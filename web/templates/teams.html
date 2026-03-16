@@ -1,0 +1,661 @@
+{% extends "base.html" %}
+
+{% block title %}Teams — SerieAI{% endblock %}
+{% block page_title %}Teams{% endblock %}
+
+{% block header_actions %}
+<div style="display:flex;align-items:center;gap:12px;">
+  <div id="teams-live-clock" style="font-family:monospace;font-size:13px;color:#e5e7eb;"></div>
+  <!-- View toggle -->
+  <div style="display:flex;border:1px solid var(--border-default);border-radius:var(--radius-md);overflow:hidden;">
+    <button id="btn-view-table" onclick="setView('table')" class="btn btn--sm" style="border-radius:0;border:none;padding:6px 14px;">Table</button>
+    <button id="btn-view-grid" onclick="setView('grid')" class="btn btn--sm btn--secondary" style="border-radius:0;border:none;border-left:1px solid var(--border-default);padding:6px 14px;">Grid</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  /* Widen content area for the league table — 20 columns need more room */
+  .main-inner { max-width: 1600px; }
+
+  /* Compact table cells so everything fits without horizontal scroll */
+  #league-table.ds-table th,
+  #league-table.ds-table td {
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+  #league-table.ds-table th {
+    font-size: 10px;
+  }
+
+  /* Zone row backgrounds */
+  .zone-ucl td { background: rgba(74, 222, 128, 0.04); }
+  .zone-ucl:hover td { background: rgba(74, 222, 128, 0.08) !important; }
+  .zone-uel td { background: rgba(99, 102, 241, 0.04); }
+  .zone-uel:hover td { background: rgba(99, 102, 241, 0.08) !important; }
+  .zone-uecl td { background: rgba(56, 189, 248, 0.04); }
+  .zone-uecl:hover td { background: rgba(56, 189, 248, 0.08) !important; }
+  .zone-relegation td { background: rgba(248, 113, 113, 0.04); }
+  .zone-relegation:hover td { background: rgba(248, 113, 113, 0.08) !important; }
+
+  /* Zone divider lines */
+  .zone-ucl-last td { border-bottom: 2px solid rgba(74, 222, 128, 0.35); }
+  .zone-uel-last td { border-bottom: 2px solid rgba(99, 102, 241, 0.35); }
+  .zone-uecl-last td { border-bottom: 2px solid rgba(56, 189, 248, 0.35); }
+  .zone-relegation-first td { border-top: 2px solid rgba(248, 113, 113, 0.35); }
+
+  /* Position badge */
+  .pos-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 22px; border-radius: 4px; font-weight: 700;
+    font-size: 12px; font-family: var(--font-mono);
+  }
+  .pos-badge--ucl { background: rgba(74,222,128,0.12); color: #4ade80; }
+  .pos-badge--uel { background: rgba(99,102,241,0.12); color: #818cf8; }
+  .pos-badge--uecl { background: rgba(56,189,248,0.12); color: #38bdf8; }
+  .pos-badge--mid { background: transparent; color: var(--text-secondary); }
+  .pos-badge--rel { background: rgba(248,113,113,0.12); color: #f87171; }
+
+  /* Form squares */
+  .form-square {
+    display: inline-block; width: 18px; height: 18px; border-radius: 4px;
+    text-align: center; font-size: 10px; line-height: 18px; font-weight: 700;
+    margin-right: 2px;
+  }
+  .form-square--W { background: var(--green); color: #000; }
+  .form-square--D { background: var(--amber); color: #000; }
+  .form-square--L { background: var(--red); color: #fff; }
+
+  /* Team badge */
+  .team-badge {
+    width: 26px; height: 26px; border-radius: 6px; display: flex;
+    align-items: center; justify-content: center; font-size: 8px;
+    font-weight: 800; color: #fff; flex-shrink: 0; letter-spacing: -0.3px;
+  }
+
+  /* Next match pill */
+  .next-pill {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+    border-radius: 6px; background: var(--bg-tertiary); font-size: 11px;
+    text-decoration: none; white-space: nowrap; transition: background 0.15s;
+  }
+  .next-pill:hover { background: var(--accent-muted); }
+  .next-pill__venue {
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    padding: 1px 4px; border-radius: 3px; line-height: 1;
+  }
+  .next-pill__venue--home { background: rgba(74,222,128,0.15); color: var(--green); }
+  .next-pill__venue--away { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* Compare icon button */
+  .compare-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: 1.5px solid var(--border-default);
+    background: transparent; cursor: pointer; display: flex; align-items: center;
+    justify-content: center; padding: 0; transition: all 0.15s; flex-shrink: 0;
+  }
+  .compare-btn:hover { border-color: var(--accent); background: var(--accent-muted); }
+  .compare-btn--active { border-color: var(--accent); background: var(--accent); }
+  .compare-btn--active svg { stroke: #fff; }
+
+  /* Legend */
+  .zone-legend {
+    display: flex; gap: 20px; flex-wrap: wrap; padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-tertiary);
+  }
+  .zone-legend__item { display: flex; align-items: center; gap: 6px; }
+  .zone-legend__dot {
+    width: 10px; height: 10px; border-radius: 3px;
+  }
+</style>
+
+<!-- Compare Banner (hidden until 2 teams selected) -->
+<div id="compare-banner" class="hidden" style="background:var(--accent-muted);border:1px solid rgba(99,102,241,0.3);border-radius:var(--radius-lg);padding:var(--space-3) var(--space-5);margin-bottom:var(--space-6);display:flex;align-items:center;justify-content:space-between;">
+  <div style="display:flex;align-items:center;gap:var(--space-3);">
+    <span class="badge badge--accent">COMPARE</span>
+    <span id="compare-team-a" class="text-small font-semibold" style="color:var(--text-primary);">-</span>
+    <span class="text-small text-tertiary">vs</span>
+    <span id="compare-team-b" class="text-small font-semibold" style="color:var(--text-primary);">-</span>
+  </div>
+  <div style="display:flex;gap:var(--space-2);">
+    <button onclick="loadComparison()" class="btn btn--sm btn--accent">Compare</button>
+    <button onclick="clearComparison()" class="btn btn--sm btn--secondary">Clear</button>
+  </div>
+</div>
+
+<!-- League Table View -->
+<div id="view-table" class="section">
+  <div class="section__header">
+    <div>
+      <h2 class="section__title" id="table-season-title">Serie A</h2>
+      <p class="section__subtitle" id="table-subtitle">Full league standings with advanced metrics</p>
+    </div>
+    <div style="display:flex;gap:var(--space-2);">
+      <button onclick="sortTable('position')" class="btn btn--sm btn--secondary sort-btn active" data-sort="position">Pos</button>
+      <button onclick="sortTable('xpts')" class="btn btn--sm btn--secondary sort-btn" data-sort="xpts">xPts</button>
+      <button onclick="sortTable('elo')" class="btn btn--sm btn--secondary sort-btn" data-sort="elo">Elo</button>
+      <button onclick="sortTable('xg_diff')" class="btn btn--sm btn--secondary sort-btn" data-sort="xg_diff">xG Diff</button>
+    </div>
+  </div>
+  <div class="table-wrapper" id="league-table-wrap">
+    <table class="ds-table" id="league-table">
+      <thead>
+        <tr>
+          <th style="width:36px;">#</th>
+          <th>Team</th>
+          <th style="text-align:center;">P</th>
+          <th style="text-align:center;">W</th>
+          <th style="text-align:center;">D</th>
+          <th style="text-align:center;">L</th>
+          <th style="text-align:center;">GF</th>
+          <th style="text-align:center;">GA</th>
+          <th style="text-align:center;">GD</th>
+          <th style="text-align:center;">Pts</th>
+          <th style="text-align:center;">xPts</th>
+          <th style="text-align:center;">+/-</th>
+          <th style="text-align:center;">xG</th>
+          <th style="text-align:center;">xGA</th>
+          <th style="text-align:center;">Elo</th>
+          <th style="text-align:center;">Form</th>
+          <th style="text-align:center;">Home</th>
+          <th style="text-align:center;">Away</th>
+          <th>Next</th>
+          <th style="width:30px;"></th>
+        </tr>
+      </thead>
+      <tbody id="league-table-body"></tbody>
+    </table>
+  </div>
+  <!-- Zone Legend -->
+  <div class="zone-legend">
+    <div class="zone-legend__item">
+      <div class="zone-legend__dot" style="background:rgba(74,222,128,0.5);"></div>
+      <span>Champions League (1-4)</span>
+    </div>
+    <div class="zone-legend__item">
+      <div class="zone-legend__dot" style="background:rgba(99,102,241,0.5);"></div>
+      <span>Europa League (5-6)</span>
+    </div>
+    <div class="zone-legend__item">
+      <div class="zone-legend__dot" style="background:rgba(56,189,248,0.5);"></div>
+      <span>Conference League (7)</span>
+    </div>
+    <div class="zone-legend__item">
+      <div class="zone-legend__dot" style="background:rgba(248,113,113,0.5);"></div>
+      <span>Relegation (18-20)</span>
+    </div>
+  </div>
+</div>
+
+<!-- Grid View -->
+<div id="view-grid" class="section hidden">
+  <div class="section__header">
+    <h2 class="section__title">All Teams</h2>
+    <p class="section__subtitle">Click a team for details. Select two to compare.</p>
+  </div>
+  <div id="team-grid" class="grid-4" style="gap:var(--space-4);"></div>
+</div>
+
+<!-- Comparison Panel (shown when compare is triggered) -->
+<div id="compare-panel" class="section hidden">
+  <div class="section__header">
+    <h2 class="section__title" id="compare-title">Head-to-Head</h2>
+    <button onclick="closeComparison()" class="btn btn--sm btn--secondary">Close</button>
+  </div>
+  <div id="compare-content" class="grid-2" style="gap:var(--space-6);"></div>
+  <!-- H2H History -->
+  <div id="h2h-section" style="margin-top:var(--space-6);">
+    <h3 class="section__title" style="font-size:14px;margin-bottom:var(--space-3);">Recent Meetings</h3>
+    <div class="table-wrapper">
+      <table class="ds-table" id="h2h-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Season</th>
+            <th>Home</th>
+            <th style="text-align:center;">Score</th>
+            <th>Away</th>
+            <th style="text-align:center;">xG (H-A)</th>
+          </tr>
+        </thead>
+        <tbody id="h2h-body"></tbody>
+      </table>
+    </div>
+  </div>
+  <!-- Upcoming Prediction between them -->
+  <div id="h2h-prediction" class="hidden" style="margin-top:var(--space-4);"></div>
+</div>
+
+<!-- Loading -->
+<div id="teams-loading" class="flex items-center justify-center" style="padding:var(--space-12);">
+  <div class="animate-spin" style="width:24px;height:24px;border:2px solid var(--border-default);border-top-color:var(--accent);border-radius:50%;"></div>
+  <span class="text-small text-tertiary" style="margin-left:var(--space-3);">Loading teams...</span>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// --- State ---
+let _teamsData = [];
+let _currentSort = 'position';
+let _currentView = 'table';
+let _compareSlots = [null, null]; // [team_a, team_b]
+
+// --- Team abbreviations & colors ---
+const TEAM_ABBR = {
+  'Inter': 'INT', 'Milan': 'MIL', 'Napoli': 'NAP', 'Juventus': 'JUV',
+  'Roma': 'ROM', 'Atalanta': 'ATA', 'Lazio': 'LAZ', 'Fiorentina': 'FIO',
+  'Bologna': 'BOL', 'Torino': 'TOR', 'Udinese': 'UDI', 'Genoa': 'GEN',
+  'Cagliari': 'CAG', 'Verona': 'VER', 'Empoli': 'EMP', 'Como': 'COM',
+  'Parma': 'PAR', 'Lecce': 'LEC', 'Monza': 'MON', 'Venezia': 'VEN',
+  'Cremonese': 'CRE', 'Sassuolo': 'SAS', 'Salernitana': 'SAL', 'Frosinone': 'FRO',
+  'Sampdoria': 'SAM', 'Spezia': 'SPE', 'Benevento': 'BEN', 'Pisa': 'PIS',
+};
+
+const TEAM_COLORS = {
+  'Inter': '#0068A8', 'Milan': '#FB090B', 'Napoli': '#12A0D7', 'Juventus': '#000000',
+  'Roma': '#8E1F2F', 'Atalanta': '#1E71B8', 'Lazio': '#87D8F7', 'Fiorentina': '#5B2C86',
+  'Bologna': '#1A2F48', 'Torino': '#8B0000', 'Udinese': '#000000', 'Genoa': '#A41E22',
+  'Cagliari': '#A62132', 'Verona': '#FFED00', 'Empoli': '#005BA6', 'Como': '#003DA5',
+  'Parma': '#FFDD00', 'Lecce': '#F8E71C', 'Monza': '#C4161C', 'Venezia': '#FC6600',
+  'Cremonese': '#C8102E', 'Sassuolo': '#00A651', 'Pisa': '#003366',
+};
+
+// --- Zone helpers ---
+function getZoneClass(pos) {
+  if (pos <= 4) return 'zone-ucl';
+  if (pos <= 6) return 'zone-uel';
+  if (pos === 7) return 'zone-uecl';
+  if (pos >= 18) return 'zone-relegation';
+  return '';
+}
+
+function getZoneDividerClass(pos) {
+  if (pos === 4) return 'zone-ucl-last';
+  if (pos === 6) return 'zone-uel-last';
+  if (pos === 7) return 'zone-uecl-last';
+  if (pos === 18) return 'zone-relegation-first';
+  return '';
+}
+
+function getPosBadgeClass(pos) {
+  if (pos <= 4) return 'pos-badge--ucl';
+  if (pos <= 6) return 'pos-badge--uel';
+  if (pos === 7) return 'pos-badge--uecl';
+  if (pos >= 18) return 'pos-badge--rel';
+  return 'pos-badge--mid';
+}
+
+// --- Init ---
+document.addEventListener('DOMContentLoaded', async () => {
+  const clockEl = document.getElementById('teams-live-clock');
+  if (clockEl) {
+    const tick = () => { clockEl.textContent = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}); };
+    tick(); setInterval(tick, 1000);
+  }
+  await loadTeams();
+});
+
+// --- Load Data ---
+async function loadTeams() {
+  try {
+    const data = await apiFetch('/api/teams/overview');
+    _teamsData = data.teams || [];
+    document.getElementById('teams-loading').classList.add('hidden');
+    // Set season in title from API
+    if (data.season) {
+      document.getElementById('table-season-title').textContent = `Serie A ${data.season}`;
+    }
+    renderTable();
+    renderGrid();
+  } catch(err) {
+    document.getElementById('teams-loading').innerHTML = `<span class="text-small text-red">Failed to load teams: ${err.message}</span>`;
+  }
+}
+
+// --- League Table ---
+function renderTable() {
+  const tbody = document.getElementById('league-table-body');
+  if (!tbody) return;
+
+  const sorted = [..._teamsData].sort((a, b) => {
+    switch(_currentSort) {
+      case 'xpts': return (b.stats.xpts || 0) - (a.stats.xpts || 0);
+      case 'elo': return (b.stats.elo || 0) - (a.stats.elo || 0);
+      case 'xg_diff': return (b.stats.xg_diff || 0) - (a.stats.xg_diff || 0);
+      default: return (a.standing.position || 99) - (b.standing.position || 99);
+    }
+  });
+
+  tbody.innerHTML = sorted.map((t, i) => {
+    const s = t.standing;
+    const st = t.stats;
+    const pos = _currentSort === 'position' ? s.position : (i + 1);
+    const ptsDiff = t.pts_diff;
+    const ptsDiffColor = ptsDiff > 0 ? 'var(--green)' : ptsDiff < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+    const ptsDiffStr = ptsDiff > 0 ? `+${ptsDiff}` : `${ptsDiff}`;
+
+    // Form display — W/D/L squares with gaps
+    const form = (s.form_last5 || '').split('').map(c => {
+      if (c === 'W') return '<span class="form-square form-square--W">W</span>';
+      if (c === 'D') return '<span class="form-square form-square--D">D</span>';
+      if (c === 'L') return '<span class="form-square form-square--L">L</span>';
+      return '';
+    }).join('');
+
+    // Home/away records
+    const hr = st.home || {};
+    const ar = st.away || {};
+    const homeStr = hr.played ? `${hr.w}-${hr.d}-${hr.l}` : '-';
+    const awayStr = ar.played ? `${ar.w}-${ar.d}-${ar.l}` : '-';
+    const homePPG = hr.ppg ? `<span class="text-tertiary" style="font-size:10px;">(${hr.ppg})</span>` : '';
+    const awayPPG = ar.ppg ? `<span class="text-tertiary" style="font-size:10px;">(${ar.ppg})</span>` : '';
+
+    // Upcoming — always show as pill with H/A badge
+    const up = t.upcoming;
+    let nextHTML = '<span class="text-tertiary" style="font-size:11px;">-</span>';
+    if (up) {
+      const venueClass = up.is_home ? 'next-pill__venue--home' : 'next-pill__venue--away';
+      const venueLabel = up.is_home ? 'H' : 'A';
+      const oppName = TEAM_ABBR[up.opponent] || up.opponent;
+      nextHTML = `<a href="/team/${encodeURIComponent(up.opponent)}" class="next-pill" onclick="event.stopPropagation();">
+        <span class="next-pill__venue ${venueClass}">${venueLabel}</span>
+        <span style="color:var(--text-primary);font-weight:500;">${oppName}</span>
+      </a>`;
+    }
+
+    // Position badge
+    const posCls = getPosBadgeClass(s.position);
+
+    // Zone row class
+    const zoneClass = _currentSort === 'position' ? getZoneClass(s.position) : '';
+    const dividerClass = _currentSort === 'position' ? getZoneDividerClass(s.position) : '';
+
+    // Compare button
+    const isSelected = _compareSlots.includes(t.team);
+    const cmpCls = isSelected ? 'compare-btn--active' : '';
+    const cmpBtn = `<button class="compare-btn ${cmpCls}" onclick="event.stopPropagation();toggleCompare('${t.team.replace(/'/g, "\\'")}')" title="Compare">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="${isSelected ? '#fff' : 'var(--text-tertiary)'}" stroke-width="2.5"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M3 4l17 17"/></svg>
+    </button>`;
+
+    // Team badge (colored square with abbreviation)
+    const teamColor = TEAM_COLORS[t.team] || '#555';
+    const teamAbbr = (TEAM_ABBR[t.team] || t.team.slice(0,3).toUpperCase()).slice(0,3);
+
+    return `<tr class="${zoneClass} ${dividerClass}" style="cursor:pointer;" onclick="window.location='/team/${encodeURIComponent(t.team)}'">
+      <td><span class="pos-badge ${posCls}">${pos}</span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="team-badge" style="background:${teamColor};">${teamAbbr}</div>
+          <span class="font-semibold" style="color:var(--text-primary);">${t.team}</span>
+        </div>
+      </td>
+      <td style="text-align:center;">${s.played}</td>
+      <td style="text-align:center;color:var(--green);">${s.won}</td>
+      <td style="text-align:center;color:var(--text-tertiary);">${s.drawn}</td>
+      <td style="text-align:center;color:var(--red);">${s.lost}</td>
+      <td style="text-align:center;">${s.gf}</td>
+      <td style="text-align:center;">${s.ga}</td>
+      <td style="text-align:center;font-weight:600;color:${s.gd > 0 ? 'var(--green)' : s.gd < 0 ? 'var(--red)' : 'var(--text-tertiary)'};">${s.gd > 0 ? '+' : ''}${s.gd}</td>
+      <td style="text-align:center;font-weight:700;color:var(--text-primary);font-size:14px;">${s.points}</td>
+      <td style="text-align:center;color:var(--text-secondary);">${st.xpts || '-'}</td>
+      <td style="text-align:center;color:${ptsDiffColor};font-weight:600;">${ptsDiffStr}</td>
+      <td style="text-align:center;color:var(--text-secondary);">${st.avg_xg ? st.avg_xg.toFixed(2) : '-'}</td>
+      <td style="text-align:center;color:var(--text-secondary);">${st.avg_xga ? st.avg_xga.toFixed(2) : '-'}</td>
+      <td style="text-align:center;font-family:var(--font-mono);font-size:12px;">${st.elo || '-'}</td>
+      <td style="text-align:center;white-space:nowrap;">${form || '-'}</td>
+      <td style="text-align:center;font-size:12px;white-space:nowrap;">${homeStr} ${homePPG}</td>
+      <td style="text-align:center;font-size:12px;white-space:nowrap;">${awayStr} ${awayPPG}</td>
+      <td style="white-space:nowrap;">${nextHTML}</td>
+      <td style="text-align:center;">${cmpBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+// --- Grid View ---
+function renderGrid() {
+  const grid = document.getElementById('team-grid');
+  if (!grid) return;
+
+  grid.innerHTML = _teamsData.map(t => {
+    const s = t.standing;
+    const st = t.stats;
+    const up = t.upcoming;
+    const color = TEAM_COLORS[t.team] || '#555';
+    const abbr = TEAM_ABBR[t.team] || t.team.slice(0,3).toUpperCase();
+    const isSelected = _compareSlots.includes(t.team);
+
+    // xG diff bar
+    const xgDiff = st.xg_diff || 0;
+    const xgBarPct = Math.min(Math.abs(xgDiff) * 25, 100);
+    const xgBarColor = xgDiff > 0 ? 'var(--green)' : xgDiff < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+
+    // Points diff badge
+    const ptsDiff = t.pts_diff;
+    const ptsBadge = ptsDiff > 0 ?
+      `<span class="badge badge--green" style="font-size:10px;">+${ptsDiff} overperf</span>` :
+      ptsDiff < 0 ?
+      `<span class="badge badge--red" style="font-size:10px;">${ptsDiff} underperf</span>` :
+      `<span class="badge badge--neutral" style="font-size:10px;">On track</span>`;
+
+    // Position zone color on the left bar
+    let zoneAccent = 'var(--border-default)';
+    if (s.position <= 4) zoneAccent = 'rgba(74,222,128,0.5)';
+    else if (s.position <= 6) zoneAccent = 'rgba(99,102,241,0.5)';
+    else if (s.position === 7) zoneAccent = 'rgba(56,189,248,0.5)';
+    else if (s.position >= 18) zoneAccent = 'rgba(248,113,113,0.5)';
+
+    // Compare button
+    const cmpCls = isSelected ? 'compare-btn--active' : '';
+
+    return `<div class="card card--clickable" style="position:relative;overflow:hidden;border-left:3px solid ${zoneAccent};" onclick="window.location='/team/${encodeURIComponent(t.team)}'">
+      <!-- Color accent top bar -->
+      <div style="height:3px;background:${color};"></div>
+      <div class="card__body" style="padding:var(--space-4);">
+        <!-- Header: badge + name + position -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:var(--space-3);">
+          <div class="team-badge" style="width:36px;height:36px;border-radius:8px;background:${color};font-size:11px;">${abbr}</div>
+          <div style="flex:1;">
+            <div class="font-semibold" style="color:var(--text-primary);font-size:14px;">${t.team}</div>
+            <div class="text-small text-tertiary">${ordinal(s.position)} — ${s.points} pts</div>
+          </div>
+          <button class="compare-btn ${cmpCls}" onclick="event.stopPropagation();toggleCompare('${t.team.replace(/'/g, "\\'")}')" title="Compare">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="${isSelected ? '#fff' : 'var(--text-tertiary)'}" stroke-width="2.5"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M3 4l17 17"/></svg>
+          </button>
+        </div>
+        <!-- Stats grid -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2);font-size:12px;">
+          <div><span class="text-tertiary">W-D-L</span> <span style="color:var(--text-primary);font-weight:600;">${s.won}-${s.drawn}-${s.lost}</span></div>
+          <div><span class="text-tertiary">GD</span> <span style="color:${s.gd > 0 ? 'var(--green)' : s.gd < 0 ? 'var(--red)' : 'var(--text-tertiary)'};font-weight:600;">${s.gd > 0 ? '+' : ''}${s.gd}</span></div>
+          <div><span class="text-tertiary">Elo</span> <span style="color:var(--text-primary);font-family:var(--font-mono);font-size:11px;">${st.elo || '-'}</span></div>
+          <div><span class="text-tertiary">xPts</span> <span style="color:var(--text-secondary);">${st.xpts || '-'}</span></div>
+        </div>
+        <!-- xG bar -->
+        <div style="margin-top:var(--space-3);">
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;">
+            <span class="text-tertiary">xG: ${st.avg_xg ? st.avg_xg.toFixed(2) : '-'}</span>
+            <span class="text-tertiary">xGA: ${st.avg_xga ? st.avg_xga.toFixed(2) : '-'}</span>
+          </div>
+          <div style="height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
+            <div style="height:100%;width:${xgBarPct}%;background:${xgBarColor};border-radius:2px;"></div>
+          </div>
+        </div>
+        <!-- Performance badge + next match -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:var(--space-3);">
+          ${ptsBadge}
+          ${up ? `<span class="text-small" style="color:var(--text-secondary);">
+            <span style="font-size:9px;font-weight:700;${up.is_home ? 'color:var(--green);' : 'color:var(--red);'}">${up.is_home ? 'H' : 'A'}</span>
+            ${TEAM_ABBR[up.opponent] || up.opponent}
+          </span>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// --- View Toggle ---
+function setView(view) {
+  _currentView = view;
+  document.getElementById('view-table').classList.toggle('hidden', view !== 'table');
+  document.getElementById('view-grid').classList.toggle('hidden', view !== 'grid');
+  document.getElementById('btn-view-table').classList.toggle('btn--secondary', view !== 'table');
+  document.getElementById('btn-view-grid').classList.toggle('btn--secondary', view !== 'grid');
+}
+
+// --- Sort ---
+function sortTable(field) {
+  _currentSort = field;
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.sort === field);
+    b.style.background = b.dataset.sort === field ? 'var(--accent-muted)' : '';
+    b.style.color = b.dataset.sort === field ? 'var(--accent)' : '';
+  });
+  renderTable();
+}
+
+// --- Compare ---
+function toggleCompare(team) {
+  if (_compareSlots.includes(team)) {
+    _compareSlots[_compareSlots.indexOf(team)] = null;
+  } else if (!_compareSlots[0]) {
+    _compareSlots[0] = team;
+  } else if (!_compareSlots[1]) {
+    _compareSlots[1] = team;
+  } else {
+    _compareSlots[1] = team;
+  }
+  updateCompareBanner();
+  renderTable();
+  renderGrid();
+}
+
+function updateCompareBanner() {
+  const banner = document.getElementById('compare-banner');
+  const [a, b] = _compareSlots;
+  if (a || b) {
+    banner.classList.remove('hidden');
+    document.getElementById('compare-team-a').textContent = a || 'Select team...';
+    document.getElementById('compare-team-b').textContent = b || 'Select team...';
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+function clearComparison() {
+  _compareSlots = [null, null];
+  updateCompareBanner();
+  document.getElementById('compare-panel').classList.add('hidden');
+  renderTable();
+  renderGrid();
+}
+
+function closeComparison() {
+  document.getElementById('compare-panel').classList.add('hidden');
+}
+
+async function loadComparison() {
+  const [a, b] = _compareSlots;
+  if (!a || !b) return;
+
+  const panel = document.getElementById('compare-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('compare-title').textContent = `${a} vs ${b}`;
+
+  const teamA = _teamsData.find(t => t.team === a);
+  const teamB = _teamsData.find(t => t.team === b);
+
+  const content = document.getElementById('compare-content');
+  content.innerHTML = [teamA, teamB].map(t => {
+    if (!t) return '<div class="card"><div class="card__body text-small text-tertiary">Team not found</div></div>';
+    const s = t.standing;
+    const st = t.stats;
+    const color = TEAM_COLORS[t.team] || '#555';
+    return `<div class="card">
+      <div style="height:3px;background:${color};"></div>
+      <div class="card__body">
+        <h3 class="font-semibold" style="color:var(--text-primary);font-size:16px;margin-bottom:var(--space-3);">${t.team}</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2);font-size:13px;">
+          ${compStat('Position', ordinal(s.position))}
+          ${compStat('Points', s.points)}
+          ${compStat('W-D-L', `${s.won}-${s.drawn}-${s.lost}`)}
+          ${compStat('GD', (s.gd > 0 ? '+' : '') + s.gd, s.gd > 0 ? 'green' : s.gd < 0 ? 'red' : '')}
+          ${compStat('GF / GA', `${s.gf} / ${s.ga}`)}
+          ${compStat('Elo', st.elo || '-')}
+          ${compStat('xPts', st.xpts || '-')}
+          ${compStat('Pts +/-', (t.pts_diff > 0 ? '+' : '') + t.pts_diff, t.pts_diff > 0 ? 'green' : t.pts_diff < 0 ? 'red' : '')}
+          ${compStat('xG (avg)', st.avg_xg ? st.avg_xg.toFixed(2) : '-')}
+          ${compStat('xGA (avg)', st.avg_xga ? st.avg_xga.toFixed(2) : '-')}
+          ${compStat('Home', st.home ? `${st.home.w}-${st.home.d}-${st.home.l} (${st.home.ppg})` : '-')}
+          ${compStat('Away', st.away ? `${st.away.w}-${st.away.d}-${st.away.l} (${st.away.ppg})` : '-')}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  try {
+    const h2h = await apiFetch(`/api/teams/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    const hBody = document.getElementById('h2h-body');
+
+    const sum = h2h.summary || {};
+    const summaryHTML = sum.total ? `<tr style="background:var(--bg-tertiary);">
+      <td colspan="2" style="font-weight:600;color:var(--text-primary);">${sum.total} meetings</td>
+      <td style="text-align:center;color:var(--green);font-weight:600;">${a}: ${sum.a_wins}W</td>
+      <td style="text-align:center;color:var(--amber);font-weight:600;">${sum.draws}D</td>
+      <td style="text-align:center;color:var(--red);font-weight:600;">${b}: ${sum.b_wins}W</td>
+      <td></td>
+    </tr>` : '';
+
+    hBody.innerHTML = summaryHTML + (h2h.h2h || []).map(m => {
+      const isAHome = m.home.toLowerCase() === a.toLowerCase();
+      return `<tr>
+        <td class="text-small">${m.date}</td>
+        <td class="text-small text-tertiary">${m.season}</td>
+        <td style="font-weight:${isAHome ? '600' : '400'};">${m.home}</td>
+        <td style="text-align:center;font-weight:700;font-family:var(--font-mono);color:var(--text-primary);">${m.score || '-'}</td>
+        <td style="font-weight:${!isAHome ? '600' : '400'};">${m.away}</td>
+        <td style="text-align:center;font-family:var(--font-mono);font-size:12px;color:var(--text-tertiary);">${m.home_xg != null ? `${m.home_xg}-${m.away_xg}` : '-'}</td>
+      </tr>`;
+    }).join('');
+
+    const predDiv = document.getElementById('h2h-prediction');
+    if (h2h.prediction) {
+      const p = h2h.prediction;
+      const probs = p.probabilities || {};
+      predDiv.innerHTML = `<div class="card card--value" style="border-left-color:var(--accent);">
+        <div class="card__body" style="display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;">
+          <span class="badge badge--accent">UPCOMING</span>
+          <span class="font-semibold" style="color:var(--text-primary);">${p.home_team} vs ${p.away_team}</span>
+          ${p.commence_time ? `<span class="text-small text-tertiary">${formatTime(p.commence_time)} — ${timeUntil(p.commence_time)}</span>` : ''}
+          <span class="badge ${p.predicted_outcome === 'Home Win' ? 'badge--green' : p.predicted_outcome === 'Draw' ? 'badge--amber' : 'badge--red'}">${p.predicted_outcome || '?'}</span>
+          ${probs.home != null ? `<span class="text-small text-tertiary">${pctStr(probs.home)} - ${pctStr(probs.draw)} - ${pctStr(probs.away)}</span>` : ''}
+          ${confBadge(p.confidence_level)}
+        </div>
+      </div>`;
+      predDiv.classList.remove('hidden');
+    } else {
+      predDiv.classList.add('hidden');
+    }
+  } catch(err) {
+    document.getElementById('h2h-body').innerHTML = `<tr><td colspan="6" class="text-small text-red">Failed to load H2H: ${err.message}</td></tr>`;
+  }
+
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// --- Helpers ---
+function compStat(label, value, color) {
+  const colorStyle = color === 'green' ? 'color:var(--green);' : color === 'red' ? 'color:var(--red);' : '';
+  return `<div>
+    <div class="text-tertiary" style="font-size:11px;">${label}</div>
+    <div style="font-weight:600;color:var(--text-primary);${colorStyle}">${value}</div>
+  </div>`;
+}
+
+function ordinal(n) {
+  const s = ['th','st','nd','rd'];
+  const v = n % 100;
+  return n + (s[(v-20)%10] || s[v] || s[0]);
+}
+</script>
+{% endblock %}

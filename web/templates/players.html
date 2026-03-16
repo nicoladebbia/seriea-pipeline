@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Players — SerieAI{% endblock %}
+{% block page_title %}Players{% endblock %}
+
+{% block head %}
+<style>
+  /* Team list (single column — no layout shift on expand) */
+  .teams-list { display: flex; flex-direction: column; gap: 8px; }
+  .team-card { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); overflow: hidden; transition: border-color 0.15s; }
+  .team-card:hover { border-color: var(--accent); }
+  .team-card__header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; cursor: pointer; user-select: none; }
+  .team-card__left { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+  .team-card__name { font-size: 15px; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+  .team-card__name a { color: inherit; text-decoration: none; transition: color 0.15s; }
+  .team-card__name a:hover { color: var(--accent); }
+  .team-card__meta { display: flex; gap: 14px; font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); flex-shrink: 0; }
+  .team-card__meta-item { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+  .team-card__meta-val { font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+  .team-card__meta-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .team-card__chevron { transition: transform 0.3s; color: var(--text-tertiary); flex-shrink: 0; margin-left: 10px; }
+  .team-card__chevron.open { transform: rotate(180deg); }
+
+  /* Player list inside card */
+  .team-card__players { max-height: 0; overflow: hidden; transition: max-height 0.4s ease; }
+  .team-card__players.open { max-height: 4000px; }
+
+  .player-row { display: flex; align-items: center; gap: 6px; padding: 5px 16px; border-top: 1px solid var(--border-subtle); transition: background 0.1s; font-size: 12px; }
+  .player-row:hover { background: var(--bg-tertiary); }
+  .player-row__pos { font-size: 9px; font-family: var(--font-mono); color: var(--text-tertiary); width: 22px; text-align: center; padding: 2px 4px; background: var(--bg-tertiary); border-radius: 3px; flex-shrink: 0; }
+  .player-row__pos--gk { color: var(--amber); background: rgba(251,191,36,0.08); }
+  .player-row__pos--df { color: var(--accent); background: rgba(96,165,250,0.08); }
+  .player-row__pos--mf { color: var(--green); background: rgba(74,222,128,0.08); }
+  .player-row__pos--fw { color: var(--red); background: rgba(248,113,113,0.08); }
+  .player-row__number { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); width: 20px; text-align: right; flex-shrink: 0; }
+  .player-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-row__name a { color: var(--text-secondary); transition: color 0.15s; text-decoration: none; }
+  .player-row__name a:hover { color: var(--accent); }
+  .player-row__stat { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); text-align: right; width: 36px; flex-shrink: 0; }
+  .player-row__stat--highlight { color: var(--text-secondary); font-weight: 600; }
+  .player-row__rating { font-size: 10px; font-family: var(--font-mono); font-weight: 600; text-align: right; width: 30px; flex-shrink: 0; }
+  .player-row__value { font-size: 9px; color: var(--text-tertiary); text-align: right; width: 48px; flex-shrink: 0; }
+
+  /* Stats header */
+  .players-header { display: flex; align-items: center; gap: 6px; padding: 4px 16px; font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); border-top: 1px solid var(--border-default); background: var(--bg-tertiary); }
+  .players-header span { font-weight: 600; }
+
+  /* Search */
+  .player-search-wrap { margin-bottom: 16px; }
+  .player-search { width: 100%; max-width: 400px; padding: 8px 12px; font-size: 13px; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); }
+  .player-search:focus { outline: none; border-color: var(--accent); }
+
+  /* Summary bar */
+  .summary-bar { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .summary-stat { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 8px 14px; }
+  .summary-stat__label { font-size: 9px; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.5px; }
+  .summary-stat__value { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+
+  /* Age/nationality chip */
+  .player-row__age { font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); width: 24px; text-align: right; flex-shrink: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="players-loading" class="text-center py-16">
+  <div class="text-secondary text-sm">Loading players...</div>
+</div>
+<div id="players-content" class="hidden">
+  <div class="summary-bar" id="players-summary"></div>
+  <div class="player-search-wrap">
+    <input type="text" id="player-search-input" class="player-search" placeholder="Search players by name, team, or position..." autocomplete="off">
+  </div>
+  <div class="teams-list" id="teams-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _playersData = [];
+
+async function loadPlayers() {
+  try {
+    const data = await apiFetch('/api/players');
+    _playersData = data.teams || [];
+    document.getElementById('players-loading').classList.add('hidden');
+    document.getElementById('players-content').classList.remove('hidden');
+    renderPlayers(_playersData);
+    initPlayerSearch();
+  } catch (err) {
+    document.getElementById('players-loading').innerHTML = `<div class="text-red text-sm">Failed to load players: ${err.message}</div>`;
+  }
+}
+
+function posClass(pos) {
+  if (!pos) return '';
+  const p = pos.toUpperCase();
+  if (p.includes('GK') || p === 'G') return 'player-row__pos--gk';
+  if (p.includes('D') || p.includes('CB') || p.includes('LB') || p.includes('RB')) return 'player-row__pos--df';
+  if (p.includes('M') || p.includes('CM') || p.includes('AM') || p.includes('DM')) return 'player-row__pos--mf';
+  if (p.includes('F') || p.includes('ST') || p.includes('CF') || p.includes('W')) return 'player-row__pos--fw';
+  return '';
+}
+
+function fmtValue(v) {
+  if (!v) return '';
+  if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
+  if (v >= 1000) return (v / 1000).toFixed(0) + 'K';
+  return v.toString();
+}
+
+function renderPlayers(teams) {
+  // Summary
+  const allPlayers = teams.flatMap(t => t.players.map(p => ({ ...p, team: t.team })));
+  const totalPlayers = allPlayers.length;
+  const totalTeams = teams.length;
+  const topScorer = allPlayers.sort((a, b) => (b.goals || 0) - (a.goals || 0))[0];
+  const topAssist = [...allPlayers].sort((a, b) => (b.assists || 0) - (a.assists || 0))[0];
+  const topRated = [...allPlayers].filter(p => p.rating && p.matches >= 5).sort((a, b) => (b.rating || 0) - (a.rating || 0))[0];
+
+  document.getElementById('players-summary').innerHTML = `
+    <div class="summary-stat"><div class="summary-stat__label">Teams</div><div class="summary-stat__value">${totalTeams}</div></div>
+    <div class="summary-stat"><div class="summary-stat__label">Players</div><div class="summary-stat__value">${totalPlayers}</div></div>
+    ${topScorer ? `<div class="summary-stat"><div class="summary-stat__label">Top Scorer</div><div class="summary-stat__value" style="font-size:13px;">${topScorer.name} (${topScorer.goals})</div></div>` : ''}
+    ${topAssist ? `<div class="summary-stat"><div class="summary-stat__label">Top Assists</div><div class="summary-stat__value" style="font-size:13px;">${topAssist.name} (${topAssist.assists})</div></div>` : ''}
+    ${topRated ? `<div class="summary-stat"><div class="summary-stat__label">Best Rated</div><div class="summary-stat__value" style="font-size:13px;">${topRated.name} (${topRated.rating.toFixed(2)})</div></div>` : ''}
+  `;
+
+  // Team cards (single column list)
+  const list = document.getElementById('teams-list');
+  list.innerHTML = teams.map((t, idx) => {
+    const tid = 'team-players-' + idx;
+    const teamGoals = t.players.reduce((s, p) => s + (p.goals || 0), 0);
+    const teamMV = t.players.reduce((s, p) => s + (p.market_value || 0), 0);
+    const ratings = t.players.filter(p => p.rating && p.matches >= 3).map(p => p.rating);
+    const avgRtg = ratings.length ? (ratings.reduce((a, b) => a + b, 0) / ratings.length) : 0;
+
+    return `<div class="team-card" id="card-${idx}">
+      <div class="team-card__header" onclick="toggleTeamCard(${idx})">
+        <div class="team-card__left">
+          <div class="team-card__name"><a href="/team/${encodeURIComponent(t.team)}" onclick="event.stopPropagation()">${t.team}</a></div>
+        </div>
+        <div class="team-card__meta">
+          <div class="team-card__meta-item"><div class="team-card__meta-val">${t.player_count}</div><div class="team-card__meta-label">Players</div></div>
+          <div class="team-card__meta-item"><div class="team-card__meta-val">${teamGoals}</div><div class="team-card__meta-label">Goals</div></div>
+          <div class="team-card__meta-item"><div class="team-card__meta-val">${avgRtg ? avgRtg.toFixed(2) : '-'}</div><div class="team-card__meta-label">Avg Rtg</div></div>
+          <div class="team-card__meta-item"><div class="team-card__meta-val">${teamMV >= 1e6 ? (teamMV / 1e6).toFixed(0) + 'M' : '-'}</div><div class="team-card__meta-label">Squad Val</div></div>
+        </div>
+        <svg id="chevron-${idx}" class="team-card__chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+      <div class="team-card__players" id="${tid}">
+        <div class="players-header">
+          <span style="width:22px;">Pos</span>
+          <span style="width:20px;">#</span>
+          <span style="flex:1;">Name</span>
+          <span style="width:24px;text-align:right;">Age</span>
+          <span style="width:36px;text-align:right;">Apps</span>
+          <span style="width:36px;text-align:right;">Starts</span>
+          <span style="width:36px;text-align:right;">Min</span>
+          <span style="width:36px;text-align:right;">G/A</span>
+          <span style="width:30px;text-align:right;">Rtg</span>
+          <span style="width:32px;text-align:right;">Sh</span>
+          <span style="width:32px;text-align:right;">SoT%</span>
+          <span style="width:36px;text-align:right;">SCA90</span>
+          <span style="width:36px;text-align:right;">Pass%</span>
+          <span style="width:48px;text-align:right;">Value</span>
+        </div>
+        ${t.players.map(p => `<div class="player-row" data-name="${(p.name || '').toLowerCase()}" data-team="${t.team.toLowerCase()}" data-pos="${(p.position || '').toLowerCase()}">
+          <div class="player-row__pos ${posClass(p.position)}">${p.position || '?'}</div>
+          <div class="player-row__number">${p.number || ''}</div>
+          <div class="player-row__name"><a href="/player/${encodeURIComponent(t.team)}/${encodeURIComponent(p.name)}">${p.name}</a></div>
+          <div class="player-row__age">${p.age || ''}</div>
+          <div class="player-row__stat">${p.matches || 0}</div>
+          <div class="player-row__stat">${p.starts || 0}</div>
+          <div class="player-row__stat">${p.minutes ? (p.minutes >= 1000 ? (p.minutes / 1000).toFixed(1) + 'k' : p.minutes) : '0'}</div>
+          <div class="player-row__stat player-row__stat--highlight">${(p.goals || 0)}/${(p.assists || 0)}</div>
+          <div class="player-row__rating" style="color:${p.rating >= 7.0 ? 'var(--green)' : p.rating >= 6.0 ? 'var(--amber)' : p.rating ? 'var(--red)' : 'var(--text-tertiary)'}">${p.rating ? p.rating.toFixed(1) : '-'}</div>
+          <div class="player-row__stat" style="width:32px;color:var(--text-tertiary)">${p.fbref?.shots || '-'}</div>
+          <div class="player-row__stat" style="width:32px;color:${(p.fbref?.shot_accuracy||0)>=40?'var(--green)':'var(--text-tertiary)'}">${p.fbref?.shot_accuracy != null ? p.fbref.shot_accuracy.toFixed(0)+'%' : '-'}</div>
+          <div class="player-row__stat" style="width:36px;color:${(p.fbref?.sca_per_90||0)>=2?'var(--accent)':'var(--text-tertiary)'}">${p.fbref?.sca_per_90 != null ? p.fbref.sca_per_90.toFixed(1) : '-'}</div>
+          <div class="player-row__stat" style="width:36px;color:${(p.fbref?.pass_pct||0)>=80?'var(--green)':'var(--text-tertiary)'}">${p.fbref?.pass_pct != null ? p.fbref.pass_pct.toFixed(0)+'%' : '-'}</div>
+          <div class="player-row__value">${fmtValue(p.market_value)}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleTeamCard(idx) {
+  const players = document.getElementById('team-players-' + idx);
+  const chevron = document.getElementById('chevron-' + idx);
+  if (!players) return;
+  players.classList.toggle('open');
+  chevron.classList.toggle('open');
+}
+
+function initPlayerSearch() {
+  const input = document.getElementById('player-search-input');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase().trim();
+    document.querySelectorAll('.team-card').forEach(card => {
+      const rows = card.querySelectorAll('.player-row');
+      let visible = 0;
+      rows.forEach(row => {
+        const name = row.dataset.name || '';
+        const team = row.dataset.team || '';
+        const pos = row.dataset.pos || '';
+        const match = !q || name.includes(q) || team.includes(q) || pos.includes(q);
+        row.style.display = match ? '' : 'none';
+        if (match) visible++;
+      });
+      const playersDiv = card.querySelector('.team-card__players');
+      if (q && visible > 0) {
+        playersDiv.classList.add('open');
+        card.querySelector('.team-card__chevron')?.classList.add('open');
+        card.style.display = '';
+      } else if (q && visible === 0) {
+        card.style.display = 'none';
+      } else {
+        card.style.display = '';
+        if (!q) {
+          playersDiv.classList.remove('open');
+          card.querySelector('.team-card__chevron')?.classList.remove('open');
+        }
+      }
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', loadPlayers);
+</script>
+{% endblock %}

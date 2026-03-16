@@ -1,0 +1,628 @@
+{% extends "base.html" %}
+{% block title %}Match Detail — SerieAI{% endblock %}
+{% block page_title %}Match Detail{% endblock %}
+
+{% block head %}
+<style>
+  /* Match header */
+  .match-header { text-align: center; padding: 24px 0; border-bottom: 1px solid var(--border-subtle); }
+  .match-header__teams { display: flex; align-items: center; justify-content: center; gap: 32px; margin-bottom: 12px; }
+  .match-header__team { text-align: center; min-width: 120px; }
+  .match-header__team-name { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+  .match-header__formation { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 2px; }
+  .match-header__score { font-size: 48px; font-weight: 800; font-family: var(--font-mono); color: var(--text-primary); letter-spacing: 4px; }
+  .match-header__meta { font-size: 11px; color: var(--text-tertiary); display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+  .match-header__meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* Stat bars */
+  .stat-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row__value { width: 48px; font-size: 12px; font-family: var(--font-mono); font-weight: 600; }
+  .stat-row__value--home { text-align: right; color: var(--text-primary); }
+  .stat-row__value--away { text-align: left; color: var(--text-primary); }
+  .stat-row__label { flex-shrink: 0; width: 100px; text-align: center; font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-row__bars { flex: 1; display: flex; gap: 2px; }
+  .stat-row__bar { height: 6px; border-radius: 3px; transition: width 0.4s ease; }
+  .stat-row__bar--home { background: var(--accent); margin-left: auto; }
+  .stat-row__bar--away { background: var(--red); }
+  .stat-row__bar-wrap { flex: 1; display: flex; }
+  .stat-row__bar-wrap--home { justify-content: flex-end; }
+
+  /* Player ratings table */
+  .ratings-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .ratings-table th { font-size: 9px; text-transform: uppercase; color: var(--text-tertiary); padding: 6px 8px; border-bottom: 1px solid var(--border-default); letter-spacing: 0.5px; font-weight: 600; }
+  .ratings-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-subtle); }
+  .ratings-table tr:hover { background: var(--bg-tertiary); }
+  .rating-badge { display: inline-block; width: 28px; text-align: center; padding: 2px 0; border-radius: 4px; font-weight: 700; font-size: 11px; font-family: var(--font-mono); }
+  .rating-badge--high { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+  .rating-badge--mid { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+  .rating-badge--low { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+  .player-pos { font-size: 9px; font-family: var(--font-mono); color: var(--text-tertiary); width: 18px; display: inline-block; }
+  .player-shirt { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); width: 20px; display: inline-block; text-align: right; margin-right: 6px; }
+  .player-name-link { color: var(--text-secondary); transition: color 0.15s; }
+  .player-name-link:hover { color: var(--accent); }
+  .sub-badge { font-size: 8px; padding: 1px 4px; border-radius: 3px; background: var(--bg-tertiary); color: var(--text-tertiary); margin-left: 4px; }
+
+  /* Shot map */
+  .shot-map-container { position: relative; width: 100%; max-width: 480px; margin: 0 auto; }
+  .shot-dot { position: absolute; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.3); transform: translate(-50%, -50%); cursor: pointer; transition: transform 0.15s; }
+  .shot-dot:hover { transform: translate(-50%, -50%) scale(1.5); z-index: 10; }
+  .shot-dot--goal { border-color: rgba(255,255,255,0.8); }
+
+  /* Timeline */
+  .timeline { position: relative; padding: 8px 0; }
+  .timeline-event { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; position: relative; }
+  .timeline-event::before { content: ''; position: absolute; left: 23px; top: 0; bottom: 0; width: 1px; background: var(--border-subtle); }
+  .timeline-event:last-child::before { display: none; }
+  .timeline-min { width: 46px; text-align: right; font-size: 11px; font-family: var(--font-mono); color: var(--text-tertiary); font-weight: 600; flex-shrink: 0; }
+  .timeline-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; z-index: 1; }
+  .timeline-icon--goal { background: var(--green); color: #000; }
+  .timeline-icon--yellow { background: var(--amber); color: #000; }
+  .timeline-icon--red { background: var(--red); color: #fff; }
+  .timeline-icon--sub { background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-default); }
+  .timeline-text { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+  .timeline-text strong { color: var(--text-primary); }
+  .timeline-team { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; }
+
+  /* Section cards */
+  .match-section { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 16px; }
+  .match-section__title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); margin-bottom: 12px; }
+
+  /* Tabs */
+  .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 16px; }
+  .tab-btn { padding: 8px 16px; font-size: 12px; font-weight: 600; color: var(--text-tertiary); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; }
+  .tab-btn:hover { color: var(--text-secondary); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Pre-match context */
+  .context-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .context-item { background: var(--bg-tertiary); border-radius: var(--radius-md); padding: 8px 10px; }
+  .context-item__label { font-size: 9px; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.5px; }
+  .context-item__value { font-size: 14px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); margin-top: 2px; }
+
+  /* Comparison rows (home | label | away) */
+  .cmp-header { display: flex; align-items: center; margin-bottom: 4px; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); }
+  .cmp-header .cmp-val { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .cmp-row { display: flex; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
+  .cmp-row:last-child { border-bottom: none; }
+  .cmp-val { flex: 1; font-size: 13px; font-weight: 600; font-family: var(--font-mono); }
+  .cmp-val--home { text-align: right; padding-right: 12px; }
+  .cmp-val--away { text-align: left; padding-left: 12px; }
+  .cmp-label { flex: 1.5; text-align: center; font-size: 10px; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.3px; }
+  .text-green { color: var(--green); }
+  .text-red { color: var(--red); }
+
+  /* Lineup pitch */
+  .lineup-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 768px) { .lineup-dual { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="match-loading" class="text-center py-16">
+  <div class="text-secondary text-sm">Loading match data...</div>
+</div>
+<div id="match-content" class="hidden"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MATCH_DATE = "{{ date }}";
+const HOME_TEAM = "{{ home_team }}";
+const AWAY_TEAM = "{{ away_team }}";
+
+async function loadMatch() {
+  try {
+    const data = await apiFetch(`/api/match/${MATCH_DATE}/${encodeURIComponent(HOME_TEAM)}/${encodeURIComponent(AWAY_TEAM)}`);
+    document.getElementById('match-loading').classList.add('hidden');
+    document.getElementById('match-content').classList.remove('hidden');
+    renderMatch(data);
+  } catch (err) {
+    document.getElementById('match-loading').innerHTML = `<div class="text-red text-sm">Failed to load match: ${err.message}</div>`;
+  }
+}
+
+function ratingClass(r) {
+  if (!r) return '';
+  if (r >= 7.0) return 'rating-badge--high';
+  if (r >= 6.0) return 'rating-badge--mid';
+  return 'rating-badge--low';
+}
+
+function renderMatch(data) {
+  const m = data.match || {};
+  const ts = data.team_stats || { home: {}, away: {} };
+  const ps = data.player_stats || { home: [], away: [] };
+  const events = data.events || {};
+  const lineups = data.lineups || {};
+  const shots = data.shots || [];
+  const pre = data.pre_match || {};
+
+  const score = (m.home_score != null && m.away_score != null)
+    ? `${m.home_score} - ${m.away_score}` : '- - -';
+
+  // --- Header ---
+  let metaParts = [];
+  if (m.season) metaParts.push(`<span>${m.season}</span>`);
+  if (m.matchweek) metaParts.push(`<span>Matchweek ${m.matchweek}</span>`);
+  if (m.date) metaParts.push(`<span>${formatDate(m.date + 'T12:00:00Z')}</span>`);
+  if (m.venue) metaParts.push(`<span>${m.venue}</span>`);
+  if (m.referee) metaParts.push(`<span>Ref: ${m.referee}</span>`);
+  if (m.attendance) metaParts.push(`<span>Att: ${Number(m.attendance).toLocaleString()}</span>`);
+
+  let html = `
+    <div class="match-header">
+      <div class="match-header__teams">
+        <div class="match-header__team">
+          <div class="match-header__team-name"><a href="/team/${encodeURIComponent(m.home_team)}" class="player-name-link">${m.home_team}</a></div>
+          ${lineups.home?.formation ? `<div class="match-header__formation">${lineups.home.formation}</div>` : ''}
+        </div>
+        <div class="match-header__score">${score}</div>
+        <div class="match-header__team">
+          <div class="match-header__team-name"><a href="/team/${encodeURIComponent(m.away_team)}" class="player-name-link">${m.away_team}</a></div>
+          ${lineups.away?.formation ? `<div class="match-header__formation">${lineups.away.formation}</div>` : ''}
+        </div>
+      </div>
+      <div class="match-header__meta">${metaParts.join('')}</div>
+    </div>
+  `;
+
+  // --- Tabs ---
+  html += `<div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('stats')">Stats</button>
+    <button class="tab-btn" onclick="switchTab('players')">Players</button>
+    <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
+    <button class="tab-btn" onclick="switchTab('shots')">Shot Map</button>
+    <button class="tab-btn" onclick="switchTab('lineups')">Lineups</button>
+    <button class="tab-btn" onclick="switchTab('context')">Context</button>
+  </div>`;
+
+  // --- Stats Tab ---
+  html += `<div id="tab-stats" class="tab-content active">${renderStats(ts)}</div>`;
+
+  // --- Players Tab ---
+  html += `<div id="tab-players" class="tab-content">${renderPlayers(ps, m)}</div>`;
+
+  // --- Timeline Tab ---
+  html += `<div id="tab-timeline" class="tab-content">${renderTimeline(events, m)}</div>`;
+
+  // --- Shot Map Tab ---
+  html += `<div id="tab-shots" class="tab-content">${renderShotMap(shots, m)}</div>`;
+
+  // --- Lineups Tab ---
+  html += `<div id="tab-lineups" class="tab-content">${renderLineups(lineups, m)}</div>`;
+
+  // --- Context Tab ---
+  html += `<div id="tab-context" class="tab-content">${renderContext(pre, m)}</div>`;
+
+  document.getElementById('match-content').innerHTML = html;
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+function renderStats(ts) {
+  const h = ts.home || {};
+  const a = ts.away || {};
+  // Group stats by category
+  const statKeys = [
+    { key: 'ballPossession', label: 'Possession', pct: true },
+    { key: 'expectedGoals', label: 'Expected Goals', decimal: true },
+    { key: 'totalShotsOnGoal', label: 'Total Shots' },
+    { key: 'shotsOnGoal', label: 'Shots on Target' },
+    { key: 'shotsOffGoal', label: 'Shots off Target' },
+    { key: 'blockedScoringAttempt', label: 'Blocked Shots' },
+    { key: 'totalShotsInsideBox', label: 'Shots Inside Box' },
+    { key: 'totalShotsOutsideBox', label: 'Shots Outside Box' },
+    { key: 'cornerKicks', label: 'Corners' },
+    { key: 'bigChanceCreated', label: 'Big Chances Created' },
+    { key: 'bigChanceMissed', label: 'Big Chances Missed' },
+    { key: 'goalkeeperSaves', label: 'Goalkeeper Saves' },
+    { key: 'passes', label: 'Total Passes' },
+    { key: 'accuratePasses', label: 'Accurate Passes' },
+    { key: 'accurateLongBalls', label: 'Accurate Long Balls' },
+    { key: 'accurateCross', label: 'Accurate Crosses' },
+    { key: 'touchesInOppBox', label: 'Touches in Opp. Box' },
+    { key: 'fouls', label: 'Fouls' },
+    { key: 'offsides', label: 'Offsides' },
+    { key: 'yellowCards', label: 'Yellow Cards' },
+    { key: 'totalTackle', label: 'Tackles' },
+    { key: 'interceptionWon', label: 'Interceptions' },
+    { key: 'totalClearance', label: 'Clearances' },
+    { key: 'ballRecovery', label: 'Ball Recoveries' },
+    { key: 'duelWonPercent', label: 'Duels Won', pct: true },
+    { key: 'groundDuelsPercentage', label: 'Ground Duels', pct: true },
+    { key: 'aerialDuelsPercentage', label: 'Aerial Duels', pct: true },
+    { key: 'dribblesPercentage', label: 'Dribbles', pct: true },
+    { key: 'hitWoodwork', label: 'Hit Woodwork' },
+  ];
+
+  let rows = '';
+  for (const s of statKeys) {
+    const hv = h[s.key]?.value;
+    const av = a[s.key]?.value;
+    if (hv == null && av == null) continue;
+    const hDisp = s.decimal ? parseFloat(hv).toFixed(2) : (h[s.key]?.display || hv);
+    const aDisp = s.decimal ? parseFloat(av).toFixed(2) : (a[s.key]?.display || av);
+    // For pct stats (e.g. "42%", "14/25 (56%)"), extract percentage for bars
+    let hPct, aPct;
+    if (s.pct) {
+      const extractPct = (v) => {
+        if (v == null) return 0;
+        const str = String(v);
+        const m = str.match(/(\d+)%/);
+        return m ? parseFloat(m[1]) : parseFloat(str) || 0;
+      };
+      hPct = extractPct(hDisp);
+      aPct = extractPct(aDisp);
+    } else {
+      const hNum = parseFloat(hv) || 0;
+      const aNum = parseFloat(av) || 0;
+      const max = Math.max(hNum + aNum, 1);
+      hPct = (hNum / max * 100).toFixed(0);
+      aPct = (aNum / max * 100).toFixed(0);
+    }
+
+    rows += `<div class="stat-row">
+      <div class="stat-row__value stat-row__value--home">${hDisp}</div>
+      <div class="stat-row__bars">
+        <div class="stat-row__bar-wrap stat-row__bar-wrap--home">
+          <div class="stat-row__bar stat-row__bar--home" style="width:${hPct}%"></div>
+        </div>
+        <div class="stat-row__bar-wrap">
+          <div class="stat-row__bar stat-row__bar--away" style="width:${aPct}%"></div>
+        </div>
+      </div>
+      <div class="stat-row__label">${s.label}</div>
+      <div class="stat-row__bars">
+        <div class="stat-row__bar-wrap stat-row__bar-wrap--home">
+          <div class="stat-row__bar stat-row__bar--home" style="width:${hPct}%"></div>
+        </div>
+        <div class="stat-row__bar-wrap">
+          <div class="stat-row__bar stat-row__bar--away" style="width:${aPct}%"></div>
+        </div>
+      </div>
+      <div class="stat-row__value stat-row__value--away">${aDisp}</div>
+    </div>`;
+  }
+
+  if (!rows) return '<div class="text-sm text-tertiary text-center py-8">No team stats available for this match.</div>';
+  return `<div class="match-section">${rows}</div>`;
+}
+
+function renderPlayers(ps, m) {
+  function playerTable(players, teamName, side) {
+    if (!players.length) return `<div class="text-xs text-tertiary">No player data</div>`;
+    const starters = players.filter(p => p.is_starter);
+    const subs = players.filter(p => !p.is_starter && p.minutes > 0);
+    const unused = players.filter(p => !p.is_starter && p.minutes === 0);
+
+    function rows(list, isSub) {
+      return list.map(p => {
+        const rc = ratingClass(p.rating);
+        const passAcc = p.total_passes > 0 ? Math.round(p.accurate_passes / p.total_passes * 100) : '';
+        return `<tr>
+          <td><span class="player-pos">${p.position}</span></td>
+          <td><span class="player-shirt">${p.shirt_number || ''}</span><a href="/player/${encodeURIComponent(teamName)}/${encodeURIComponent(p.name)}" class="player-name-link">${p.name}</a>${isSub ? '<span class="sub-badge">SUB</span>' : ''}</td>
+          <td class="text-center">${p.rating ? `<span class="rating-badge ${rc}">${p.rating}</span>` : '-'}</td>
+          <td class="text-center text-tertiary">${p.minutes}'</td>
+          <td class="text-center">${p.goals || ''}</td>
+          <td class="text-center">${p.assists || ''}</td>
+          <td class="text-center text-tertiary">${p.xg != null ? p.xg.toFixed(2) : ''}</td>
+          <td class="text-center text-tertiary">${p.total_shots || ''}</td>
+          <td class="text-center text-tertiary">${p.key_passes || ''}</td>
+          <td class="text-center text-tertiary">${passAcc ? passAcc + '%' : ''}</td>
+          <td class="text-center text-tertiary">${p.tackles || ''}</td>
+          <td class="text-center text-tertiary">${p.interceptions || ''}</td>
+          <td class="text-center text-tertiary">${p.duels_won || ''}${p.duels_won && p.duels_lost ? '/' + p.duels_lost : ''}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    return `<table class="ratings-table">
+      <thead><tr>
+        <th>Pos</th><th>${teamName}</th><th>Rtg</th><th>Min</th><th>G</th><th>A</th><th>xG</th><th>Sh</th><th>KP</th><th>Pass%</th><th>Tkl</th><th>Int</th><th>Duels</th>
+      </tr></thead>
+      <tbody>
+        ${rows(starters, false)}
+        ${subs.length ? '<tr><td colspan="13" class="text-center" style="padding:4px;font-size:9px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:1px;">Substitutes</td></tr>' + rows(subs, true) : ''}
+      </tbody>
+    </table>`;
+  }
+
+  return `<div class="lineup-dual">
+    <div class="match-section">
+      <div class="match-section__title">${m.home_team}</div>
+      ${playerTable(ps.home, m.home_team, 'home')}
+    </div>
+    <div class="match-section">
+      <div class="match-section__title">${m.away_team}</div>
+      ${playerTable(ps.away, m.away_team, 'away')}
+    </div>
+  </div>`;
+}
+
+function renderTimeline(events, m) {
+  const all = [];
+  for (const g of (events.goals || [])) {
+    all.push({ ...g, _type: 'goal', _min: g.minute + (g.added_time || 0) * 0.01 });
+  }
+  for (const c of (events.cards || [])) {
+    all.push({ ...c, _type: 'card', _min: c.minute + (c.added_time || 0) * 0.01 });
+  }
+  for (const s of (events.substitutions || [])) {
+    all.push({ ...s, _type: 'sub', _min: s.minute + (s.added_time || 0) * 0.01 });
+  }
+  all.sort((a, b) => a._min - b._min);
+
+  if (!all.length) return '<div class="text-sm text-tertiary text-center py-8">No events available.</div>';
+
+  let html = '<div class="match-section"><div class="timeline">';
+  for (const e of all) {
+    const minStr = e.added_time ? `${e.minute}+${e.added_time}'` : `${e.minute}'`;
+    const team = e.is_home ? m.home_team : m.away_team;
+    let icon = '', text = '';
+
+    if (e._type === 'goal') {
+      icon = '<div class="timeline-icon timeline-icon--goal">&#9917;</div>';
+      const assist = e.assist ? ` (assist: ${e.assist})` : '';
+      const gtype = e.type && e.type !== 'regular' ? ` [${e.type}]` : '';
+      text = `<strong>${e.player}</strong>${gtype}${assist}`;
+    } else if (e._type === 'card') {
+      const ct = (e.card_type || '').toLowerCase();
+      const isRed = ct.includes('red');
+      icon = `<div class="timeline-icon timeline-icon--${isRed ? 'red' : 'yellow'}">${isRed ? '&#9646;' : '&#9646;'}</div>`;
+      text = `<strong>${e.player}</strong> <span class="text-tertiary">${e.card_type}</span>`;
+    } else if (e._type === 'sub') {
+      icon = '<div class="timeline-icon timeline-icon--sub">&#8644;</div>';
+      text = `<span class="text-red">${e.player_out || '?'}</span> &#8594; <span class="text-green">${e.player_in || '?'}</span>`;
+    }
+
+    html += `<div class="timeline-event" style="${e.is_home ? '' : 'flex-direction: row-reverse; text-align: right;'}">
+      <div class="timeline-min">${minStr}</div>
+      ${icon}
+      <div class="timeline-text"><div class="timeline-team">${team}</div>${text}</div>
+    </div>`;
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function renderShotMap(shots, m) {
+  if (!shots.length) return '<div class="text-sm text-tertiary text-center py-8">No shot data available.</div>';
+
+  // Pitch SVG (half pitch, top-down view for each team)
+  const W = 480, H = 340;
+  const pitchW = 105, pitchH = 68; // standard dimensions in meters
+
+  let homeShots = shots.filter(s => s.is_home);
+  let awayShots = shots.filter(s => !s.is_home);
+
+  function shotDots(shotList, isHome) {
+    return shotList.map(s => {
+      if (s.shot_x == null || s.shot_y == null) return '';
+      // Sofascore coordinates: x is 0-100 (goal-to-goal), y is 0-100 (width)
+      let px, py;
+      if (isHome) {
+        px = (100 - s.shot_x) / 100 * W;
+        py = s.shot_y / 100 * H;
+      } else {
+        px = s.shot_x / 100 * W;
+        py = s.shot_y / 100 * H;
+      }
+      const hasXg = s.xg != null && s.xg > 0;
+      const size = hasXg ? Math.max(6, Math.min(18, s.xg * 80 + 6)) : 8;
+      const color = s.is_goal ? 'var(--green)' : (isHome ? 'var(--accent)' : 'var(--red)');
+      const opacity = s.is_goal ? 1 : 0.7;
+      const xgText = hasXg ? `xG:${s.xg.toFixed(2)}` : '';
+      const title = `${s.player_name} ${s.time}' ${xgText} ${s.is_goal ? 'GOAL' : s.shot_type || ''}`.trim();
+      return `<div class="shot-dot ${s.is_goal ? 'shot-dot--goal' : ''}" title="${title}" style="left:${px}px;top:${py}px;width:${size}px;height:${size}px;background:${color};opacity:${opacity};"></div>`;
+    }).join('');
+  }
+
+  // xG totals — check if xG data exists for this match
+  const hasAnyXg = [...homeShots, ...awayShots].some(s => s.xg != null && s.xg > 0);
+  const homeXg = homeShots.reduce((s, x) => s + (x.xg || 0), 0);
+  const awayXg = awayShots.reduce((s, x) => s + (x.xg || 0), 0);
+  const homeXgLabel = hasAnyXg ? `(xG ${homeXg.toFixed(2)})` : '(xG N/A)';
+  const awayXgLabel = hasAnyXg ? `(xG ${awayXg.toFixed(2)})` : '(xG N/A)';
+
+  return `<div class="match-section">
+    <div class="match-section__title">Shot Map</div>
+    <div class="flex justify-between text-xs text-tertiary mb-2" style="max-width:480px;margin:0 auto;">
+      <span>${m.home_team}: ${homeShots.length} shots ${homeXgLabel}</span>
+      <span>${m.away_team}: ${awayShots.length} shots ${awayXgLabel}</span>
+    </div>
+    <div class="shot-map-container" style="width:${W}px;height:${H}px;background:var(--bg-tertiary);border-radius:var(--radius-lg);border:1px solid var(--border-default);overflow:hidden;">
+      <!-- Half pitch lines -->
+      <svg width="${W}" height="${H}" style="position:absolute;top:0;left:0;">
+        <rect x="0" y="0" width="${W}" height="${H}" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+        <line x1="${W/2}" y1="0" x2="${W/2}" y2="${H}" stroke="var(--border-subtle)" stroke-width="1"/>
+        <circle cx="${W/2}" cy="${H/2}" r="40" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+        <!-- Home penalty area -->
+        <rect x="0" y="${H/2-60}" width="60" height="120" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+        <rect x="0" y="${H/2-25}" width="22" height="50" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+        <!-- Away penalty area -->
+        <rect x="${W-60}" y="${H/2-60}" width="60" height="120" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+        <rect x="${W-22}" y="${H/2-25}" width="22" height="50" fill="none" stroke="var(--border-subtle)" stroke-width="1"/>
+      </svg>
+      ${shotDots(homeShots, true)}
+      ${shotDots(awayShots, false)}
+    </div>
+    <div class="flex justify-center gap-4 mt-3 text-xs">
+      <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:4px;"></span>${m.home_team}</span>
+      <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:4px;"></span>${m.away_team}</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--green);margin-right:4px;border:1.5px solid rgba(255,255,255,0.8);"></span>Goal</span>
+    </div>
+  </div>`;
+}
+
+function renderLineups(lineups, m) {
+  function lineupCard(side, teamName) {
+    const l = lineups[side] || {};
+    if (!l.starters?.length) return `<div class="text-xs text-tertiary">No lineup data</div>`;
+    return `<div class="match-section">
+      <div class="match-section__title">${teamName} — ${l.formation || '?'}</div>
+      <div class="text-xs font-semibold text-tertiary uppercase mb-2">Starting XI</div>
+      ${l.starters.map(p => `<div class="flex items-center gap-2 py-1 border-b" style="border-color:var(--border-subtle);">
+        <span class="player-shirt">${p.shirt_number || ''}</span>
+        <span class="player-pos">${p.position}</span>
+        <a href="/player/${encodeURIComponent(teamName)}/${encodeURIComponent(p.name)}" class="text-xs player-name-link flex-1">${p.name}</a>
+        ${p.rating ? `<span class="rating-badge ${ratingClass(p.rating)}">${p.rating}</span>` : ''}
+        <span class="text-xs text-tertiary font-mono">${p.minutes != null ? p.minutes + "'" : ''}</span>
+      </div>`).join('')}
+      ${l.bench?.length ? `<div class="text-xs font-semibold text-tertiary uppercase mt-3 mb-2">Bench</div>` +
+        l.bench.filter(p => p.minutes > 0).map(p => `<div class="flex items-center gap-2 py-1" style="opacity:0.7;">
+          <span class="player-shirt">${p.shirt_number || ''}</span>
+          <span class="player-pos">${p.position}</span>
+          <a href="/player/${encodeURIComponent(teamName)}/${encodeURIComponent(p.name)}" class="text-xs player-name-link flex-1">${p.name}</a>
+          ${p.rating ? `<span class="rating-badge ${ratingClass(p.rating)}">${p.rating}</span>` : ''}
+          <span class="text-xs text-tertiary font-mono">${p.minutes}'</span>
+        </div>`).join('') : ''}
+    </div>`;
+  }
+  return `<div class="lineup-dual">
+    ${lineupCard('home', m.home_team)}
+    ${lineupCard('away', m.away_team)}
+  </div>`;
+}
+
+function renderContext(pre, m) {
+  if (!pre || !Object.keys(pre).length) return '<div class="text-sm text-tertiary text-center py-8">No pre-match context available.</div>';
+
+  const p = (key) => pre[key] != null ? parseFloat(pre[key]) : null;
+  const pf = (key, dec=1) => { const v = p(key); return v != null ? v.toFixed(dec) : null; };
+  const pi = (key) => { const v = p(key); return v != null ? Math.round(v) : null; };
+
+  // --- Helper: comparison row (home value | label | away value) ---
+  function cmpRow(label, hVal, aVal, opts = {}) {
+    if (hVal == null && aVal == null) return '';
+    const hStr = hVal != null ? String(hVal) : '-';
+    const aStr = aVal != null ? String(aVal) : '-';
+    const hCls = opts.higherBetter && hVal != null && aVal != null ? (hVal > aVal ? 'text-green' : hVal < aVal ? 'text-red' : '') : '';
+    const aCls = opts.higherBetter && hVal != null && aVal != null ? (aVal > hVal ? 'text-green' : aVal < hVal ? 'text-red' : '') : '';
+    return `<div class="cmp-row">
+      <span class="cmp-val cmp-val--home ${hCls}">${hStr}</span>
+      <span class="cmp-label">${label}</span>
+      <span class="cmp-val cmp-val--away ${aCls}">${aStr}</span>
+    </div>`;
+  }
+
+  let html = '';
+
+  // === SECTION: Match Info ===
+  let matchInfo = '';
+  if (pre.odds_PSH) matchInfo += `<div class="context-item"><div class="context-item__label">Pinnacle</div><div class="context-item__value">${pf('odds_PSH',2)} / ${pf('odds_PSD',2)} / ${pf('odds_PSA',2)}</div></div>`;
+  if (pre.odds_AvgH) matchInfo += `<div class="context-item"><div class="context-item__label">Market Avg</div><div class="context-item__value">${pf('odds_AvgH',2)} / ${pre.odds_AvgD ? pf('odds_AvgD',2) : '-'} / ${pf('odds_AvgA',2)}</div></div>`;
+  if (pre.is_derby) matchInfo += `<div class="context-item"><div class="context-item__label">Derby</div><div class="context-item__value" style="color:var(--red);">Yes</div></div>`;
+  if (pre.home_formation) matchInfo += `<div class="context-item"><div class="context-item__label">Formations</div><div class="context-item__value">${pre.home_formation} vs ${pre.away_formation || '?'}</div></div>`;
+  if (pre.kickoff_time) matchInfo += `<div class="context-item"><div class="context-item__label">Kickoff</div><div class="context-item__value">${pre.kickoff_time}</div></div>`;
+  if (pre.attendance) matchInfo += `<div class="context-item"><div class="context-item__label">Attendance</div><div class="context-item__value">${Number(pre.attendance).toLocaleString()}</div></div>`;
+
+  if (matchInfo) {
+    html += `<div class="match-section"><div class="match-section__title">Match Info</div><div class="context-grid">${matchInfo}</div></div>`;
+  }
+
+  // === SECTION: Team Comparison ===
+  let cmp = '';
+  cmp += cmpRow('Elo Rating', pi('home_elo'), pi('away_elo'), {higherBetter: true});
+  cmp += cmpRow('League Position', pi('home_league_pos'), pi('away_league_pos'));
+  cmp += cmpRow('Win Rate (L5)', p('home_roll_5_win_rate') != null ? (p('home_roll_5_win_rate')*100).toFixed(0)+'%' : null, p('away_roll_5_win_rate') != null ? (p('away_roll_5_win_rate')*100).toFixed(0)+'%' : null, {higherBetter: true});
+  cmp += cmpRow('Points (L5)', pf('home_roll_5_points',1), pf('away_roll_5_points',1), {higherBetter: true});
+  cmp += cmpRow('Points (L3)', pf('home_form_points_3',1), pf('away_form_points_3',1), {higherBetter: true});
+  cmp += cmpRow('Goals Scored (L5)', pf('home_roll_5_goals_scored',1), pf('away_roll_5_goals_scored',1), {higherBetter: true});
+  cmp += cmpRow('Goals Conceded (L5)', pf('home_roll_5_goals_conceded',1), pf('away_roll_5_goals_conceded',1));
+  cmp += cmpRow('Goal Diff (L5)', pf('home_gd_roll_5',1), pf('away_gd_roll_5',1), {higherBetter: true});
+  cmp += cmpRow('Clean Sheets (L5)', pf('home_roll_5_clean_sheet',1), pf('away_roll_5_clean_sheet',1), {higherBetter: true});
+  cmp += cmpRow('Shots on Target (L5)', pf('home_roll_5_shots_on_target',1), pf('away_roll_5_shots_on_target',1), {higherBetter: true});
+
+  if (cmp) {
+    html += `<div class="match-section"><div class="match-section__title">Form Comparison (Last 5)</div>
+      <div class="cmp-header"><span class="cmp-val cmp-val--home">${m.home_team}</span><span class="cmp-label"></span><span class="cmp-val cmp-val--away">${m.away_team}</span></div>
+      ${cmp}</div>`;
+  }
+
+  // === SECTION: Streaks ===
+  let streaks = '';
+  streaks += cmpRow('Win Streak', pi('home_win_streak'), pi('away_win_streak'), {higherBetter: true});
+  streaks += cmpRow('Unbeaten Run', pi('home_unbeaten_run'), pi('away_unbeaten_run'), {higherBetter: true});
+  streaks += cmpRow('Loss Streak', pi('home_loss_streak'), pi('away_loss_streak'));
+  streaks += cmpRow('Winless Run', pi('home_winless_run'), pi('away_winless_run'));
+  streaks += cmpRow('Scoring Streak', pi('home_scoring_streak'), pi('away_scoring_streak'), {higherBetter: true});
+  streaks += cmpRow('Clean Sheet Streak', pi('home_clean_sheet_streak'), pi('away_clean_sheet_streak'), {higherBetter: true});
+
+  if (streaks) {
+    html += `<div class="match-section"><div class="match-section__title">Streaks</div>
+      <div class="cmp-header"><span class="cmp-val cmp-val--home">${m.home_team}</span><span class="cmp-label"></span><span class="cmp-val cmp-val--away">${m.away_team}</span></div>
+      ${streaks}</div>`;
+  }
+
+  // === SECTION: xG & Advanced Form ===
+  let adv = '';
+  adv += cmpRow('Avg xG (L5)', pf('home_ss_roll_xg',2), pf('away_ss_roll_xg',2), {higherBetter: true});
+  adv += cmpRow('Avg Goals (L5)', pf('home_ss_roll_goals',2), pf('away_ss_roll_goals',2), {higherBetter: true});
+  adv += cmpRow('xG Overperformance', pf('home_xg_overperformance_roll_5',2), pf('away_xg_overperformance_roll_5',2));
+  adv += cmpRow('Avg Rating (L5)', pf('home_ss_roll_rating',2), pf('away_ss_roll_rating',2), {higherBetter: true});
+  adv += cmpRow('Avg Shots (L5)', pf('home_ss_roll_total_shots',1), pf('away_ss_roll_total_shots',1), {higherBetter: true});
+  adv += cmpRow('Pass Accuracy (L5)', p('home_ss_roll_pass_accuracy') != null ? (p('home_ss_roll_pass_accuracy')*100).toFixed(0)+'%' : null, p('away_ss_roll_pass_accuracy') != null ? (p('away_ss_roll_pass_accuracy')*100).toFixed(0)+'%' : null, {higherBetter: true});
+  adv += cmpRow('Territory (L5)', p('home_ss_roll_territory_ratio') != null ? (p('home_ss_roll_territory_ratio')*100).toFixed(0)+'%' : null, p('away_ss_roll_territory_ratio') != null ? (p('away_ss_roll_territory_ratio')*100).toFixed(0)+'%' : null, {higherBetter: true});
+
+  if (adv) {
+    html += `<div class="match-section"><div class="match-section__title">Advanced Form (Sofascore L5)</div>
+      <div class="cmp-header"><span class="cmp-val cmp-val--home">${m.home_team}</span><span class="cmp-label"></span><span class="cmp-val cmp-val--away">${m.away_team}</span></div>
+      ${adv}</div>`;
+  }
+
+  // === SECTION: Venue Form ===
+  let venue = '';
+  venue += cmpRow('Venue Points (L5)', pf('home_venue_roll_5_points',1), pf('away_venue_roll_5_points',1), {higherBetter: true});
+  venue += cmpRow('Venue Goals For (L5)', pf('home_venue_roll_5_goals_scored',1), pf('away_venue_roll_5_goals_scored',1), {higherBetter: true});
+  venue += cmpRow('Venue Goals Against (L5)', pf('home_venue_roll_5_goals_conceded',1), pf('away_venue_roll_5_goals_conceded',1));
+  venue += cmpRow('Venue xG For (L5)', pf('home_venue_roll_5_xg_for',2), pf('away_venue_roll_5_xg_for',2), {higherBetter: true});
+  venue += cmpRow('Venue xG Against (L5)', pf('home_venue_roll_5_xg_against',2), pf('away_venue_roll_5_xg_against',2));
+
+  if (venue) {
+    html += `<div class="match-section"><div class="match-section__title">Venue Form (Home/Away L5)</div>
+      <div class="cmp-header"><span class="cmp-val cmp-val--home">${m.home_team} (H)</span><span class="cmp-label"></span><span class="cmp-val cmp-val--away">${m.away_team} (A)</span></div>
+      ${venue}</div>`;
+  }
+
+  // === SECTION: Head to Head ===
+  let h2h = '';
+  if (pre.h2h_matches_played) {
+    h2h += `<div class="context-item"><div class="context-item__label">Matches Played</div><div class="context-item__value">${pre.h2h_matches_played}</div></div>`;
+    h2h += `<div class="context-item"><div class="context-item__label">${m.home_team} Wins</div><div class="context-item__value">${pi('h2h_home_wins') || 0}</div></div>`;
+    h2h += `<div class="context-item"><div class="context-item__label">${m.away_team} Wins</div><div class="context-item__value">${pi('h2h_away_wins') || 0}</div></div>`;
+    const draws = pi('h2h_matches_played') - (pi('h2h_home_wins') || 0) - (pi('h2h_away_wins') || 0);
+    h2h += `<div class="context-item"><div class="context-item__label">Draws</div><div class="context-item__value">${draws}</div></div>`;
+    if (pre.h2h_over25_rate != null) h2h += `<div class="context-item"><div class="context-item__label">Over 2.5 Rate</div><div class="context-item__value">${(p('h2h_over25_rate')*100).toFixed(0)}%</div></div>`;
+    if (pre.h2h_btts_rate != null) h2h += `<div class="context-item"><div class="context-item__label">BTTS Rate</div><div class="context-item__value">${(p('h2h_btts_rate')*100).toFixed(0)}%</div></div>`;
+  }
+  if (h2h) {
+    html += `<div class="match-section"><div class="match-section__title">Head to Head</div><div class="context-grid">${h2h}</div></div>`;
+  }
+
+  // === SECTION: Conditions ===
+  let cond = '';
+  if (pre.weather_temperature_2m_max) cond += `<div class="context-item"><div class="context-item__label">Temperature</div><div class="context-item__value">${pf('weather_temperature_2m_max',0)}°C</div></div>`;
+  if (pre.weather_wind_speed_10m_max) cond += `<div class="context-item"><div class="context-item__label">Wind</div><div class="context-item__value">${pf('weather_wind_speed_10m_max',0)} km/h</div></div>`;
+  if (p('weather_precipitation_sum') > 0) cond += `<div class="context-item"><div class="context-item__label">Rain</div><div class="context-item__value">${pf('weather_precipitation_sum',1)}mm</div></div>`;
+  if (pre.ref_avg_yellows) cond += `<div class="context-item"><div class="context-item__label">Ref Avg Yellows</div><div class="context-item__value">${pf('ref_avg_yellows',1)}</div></div>`;
+  if (pre.ref_avg_fouls) cond += `<div class="context-item"><div class="context-item__label">Ref Avg Fouls</div><div class="context-item__value">${pf('ref_avg_fouls',1)}</div></div>`;
+  if (cond) {
+    html += `<div class="match-section"><div class="match-section__title">Conditions</div><div class="context-grid">${cond}</div></div>`;
+  }
+
+  return html || '<div class="text-sm text-tertiary text-center py-8">No pre-match context available.</div>';
+}
+
+document.addEventListener('DOMContentLoaded', loadMatch);
+</script>
+{% endblock %}

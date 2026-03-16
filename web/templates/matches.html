@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}Matches — SerieAI{% endblock %}
+{% block page_title %}Matches{% endblock %}
+
+{% block head %}
+<style>
+  /* Summary bar */
+  .matches-summary { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .matches-summary__stat { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 8px 14px; }
+  .matches-summary__label { font-size: 9px; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.5px; }
+  .matches-summary__value { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+
+  /* Matchweek section */
+  .mw-section { margin-bottom: 24px; }
+  .mw-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; padding: 10px 16px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); transition: border-color 0.15s; }
+  .mw-header:hover { border-color: var(--accent); }
+  .mw-header__left { display: flex; align-items: center; gap: 12px; }
+  .mw-header__title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .mw-header__dates { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .mw-header__meta { display: flex; gap: 14px; font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .mw-header__meta-item { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+  .mw-header__meta-val { font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+  .mw-header__meta-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .mw-chevron { transition: transform 0.3s; color: var(--text-tertiary); flex-shrink: 0; margin-left: 10px; }
+  .mw-chevron.open { transform: rotate(180deg); }
+
+  /* Matches list (collapsible) */
+  .mw-matches { max-height: 0; overflow: hidden; transition: max-height 0.4s ease; margin-top: 0; }
+  .mw-matches.open { max-height: 5000px; margin-top: 8px; }
+
+  /* Match card */
+  .match-card { display: flex; align-items: stretch; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); margin-bottom: 6px; overflow: hidden; transition: border-color 0.15s; }
+  .match-card:hover { border-color: var(--accent); }
+  .match-card__main { flex: 1; display: flex; align-items: center; padding: 10px 16px; gap: 12px; cursor: pointer; text-decoration: none; color: inherit; min-width: 0; }
+
+  /* Teams & score */
+  .match-card__teams { flex: 1; min-width: 0; }
+  .match-card__row { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .match-card__row:last-child { margin-bottom: 0; }
+  .match-card__team { font-size: 13px; font-weight: 600; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .match-card__team--winner { color: var(--text-primary); }
+  .match-card__team--loser { color: var(--text-tertiary); }
+  .match-card__score { font-size: 16px; font-weight: 800; font-family: var(--font-mono); width: 20px; text-align: center; }
+  .match-card__score--winner { color: var(--green); }
+  .match-card__score--loser { color: var(--text-tertiary); }
+  .match-card__score--draw { color: var(--amber); }
+
+  /* xG bar */
+  .match-card__xg { display: flex; flex-direction: column; gap: 2px; width: 100px; flex-shrink: 0; }
+  .match-card__xg-row { display: flex; align-items: center; gap: 4px; font-size: 10px; font-family: var(--font-mono); color: var(--text-tertiary); }
+  .match-card__xg-bar { height: 4px; border-radius: 2px; background: var(--accent); opacity: 0.6; }
+  .match-card__xg-val { width: 28px; text-align: right; flex-shrink: 0; }
+
+  /* Stats strip */
+  .match-card__stats { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 12px; border-left: 1px solid var(--border-subtle); width: 120px; flex-shrink: 0; }
+  .match-card__stat { font-size: 9px; color: var(--text-tertiary); display: flex; justify-content: space-between; }
+  .match-card__stat-val { font-family: var(--font-mono); color: var(--text-secondary); font-weight: 600; }
+
+  /* Scorers */
+  .match-card__scorers { font-size: 9px; color: var(--text-tertiary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Date column */
+  .match-card__date { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); width: 48px; text-align: center; flex-shrink: 0; }
+
+  /* Filter bar */
+  .matches-filter { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .matches-filter__input { padding: 6px 12px; font-size: 12px; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); max-width: 300px; flex: 1; }
+  .matches-filter__input:focus { outline: none; border-color: var(--accent); }
+  .matches-filter__btn { padding: 6px 12px; font-size: 11px; font-weight: 600; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; }
+  .matches-filter__btn:hover { border-color: var(--accent); color: var(--accent); }
+  .matches-filter__btn.active { background: rgba(96,165,250,0.12); border-color: var(--accent); color: var(--accent); }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .match-card__xg, .match-card__stats { display: none; }
+    .match-card__main { padding: 8px 12px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="matches-loading" class="text-center py-16">
+  <div class="text-secondary text-sm">Loading matches...</div>
+</div>
+<div id="matches-content" class="hidden">
+  <div class="matches-summary" id="matches-summary"></div>
+  <div class="matches-filter">
+    <select id="season-select" class="matches-filter__input" style="max-width:160px;cursor:pointer;"></select>
+    <input type="text" id="matches-search" class="matches-filter__input" placeholder="Search team..." autocomplete="off">
+    <button class="matches-filter__btn active" data-filter="all" onclick="filterMatches('all', this)">All</button>
+    <button class="matches-filter__btn" data-filter="big" onclick="filterMatches('big', this)">Big Results</button>
+    <button class="matches-filter__btn" data-filter="draws" onclick="filterMatches('draws', this)">Draws</button>
+    <button class="matches-filter__btn" data-filter="clean" onclick="filterMatches('clean', this)">Clean Sheets</button>
+  </div>
+  <div id="matchweeks-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _matchesData = null;
+let _currentFilter = 'all';
+let _searchQuery = '';
+let _currentSeason = '2025-2026';
+
+async function loadSeasons() {
+  try {
+    const data = await apiFetch('/api/matches/seasons');
+    const select = document.getElementById('season-select');
+    select.innerHTML = (data.seasons || []).map(s =>
+      `<option value="${s}" ${s === _currentSeason ? 'selected' : ''}>${s}</option>`
+    ).join('');
+    select.addEventListener('change', () => {
+      _currentSeason = select.value;
+      loadMatches(_currentSeason);
+    });
+  } catch (err) {
+    console.error('Failed to load seasons:', err);
+  }
+}
+
+async function loadMatches(season) {
+  season = season || _currentSeason;
+  const loading = document.getElementById('matches-loading');
+  const content = document.getElementById('matches-content');
+  // Show loading state without hiding content on season switch
+  const list = document.getElementById('matchweeks-list');
+  if (list) list.innerHTML = '<div class="text-center py-8 text-secondary text-sm">Loading...</div>';
+  try {
+    const data = await apiFetch(`/api/matches?season=${season}`);
+    _matchesData = data;
+    loading.classList.add('hidden');
+    content.classList.remove('hidden');
+    renderSummary(data);
+    renderMatchweeks(data.matchweeks);
+    initMatchSearch();
+    // Auto-expand the latest matchweek
+    const first = document.querySelector('.mw-matches');
+    const firstChev = document.querySelector('.mw-chevron');
+    if (first) { first.classList.add('open'); }
+    if (firstChev) { firstChev.classList.add('open'); }
+  } catch (err) {
+    loading.innerHTML = `<div class="text-red text-sm">Failed to load matches: ${err.message}</div>`;
+  }
+}
+
+function renderSummary(data) {
+  const allMatches = data.matchweeks.flatMap(mw => mw.matches);
+  const totalGoals = allMatches.reduce((s, m) => s + m.home_score + m.away_score, 0);
+  const avgGoals = allMatches.length ? (totalGoals / allMatches.length).toFixed(2) : 0;
+  const homeWins = allMatches.filter(m => m.home_score > m.away_score).length;
+  const draws = allMatches.filter(m => m.home_score === m.away_score).length;
+  const awayWins = allMatches.filter(m => m.home_score < m.away_score).length;
+  const btts = allMatches.filter(m => m.home_score > 0 && m.away_score > 0).length;
+  const over25 = allMatches.filter(m => m.home_score + m.away_score > 2).length;
+
+  document.getElementById('matches-summary').innerHTML = `
+    <div class="matches-summary__stat"><div class="matches-summary__label">Matches</div><div class="matches-summary__value">${data.total_matches}</div></div>
+    <div class="matches-summary__stat"><div class="matches-summary__label">Matchweeks</div><div class="matches-summary__value">${data.matchweeks.length}</div></div>
+    <div class="matches-summary__stat"><div class="matches-summary__label">Goals/Match</div><div class="matches-summary__value">${avgGoals}</div></div>
+    <div class="matches-summary__stat"><div class="matches-summary__label">Home/Draw/Away</div><div class="matches-summary__value" style="font-size:13px;">${homeWins}/${draws}/${awayWins}</div></div>
+    <div class="matches-summary__stat"><div class="matches-summary__label">BTTS %</div><div class="matches-summary__value">${allMatches.length ? Math.round(btts / allMatches.length * 100) : 0}%</div></div>
+    <div class="matches-summary__stat"><div class="matches-summary__label">Over 2.5 %</div><div class="matches-summary__value">${allMatches.length ? Math.round(over25 / allMatches.length * 100) : 0}%</div></div>
+  `;
+}
+
+function matchFilter(m) {
+  // Search filter
+  if (_searchQuery) {
+    const q = _searchQuery;
+    if (!m.home_team.toLowerCase().includes(q) && !m.away_team.toLowerCase().includes(q)) return false;
+  }
+  // Type filter
+  if (_currentFilter === 'big') return Math.abs(m.home_score - m.away_score) >= 3 || (m.home_score + m.away_score) >= 5;
+  if (_currentFilter === 'draws') return m.home_score === m.away_score;
+  if (_currentFilter === 'clean') return m.home_score === 0 || m.away_score === 0;
+  return true;
+}
+
+function renderMatchweeks(matchweeks) {
+  const container = document.getElementById('matchweeks-list');
+  container.innerHTML = matchweeks.map((mw, idx) => {
+    const filtered = mw.matches.filter(matchFilter);
+    if (filtered.length === 0) return '';
+    const totalGoals = filtered.reduce((s, m) => s + m.home_score + m.away_score, 0);
+    const avgGoals = filtered.length ? (totalGoals / filtered.length).toFixed(1) : '0';
+
+    return `<div class="mw-section" data-mw="${mw.matchweek}">
+      <div class="mw-header" onclick="toggleMW(${idx})">
+        <div class="mw-header__left">
+          <div class="mw-header__title">Matchweek ${mw.matchweek}</div>
+          <div class="mw-header__dates">${mw.date_range}</div>
+        </div>
+        <div class="mw-header__meta">
+          <div class="mw-header__meta-item"><div class="mw-header__meta-val">${filtered.length}</div><div class="mw-header__meta-label">Matches</div></div>
+          <div class="mw-header__meta-item"><div class="mw-header__meta-val">${totalGoals}</div><div class="mw-header__meta-label">Goals</div></div>
+          <div class="mw-header__meta-item"><div class="mw-header__meta-val">${avgGoals}</div><div class="mw-header__meta-label">Avg G/M</div></div>
+        </div>
+        <svg class="mw-chevron" id="mw-chev-${idx}" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+      <div class="mw-matches" id="mw-body-${idx}">
+        ${filtered.map(m => renderMatchCard(m)).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderMatchCard(m) {
+  const hWin = m.home_score > m.away_score;
+  const aWin = m.away_score > m.home_score;
+  const draw = m.home_score === m.away_score;
+
+  const hTeamCls = hWin ? 'match-card__team--winner' : aWin ? 'match-card__team--loser' : '';
+  const aTeamCls = aWin ? 'match-card__team--winner' : hWin ? 'match-card__team--loser' : '';
+  const hScoreCls = hWin ? 'match-card__score--winner' : draw ? 'match-card__score--draw' : 'match-card__score--loser';
+  const aScoreCls = aWin ? 'match-card__score--winner' : draw ? 'match-card__score--draw' : 'match-card__score--loser';
+
+  // xG bars (scaled to max 4.0)
+  const maxXg = 4.0;
+  const hXgW = m.home_xg ? Math.min(100, (m.home_xg / maxXg) * 100) : 0;
+  const aXgW = m.away_xg ? Math.min(100, (m.away_xg / maxXg) * 100) : 0;
+
+  // Scorers text
+  const homeScorers = m.scorers.filter(s => s.team === m.home_team).map(s => s.name.split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
+  const awayScorers = m.scorers.filter(s => s.team === m.away_team).map(s => s.name.split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
+
+  const matchUrl = `/match/${m.date}/${encodeURIComponent(m.home_team)}/${encodeURIComponent(m.away_team)}`;
+
+  return `<div class="match-card">
+    <a class="match-card__main" href="${matchUrl}">
+      <div class="match-card__date">${m.date.slice(5)}</div>
+      <div class="match-card__teams">
+        <div class="match-card__row">
+          <span class="match-card__team ${hTeamCls}">${m.home_team}</span>
+          <span class="match-card__score ${hScoreCls}">${m.home_score}</span>
+        </div>
+        <div class="match-card__row">
+          <span class="match-card__team ${aTeamCls}">${m.away_team}</span>
+          <span class="match-card__score ${aScoreCls}">${m.away_score}</span>
+        </div>
+      </div>
+      <div class="match-card__xg">
+        <div class="match-card__xg-row">
+          <div class="match-card__xg-bar" style="width:${hXgW}%;"></div>
+          <div class="match-card__xg-val">${m.home_xg != null ? m.home_xg.toFixed(1) : '-'}</div>
+        </div>
+        <div class="match-card__xg-row">
+          <div class="match-card__xg-bar" style="width:${aXgW}%;"></div>
+          <div class="match-card__xg-val">${m.away_xg != null ? m.away_xg.toFixed(1) : '-'}</div>
+        </div>
+      </div>
+    </a>
+    <div class="match-card__stats">
+      <div class="match-card__stat"><span>Shots</span><span class="match-card__stat-val">${m.home_shots}-${m.away_shots}</span></div>
+      ${m.home_top_rated ? `<div class="match-card__stat"><span>MOTM</span><span class="match-card__stat-val">${m.home_top_rated.rating > (m.away_top_rated?.rating || 0) ? m.home_top_rated.name.split(' ').pop() + ' ' + m.home_top_rated.rating : (m.away_top_rated ? m.away_top_rated.name.split(' ').pop() + ' ' + m.away_top_rated.rating : '-')}</span></div>` : ''}
+      ${homeScorers || awayScorers ? `<div class="match-card__scorers">${[homeScorers, awayScorers].filter(Boolean).join(' | ')}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function toggleMW(idx) {
+  const body = document.getElementById('mw-body-' + idx);
+  const chev = document.getElementById('mw-chev-' + idx);
+  if (body) body.classList.toggle('open');
+  if (chev) chev.classList.toggle('open');
+}
+
+function filterMatches(filter, btn) {
+  _currentFilter = filter;
+  document.querySelectorAll('.matches-filter__btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderMatchweeks(_matchesData.matchweeks);
+  // Re-expand first matchweek
+  const first = document.querySelector('.mw-matches');
+  const firstChev = document.querySelector('.mw-chevron');
+  if (first) first.classList.add('open');
+  if (firstChev) firstChev.classList.add('open');
+}
+
+function initMatchSearch() {
+  const input = document.getElementById('matches-search');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    _searchQuery = input.value.toLowerCase().trim();
+    renderMatchweeks(_matchesData.matchweeks);
+    // Expand all when searching
+    if (_searchQuery) {
+      document.querySelectorAll('.mw-matches').forEach(el => el.classList.add('open'));
+      document.querySelectorAll('.mw-chevron').forEach(el => el.classList.add('open'));
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadSeasons(); loadMatches(); });
+</script>
+{% endblock %}

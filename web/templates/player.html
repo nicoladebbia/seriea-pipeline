@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}{{ player }} — SerieAI{% endblock %}
+{% block page_title %}{{ player }}{% endblock %}
+{% block page_subtitle %}<span class="text-sm text-tertiary ml-2">{{ team }}</span>{% endblock %}
+
+{% block head %}
+<style>
+  /* Profile header */
+  .profile-header { display: flex; align-items: center; gap: 20px; padding: 20px 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 20px; }
+  .profile-avatar { width: 64px; height: 64px; border-radius: 50%; background: var(--bg-tertiary); border: 2px solid var(--border-default); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: var(--accent); font-family: var(--font-mono); }
+  .profile-info { flex: 1; }
+  .profile-name { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+  .profile-meta { font-size: 12px; color: var(--text-tertiary); display: flex; gap: 12px; margin-top: 4px; flex-wrap: wrap; }
+  .profile-meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+  /* Stats grid */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; margin-bottom: 20px; }
+  .stat-card { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px; text-align: center; }
+  .stat-card__value { font-size: 20px; font-weight: 800; font-family: var(--font-mono); color: var(--text-primary); }
+  .stat-card__label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); margin-top: 2px; }
+
+  /* Section */
+  .section { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 16px; }
+  .section__title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); margin-bottom: 12px; }
+
+  /* Match log table */
+  .match-log { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .match-log th { font-size: 9px; text-transform: uppercase; color: var(--text-tertiary); padding: 6px 6px; border-bottom: 1px solid var(--border-default); letter-spacing: 0.5px; font-weight: 600; }
+  .match-log td { padding: 5px 6px; border-bottom: 1px solid var(--border-subtle); }
+  .match-log tr:hover { background: var(--bg-tertiary); }
+  .match-log__result { font-weight: 700; font-family: var(--font-mono); }
+  .match-link { color: var(--text-tertiary); transition: color 0.15s; }
+  .match-link:hover { color: var(--accent); }
+
+  /* Rating badge */
+  .rating-lg { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-family: var(--font-mono); font-size: 11px; }
+  .rating-lg--high { background: rgba(74,222,128,0.15); color: var(--green); }
+  .rating-lg--mid { background: rgba(251,191,36,0.15); color: var(--amber); }
+  .rating-lg--low { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* Form chart */
+  .form-chart { display: flex; align-items: flex-end; gap: 3px; height: 80px; }
+  .form-bar { flex: 1; min-width: 14px; max-width: 24px; border-radius: 3px 3px 0 0; position: relative; transition: height 0.3s ease; cursor: pointer; }
+  .form-bar__label { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-size: 8px; color: var(--text-tertiary); white-space: nowrap; }
+  .form-bar__value { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 600; font-family: var(--font-mono); }
+
+  /* Market value chart */
+  .mv-chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 8px; }
+  .mv-bar { flex: 1; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0.7; position: relative; cursor: pointer; }
+  .mv-bar:hover { opacity: 1; }
+  .mv-bar__label { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); font-size: 8px; color: var(--text-tertiary); white-space: nowrap; }
+
+  /* Career summary */
+  .career-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+  .career-item { padding: 8px; background: var(--bg-tertiary); border-radius: var(--radius-md); }
+  .career-item__label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; }
+  .career-item__value { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+
+  /* Tabs */
+  .player-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 16px; }
+  .player-tab { padding: 8px 16px; font-size: 12px; font-weight: 600; color: var(--text-tertiary); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; }
+  .player-tab:hover { color: var(--text-secondary); }
+  .player-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .player-tab-content { display: none; }
+  .player-tab-content.active { display: block; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="player-loading" class="text-center py-16">
+  <div class="text-secondary text-sm">Loading player data...</div>
+</div>
+<div id="player-content" class="hidden"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PLAYER_TEAM = "{{ team }}";
+const PLAYER_NAME = "{{ player }}";
+
+async function loadPlayer() {
+  try {
+    const data = await apiFetch(`/api/player/${encodeURIComponent(PLAYER_TEAM)}/${encodeURIComponent(PLAYER_NAME)}`);
+    document.getElementById('player-loading').classList.add('hidden');
+    document.getElementById('player-content').classList.remove('hidden');
+    renderPlayer(data);
+  } catch (err) {
+    document.getElementById('player-loading').innerHTML = `<div class="text-red text-sm">Failed to load player: ${err.message}</div>`;
+  }
+}
+
+function ratingCls(r) {
+  if (!r) return '';
+  if (r >= 7.0) return 'rating-lg--high';
+  if (r >= 6.0) return 'rating-lg--mid';
+  return 'rating-lg--low';
+}
+
+function renderPlayer(data) {
+  const p = data.player || {};
+  const ss = data.season_stats || {};
+  const ml = data.match_log || [];
+  const career = data.career || {};
+  const mvh = data.market_value_history || [];
+
+  const initials = (p.name || '??').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+
+  // Profile header
+  let metaParts = [];
+  if (p.position) metaParts.push(`<span>${p.position}</span>`);
+  if (p.number) metaParts.push(`<span>#${p.number}</span>`);
+  if (p.age) metaParts.push(`<span>Age ${p.age}</span>`);
+  if (p.nationality) metaParts.push(`<span>${p.nationality}</span>`);
+  if (p.height) metaParts.push(`<span>${p.height} cm</span>`);
+  if (p.market_value) {
+    const fmtMv = p.market_value >= 1000000 ? (p.market_value / 1000000).toFixed(1) + 'M' : (p.market_value / 1000).toFixed(0) + 'K';
+    metaParts.push(`<span>Value: €${fmtMv}</span>`);
+  } else if (mvh.length) {
+    const latest = mvh[mvh.length - 1];
+    const fmtMv = latest.value >= 1000000 ? (latest.value / 1000000).toFixed(1) + 'M' : (latest.value / 1000).toFixed(0) + 'K';
+    metaParts.push(`<span>Value: €${fmtMv}</span>`);
+  }
+
+  let html = `<div class="profile-header">
+    <div class="profile-avatar">${initials}</div>
+    <div class="profile-info">
+      <div class="profile-name">${p.name}</div>
+      <div class="profile-meta">
+        <span><a href="/team/${encodeURIComponent(p.team)}" style="color:var(--accent);">${p.team}</a></span>
+        ${metaParts.join('')}
+      </div>
+    </div>
+  </div>`;
+
+  // Season stats cards
+  if (Object.keys(ss).length) {
+    const passAcc = ss.total_passes > 0 ? Math.round(ss.accurate_passes / ss.total_passes * 100) : null;
+    html += `<div class="stats-grid">
+      <div class="stat-card"><div class="stat-card__value">${ss.matches || 0}</div><div class="stat-card__label">Matches</div></div>
+      <div class="stat-card"><div class="stat-card__value">${ss.starts || 0}</div><div class="stat-card__label">Starts</div></div>
+      <div class="stat-card"><div class="stat-card__value">${ss.minutes || 0}</div><div class="stat-card__label">Minutes</div></div>
+      <div class="stat-card"><div class="stat-card__value">${ss.goals || 0}</div><div class="stat-card__label">Goals</div></div>
+      <div class="stat-card"><div class="stat-card__value">${ss.assists || 0}</div><div class="stat-card__label">Assists</div></div>
+      ${ss.xg != null ? `<div class="stat-card"><div class="stat-card__value">${ss.xg.toFixed(1)}</div><div class="stat-card__label">xG</div></div>` : ''}
+      ${ss.xa != null ? `<div class="stat-card"><div class="stat-card__value">${ss.xa.toFixed(1)}</div><div class="stat-card__label">xA</div></div>` : ''}
+      ${ss.avg_rating != null ? `<div class="stat-card"><div class="stat-card__value" style="color:${ss.avg_rating >= 7 ? 'var(--green)' : ss.avg_rating >= 6.5 ? 'var(--amber)' : 'var(--text-primary)'}">${ss.avg_rating}</div><div class="stat-card__label">Avg Rating</div></div>` : ''}
+      ${ss.total_shots ? `<div class="stat-card"><div class="stat-card__value">${ss.total_shots}</div><div class="stat-card__label">Shots</div></div>` : ''}
+      ${ss.key_passes ? `<div class="stat-card"><div class="stat-card__value">${ss.key_passes}</div><div class="stat-card__label">Key Passes</div></div>` : ''}
+      ${passAcc ? `<div class="stat-card"><div class="stat-card__value">${passAcc}%</div><div class="stat-card__label">Pass Acc.</div></div>` : ''}
+      ${ss.tackles ? `<div class="stat-card"><div class="stat-card__value">${ss.tackles}</div><div class="stat-card__label">Tackles</div></div>` : ''}
+      ${ss.interceptions ? `<div class="stat-card"><div class="stat-card__value">${ss.interceptions}</div><div class="stat-card__label">Interceptions</div></div>` : ''}
+      ${ss.ball_recoveries ? `<div class="stat-card"><div class="stat-card__value">${ss.ball_recoveries}</div><div class="stat-card__label">Recoveries</div></div>` : ''}
+      ${ss.dribbles_total ? `<div class="stat-card"><div class="stat-card__value">${ss.dribbles_won}/${ss.dribbles_total}</div><div class="stat-card__label">Dribbles W/T</div></div>` : ''}
+      ${ss.progressive_carries ? `<div class="stat-card"><div class="stat-card__value">${ss.progressive_carries}</div><div class="stat-card__label">Prog. Carries</div></div>` : ''}
+      ${ss.aerial_won || ss.aerial_lost ? `<div class="stat-card"><div class="stat-card__value">${ss.aerial_won}/${ss.aerial_won + ss.aerial_lost}</div><div class="stat-card__label">Aerials W/T</div></div>` : ''}
+      ${ss.clearances ? `<div class="stat-card"><div class="stat-card__value">${ss.clearances}</div><div class="stat-card__label">Clearances</div></div>` : ''}
+      ${ss.blocks ? `<div class="stat-card"><div class="stat-card__value">${ss.blocks}</div><div class="stat-card__label">Blocks</div></div>` : ''}
+      ${ss.big_chances_created ? `<div class="stat-card"><div class="stat-card__value">${ss.big_chances_created}</div><div class="stat-card__label">Big Chances C.</div></div>` : ''}
+      ${ss.big_chances_missed ? `<div class="stat-card"><div class="stat-card__value">${ss.big_chances_missed}</div><div class="stat-card__label">Big Chances M.</div></div>` : ''}
+      ${ss.fouls ? `<div class="stat-card"><div class="stat-card__value">${ss.fouls}</div><div class="stat-card__label">Fouls</div></div>` : ''}
+      ${ss.was_fouled ? `<div class="stat-card"><div class="stat-card__value">${ss.was_fouled}</div><div class="stat-card__label">Fouled</div></div>` : ''}
+      ${ss.offsides ? `<div class="stat-card"><div class="stat-card__value">${ss.offsides}</div><div class="stat-card__label">Offsides</div></div>` : ''}
+      ${ss.touches ? `<div class="stat-card"><div class="stat-card__value">${ss.touches}</div><div class="stat-card__label">Touches</div></div>` : ''}
+      ${ss.saves ? `<div class="stat-card"><div class="stat-card__value">${ss.saves}</div><div class="stat-card__label">Saves</div></div>` : ''}
+    </div>`;
+  }
+
+  // Tabs
+  html += `<div class="player-tabs">
+    <button class="player-tab active" onclick="switchPlayerTab('form')">Form</button>
+    <button class="player-tab" onclick="switchPlayerTab('matches')">Match Log</button>
+    <button class="player-tab" onclick="switchPlayerTab('career')">Career</button>
+    ${mvh.length ? '<button class="player-tab" onclick="switchPlayerTab(\'value\')">Market Value</button>' : ''}
+  </div>`;
+
+  // Form tab (rating chart for last matches)
+  html += `<div id="ptab-form" class="player-tab-content active">${renderFormChart(ml)}</div>`;
+
+  // Match log tab
+  html += `<div id="ptab-matches" class="player-tab-content">${renderMatchLog(ml, p)}</div>`;
+
+  // Career tab
+  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career)}</div>`;
+
+  // Market value tab
+  if (mvh.length) {
+    html += `<div id="ptab-value" class="player-tab-content">${renderMarketValue(mvh)}</div>`;
+  }
+
+  document.getElementById('player-content').innerHTML = html;
+}
+
+function switchPlayerTab(tab) {
+  document.querySelectorAll('.player-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.player-tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('ptab-' + tab).classList.add('active');
+}
+
+function renderFormChart(ml) {
+  const recent = ml.slice(0, 15).reverse();
+  if (!recent.length) return '<div class="text-sm text-tertiary text-center py-8">No match data for form chart.</div>';
+
+  const maxR = 10;
+  let bars = recent.map(m => {
+    const r = m.rating || 0;
+    const h = Math.max(4, (r / maxR) * 80);
+    const color = r >= 7.5 ? 'var(--green)' : r >= 7.0 ? 'rgba(74,222,128,0.6)' : r >= 6.5 ? 'var(--amber)' : r >= 6.0 ? 'rgba(251,191,36,0.5)' : r > 0 ? 'var(--red)' : 'var(--bg-tertiary)';
+    const opp = m.opponent || '';
+    const goals = m.goals ? `⚽${m.goals}` : '';
+    return `<div class="form-bar" style="height:${h}px;background:${color};" title="${opp}: ${r || 'N/A'} ${goals}">
+      <div class="form-bar__value" style="color:${color};">${r ? r.toFixed(1) : ''}</div>
+      <div class="form-bar__label">${opp.slice(0, 3)}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="section">
+    <div class="section__title">Rating Form (Last ${recent.length} Matches)</div>
+    <div class="form-chart" style="padding-bottom:20px;padding-top:16px;">${bars}</div>
+  </div>`;
+}
+
+function renderMatchLog(ml, p) {
+  if (!ml.length) return '<div class="text-sm text-tertiary text-center py-8">No match log available.</div>';
+
+  const rows = ml.map(m => {
+    const isHome = m.is_home;
+    const opp = m.opponent || '?';
+    const venue = isHome ? 'H' : 'A';
+    const venueCol = isHome ? 'var(--green)' : 'var(--red)';
+    const score = (m.home_score != null && m.away_score != null) ? `${m.home_score}-${m.away_score}` : '-';
+    const homeT = isHome ? p.team : opp;
+    const awayT = isHome ? opp : p.team;
+    const matchDate = m.date || '';
+    const matchLink = `/match/${matchDate}/${encodeURIComponent(homeT)}/${encodeURIComponent(awayT)}`;
+    const rc = ratingCls(m.rating);
+
+    return `<tr>
+      <td class="text-tertiary font-mono">${matchDate.slice(5)}</td>
+      <td style="color:${venueCol};font-weight:700;text-align:center;">${venue}</td>
+      <td><a href="/team/${encodeURIComponent(opp)}" class="match-link">${opp}</a></td>
+      <td class="text-center match-log__result"><a href="${matchLink}" class="match-link">${score}</a></td>
+      <td class="text-center">${m.is_starter ? '●' : '<span class="text-tertiary">○</span>'}</td>
+      <td class="text-center text-tertiary font-mono">${m.minutes}'</td>
+      <td class="text-center">${m.rating ? `<span class="rating-lg ${rc}">${m.rating}</span>` : '-'}</td>
+      <td class="text-center">${m.goals || ''}</td>
+      <td class="text-center">${m.assists || ''}</td>
+      <td class="text-center text-tertiary">${m.xg != null ? m.xg.toFixed(2) : ''}</td>
+      <td class="text-center text-tertiary">${m.total_shots || ''}</td>
+      <td class="text-center text-tertiary">${m.key_passes || ''}</td>
+      <td class="text-center text-tertiary">${m.tackles || ''}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="section" style="overflow-x:auto;">
+    <div class="section__title">Match Log (${ml.length} matches)</div>
+    <table class="match-log">
+      <thead><tr>
+        <th>Date</th><th>V</th><th>Opponent</th><th>Score</th><th>XI</th><th>Min</th><th>Rtg</th><th>G</th><th>A</th><th>xG</th><th>Sh</th><th>KP</th><th>Tkl</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderCareer(career) {
+  if (!career || !Object.keys(career).length) return '<div class="text-sm text-tertiary text-center py-8">No career data available.</div>';
+
+  return `<div class="section">
+    <div class="section__title">Career Statistics (All Seasons)</div>
+    <div class="career-grid">
+      <div class="career-item"><div class="career-item__label">Matches</div><div class="career-item__value">${career.total_matches || 0}</div></div>
+      <div class="career-item"><div class="career-item__label">Minutes</div><div class="career-item__value">${(career.total_minutes || 0).toLocaleString()}</div></div>
+      <div class="career-item"><div class="career-item__label">Goals</div><div class="career-item__value">${career.total_goals || 0}</div></div>
+      <div class="career-item"><div class="career-item__label">Assists</div><div class="career-item__value">${career.total_assists || 0}</div></div>
+      <div class="career-item"><div class="career-item__label">Total xG</div><div class="career-item__value">${(career.total_xg || 0).toFixed(1)}</div></div>
+      <div class="career-item"><div class="career-item__label">Total xA</div><div class="career-item__value">${(career.total_xa || 0).toFixed(1)}</div></div>
+      <div class="career-item"><div class="career-item__label">xG/90</div><div class="career-item__value">${(career.xg_per_90 || 0).toFixed(2)}</div></div>
+      <div class="career-item"><div class="career-item__label">xA/90</div><div class="career-item__value">${(career.xa_per_90 || 0).toFixed(2)}</div></div>
+      ${career.position ? `<div class="career-item"><div class="career-item__label">Position</div><div class="career-item__value">${career.position}</div></div>` : ''}
+      ${career.recent_form_xg ? `<div class="career-item"><div class="career-item__label">Recent xG/90</div><div class="career-item__value">${career.recent_form_xg.toFixed(2)}</div></div>` : ''}
+      ${career.recent_form_xa ? `<div class="career-item"><div class="career-item__label">Recent xA/90</div><div class="career-item__value">${career.recent_form_xa.toFixed(2)}</div></div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderMarketValue(mvh) {
+  if (!mvh.length) return '';
+  const maxVal = Math.max(...mvh.map(v => v.value));
+
+  const bars = mvh.map(v => {
+    const h = Math.max(4, (v.value / maxVal) * 60);
+    const fmtVal = v.value >= 1000000 ? '€' + (v.value / 1000000).toFixed(1) + 'M' : '€' + (v.value / 1000).toFixed(0) + 'K';
+    return `<div class="mv-bar" style="height:${h}px;" title="${v.season}: ${fmtVal}">
+      <div class="mv-bar__label">${v.season.slice(2, 4)}/${v.season.slice(-2)}</div>
+    </div>`;
+  }).join('');
+
+  const latest = mvh[mvh.length - 1];
+  const fmtLatest = latest.value >= 1000000 ? '€' + (latest.value / 1000000).toFixed(1) + 'M' : '€' + (latest.value / 1000).toFixed(0) + 'K';
+
+  return `<div class="section">
+    <div class="section__title">Market Value History — Current: ${fmtLatest}</div>
+    <div class="mv-chart" style="padding-bottom:18px;">${bars}</div>
+  </div>`;
+}
+
+document.addEventListener('DOMContentLoaded', loadPlayer);
+</script>
+{% endblock %}

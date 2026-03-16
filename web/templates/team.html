@@ -1,0 +1,1480 @@
+{% extends "base.html" %}
+
+{% block title %}{{ team_name }} — SerieAI{% endblock %}
+{% block page_title %}{{ team_name }}{% endblock %}
+
+{% block head %}
+  <script src="/static/js/tailwind.min.js"></script>
+  <script src="/static/js/chart.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      corePlugins: { preflight: false },
+      theme: { extend: { colors: {
+        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
+        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
+        accent: { blue:'#818cf8', green:'#4ade80', red:'#f87171', amber:'#fbbf24', purple:'#a78bfa' }
+      } } }
+    }
+  </script>
+  <style>
+    .tab-btn { transition: all 0.2s; background: transparent; color: #a1a1aa; border: 1px solid transparent; }
+    .tab-btn:hover { color: #e4e4e7; background: rgba(255,255,255,0.05); }
+    .tab-btn.active { background: rgba(129,140,248,0.2); color: #818cf8; border-color: rgba(129,140,248,0.4); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="text-gray-200">
+
+  <!-- Loading -->
+  <div id="loading" class="max-w-7xl mx-auto px-4 py-20 text-center text-gray-500">
+    Loading team data...
+  </div>
+
+  <!-- Main Content (hidden until loaded) -->
+  <div id="content" class="max-w-7xl mx-auto px-4 py-6 hidden">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div class="flex items-center gap-4">
+        <h1 id="team-title" class="text-2xl font-bold text-white">{{ team_name }}</h1>
+        <span id="position-badge" class="badge bg-accent-blue/20 text-accent-blue border border-accent-blue/30"></span>
+        <span id="elo-badge" class="badge bg-accent-purple/20 text-accent-purple border border-accent-purple/30"></span>
+      </div>
+      <div id="form-dots" class="flex items-center gap-1"></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 mb-6 border-b border-gray-800 pb-3">
+      <button class="tab-btn active px-4 py-2 text-sm font-medium rounded-lg border border-transparent" onclick="switchTab('overview')">Overview</button>
+      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('history')">Match History</button>
+      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('stats')">Stats & Trends</button>
+      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('next')">Next Match</button>
+    </div>
+
+    <!-- Tab: Overview -->
+    <div id="tab-overview" class="tab-content">
+      <!-- Season stats grid -->
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Played</div>
+          <div id="stat-played" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Won</div>
+          <div id="stat-won" class="text-xl font-bold text-green-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Drawn</div>
+          <div id="stat-drawn" class="text-xl font-bold text-amber-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Lost</div>
+          <div id="stat-lost" class="text-xl font-bold text-red-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GF</div>
+          <div id="stat-gf" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GA</div>
+          <div id="stat-ga" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GD</div>
+          <div id="stat-gd" class="text-xl font-bold">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Points</div>
+          <div id="stat-pts" class="text-xl font-bold text-accent-blue">-</div>
+        </div>
+      </div>
+
+      <!-- Key metrics: Attack -->
+      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mb-2 mt-2">Attack (Last 10)</h3>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Avg xG</div>
+          <div id="stat-xg" class="text-xl font-bold text-green-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Shots / G</div>
+          <div id="stat-shots" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">On Target</div>
+          <div id="stat-sot" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Big Chances</div>
+          <div id="stat-bc" class="text-xl font-bold text-green-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Key Passes</div>
+          <div id="stat-kp" class="text-xl font-bold text-white">-</div>
+        </div>
+      </div>
+
+      <!-- Key metrics: Defense & General -->
+      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Defense & Style</h3>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Avg xGA</div>
+          <div id="stat-xga" class="text-xl font-bold text-red-400">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Clean Sheet %</div>
+          <div id="stat-cs" class="text-xl font-bold text-accent-blue">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">BTTS %</div>
+          <div id="stat-btts" class="text-xl font-bold text-accent-amber">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Possession</div>
+          <div id="stat-poss" class="text-xl font-bold text-white">-</div>
+        </div>
+        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Pass Acc.</div>
+          <div id="stat-pass" class="text-xl font-bold text-white">-</div>
+        </div>
+      </div>
+
+      <!-- Predicted Formation & Key Info -->
+      <div id="overview-lineup" class="mb-6"></div>
+
+      <!-- Season summaries -->
+      <div id="season-summaries" class="mb-6"></div>
+
+      <!-- Recent form -->
+      <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Recent Form (Last 5)</h3>
+        <div id="recent-form-detail" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <!-- Tab: Match History -->
+    <div id="tab-history" class="tab-content hidden">
+      <div class="flex items-center gap-3 mb-4 flex-wrap">
+        <span class="text-sm text-gray-400">Venue:</span>
+        <button id="filter-all" class="px-3 py-1 text-xs rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30" onclick="filterHistory('all')">All</button>
+        <button id="filter-home" class="px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white" onclick="filterHistory('home')">Home</button>
+        <button id="filter-away" class="px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white" onclick="filterHistory('away')">Away</button>
+        <span class="text-sm text-gray-400 ml-4">Season:</span>
+        <select id="season-select" onchange="filterHistory(_currentVenueFilter)" class="bg-dark-800 border border-gray-700 text-gray-300 text-xs rounded-lg px-2 py-1">
+          <option value="all">All Seasons</option>
+        </select>
+      </div>
+      <div class="bg-dark-800 rounded-xl border border-gray-700/50 overflow-x-auto">
+        <table class="w-full">
+          <thead>
+            <tr class="border-b border-gray-700/50 text-[10px] text-gray-500 uppercase tracking-wider">
+              <th class="px-2 py-2 text-center w-4"></th>
+              <th class="px-2 py-2 text-center">MW</th>
+              <th class="px-3 py-2 text-left">Date</th>
+              <th class="px-3 py-2 text-left">Opponent</th>
+              <th class="px-2 py-2 text-center">H/A</th>
+              <th class="px-2 py-2 text-center">Score</th>
+              <th class="px-2 py-2 text-center">Result</th>
+              <th class="px-2 py-2 text-center">xG</th>
+              <th class="px-2 py-2 text-center">xGA</th>
+              <th class="px-2 py-2 text-center">Poss</th>
+              <th class="px-2 py-2 text-center">Rating</th>
+              <th class="px-3 py-2 text-center">Formation</th>
+            </tr>
+          </thead>
+          <tbody id="history-table" class="divide-y divide-gray-800/50"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab: Stats & Trends -->
+    <div id="tab-stats" class="tab-content hidden">
+      <!-- Charts row 1: xG + Elo -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300 mb-3">xG Trend (Last 30 Matches)</h3>
+          <canvas id="chart-xg" height="200"></canvas>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300 mb-3">Elo Rating Trend</h3>
+          <canvas id="chart-elo" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Charts row 2: Form + Goals Distribution -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300 mb-3">Form Trend (Points per Game, Rolling 5)</h3>
+          <canvas id="chart-form" height="200"></canvas>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300 mb-3">Goals Distribution (This Season)</h3>
+          <canvas id="chart-goals" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Home vs Away comparison -->
+      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mt-6 mb-3">Home vs Away (This Season)</h3>
+      <div class="grid grid-cols-2 gap-4">
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="w-2 h-2 rounded-full bg-green-500"></span>
+            <span class="text-sm font-semibold text-gray-300">Home</span>
+          </div>
+          <div id="home-record" class="space-y-2"></div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+            <span class="text-sm font-semibold text-gray-300">Away</span>
+          </div>
+          <div id="away-record" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <!-- Key numbers row -->
+      <div class="grid grid-cols-3 md:grid-cols-6 gap-3 mt-6">
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Win %</div>
+          <div id="stat-win-pct" class="text-2xl font-bold text-green-400">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Draw %</div>
+          <div id="stat-draw-pct" class="text-2xl font-bold text-amber-400">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Loss %</div>
+          <div id="stat-loss-pct" class="text-2xl font-bold text-red-400">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Avg Rating</div>
+          <div id="stat-avg-rating" class="text-2xl font-bold text-accent-blue">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Tackles/G</div>
+          <div id="stat-tackles" class="text-2xl font-bold text-gray-300">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Interceptions</div>
+          <div id="stat-intercepts" class="text-2xl font-bold text-gray-300">-</div>
+        </div>
+      </div>
+
+      <!-- Elo info -->
+      <div class="grid grid-cols-2 gap-4 mt-4">
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Current Elo</div>
+          <div id="stat-elo-current" class="text-2xl font-bold text-accent-purple">-</div>
+        </div>
+        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Elo Trend (20 matches)</div>
+          <div id="stat-elo-trend" class="text-2xl font-bold">-</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Next Match -->
+    <div id="tab-next" class="tab-content hidden">
+      <div id="next-match-content"></div>
+      <div id="no-next-match" class="text-center py-12 text-gray-500 hidden">
+        <p class="text-lg mb-2">No upcoming match prediction available</p>
+        <p class="text-sm">Run the pipeline to generate predictions</p>
+      </div>
+    </div>
+  </div>
+
+<script>
+const TEAM_NAME = "{{ team_name }}";
+let _teamData = null;
+let _allHistory = [];
+let _allSeasons = {};
+let _currentVenueFilter = 'all';
+let _charts = {};
+
+// ─── Tab switching ──────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(el => {
+    el.classList.remove('active');
+    el.classList.add('text-gray-400');
+  });
+  document.getElementById('tab-' + tab).classList.remove('hidden');
+  event.target.classList.add('active');
+  event.target.classList.remove('text-gray-400');
+
+  // Lazy-init charts
+  if (tab === 'stats' && _teamData) {
+    renderCharts(_teamData.stats || {});
+  }
+}
+
+// ─── Load team data ─────────────────────────────────────────────────────
+async function loadTeam() {
+  try {
+    const res = await fetch('/api/team/' + encodeURIComponent(TEAM_NAME));
+    const data = await res.json();
+    _teamData = data;
+    _allSeasons = data.seasons || {};
+
+    // Populate season selector
+    const sel = document.getElementById('season-select');
+    sel.innerHTML = '<option value="all">All Seasons</option>';
+    Object.keys(_allSeasons).sort().reverse().forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      sel.appendChild(opt);
+    });
+
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('content').classList.remove('hidden');
+
+    renderOverview(data);
+    renderHistory(data.match_history || []);
+    renderNextMatch(data.upcoming || {});
+    renderStats(data.stats || {});
+    // Load enriched history (formations, events) in background
+    loadEnrichedHistory();
+  } catch (err) {
+    document.getElementById('loading').textContent = 'Failed to load: ' + err.message;
+  }
+}
+
+// ─── Render: Overview ───────────────────────────────────────────────────
+function renderOverview(data) {
+  const o = data.overview || {};
+
+  // Position & Elo badges
+  if (o.position) {
+    document.getElementById('position-badge').textContent = '#' + o.position;
+  }
+  const stats = data.stats || {};
+  if (stats.current_elo) {
+    document.getElementById('elo-badge').textContent = 'Elo ' + Math.round(stats.current_elo);
+  }
+
+  // Season stats
+  document.getElementById('stat-played').textContent = o.played || '-';
+  document.getElementById('stat-won').textContent = o.won || '-';
+  document.getElementById('stat-drawn').textContent = o.drawn || '-';
+  document.getElementById('stat-lost').textContent = o.lost || '-';
+  document.getElementById('stat-gf').textContent = o.goals_for || '-';
+  document.getElementById('stat-ga').textContent = o.goals_against || '-';
+
+  const gd = o.goal_difference || 0;
+  const gdEl = document.getElementById('stat-gd');
+  gdEl.textContent = (gd > 0 ? '+' : '') + gd;
+  gdEl.classList.add(gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400');
+
+  document.getElementById('stat-pts').textContent = o.points || '-';
+
+  // Attack metrics
+  if (stats.avg_xg != null) document.getElementById('stat-xg').textContent = stats.avg_xg.toFixed(2);
+  if (stats.avg_shots != null) document.getElementById('stat-shots').textContent = stats.avg_shots.toFixed(1);
+  if (stats.avg_shots_on_target != null) document.getElementById('stat-sot').textContent = stats.avg_shots_on_target.toFixed(1);
+  if (stats.avg_big_chances != null) document.getElementById('stat-bc').textContent = stats.avg_big_chances.toFixed(1);
+  if (stats.avg_key_passes != null) document.getElementById('stat-kp').textContent = stats.avg_key_passes.toFixed(1);
+  // Defense metrics
+  if (stats.avg_xg_against != null) document.getElementById('stat-xga').textContent = stats.avg_xg_against.toFixed(2);
+  if (stats.clean_sheet_pct != null) document.getElementById('stat-cs').textContent = stats.clean_sheet_pct + '%';
+  if (stats.btts_pct != null) document.getElementById('stat-btts').textContent = stats.btts_pct + '%';
+  if (stats.avg_possession != null) document.getElementById('stat-poss').textContent = stats.avg_possession.toFixed(1) + '%';
+  if (stats.avg_pass_accuracy != null) document.getElementById('stat-pass').textContent = stats.avg_pass_accuracy.toFixed(1) + '%';
+
+  // Season summaries
+  renderSeasonSummaries(data.season_summaries || {});
+
+  // Lineup prediction compact view in overview
+  renderOverviewLineup(data.lineup_prediction || {});
+
+  // Form dots
+  renderFormDots(data.form || data.match_history || []);
+
+  // Recent form detail
+  renderFormDetail(data.match_history || []);
+}
+
+// ─── Position → Pitch Coordinates (vertical pitch, 0-100 scale) ──────
+// y: 0 = own goal line, 100 = opponent goal line
+// x: 0 = left, 100 = right
+const PITCH_POSITIONS = {
+  GK:  { x: 50, y: 7 },
+  // 3-back
+  RCB: { x: 28, y: 22 }, CB: { x: 50, y: 20 }, LCB: { x: 72, y: 22 },
+  // 4-back
+  RB:  { x: 12, y: 25 }, LB: { x: 88, y: 25 },
+  // 5-back / wing-backs
+  RWB: { x: 10, y: 42 }, LWB: { x: 90, y: 42 },
+  // Defensive midfield
+  CDM: { x: 50, y: 38 }, RDM: { x: 38, y: 36 }, LDM: { x: 62, y: 36 },
+  // Central midfield
+  CM:  { x: 50, y: 48 }, RCM: { x: 32, y: 46 }, LCM: { x: 68, y: 46 },
+  RM:  { x: 12, y: 48 }, LM:  { x: 88, y: 48 },
+  // Attacking midfield
+  CAM: { x: 50, y: 60 }, RAM: { x: 32, y: 58 }, LAM: { x: 68, y: 58 },
+  SS:  { x: 50, y: 65 },
+  // Forwards
+  RW:  { x: 18, y: 72 }, LW:  { x: 82, y: 72 },
+  ST:  { x: 50, y: 80 }, RS:  { x: 36, y: 78 }, LS:  { x: 64, y: 78 },
+  CF:  { x: 50, y: 78 },
+  // Generic fallbacks
+  DEF: { x: 50, y: 24 }, MID: { x: 50, y: 48 }, FWD: { x: 50, y: 75 },
+};
+
+function getPlayerCoords(posLabel) {
+  return PITCH_POSITIONS[posLabel] || PITCH_POSITIONS['MID'];
+}
+
+function statusColor(status) {
+  switch(status) {
+    case 'certain': return { bg: 'rgba(74,222,128,0.9)', text: '#000', ring: 'rgba(74,222,128,0.3)' };
+    case 'likely': return { bg: 'rgba(96,165,250,0.9)', text: '#000', ring: 'rgba(96,165,250,0.3)' };
+    case 'rotation': return { bg: 'rgba(251,191,36,0.9)', text: '#000', ring: 'rgba(251,191,36,0.3)' };
+    case 'fill-in': return { bg: 'rgba(168,85,247,0.9)', text: '#fff', ring: 'rgba(168,85,247,0.3)' };
+    default: return { bg: 'rgba(113,113,122,0.9)', text: '#fff', ring: 'rgba(113,113,122,0.3)' };
+  }
+}
+
+function pctColor(pct) {
+  if (pct >= 80) return '#4ade80';
+  if (pct >= 60) return '#60a5fa';
+  if (pct >= 40) return '#fbbf24';
+  return '#f87171';
+}
+
+function renderPitchFormation(lp, compact) {
+  if (!lp || !lp.formation) return '';
+  const fm = lp.formation || {};
+  const xi = lp.predicted_xi || [];
+  const unavail = lp.unavailable || [];
+  const suspRisk = lp.suspension_risk || [];
+  const confPct = ((fm.confidence || 0) * 100).toFixed(0);
+  const pitchH = compact ? 420 : 560;
+  const pitchW = compact ? 320 : 400;
+  const fontSize = compact ? 9 : 10;
+  const dotR = compact ? 16 : 20;
+
+  // Build player markers
+  const playersSVG = xi.map(p => {
+    const pos = getPlayerCoords(p.position_label);
+    const cx = (pos.x / 100) * pitchW;
+    const cy = (pos.y / 100) * pitchH;
+    const sc = statusColor(p.status);
+    const pctC = pctColor(p.start_pct);
+    const lastName = p.name.split(' ').pop();
+    const contested = p.contested ? `<title>${p.name} — Rival: ${p.rival || '?'}, Margin: ${p.margin || '?'}</title>` : `<title>${p.name}</title>`;
+
+    return `<g class="pitch-player" style="cursor:pointer;">
+      ${contested}
+      <circle cx="${cx}" cy="${cy}" r="${dotR + 4}" fill="${sc.ring}" />
+      <circle cx="${cx}" cy="${cy}" r="${dotR}" fill="${sc.bg}" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+      <text x="${cx}" y="${cy + 1}" text-anchor="middle" dominant-baseline="central" fill="${sc.text}" font-size="${compact ? 8 : 9}" font-weight="700" font-family="var(--font-mono)">${p.shirt_number || ''}</text>
+      <text x="${cx}" y="${cy + dotR + 11}" text-anchor="middle" fill="#fff" font-size="${fontSize}" font-weight="600" style="text-shadow:0 1px 3px rgba(0,0,0,0.8);">${lastName}</text>
+      <text x="${cx}" y="${cy + dotR + 22}" text-anchor="middle" fill="${pctC}" font-size="${fontSize - 1}" font-weight="700" font-family="var(--font-mono)">${p.start_pct.toFixed(0)}%</text>
+      ${p.contested ? `<circle cx="${cx + dotR - 2}" cy="${cy - dotR + 2}" r="4" fill="#fbbf24" stroke="#000" stroke-width="0.5"/>` : ''}
+    </g>`;
+  }).join('');
+
+  // Pitch SVG
+  const pitch = `<svg viewBox="0 0 ${pitchW} ${pitchH}" width="100%" style="max-width:${pitchW}px;" xmlns="http://www.w3.org/2000/svg">
+    <!-- Pitch background -->
+    <rect width="${pitchW}" height="${pitchH}" rx="8" fill="#1a472a"/>
+    <!-- Field lines -->
+    <rect x="4" y="4" width="${pitchW-8}" height="${pitchH-8}" rx="4" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5"/>
+    <!-- Center line -->
+    <line x1="4" y1="${pitchH/2}" x2="${pitchW-4}" y2="${pitchH/2}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <!-- Center circle -->
+    <circle cx="${pitchW/2}" cy="${pitchH/2}" r="40" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <circle cx="${pitchW/2}" cy="${pitchH/2}" r="2" fill="rgba(255,255,255,0.2)"/>
+    <!-- Bottom penalty box (own goal) -->
+    <rect x="${pitchW/2 - 65}" y="4" width="130" height="55" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1" rx="2"/>
+    <rect x="${pitchW/2 - 30}" y="4" width="60" height="20" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1" rx="1"/>
+    <!-- Top penalty box (attacking) -->
+    <rect x="${pitchW/2 - 65}" y="${pitchH - 59}" width="130" height="55" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1" rx="2"/>
+    <rect x="${pitchW/2 - 30}" y="${pitchH - 24}" width="60" height="20" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1" rx="1"/>
+    <!-- Penalty spots -->
+    <circle cx="${pitchW/2}" cy="40" r="2" fill="rgba(255,255,255,0.15)"/>
+    <circle cx="${pitchW/2}" cy="${pitchH - 40}" r="2" fill="rgba(255,255,255,0.15)"/>
+    <!-- Grass stripes -->
+    ${Array.from({length: 8}, (_, i) => {
+      const sy = i * (pitchH / 8);
+      return i % 2 === 0 ? `<rect x="4" y="${sy}" width="${pitchW-8}" height="${pitchH/8}" fill="rgba(255,255,255,0.015)"/>` : '';
+    }).join('')}
+    <!-- Players -->
+    ${playersSVG}
+  </svg>`;
+
+  // Alerts under the pitch
+  let alertsHtml = '';
+  if (unavail.length) {
+    alertsHtml += `<div class="mt-3">
+      <div class="text-[9px] text-red-400 uppercase font-semibold mb-1">Unavailable (${unavail.length})</div>
+      <div class="flex flex-wrap gap-1">
+        ${unavail.map(u => {
+          const typeCol = u.type === 'suspended' ? 'bg-purple-900/30 text-purple-300 border-purple-800/30' : u.type === 'doubtful' ? 'bg-amber-900/30 text-amber-300 border-amber-800/30' : 'bg-red-900/30 text-red-300 border-red-800/30';
+          return `<span class="text-[10px] rounded px-1.5 py-0.5 border ${typeCol}">${u.name} — ${u.description || u.reason}</span>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+  if (suspRisk.length) {
+    alertsHtml += `<div class="mt-2">
+      <div class="text-[9px] text-amber-400 uppercase font-semibold mb-1">Suspension Risk</div>
+      <div class="flex flex-wrap gap-1">
+        ${suspRisk.map(s => `<span class="text-[10px] bg-amber-900/30 text-amber-300 rounded px-1.5 py-0.5 border border-amber-800/30">${s.name} (${s.yellows} YC)</span>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Legend
+  const legend = `<div class="flex flex-wrap gap-3 mt-3" style="font-size:10px;">
+    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(74,222,128,0.9);display:inline-block;"></span> Certain</span>
+    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(96,165,250,0.9);display:inline-block;"></span> Likely</span>
+    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(251,191,36,0.9);display:inline-block;"></span> Rotation</span>
+    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(168,85,247,0.9);display:inline-block;"></span> Fill-in</span>
+    <span class="flex items-center gap-1"><span style="width:6px;height:6px;border-radius:50%;background:#fbbf24;display:inline-block;border:1px solid #000;"></span> Contested</span>
+  </div>`;
+
+  return { pitch, alertsHtml, legend, fm, confPct };
+}
+
+function renderOverviewLineup(lp) {
+  const el = document.getElementById('overview-lineup');
+  if (!el || !lp || !lp.formation) return;
+
+  const r = renderPitchFormation(lp, true);
+  const fm = r.fm;
+  const alts = fm.alternatives || [];
+  const altHtml = alts.length ? `<div class="flex gap-2 mb-3">
+    ${alts.map(a => `<div class="bg-gray-800/50 rounded-lg p-1.5 text-center ${a.formation === fm.predicted ? 'border border-accent-blue/30' : ''}">
+      <div class="text-xs font-bold ${a.formation === fm.predicted ? 'text-accent-blue' : 'text-gray-400'}">${a.formation}</div>
+      <div class="text-[9px] text-gray-500">${a.pct}%</div>
+    </div>`).join('')}
+  </div>` : '';
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold text-gray-300">Predicted Formation</h3>
+      <div class="flex items-center gap-2">
+        <span class="text-xl font-bold text-accent-blue font-mono">${fm.predicted || '?'}</span>
+        <span class="text-[10px] text-gray-500">${r.confPct}% conf</span>
+      </div>
+    </div>
+    ${altHtml}
+    <div class="flex justify-center">${r.pitch}</div>
+    ${r.legend}
+    ${r.alertsHtml}
+  </div>`;
+}
+
+function renderFormDots(form) {
+  const container = document.getElementById('form-dots');
+  let items = [];
+
+  if (Array.isArray(form)) {
+    items = form.slice(0, 5);
+  }
+
+  if (items.length === 0) return;
+
+  container.innerHTML = items.map(item => {
+    let result = '';
+    if (typeof item === 'string') {
+      result = item.toUpperCase();
+    } else if (typeof item === 'object') {
+      result = (item.result || '').toUpperCase();
+    }
+    const r = result.charAt(0);
+    const colorMap = { W: 'bg-green-500', D: 'bg-amber-500', L: 'bg-red-500' };
+    const color = colorMap[r] || 'bg-gray-600';
+    return `<div class="w-7 h-7 ${color} rounded-full flex items-center justify-center text-[10px] font-bold text-white">${r || '?'}</div>`;
+  }).join('');
+}
+
+function renderFormDetail(history) {
+  const container = document.getElementById('recent-form-detail');
+  const recent = history.slice(0, 5);
+  if (recent.length === 0) {
+    container.innerHTML = '<p class="text-xs text-gray-500">No recent matches</p>';
+    return;
+  }
+  container.innerHTML = recent.map(m => {
+    const r = (m.result || '').toUpperCase();
+    const rc = r === 'W' ? 'text-green-400' : r === 'D' ? 'text-amber-400' : 'text-red-400';
+    const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
+    const score = (m.goals_scored !== undefined && m.goals_conceded !== undefined) ?
+      `${m.goals_scored}-${m.goals_conceded}` : '-';
+    return `<div class="flex items-center justify-between py-1.5">
+      <div class="flex items-center gap-3">
+        <span class="w-5 font-bold ${rc}">${r || '?'}</span>
+        <span class="text-[10px] text-gray-500 w-5">${venue}</span>
+        <a href="/team/${encodeURIComponent(m.opponent || '')}" class="text-sm text-gray-200 hover:text-accent-blue transition-colors">${m.opponent || '?'}</a>
+      </div>
+      <div class="flex items-center gap-4 text-xs">
+        <span class="font-mono text-white">${score}</span>
+        <span class="text-gray-500">${m.match_date || ''}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ─── Render: Season Summaries (expandable with match-by-match) ──────────
+let _expandedSeason = null;
+
+function renderSeasonSummaries(summaries) {
+  const container = document.getElementById('season-summaries');
+  const seasons = Object.keys(summaries).sort().reverse().slice(0, 8);
+  if (seasons.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = `
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Season-by-Season Record</h3>
+    <div class="space-y-2" id="season-cards">
+      ${seasons.map(s => {
+        const d = summaries[s];
+        const total = d.played || 1;
+        const wPct = ((d.won || 0) / total * 100).toFixed(0);
+        const dPct = ((d.drawn || 0) / total * 100).toFixed(0);
+        const lPct = ((d.lost || 0) / total * 100).toFixed(0);
+        const gd = (d.gf || 0) - (d.ga || 0);
+        const gdStr = (gd > 0 ? '+' : '') + gd;
+        const gdColor = gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400';
+        const safeS = s.replace(/[^a-zA-Z0-9-]/g, '_');
+        return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 overflow-hidden" id="season-card-${safeS}">
+          <div class="p-3 cursor-pointer hover:bg-gray-800/50 transition-colors" onclick="toggleSeason('${s}')">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-semibold text-white">${s}</span>
+                <span class="text-[10px] text-gray-500">${d.played} matches</span>
+                ${d.win_pct ? `<span class="text-[10px] text-gray-500">(${d.win_pct.toFixed(0)}% win)</span>` : ''}
+              </div>
+              <svg id="chevron-${safeS}" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-gray-500 transition-transform" style="transition:transform 0.2s;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+            <div class="flex h-1.5 rounded-full overflow-hidden bg-gray-700 mb-2">
+              <div class="bg-green-500" style="width:${wPct}%"></div>
+              <div class="bg-amber-500" style="width:${dPct}%"></div>
+              <div class="bg-red-500" style="width:${lPct}%"></div>
+            </div>
+            <div class="flex items-center justify-between text-[11px]">
+              <span class="text-green-400">${d.won}W</span>
+              <span class="text-amber-400">${d.drawn}D</span>
+              <span class="text-red-400">${d.lost}L</span>
+              <span class="text-gray-400">${d.gf || 0} scored</span>
+              <span class="text-gray-400">${d.ga || 0} conceded</span>
+              <span class="${gdColor}">${gdStr}</span>
+            </div>
+          </div>
+          <div id="season-detail-${safeS}" class="hidden" style="max-height:0;overflow:hidden;transition:max-height 0.3s ease;"></div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function toggleSeason(season) {
+  const safeS = season.replace(/[^a-zA-Z0-9-]/g, '_');
+  const detail = document.getElementById('season-detail-' + safeS);
+  const chevron = document.getElementById('chevron-' + safeS);
+  if (!detail) return;
+
+  if (_expandedSeason === season) {
+    // Collapse
+    detail.style.maxHeight = '0';
+    setTimeout(() => detail.classList.add('hidden'), 300);
+    chevron.style.transform = '';
+    _expandedSeason = null;
+    return;
+  }
+
+  // Collapse previous
+  if (_expandedSeason) {
+    const prevS = _expandedSeason.replace(/[^a-zA-Z0-9-]/g, '_');
+    const prevDetail = document.getElementById('season-detail-' + prevS);
+    const prevChevron = document.getElementById('chevron-' + prevS);
+    if (prevDetail) { prevDetail.style.maxHeight = '0'; setTimeout(() => prevDetail.classList.add('hidden'), 300); }
+    if (prevChevron) prevChevron.style.transform = '';
+  }
+
+  // Expand this one
+  _expandedSeason = season;
+  chevron.style.transform = 'rotate(180deg)';
+
+  // Get matches for this season
+  const matches = (_allSeasons[season] || []).sort((a, b) => (b.match_date || '').localeCompare(a.match_date || ''));
+  if (matches.length === 0) {
+    detail.innerHTML = '<div class="px-3 pb-3 text-xs text-gray-500">No match data available for this season.</div>';
+    detail.classList.remove('hidden');
+    detail.style.maxHeight = '60px';
+    return;
+  }
+
+  // Build match rows
+  const rows = matches.map(m => {
+    const r = (m.result || '').toUpperCase();
+    const rc = r === 'W' ? 'text-green-400' : r === 'D' ? 'text-amber-400' : 'text-red-400';
+    const bg = r === 'W' ? 'bg-green-900/5' : r === 'L' ? 'bg-red-900/5' : '';
+    const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
+    const venueCol = venue === 'H' ? 'text-green-500' : 'text-red-400';
+    const score = (m.goals_scored !== undefined && m.goals_conceded !== undefined) ?
+      `${m.goals_scored}-${m.goals_conceded}` : '-';
+    const xgStr = m.xg ? `${m.xg.toFixed(1)}-${(m.xg_against || 0).toFixed(1)}` : '';
+    const mw = m.matchweek ? `MW${m.matchweek}` : '';
+    const date = m.match_date ? m.match_date.slice(5) : ''; // MM-DD
+
+    // Build match detail link
+    const homeT = venue === 'H' ? _teamData.team : (m.opponent || '');
+    const awayT = venue === 'H' ? (m.opponent || '') : _teamData.team;
+    const matchUrl = m.match_date ? `/match/${m.match_date}/${encodeURIComponent(homeT)}/${encodeURIComponent(awayT)}` : '';
+
+    return `<tr class="${bg} hover:bg-gray-800/50">
+      <td class="px-2 py-1.5 text-[10px] text-gray-500 font-mono">
+        <div class="flex items-center gap-1">
+          ${matchUrl ? `<a href="${matchUrl}" class="text-gray-600 hover:text-accent-blue transition-colors" title="Match details" style="line-height:1;">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          </a>` : ''}
+          <span>${date}</span>
+        </div>
+      </td>
+      <td class="px-2 py-1.5 text-[10px] text-gray-500">${mw}</td>
+      <td class="px-1 py-1.5 text-center"><span class="font-bold ${rc} text-xs">${r}</span></td>
+      <td class="px-1 py-1.5 text-center text-[10px] ${venueCol} font-bold">${venue}</td>
+      <td class="px-2 py-1.5 text-xs">
+        <a href="/team/${encodeURIComponent(m.opponent || '')}" class="text-gray-200 hover:text-accent-blue transition-colors">${m.opponent || '?'}</a>
+      </td>
+      <td class="px-2 py-1.5 text-center text-xs font-mono font-bold text-white">${matchUrl ? `<a href="${matchUrl}" class="text-white hover:text-accent-blue transition-colors">${score}</a>` : score}</td>
+      <td class="px-2 py-1.5 text-center text-[10px] text-gray-500 font-mono">${xgStr}</td>
+      <td class="px-2 py-1.5 text-right text-[10px] text-gray-500 font-mono">${m.possession ? m.possession + '%' : ''}</td>
+    </tr>`;
+  }).join('');
+
+  // Summary stats
+  const wins = matches.filter(m => m.result === 'W').length;
+  const draws = matches.filter(m => m.result === 'D').length;
+  const losses = matches.length - wins - draws;
+  const homeW = matches.filter(m => (m.is_home === true || m.is_home === 1) && m.result === 'W').length;
+  const homeTotal = matches.filter(m => m.is_home === true || m.is_home === 1).length;
+  const awayW = matches.filter(m => !(m.is_home === true || m.is_home === 1) && m.result === 'W').length;
+  const awayTotal = matches.length - homeTotal;
+  const avgXg = matches.filter(m => m.xg).reduce((s, m) => s + m.xg, 0) / (matches.filter(m => m.xg).length || 1);
+  const avgXga = matches.filter(m => m.xg_against).reduce((s, m) => s + m.xg_against, 0) / (matches.filter(m => m.xg_against).length || 1);
+
+  detail.innerHTML = `<div class="border-t border-gray-700/50">
+    <!-- Quick splits -->
+    <div class="flex gap-4 px-3 py-2 text-[10px] text-gray-500 bg-gray-800/30">
+      <span>Home: <span class="text-green-400 font-semibold">${homeW}W</span>/${homeTotal}</span>
+      <span>Away: <span class="text-green-400 font-semibold">${awayW}W</span>/${awayTotal}</span>
+      ${avgXg ? `<span>Avg xG: <span class="text-gray-300">${avgXg.toFixed(2)}</span> - <span class="text-gray-300">${avgXga.toFixed(2)}</span></span>` : ''}
+    </div>
+    <!-- Match table -->
+    <div style="max-height:400px;overflow-y:auto;">
+      <table class="w-full">
+        <thead class="sticky top-0 bg-dark-800">
+          <tr class="text-[9px] text-gray-500 uppercase border-b border-gray-700">
+            <th class="px-2 py-1 text-left">Date</th>
+            <th class="px-2 py-1 text-left">MW</th>
+            <th class="px-1 py-1 text-center">R</th>
+            <th class="px-1 py-1 text-center">V</th>
+            <th class="px-2 py-1 text-left">Opponent</th>
+            <th class="px-2 py-1 text-center">Score</th>
+            <th class="px-2 py-1 text-center">xG</th>
+            <th class="px-2 py-1 text-right">Poss</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+
+  detail.classList.remove('hidden');
+  // Animate max-height
+  detail.style.maxHeight = detail.scrollHeight + 'px';
+}
+
+// ─── Render: Match History ──────────────────────────────────────────────
+function renderHistory(history) {
+  _allHistory = history;
+  renderHistoryFiltered('all');
+}
+
+function filterHistory(venueType) {
+  _currentVenueFilter = venueType;
+  ['all', 'home', 'away'].forEach(t => {
+    const btn = document.getElementById('filter-' + t);
+    if (t === venueType) {
+      btn.className = 'px-3 py-1 text-xs rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30';
+    } else {
+      btn.className = 'px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white';
+    }
+  });
+  renderHistoryFiltered(venueType);
+}
+
+function renderHistoryFiltered(venueType) {
+  // Determine source data based on season selector
+  const seasonSel = document.getElementById('season-select').value;
+  let source;
+  if (seasonSel === 'all') {
+    // Show last 50 matches across all seasons
+    const allFromSeasons = Object.values(_allSeasons).flat();
+    source = allFromSeasons.length > 0
+      ? allFromSeasons.sort((a, b) => (b.match_date || '').localeCompare(a.match_date || '')).slice(0, 50)
+      : _allHistory;
+  } else {
+    source = (_allSeasons[seasonSel] || []);
+  }
+
+  // Apply venue filter
+  let filtered = source;
+  if (venueType === 'home') filtered = source.filter(m => m.is_home === true || m.is_home === 1);
+  if (venueType === 'away') filtered = source.filter(m => m.is_home === false || m.is_home === 0);
+
+  const tbody = document.getElementById('history-table');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="12" class="px-4 py-8 text-center text-gray-500 text-sm">No matches found</td></tr>';
+    return;
+  }
+
+  // Format helpers
+  const fmtF = (v, d=2) => v != null ? Number(v).toFixed(d) : '-';
+  const fmtPct = v => v != null ? Number(v).toFixed(0) + '%' : '-';
+
+  tbody.innerHTML = filtered.map((m, idx) => {
+    const r = (m.result || '').toUpperCase();
+    const rc = r === 'W' ? 'text-green-400 bg-green-900/20' : r === 'D' ? 'text-amber-400 bg-amber-900/20' : 'text-red-400 bg-red-900/20';
+    const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
+    // Inject formation from enriched data
+    if (!m.formation && _enrichedHistory) {
+      const h = venue === 'H' ? TEAM_NAME : (m.opponent || '');
+      const a = venue === 'H' ? (m.opponent || '') : TEAM_NAME;
+      const ek = `${m.match_date}_${h}_${a}`;
+      if (_enrichedHistory[ek]) m.formation = _enrichedHistory[ek].formation;
+    }
+    const score = (m.goals_scored != null && m.goals_conceded != null) ?
+      `${m.goals_scored}-${m.goals_conceded}` : '-';
+    const isPartial = m.partial === true;
+    const rowClass = isPartial ? 'hover:bg-dark-700/30 transition-colors border-l-2 border-accent-blue/40 cursor-pointer' : 'hover:bg-dark-700/30 transition-colors cursor-pointer';
+    const dateStr = m.match_date || '';
+    const opponent = m.opponent || '';
+    const home = venue === 'H' ? TEAM_NAME : opponent;
+    const away = venue === 'H' ? opponent : TEAM_NAME;
+    const rowId = `match-${idx}`;
+    return `<tr class="${rowClass}" onclick="toggleMatchDetail('${rowId}', '${dateStr}', '${encodeURIComponent(home)}', '${encodeURIComponent(away)}')">
+      <td class="px-2 py-2 text-center text-gray-500"><span id="arrow-${rowId}" class="text-[10px]">&#9654;</span></td>
+      <td class="px-2 py-2 text-center text-[10px] text-gray-500 font-mono">${m.matchweek || '-'}</td>
+      <td class="px-3 py-2 text-xs text-gray-400 whitespace-nowrap">${dateStr}</td>
+      <td class="px-3 py-2 text-sm"><a href="/team/${encodeURIComponent(opponent)}" class="text-gray-200 hover:text-accent-blue transition-colors" onclick="event.stopPropagation()">${opponent}</a>${isPartial ? ' <span class="text-[9px] text-accent-blue/60">NEW</span>' : ''}</td>
+      <td class="px-2 py-2 text-center"><span class="badge ${venue === 'H' ? 'bg-green-900/30 text-green-400' : 'bg-blue-900/30 text-blue-400'}">${venue}</span></td>
+      <td class="px-2 py-2 text-center font-mono text-white text-sm">${score}</td>
+      <td class="px-2 py-2 text-center"><span class="badge ${rc}">${r || '?'}</span></td>
+      <td class="px-2 py-2 text-center text-xs ${m.xg != null ? 'text-green-400' : 'text-gray-600'}">${fmtF(m.xg)}</td>
+      <td class="px-2 py-2 text-center text-xs ${m.xg_against != null ? 'text-red-400' : 'text-gray-600'}">${fmtF(m.xg_against)}</td>
+      <td class="px-2 py-2 text-center text-xs text-gray-400">${fmtPct(m.possession)}</td>
+      <td class="px-2 py-2 text-center text-xs ${m.rating != null && m.rating >= 7 ? 'text-green-400 font-semibold' : m.rating != null && m.rating < 6.5 ? 'text-red-400' : 'text-gray-400'}">${fmtF(m.rating, 1)}</td>
+      <td class="px-3 py-2 text-center text-xs text-gray-400 font-mono">${m.formation || '-'}</td>
+    </tr>
+    <tr id="detail-${rowId}" class="hidden">
+      <td colspan="12" class="p-0">
+        <div class="px-4 py-3 bg-dark-900/80 border-t border-b border-gray-700/30">
+          <div class="text-xs text-gray-500 text-center">Loading match details...</div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Enriched History (formations) ──────────────────────────────────────
+let _enrichedHistory = null;
+async function loadEnrichedHistory() {
+  try {
+    const res = await fetch(`/api/team/${encodeURIComponent(TEAM_NAME)}/match-history?limit=40`);
+    const data = await res.json();
+    if (data.matches) {
+      _enrichedHistory = {};
+      data.matches.forEach(m => {
+        const key = `${m.date}_${m.home_team}_${m.away_team}`;
+        _enrichedHistory[key] = m;
+      });
+      // Update formation column in current table
+      document.querySelectorAll('#history-table tr[id^="detail-"]').forEach(tr => {
+        // formations are updated via the match lookup
+      });
+      // Re-render to pick up formations
+      renderHistoryFiltered(_currentVenueFilter);
+    }
+  } catch (e) { /* silent */ }
+}
+
+// Attach formation data to history entries
+function getFormation(m) {
+  if (!_enrichedHistory) return '';
+  const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
+  const home = venue === 'H' ? TEAM_NAME : (m.opponent || '');
+  const away = venue === 'H' ? (m.opponent || '') : TEAM_NAME;
+  const key = `${m.match_date}_${home}_${away}`;
+  const enriched = _enrichedHistory[key];
+  return enriched ? enriched.formation || '' : '';
+}
+// Patch: override m.formation with enriched data
+const _origRenderHistoryFiltered = renderHistoryFiltered;
+// We already set m.formation in the template; let's inject it from enriched data
+
+
+// ─── Toggle Match Detail ────────────────────────────────────────────────
+const _detailCache = {};
+async function toggleMatchDetail(rowId, date, homeEnc, awayEnc) {
+  const detailRow = document.getElementById('detail-' + rowId);
+  const arrow = document.getElementById('arrow-' + rowId);
+  if (!detailRow) return;
+  if (!detailRow.classList.contains('hidden')) {
+    detailRow.classList.add('hidden');
+    if (arrow) arrow.innerHTML = '&#9654;';
+    return;
+  }
+  detailRow.classList.remove('hidden');
+  if (arrow) arrow.innerHTML = '&#9660;';
+
+  const cacheKey = `${date}_${homeEnc}_${awayEnc}`;
+  if (_detailCache[cacheKey]) {
+    renderMatchDetail(detailRow, _detailCache[cacheKey]);
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/match-events/${date}/${homeEnc}/${awayEnc}`);
+    if (!res.ok) {
+      detailRow.querySelector('div').innerHTML = '<div class="text-xs text-red-400 text-center py-2">Match events not available</div>';
+      return;
+    }
+    const data = await res.json();
+    _detailCache[cacheKey] = data;
+    renderMatchDetail(detailRow, data);
+  } catch (e) {
+    detailRow.querySelector('div').innerHTML = '<div class="text-xs text-red-400 text-center py-2">Failed to load match events</div>';
+  }
+}
+
+function renderMatchDetail(row, data) {
+  const cell = row.querySelector('div');
+  const fmtMin = (m, at) => at ? `${m}+${at}'` : `${m}'`;
+
+  // ── Lineup Section ──
+  let lineupHtml = '';
+  ['home', 'away'].forEach(side => {
+    const lineup = data[`${side}_lineup`] || {};
+    const formation = lineup.formation || '?';
+    const teamName = side === 'home' ? data.home_team : data.away_team;
+    const isOurTeam = teamName === TEAM_NAME;
+    const highlight = isOurTeam ? 'text-accent-blue' : 'text-gray-400';
+
+    lineupHtml += `<div class="flex-1 min-w-[200px]">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-sm font-semibold ${highlight}">${teamName}</span>
+        <span class="text-xs text-gray-500 font-mono">${formation}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+        ${(lineup.starters || []).map(p =>
+          `<span class="text-gray-300"><span class="text-gray-600 w-5 inline-block text-right mr-1">#${p.shirt_number || ''}</span>${p.name} <span class="text-gray-600">${p.position}</span></span>`
+        ).join('')}
+      </div>
+    </div>`;
+  });
+
+  // ── Events Timeline ──
+  const events = [];
+  (data.goals || []).forEach(g => events.push({
+    min: g.minute, added: g.added_time || 0, type: 'goal',
+    html: `<span class="text-green-400">&#9917;</span> <span class="font-medium text-white">${g.player}</span>
+           ${g.type === 'penalty' ? '<span class="text-yellow-500 text-[9px]">(P)</span>' : ''}
+           ${g.type === 'ownGoal' ? '<span class="text-red-400 text-[9px]">(OG)</span>' : ''}
+           ${g.assist ? `<span class="text-gray-500">(${g.assist})</span>` : ''}
+           <span class="text-[9px] ${g.is_home ? 'text-blue-400' : 'text-purple-400'}">${g.is_home ? data.home_team : data.away_team}</span>`
+  }));
+  (data.cards || []).forEach(c => events.push({
+    min: c.minute, added: c.added_time || 0, type: 'card',
+    html: `<span class="${c.card_type === 'yellow' ? 'text-yellow-400' : 'text-red-500'}">&#9646;</span> ${c.player}
+           <span class="text-[9px] ${c.is_home ? 'text-blue-400' : 'text-purple-400'}">${c.is_home ? data.home_team : data.away_team}</span>`
+  }));
+  (data.substitutions || []).forEach(s => events.push({
+    min: s.minute, added: s.added_time || 0, type: 'sub',
+    html: `<span class="text-gray-400">&#8644;</span> <span class="text-red-300">${s.player_out || '?'}</span> &rarr; <span class="text-green-300">${s.player_in}</span>
+           <span class="text-[9px] ${s.is_home ? 'text-blue-400' : 'text-purple-400'}">${s.is_home ? data.home_team : data.away_team}</span>`
+  }));
+  events.sort((a, b) => a.min - b.min || a.added - b.added);
+
+  const timelineHtml = events.map(e =>
+    `<div class="flex items-start gap-2 py-0.5">
+      <span class="text-[10px] text-gray-500 font-mono w-10 text-right flex-shrink-0">${fmtMin(e.min, e.added)}</span>
+      <span class="text-[11px]">${e.html}</span>
+    </div>`
+  ).join('');
+
+  cell.innerHTML = `
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="lg:col-span-2">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Lineups</div>
+        <div class="flex gap-4 flex-wrap">${lineupHtml}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Match Events</div>
+        <div class="max-h-60 overflow-y-auto">${timelineHtml || '<span class="text-xs text-gray-600">No events data</span>'}</div>
+      </div>
+    </div>`;
+}
+
+// ─── Render: Stats & Charts ─────────────────────────────────────────────
+function renderStats(stats) {
+  if (stats.win_pct != null) document.getElementById('stat-win-pct').textContent = stats.win_pct + '%';
+  if (stats.draw_pct != null) document.getElementById('stat-draw-pct').textContent = stats.draw_pct + '%';
+  if (stats.loss_pct != null) document.getElementById('stat-loss-pct').textContent = stats.loss_pct + '%';
+  if (stats.current_elo != null) document.getElementById('stat-elo-current').textContent = Math.round(stats.current_elo);
+
+  if (stats.avg_rating != null) document.getElementById('stat-avg-rating').textContent = stats.avg_rating.toFixed(1);
+  if (stats.avg_tackles_won != null) document.getElementById('stat-tackles').textContent = stats.avg_tackles_won.toFixed(1);
+  if (stats.avg_interceptions != null) document.getElementById('stat-intercepts').textContent = stats.avg_interceptions.toFixed(1);
+
+  const trendEl = document.getElementById('stat-elo-trend');
+  if (stats.elo_trend != null) {
+    const t = stats.elo_trend;
+    trendEl.textContent = (t >= 0 ? '+' : '') + Math.round(t);
+    trendEl.classList.add(t >= 0 ? 'text-green-400' : 'text-red-400');
+  }
+
+  // Home vs Away records
+  renderSplitRecord('home-record', stats.home_record);
+  renderSplitRecord('away-record', stats.away_record);
+}
+
+function renderSplitRecord(elId, rec) {
+  const el = document.getElementById(elId);
+  if (!rec || !rec.played) { el.innerHTML = '<p class="text-xs text-gray-500">No data</p>'; return; }
+  const gd = rec.gf - rec.ga;
+  const gdStr = (gd > 0 ? '+' : '') + gd;
+  const gdColor = gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400';
+  el.innerHTML = `
+    <div class="flex items-center justify-between text-xs mb-1">
+      <span class="text-gray-400">${rec.played} played</span>
+      <span class="font-semibold text-white">${rec.win_pct}% win rate</span>
+    </div>
+    <div class="flex items-center gap-2 text-[11px] mb-2">
+      <span class="text-green-400">${rec.won}W</span>
+      <span class="text-amber-400">${rec.drawn}D</span>
+      <span class="text-red-400">${rec.lost}L</span>
+    </div>
+    <div class="flex items-center justify-between text-[11px]">
+      <span class="text-gray-400">Avg GF: <span class="text-white">${rec.avg_gf}</span></span>
+      <span class="text-gray-400">Avg GA: <span class="text-white">${rec.avg_ga}</span></span>
+      <span class="${gdColor}">${gdStr} GD</span>
+    </div>
+  `;
+}
+
+function renderCharts(stats) {
+  const chartOpts = {
+    responsive: true,
+    plugins: { legend: { labels: { color: '#9ca3af', font: { size: 11 } } } },
+    scales: {
+      x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: '#1f2937' } },
+      y: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: '#1f2937' } },
+    }
+  };
+
+  // xG chart
+  if (stats.xg_history && stats.xg_history.length > 0 && !_charts.xg) {
+    const ctx = document.getElementById('chart-xg').getContext('2d');
+    _charts.xg = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: stats.xg_history.map(p => p.date),
+        datasets: [
+          { label: 'xG For', data: stats.xg_history.map(p => p.xg_for), borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)', tension: 0.3, fill: true, pointRadius: 3 },
+          { label: 'xG Against', data: stats.xg_history.map(p => p.xg_against), borderColor: '#f87171', backgroundColor: 'rgba(248,113,113,0.1)', tension: 0.3, fill: true, pointRadius: 3 },
+        ]
+      },
+      options: chartOpts
+    });
+  }
+
+  // Elo chart
+  if (stats.elo_history && stats.elo_history.length > 0 && !_charts.elo) {
+    const ctx = document.getElementById('chart-elo').getContext('2d');
+    _charts.elo = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: stats.elo_history.map(p => p.date),
+        datasets: [
+          { label: 'Elo Rating', data: stats.elo_history.map(p => p.elo), borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)', tension: 0.3, fill: true, pointRadius: 3 },
+        ]
+      },
+      options: chartOpts
+    });
+  }
+
+  // Form trend chart (PPG rolling 5)
+  if (stats.form_trend && stats.form_trend.length > 0 && !_charts.form) {
+    const ctx = document.getElementById('chart-form').getContext('2d');
+    _charts.form = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: stats.form_trend.map(p => p.date),
+        datasets: [
+          { label: 'PPG (5-match)', data: stats.form_trend.map(p => p.ppg), borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.1)', tension: 0.3, fill: true, pointRadius: 3 },
+        ]
+      },
+      options: { ...chartOpts, scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, min: 0, max: 3, ticks: { ...chartOpts.scales.y.ticks, stepSize: 0.5 } } } }
+    });
+  }
+
+  // Goals distribution chart (bar)
+  if (stats.goals_scored_dist && !_charts.goals) {
+    const ctx = document.getElementById('chart-goals').getContext('2d');
+    const gsd = stats.goals_scored_dist;
+    const gcd = stats.goals_conceded_dist || {};
+    _charts.goals = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['0 goals', '1 goal', '2 goals', '3+ goals'],
+        datasets: [
+          { label: 'Scored', data: [gsd['0']||0, gsd['1']||0, gsd['2']||0, gsd['3+']||0], backgroundColor: 'rgba(74,222,128,0.6)', borderColor: '#4ade80', borderWidth: 1 },
+          { label: 'Conceded', data: [gcd['0']||0, gcd['1']||0, gcd['2']||0, gcd['3+']||0], backgroundColor: 'rgba(248,113,113,0.6)', borderColor: '#f87171', borderWidth: 1 },
+        ]
+      },
+      options: { ...chartOpts, scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, beginAtZero: true, ticks: { ...chartOpts.scales.y.ticks, stepSize: 1 } } } }
+    });
+  }
+}
+
+// ─── Render: Next Match ─────────────────────────────────────────────────
+function renderNextMatch(upcoming) {
+  if (!upcoming || !upcoming.match) {
+    document.getElementById('no-next-match').classList.remove('hidden');
+    return;
+  }
+
+  const probH = Math.round((upcoming.probabilities?.home || 0) * 100);
+  const probD = Math.round((upcoming.probabilities?.draw || 0) * 100);
+  const probA = Math.round((upcoming.probabilities?.away || 0) * 100);
+
+  const predColor = {
+    HOME: 'text-green-400', DRAW: 'text-amber-400', AWAY: 'text-red-400'
+  }[upcoming.predicted_outcome] || 'text-gray-400';
+
+  // Market implied probabilities
+  const mi = upcoming.market_implied || {};
+  const miH = Math.round((mi.home || 0) * 100);
+  const miD = Math.round((mi.draw || 0) * 100);
+  const miA = Math.round((mi.away || 0) * 100);
+
+  // Factors
+  const hFactors = (upcoming.home_factors || []).map(f => `<span class="text-[10px] bg-green-900/30 text-green-400 px-1.5 py-0.5 rounded">${f}</span>`).join(' ');
+  const aFactors = (upcoming.away_factors || []).map(f => `<span class="text-[10px] bg-red-900/30 text-red-400 px-1.5 py-0.5 rounded">${f}</span>`).join(' ');
+
+  // Form comparison
+  const hForm = upcoming.home_form || {};
+  const aForm = upcoming.away_form || {};
+
+  // Component predictions (filter to only actual prediction entries)
+  const comps = upcoming.component_predictions || {};
+  let compRows = '';
+  for (const [method, pred] of Object.entries(comps)) {
+    if (!pred || typeof pred !== 'object' || pred.prob_H == null) continue;
+    const pH = Math.round((pred.prob_H || 0) * 100);
+    const pD = Math.round((pred.prob_D || 0) * 100);
+    const pA = Math.round((pred.prob_A || 0) * 100);
+    const winner = pH >= pD && pH >= pA ? 'H' : pD >= pA ? 'D' : 'A';
+    const wColor = winner === 'H' ? 'text-green-400' : winner === 'D' ? 'text-amber-400' : 'text-red-400';
+    compRows += `<tr class="border-b border-gray-800/30">
+      <td class="px-3 py-1.5 text-xs text-gray-400 capitalize">${method}</td>
+      <td class="px-3 py-1.5 text-center text-xs text-green-400">${pH}%</td>
+      <td class="px-3 py-1.5 text-center text-xs text-amber-400">${pD}%</td>
+      <td class="px-3 py-1.5 text-center text-xs text-red-400">${pA}%</td>
+      <td class="px-3 py-1.5 text-center text-xs font-bold ${wColor}">${winner}</td>
+    </tr>`;
+  }
+
+  // Formation
+  const fa = upcoming.formation_analysis || {};
+
+  document.getElementById('next-match-content').innerHTML = `
+    <!-- Match Header -->
+    <div class="bg-dark-800 rounded-xl border border-gray-700/50 p-6 mb-4">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-bold text-white">${upcoming.match}</h3>
+          <div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
+            <span>${upcoming.commence_time ? formatTime(upcoming.commence_time) : (upcoming.date || 'TBD')}</span>
+            ${upcoming.commence_time ? `<span class="text-amber-400 font-mono">${timeUntil(upcoming.commence_time)}</span>` : ''}
+            ${upcoming.venue ? `<span>${upcoming.venue}</span>` : ''}
+            ${upcoming.referee ? `<span>Ref: ${upcoming.referee}${upcoming.referee_bias ? ' (' + upcoming.referee_bias.replace(/_/g,' ') + ')' : ''}</span>` : ''}
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="text-sm text-gray-400">Prediction</div>
+          <div class="text-2xl font-bold ${predColor}">${upcoming.predicted_outcome || '?'}</div>
+          <div class="text-xs text-gray-500">${upcoming.confidence || ''}</div>
+        </div>
+      </div>
+
+      ${upcoming.betting_recommendation ? `<div class="bg-accent-blue/10 border border-accent-blue/20 rounded-lg px-3 py-2 mb-4 text-sm text-accent-blue font-medium">${upcoming.betting_recommendation}</div>` : ''}
+
+      <!-- Probability bars: Model vs Market -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Our Model</div>
+          ${_probBar('Home', probH, 'green')}
+          ${_probBar('Draw', probD, 'amber')}
+          ${_probBar('Away', probA, 'red')}
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Market Implied</div>
+          ${_probBar('Home', miH, 'green')}
+          ${_probBar('Draw', miD, 'amber')}
+          ${_probBar('Away', miA, 'red')}
+        </div>
+      </div>
+
+      <!-- xG & Edge -->
+      <div class="grid grid-cols-3 gap-3">
+        ${upcoming.home_xg != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
+          <div class="text-[10px] text-gray-500 mb-1">Expected Goals</div>
+          <div class="text-lg font-bold text-white">${upcoming.home_xg?.toFixed(2) || '?'} - ${upcoming.away_xg?.toFixed(2) || '?'}</div>
+          <div class="text-[10px] text-gray-500">Total: ${upcoming.expected_goals?.toFixed(2) || '?'}</div>
+        </div>` : ''}
+        ${upcoming.over_25 != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
+          <div class="text-[10px] text-gray-500 mb-1">Over 2.5</div>
+          <div class="text-lg font-bold ${upcoming.over_25 ? 'text-green-400' : 'text-red-400'}">${upcoming.over_25 ? 'YES' : 'NO'}</div>
+        </div>` : ''}
+        ${upcoming.market_edge != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
+          <div class="text-[10px] text-gray-500 mb-1">Market Edge</div>
+          <div class="text-lg font-bold ${upcoming.market_edge > 0 ? 'text-green-400' : 'text-red-400'}">${(upcoming.market_edge * 100).toFixed(1)}%</div>
+        </div>` : ''}
+      </div>
+    </div>
+
+    <!-- Factors -->
+    ${(hFactors || aFactors) ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
+      <h4 class="text-sm font-semibold text-gray-300 mb-3">Key Factors</h4>
+      ${hFactors ? `<div class="mb-2"><span class="text-[10px] text-gray-500 mr-2">Home:</span>${hFactors}</div>` : ''}
+      ${aFactors ? `<div><span class="text-[10px] text-gray-500 mr-2">Away:</span>${aFactors}</div>` : ''}
+    </div>` : ''}
+
+    <!-- Component Predictions Table -->
+    ${compRows ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
+      <h4 class="text-sm font-semibold text-gray-300 mb-3">Model Components</h4>
+      <table class="w-full">
+        <thead><tr class="text-[10px] text-gray-500 uppercase">
+          <th class="px-3 py-1 text-left">Method</th>
+          <th class="px-3 py-1 text-center">H%</th>
+          <th class="px-3 py-1 text-center">D%</th>
+          <th class="px-3 py-1 text-center">A%</th>
+          <th class="px-3 py-1 text-center">Pick</th>
+        </tr></thead>
+        <tbody>${compRows}</tbody>
+      </table>
+    </div>` : ''}
+
+    <!-- Form Comparison -->
+    ${hForm.team || aForm.team ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
+      <h4 class="text-sm font-semibold text-gray-300 mb-3">Form Comparison (Last 5)</h4>
+      <div class="grid grid-cols-2 gap-4">
+        ${_renderFormBox(hForm, 'Home')}
+        ${_renderFormBox(aForm, 'Away')}
+      </div>
+    </div>` : ''}
+
+    <!-- Formation -->
+    ${fa.home_formation ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
+      <h4 class="text-sm font-semibold text-gray-300 mb-3">Tactical Matchup</h4>
+      <div class="flex items-center justify-between text-sm">
+        <span class="text-white font-mono">${fa.home_formation}</span>
+        <span class="text-gray-500">vs</span>
+        <span class="text-white font-mono">${fa.away_formation}</span>
+      </div>
+      ${fa.matchup_advantage != null ? `<div class="mt-2 text-xs text-gray-400">Advantage: <span class="${fa.matchup_advantage > 0 ? 'text-green-400' : fa.matchup_advantage < 0 ? 'text-red-400' : 'text-gray-400'}">${fa.matchup_advantage > 0 ? '+' : ''}${(fa.matchup_advantage * 100).toFixed(1)}%</span> (${fa.confidence || 'medium'} confidence)</div>` : ''}
+    </div>` : ''}
+
+    ${_teamData && _teamData.lineup_prediction ? renderLineupPrediction(_teamData.lineup_prediction) : ''}
+
+    ${_teamData && _teamData.h2h ? renderH2H(_teamData.h2h) : ''}
+
+    <!-- Link to full dashboard -->
+    <div class="text-center mt-4">
+      <a href="/" class="text-sm text-accent-blue hover:underline">View all predictions on Dashboard &rarr;</a>
+    </div>
+  `;
+}
+
+function renderLineupPrediction(lp) {
+  if (!lp || !lp.formation) return '';
+  const fm = lp.formation || {};
+  const xi = lp.predicted_xi || [];
+  const bench = lp.bench || [];
+  const unavail = lp.unavailable || [];
+  const suspRisk = lp.suspension_risk || [];
+  const changes = lp.changes || [];
+  const yellows = lp.yellow_cards || {};
+  const confPct = ((fm.confidence || 0) * 100).toFixed(0);
+
+  // Use the pitch visualization
+  const r = renderPitchFormation(lp, false);
+
+  // Formation alternatives
+  const alts = fm.alternatives || [];
+  let altHtml2 = '';
+  if (alts.length > 0) {
+    altHtml2 = `<div class="flex gap-2 mb-4">${alts.map(a => `<div class="bg-gray-800/50 rounded-lg p-2 text-center ${a.formation === fm.predicted ? 'border border-accent-blue/30' : ''}">
+      <div class="text-sm font-bold ${a.formation === fm.predicted ? 'text-accent-blue' : 'text-gray-400'}">${a.formation}</div>
+      <div class="text-[10px] text-gray-500">${a.pct}% (${a.count} matches)</div>
+    </div>`).join('')}</div>`;
+  }
+
+  // Bench list (compact, under the pitch)
+  let benchHtml = '';
+  if (bench.length) {
+    benchHtml = `<div class="mt-3">
+      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Bench (${bench.length})</div>
+      <div class="flex flex-wrap gap-1">
+        ${bench.map(p => {
+          const pctC = pctColor(p.start_pct);
+          return `<span class="text-[10px] bg-gray-800 rounded px-1.5 py-0.5 border border-gray-700/50 flex items-center gap-1">
+            <span class="text-gray-600 font-mono">${p.position_label}</span>
+            <span class="text-gray-300">${p.name}</span>
+            <span style="color:${pctC}" class="font-mono">${p.start_pct.toFixed(0)}%</span>
+          </span>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Formation history
+  const hist = fm.history || [];
+  let histHtml = '';
+  if (hist.length) {
+    histHtml = `<div class="mt-3">
+      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Recent Formations</div>
+      <div class="flex gap-2">
+        ${hist.map(h => `<div class="bg-gray-800/50 rounded px-2 py-1 text-center">
+          <div class="text-xs font-mono font-bold text-white">${h.formation}</div>
+          <div class="text-[9px] text-gray-500">vs ${h.opponent}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Yellow cards summary
+  let yellowEntries = Object.entries(yellows).sort((a, b) => b[1].yellows - a[1].yellows);
+  let yellowHtml = '';
+  if (yellowEntries.length) {
+    yellowHtml = `<div class="mt-3">
+      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Yellow Cards</div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-1">
+        ${yellowEntries.slice(0, 9).map(([pid, yc]) => {
+          const riskCol = yc.risk_level === 'high' ? 'text-red-400 bg-red-900/10' : yc.risk_level === 'medium' ? 'text-amber-400 bg-amber-900/10' : 'text-gray-400 bg-gray-800/50';
+          return `<div class="flex items-center justify-between rounded px-2 py-1 ${riskCol}">
+            <span class="text-[10px]">${yc.name}</span>
+            <span class="text-[10px] font-mono font-bold">${yc.yellows}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Changes
+  let changesHtml = '';
+  if (changes.length) {
+    changesHtml = `<div class="mt-3">
+      <div class="text-[9px] text-purple-400 uppercase font-semibold mb-1">Expected Changes</div>
+      ${changes.map(c => `<div class="flex items-center gap-2 text-xs py-0.5">
+        <span class="text-red-400 line-through">${c.out}</span>
+        <span class="text-gray-500">&rarr;</span>
+        <span class="text-green-400">${c.in}</span>
+        <span class="text-[10px] text-gray-500">(${c.reason})</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
+    <h4 class="text-sm font-semibold text-gray-300 mb-3">Predicted Lineup</h4>
+
+    <div class="flex items-center gap-4 mb-4">
+      <div class="text-3xl font-bold text-accent-blue font-mono">${fm.predicted || '?'}</div>
+      <div>
+        <div class="text-xs text-gray-400">Predicted Formation</div>
+        <div class="text-[10px] text-gray-500">${confPct}% confidence (${fm.based_on_matches || '?'} matches analyzed)</div>
+      </div>
+    </div>
+
+    ${altHtml2}
+
+    <div class="flex justify-center">${r.pitch}</div>
+    ${r.legend}
+    ${benchHtml}
+    ${changesHtml}
+    ${r.alertsHtml}
+    ${yellowHtml}
+    ${histHtml}
+  </div>`;
+}
+
+function _probBar(label, pct, color) {
+  return `<div class="flex items-center gap-2 mb-1.5">
+    <span class="w-12 text-xs text-gray-400">${label}</span>
+    <div class="flex-1 bg-gray-800 rounded-full h-2.5 overflow-hidden">
+      <div class="h-full bg-${color}-500 rounded-full" style="width:${pct}%"></div>
+    </div>
+    <span class="w-10 text-xs text-${color}-400 text-right font-mono">${pct}%</span>
+  </div>`;
+}
+
+function _renderFormBox(form, label) {
+  if (!form || !form.team) return '';
+  const ppg = form.total_matches ? (form.total_points / form.total_matches).toFixed(2) : '-';
+  return `<div class="bg-gray-800/30 rounded-lg p-3">
+    <div class="text-xs font-semibold text-gray-300 mb-2">${form.team} (${label})</div>
+    <div class="grid grid-cols-2 gap-1 text-[11px]">
+      <span class="text-gray-500">Points:</span><span class="text-white">${form.total_points || 0} / ${(form.total_matches || 0) * 3}</span>
+      <span class="text-gray-500">PPG:</span><span class="text-white">${ppg}</span>
+      <span class="text-gray-500">Goals:</span><span class="text-white">${form.goals_scored || 0} scored, ${form.goals_conceded || 0} conceded</span>
+      <span class="text-gray-500">Clean Sh.:</span><span class="text-white">${form.clean_sheets || 0}</span>
+    </div>
+  </div>`;
+}
+
+function renderH2H(h2h) {
+  if (!h2h || typeof h2h !== 'object') return '';
+  const meetings = h2h.meetings || h2h.matches || [];
+  if (!Array.isArray(meetings) || meetings.length === 0) {
+    if (typeof h2h === 'object' && Object.keys(h2h).length > 0) {
+      // Try to render summary stats
+      const keys = Object.keys(h2h);
+      const items = keys.filter(k => typeof h2h[k] !== 'object').map(k =>
+        `<div class="flex justify-between py-1"><span class="text-gray-400 text-xs">${k.replace(/_/g, ' ')}</span><span class="text-white text-sm">${h2h[k]}</span></div>`
+      ).join('');
+      if (items) {
+        return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mt-4">
+          <h4 class="text-sm font-semibold text-gray-300 mb-3">Head-to-Head</h4>
+          ${items}
+        </div>`;
+      }
+    }
+    return '';
+  }
+  return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mt-4">
+    <h4 class="text-sm font-semibold text-gray-300 mb-3">Head-to-Head (${meetings.length} meetings)</h4>
+    <div class="space-y-1">${meetings.slice(0, 5).map(m =>
+      `<div class="flex items-center justify-between text-xs py-1">
+        <span class="text-gray-500">${m.date || ''}</span>
+        <span class="text-white">${m.score || m.result || ''}</span>
+      </div>`
+    ).join('')}</div>
+  </div>`;
+}
+
+// ─── Init ───────────────────────────────────────────────────────────────
+loadTeam();
+
+</script>
+  </div>
+{% endblock %}

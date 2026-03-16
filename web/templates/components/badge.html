@@ -1,0 +1,30 @@
+{# Badge macros #}
+
+{# Confidence badge - maps confidence level to color class #}
+{% macro confidence_badge(level) %}
+  {% set cls_map = {
+    'Very High': 'badge--conf-very-high',
+    'High': 'badge--conf-high',
+    'Medium-High': 'badge--conf-medium-high',
+    'Medium': 'badge--conf-medium',
+    'Low': 'badge--conf-low',
+    'Very Low': 'badge--conf-very-low'
+  } %}
+  <span class="badge {{ cls_map.get(level, 'badge--neutral') }}">{{ level or 'N/A' }}</span>
+{% endmacro %}
+
+{# Generic colored badge #}
+{% macro colored_badge(text, color="neutral") %}
+  <span class="badge badge--{{ color }}">{{ text }}</span>
+{% endmacro %}
+
+{# Status badge #}
+{% macro status_badge(status) %}
+  {% if status == 'live' %}
+    <span class="badge badge--green animate-pulse">LIVE</span>
+  {% elif status == 'completed' %}
+    <span class="badge badge--neutral">FT</span>
+  {% elif status == 'upcoming' %}
+    <span class="badge badge--accent">UPCOMING</span>
+  {% endif %}
+{% endmacro %}

@@ -1,0 +1,23 @@
+{# Match card — rendered via JS, this macro provides the static container #}
+{# The actual card content is built client-side from /api/dashboard data #}
+
+{% macro match_card_container() %}
+{# Container for JS-rendered match cards #}
+<div id="matches" class="grid-2 hidden"></div>
+{% endmacro %}
+
+{% macro empty_state() %}
+<div id="empty" class="hidden" style="text-align:center; padding: var(--space-12) 0;">
+  <p class="text-section-title text-secondary" style="margin-bottom: var(--space-2);">No predictions available</p>
+  <p class="text-small text-tertiary">Run the pipeline first: <code style="background:var(--bg-tertiary); padding: 2px 8px; border-radius: var(--radius-sm); font-family: var(--font-mono);">python3 run_full_pipeline.py</code></p>
+</div>
+{% endmacro %}
+
+{% macro loading_state() %}
+<div id="loading" style="text-align:center; padding: var(--space-12) 0;">
+  <div class="flex flex-col items-center gap-3">
+    <svg class="animate-spin" width="24" height="24" fill="none" stroke="var(--text-tertiary)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+    <span class="text-body text-tertiary">Loading match data...</span>
+  </div>
+</div>
+{% endmacro %}

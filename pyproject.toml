@@ -1,0 +1,71 @@
+[project]
+name = "seriea-pipeline"
+version = "1.0.0"
+description = "FBref Serie A scraper and ML feature engineering pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pandas>=2.1",
+    "pyarrow>=14.0",
+    "click>=8.1",
+    "python-dateutil>=2.8",
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+    "lightgbm>=4.0",
+    "numpy>=1.24",
+    "optuna>=3.4",
+    "scipy>=1.11",
+    "catboost>=1.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+web = ["flask>=3.0"]
+deep = ["tensorflow>=2.15"]
+scraping = ["selenium>=4.15", "botasaurus>=4.0"]
+
+[project.scripts]
+seriea = "cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+# =============================================================================
+# Ruff - Fast Python linter and formatter
+# =============================================================================
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "S", "BLE"]
+ignore = ["E501", "S101", "B905"]
+# E = pycodestyle errors
+# F = pyflakes (unused imports, undefined names)
+# W = pycodestyle warnings
+# B = flake8-bugbear (common bug patterns)
+# I = isort (import ordering)
+# UP = pyupgrade (modernize syntax for target Python version)
+# S = bandit (security checks)
+# BLE = blind except (bare except: blocks)
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]       # Allow assert in tests
+"scripts/legacy/*" = ["ALL"]  # Ignore legacy scripts
+
+# =============================================================================
+# Pytest configuration
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

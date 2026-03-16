@@ -1,0 +1,8 @@
+{# Stat card macro — displays a label, value, and optional trend #}
+{% macro stat_card(id, label, default_value="-", css_class="") %}
+<div class="stat-card {{ css_class }}">
+  <span class="stat-card__label">{{ label }}</span>
+  <span id="{{ id }}" class="stat-card__value">{{ default_value }}</span>
+  <span id="{{ id }}-trend" class="stat-card__trend stat-card__trend--neutral"></span>
+</div>
+{% endmacro %}

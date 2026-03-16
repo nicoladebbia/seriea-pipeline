@@ -1,0 +1,595 @@
+{% extends "base.html" %}
+{% from "components/stat_card.html" import stat_card %}
+
+{% block title %}Predictions — SerieAI{% endblock %}
+{% block page_title %}Predictions{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Summary Bar ──────────────────────────────────────── */
+  .pred-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:var(--space-3); margin-bottom:var(--space-5); }
+  @media (max-width:768px) { .pred-summary { grid-template-columns:repeat(2,1fr); } }
+
+  /* ── Controls ─────────────────────────────────────────── */
+  .pred-controls {
+    display:flex; align-items:center; justify-content:space-between; gap:var(--space-3);
+    padding:var(--space-3) var(--space-4); background:var(--bg-card); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); margin-bottom:var(--space-5); flex-wrap:wrap;
+  }
+  .pred-controls__group { display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; }
+  .pred-controls label { font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; }
+  .pred-controls select { background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border-default); border-radius:var(--radius-sm); padding:4px 8px; font-size:12px; cursor:pointer; }
+  .pred-toggle { display:inline-flex; border:1px solid var(--border-default); border-radius:var(--radius-sm); overflow:hidden; }
+  .pred-toggle__btn { background:var(--bg-tertiary); border:none; color:var(--text-tertiary); padding:4px 12px; font-size:11px; cursor:pointer; transition:all 0.15s; }
+  .pred-toggle__btn.active { background:var(--accent); color:white; }
+  .pred-toggle__btn:not(:last-child) { border-right:1px solid var(--border-default); }
+
+  /* ── Edge Heatmap Table ───────────────────────────────── */
+  .pred-heatmap { margin-bottom:var(--space-6); }
+  .pred-heatmap__header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:var(--space-2) 0; margin-bottom:var(--space-2); cursor:pointer;
+  }
+  .pred-heatmap__title { font-size:13px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:var(--space-2); }
+  .pred-heatmap__arrow { transition:transform 0.2s; }
+  .pred-table-wrap { overflow-x:auto; }
+  .pred-table {
+    width:100%; border-collapse:collapse; font-size:12px;
+    background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-md); overflow:hidden;
+  }
+  .pred-table th { padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary); border-bottom:1px solid var(--border-default); font-weight:600; white-space:nowrap; cursor:pointer; user-select:none; }
+  .pred-table th:hover { color:var(--text-secondary); }
+  .pred-table td { padding:6px 10px; border-bottom:1px solid var(--border-subtle); white-space:nowrap; }
+  .pred-table tr { cursor:pointer; transition:background 0.15s; }
+  .pred-table tbody tr:hover { background:rgba(129,140,248,0.06); }
+  .pred-table .edge-cell { font-family:var(--font-mono); font-size:11px; text-align:center; padding:4px 8px; border-radius:3px; font-weight:500; }
+  .pred-table .pos-badge { display:inline-block; min-width:22px; text-align:center; padding:1px 4px; border-radius:3px; font-size:10px; font-weight:600; font-family:var(--font-mono); }
+  .pos-badge--top4 { background:rgba(74,222,128,0.15); color:var(--green); }
+  .pos-badge--mid { background:rgba(129,140,248,0.15); color:var(--accent); }
+  .pos-badge--bottom3 { background:rgba(248,113,113,0.15); color:var(--red); }
+  .pos-badge--default { background:var(--bg-tertiary); color:var(--text-tertiary); }
+  .agree-badge { font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px; }
+
+  /* ── Compact Match Row ────────────────────────────────── */
+  .pred-row {
+    display:flex; align-items:center; gap:var(--space-3);
+    padding:var(--space-3) var(--space-4);
+    background:var(--bg-card); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); margin-bottom:var(--space-2);
+    cursor:pointer; text-decoration:none; color:inherit;
+    transition:border-color 0.15s, background 0.15s;
+  }
+  .pred-row:hover { border-color:var(--border-default); background:rgba(129,140,248,0.04); }
+  .pred-row__time { width:44px; flex-shrink:0; font-family:var(--font-mono); font-size:11px; color:var(--text-tertiary); text-align:center; }
+  .pred-row__teams { flex:1; min-width:0; }
+  .pred-row__team { font-size:13px; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px; }
+  .pred-row__team-meta { font-size:10px; color:var(--text-tertiary); }
+  .pred-row__center { width:80px; flex-shrink:0; text-align:center; }
+  .pred-row__outcome { font-size:12px; font-weight:700; }
+  .pred-row__xg { font-family:var(--font-mono); font-size:10px; color:var(--text-tertiary); }
+  .pred-row__prob { width:100px; flex-shrink:0; }
+  .pred-row__prob-bar { display:flex; height:5px; border-radius:3px; overflow:hidden; margin-bottom:3px; }
+  .pred-row__prob-nums { font-family:var(--font-mono); font-size:9px; color:var(--text-tertiary); display:flex; justify-content:space-between; }
+  .pred-row__right { width:90px; flex-shrink:0; text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
+  .pred-row__arrow { width:16px; flex-shrink:0; color:var(--text-tertiary); }
+  .pred-row__live-dot { width:8px; height:8px; border-radius:50%; background:var(--green); display:inline-block; animation:pulse-dot 1.5s infinite; }
+  @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .pred-row__live-score { font-family:var(--font-mono); font-size:14px; font-weight:700; color:var(--green); }
+  @media (max-width:768px) {
+    .pred-row__prob { display:none; }
+    .pred-row__right { width:60px; }
+  }
+
+  /* ── Prob bar (predictions version) ───────────────────── */
+  .pred-prob-bar { display:flex; height:6px; border-radius:3px; overflow:hidden; margin:var(--space-1) 0; }
+
+  /* ── Date group headers ───────────────────────────────── */
+  .pred-date-header {
+    display:flex; align-items:center; gap:var(--space-3);
+    padding:var(--space-2) 0; margin:var(--space-4) 0 var(--space-3);
+    border-bottom:1px solid var(--border-subtle);
+  }
+  .pred-date-header__date { font-size:13px; font-weight:600; color:var(--text-primary); }
+  .pred-date-header__meta { font-size:11px; color:var(--text-tertiary); }
+</style>
+{% endblock %}
+
+{% block header_actions %}
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+  <div id="pred-clock" style="font-family:monospace;font-size:13px;color:var(--text-secondary);"></div>
+  <div id="pred-freshness" style="display:flex;align-items:center;gap:10px;font-size:11px;"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+<!-- Summary Bar -->
+<div class="pred-summary">
+  {{ stat_card("pred-total", "Matches") }}
+  {{ stat_card("pred-avg-conf", "Avg Confidence") }}
+  {{ stat_card("pred-value-bets", "Value Bets") }}
+  {{ stat_card("pred-best-edge", "Best Edge") }}
+</div>
+
+<!-- Controls -->
+<div class="pred-controls">
+  <div class="pred-controls__group">
+    <label>Sort</label>
+    <select id="pred-sort" onchange="predRender()">
+      <option value="kickoff">Kickoff</option>
+      <option value="edge">Edge (High&rarr;Low)</option>
+      <option value="confidence">Confidence</option>
+      <option value="xg">xG Total</option>
+    </select>
+    <label>Filter</label>
+    <div class="pred-toggle">
+      <button class="pred-toggle__btn active" onclick="predFilter('all',this)">All</button>
+      <button class="pred-toggle__btn" onclick="predFilter('value',this)">Value Only</button>
+      <button class="pred-toggle__btn" onclick="predFilter('high-conf',this)">High Conf</button>
+    </div>
+  </div>
+  <div class="pred-controls__group">
+    <span id="pred-count" class="text-small text-tertiary"></span>
+  </div>
+</div>
+
+<!-- Edge Overview Heatmap -->
+<div class="pred-heatmap">
+  <div class="pred-heatmap__header" onclick="toggleHeatmap()">
+    <div class="pred-heatmap__title">
+      <svg class="pred-heatmap__arrow" id="heatmap-arrow" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="transform:rotate(90deg)"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+      Edge Overview
+      <span class="text-tertiary text-small" style="font-weight:400">click row to view details</span>
+    </div>
+  </div>
+  <div class="pred-table-wrap" id="heatmap-body">
+    <table class="pred-table">
+      <thead>
+        <tr>
+          <th>KO</th>
+          <th>Match</th>
+          <th style="text-align:center">Pos</th>
+          <th style="text-align:center">H Edge</th>
+          <th style="text-align:center">D Edge</th>
+          <th style="text-align:center">A Edge</th>
+          <th style="text-align:center">xG</th>
+          <th style="text-align:center">Conf</th>
+          <th style="text-align:center">Models</th>
+        </tr>
+      </thead>
+      <tbody id="heatmap-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Match Cards -->
+<div id="pred-cards">
+  <div id="pred-loading" style="text-align:center;padding:var(--space-12) 0;">
+    <div class="flex flex-col items-center gap-3">
+      <svg class="animate-spin" width="24" height="24" fill="none" stroke="var(--text-tertiary)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      <span class="text-body text-tertiary">Loading predictions...</span>
+    </div>
+  </div>
+  <div id="pred-empty" class="hidden" style="text-align:center;padding:var(--space-12) 0;">
+    <p class="text-section-title text-secondary" style="margin-bottom:var(--space-2);">No predictions available</p>
+    <p class="text-small text-tertiary">Run the pipeline first: <code style="background:var(--bg-tertiary);padding:2px 8px;border-radius:var(--radius-sm);font-family:var(--font-mono);">python3 run_full_pipeline.py</code></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ═══════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════
+let _allMatches = [], _ctx = {}, _filter = 'all';
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function confRank(l) {
+  if (!l) return -1;
+  const map = {'very high':5,'high':4,'medium-high':3,'medium':2,'low':1,'very low':0};
+  return map[l.toLowerCase()] ?? -1;
+}
+const confLabels = ['Very Low','Low','Medium','Medium-High','High','Very High'];
+
+function edgeCellStyle(edge) {
+  if (edge == null) return 'color:var(--text-tertiary)';
+  const abs = Math.abs(edge);
+  const a = Math.min(abs / 12, 0.55);
+  if (edge > 1) return `background:rgba(74,222,128,${a});color:var(--green)`;
+  if (edge < -1) return `background:rgba(248,113,113,${a});color:var(--red)`;
+  return 'color:var(--text-tertiary)';
+}
+
+function edgeFmt(v) { if (v == null) return '-'; return (v >= 0 ? '+' : '') + v.toFixed(1); }
+
+function posBadge(pos) {
+  if (!pos) return '';
+  const cls = pos <= 4 ? 'pos-badge--top4' : pos >= 18 ? 'pos-badge--bottom3' : pos <= 8 ? 'pos-badge--mid' : 'pos-badge--default';
+  return `<span class="pos-badge ${cls}">${pos}</span>`;
+}
+
+function zoneLabel(pos) {
+  if (pos === 1) return ['Title holders', 'zone--title'];
+  if (pos <= 4) return ['Champions League', 'zone--cl'];
+  if (pos === 5) return ['Europa League', 'zone--el'];
+  if (pos <= 7) return ['Conference League', 'zone--conf'];
+  if (pos >= 18) return ['Relegation zone', 'zone--relegation'];
+  return ['Mid-table', 'zone--mid'];
+}
+
+function formDots(form5) {
+  if (!form5) return '';
+  return form5.split('').map(c => {
+    const col = c === 'W' ? 'var(--green)' : c === 'D' ? 'var(--amber)' : 'var(--red)';
+    return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${col}" title="${c}"></span>`;
+  }).join(' ');
+}
+
+function getMatchEdges(m) {
+  const p = m.probabilities || {}, mk = m.market_implied || {};
+  return {
+    home: (mk.home && p.home) ? (p.home - mk.home) * 100 : null,
+    draw: (mk.draw && p.draw) ? (p.draw - mk.draw) * 100 : null,
+    away: (mk.away && p.away) ? (p.away - mk.away) * 100 : null,
+  };
+}
+
+function getAgreement(m) {
+  const comp = m.component_methods || {};
+  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  if (methods.length < 2) return null;
+  const calls = methods.map(([, p]) => {
+    const pH = p.prob_H||0, pD = p.prob_D||0, pA = p.prob_A||0;
+    return pH >= pD && pH >= pA ? 'H' : pD >= pH && pD >= pA ? 'D' : 'A';
+  });
+  const pred = m.predicted_outcome === 'HOME' ? 'H' : m.predicted_outcome === 'AWAY' ? 'A' : 'D';
+  const agree = calls.filter(c => c === pred).length;
+  return { agree, total: calls.length, calls, pred };
+}
+
+function matchAnchor(m) {
+  return (m.match || `${m.home_team} vs ${m.away_team}`).replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// EDGE HEATMAP TABLE
+// ═══════════════════════════════════════════════════════════════
+function renderHeatmap(matches) {
+  const tbody = document.getElementById('heatmap-rows');
+  const standings = _ctx.standings || {};
+  tbody.innerHTML = matches.map(m => {
+    const edges = getMatchEdges(m);
+    const agr = getAgreement(m);
+    const hPos = standings[m.home_team]?.position;
+    const aPos = standings[m.away_team]?.position;
+    const anchor = matchAnchor(m);
+    const agrHtml = agr ? (() => {
+      const ratio = agr.agree / agr.total;
+      const col = ratio >= 0.8 ? 'background:rgba(74,222,128,0.15);color:var(--green)' :
+                  ratio >= 0.5 ? 'background:rgba(251,191,36,0.15);color:var(--amber)' :
+                                 'background:rgba(248,113,113,0.15);color:var(--red)';
+      return `<span class="agree-badge" style="${col}">${agr.agree}/${agr.total} ${agr.pred}</span>`;
+    })() : '-';
+    const slug = matchSlug(m);
+    return `<tr onclick="window.location.href='/prediction/${slug}'" style="cursor:pointer">
+      <td class="text-mono text-tertiary">${formatKickoffTime(m.commence_time) || '-'}</td>
+      <td><span class="text-secondary font-medium">${m.home_team}</span> <span class="text-tertiary">vs</span> <span class="text-secondary font-medium">${m.away_team}</span></td>
+      <td style="text-align:center">${posBadge(hPos)} <span class="text-tertiary">v</span> ${posBadge(aPos)}</td>
+      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.home)}">${edgeFmt(edges.home)}</span></td>
+      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.draw)}">${edgeFmt(edges.draw)}</span></td>
+      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.away)}">${edgeFmt(edges.away)}</span></td>
+      <td style="text-align:center" class="text-mono text-secondary">${xgFmt(m.home_xg)}-${xgFmt(m.away_xg)}</td>
+      <td style="text-align:center">${confBadge(m.confidence_level)}</td>
+      <td style="text-align:center">${agrHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+let _heatmapOpen = true;
+function toggleHeatmap() {
+  _heatmapOpen = !_heatmapOpen;
+  document.getElementById('heatmap-body').style.display = _heatmapOpen ? '' : 'none';
+  document.getElementById('heatmap-arrow').style.transform = _heatmapOpen ? 'rotate(90deg)' : 'rotate(0deg)';
+}
+
+function matchSlug(m) {
+  return (m.match || `${m.home_team} vs ${m.away_team}`).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function goToMatch(m) {
+  window.location.href = '/prediction/' + matchSlug(m);
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// COMPACT ROW RENDERER
+// ═══════════════════════════════════════════════════════════════
+function renderCompactRow(m) {
+  const slug = matchSlug(m);
+  const probs = m.probabilities || {};
+  const outcomeCol = OUTCOME_COLORS[m.predicted_outcome] || 'var(--text-tertiary)';
+  const edges = getMatchEdges(m);
+  const bestEdge = Math.max(edges.home||0, edges.draw||0, edges.away||0);
+  const hasValue = bestEdge > 3;
+  const mi = m.market_intelligence || {};
+  const om = m.odds_movement || {};
+  const hasSteam = mi.steam_detected || om.is_steam_move;
+  const standings = _ctx.standings || {};
+  const hPos = standings[m.home_team]?.position;
+  const aPos = standings[m.away_team]?.position;
+  const agr = getAgreement(m);
+  const h2h = m.odds?.h2h || {};
+
+  // Badges for special signals
+  let badges = '';
+  if (m.lineup_source === 'confirmed') badges += '<span class="badge badge--outline-green" style="font-size:8px;padding:1px 4px">XI</span> ';
+  if (hasSteam) badges += '<span class="badge badge--red" style="font-size:8px;padding:1px 4px">STEAM</span> ';
+  if (hasValue) badges += `<span class="badge badge--green" style="font-size:8px;padding:1px 4px">+${bestEdge.toFixed(0)}%</span> `;
+
+  // Probability bar segments
+  const pH = (probs.home||0)*100, pD = (probs.draw||0)*100, pA = (probs.away||0)*100;
+
+  return `<a href="/prediction/${slug}" class="pred-row" id="row-${matchAnchor(m)}">
+    <div class="pred-row__time">
+      ${formatKickoffTime(m.commence_time) || '--:--'}
+    </div>
+    <div class="pred-row__teams">
+      <div class="pred-row__team">
+        ${hPos ? posBadge(hPos)+' ' : ''}<span>${m.home_team}</span>
+        <span style="color:var(--text-tertiary);font-weight:400;font-size:11px">vs</span>
+        ${aPos ? posBadge(aPos)+' ' : ''}<span>${m.away_team}</span>
+      </div>
+      <div class="pred-row__team-meta">
+        ${timeUntil(m.commence_time)} ${badges}
+        ${h2h.home ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-tertiary)">${oddsFmt(h2h.home)} / ${oddsFmt(h2h.draw)} / ${oddsFmt(h2h.away)}</span>` : ''}
+      </div>
+    </div>
+    <div class="pred-row__center">
+      <div class="pred-row__outcome" style="color:${outcomeCol}">${m.predicted_outcome || '?'}</div>
+      <div class="pred-row__xg">${xgFmt(m.home_xg)} - ${xgFmt(m.away_xg)}</div>
+    </div>
+    <div class="pred-row__prob">
+      <div class="pred-row__prob-bar">
+        <div style="width:${pH.toFixed(0)}%;background:var(--green)"></div>
+        <div style="width:${pD.toFixed(0)}%;background:var(--amber)"></div>
+        <div style="width:${pA.toFixed(0)}%;background:var(--red)"></div>
+      </div>
+      <div class="pred-row__prob-nums">
+        <span style="color:var(--green)">${pH.toFixed(0)}</span>
+        <span style="color:var(--amber)">${pD.toFixed(0)}</span>
+        <span style="color:var(--red)">${pA.toFixed(0)}</span>
+      </div>
+    </div>
+    <div class="pred-row__right">
+      ${confBadge(m.confidence_level)}
+      ${agr ? `<span style="font-size:9px;color:${agr.agree/agr.total >= 0.8 ? 'var(--green)' : agr.agree/agr.total >= 0.5 ? 'var(--amber)' : 'var(--red)'}">${agr.agree}/${agr.total} agree</span>` : ''}
+    </div>
+    <div class="pred-row__arrow">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+    </div>
+  </a>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// SUMMARY STATS
+// ═══════════════════════════════════════════════════════════════
+function updateSummary(matches) {
+  const el = id => document.getElementById(id);
+
+  if (el('pred-total')) {
+    el('pred-total').textContent = matches.length;
+    const t = el('pred-total-trend');
+    if (t) { t.textContent = matches.filter(m => m.status !== 'completed').length + ' upcoming'; t.className = 'stat-card__trend stat-card__trend--neutral'; }
+  }
+
+  if (el('pred-avg-conf')) {
+    const levels = matches.map(m => confRank(m.confidence_level)).filter(c => c >= 0);
+    const avg = levels.length ? levels.reduce((a,b) => a+b, 0) / levels.length : 0;
+    el('pred-avg-conf').textContent = confLabels[Math.round(avg)] || 'N/A';
+    const t = el('pred-avg-conf-trend');
+    if (t) { const high = levels.filter(c => c >= 3).length; t.textContent = `${high}/${levels.length} Medium-High+`; t.className = 'stat-card__trend stat-card__trend--neutral'; }
+  }
+
+  if (el('pred-value-bets')) {
+    const vb = matches.filter(m => { const e = getMatchEdges(m); return Math.max(e.home||0,e.draw||0,e.away||0) > 3; });
+    el('pred-value-bets').textContent = vb.length;
+    const t = el('pred-value-bets-trend');
+    if (t) {
+      if (vb.length) { const avg = vb.reduce((s,m) => { const e=getMatchEdges(m); return s+Math.max(e.home||0,e.draw||0,e.away||0);},0)/vb.length; t.textContent = `avg edge ${avg.toFixed(1)}%`; t.className = 'stat-card__trend stat-card__trend--up'; }
+      else { t.textContent = 'no edges found'; t.className = 'stat-card__trend stat-card__trend--neutral'; }
+    }
+  }
+
+  if (el('pred-best-edge')) {
+    let best = null, bestVal = 0;
+    for (const m of matches) { const e = getMatchEdges(m); const mx = Math.max(e.home||0,e.draw||0,e.away||0); if (mx > bestVal) { bestVal = mx; best = m; } }
+    if (best) {
+      el('pred-best-edge').textContent = `+${bestVal.toFixed(1)}%`;
+      el('pred-best-edge').style.color = 'var(--green)';
+      const t = el('pred-best-edge-trend');
+      if (t) { const s = `${best.home_team} vs ${best.away_team}`; t.textContent = s.length > 28 ? s.substring(0,25)+'...' : s; t.className = 'stat-card__trend stat-card__trend--neutral'; }
+    } else { el('pred-best-edge').textContent = '-'; }
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// FILTER + SORT + RENDER
+// ═══════════════════════════════════════════════════════════════
+function predFilter(filter, btn) {
+  _filter = filter;
+  document.querySelectorAll('.pred-toggle__btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  predRender();
+}
+
+function predRender() {
+  let matches = [..._allMatches];
+
+  // Filter
+  if (_filter === 'value') matches = matches.filter(m => { const e = getMatchEdges(m); return Math.max(e.home||0,e.draw||0,e.away||0) > 3; });
+  else if (_filter === 'high-conf') matches = matches.filter(m => confRank(m.confidence_level) >= 3);
+
+  // Sort
+  const sort = document.getElementById('pred-sort')?.value || 'kickoff';
+  if (sort === 'edge') matches.sort((a,b) => { const ea = getMatchEdges(a), eb = getMatchEdges(b); return Math.max(eb.home||0,eb.draw||0,eb.away||0) - Math.max(ea.home||0,ea.draw||0,ea.away||0); });
+  else if (sort === 'confidence') matches.sort((a,b) => confRank(b.confidence_level) - confRank(a.confidence_level));
+  else if (sort === 'xg') matches.sort((a,b) => ((b.home_xg||0)+(b.away_xg||0)) - ((a.home_xg||0)+(a.away_xg||0)));
+
+  document.getElementById('pred-count').textContent = `${matches.length} of ${_allMatches.length} matches`;
+
+  // Heatmap
+  renderHeatmap(matches);
+
+  // Compact rows
+  const container = document.getElementById('pred-cards');
+  container.querySelectorAll('.pred-date-header, .pred-row').forEach(el => el.remove());
+
+  if (!matches.length) {
+    document.getElementById('pred-empty')?.classList.remove('hidden');
+    return;
+  }
+  document.getElementById('pred-empty')?.classList.add('hidden');
+
+  const useGroups = sort === 'kickoff';
+
+  if (useGroups) {
+    // Group by date
+    const groups = {};
+    for (const m of matches) {
+      let dk = m.commence_time ? localDateKey(m.commence_time) : (m.date || 'unknown');
+      if (!groups[dk]) groups[dk] = [];
+      groups[dk].push(m);
+    }
+    for (const [dk, gm] of Object.entries(groups).sort(([a],[b]) => a.localeCompare(b))) {
+      let dateLabel;
+      try { const d = new Date(dk + 'T12:00:00'); dateLabel = d.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric' }); }
+      catch { dateLabel = dk; }
+      const firstCT = gm[0].commence_time;
+      container.insertAdjacentHTML('beforeend', `<div class="pred-date-header"><span class="pred-date-header__date">${dateLabel}</span><span class="pred-date-header__meta">${gm.length} match${gm.length!==1?'es':''}</span>${firstCT ? `<span class="pred-date-header__meta">${timeUntil(firstCT)}</span>` : ''}</div>`);
+      for (const m of gm) container.insertAdjacentHTML('beforeend', renderCompactRow(m));
+    }
+  } else {
+    for (const m of matches) container.insertAdjacentHTML('beforeend', renderCompactRow(m));
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LOAD DATA
+// ═══════════════════════════════════════════════════════════════
+async function loadPredictions() {
+  try {
+    // Fetch dashboard data + context in parallel
+    const [dashData, ctxData] = await Promise.all([
+      apiFetch('/api/dashboard'),
+      apiFetch('/api/predictions/context').catch(() => ({ h2h:{}, standings:{}, calibration:{} }))
+    ]);
+
+    document.getElementById('pred-loading').classList.add('hidden');
+    _ctx = ctxData;
+
+    if (!dashData.matches?.length) {
+      document.getElementById('pred-empty').classList.remove('hidden');
+      return;
+    }
+
+    // Freshness
+    const freshEl = document.getElementById('pred-freshness');
+    if (freshEl) {
+      const fmtAge = ts => { if(!ts) return 'N/A'; const m=Math.round((Date.now()-new Date(ts).getTime())/60000); return m<1?'now':m<60?m+'m':(m/60).toFixed(1)+'h'; };
+      const dot = ts => { if(!ts) return '#6b7280'; const m=(Date.now()-new Date(ts).getTime())/60000; return m<60?'#4ade80':m<360?'#fbbf24':'#f87171'; };
+      freshEl.innerHTML = `
+        <span style="color:#9ca3af">${dashData.match_count} matches</span>
+        <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:6px;height:6px;border-radius:50%;background:${dot(dashData.predictions_generated_at)}"></span><span style="color:#9ca3af">Preds:</span><span style="color:#e5e7eb;font-family:monospace">${fmtAge(dashData.predictions_generated_at)}</span></span>
+        <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:6px;height:6px;border-radius:50%;background:${dot(dashData.market_intelligence_at)}"></span><span style="color:#9ca3af">Market:</span><span style="color:#e5e7eb;font-family:monospace">${fmtAge(dashData.market_intelligence_at)}</span></span>
+      `;
+    }
+
+    // Also try loading lineup assessment data
+    try {
+      const la = await apiFetch('/api/lineup-assessment');
+      if (la?.matches) {
+        for (const m of dashData.matches) {
+          const mk = m.match || `${m.home_team} vs ${m.away_team}`;
+          const assessment = la.matches[mk];
+          if (assessment) m._lineup_assessment = assessment;
+        }
+      }
+    } catch {}
+
+    _allMatches = dashData.matches;
+    updateSummary(dashData.matches);
+    predRender();
+
+  } catch (err) {
+    document.getElementById('pred-loading').innerHTML = `<span class="text-red">Failed to load: ${err.message}</span>`;
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE DATA POLLING
+// ═══════════════════════════════════════════════════════════════
+let _liveData = {};
+
+async function pollLiveData() {
+  try {
+    const res = await fetch('/api/match-clock');
+    const data = await res.json();
+    _liveData = data.matches || {};
+    updateLiveRows();
+  } catch(e) {
+    // Silent fail — live data is best-effort
+  }
+}
+
+function updateLiveRows() {
+  for (const m of _allMatches) {
+    const mk = m.match || `${m.home_team} vs ${m.away_team}`;
+    const info = _liveData[mk];
+    if (!info) continue;
+
+    const anchor = matchAnchor(m);
+    const row = document.getElementById('row-' + anchor);
+    if (!row) continue;
+
+    const timeEl = row.querySelector('.pred-row__time');
+    const centerEl = row.querySelector('.pred-row__center');
+
+    if (info.status === 'live' || info.status === 'half_time') {
+      // Show live score instead of kickoff time
+      const minute = info.minute || '';
+      const score = info.score || [0, 0];
+      if (timeEl) timeEl.innerHTML = `<span class="pred-row__live-dot"></span><br><span style="font-size:9px;color:var(--green)">${minute}'</span>`;
+      if (centerEl) centerEl.innerHTML = `<div class="pred-row__live-score">${score[0]} - ${score[1]}</div><div class="pred-row__xg" style="color:var(--green)">${info.status === 'half_time' ? 'HT' : 'LIVE'}</div>`;
+      row.style.borderColor = 'rgba(74,222,128,0.3)';
+    } else if (info.status === 'completed') {
+      const score = info.score || [0, 0];
+      if (timeEl) timeEl.innerHTML = '<span style="font-size:9px;color:var(--text-tertiary)">FT</span>';
+      if (centerEl) centerEl.innerHTML = `<div style="font-family:var(--font-mono);font-size:14px;font-weight:700;color:var(--text-secondary)">${score[0]} - ${score[1]}</div><div class="pred-row__xg">Full Time</div>`;
+      row.style.borderColor = '';
+    }
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+loadPredictions();
+
+// Live clock
+(function() {
+  function tick() { const el = document.getElementById('pred-clock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  tick(); setInterval(tick, 1000);
+})();
+
+// Live match data polling (30s)
+setTimeout(() => { pollLiveData(); setInterval(pollLiveData, 30000); }, 3000);
+</script>
+{% endblock %}

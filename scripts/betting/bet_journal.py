@@ -1,0 +1,1052 @@
+"""Unified Bet Journal — single source of truth for all bets.
+
+Stores bets from placement through settlement in a single JSON file
+at data/betting/bet_journal.json. Replaces the fragmented 5-file system.
+
+Schema per bet:
+    bet_id, match, date, market, selection,
+    model_prob, sharp_implied_prob, edge_pct,
+    odds, bookmaker, avg_odds, pinnacle_odds,
+    stake, confidence, factors,
+    status (pending/won/lost/push/void),
+    result_score, profit,
+    closing_odds, clv_pct,
+    placed_at, settled_at
+
+Usage:
+    python scripts/bet_journal.py pending       # List pending bets
+    python scripts/bet_journal.py settled       # List settled bets
+    python scripts/bet_journal.py stats         # P&L summary
+    python scripts/bet_journal.py report        # Full weekly report
+    python scripts/bet_journal.py migrate       # One-time migration from legacy
+    python scripts/bet_journal.py settle        # Fetch results + auto-settle
+"""
+
+import json
+import logging
+import shutil
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
+
+log = logging.getLogger(__name__)
+
+# Resolve paths relative to project root
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent.parent
+DATA_DIR = _PROJECT_ROOT / "data"
+JOURNAL_PATH = DATA_DIR / "betting" / "bet_journal.json"
+
+# Legacy file paths for migration
+LEGACY_FILES = {
+    "placed_bets_log": DATA_DIR / "betting" / "placed_bets_log.json",
+    "placed_bets": DATA_DIR / "betting" / "placed_bets.json",
+    "bet_history": DATA_DIR / "upcoming" / "bet_history.json",
+    "history": DATA_DIR / "betting" / "history.json",
+    "clv_history": DATA_DIR / "betting" / "clv_history.json",
+}
+
+
+# =============================================================================
+# JOURNAL I/O
+# =============================================================================
+
+def _load_journal() -> Dict:
+    """Load the journal file. Returns dict with 'metadata' and 'bets' keys."""
+    if JOURNAL_PATH.exists():
+        try:
+            with open(JOURNAL_PATH) as f:
+                data = json.load(f)
+            # Ensure required structure
+            if "bets" not in data:
+                data["bets"] = {}
+            if "metadata" not in data:
+                data["metadata"] = {}
+            return data
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Failed to load journal: %s", e)
+    return {
+        "metadata": {
+            "created_at": datetime.now().isoformat(),
+            "version": 1,
+        },
+        "bets": {},
+    }
+
+
+def _save_journal(journal: Dict):
+    """Save journal to disk atomically."""
+    JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    journal["metadata"]["updated_at"] = datetime.now().isoformat()
+    journal["metadata"]["total_bets"] = len(journal["bets"])
+
+    # Write to temp file then rename for atomicity
+    tmp_path = JOURNAL_PATH.with_suffix(".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(journal, f, indent=2, default=str)
+    tmp_path.rename(JOURNAL_PATH)
+
+
+def _generate_bet_id(date: str, match: str, market: str, selection: str) -> str:
+    """Generate deterministic bet_id for deduplication."""
+    # Normalize market: h2h/moneyline → 1X2, totals → O/U, etc.
+    m = market.strip().upper()
+    if m in ("H2H", "1X2", "MONEYLINE"):
+        m = "1X2"
+    elif m in ("TOTALS",) or m.startswith("O/U"):
+        m = market.strip().replace(" ", "_").replace("/", "")  # preserve line info
+    else:
+        m = market.strip().replace(" ", "_").replace("/", "")
+    parts = [
+        date.strip(),
+        match.strip().replace(" ", "_"),
+        m,
+        selection.strip().upper().replace(" ", "_"),
+    ]
+    return "_".join(parts)
+
+
+# =============================================================================
+# CRUD OPERATIONS
+# =============================================================================
+
+MAX_EDGE_PCT = 12.0  # Defense-in-depth: reject bets above this edge regardless of caller
+
+
+def add_bet(bet_data: Dict) -> str:
+    """Add a bet to the journal. Returns bet_id.
+
+    Deduplicates by bet_id. If a bet with the same ID already exists
+    and is pending, updates odds/stake. If settled, skips.
+
+    Enforces edge cap as defense-in-depth — no bet with edge > MAX_EDGE_PCT
+    can enter the journal regardless of which pathway produced it.
+
+    Required fields: match, date, market, selection, odds, stake
+    """
+    edge = bet_data.get("edge_pct")
+    if edge is not None and abs(edge) > MAX_EDGE_PCT:
+        log.warning(
+            "Rejected bet %s: edge %.1f%% exceeds cap %.1f%%",
+            bet_data.get("match", "unknown"), edge, MAX_EDGE_PCT,
+        )
+        return ""
+
+    journal = _load_journal()
+
+    bet_id = _generate_bet_id(
+        bet_data.get("date", ""),
+        bet_data.get("match", ""),
+        bet_data.get("market", ""),
+        bet_data.get("selection", ""),
+    )
+
+    if bet_id in journal["bets"]:
+        existing = journal["bets"][bet_id]
+        if existing.get("status") != "pending":
+            log.debug("Skipping settled bet %s", bet_id)
+            return bet_id
+        # Update pending bet with latest pipeline data.
+        # Always update odds/stake from pipeline re-runs — staking config
+        # changes (e.g., Kelly → proportional) must propagate to journal.
+        for key in ("model_prob", "edge_pct", "avg_odds",
+                     "pinnacle_odds", "bookmaker", "confidence", "factors",
+                     "sharp_implied_prob", "pipeline_status",
+                     "odds", "stake"):
+            if key in bet_data and bet_data[key] is not None:
+                existing[key] = bet_data[key]
+        existing["updated_at"] = datetime.now().isoformat()
+        log.debug("Updated pending bet %s", bet_id)
+    else:
+        # New bet entry
+        entry = {
+            "bet_id": bet_id,
+            "match": bet_data.get("match", ""),
+            "date": bet_data.get("date", ""),
+            "market": bet_data.get("market", ""),
+            "selection": bet_data.get("selection", ""),
+            "model_prob": bet_data.get("model_prob"),
+            "sharp_implied_prob": bet_data.get("sharp_implied_prob"),
+            "edge_pct": bet_data.get("edge_pct"),
+            "odds": bet_data.get("odds"),
+            "bookmaker": bet_data.get("bookmaker"),
+            "avg_odds": bet_data.get("avg_odds"),
+            "pinnacle_odds": bet_data.get("pinnacle_odds"),
+            "stake": bet_data.get("stake"),
+            "confidence": bet_data.get("confidence"),
+            "factors": bet_data.get("factors"),
+            "status": "pending",
+            "result_score": None,
+            "profit": None,
+            "closing_odds": None,
+            "clv_pct": None,
+            "placed_at": bet_data.get("placed_at", datetime.now().isoformat()),
+            "settled_at": None,
+            "pipeline_status": bet_data.get("pipeline_status"),
+        }
+        journal["bets"][bet_id] = entry
+        log.debug("Added new bet %s", bet_id)
+
+    _save_journal(journal)
+    return bet_id
+
+
+def get_pending_bets(match_date: str = None, include_superseded: bool = True) -> List[Dict]:
+    """Get all unsettled bets, optionally filtered by match date.
+
+    Args:
+        match_date: Optional date filter (YYYY-MM-DD).
+        include_superseded: If True, also return superseded bets (pipeline
+            re-ran and generated different bets, but originals may have
+            already been placed by the user).
+    """
+    journal = _load_journal()
+    settleable = {"pending", "superseded"} if include_superseded else {"pending"}
+    pending = []
+    for bet in journal["bets"].values():
+        if bet.get("status") not in settleable:
+            continue
+        if match_date and bet.get("date") != match_date:
+            continue
+        pending.append(bet)
+    return sorted(pending, key=lambda b: (b.get("date", ""), b.get("match", "")))
+
+
+def get_settled_bets() -> List[Dict]:
+    """Get all settled bets (won/lost/push/void)."""
+    journal = _load_journal()
+    settled = []
+    for bet in journal["bets"].values():
+        if bet.get("status") in ("won", "lost", "push", "void"):
+            settled.append(bet)
+    return sorted(settled, key=lambda b: b.get("settled_at", ""))
+
+
+def settle_bet(bet_id: str, status: str, result_score: str = None,
+               profit: float = None) -> bool:
+    """Mark a bet as won/lost/push/void.
+
+    Returns True if bet was found and updated, False otherwise.
+    """
+    if status not in ("won", "lost", "push", "void"):
+        log.error("Invalid status: %s", status)
+        return False
+
+    journal = _load_journal()
+    if bet_id not in journal["bets"]:
+        log.warning("Bet %s not found in journal", bet_id)
+        return False
+
+    bet = journal["bets"][bet_id]
+    # Allow settling pending and superseded bets (superseded = pipeline re-ran
+    # but original bet may have been placed)
+    if bet.get("status") not in ("pending", "superseded"):
+        log.debug("Bet %s already settled as %s", bet_id, bet.get("status"))
+        return False
+
+    bet["status"] = status
+    bet["result_score"] = result_score
+    bet["profit"] = profit
+    bet["settled_at"] = datetime.now().isoformat()
+
+    _save_journal(journal)
+    log.info("Settled %s as %s (profit: %s)", bet_id, status, profit)
+    return True
+
+
+def repair_settlements(dry_run: bool = True) -> Dict:
+    """Re-derive correct outcomes from stored result_score and fix wrong statuses.
+
+    Some bets were incorrectly settled (e.g., marked 'lost' when they should be
+    'won') due to a dedup collision in results_fetcher that prevented correction.
+    This function re-computes the correct outcome for every settled bet that has
+    a result_score, and fixes any mismatches.
+
+    Args:
+        dry_run: If True, only report what would change. If False, apply fixes.
+
+    Returns:
+        Dict with 'checked', 'wrong', 'fixed' counts and 'details' list.
+    """
+    journal = _load_journal()
+    stats = {"checked": 0, "wrong": 0, "fixed": 0, "details": []}
+
+    for bet_id, bet in journal["bets"].items():
+        if bet.get("status") not in ("won", "lost", "push"):
+            continue
+        result_score = bet.get("result_score")
+        if not result_score or "-" not in str(result_score):
+            continue
+
+        stats["checked"] += 1
+        parts = str(result_score).split("-")
+        try:
+            home_score = int(parts[0].strip())
+            away_score = int(parts[1].strip())
+        except (ValueError, IndexError):
+            continue
+
+        selection = bet.get("selection", "")
+        market = bet.get("market", "")
+        sel_upper = selection.upper().strip()
+        mkt_upper = market.upper().strip()
+        total_goals = home_score + away_score
+        btts = home_score > 0 and away_score > 0
+        expected = "lost"  # default
+
+        # 1X2
+        if mkt_upper in ("H2H", "1X2"):
+            if sel_upper in ("HOME", "1"):
+                expected = "won" if home_score > away_score else "lost"
+            elif sel_upper in ("DRAW", "X"):
+                expected = "won" if home_score == away_score else "lost"
+            elif sel_upper in ("AWAY", "2"):
+                expected = "won" if away_score > home_score else "lost"
+
+        # O/U
+        elif mkt_upper.startswith("O/U") or mkt_upper == "TOTALS":
+            if "OVER" in sel_upper:
+                line = float(sel_upper.split()[-1]) if len(sel_upper.split()) > 1 else 2.5
+                if total_goals > line:
+                    expected = "won"
+                elif total_goals == line:
+                    expected = "push"
+            elif "UNDER" in sel_upper:
+                line = float(sel_upper.split()[-1]) if len(sel_upper.split()) > 1 else 2.5
+                if total_goals < line:
+                    expected = "won"
+                elif total_goals == line:
+                    expected = "push"
+
+        # BTTS
+        elif mkt_upper == "BTTS":
+            if "YES" in sel_upper:
+                expected = "won" if btts else "lost"
+            else:
+                expected = "won" if not btts else "lost"
+
+        # DC
+        elif mkt_upper == "DC":
+            if "1X" in sel_upper or "HOME OR DRAW" in sel_upper:
+                expected = "won" if home_score >= away_score else "lost"
+            elif "X2" in sel_upper or "DRAW OR AWAY" in sel_upper:
+                expected = "won" if away_score >= home_score else "lost"
+            elif "12" in sel_upper or "HOME OR AWAY" in sel_upper:
+                expected = "won" if home_score != away_score else "lost"
+
+        # DNB
+        elif mkt_upper == "DNB":
+            if "HOME" in sel_upper:
+                if home_score > away_score:
+                    expected = "won"
+                elif home_score == away_score:
+                    expected = "push"
+            elif "AWAY" in sel_upper:
+                if away_score > home_score:
+                    expected = "won"
+                elif home_score == away_score:
+                    expected = "push"
+
+        # AH / Spreads
+        elif mkt_upper.startswith("AH") or mkt_upper in ("SPREADS", "HANDICAP"):
+            parts_sel = sel_upper.split()
+            side = parts_sel[0] if parts_sel else ""
+            line = 0.0
+            if len(parts_sel) > 1:
+                try:
+                    line = float(parts_sel[-1])
+                except ValueError:
+                    line = 0.0
+            goal_diff = home_score - away_score
+            adjusted = (-goal_diff + line) if side == "AWAY" else (goal_diff + line)
+            if adjusted > 0:
+                expected = "won"
+            elif adjusted == 0:
+                expected = "push"
+
+        current = bet.get("status")
+        if current != expected:
+            stats["wrong"] += 1
+            detail = {
+                "bet_id": bet_id,
+                "match": bet.get("match"),
+                "market": market,
+                "selection": selection,
+                "result_score": result_score,
+                "was": current,
+                "should_be": expected,
+            }
+            stats["details"].append(detail)
+
+            if not dry_run:
+                # Fix the status and recalculate profit
+                odds = bet.get("odds", 1.0)
+                stake = bet.get("stake", 0.0)
+                if expected == "won":
+                    profit = round(stake * (odds - 1), 2)
+                elif expected == "push":
+                    profit = 0.0
+                else:
+                    profit = round(-stake, 2)
+
+                bet["status"] = expected
+                bet["profit"] = profit
+                bet["repaired_at"] = datetime.now().isoformat()
+                bet["repair_note"] = f"Was '{current}', fixed to '{expected}'"
+                stats["fixed"] += 1
+
+    if not dry_run and stats["fixed"] > 0:
+        _save_journal(journal)
+        log.info("Repaired %d/%d wrong settlements", stats["fixed"], stats["wrong"])
+
+    return stats
+
+
+def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None) -> bool:
+    """Store CLV data for a bet.
+
+    If clv_pct is not provided, computes it from odds and closing_odds.
+    CLV = (bet_odds / closing_odds) - 1
+    """
+    journal = _load_journal()
+    if bet_id not in journal["bets"]:
+        log.warning("Bet %s not found for CLV update", bet_id)
+        return False
+
+    bet = journal["bets"][bet_id]
+    bet["closing_odds"] = closing_odds
+
+    if clv_pct is not None:
+        bet["clv_pct"] = clv_pct
+    elif bet.get("odds") and closing_odds and closing_odds > 1.0:
+        bet["clv_pct"] = round(((bet["odds"] / closing_odds) - 1.0) * 100, 2)
+
+    _save_journal(journal)
+    return True
+
+
+# =============================================================================
+# STATISTICS
+# =============================================================================
+
+def get_journal_stats() -> Dict:
+    """Aggregate P&L, ROI, CLV, by-market breakdown."""
+    journal = _load_journal()
+    bets = list(journal["bets"].values())
+
+    if not bets:
+        return {"total_bets": 0, "message": "No bets in journal"}
+
+    pending = [b for b in bets if b.get("status") == "pending"]
+    settled = [b for b in bets if b.get("status") in ("won", "lost", "push", "void")]
+    won = [b for b in settled if b["status"] == "won"]
+    lost = [b for b in settled if b["status"] == "lost"]
+    pushes = [b for b in settled if b["status"] == "push"]
+
+    total_staked = sum(b.get("stake", 0) or 0 for b in settled)
+    total_profit = sum(b.get("profit", 0) or 0 for b in settled)
+    roi = (total_profit / total_staked * 100) if total_staked > 0 else 0.0
+
+    # CLV stats
+    clv_bets = [b for b in bets if b.get("clv_pct") is not None]
+    avg_clv = (sum(b["clv_pct"] for b in clv_bets) / len(clv_bets)) if clv_bets else 0.0
+    positive_clv = sum(1 for b in clv_bets if b["clv_pct"] > 0)
+
+    # By market
+    by_market = {}
+    for b in settled:
+        m = b.get("market", "unknown")
+        if m not in by_market:
+            by_market[m] = {"bets": 0, "wins": 0, "losses": 0, "pushes": 0,
+                            "profit": 0.0, "staked": 0.0}
+        by_market[m]["bets"] += 1
+        by_market[m]["profit"] += b.get("profit", 0) or 0
+        by_market[m]["staked"] += b.get("stake", 0) or 0
+        if b["status"] == "won":
+            by_market[m]["wins"] += 1
+        elif b["status"] == "lost":
+            by_market[m]["losses"] += 1
+        elif b["status"] == "push":
+            by_market[m]["pushes"] += 1
+
+    return {
+        "total_bets": len(bets),
+        "pending": len(pending),
+        "settled": len(settled),
+        "won": len(won),
+        "lost": len(lost),
+        "pushes": len(pushes),
+        "total_staked": round(total_staked, 2),
+        "total_profit": round(total_profit, 2),
+        "roi_pct": round(roi, 2),
+        "clv_avg_pct": round(avg_clv, 2),
+        "clv_positive": positive_clv,
+        "clv_total": len(clv_bets),
+        "by_market": by_market,
+    }
+
+
+# =============================================================================
+# MIGRATION FROM LEGACY FILES
+# =============================================================================
+
+def migrate_from_legacy() -> Dict:
+    """One-time import from 5 legacy files.
+
+    Reads placed_bets_log.json, placed_bets.json, bet_history.json,
+    history.json, and clv_history.json. Deduplicates by (date, match,
+    market, selection). Merges settlement and CLV data.
+
+    Backs up legacy files to data/betting/legacy/ first.
+    """
+    journal = _load_journal()
+    stats = {"sources_read": 0, "total_imported": 0, "duplicates_merged": 0,
+             "settlements_applied": 0, "clv_applied": 0, "errors": []}
+
+    # Intermediate store: dedup_key -> best record
+    merged: Dict[str, Dict] = {}
+
+    def _dedup_key(date: str, match: str, market: str, selection: str) -> str:
+        return _generate_bet_id(date, match, market, selection)
+
+    def _richness(rec: Dict) -> int:
+        """Count non-None fields — prefer richer records."""
+        return sum(1 for v in rec.values() if v is not None)
+
+    # --- Source 1: placed_bets_log.json (14 records) ---
+    path = LEGACY_FILES["placed_bets_log"]
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            for b in data:
+                key = _dedup_key(b.get("date", ""), b.get("match", ""),
+                                 b.get("market", ""), b.get("selection", ""))
+                rec = {
+                    "match": b.get("match", ""),
+                    "date": b.get("date", ""),
+                    "market": _normalize_market(b.get("market", "")),
+                    "selection": b.get("selection", ""),
+                    "model_prob": b.get("our_probability"),
+                    "edge_pct": b.get("value_pct"),
+                    "odds": b.get("odds"),
+                    "stake": b.get("stake"),
+                    "confidence": b.get("confidence"),
+                    "factors": b.get("factors"),
+                    "placed_at": b.get("recorded_at"),
+                    "status": b.get("status", "pending"),
+                }
+                if key not in merged or _richness(rec) > _richness(merged[key]):
+                    merged[key] = rec
+                else:
+                    stats["duplicates_merged"] += 1
+            stats["sources_read"] += 1
+            log.info("Read %d bets from placed_bets_log.json", len(data))
+        except Exception as e:
+            stats["errors"].append(f"placed_bets_log: {e}")
+
+    # --- Source 2: placed_bets.json (37 records) ---
+    path = LEGACY_FILES["placed_bets"]
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            bets_list = data.get("bets", []) if isinstance(data, dict) else data
+            for b in bets_list:
+                key = _dedup_key(b.get("date", ""), b.get("match", ""),
+                                 b.get("market", ""), b.get("selection", ""))
+                rec = {
+                    "match": b.get("match", ""),
+                    "date": b.get("date", ""),
+                    "market": _normalize_market(b.get("market", "")),
+                    "selection": b.get("selection", ""),
+                    "model_prob": b.get("model_prob"),
+                    "sharp_implied_prob": b.get("sharp_implied_prob"),
+                    "edge_pct": b.get("edge_pct"),
+                    "odds": b.get("best_odds"),
+                    "bookmaker": b.get("best_bookmaker"),
+                    "avg_odds": b.get("avg_odds"),
+                    "pinnacle_odds": b.get("pinnacle_odds"),
+                    "stake": b.get("stake_amount"),
+                    "placed_at": b.get("placed_at"),
+                    "status": "pending",
+                }
+                if key not in merged or _richness(rec) > _richness(merged[key]):
+                    old = merged.get(key)
+                    merged[key] = rec
+                    # Preserve fields from previous source that this one lacks
+                    if old:
+                        stats["duplicates_merged"] += 1
+                        for k in ("confidence", "factors"):
+                            if rec.get(k) is None and old.get(k) is not None:
+                                rec[k] = old[k]
+                else:
+                    # Keep richer existing, but overlay any new fields
+                    existing = merged[key]
+                    for k, v in rec.items():
+                        if v is not None and existing.get(k) is None:
+                            existing[k] = v
+                    stats["duplicates_merged"] += 1
+            stats["sources_read"] += 1
+            log.info("Read %d bets from placed_bets.json", len(bets_list))
+        except Exception as e:
+            stats["errors"].append(f"placed_bets: {e}")
+
+    # --- Source 3: bet_history.json (37 records, in data/upcoming/) ---
+    path = LEGACY_FILES["bet_history"]
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            bets_list = data if isinstance(data, list) else data.get("bets", [])
+            for b in bets_list:
+                key = _dedup_key(b.get("date", ""), b.get("match", ""),
+                                 b.get("market", ""), b.get("selection", ""))
+                rec = {
+                    "match": b.get("match", ""),
+                    "date": b.get("date", ""),
+                    "market": _normalize_market(b.get("market", "")),
+                    "selection": b.get("selection", ""),
+                    "model_prob": b.get("model_prob"),
+                    "edge_pct": b.get("edge_pct"),
+                    "odds": b.get("best_odds"),
+                    "bookmaker": b.get("best_bookmaker"),
+                    "stake": b.get("stake"),
+                    "placed_at": b.get("placed_at"),
+                    "status": "pending",
+                }
+                if key not in merged or _richness(rec) > _richness(merged[key]):
+                    old = merged.get(key)
+                    merged[key] = rec
+                    if old:
+                        stats["duplicates_merged"] += 1
+                        for k in ("confidence", "factors", "avg_odds",
+                                   "pinnacle_odds", "sharp_implied_prob", "bookmaker"):
+                            if rec.get(k) is None and old.get(k) is not None:
+                                rec[k] = old[k]
+                else:
+                    existing = merged[key]
+                    for k, v in rec.items():
+                        if v is not None and existing.get(k) is None:
+                            existing[k] = v
+                    stats["duplicates_merged"] += 1
+            stats["sources_read"] += 1
+            log.info("Read %d bets from bet_history.json", len(bets_list))
+        except Exception as e:
+            stats["errors"].append(f"bet_history: {e}")
+
+    # --- Source 4: history.json (3 settled records) ---
+    path = LEGACY_FILES["history"]
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            for b in data:
+                key = _dedup_key(b.get("date", ""), b.get("match", ""),
+                                 b.get("market", ""), b.get("selection", ""))
+                if key in merged:
+                    rec = merged[key]
+                    rec["status"] = b.get("status", rec.get("status", "pending"))
+                    rec["profit"] = b.get("profit")
+                    rec["result_score"] = b.get("result")
+                    rec["settled_at"] = b.get("settled_at")
+                    if rec.get("odds") is None:
+                        rec["odds"] = b.get("odds")
+                    if rec.get("stake") is None:
+                        rec["stake"] = b.get("stake")
+                    stats["settlements_applied"] += 1
+                else:
+                    # Bet only in history — add it
+                    merged[key] = {
+                        "match": b.get("match", ""),
+                        "date": b.get("date", ""),
+                        "market": _normalize_market(b.get("market", "")),
+                        "selection": b.get("selection", ""),
+                        "odds": b.get("odds"),
+                        "stake": b.get("stake"),
+                        "status": b.get("status", "lost"),
+                        "profit": b.get("profit"),
+                        "result_score": b.get("result"),
+                        "settled_at": b.get("settled_at"),
+                    }
+                    stats["settlements_applied"] += 1
+            stats["sources_read"] += 1
+            log.info("Read %d settlements from history.json", len(data))
+        except Exception as e:
+            stats["errors"].append(f"history: {e}")
+
+    # --- Source 5: clv_history.json (11 records) ---
+    path = LEGACY_FILES["clv_history"]
+    if path.exists():
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            clv_bets = data.get("bets", []) if isinstance(data, dict) else data
+            for b in clv_bets:
+                # CLV records don't have date — match by (match, market, selection)
+                # Try all keys to find matching bet
+                found = False
+                for key, rec in merged.items():
+                    if (rec.get("match") == b.get("match") and
+                            rec.get("selection") == b.get("selection") and
+                            _normalize_market(rec.get("market", "")).upper() ==
+                            _normalize_market(b.get("market", "")).upper()):
+                        rec["closing_odds"] = b.get("closing_odds")
+                        rec["clv_pct"] = b.get("clv_pct")
+                        stats["clv_applied"] += 1
+                        found = True
+                        break
+                if not found:
+                    log.debug("CLV record unmatched: %s %s %s",
+                              b.get("match"), b.get("market"), b.get("selection"))
+            stats["sources_read"] += 1
+            log.info("Applied %d CLV records from clv_history.json",
+                     stats["clv_applied"])
+        except Exception as e:
+            stats["errors"].append(f"clv_history: {e}")
+
+    # Write all merged bets to journal
+    for key, rec in merged.items():
+        bet_id = key
+        # Don't overwrite already-settled journal bets
+        if bet_id in journal["bets"] and \
+                journal["bets"][bet_id].get("status") != "pending":
+            continue
+
+        entry = {
+            "bet_id": bet_id,
+            "match": rec.get("match", ""),
+            "date": rec.get("date", ""),
+            "market": rec.get("market", ""),
+            "selection": rec.get("selection", ""),
+            "model_prob": rec.get("model_prob"),
+            "sharp_implied_prob": rec.get("sharp_implied_prob"),
+            "edge_pct": rec.get("edge_pct"),
+            "odds": rec.get("odds"),
+            "bookmaker": rec.get("bookmaker"),
+            "avg_odds": rec.get("avg_odds"),
+            "pinnacle_odds": rec.get("pinnacle_odds"),
+            "stake": rec.get("stake"),
+            "confidence": rec.get("confidence"),
+            "factors": rec.get("factors"),
+            "status": rec.get("status", "pending"),
+            "result_score": rec.get("result_score"),
+            "profit": rec.get("profit"),
+            "closing_odds": rec.get("closing_odds"),
+            "clv_pct": rec.get("clv_pct"),
+            "placed_at": rec.get("placed_at"),
+            "settled_at": rec.get("settled_at"),
+        }
+        journal["bets"][bet_id] = entry
+
+    stats["total_imported"] = len(journal["bets"])
+
+    # Backup legacy files
+    _backup_legacy_files()
+
+    _save_journal(journal)
+    return stats
+
+
+def _normalize_market(market: str) -> str:
+    """Normalize market names across legacy sources.
+
+    Legacy sources use: 'h2h', '1X2', 'totals', 'O/U 2.5', 'spreads', etc.
+    Normalize to consistent format.
+    """
+    m = market.strip()
+    m_upper = m.upper()
+    if m_upper in ("H2H", "1X2", "MONEYLINE"):
+        return "1X2"
+    if m_upper in ("TOTALS", "OU", "OVER/UNDER") or m_upper.startswith("O/U"):
+        return m if m_upper.startswith("O/U") else "O/U 2.5"
+    if m_upper in ("SPREADS", "HANDICAP", "AH"):
+        return "spreads"
+    return m
+
+
+def _backup_legacy_files():
+    """Copy legacy files to data/betting/legacy/ for safety."""
+    backup_dir = DATA_DIR / "betting" / "legacy"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for name, path in LEGACY_FILES.items():
+        if path.exists():
+            dest = backup_dir / path.name
+            if not dest.exists():
+                shutil.copy2(path, dest)
+                log.info("Backed up %s to %s", path.name, dest)
+
+
+# =============================================================================
+# WEEKLY REPORT
+# =============================================================================
+
+def generate_report(days: int = 7) -> str:
+    """Generate a comprehensive weekly report.
+
+    Covers: bankroll change, record, by-market, by-confidence,
+    by-edge-bucket, CLV summary.
+    """
+    journal = _load_journal()
+    bets = list(journal["bets"].values())
+
+    if not bets:
+        return "No bets in journal."
+
+    # Date range
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    end_str = end_date.strftime("%b %-d, %Y")
+    start_str = start_date.strftime("%b %-d, %Y")
+
+    # Split bets
+    all_settled = [b for b in bets if b.get("status") in ("won", "lost", "push")]
+    all_pending = [b for b in bets if b.get("status") == "pending"]
+
+    # Period filter for settled bets
+    period_settled = []
+    for b in all_settled:
+        sa = b.get("settled_at", "")
+        if sa:
+            try:
+                settled_date = datetime.fromisoformat(sa).date()
+                if start_date <= settled_date <= end_date:
+                    period_settled.append(b)
+            except (ValueError, TypeError):
+                pass
+
+    # If no period settled, show all-time
+    if not period_settled:
+        period_settled = all_settled
+        start_str = "All time"
+
+    # Bankroll (from bankroll.json for accuracy)
+    bankroll_path = DATA_DIR / "betting" / "bankroll.json"
+    initial_balance = 1000.0
+    current_balance = 1000.0
+    if bankroll_path.exists():
+        try:
+            with open(bankroll_path) as f:
+                br = json.load(f)
+            initial_balance = br.get("initial_balance", 1000.0)
+            current_balance = br.get("current_balance", 1000.0)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Core stats
+    wins = [b for b in period_settled if b["status"] == "won"]
+    losses = [b for b in period_settled if b["status"] == "lost"]
+    pushes = [b for b in period_settled if b["status"] == "push"]
+    decided = len(wins) + len(losses)
+    win_rate = (len(wins) / decided * 100) if decided > 0 else 0.0
+    total_staked = sum(b.get("stake", 0) or 0 for b in period_settled)
+    total_profit = sum(b.get("profit", 0) or 0 for b in period_settled)
+    roi = (total_profit / total_staked * 100) if total_staked > 0 else 0.0
+    net_change = current_balance - initial_balance
+    net_pct = (net_change / initial_balance * 100) if initial_balance > 0 else 0.0
+
+    lines = []
+    lines.append(f"WEEKLY BETTING REPORT ({start_str} - {end_str})")
+    lines.append("\u2501" * 50)
+    lines.append("")
+    lines.append(f"BANKROLL:  ${initial_balance:,.2f} \u2192 ${current_balance:,.2f} "
+                 f"({'+' if net_change >= 0 else ''}{net_change:,.2f}, "
+                 f"{'+' if net_pct >= 0 else ''}{net_pct:.1f}%)")
+    lines.append(f"RECORD:    {len(wins)}W-{len(losses)}L-{len(pushes)}P "
+                 f"({win_rate:.0f}% win rate)")
+    lines.append(f"STAKED:    ${total_staked:,.2f} | "
+                 f"ROI: {'+' if roi >= 0 else ''}{roi:.1f}%")
+    lines.append(f"PENDING:   {len(all_pending)} bets")
+
+    # By market
+    lines.append("")
+    lines.append("BY MARKET:")
+    by_market = {}
+    for b in period_settled:
+        m = b.get("market", "unknown")
+        if m not in by_market:
+            by_market[m] = {"bets": 0, "wins": 0, "losses": 0, "pushes": 0,
+                            "profit": 0.0, "staked": 0.0}
+        by_market[m]["bets"] += 1
+        by_market[m]["profit"] += b.get("profit", 0) or 0
+        by_market[m]["staked"] += b.get("stake", 0) or 0
+        if b["status"] == "won":
+            by_market[m]["wins"] += 1
+        elif b["status"] == "lost":
+            by_market[m]["losses"] += 1
+        elif b["status"] == "push":
+            by_market[m]["pushes"] += 1
+
+    for m, s in sorted(by_market.items()):
+        m_roi = (s["profit"] / s["staked"] * 100) if s["staked"] > 0 else 0.0
+        rec = f"{s['wins']}W-{s['losses']}L"
+        if s["pushes"]:
+            rec += f"-{s['pushes']}P"
+        lines.append(f"  {m:<12} {s['bets']} {'bet' if s['bets'] == 1 else 'bets':<5} "
+                     f"{rec:<10} {'+' if s['profit'] >= 0 else ''}${s['profit']:,.2f}  "
+                     f"{'+' if m_roi >= 0 else ''}{m_roi:.1f}% ROI")
+
+    # By confidence
+    lines.append("")
+    lines.append("BY CONFIDENCE:")
+    by_conf = {}
+    for b in period_settled:
+        c = (b.get("confidence") or "UNKNOWN").upper()
+        if c not in by_conf:
+            by_conf[c] = {"bets": 0, "profit": 0.0, "staked": 0.0}
+        by_conf[c]["bets"] += 1
+        by_conf[c]["profit"] += b.get("profit", 0) or 0
+        by_conf[c]["staked"] += b.get("stake", 0) or 0
+
+    for c in ("ELITE", "HIGH", "STRONG", "MEDIUM-HIGH", "MEDIUM", "STANDARD", "UNKNOWN"):
+        if c in by_conf:
+            s = by_conf[c]
+            c_roi = (s["profit"] / s["staked"] * 100) if s["staked"] > 0 else 0.0
+            lines.append(f"  {c:<14} {s['bets']} {'bet' if s['bets'] == 1 else 'bets':<5} "
+                         f"{'+' if s['profit'] >= 0 else ''}${s['profit']:,.2f}  "
+                         f"{'+' if c_roi >= 0 else ''}{c_roi:.0f}% ROI")
+
+    # By edge bucket
+    lines.append("")
+    lines.append("BY EDGE BUCKET:")
+    edge_buckets = {"0-10%": [], "10-20%": [], "20%+": []}
+    for b in period_settled:
+        edge = b.get("edge_pct") or 0
+        if edge < 10:
+            edge_buckets["0-10%"].append(b)
+        elif edge < 20:
+            edge_buckets["10-20%"].append(b)
+        else:
+            edge_buckets["20%+"].append(b)
+
+    for bucket, bucket_bets in edge_buckets.items():
+        n = len(bucket_bets)
+        profit = sum(b.get("profit", 0) or 0 for b in bucket_bets)
+        if n == 0:
+            lines.append(f"  {bucket:<8} 0 bets")
+        else:
+            lines.append(f"  {bucket:<8} {n} {'bet' if n == 1 else 'bets':<5} "
+                         f"{'+' if profit >= 0 else ''}${profit:,.2f}")
+
+    # CLV summary
+    clv_bets = [b for b in bets if b.get("clv_pct") is not None]
+    if clv_bets:
+        avg_clv = sum(b["clv_pct"] for b in clv_bets) / len(clv_bets)
+        positive = sum(1 for b in clv_bets if b["clv_pct"] > 0)
+        lines.append("")
+        flag = " [OK]" if avg_clv > 0 else " [!]"
+        lines.append(f"CLV: {avg_clv:+.2f}% avg ({positive}/{len(clv_bets)} positive){flag}")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def _print_bets_table(bets: List[Dict], title: str):
+    """Print a table of bets."""
+    print(f"\n{title} ({len(bets)} bets)")
+    print("-" * 90)
+    if not bets:
+        print("  (none)")
+        return
+
+    print(f"  {'Date':<12} {'Match':<28} {'Market':<10} {'Selection':<18} "
+          f"{'Odds':>6} {'Stake':>7} {'Status':<6}")
+    print(f"  {'-'*12} {'-'*28} {'-'*10} {'-'*18} {'-'*6} {'-'*7} {'-'*6}")
+    for b in bets:
+        status = b.get("status", "?")
+        profit_str = ""
+        if status != "pending" and b.get("profit") is not None:
+            profit_str = f" ({'+' if b['profit'] >= 0 else ''}{b['profit']:.2f})"
+        odds_str = f"{b.get('odds', 0):.2f}" if b.get("odds") else "?"
+        stake_str = f"${b.get('stake', 0):.0f}" if b.get("stake") else "?"
+        print(f"  {b.get('date', '?'):<12} {b.get('match', '?'):<28} "
+              f"{b.get('market', '?'):<10} {b.get('selection', '?'):<18} "
+              f"{odds_str:>6} {stake_str:>7} {status:<6}{profit_str}")
+
+
+def main():
+    import argparse
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    parser = argparse.ArgumentParser(description="Bet Journal")
+    parser.add_argument("command", nargs="?", default="stats",
+                        choices=["pending", "settled", "stats", "report",
+                                 "migrate", "settle"],
+                        help="Command to run")
+    parser.add_argument("--days", type=int, default=7,
+                        help="Days for report period (default: 7)")
+    args = parser.parse_args()
+
+    if args.command == "pending":
+        bets = get_pending_bets()
+        _print_bets_table(bets, "PENDING BETS")
+
+    elif args.command == "settled":
+        bets = get_settled_bets()
+        _print_bets_table(bets, "SETTLED BETS")
+
+    elif args.command == "stats":
+        stats = get_journal_stats()
+        print(f"\n{'='*50}")
+        print("BET JOURNAL STATS")
+        print(f"{'='*50}")
+        print(f"  Total bets:    {stats.get('total_bets', 0)}")
+        print(f"  Pending:       {stats.get('pending', 0)}")
+        print(f"  Settled:       {stats.get('settled', 0)} "
+              f"({stats.get('won', 0)}W-{stats.get('lost', 0)}L-"
+              f"{stats.get('pushes', 0)}P)")
+        print(f"  Total staked:  ${stats.get('total_staked', 0):,.2f}")
+        print(f"  Total profit:  ${stats.get('total_profit', 0):+,.2f}")
+        print(f"  ROI:           {stats.get('roi_pct', 0):+.2f}%")
+        if stats.get("clv_total"):
+            print(f"  CLV:           {stats.get('clv_avg_pct', 0):+.2f}% avg "
+                  f"({stats.get('clv_positive', 0)}/{stats.get('clv_total', 0)} positive)")
+
+    elif args.command == "report":
+        print(generate_report(days=args.days))
+
+    elif args.command == "migrate":
+        print("\nMigrating from legacy files...")
+        result = migrate_from_legacy()
+        print(f"\nMigration complete:")
+        print(f"  Sources read:       {result['sources_read']}")
+        print(f"  Total imported:     {result['total_imported']}")
+        print(f"  Duplicates merged:  {result['duplicates_merged']}")
+        print(f"  Settlements applied: {result['settlements_applied']}")
+        print(f"  CLV records applied: {result['clv_applied']}")
+        if result["errors"]:
+            print(f"  Errors: {result['errors']}")
+        print(f"\nJournal saved to: {JOURNAL_PATH}")
+
+        # Show quick stats
+        stats = get_journal_stats()
+        print(f"\nPost-migration stats:")
+        print(f"  Total bets: {stats['total_bets']} "
+              f"({stats['pending']} pending, {stats['settled']} settled)")
+        print(f"  P&L: ${stats['total_profit']:+,.2f} | ROI: {stats['roi_pct']:+.2f}%")
+
+    elif args.command == "settle":
+        print("\nFetching results and settling bets...")
+        try:
+            from scripts.data.results_fetcher import fetch_and_settle
+            summary = fetch_and_settle()
+            print(f"\nSettlement complete:")
+            print(f"  Settled: {summary.get('settled', 0)}")
+            print(f"  Won: {summary.get('won', 0)}")
+            print(f"  Lost: {summary.get('lost', 0)}")
+            print(f"  Push: {summary.get('push', 0)}")
+            print(f"  Profit: ${summary.get('profit', 0):+,.2f}")
+            print(f"  Balance: ${summary.get('new_balance', 0):,.2f}")
+        except Exception as e:
+            print(f"Settlement failed: {e}")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

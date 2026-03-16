@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}AI Advisor — SerieAI{% endblock %}
+
+{% block head %}
+<style>
+  .advisor-fullpage {
+    display: flex;
+    gap: var(--space-6);
+    height: calc(100vh - 73px);
+    padding: 0;
+  }
+  .advisor-fullpage .main-inner {
+    padding: 0;
+    max-width: none;
+  }
+  .advisor-chat-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    height: 100%;
+  }
+  .advisor-sidebar-right {
+    width: 280px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border-subtle);
+    padding: var(--space-5);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .advisor-sidebar-right h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .suggested-q {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    background: none;
+    text-align: left;
+    width: 100%;
+  }
+  .suggested-q:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-muted);
+  }
+  .fp-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-6) var(--space-8);
+  }
+  .fp-input-area {
+    border-top: 1px solid var(--border-subtle);
+    padding: var(--space-4) var(--space-8);
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-end;
+  }
+  .fp-input-area textarea {
+    flex: 1;
+    resize: none;
+    min-height: 40px;
+    max-height: 120px;
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: var(--font-sans);
+    outline: none;
+    line-height: 1.5;
+  }
+  .fp-input-area textarea:focus { border-color: var(--accent); }
+  .fp-input-area textarea::placeholder { color: var(--text-tertiary); }
+  @media (max-width: 1024px) {
+    .advisor-sidebar-right { display: none; }
+  }
+</style>
+{% endblock %}
+
+{% block page_title %}AI Advisor{% endblock %}
+
+{% block content %}
+<div class="advisor-fullpage">
+  <div class="advisor-chat-area">
+    <div class="fp-messages" id="fp-messages"></div>
+    <div class="fp-input-area">
+      <textarea id="fp-input" placeholder="Ask about matches, teams, bets, players..." rows="1"></textarea>
+      <button class="btn btn--primary" id="fp-send" style="height:40px;">Send</button>
+      <button class="btn btn--secondary" id="fp-stop" style="height:40px;display:none;">Stop</button>
+      <button class="btn btn--ghost btn--sm" onclick="SerieAI.Advisor.clearChat()" title="Clear conversation" style="height:40px;color:var(--text-tertiary);">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <aside class="advisor-sidebar-right">
+    <div>
+      <h3>Suggested Questions</h3>
+      <div class="flex-col gap-2 mt-3" id="suggested-questions">
+        <button class="suggested-q" data-q="What are today's best value bets?">What are today's best value bets?</button>
+        <button class="suggested-q" data-q="Analyze the top match this weekend">Analyze the top match this weekend</button>
+        <button class="suggested-q" data-q="Which teams are in the best form?">Which teams are in the best form?</button>
+        <button class="suggested-q" data-q="How's my bankroll doing?">How's my bankroll doing?</button>
+        <button class="suggested-q" data-q="Compare Napoli vs Inter head to head">Compare Napoli vs Inter head to head</button>
+        <button class="suggested-q" data-q="Any live matches right now?">Any live matches right now?</button>
+      </div>
+    </div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/marked.min.js"></script>
+<script src="/static/js/advisor.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    SerieAI.Advisor.initFullpage('fp-messages', 'fp-input', 'fp-send', 'fp-stop');
+    // Wire up suggested questions
+    document.querySelectorAll('.suggested-q').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const q = btn.dataset.q;
+        document.getElementById('fp-input').value = q;
+        document.getElementById('fp-send').click();
+      });
+    });
+  });
+</script>
+{% endblock %}

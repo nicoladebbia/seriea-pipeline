@@ -1,0 +1,11 @@
+data/
+__pycache__/
+*.pyc
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+config/api_keys.json
+*.log
+.DS_Store

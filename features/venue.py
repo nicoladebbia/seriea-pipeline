@@ -1,0 +1,392 @@
+"""Venue Intelligence Module - Stadium-specific features.
+
+This module captures venue-related factors that impact match outcomes:
+- Stadium capacity and typical attendance
+- Pitch dimensions (narrow vs wide)
+- Altitude effects (e.g., Atalanta's Bergamo)
+- Travel distance for away team
+- Home team's historical performance at venue
+
+These factors are often overlooked but can significantly impact results.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+log = logging.getLogger(__name__)
+
+# Serie A stadium data (2024-25 season)
+SERIE_A_STADIUMS = {
+    "Inter": {
+        "name": "San Siro",
+        "city": "Milan",
+        "capacity": 75923,
+        "altitude_m": 122,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.478,
+        "lon": 9.124,
+    },
+    "Milan": {
+        "name": "San Siro",
+        "city": "Milan",
+        "capacity": 75923,
+        "altitude_m": 122,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.478,
+        "lon": 9.124,
+    },
+    "Juventus": {
+        "name": "Allianz Stadium",
+        "city": "Turin",
+        "capacity": 41507,
+        "altitude_m": 239,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.110,
+        "lon": 7.641,
+    },
+    "Napoli": {
+        "name": "Diego Armando Maradona",
+        "city": "Naples",
+        "capacity": 54726,
+        "altitude_m": 5,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 40.828,
+        "lon": 14.193,
+    },
+    "Roma": {
+        "name": "Stadio Olimpico",
+        "city": "Rome",
+        "capacity": 72698,
+        "altitude_m": 18,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 41.934,
+        "lon": 12.455,
+    },
+    "Lazio": {
+        "name": "Stadio Olimpico",
+        "city": "Rome",
+        "capacity": 72698,
+        "altitude_m": 18,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 41.934,
+        "lon": 12.455,
+    },
+    "Atalanta": {
+        "name": "Gewiss Stadium",
+        "city": "Bergamo",
+        "capacity": 24950,
+        "altitude_m": 352,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.709,
+        "lon": 9.681,
+    },
+    "Fiorentina": {
+        "name": "Artemio Franchi",
+        "city": "Florence",
+        "capacity": 43147,
+        "altitude_m": 50,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 43.781,
+        "lon": 11.282,
+    },
+    "Bologna": {
+        "name": "Renato Dall'Ara",
+        "city": "Bologna",
+        "capacity": 36462,
+        "altitude_m": 54,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 44.492,
+        "lon": 11.310,
+    },
+    "Torino": {
+        "name": "Stadio Olimpico Grande Torino",
+        "city": "Turin",
+        "capacity": 27994,
+        "altitude_m": 239,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.042,
+        "lon": 7.650,
+    },
+    "Udinese": {
+        "name": "Dacia Arena",
+        "city": "Udine",
+        "capacity": 25144,
+        "altitude_m": 113,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 46.082,
+        "lon": 13.200,
+    },
+    "Genoa": {
+        "name": "Luigi Ferraris",
+        "city": "Genoa",
+        "capacity": 36599,
+        "altitude_m": 19,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 44.416,
+        "lon": 8.952,
+    },
+    "Sampdoria": {
+        "name": "Luigi Ferraris",
+        "city": "Genoa",
+        "capacity": 36599,
+        "altitude_m": 19,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 44.416,
+        "lon": 8.952,
+    },
+    "Cagliari": {
+        "name": "Unipol Domus",
+        "city": "Cagliari",
+        "capacity": 16416,
+        "altitude_m": 4,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 39.200,
+        "lon": 9.137,
+    },
+    "Sassuolo": {
+        "name": "Mapei Stadium",
+        "city": "Reggio Emilia",
+        "capacity": 23717,
+        "altitude_m": 58,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 44.714,
+        "lon": 10.650,
+    },
+    "Empoli": {
+        "name": "Stadio Carlo Castellani",
+        "city": "Empoli",
+        "capacity": 16284,
+        "altitude_m": 28,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 43.726,
+        "lon": 10.946,
+    },
+    "Verona": {
+        "name": "Stadio Bentegodi",
+        "city": "Verona",
+        "capacity": 39211,
+        "altitude_m": 59,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.435,
+        "lon": 10.969,
+    },
+    "Hellas Verona": {
+        "name": "Stadio Bentegodi",
+        "city": "Verona",
+        "capacity": 39211,
+        "altitude_m": 59,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.435,
+        "lon": 10.969,
+    },
+    "Lecce": {
+        "name": "Via del Mare",
+        "city": "Lecce",
+        "capacity": 40670,
+        "altitude_m": 49,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 40.355,
+        "lon": 18.190,
+    },
+    "Monza": {
+        "name": "U-Power Stadium",
+        "city": "Monza",
+        "capacity": 16917,
+        "altitude_m": 162,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.584,
+        "lon": 9.280,
+    },
+    "Parma": {
+        "name": "Stadio Tardini",
+        "city": "Parma",
+        "capacity": 22352,
+        "altitude_m": 55,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 44.795,
+        "lon": 10.339,
+    },
+    "Venezia": {
+        "name": "Stadio Penzo",
+        "city": "Venice",
+        "capacity": 11150,
+        "altitude_m": 1,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.432,
+        "lon": 12.377,
+    },
+    "Como": {
+        "name": "Stadio Sinigaglia",
+        "city": "Como",
+        "capacity": 13602,
+        "altitude_m": 201,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.819,
+        "lon": 9.069,
+    },
+}
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate the great circle distance between two points in km."""
+    R = 6371  # Radius of Earth in km
+
+    lat1_rad = np.radians(lat1)
+    lat2_rad = np.radians(lat2)
+    delta_lat = np.radians(lat2 - lat1)
+    delta_lon = np.radians(lon2 - lon1)
+
+    a = np.sin(delta_lat / 2) ** 2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(delta_lon / 2) ** 2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    return R * c
+
+
+def get_travel_distance(home_team: str, away_team: str) -> float:
+    """Calculate travel distance for away team in km."""
+    home_info = SERIE_A_STADIUMS.get(home_team)
+    away_info = SERIE_A_STADIUMS.get(away_team)
+
+    if not home_info or not away_info:
+        return 0.0
+
+    return haversine_distance(
+        home_info["lat"], home_info["lon"],
+        away_info["lat"], away_info["lon"]
+    )
+
+
+def get_altitude_difference(home_team: str, away_team: str) -> float:
+    """Calculate altitude difference (home - away) in meters."""
+    home_info = SERIE_A_STADIUMS.get(home_team)
+    away_info = SERIE_A_STADIUMS.get(away_team)
+
+    if not home_info or not away_info:
+        return 0.0
+
+    return home_info["altitude_m"] - away_info["altitude_m"]
+
+
+def get_stadium_capacity(team: str) -> int:
+    """Get stadium capacity for a team."""
+    info = SERIE_A_STADIUMS.get(team)
+    return info["capacity"] if info else None
+
+
+def add_venue_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add venue-related features to match DataFrame.
+
+    Features added:
+    - travel_distance_km: Away team's travel distance
+    - altitude_diff: Altitude difference (home - away)
+    - home_stadium_capacity: Home team's stadium capacity
+    - capacity_ratio: Attendance / Capacity (atmosphere indicator)
+    - is_neutral_venue: Whether played at neutral venue
+    - long_travel: Flag for travel > 500km
+    - altitude_advantage: Flag for altitude > 200m difference
+    """
+    df = df.copy()
+
+    log.info("Adding venue features...")
+
+    # Initialize columns
+    df["travel_distance_km"] = 0.0
+    df["altitude_diff"] = 0.0
+    df["home_stadium_capacity"] = np.nan
+    df["capacity_ratio"] = 0.0
+    df["is_neutral_venue"] = 0
+    df["long_travel"] = 0
+    df["altitude_advantage"] = 0
+
+    for idx, row in df.iterrows():
+        home_team = row.get("home_team", "")
+        away_team = row.get("away_team", "")
+
+        if not home_team or not away_team:
+            continue
+
+        # Travel distance
+        distance = get_travel_distance(home_team, away_team)
+        df.at[idx, "travel_distance_km"] = round(distance, 1)
+        df.at[idx, "long_travel"] = 1 if distance > 500 else 0
+
+        # Altitude
+        alt_diff = get_altitude_difference(home_team, away_team)
+        df.at[idx, "altitude_diff"] = alt_diff
+        df.at[idx, "altitude_advantage"] = 1 if alt_diff > 200 else 0
+
+        # Capacity
+        capacity = get_stadium_capacity(home_team)
+        df.at[idx, "home_stadium_capacity"] = capacity
+
+        # Capacity ratio (atmosphere)
+        attendance = row.get("attendance", 0)
+        if pd.notna(attendance) and capacity is not None and capacity > 0:
+            attendance_val = pd.to_numeric(attendance, errors="coerce")
+            if pd.notna(attendance_val) and attendance_val > 0:
+                df.at[idx, "capacity_ratio"] = round(min(1.0, attendance_val / capacity), 2)
+
+    # Normalize travel distance (0-1 scale, max ~1000km in Italy)
+    df["travel_distance_norm"] = df["travel_distance_km"] / 1000
+
+    n_long_travel = (df["long_travel"] > 0).sum()
+    n_altitude = (df["altitude_advantage"] > 0).sum()
+
+    log.info(f"Added venue features: {n_long_travel} long travels, {n_altitude} altitude advantages")
+
+    return df
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    print("Testing venue module...")
+    print("=" * 60)
+
+    # Test travel distances
+    print("\nTravel Distance Examples:")
+    test_matches = [
+        ("Napoli", "Inter"),  # Long distance
+        ("Inter", "Milan"),  # Same city
+        ("Lecce", "Napoli"),  # Southern teams
+        ("Atalanta", "Napoli"),  # Altitude + distance
+    ]
+
+    for home, away in test_matches:
+        dist = get_travel_distance(home, away)
+        alt = get_altitude_difference(home, away)
+        print(f"  {away} @ {home}: {dist:.0f} km, altitude diff: {alt:+.0f} m")
+
+    # Stadium capacities
+    print("\nStadium Capacities (Top 10):")
+    capacities = [(team, info["capacity"]) for team, info in SERIE_A_STADIUMS.items()]
+    for team, cap in sorted(capacities, key=lambda x: -x[1])[:10]:
+        print(f"  {team}: {cap:,}")

@@ -1,0 +1,9 @@
+2026-02-03 13:20:19,497 [INFO] ScraperFC FBref Scraper
+2026-02-03 13:20:19,497 [INFO] Seasons to scrape: ['2024-2025']
+2026-02-03 13:20:19,497 [INFO] Output directory: /Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/scraperfc
+2026-02-03 13:20:19,497 [INFO] 
+2026-02-03 13:20:19,498 [INFO] === Season 2024-2025 ===
+2026-02-03 13:20:19,498 [INFO]   2024-2025: Scraping matches...
+2026-02-03 13:20:21,578 [INFO] Websocket connected
+2026-02-03 13:20:21,850 [INFO] Websocket connected
+2026-02-03 13:20:40,453 [ERROR] Connection to remote host was lost. - goodbye

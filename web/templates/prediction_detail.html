@@ -1,0 +1,1328 @@
+{% extends "base.html" %}
+
+{% block title %}Match Prediction — SerieAI{% endblock %}
+{% block page_title %}<span id="page-match-title">Match Prediction</span>{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Back Link ──────────────────────────────────────── */
+  .back-link {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:12px; color:var(--text-tertiary); text-decoration:none;
+    margin-bottom:var(--space-4); transition:color 0.15s;
+  }
+  .back-link:hover { color:var(--accent); }
+
+  /* ── Match Hero ─────────────────────────────────────── */
+  .match-hero {
+    background:var(--bg-card); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-lg); overflow:hidden; margin-bottom:var(--space-5);
+  }
+  .match-hero__header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border-subtle);
+    flex-wrap:wrap; gap:var(--space-2);
+  }
+  .match-hero__teams {
+    display:flex; align-items:center; gap:var(--space-6);
+    padding:var(--space-6) var(--space-6); justify-content:center;
+  }
+  .match-hero__team { flex:1; max-width:280px; }
+  .match-hero__team--home { text-align:right; }
+  .match-hero__team--away { text-align:left; }
+  .match-hero__team-name { font-size:24px; font-weight:700; color:var(--text-primary); }
+  .match-hero__team-name a { color:inherit; text-decoration:none; }
+  .match-hero__team-name a:hover { color:var(--accent); }
+  .match-hero__team-meta { font-size:12px; color:var(--text-tertiary); margin-top:4px; }
+  .match-hero__vs {
+    display:flex; flex-direction:column; align-items:center;
+    min-width:200px; text-align:center;
+  }
+  .match-hero__outcome { font-size:20px; font-weight:800; margin-bottom:4px; }
+  .match-hero__odds { font-size:12px; color:var(--text-tertiary); font-family:var(--font-mono); }
+  .match-hero__prob-bar { width:200px; margin:var(--space-2) 0; }
+
+  /* ── Intelligence Sections ──────────────────────────── */
+  .intel-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-4); }
+  @media (max-width:900px) { .intel-grid { grid-template-columns:1fr; } }
+  .intel-section {
+    background:var(--bg-card); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-lg); overflow:hidden;
+  }
+  .intel-section--full { grid-column:1/-1; }
+  .intel-section__header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border-subtle);
+  }
+  .intel-section__title {
+    font-size:11px; text-transform:uppercase; letter-spacing:0.5px;
+    font-weight:600; color:var(--accent); display:flex; align-items:center; gap:6px;
+  }
+  .intel-section__body { padding:var(--space-4); }
+
+  /* ── Model vs Market Chart ──────────────────────────── */
+  .mvm-row { display:flex; align-items:center; gap:var(--space-2); margin-bottom:var(--space-2); }
+  .mvm-label { width:50px; font-size:12px; font-weight:600; text-align:right; flex-shrink:0; }
+  .mvm-bars { flex:1; display:flex; align-items:center; gap:4px; height:24px; }
+  .mvm-bar { height:100%; border-radius:4px; transition:width 0.3s; min-width:2px; }
+  .mvm-bar--model { opacity:1; }
+  .mvm-bar--market { opacity:0.4; }
+  .mvm-pct { font-family:var(--font-mono); font-size:12px; width:36px; text-align:right; flex-shrink:0; }
+  .mvm-edge { font-family:var(--font-mono); font-size:12px; font-weight:600; width:52px; text-align:right; flex-shrink:0; }
+  .mvm-legend { display:flex; gap:var(--space-4); font-size:11px; color:var(--text-tertiary); margin-bottom:var(--space-3); }
+  .mvm-legend span::before { content:''; display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+  .mvm-legend .leg-model::before { background:var(--accent); }
+  .mvm-legend .leg-market::before { background:var(--text-tertiary); opacity:0.5; }
+
+  /* ── Ensemble Rows ──────────────────────────────────── */
+  .ens-row { display:flex; align-items:center; gap:var(--space-2); margin-bottom:6px; font-size:12px; }
+  .ens-name { width:90px; color:var(--text-secondary); text-align:right; flex-shrink:0; overflow:hidden; text-overflow:ellipsis; }
+  .ens-weight { width:32px; font-family:var(--font-mono); color:var(--text-tertiary); font-size:11px; text-align:right; flex-shrink:0; }
+  .ens-bar-wrap { flex:1; display:flex; height:16px; border-radius:4px; overflow:hidden; background:var(--bg-tertiary); }
+  .ens-bar-seg { height:100%; transition:width 0.3s; }
+  .ens-call { width:20px; font-weight:700; text-align:center; flex-shrink:0; }
+  .ens-agree-icon { width:16px; text-align:center; flex-shrink:0; font-size:11px; }
+  .ens-separator { border-top:1px solid var(--border-default); margin:var(--space-2) 0; }
+
+  /* ── H2H ────────────────────────────────────────────── */
+  .h2h-grid { display:grid; grid-template-columns:1fr auto 1fr; gap:var(--space-2); align-items:center; text-align:center; }
+  .h2h-stat { font-size:11px; color:var(--text-tertiary); }
+  .h2h-stat__val { font-family:var(--font-mono); font-size:16px; font-weight:600; display:block; }
+  .h2h-bar-wrap { display:flex; height:8px; border-radius:4px; overflow:hidden; margin:var(--space-2) 0; }
+
+  /* ── League Context ─────────────────────────────────── */
+  .league-ctx { font-size:12px; }
+  .league-ctx__row { display:flex; align-items:center; justify-content:space-between; padding:4px 0; }
+  .league-ctx__label { color:var(--text-tertiary); }
+  .league-ctx__val { font-family:var(--font-mono); font-weight:500; }
+  .league-ctx__zone { font-size:10px; padding:2px 6px; border-radius:3px; font-weight:600; }
+  .zone--title { background:rgba(74,222,128,0.15); color:var(--green); }
+  .zone--cl { background:rgba(74,222,128,0.1); color:var(--green); }
+  .zone--el { background:rgba(129,140,248,0.15); color:var(--accent); }
+  .zone--conf { background:rgba(129,140,248,0.1); color:var(--accent); }
+  .zone--relegation { background:rgba(248,113,113,0.15); color:var(--red); }
+  .zone--mid { background:var(--bg-tertiary); color:var(--text-tertiary); }
+
+  /* ── Live pulse animation ─────────────────────────────*/
+  @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.7} }
+
+  /* ── Lineup Grid ────────────────────────────────────── */
+  .lineup-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); }
+  @media (max-width:600px) { .lineup-grid { grid-template-columns:1fr; } }
+  .lineup-col__header { font-size:12px; font-weight:600; margin-bottom:var(--space-2); display:flex; align-items:center; gap:6px; }
+  .lineup-col__player { font-size:12px; line-height:1.8; color:var(--text-secondary); }
+  .lineup-col__bench { margin-top:var(--space-3); padding-top:var(--space-2); border-top:1px solid var(--border-subtle); }
+  .lineup-col__bench-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); margin-bottom:var(--space-1); }
+
+  /* ── Odds Table ─────────────────────────────────────── */
+  .odds-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .odds-table th { padding:6px 10px; text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); border-bottom:1px solid var(--border-default); }
+  .odds-table td { padding:6px 10px; border-bottom:1px solid var(--border-subtle); font-family:var(--font-mono); }
+
+  /* ── Mini Stat Grid (for intel sections) ────────────── */
+  .dp-intel-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); gap:var(--space-3); }
+  .dp-intel-item { display:flex; flex-direction:column; }
+  .dp-odds-move { display:flex; gap:var(--space-4); flex-wrap:wrap; }
+  .dp-odds-move__item { display:flex; flex-direction:column; gap:2px; }
+  .dp-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3); }
+  @media (max-width:600px) { .dp-mini-grid { grid-template-columns:1fr; } }
+  .dp-mini-stat { display:flex; flex-direction:column; }
+
+  /* ── Position Badge ─────────────────────────────────── */
+  .pos-badge { display:inline-block; min-width:24px; text-align:center; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600; font-family:var(--font-mono); }
+  .pos-badge--top4 { background:rgba(74,222,128,0.15); color:var(--green); }
+  .pos-badge--mid { background:rgba(129,140,248,0.15); color:var(--accent); }
+  .pos-badge--bottom3 { background:rgba(248,113,113,0.15); color:var(--red); }
+  .pos-badge--default { background:var(--bg-tertiary); color:var(--text-tertiary); }
+
+  /* ── Calibration ────────────────────────────────────── */
+  .cal-note { font-size:12px; padding:var(--space-2) var(--space-3); background:var(--bg-tertiary); border-radius:var(--radius-sm); margin-top:var(--space-3); }
+
+  /* ── Recommended Bets ───────────────────────────────── */
+  .bet-card {
+    background:var(--bg-tertiary); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); padding:var(--space-3) var(--space-4);
+    margin-bottom:var(--space-2);
+  }
+  .bet-card--value { border-color:rgba(74,222,128,0.3); }
+
+  /* ── Live Match Sections ─────────────────────────────── */
+  .live-banner {
+    display:flex; align-items:center; justify-content:center; gap:12px;
+    padding:var(--space-2) var(--space-4); background:rgba(74,222,128,0.08);
+    border-bottom:1px solid rgba(74,222,128,0.2); font-size:12px;
+  }
+  .live-dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+  .live-score-display {
+    display:flex; align-items:center; justify-content:center; gap:var(--space-6);
+    padding:var(--space-6) var(--space-4);
+  }
+  .live-score__team { flex:1; max-width:200px; }
+  .live-score__team--home { text-align:right; }
+  .live-score__team--away { text-align:left; }
+  .live-score__name { font-size:20px; font-weight:700; }
+  .live-score__center {
+    display:flex; flex-direction:column; align-items:center; min-width:100px;
+  }
+  .live-score__digits { font-size:48px; font-weight:800; font-family:var(--font-mono); letter-spacing:6px; }
+  .live-score__minute { font-size:14px; color:var(--green); font-weight:600; font-family:var(--font-mono); }
+  .live-score__status { font-size:11px; color:var(--text-tertiary); margin-top:2px; }
+
+  /* Event Timeline */
+  .event-timeline { list-style:none; padding:0; margin:0; }
+  .event-timeline__item {
+    display:flex; align-items:flex-start; gap:var(--space-3);
+    padding:var(--space-2) 0; border-bottom:1px solid var(--border-subtle);
+    font-size:12px;
+  }
+  .event-timeline__item:last-child { border-bottom:none; }
+  .event-timeline__minute {
+    width:36px; text-align:right; font-family:var(--font-mono); font-weight:600;
+    color:var(--text-tertiary); flex-shrink:0;
+  }
+  .event-timeline__icon { width:20px; text-align:center; flex-shrink:0; font-size:14px; }
+  .event-timeline__detail { flex:1; color:var(--text-secondary); }
+  .event-timeline__side { font-size:10px; color:var(--text-tertiary); }
+
+  /* Live Stats Bars */
+  .live-stat-row {
+    display:flex; align-items:center; gap:var(--space-2);
+    padding:6px 0; border-bottom:1px solid var(--border-subtle);
+  }
+  .live-stat-row:last-child { border-bottom:none; }
+  .live-stat__val { width:40px; font-family:var(--font-mono); font-size:12px; font-weight:600; }
+  .live-stat__val--home { text-align:right; color:var(--text-primary); }
+  .live-stat__val--away { text-align:left; color:var(--text-primary); }
+  .live-stat__label {
+    flex-shrink:0; width:90px; text-align:center; font-size:10px;
+    color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.3px;
+  }
+  .live-stat__bars { flex:1; display:flex; gap:2px; }
+  .live-stat__bar-wrap { flex:1; display:flex; }
+  .live-stat__bar-wrap--home { justify-content:flex-end; }
+  .live-stat__bar { height:8px; border-radius:4px; transition:width 0.4s ease; min-width:2px; }
+  .live-stat__bar--home { background:var(--accent); }
+  .live-stat__bar--away { background:var(--red); }
+
+  /* Auto-refresh indicator */
+  .refresh-indicator {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:11px; color:var(--text-tertiary);
+  }
+  .refresh-indicator .animate-spin { width:12px; height:12px; }
+</style>
+{% endblock %}
+
+{% block header_actions %}
+<div style="display:flex;align-items:center;gap:12px;">
+  <div id="detail-clock" style="font-family:monospace;font-size:13px;color:var(--text-secondary);"></div>
+</div>
+{% endblock %}
+
+{% block content %}
+<a href="/predictions" class="back-link">
+  <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+  All Predictions
+</a>
+
+<!-- Match Hero -->
+<div class="match-hero" id="match-hero">
+  <div style="text-align:center;padding:var(--space-12) 0;">
+    <svg class="animate-spin" width="24" height="24" fill="none" stroke="var(--text-tertiary)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+    <div class="text-small text-tertiary mt-2">Loading prediction...</div>
+  </div>
+</div>
+
+<!-- Live Match Section (shown only when match is live) -->
+<div id="live-section" class="hidden" style="margin-bottom:var(--space-4)">
+  <div class="intel-grid">
+    <!-- Live Score + Events -->
+    <div class="intel-section">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <span class="live-dot animate-pulse"></span>
+          Live Match
+        </span>
+        <span class="refresh-indicator" id="live-refresh-status"></span>
+      </div>
+      <div class="intel-section__body" id="body-live-score" style="padding:0"></div>
+    </div>
+
+    <!-- Live Stats -->
+    <div class="intel-section">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          Live Statistics
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-live-stats"></div>
+    </div>
+  </div>
+
+  <!-- Live Events Timeline (full width) -->
+  <div class="intel-grid" style="margin-top:0">
+    <div class="intel-section intel-section--full">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Match Events
+        </span>
+        <span id="live-events-count" class="text-small text-tertiary"></span>
+      </div>
+      <div class="intel-section__body" id="body-live-events"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Intelligence Sections -->
+<div id="intel-sections" class="hidden">
+  <!-- Row 1: Prediction Analysis + Match Context -->
+  <div class="intel-grid">
+    <div class="intel-section" id="sec-prediction">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 100 12 6 6 0 000-12z"/></svg>
+          Prediction Analysis
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-prediction"></div>
+    </div>
+    <div class="intel-section" id="sec-context">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          Match Context
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-context"></div>
+    </div>
+  </div>
+
+  <!-- Row 2: Key Factors + Market Intelligence -->
+  <div class="intel-grid">
+    <div class="intel-section" id="sec-factors">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Key Factors
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-factors"></div>
+    </div>
+    <div class="intel-section" id="sec-market">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+          Market Intelligence
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-market"></div>
+    </div>
+  </div>
+
+  <!-- Row 3: Lineups + Injuries -->
+  <div class="intel-grid">
+    <div class="intel-section" id="sec-lineups">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          Lineups
+        </span>
+        <span id="lineup-badge"></span>
+      </div>
+      <div class="intel-section__body" id="body-lineups"></div>
+    </div>
+    <div class="intel-section" id="sec-injuries">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Injuries &amp; Suspensions
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-injuries"></div>
+    </div>
+  </div>
+
+  <!-- Row 4: Cross-Market + Draw Analysis -->
+  <div class="intel-grid">
+    <div class="intel-section" id="sec-cross-market">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          Cross-Market Signals
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-cross-market"></div>
+    </div>
+    <div class="intel-section" id="sec-draw">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Draw Analysis
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-draw"></div>
+    </div>
+  </div>
+
+  <!-- Row 5: Conditions + Sentiment -->
+  <div class="intel-grid">
+    <div class="intel-section" id="sec-conditions">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.9 2.999"/></svg>
+          Conditions
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-conditions"></div>
+    </div>
+    <div class="intel-section" id="sec-sentiment">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+          Sentiment
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-sentiment"></div>
+    </div>
+  </div>
+
+  <!-- Row 6: Betting Recommendations (full-width) -->
+  <div class="intel-grid">
+    <div class="intel-section intel-section--full" id="sec-betting">
+      <div class="intel-section__header">
+        <span class="intel-section__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Betting Recommendation
+        </span>
+      </div>
+      <div class="intel-section__body" id="body-betting"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Error State -->
+<div id="detail-error" class="hidden" style="text-align:center;padding:var(--space-12) 0;">
+  <p class="text-section-title text-secondary" style="margin-bottom:var(--space-2);">Match not found</p>
+  <p class="text-small text-tertiary" id="detail-error-msg">Could not find prediction for this match.</p>
+  <a href="/predictions" class="btn btn--sm mt-4" style="display:inline-block;">View All Predictions</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MATCH_SLUG = "{{ match_slug }}";
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function toSlug(s) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function posBadge(pos) {
+  if (!pos) return '';
+  const cls = pos <= 4 ? 'pos-badge--top4' : pos >= 18 ? 'pos-badge--bottom3' : pos <= 8 ? 'pos-badge--mid' : 'pos-badge--default';
+  return `<span class="pos-badge ${cls}">${pos}</span>`;
+}
+
+function zoneLabel(pos) {
+  if (pos === 1) return ['Title holders', 'zone--title'];
+  if (pos <= 4) return ['Champions League', 'zone--cl'];
+  if (pos === 5) return ['Europa League', 'zone--el'];
+  if (pos <= 7) return ['Conference League', 'zone--conf'];
+  if (pos >= 18) return ['Relegation zone', 'zone--relegation'];
+  return ['Mid-table', 'zone--mid'];
+}
+
+function formDots(form5) {
+  if (!form5) return '';
+  return form5.split('').map(c => {
+    const col = c === 'W' ? 'var(--green)' : c === 'D' ? 'var(--amber)' : 'var(--red)';
+    return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${col}" title="${c}"></span>`;
+  }).join(' ');
+}
+
+function getMatchEdges(m) {
+  const p = m.probabilities || {}, mk = m.market_implied || {};
+  return {
+    home: (mk.home && p.home) ? (p.home - mk.home) * 100 : null,
+    draw: (mk.draw && p.draw) ? (p.draw - mk.draw) * 100 : null,
+    away: (mk.away && p.away) ? (p.away - mk.away) * 100 : null,
+  };
+}
+
+function getAgreement(m) {
+  const comp = m.component_methods || {};
+  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  if (methods.length < 2) return null;
+  const calls = methods.map(([, p]) => {
+    const pH = p.prob_H||0, pD = p.prob_D||0, pA = p.prob_A||0;
+    return pH >= pD && pH >= pA ? 'H' : pD >= pH && pD >= pA ? 'D' : 'A';
+  });
+  const pred = m.predicted_outcome === 'HOME' ? 'H' : m.predicted_outcome === 'AWAY' ? 'A' : 'D';
+  const agree = calls.filter(c => c === pred).length;
+  return { agree, total: calls.length, calls, pred };
+}
+
+const fmtFactor = f => f.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Match Hero
+// ═══════════════════════════════════════════════════════════════
+function renderHero(m, ctx) {
+  const probs = m.probabilities || {};
+  const outcomeCol = OUTCOME_COLORS[m.predicted_outcome] || 'var(--text-tertiary)';
+  const h2h = m.odds?.h2h || {};
+  const standings = ctx.standings || {};
+  const hPos = standings[m.home_team]?.position;
+  const aPos = standings[m.away_team]?.position;
+  const hPts = standings[m.home_team]?.points;
+  const aPts = standings[m.away_team]?.points;
+  const hForm = standings[m.home_team]?.form_last5;
+  const aForm = standings[m.away_team]?.form_last5;
+  const edges = getMatchEdges(m);
+  const bestEdge = Math.max(edges.home||0, edges.draw||0, edges.away||0);
+  const hasValue = bestEdge > 3;
+  const mi = m.market_intelligence||{}, om = m.odds_movement||{};
+  const hasSteam = mi.steam_detected || om.is_steam_move;
+  const isCompleted = m.status === 'completed';
+  const actualScore = m.actual_score;
+  const actualResult = m.actual_result;
+  const predCorrect = isCompleted && actualResult && actualResult === m.predicted_outcome;
+  const resultMap = {'HOME': m.home_team, 'AWAY': m.away_team, 'DRAW': 'Draw'};
+
+  return `
+    <div class="match-hero__header">
+      <div class="flex items-center gap-2 flex-wrap">
+        ${isCompleted
+          ? `<span class="badge" style="background:rgba(148,163,184,0.15);color:var(--text-tertiary);font-weight:600">FT</span>
+             <span class="text-small text-tertiary">${m.date || ''}</span>`
+          : `<span class="text-small text-tertiary text-mono">${formatKickoffTime(m.commence_time)||'--:--'}</span>
+             <span class="text-small text-tertiary">${timeUntil(m.commence_time)}</span>
+             ${windowBadge(m.match_window)}`
+        }
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        ${isCompleted
+          ? `<span class="badge ${predCorrect ? 'badge--green' : 'badge--red'}">${predCorrect ? 'CORRECT' : 'WRONG'}</span>
+             <span class="text-small text-tertiary">Predicted: ${m.predicted_outcome || '?'} | Actual: ${actualResult || '?'}</span>`
+          : `${m.lineup_source==='confirmed'?'<span class="badge badge--outline-green">CONFIRMED XI</span>':''}
+             ${hasValue?`<span class="badge badge--green">VALUE +${bestEdge.toFixed(1)}%</span>`:''}
+             ${hasSteam?'<span class="badge badge--red">STEAM MOVE</span>':''}
+             ${confBadge(m.confidence_level)}`
+        }
+      </div>
+    </div>
+    <div class="match-hero__teams">
+      <div class="match-hero__team match-hero__team--home">
+        <div class="match-hero__team-name"><a href="/team/${encodeURIComponent(m.home_team)}">${m.home_team}</a></div>
+        <div class="match-hero__team-meta">
+          ${hPos ? posBadge(hPos) + ' ' : ''}${hPts ? hPts + 'pts' : ''}
+          ${hForm ? '<span style="margin-left:8px">' + formDots(hForm) + '</span>' : ''}
+        </div>
+      </div>
+      <div class="match-hero__vs">
+        ${isCompleted && actualScore
+          ? `<div style="font-size:36px;font-weight:800;font-family:var(--font-mono);color:var(--text-primary);margin-bottom:4px">${actualScore[0]} - ${actualScore[1]}</div>
+             <div style="font-size:11px;color:var(--text-tertiary)">Full Time</div>`
+          : `<div class="match-hero__prob-bar">${probBarHTML(probs)}</div>
+             <div class="match-hero__outcome" style="color:${outcomeCol}">${m.predicted_outcome||'?'}</div>
+             <div class="match-hero__odds">
+               ${h2h.home ? `${oddsFmt(h2h.home)} / ${oddsFmt(h2h.draw)} / ${oddsFmt(h2h.away)}` : ''}
+             </div>`
+        }
+        <div style="margin-top:6px;font-size:11px;color:var(--text-tertiary)">
+          xG: <span class="text-mono text-green">${xgFmt(m.home_xg)}</span> - <span class="text-mono text-red">${xgFmt(m.away_xg)}</span>
+        </div>
+      </div>
+      <div class="match-hero__team match-hero__team--away">
+        <div class="match-hero__team-name"><a href="/team/${encodeURIComponent(m.away_team)}">${m.away_team}</a></div>
+        <div class="match-hero__team-meta">
+          ${aPos ? posBadge(aPos) + ' ' : ''}${aPts ? aPts + 'pts' : ''}
+          ${aForm ? '<span style="margin-left:8px">' + formDots(aForm) + '</span>' : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Prediction Analysis (Model vs Market + Ensemble)
+// ═══════════════════════════════════════════════════════════════
+function renderPredictionAnalysis(m) {
+  const p = m.probabilities || {}, mk = m.market_implied || {};
+  const hasMarket = mk.home || mk.away;
+  let html = '';
+
+  // Model vs Market
+  if (p.home || p.away) {
+    const sides = [
+      ['H', m.home_team, p.home||0, mk.home||0, '--green'],
+      ['D', 'Draw', p.draw||0, mk.draw||0, '--amber'],
+      ['A', m.away_team, p.away||0, mk.away||0, '--red']
+    ];
+    html += `<div class="text-label mb-2">Model vs Market</div>`;
+    html += `<div class="mvm-legend"><span class="leg-model">Model</span>${hasMarket ? '<span class="leg-market">Market</span>' : ''}</div>`;
+    for (const [code, , model, market, col] of sides) {
+      const mPct = (model * 100).toFixed(0);
+      const mkPct = hasMarket ? (market * 100).toFixed(0) : null;
+      const edge = hasMarket ? (model - market) * 100 : null;
+      const edgeCol = edge > 3 ? 'text-green' : edge < -3 ? 'text-red' : 'text-tertiary';
+      html += `<div class="mvm-row">
+        <span class="mvm-label" style="color:var(${col})">${code}</span>
+        <div class="mvm-bars">
+          <div class="mvm-bar mvm-bar--model" style="width:${mPct}%;background:var(${col})"></div>
+          ${hasMarket ? `<div class="mvm-bar mvm-bar--market" style="width:${mkPct}%;background:var(${col})"></div>` : ''}
+        </div>
+        <span class="mvm-pct" style="color:var(${col})">${mPct}%</span>
+        ${hasMarket ? `<span class="mvm-pct text-tertiary">${mkPct}%</span>` : ''}
+        ${edge != null ? `<span class="mvm-edge ${edgeCol}">${edge > 0 ? '+' : ''}${edge.toFixed(1)}</span>` : ''}
+      </div>`;
+    }
+  }
+
+  // Ensemble Components
+  const comp = m.component_methods || {};
+  const wts = m.weights_applied || {};
+  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  if (methods.length) {
+    const nameMap = { ml:'ML CatBoost', market:'Market Odds', xg:'xG Poisson', player_xg:'Player xG', factor:'Factor', deep:'Deep Learn' };
+    const order = ['ml','market','xg','player_xg','factor','deep'];
+    methods.sort(([a],[b]) => { const ia=order.indexOf(a),ib=order.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); });
+    const ensCall = m.predicted_outcome === 'HOME' ? 'H' : m.predicted_outcome === 'AWAY' ? 'A' : 'D';
+
+    html += `<div style="margin-top:var(--space-4)"><div class="text-label mb-2">Ensemble Components</div>`;
+    for (const [method, preds] of methods) {
+      const w = wts[method]; const wPct = w != null ? (w*100).toFixed(0) : '?';
+      const pH = (preds.prob_H||0)*100, pD = (preds.prob_D||0)*100, pA = (preds.prob_A||0)*100;
+      const call = pH >= pD && pH >= pA ? 'H' : pD >= pH && pD >= pA ? 'D' : 'A';
+      const callCol = call === 'H' ? 'text-green' : call === 'D' ? 'text-amber' : 'text-red';
+      const agrees = call === ensCall;
+      html += `<div class="ens-row">
+        <span class="ens-name">${nameMap[method]||method}</span>
+        <span class="ens-weight">${wPct}%</span>
+        <div class="ens-bar-wrap">
+          <div class="ens-bar-seg" style="width:${pH.toFixed(0)}%;background:var(--green)"></div>
+          <div class="ens-bar-seg" style="width:${pD.toFixed(0)}%;background:var(--amber)"></div>
+          <div class="ens-bar-seg" style="width:${pA.toFixed(0)}%;background:var(--red)"></div>
+        </div>
+        <span class="ens-call ${callCol}">${call}</span>
+        <span class="ens-agree-icon">${agrees ? '<span style="color:var(--green)">\u2713</span>' : '<span style="color:var(--red)">\u2717</span>'}</span>
+      </div>`;
+    }
+
+    // Final ensemble row
+    const fp = m.probabilities || {};
+    const fH = (fp.home||0)*100, fD = (fp.draw||0)*100, fA = (fp.away||0)*100;
+    const fCol = ensCall === 'H' ? 'text-green' : ensCall === 'D' ? 'text-amber' : 'text-red';
+    const agr = getAgreement(m);
+    html += `<div class="ens-separator"></div>
+      <div class="ens-row" style="font-weight:600">
+        <span class="ens-name" style="color:var(--text-primary)">Ensemble</span>
+        <span class="ens-weight" style="color:var(--accent)">FIN</span>
+        <div class="ens-bar-wrap" style="height:18px">
+          <div class="ens-bar-seg" style="width:${fH.toFixed(0)}%;background:var(--green)"></div>
+          <div class="ens-bar-seg" style="width:${fD.toFixed(0)}%;background:var(--amber)"></div>
+          <div class="ens-bar-seg" style="width:${fA.toFixed(0)}%;background:var(--red)"></div>
+        </div>
+        <span class="ens-call ${fCol}">${ensCall}</span>
+        <span class="ens-agree-icon">${agr ? agr.agree + '/' + agr.total : ''}</span>
+      </div>`;
+    html += '</div>';
+  }
+
+  return html || '<div class="text-small text-tertiary">No prediction data</div>';
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Match Context (H2H + League Position)
+// ═══════════════════════════════════════════════════════════════
+function renderMatchContext(m, ctx) {
+  let html = '';
+  const standings = ctx.standings || {};
+
+  // H2H
+  const matchKey = m.match || `${m.home_team} vs ${m.away_team}`;
+  const h2h = (ctx.h2h || {})[matchKey];
+  html += '<div class="text-label mb-2">Head to Head</div>';
+  if (h2h && h2h.total_meetings) {
+    const total = h2h.total_meetings;
+    const hW = h2h.home_wins||0, d = h2h.draws||0, aW = h2h.away_wins||0;
+    const hPct = total ? (hW/total*100).toFixed(0) : 0;
+    const dPct = total ? (d/total*100).toFixed(0) : 0;
+    const aPct = total ? (aW/total*100).toFixed(0) : 0;
+    const lastScore = h2h.last_score || '';
+    const lastResult = h2h.last_result ? h2h.last_result.replace(/_/g,' ') : '';
+    const lastCol = lastResult.includes('home') ? 'text-green' : lastResult.includes('away') ? 'text-red' : 'text-amber';
+    html += `
+      <div class="text-small text-tertiary mb-2">${total} meetings</div>
+      <div class="h2h-grid">
+        <div class="h2h-stat"><span class="h2h-stat__val text-green">${hW}</span>${m.home_team} wins</div>
+        <div class="h2h-stat"><span class="h2h-stat__val text-amber">${d}</span>draws</div>
+        <div class="h2h-stat"><span class="h2h-stat__val text-red">${aW}</span>${m.away_team} wins</div>
+      </div>
+      <div class="h2h-bar-wrap" title="${hPct}% / ${dPct}% / ${aPct}%">
+        <div style="width:${hPct}%;background:var(--green)"></div>
+        <div style="width:${dPct}%;background:var(--amber)"></div>
+        <div style="width:${aPct}%;background:var(--red)"></div>
+      </div>
+      <div class="flex items-center justify-between" style="font-size:11px">
+        <div><span class="text-tertiary">Avg goals:</span> <span class="text-mono text-green">${h2h.home_goals_avg?.toFixed(1)??'-'}</span> <span class="text-tertiary">-</span> <span class="text-mono text-red">${h2h.away_goals_avg?.toFixed(1)??'-'}</span></div>
+        ${lastScore ? `<div><span class="text-tertiary">Last:</span> <span class="${lastCol} text-mono">${lastScore}</span></div>` : ''}
+      </div>`;
+  } else {
+    html += '<div class="text-small text-tertiary mb-3">No H2H data available</div>';
+  }
+
+  // League Position
+  html += '<div style="margin-top:var(--space-4)"><div class="text-label mb-2">League Position</div>';
+  for (const [team, isHome] of [[m.home_team, true], [m.away_team, false]]) {
+    const s = standings[team];
+    if (!s) { html += `<div class="text-small text-tertiary mb-2">${team}: no data</div>`; continue; }
+    const [zone, zoneCls] = zoneLabel(s.position);
+    const col = isHome ? 'text-green' : 'text-red';
+    html += `<div style="margin-bottom:var(--space-3)">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="${col} font-semibold" style="font-size:12px">${team}</span>
+        ${posBadge(s.position)}
+        <span class="league-ctx__zone ${zoneCls}">${zone}</span>
+      </div>
+      <div class="league-ctx">
+        <div class="league-ctx__row"><span class="league-ctx__label">Record</span><span class="league-ctx__val">${s.wins}W ${s.draws}D ${s.losses}L</span></div>
+        <div class="league-ctx__row"><span class="league-ctx__label">Points</span><span class="league-ctx__val">${s.points}pts <span class="text-tertiary">(${s.played} played)</span></span></div>
+        <div class="league-ctx__row"><span class="league-ctx__label">Goals</span><span class="league-ctx__val">${s.gf}-${s.ga} <span class="${s.gd>0?'text-green':s.gd<0?'text-red':'text-tertiary'}">(${s.gd>0?'+':''}${s.gd})</span></span></div>
+        <div class="league-ctx__row"><span class="league-ctx__label">Form</span><span>${formDots(s.form_last5)}</span></div>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Calibration
+  const cal = ctx.calibration || {};
+  const byConf = cal.by_confidence || {};
+  const level = m.confidence_level;
+  const calData = byConf[level?.toUpperCase()] || byConf[level];
+  if (calData && calData.total >= 5) {
+    const acc = (calData.accuracy * 100).toFixed(0);
+    const col = calData.accuracy >= 0.5 ? 'text-green' : calData.accuracy >= 0.3 ? 'text-amber' : 'text-red';
+    html += `<div class="cal-note"><span class="text-tertiary">At <strong>${level}</strong> confidence:</span> <span class="${col} font-semibold">${acc}% accuracy</span> <span class="text-tertiary">(${calData.total} predictions)</span></div>`;
+  }
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Key Factors
+// ═══════════════════════════════════════════════════════════════
+function renderFactors(m) {
+  const hf = m.home_factors||[], af = m.away_factors||[], nf = m.neutral_factors||[];
+  if (!hf.length && !af.length && !nf.length) return '<div class="text-small text-tertiary">No factor data</div>';
+  let html = '';
+  if (hf.length) html += `<div class="mb-3"><span class="text-small text-green font-medium">${m.home_team}</span><div class="flex flex-wrap gap-1 mt-1">${hf.map(f=>`<span class="badge badge--outline-green">${fmtFactor(f)}</span>`).join('')}</div></div>`;
+  if (af.length) html += `<div class="mb-3"><span class="text-small text-red font-medium">${m.away_team}</span><div class="flex flex-wrap gap-1 mt-1">${af.map(f=>`<span class="badge badge--outline-red">${fmtFactor(f)}</span>`).join('')}</div></div>`;
+  if (nf.length) html += `<div><span class="text-small text-tertiary font-medium">Neutral</span><div class="flex flex-wrap gap-1 mt-1">${nf.map(f=>`<span class="badge badge--neutral">${fmtFactor(f)}</span>`).join('')}</div></div>`;
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Market Intelligence
+// ═══════════════════════════════════════════════════════════════
+function renderMarketIntel(m) {
+  const mi = m.market_intelligence||{}, om = m.odds_movement||{};
+  if (!mi.sharp_direction && !om.current_home && !mi.composite_score) return '<div class="text-small text-tertiary">No market intelligence data</div>';
+
+  let html = '<div class="dp-intel-grid">';
+  if (mi.sharp_direction) html += `<div class="dp-intel-item"><span class="text-label">Sharp Money</span><span class="text-small font-medium mt-1">${arrowIcon(mi.sharp_direction)} ${mi.sharp_direction}</span></div>`;
+  html += `<div class="dp-intel-item"><span class="text-label">Steam</span><span class="text-small mt-1">${mi.steam_detected||om.is_steam_move?'<span class="badge badge--red">DETECTED</span>':'<span class="text-tertiary">None</span>'}</span></div>`;
+  if (mi.divergence) html += `<div class="dp-intel-item"><span class="text-label">Sharp-Soft Gap</span><span class="text-mono text-small mt-1">${(mi.divergence*100).toFixed(1)}%</span></div>`;
+  if (mi.composite_score!=null) html += `<div class="dp-intel-item"><span class="text-label">Confidence</span><span class="text-mono text-small mt-1">${mi.composite_score.toFixed(2)}</span></div>`;
+  html += '</div>';
+
+  // Odds movement
+  if (om.current_home || om.opening_home) {
+    html += '<div class="dp-odds-move mt-3" style="margin-top:var(--space-3)">';
+    for (const [side,label,col] of [['home','H','--green'],['draw','D','--amber'],['away','A','--red']]) {
+      const cur=om['current_'+side], open=om['opening_'+side], mov=om[side+'_movement'];
+      const arrow=mov>0?'\u25B2':mov<0?'\u25BC':'';
+      const movCol=mov>0?'text-green':mov<0?'text-red':'';
+      html += `<div class="dp-odds-move__item"><span class="text-label">${label}</span><div class="flex items-center gap-1"><span class="text-tertiary" style="font-size:11px">${oddsFmt(open)}</span><span class="text-tertiary">\u2192</span><span class="text-mono font-medium" style="font-size:12px;color:var(${col})">${oddsFmt(cur)}</span>${arrow?`<span class="${movCol}" style="font-size:10px">${arrow}</span>`:''}</div></div>`;
+    }
+    html += '</div>';
+  }
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Lineups
+// ═══════════════════════════════════════════════════════════════
+function renderLineups(m) {
+  const cl = m.confirmed_lineups||{}, lp = m.lineup_prediction||{};
+
+  if (cl.home_lineup || cl.away_lineup) {
+    document.getElementById('lineup-badge').innerHTML = '<span class="badge badge--outline-green">Confirmed</span>';
+    let html = '<div class="lineup-grid">';
+    for (const [side, team, col] of [['home', m.home_team, 'text-green'], ['away', m.away_team, 'text-red']]) {
+      const lineup = cl[side+'_lineup']||[];
+      const bench = cl[side+'_bench']||[];
+      const formation = cl[side+'_formation']||'?';
+      html += `<div>
+        <div class="lineup-col__header"><span class="${col}">${team}</span> <span class="text-tertiary text-mono">${formation}</span></div>
+        <div class="lineup-col__player">${lineup.map((p,i) => `<div>${i+1}. ${p}</div>`).join('')}</div>
+        ${bench.length ? `<div class="lineup-col__bench"><div class="lineup-col__bench-label">Bench</div><div class="lineup-col__player text-tertiary">${bench.map(p => `<div>${p}</div>`).join('')}</div></div>` : ''}
+      </div>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  if (lp.home_lineup?.formation || lp.away_lineup?.formation) {
+    document.getElementById('lineup-badge').innerHTML = '<span class="badge badge--amber">Predicted</span>';
+    let html = '<div class="lineup-grid">';
+    for (const [side, team, col] of [['home', m.home_team, 'text-green'], ['away', m.away_team, 'text-red']]) {
+      const tl = lp[side+'_lineup'];
+      if (!tl?.formation) { html += `<div class="text-small text-tertiary">${team}: No data</div>`; continue; }
+      const fm = tl.formation||{}, xi = tl.predicted_xi||[];
+      html += `<div>
+        <div class="lineup-col__header"><span class="${col}">${team}</span> <span class="text-tertiary text-mono">${fm.predicted||'?'}</span> <span class="text-tertiary text-small">${((fm.confidence||0)*100).toFixed(0)}%</span></div>
+        <div class="lineup-col__player">${xi.map(p => {
+          const trendCol = p.form_trend==='hot'?'text-green':p.form_trend==='cold'?'text-red':'text-secondary';
+          return `<div class="${trendCol}">${p.position_label||''} ${p.name}</div>`;
+        }).join('')}</div>
+      </div>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  document.getElementById('lineup-badge').innerHTML = '';
+  return '<div class="text-small text-tertiary">No lineup data available</div>';
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Injuries
+// ═══════════════════════════════════════════════════════════════
+function renderInjuries(m) {
+  const inj = m.injury_adjustments||{};
+  const hInj = inj.home_injured||[], aInj = inj.away_injured||[];
+  if (!hInj.length && !aInj.length) return '<div class="text-small text-tertiary">No injury data</div>';
+  return `<div class="dp-mini-grid">
+    <div class="dp-mini-stat"><span class="text-label">${m.home_team} (${hInj.length})</span><div class="flex flex-wrap gap-1 mt-1">${hInj.map(p=>`<span class="badge badge--red">${p}</span>`).join('')||'<span class="text-tertiary text-small">Full squad</span>'}</div></div>
+    <div class="dp-mini-stat"><span class="text-label">${m.away_team} (${aInj.length})</span><div class="flex flex-wrap gap-1 mt-1">${aInj.map(p=>`<span class="badge badge--red">${p}</span>`).join('')||'<span class="text-tertiary text-small">Full squad</span>'}</div></div>
+  </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Cross-Market Signals
+// ═══════════════════════════════════════════════════════════════
+function renderCrossMarket(m) {
+  const cm = m.cross_market || {};
+  if (!cm.signals_count && !cm.has_anomaly) return '<div class="text-small text-tertiary">No cross-market signal data</div>';
+
+  let html = '<div class="dp-intel-grid">';
+  if (cm.offensive_dominance) {
+    const od = cm.offensive_dominance;
+    html += `<div class="dp-intel-item"><span class="text-label">Offensive Dominance</span><span class="text-small mt-1">${od.detected ? `<span class="badge badge--green">${od.side}</span> str: ${(od.strength*100).toFixed(0)}%` : '<span class="text-tertiary">Not detected</span>'}</span></div>`;
+  }
+  if (cm.defensive_signal) {
+    const ds = cm.defensive_signal;
+    html += `<div class="dp-intel-item"><span class="text-label">Defensive Signal</span><span class="text-small mt-1">${ds.detected ? `<span class="badge badge--amber">Active</span> ${(ds.strength*100).toFixed(0)}%` : '<span class="text-tertiary">None</span>'}</span></div>`;
+  }
+  if (cm.handicap_consistency) {
+    const hc = cm.handicap_consistency;
+    html += `<div class="dp-intel-item"><span class="text-label">Handicap Consistency</span><span class="text-small mt-1">${hc.consistent ? '<span class="text-green">Consistent</span>' : `<span class="badge badge--red">${hc.inconsistency_type||'Inconsistent'}</span>`}</span></div>`;
+  }
+  if (cm.btts_totals) {
+    const bt = cm.btts_totals;
+    html += `<div class="dp-intel-item"><span class="text-label">BTTS/Totals</span><span class="text-small mt-1">${bt.agreement ? '<span class="text-green">Agreement</span>' : `<span class="badge badge--amber">${bt.anomaly_type||'Anomaly'}</span>`}</span></div>`;
+  }
+  html += '</div>';
+
+  const reasons = [cm.offensive_dominance?.reasoning, cm.defensive_signal?.reasoning, cm.handicap_consistency?.reasoning, cm.btts_totals?.reasoning].filter(Boolean);
+  if (reasons.length) html += `<div class="text-small text-tertiary mt-2" style="font-style:italic;margin-top:var(--space-2)">${reasons.join(' | ')}</div>`;
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Draw Analysis
+// ═══════════════════════════════════════════════════════════════
+function renderDrawAnalysis(m) {
+  const da = m.draw_analysis||{};
+  if (!da.draw_score && !da.is_draw_candidate) return '<div class="text-small text-tertiary">No draw analysis data</div>';
+  const dp = (da.draw_score||0)*100;
+  return `
+    <div class="flex items-center gap-3 mb-2">
+      <span class="text-mono font-semibold ${da.is_draw_candidate?'text-amber':'text-secondary'}" style="font-size:20px">${dp.toFixed(0)}%</span>
+      ${da.is_draw_candidate ? '<span class="badge badge--amber">DRAW CANDIDATE</span>' : '<span class="text-small text-tertiary">Not a draw candidate</span>'}
+    </div>
+    ${(da.indicators||[]).length ? `<div class="flex flex-wrap gap-1 mt-2">${da.indicators.map(i=>`<span class="badge badge--neutral">${i.replace(/_/g,' ')}</span>`).join('')}</div>` : ''}`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Conditions (Weather + Referee)
+// ═══════════════════════════════════════════════════════════════
+function renderConditions(m) {
+  const w = m.weather||{};
+  let html = '';
+  if (w.temperature != null) {
+    const cond = w.conditions; let desc = '';
+    if (cond && typeof cond === 'object') {
+      const t=[]; if(cond.is_rainy)t.push('Rain'); if(cond.is_windy)t.push('Wind'); if(cond.is_cold)t.push('Cold'); if(cond.is_hot)t.push('Hot'); desc=t.length?t.join(', '):'Clear';
+    } else if (typeof cond === 'string') desc = cond;
+    html += `<div class="dp-intel-grid"><div class="dp-intel-item"><span class="text-label">Weather</span><span class="text-small mt-1">${desc} ${w.temperature}\u00B0C</span></div>`;
+    if (w.humidity != null) html += `<div class="dp-intel-item"><span class="text-label">Humidity</span><span class="text-small mt-1">${w.humidity}%</span></div>`;
+    if (w.wind_speed != null) html += `<div class="dp-intel-item"><span class="text-label">Wind</span><span class="text-small mt-1">${w.wind_speed} km/h</span></div>`;
+    html += '</div>';
+  }
+  if (m.referee) {
+    html += `<div style="margin-top:var(--space-3)"><div class="dp-intel-grid"><div class="dp-intel-item"><span class="text-label">Referee</span><span class="text-small mt-1">${m.referee}${m.referee_bias?' <span class="badge badge--neutral" style="font-size:9px">'+m.referee_bias.replace(/_/g,' ')+'</span>':''}</span></div></div></div>`;
+  }
+  if (!html) html = '<div class="text-small text-tertiary">No conditions data</div>';
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Sentiment
+// ═══════════════════════════════════════════════════════════════
+function renderSentiment(m) {
+  const sent = m.sentiment||{};
+  if (!sent.home_fan_confidence && !sent.away_fan_confidence) return '<div class="text-small text-tertiary">No sentiment data</div>';
+  return `<div class="dp-mini-grid">
+    <div class="dp-mini-stat"><span class="text-label">Home Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--green" style="width:${sent.home_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.home_fan_confidence||0}%</span></div></div>
+    <div class="dp-mini-stat"><span class="text-label">Away Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--red" style="width:${sent.away_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.away_fan_confidence||0}%</span></div></div>
+  </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Betting Recommendation
+// ═══════════════════════════════════════════════════════════════
+function renderBetting(m) {
+  const edges = getMatchEdges(m);
+  const h2h = m.odds?.h2h || {};
+  const totals = m.odds?.totals || [];
+  const rec = m.betting_recommendation;
+
+  let html = '';
+
+  // Edges summary
+  html += '<div class="text-label mb-2">Market Edges</div>';
+  html += '<div style="display:flex;gap:var(--space-4);margin-bottom:var(--space-3)">';
+  for (const [side, label, col] of [['home','Home','--green'],['draw','Draw','--amber'],['away','Away','--red']]) {
+    const edge = edges[side];
+    const edgeCol = edge > 3 ? 'text-green' : edge < -3 ? 'text-red' : 'text-tertiary';
+    html += `<div style="flex:1;text-align:center;background:var(--bg-tertiary);padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm)">
+      <div class="text-label">${label}</div>
+      <div class="text-mono font-semibold ${edgeCol}" style="font-size:16px">${edge!=null?(edge>0?'+':'')+edge.toFixed(1)+'%':'-'}</div>
+      <div class="text-tertiary" style="font-size:10px">${h2h[side] ? '@' + h2h[side].toFixed(2) : ''}</div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Recommendation
+  if (rec) {
+    html += `<div style="margin-top:var(--space-2);padding:var(--space-3);background:rgba(74,222,128,0.05);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
+      <span class="text-label">Recommendation</span>
+      <div class="text-secondary font-medium mt-1">${rec}</div>
+    </div>`;
+  }
+
+  // Totals
+  if (totals.length) {
+    html += '<div style="margin-top:var(--space-3)"><div class="text-label mb-2">Totals (O/U)</div><div style="display:flex;gap:var(--space-2);flex-wrap:wrap">';
+    for (const t of totals.slice(0, 4)) {
+      const point = t.point || t.total;
+      html += `<div style="background:var(--bg-tertiary);padding:4px 10px;border-radius:var(--radius-sm);font-size:11px">
+        <span class="text-tertiary">${point}</span>
+        <span class="text-mono text-green">O ${oddsFmt(t.over)}</span>
+        <span class="text-mono text-red">U ${oddsFmt(t.under)}</span>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+
+  return html || '<div class="text-small text-tertiary">No betting data</div>';
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE: Score Display
+// ═══════════════════════════════════════════════════════════════
+function renderLiveScore(live, match) {
+  const score = live.score || [0, 0];
+  const minute = live.minute;
+  const statusLabels = {first_half:'1st Half',half_time:'Half Time',second_half:'2nd Half',completed:'Full Time'};
+  const statusLabel = statusLabels[live.status] || live.status;
+  const isActive = ['first_half','second_half'].includes(live.status);
+
+  // Current odds
+  const curOdds = live.current_odds || {};
+  const preOdds = live.pre_match_odds || {};
+
+  let oddsHtml = '';
+  if (curOdds.home) {
+    oddsHtml = '<div style="display:flex;gap:var(--space-4);justify-content:center;padding:var(--space-2) 0;border-top:1px solid var(--border-subtle)">';
+    for (const [side, label, col] of [['home','H','--green'],['draw','D','--amber'],['away','A','--red']]) {
+      const cur = curOdds[side], pre = preOdds[side];
+      const shift = (pre && cur) ? ((1/cur*100) - (1/pre*100)) : 0;
+      const arrow = shift > 0.5 ? '<span class="text-green" style="font-size:10px">\u25B2</span>' : shift < -0.5 ? '<span class="text-red" style="font-size:10px">\u25BC</span>' : '';
+      oddsHtml += `<div style="text-align:center;min-width:60px">
+        <div class="text-label">${label}</div>
+        <div class="text-mono font-semibold" style="font-size:14px;color:var(${col})">${cur ? cur.toFixed(2) : '-'}</div>
+        ${pre ? `<div class="text-tertiary" style="font-size:10px">was ${pre.toFixed(2)} ${arrow}</div>` : ''}
+      </div>`;
+    }
+    oddsHtml += '</div>';
+  }
+
+  return `
+    <div class="live-banner">
+      ${isActive ? '<span class="live-dot animate-pulse"></span>' : ''}
+      <span class="text-green font-semibold">${statusLabel}</span>
+      ${minute ? `<span class="text-mono text-green">${minute}'</span>` : ''}
+    </div>
+    <div class="live-score-display">
+      <div class="live-score__team live-score__team--home">
+        <div class="live-score__name">${match.home_team}</div>
+      </div>
+      <div class="live-score__center">
+        <div class="live-score__digits">${score[0]} - ${score[1]}</div>
+      </div>
+      <div class="live-score__team live-score__team--away">
+        <div class="live-score__name">${match.away_team}</div>
+      </div>
+    </div>
+    ${oddsHtml}`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE: Statistics Bars
+// ═══════════════════════════════════════════════════════════════
+function renderLiveStats(stats) {
+  if (!stats || !Object.keys(stats).length) return '<div class="text-small text-tertiary">No live statistics yet</div>';
+
+  const displayOrder = [
+    ['possession', 'Possession', '%'],
+    ['xg', 'xG', ''],
+    ['shots', 'Shots', ''],
+    ['shots_on_target', 'On Target', ''],
+    ['corners', 'Corners', ''],
+    ['fouls', 'Fouls', ''],
+    ['big_chances', 'Big Chances', ''],
+    ['saves', 'Saves', ''],
+    ['passes', 'Passes', ''],
+    ['accurate_passes', 'Acc. Passes', ''],
+    ['yellow_cards', 'Yellows', ''],
+    ['offsides', 'Offsides', ''],
+  ];
+
+  let html = '';
+  for (const [key, label, suffix] of displayOrder) {
+    const s = stats[key];
+    if (!s) continue;
+    const hVal = s.home, aVal = s.away;
+    const hNum = parseFloat(hVal) || 0, aNum = parseFloat(aVal) || 0;
+    const total = hNum + aNum || 1;
+    const hPct = (hNum / total * 100).toFixed(0);
+    const aPct = (aNum / total * 100).toFixed(0);
+
+    const hDisplay = typeof hVal === 'number' && !Number.isInteger(hVal) ? hVal.toFixed(2) : hVal;
+    const aDisplay = typeof aVal === 'number' && !Number.isInteger(aVal) ? aVal.toFixed(2) : aVal;
+
+    html += `<div class="live-stat-row">
+      <span class="live-stat__val live-stat__val--home">${hDisplay}${suffix}</span>
+      <div class="live-stat__bars">
+        <div class="live-stat__bar-wrap live-stat__bar-wrap--home">
+          <div class="live-stat__bar live-stat__bar--home" style="width:${hPct}%"></div>
+        </div>
+        <div class="live-stat__bar-wrap">
+          <div class="live-stat__bar live-stat__bar--away" style="width:${aPct}%"></div>
+        </div>
+      </div>
+      <span class="live-stat__val live-stat__val--away">${aDisplay}${suffix}</span>
+      <span class="live-stat__label">${label}</span>
+    </div>`;
+  }
+  return html || '<div class="text-small text-tertiary">No live statistics yet</div>';
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE: Event Timeline
+// ═══════════════════════════════════════════════════════════════
+function renderLiveEvents(events, match) {
+  if (!events || !events.length) return '<div class="text-small text-tertiary">No match events yet</div>';
+
+  // Sort by minute descending (most recent first)
+  const sorted = [...events].sort((a, b) => (b.minute + (b.added_time||0)/100) - (a.minute + (a.added_time||0)/100));
+
+  let html = '<ul class="event-timeline">';
+  for (const e of sorted) {
+    const min = e.added_time ? `${e.minute}+${e.added_time}` : `${e.minute}`;
+    const side = e.is_home ? match.home_team : match.away_team;
+    const sideCol = e.is_home ? 'text-green' : 'text-red';
+    let icon = '', detail = '';
+
+    if (e.type === 'goal') {
+      icon = '\u26BD';
+      const goalLabel = e.goal_type === 'penalty' ? ' (pen)' : e.goal_type === 'ownGoal' ? ' (OG)' : '';
+      detail = `<strong>${e.player}</strong>${goalLabel}${e.assist ? ` <span class="text-tertiary">assist: ${e.assist}</span>` : ''}`;
+    } else if (e.type === 'card') {
+      icon = e.card_type === 'yellow' ? '\uD83D\uDFE8' : e.card_type === 'red' ? '\uD83D\uDFE5' : '\uD83D\uDFE8\uD83D\uDFE5';
+      detail = `<strong>${e.player}</strong>`;
+    } else if (e.type === 'substitution') {
+      icon = '\uD83D\uDD04';
+      detail = `<span class="text-red">${e.player_out}</span> <span class="text-tertiary">\u2192</span> <span class="text-green">${e.player_in}</span>`;
+    } else if (e.type === 'var') {
+      icon = '\uD83D\uDCFA';
+      detail = `VAR: ${(e.decision||'').replace(/_/g,' ')}`;
+    }
+
+    html += `<li class="event-timeline__item">
+      <span class="event-timeline__minute">${min}'</span>
+      <span class="event-timeline__icon">${icon}</span>
+      <div class="event-timeline__detail">${detail}</div>
+      <span class="event-timeline__side ${sideCol}">${side}</span>
+    </li>`;
+  }
+  html += '</ul>';
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE: Fetch and render live data
+// ═══════════════════════════════════════════════════════════════
+let _liveRefreshInterval = null;
+let _currentMatch = null;
+
+async function fetchAndRenderLive() {
+  try {
+    const live = await apiFetch(`/api/live/match/${MATCH_SLUG}`);
+    if (!live || !live.found) {
+      document.getElementById('live-section').classList.add('hidden');
+      return false;
+    }
+
+    const isLive = ['first_half','half_time','second_half'].includes(live.status);
+    const isCompleted = live.status === 'completed';
+
+    if (!isLive && !isCompleted) {
+      document.getElementById('live-section').classList.add('hidden');
+      return false;
+    }
+
+    // Show live section
+    document.getElementById('live-section').classList.remove('hidden');
+
+    // Render score
+    document.getElementById('body-live-score').innerHTML = renderLiveScore(live, _currentMatch || live);
+
+    // Render stats
+    document.getElementById('body-live-stats').innerHTML = renderLiveStats(live.statistics);
+
+    // Render events
+    const events = live.events || [];
+    document.getElementById('body-live-events').innerHTML = renderLiveEvents(events, _currentMatch || live);
+    const countEl = document.getElementById('live-events-count');
+    if (countEl) countEl.textContent = events.length ? `${events.length} event${events.length!==1?'s':''}` : '';
+
+    // Update refresh indicator
+    const refEl = document.getElementById('live-refresh-status');
+    if (refEl) {
+      const pollInfo = live.polls ? `Poll #${live.polls}` : '';
+      const lastPoll = live.last_poll_at ? new Date(live.last_poll_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '';
+      refEl.textContent = [pollInfo, lastPoll].filter(Boolean).join(' | ');
+    }
+
+    // Update page title with score
+    if (isLive) {
+      const score = live.score || [0, 0];
+      document.title = `${score[0]}-${score[1]} ${live.home_team} vs ${live.away_team} — SerieAI`;
+    }
+
+    return isLive;
+  } catch (err) {
+    console.warn('Live data fetch failed:', err);
+    return false;
+  }
+}
+
+function startLiveRefresh() {
+  if (_liveRefreshInterval) return;
+  _liveRefreshInterval = setInterval(async () => {
+    const stillLive = await fetchAndRenderLive();
+    if (!stillLive && _liveRefreshInterval) {
+      clearInterval(_liveRefreshInterval);
+      _liveRefreshInterval = null;
+    }
+  }, 30000); // Refresh every 30 seconds
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN LOADER
+// ═══════════════════════════════════════════════════════════════
+async function loadMatchDetail() {
+  try {
+    const [dashData, ctxData] = await Promise.all([
+      apiFetch('/api/dashboard'),
+      apiFetch('/api/predictions/context').catch(() => ({ h2h:{}, standings:{}, calibration:{} }))
+    ]);
+
+    // Find match by slug — check all_matches first (includes completed), fallback to matches
+    const allMatches = dashData.all_matches || dashData.matches || [];
+    const match = allMatches.find(m => {
+      const mk = m.match || `${m.home_team} vs ${m.away_team}`;
+      return toSlug(mk) === MATCH_SLUG;
+    });
+
+    if (!match) {
+      document.getElementById('match-hero').classList.add('hidden');
+      document.getElementById('detail-error').classList.remove('hidden');
+      document.getElementById('detail-error-msg').textContent = `No prediction found for slug "${MATCH_SLUG}". The match may have finished or the pipeline hasn't run yet.`;
+      return;
+    }
+
+    _currentMatch = match;
+
+    // Update page title
+    const title = `${match.home_team} vs ${match.away_team}`;
+    document.title = `${title} — SerieAI`;
+    document.getElementById('page-match-title').textContent = title;
+
+    // Render hero
+    document.getElementById('match-hero').innerHTML = renderHero(match, ctxData);
+
+    // Show intelligence sections
+    document.getElementById('intel-sections').classList.remove('hidden');
+
+    // Render all sections
+    document.getElementById('body-prediction').innerHTML = renderPredictionAnalysis(match);
+    document.getElementById('body-context').innerHTML = renderMatchContext(match, ctxData);
+    document.getElementById('body-factors').innerHTML = renderFactors(match);
+    document.getElementById('body-market').innerHTML = renderMarketIntel(match);
+    document.getElementById('body-lineups').innerHTML = renderLineups(match);
+    document.getElementById('body-injuries').innerHTML = renderInjuries(match);
+    document.getElementById('body-cross-market').innerHTML = renderCrossMarket(match);
+    document.getElementById('body-draw').innerHTML = renderDrawAnalysis(match);
+    document.getElementById('body-conditions').innerHTML = renderConditions(match);
+    document.getElementById('body-sentiment').innerHTML = renderSentiment(match);
+    document.getElementById('body-betting').innerHTML = renderBetting(match);
+
+    // Try to load live data
+    const isLive = await fetchAndRenderLive();
+    if (isLive) {
+      startLiveRefresh();
+    }
+
+    // Also start match-clock polling for hero badge updates
+    pollMatchClock();
+    setInterval(pollMatchClock, 30000);
+
+  } catch (err) {
+    document.getElementById('match-hero').innerHTML = `<div style="padding:var(--space-6);text-align:center"><span class="text-red">Failed to load: ${err.message}</span></div>`;
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// MATCH-CLOCK POLLING (hero badge + basic live status)
+// ═══════════════════════════════════════════════════════════════
+async function pollMatchClock() {
+  try {
+    const res = await fetch('/api/match-clock');
+    const data = await res.json();
+    const matches = data.matches || {};
+
+    // Find our match
+    const mk = _currentMatch ? (_currentMatch.match || `${_currentMatch.home_team} vs ${_currentMatch.away_team}`) : null;
+    if (!mk) return;
+    const info = matches[mk];
+    if (!info) return;
+
+    updateHeroBadge(info);
+
+    // If no full live data but match-clock says live, show basic score in live section
+    if ((info.status === 'live' || info.status === 'half_time') && !_liveRefreshInterval) {
+      showBasicLiveFromClock(info);
+    }
+  } catch(e) { /* silent */ }
+}
+
+function updateHeroBadge(info) {
+  const header = document.querySelector('.match-hero__header');
+  if (!header) return;
+
+  // Remove any existing live/ft badges
+  header.querySelectorAll('.badge--live-status').forEach(el => el.remove());
+
+  const badgeArea = header.querySelector('.flex:last-child') || header.lastElementChild;
+  if (!badgeArea) return;
+
+  if (info.status === 'live') {
+    const clock = info.clock || '';
+    const score = info.score ? `${info.score[0]}-${info.score[1]}` : '';
+    badgeArea.insertAdjacentHTML('afterbegin',
+      `<span class="badge badge--live-status" style="background:var(--green);color:#000;font-weight:700;animation:pulse-live 1.5s ease-in-out infinite">LIVE ${clock}${score ? ' | ' + score : ''}</span>`);
+  } else if (info.status === 'half_time') {
+    const score = info.score ? `${info.score[0]}-${info.score[1]}` : '';
+    badgeArea.insertAdjacentHTML('afterbegin',
+      `<span class="badge badge--live-status" style="background:rgba(251,191,36,0.15);color:var(--amber);font-weight:700">HT${score ? ' | ' + score : ''}</span>`);
+  } else if (info.status === 'completed') {
+    const score = info.score ? `${info.score[0]}-${info.score[1]}` : '';
+    badgeArea.insertAdjacentHTML('afterbegin',
+      `<span class="badge badge--live-status" style="background:rgba(148,163,184,0.15);color:var(--text-tertiary);font-weight:600">FT${score ? ' ' + score : ''}</span>`);
+  }
+}
+
+function showBasicLiveFromClock(info) {
+  const liveSection = document.getElementById('live-section');
+  const scoreBody = document.getElementById('body-live-score');
+  if (!liveSection || !scoreBody) return;
+
+  liveSection.classList.remove('hidden');
+
+  const score = info.score || [0, 0];
+  const clock = info.clock || '';
+  const isHT = info.status === 'half_time';
+
+  scoreBody.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;padding:var(--space-4);gap:var(--space-6)">
+      <div style="font-size:32px;font-weight:800;font-family:var(--font-mono);color:var(--text-primary)">
+        ${score[0]} - ${score[1]}
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:20px;font-weight:700;color:${isHT ? 'var(--amber)' : 'var(--green)'}">${clock}</div>
+        <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">${isHT ? 'Half Time' : 'In Progress'}</div>
+      </div>
+    </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+loadMatchDetail();
+
+(function() {
+  function tick() { const el = document.getElementById('detail-clock'); if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  tick(); setInterval(tick, 1000);
+})();
+</script>
+{% endblock %}

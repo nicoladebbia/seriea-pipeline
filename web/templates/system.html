@@ -1,0 +1,1557 @@
+{% extends "base.html" %}
+
+{% block title %}System Health — SerieAI{% endblock %}
+{% block page_title %}System Health{% endblock %}
+
+{% block head %}
+  <script src="/static/js/tailwind.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      corePlugins: { preflight: false },
+      theme: { extend: { colors: {
+        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
+        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
+        accent: { blue:'#818cf8' }
+      } } }
+    }
+  </script>
+  <style>
+    .stat-value { font-variant-numeric: tabular-nums; }
+    .section-card { transition: all 0.2s; }
+    .section-card:hover { border-color: #374151; }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="text-gray-200">
+    <div id="loading" class="text-center py-20 text-gray-500">Loading system health...</div>
+
+    <!-- Quick Actions Row -->
+    <div id="quick-actions" class="hidden mb-6">
+      <div class="flex flex-wrap gap-3">
+        <button onclick="quickAction('/api/refresh/snapshot', this)" class="flex items-center gap-2 bg-green-700 hover:bg-green-600 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Odds Snapshot <span class="text-green-300/60 font-normal ml-1">~12 cr</span>
+        </button>
+        <button onclick="quickAction('/api/refresh', this)" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Full Pipeline <span class="text-blue-300/60 font-normal ml-1">~20 cr</span>
+        </button>
+        <button onclick="quickAction('/api/refresh/extra-markets', this)" class="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          Extra Markets <span class="text-purple-300/60 font-normal ml-1">~504 cr</span>
+        </button>
+        <button onclick="quickAction('/api/live/trigger', this)" class="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+          Poll Live Now <span class="text-emerald-300/60 font-normal ml-1">~2 cr</span>
+        </button>
+        <button onclick="startSofascore(this)" class="flex items-center gap-2 bg-cyan-700 hover:bg-cyan-600 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          Refresh SofaScore <span class="text-cyan-300/60 font-normal ml-1">free</span>
+        </button>
+      </div>
+      <div id="quick-action-status" class="text-xs text-gray-500 mt-2"></div>
+    </div>
+
+    <!-- Scheduler + Credits + SofaScore + Live (2x2 grid) -->
+    <div id="control-panels" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+
+      <!-- Auto-Scheduler Card -->
+      <div id="scheduler-card" class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">Auto-Scheduler</h3>
+          <button id="scheduler-toggle" onclick="toggleScheduler()" class="px-3 py-1 text-xs font-semibold rounded-lg border transition-colors bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700">OFF</button>
+        </div>
+        <!-- Preset Modes -->
+        <div class="flex gap-2 mb-4">
+          <button onclick="applyPreset('matchday')" class="flex-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors bg-red-900/30 text-red-300 border-red-800/50 hover:bg-red-900/50" title="~3,200 cr/day: Snapshots 10min, live 2min, results 15min, extra 3x, pipeline 3x">
+            Matchday
+          </button>
+          <button onclick="applyPreset('standard')" class="flex-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors bg-blue-900/30 text-blue-300 border-blue-800/50 hover:bg-blue-900/50" title="~2,600 cr/day: Snapshots 15min, results 30min, extra 2x, pipeline 2x">
+            Standard
+          </button>
+          <button onclick="applyPreset('economy')" class="flex-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors bg-green-900/30 text-green-300 border-green-800/50 hover:bg-green-900/50" title="~800 cr/day: Snapshots 60min, results 60min, extra 1x, pipeline 1x">
+            Economy
+          </button>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-xs mb-3">
+          <div>
+            <div class="text-[10px] text-gray-500 mb-1">Snapshot Interval <span class="text-blue-400/60">~12 cr each</span></div>
+            <select id="cfg-snapshot-interval" onchange="updateSchedulerConfig()" class="bg-gray-900 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 w-full">
+              <option value="5">5 min (aggressive)</option>
+              <option value="10" selected>10 min (recommended)</option>
+              <option value="15">15 min (balanced)</option>
+              <option value="30">30 min (light)</option>
+              <option value="60">60 min (economy)</option>
+            </select>
+            <div class="text-[9px] text-gray-600 mt-0.5">Catches steam moves. 10-15 min ideal</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500 mb-1">Results Check <span class="text-blue-400/60">~2 cr each</span></div>
+            <select id="cfg-results-interval" onchange="updateSchedulerConfig()" class="bg-gray-900 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 w-full">
+              <option value="15">15 min (matchday)</option>
+              <option value="30" selected>30 min (recommended)</option>
+              <option value="60">60 min (off-day)</option>
+            </select>
+            <div class="text-[9px] text-gray-600 mt-0.5">Auto-settles bets. 15 min on matchday</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500 mb-1">Extra Markets Times <span class="text-blue-400/60">~504 cr each</span></div>
+            <input id="cfg-extra-times" value="08:00, 16:00" onchange="updateSchedulerConfig()" class="bg-gray-900 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 w-full" placeholder="08:00, 16:00" />
+            <div class="text-[9px] text-gray-600 mt-0.5">BTTS, DNB, alt lines for all matches</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500 mb-1">Pipeline Times <span class="text-blue-400/60">~20 cr each</span></div>
+            <input id="cfg-pipeline-times" value="07:00, 19:00" onchange="updateSchedulerConfig()" class="bg-gray-900 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1 w-full" placeholder="07:00, 19:00" />
+            <div class="text-[9px] text-gray-600 mt-0.5">Full 32-step run. 2x/day recommended</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-3 mb-3">
+          <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" id="cfg-auto-live" checked onchange="updateSchedulerConfig()" class="rounded bg-gray-800 border-gray-600 text-green-500">
+            Auto-start live on matchday
+          </label>
+          <div class="text-[10px] text-gray-500">
+            Live interval:
+            <select id="cfg-live-interval" onchange="updateSchedulerConfig()" class="bg-gray-900 border border-gray-700 text-gray-300 text-[10px] rounded px-1 py-0.5">
+              <option value="1">1 min</option>
+              <option value="2" selected>2 min (recommended)</option>
+              <option value="5">5 min</option>
+            </select>
+          </div>
+        </div>
+        <div id="scheduler-estimate" class="text-[10px] text-amber-400/80 mb-2"></div>
+        <div id="scheduler-next-runs" class="text-[10px] text-gray-500 mb-3"></div>
+        <div id="scheduler-log" class="max-h-32 overflow-y-auto"></div>
+      </div>
+
+      <!-- API Credits Card -->
+      <div id="credits-card" class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">API Credits</h3>
+          <span id="credits-limit" class="text-[10px] text-gray-500">100K/month</span>
+        </div>
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <div class="text-[10px] text-gray-500 uppercase">Today</div>
+            <div class="text-2xl font-bold text-white stat-value mt-1" id="credits-today">-</div>
+            <div class="text-xs text-gray-500" id="credits-today-limit"></div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500 uppercase">This Month</div>
+            <div class="text-2xl font-bold text-white stat-value mt-1" id="credits-monthly">-</div>
+            <div class="text-xs text-gray-500" id="credits-monthly-pct"></div>
+          </div>
+        </div>
+        <div class="mb-3">
+          <div class="flex justify-between text-[10px] text-gray-500 mb-1">
+            <span>Monthly Usage</span>
+            <span id="credits-bar-label">0%</span>
+          </div>
+          <div class="h-2.5 bg-gray-800 rounded-full overflow-hidden">
+            <div id="credits-bar" class="h-2.5 rounded-full bg-blue-500 transition-all" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="text-[10px] text-gray-500" id="credits-remaining"></div>
+        <div class="text-[10px] text-gray-500" id="credits-last-call"></div>
+      </div>
+
+      <!-- SofaScore Data Card -->
+      <div id="sofascore-card" class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">SofaScore Data</h3>
+          <span id="sofascore-status-badge" class="badge bg-gray-700 text-gray-400">Unknown</span>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-xs mb-3">
+          <div>
+            <div class="text-[10px] text-gray-500">Total Records</div>
+            <div class="text-lg font-bold text-white stat-value" id="ss-records">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Total Matches</div>
+            <div class="text-lg font-bold text-white stat-value" id="ss-matches">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Last Updated</div>
+            <div class="text-sm text-gray-300" id="ss-updated">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">File Size</div>
+            <div class="text-sm text-gray-300" id="ss-size">-</div>
+          </div>
+        </div>
+        <div id="ss-seasons" class="text-[10px] text-gray-500 mb-3"></div>
+        <div id="ss-scrape-status" class="text-xs text-gray-500"></div>
+      </div>
+
+      <!-- Live Monitoring Card -->
+      <div id="live-control-card" class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">Live Monitoring</h3>
+          <span id="live-status-badge" class="badge bg-gray-700 text-gray-400">Inactive</span>
+        </div>
+        <div class="flex items-center gap-3 mb-3">
+          <button id="live-toggle-btn" onclick="toggleLivePoll()" class="px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700">Start Auto-Poll</button>
+          <select id="live-interval-select" class="bg-gray-900 border border-gray-700 text-gray-300 text-xs rounded px-2 py-1">
+            <option value="60">1 min (intensive)</option>
+            <option value="120" selected>2 min (recommended)</option>
+            <option value="300">5 min (light)</option>
+            <option value="900">15 min (background)</option>
+          </select>
+        </div>
+        <div class="text-[9px] text-gray-600 mb-3">2 min recommended on matchday. ~2 credits per poll. Uses ~60 cr/hour at 2 min.</div>
+        <div class="grid grid-cols-3 gap-3 text-xs">
+          <div>
+            <div class="text-[10px] text-gray-500">Status</div>
+            <div class="text-sm font-medium" id="live-poll-status">OFF</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Interval</div>
+            <div class="text-sm stat-value" id="live-poll-interval">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Next Poll</div>
+            <div class="text-sm stat-value font-mono" id="live-next-poll">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Overview -->
+    <div id="status-overview" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6"></div>
+
+    <!-- Bankroll Health -->
+    <div id="bankroll-health" class="hidden mb-6"></div>
+
+    <!-- Data Freshness -->
+    <div id="data-freshness" class="hidden mb-6"></div>
+
+    <!-- Feature Drift -->
+    <div id="feature-drift" class="hidden mb-6"></div>
+
+    <!-- Prediction Archive -->
+    <div id="prediction-archive" class="hidden mb-6"></div>
+
+    <!-- Settled Bets History -->
+    <div id="settled-bets" class="hidden mb-6"></div>
+
+    <!-- Feedback Loop / Model Intelligence -->
+    <div id="feedback-loop" class="hidden mb-6"></div>
+
+    <!-- Deployment State / Model Metadata -->
+    <div id="deployment-state" class="hidden mb-6"></div>
+
+    <!-- Drift Report (detailed) -->
+    <div id="drift-report" class="hidden mb-6"></div>
+
+    <!-- Prediction Audit -->
+    <div id="prediction-audit" class="hidden mb-6"></div>
+
+    <!-- Lessons Learned -->
+    <div id="lessons-learned" class="hidden mb-6"></div>
+
+    <!-- Data Quality: Null Rates + Season Coverage -->
+    <div id="data-quality" class="hidden mb-6"></div>
+
+    <!-- Empty -->
+    <div id="empty" class="hidden text-center py-20 text-gray-500">
+      <p class="text-xl mb-2">No system data available</p>
+      <p class="text-sm">Run the full pipeline to generate system health data.</p>
+    </div>
+<script>
+function statCard(label, value, sub, color) {
+  return `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
+    <div class="text-[10px] uppercase tracking-wider text-gray-500">${label}</div>
+    <div class="text-xl font-bold mt-1 stat-value" style="color:${color || '#fff'}">${value}</div>
+    ${sub ? `<div class="text-xs text-gray-500 mt-0.5">${sub}</div>` : ''}
+  </div>`;
+}
+
+function freshnessColor(fresh) {
+  return fresh ? '#4ade80' : '#f87171';
+}
+
+function renderStatusOverview(data) {
+  const el = document.getElementById('status-overview');
+  const bp = data.betting_performance || {};
+  const bh = data.bankroll_health || {};
+  const fd = data.feature_drift || {};
+  const pa = data.prediction_accuracy || {};
+
+  const profit = bh.net_profit || bp.profit || 0;
+  const profitColor = profit >= 0 ? '#4ade80' : '#f87171';
+  const roi = bh.roi || bp.roi || 0;
+  const roiPct = (roi * 100).toFixed(1);
+
+  const healthyFeatures = fd.healthy || 0;
+  const totalFeatures = fd.total_checked || 0;
+  const featureColor = fd.unhealthy > 0 ? '#fbbf24' : '#4ade80';
+
+  const archiveCount = (data.prediction_archive || []).length;
+  const verifiedCount = (data.prediction_archive || []).filter(p => p.actual_result).length;
+
+  el.innerHTML =
+    statCard('Bankroll', '\u20ac' + (bh.current_bankroll || 1000).toFixed(2),
+      `${profit >= 0 ? '+' : ''}\u20ac${profit.toFixed(2)} (${roi >= 0 ? '+' : ''}${roiPct}%)`, profitColor) +
+    statCard('Settled Bets', `${bh.wins || bp.wins || 0}W / ${bh.losses || bp.losses || 0}L / ${bh.pushes || bp.pushes || 0}P`,
+      `${bh.total_bets || bp.total_bets || 0} total`, '#818cf8') +
+    statCard('Feature Health', `${healthyFeatures}/${totalFeatures}`,
+      fd.unhealthy > 0 ? `${fd.unhealthy} unhealthy` : 'All healthy', featureColor) +
+    statCard('Predictions Tracked', archiveCount,
+      `${verifiedCount} verified`, '#a78bfa');
+  el.classList.remove('hidden');
+}
+
+function renderBankrollHealth(bh) {
+  if (!bh || !bh.current_bankroll) return;
+  const el = document.getElementById('bankroll-health');
+
+  const current = bh.current_bankroll;
+  const initial = bh.initial_bankroll || 1000;
+  const peak = bh.peak_bankroll || current;
+  const pnl = current - initial;
+  const pnlColor = pnl >= 0 ? '#4ade80' : '#f87171';
+  const drawdown = bh.drawdown || 0;
+  const streak = bh.current_streak || 0;
+  const streakText = streak > 0 ? `${streak}W streak` : streak < 0 ? `${Math.abs(streak)}L streak` : 'No streak';
+  const streakColor = streak > 0 ? 'text-green-400' : streak < 0 ? 'text-red-400' : 'text-gray-500';
+  const riskColors = { LOW: 'bg-green-900/50 text-green-400', MEDIUM: 'bg-amber-900/50 text-amber-400', HIGH: 'bg-red-900/50 text-red-400' };
+  const riskCls = riskColors[bh.risk_level] || riskColors.LOW;
+
+  // Bankroll progress bar
+  const pctOfPeak = peak > 0 ? ((current / peak) * 100).toFixed(0) : 100;
+  const barColor = current >= initial ? 'bg-green-500' : 'bg-red-500';
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Bankroll Management</h3>
+      <span class="badge ${riskCls}">${bh.risk_level || 'LOW'} RISK</span>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Current</div>
+        <div class="text-2xl font-bold text-white stat-value mt-1">\u20ac${current.toFixed(2)}</div>
+        <div class="text-xs mt-0.5 stat-value" style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}\u20ac${pnl.toFixed(2)}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Initial</div>
+        <div class="text-lg font-bold text-gray-300 stat-value mt-1">\u20ac${initial.toFixed(0)}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Peak</div>
+        <div class="text-lg font-bold text-green-400 stat-value mt-1">\u20ac${peak.toFixed(2)}</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Drawdown</div>
+        <div class="text-lg font-bold ${drawdown > 0.1 ? 'text-red-400' : drawdown > 0 ? 'text-amber-400' : 'text-green-400'} stat-value mt-1">${(drawdown * 100).toFixed(1)}%</div>
+        <div class="text-[10px] text-gray-500 mt-0.5">Max 20%</div>
+      </div>
+      <div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Streak</div>
+        <div class="text-lg font-bold ${streakColor} mt-1">${streakText}</div>
+      </div>
+    </div>
+    <div class="mb-2">
+      <div class="flex justify-between text-[10px] text-gray-500 mb-1">
+        <span>Progress to peak</span><span>${pctOfPeak}%</span>
+      </div>
+      <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div class="${barColor} h-2 rounded-full transition-all" style="width:${pctOfPeak}%"></div>
+      </div>
+    </div>
+    <div class="flex items-center gap-4 text-xs text-gray-500 mt-3">
+      <span>Win Rate: ${bh.win_rate != null ? bh.win_rate.toFixed(0) : (bh.total_bets > 0 ? ((bh.total_wins / bh.total_bets) * 100).toFixed(0) : 0)}%</span>
+      <span>ROI: ${(bh.roi * 100).toFixed(1)}%</span>
+      <span>${bh.wins||0}W / ${bh.losses||0}L${bh.pushes ? ' / '+bh.pushes+'P' : ''}</span>
+      <span>Can Bet: <span class="${bh.can_bet ? 'text-green-400' : 'text-red-400'}">${bh.can_bet ? 'Yes' : 'No'}</span></span>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+function renderDataFreshness(freshness) {
+  if (!freshness || !Object.keys(freshness).length) return;
+  const el = document.getElementById('data-freshness');
+
+  // Handle both formats: {odds: {last_updated, age_hours, fresh}, ...} or flat
+  const items = [];
+  for (const [key, val] of Object.entries(freshness)) {
+    if (typeof val === 'object' && val !== null) {
+      items.push({
+        name: key.replace(/_/g, ' '),
+        fresh: val.fresh !== false && val.fresh !== 'false',
+        age: val.age_hours != null ? val.age_hours : null,
+        detail: val.last_updated || val.date || val.latest_file || '',
+        extra: val.count || val.rows || val.seasons || val.teams || '',
+      });
+    } else if (typeof val === 'string') {
+      // Flat format: key = last modified timestamp
+      const age = val ? ((Date.now() - new Date(val).getTime()) / 3600000).toFixed(1) : null;
+      items.push({
+        name: key.replace(/_/g, ' '),
+        fresh: age !== null && parseFloat(age) < 24,
+        age: age ? parseFloat(age) : null,
+        detail: val,
+        extra: '',
+      });
+    }
+  }
+
+  const freshCount = items.filter(i => i.fresh).length;
+  const staleCount = items.filter(i => !i.fresh).length;
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Data Freshness</h3>
+      <div class="flex items-center gap-2">
+        <span class="badge bg-green-900/50 text-green-400">${freshCount} fresh</span>
+        ${staleCount > 0 ? `<span class="badge bg-red-900/50 text-red-400">${staleCount} stale</span>` : ''}
+      </div>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      ${items.map(item => {
+        const color = item.fresh ? 'border-green-900/30' : 'border-red-900/30';
+        const dotColor = item.fresh ? 'bg-green-400' : 'bg-red-400';
+        const ageStr = item.age != null ? `${item.age < 1 ? '<1' : item.age.toFixed(0)}h ago` : '';
+        return `<div class="bg-gray-900/50 rounded-lg border ${color} p-3">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="w-2 h-2 rounded-full ${dotColor}"></span>
+            <span class="text-xs font-medium text-gray-200 capitalize">${item.name}</span>
+            ${ageStr ? `<span class="text-[10px] text-gray-500 ml-auto">${ageStr}</span>` : ''}
+          </div>
+          ${item.extra ? `<div class="text-[10px] text-gray-500">${item.extra}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+function renderFeatureDrift(drift) {
+  if (!drift || !drift.details) return;
+  const el = document.getElementById('feature-drift');
+
+  const details = drift.details;
+  const featureNames = Object.keys(details);
+  if (!featureNames.length) return;
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Feature Health</h3>
+      <div class="flex items-center gap-2">
+        <span class="badge bg-green-900/50 text-green-400">${drift.healthy || 0} healthy</span>
+        ${drift.unhealthy > 0 ? `<span class="badge bg-red-900/50 text-red-400">${drift.unhealthy} unhealthy</span>` : ''}
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-2">Feature</th>
+            <th class="p-2 text-right">Unique Values</th>
+            <th class="p-2 text-right">Std Dev</th>
+            <th class="p-2 text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${featureNames.map(name => {
+            const f = details[name];
+            const healthy = f.healthy === true || f.healthy === 'True' || f.healthy === 'true';
+            const statusBadge = healthy
+              ? '<span class="badge bg-green-900/50 text-green-400">OK</span>'
+              : '<span class="badge bg-red-900/50 text-red-400">DRIFT</span>';
+            const rowCls = healthy ? '' : 'bg-red-900/10';
+            return `<tr class="border-b border-gray-800/50 ${rowCls}">
+              <td class="p-2 text-gray-300 font-mono text-[11px]">${name}</td>
+              <td class="p-2 text-right stat-value text-gray-400">${f.nunique || '-'}</td>
+              <td class="p-2 text-right stat-value text-gray-400">${f.std != null ? f.std.toFixed(4) : '-'}</td>
+              <td class="p-2 text-center">${statusBadge}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+function renderPredictionArchive(archive) {
+  if (!archive || !archive.length) return;
+  const el = document.getElementById('prediction-archive');
+
+  const verified = archive.filter(p => p.actual_result);
+  const correct = verified.filter(p => p.correct);
+  const accuracy = verified.length > 0 ? ((correct.length / verified.length) * 100).toFixed(1) : '-';
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Prediction Archive</h3>
+      <div class="flex items-center gap-2">
+        <span class="badge bg-purple-900/50 text-purple-400">${archive.length} tracked</span>
+        ${verified.length > 0 ? `<span class="badge ${correct.length / verified.length >= 0.5 ? 'bg-green-900/50 text-green-400' : 'bg-amber-900/50 text-amber-400'}">${accuracy}% accuracy (${verified.length} verified)</span>` : ''}
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-2">Date</th>
+            <th class="text-left p-2">Match</th>
+            <th class="p-2">Prediction</th>
+            <th class="p-2">Confidence</th>
+            <th class="p-2">xG</th>
+            <th class="p-2">Result</th>
+            <th class="p-2">Correct</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${archive.map(p => {
+            const outcomeColors = { HOME: 'text-green-400', DRAW: 'text-amber-400', AWAY: 'text-red-400' };
+            const confColors = { 'VERY HIGH': 'text-green-400', 'HIGH': 'text-green-400', 'MEDIUM-HIGH': 'text-lime-400', 'MEDIUM': 'text-amber-400', 'LOW': 'text-red-400' };
+            const predColor = outcomeColors[p.predicted_outcome] || 'text-gray-400';
+            const confColor = confColors[p.confidence_level] || 'text-gray-400';
+
+            let resultCell = '<span class="text-gray-600">Pending</span>';
+            let correctCell = '';
+            if (p.actual_result) {
+              const actualColor = outcomeColors[p.actual_result] || 'text-gray-400';
+              resultCell = `<span class="${actualColor}">${p.actual_result}</span> <span class="text-gray-600">${p.score || ''}</span>`;
+              correctCell = p.correct
+                ? '<span class="text-green-400 font-bold">&#10003;</span>'
+                : '<span class="text-red-400 font-bold">&#10007;</span>';
+            }
+
+            return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
+              <td class="p-2 text-gray-400">${p.date || '-'}</td>
+              <td class="p-2 text-white">${p.match || '-'}</td>
+              <td class="p-2 text-center ${predColor} font-medium">${p.predicted_outcome || '-'}</td>
+              <td class="p-2 text-center ${confColor}">${p.confidence_level || '-'}</td>
+              <td class="p-2 text-center stat-value text-gray-300">${(p.home_xg || 0).toFixed(2)} - ${(p.away_xg || 0).toFixed(2)}</td>
+              <td class="p-2 text-center">${resultCell}</td>
+              <td class="p-2 text-center">${correctCell}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+function renderSettledBets(bets) {
+  if (!bets || !bets.length) return;
+  const el = document.getElementById('settled-bets');
+
+  const totalProfit = bets.reduce((sum, b) => sum + (b.profit_loss || 0), 0);
+  const profitColor = totalProfit >= 0 ? '#4ade80' : '#f87171';
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Settled Bets</h3>
+      <span class="text-sm font-bold stat-value" style="color:${profitColor}">P&L: ${totalProfit >= 0 ? '+' : ''}\u20ac${totalProfit.toFixed(2)}</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead>
+          <tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-2">Date</th>
+            <th class="text-left p-2">Match</th>
+            <th class="text-left p-2">Selection</th>
+            <th class="p-2">Odds</th>
+            <th class="p-2">Stake</th>
+            <th class="p-2">Result</th>
+            <th class="p-2">Outcome</th>
+            <th class="p-2">P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${bets.map(b => {
+            const outcome = (b.outcome || '').toUpperCase();
+            const outcomeBadge = outcome === 'WON'
+              ? '<span class="badge bg-green-900/50 text-green-400">WON</span>'
+              : outcome === 'LOST'
+                ? '<span class="badge bg-red-900/50 text-red-400">LOST</span>'
+                : '<span class="badge bg-amber-900/50 text-amber-400">PUSH</span>';
+            const pnl = b.profit_loss || 0;
+            const pnlColor = pnl > 0 ? 'text-green-400' : pnl < 0 ? 'text-red-400' : 'text-gray-400';
+            return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
+              <td class="p-2 text-gray-400">${b.date || b.settled_at || '-'}</td>
+              <td class="p-2 text-white">${b.match || '-'}</td>
+              <td class="p-2 text-gray-300">${b.selection || '-'}</td>
+              <td class="p-2 text-center stat-value">${(b.odds || 0).toFixed(2)}</td>
+              <td class="p-2 text-center stat-value">\u20ac${(b.stake || 0).toFixed(1)}</td>
+              <td class="p-2 text-center text-gray-300">${b.result || '-'}</td>
+              <td class="p-2 text-center">${outcomeBadge}</td>
+              <td class="p-2 text-center stat-value ${pnlColor} font-medium">${pnl >= 0 ? '+' : ''}\u20ac${pnl.toFixed(2)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${bets.some(b => b.notes) ? `<div class="mt-4 space-y-2">
+      <div class="text-[10px] text-gray-500 uppercase tracking-wider">Notes</div>
+      ${bets.filter(b => b.notes).map(b => `<div class="text-[11px] text-gray-500 bg-gray-900/50 rounded-lg p-2">
+        <span class="text-gray-400 font-medium">${b.match}:</span> ${b.notes}
+      </div>`).join('')}
+    </div>` : ''}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Feedback Loop / Model Intelligence ─── */
+function renderFeedbackLoop(fl) {
+  if (!fl || !Object.keys(fl).length) return;
+  const el = document.getElementById('feedback-loop');
+
+  const ov = fl.overall || {};
+  const brierScores = fl.method_brier_scores || {};
+  const wo = fl.weight_optimization || {};
+  const fa = fl.factor_adjustments || {};
+  const cal = fl.calibration || {};
+  const xgAcc = fl.xg_accuracy || {};
+  const intelEff = fl.intelligence_effectiveness || {};
+  const factorCountAcc = fl.factor_count_accuracy || {};
+
+  // --- Overview Stats ---
+  const accPct = ov.accuracy != null ? (ov.accuracy * 100).toFixed(1) + '%' : '-';
+  const accColor = ov.accuracy >= 0.5 ? 'text-green-400' : ov.accuracy >= 0.35 ? 'text-amber-400' : 'text-red-400';
+  const reliabilityBadge = ov.reliability
+    ? (ov.reliability === 'insufficient'
+      ? '<span class="badge bg-gray-700 text-gray-400">Insufficient Data</span>'
+      : ov.reliability === 'acceptable'
+        ? '<span class="badge bg-green-900/50 text-green-400">Acceptable</span>'
+        : `<span class="badge bg-amber-900/50 text-amber-400">${ov.reliability}</span>`)
+    : '';
+  const brierColor = ov.mean_brier < 0.5 ? 'text-green-400' : ov.mean_brier < 0.8 ? 'text-amber-400' : 'text-red-400';
+
+  // --- Method Brier Ranking ---
+  const methods = Object.entries(brierScores).sort((a, b) => (a[1].rank || 99) - (b[1].rank || 99));
+  const methodLabels = { factor: 'Factor Model', xg: 'xG Poisson', ml: 'ML CatBoost', player_xg: 'Player xG', market: 'Market Odds', deep: 'Deep Learning' };
+  const maxBrier = Math.max(...methods.map(([, v]) => v.mean_brier || 0), 1.2);
+
+  let methodsHTML = '';
+  if (methods.length) {
+    methodsHTML = `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Method Brier Scores (lower = better)</h4>
+      <div class="space-y-2">
+        ${methods.map(([key, v]) => {
+          const pct = ((v.mean_brier || 0) / maxBrier * 100).toFixed(1);
+          const barColor = v.rank === 1 ? 'bg-green-500' : v.rank <= 3 ? 'bg-blue-500' : 'bg-gray-500';
+          return `<div class="flex items-center gap-3">
+            <div class="w-20 text-[11px] text-gray-400 text-right font-medium">${methodLabels[key] || key}</div>
+            <div class="flex-1 h-4 bg-gray-800 rounded-full overflow-hidden relative">
+              <div class="${barColor} h-4 rounded-full transition-all" style="width:${pct}%"></div>
+            </div>
+            <div class="w-16 text-[11px] stat-value text-gray-300 text-right">${(v.mean_brier || 0).toFixed(4)}</div>
+            <div class="w-6 text-[10px] text-gray-500">#${v.rank || '-'}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // --- Weight Optimization ---
+  let weightsHTML = '';
+  if (wo.current_weights && Object.keys(wo.current_weights).length) {
+    const statusBadge = wo.status === 'cold_start'
+      ? '<span class="badge bg-amber-900/50 text-amber-400">Cold Start</span>'
+      : wo.status === 'optimized'
+        ? '<span class="badge bg-green-900/50 text-green-400">Optimized</span>'
+        : `<span class="badge bg-gray-700 text-gray-400">${wo.status || 'Unknown'}</span>`;
+    const changes = wo.changes || {};
+    weightsHTML = `<div class="mt-5">
+      <div class="flex items-center justify-between mb-3">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ensemble Weight Optimization</h4>
+        ${statusBadge}
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-gray-500 border-b border-gray-800">
+              <th class="text-left p-2">Method</th>
+              <th class="p-2 text-right">Current</th>
+              <th class="p-2 text-right">Optimized</th>
+              <th class="p-2 text-right">Delta</th>
+              <th class="p-2 text-center">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${Object.entries(wo.current_weights).map(([key, cur]) => {
+              const opt = (wo.optimized_weights || {})[key] || cur;
+              const ch = changes[key] || {};
+              const delta = ch.delta || (opt - cur);
+              const pctChg = ch.pct_change || (cur > 0 ? ((delta / cur) * 100) : 0);
+              const deltaColor = delta > 0.01 ? 'text-green-400' : delta < -0.01 ? 'text-red-400' : 'text-gray-500';
+              const arrow = delta > 0.01 ? '&#9650;' : delta < -0.01 ? '&#9660;' : '&#8226;';
+              return `<tr class="border-b border-gray-800/50">
+                <td class="p-2 text-gray-300 font-medium">${methodLabels[key] || key}</td>
+                <td class="p-2 text-right stat-value text-gray-400">${(cur * 100).toFixed(1)}%</td>
+                <td class="p-2 text-right stat-value text-white">${(opt * 100).toFixed(1)}%</td>
+                <td class="p-2 text-right stat-value ${deltaColor}">${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}pp</td>
+                <td class="p-2 text-center ${deltaColor}">${arrow} ${Math.abs(pctChg).toFixed(0)}%</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  // --- Factor Adjustments ---
+  let factorsHTML = '';
+  if (fa.details && Object.keys(fa.details).length) {
+    const factors = Object.entries(fa.details);
+    factorsHTML = `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Factor Adjustments</h4>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-gray-500 border-b border-gray-800">
+              <th class="text-left p-2">Factor</th>
+              <th class="p-2 text-right">Applied</th>
+              <th class="p-2 text-right">Accuracy</th>
+              <th class="p-2 text-right">Base Rate</th>
+              <th class="p-2 text-right">Multiplier</th>
+              <th class="p-2 text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${factors.map(([name, f]) => {
+              const accVal = f.accuracy != null ? (f.accuracy * 100).toFixed(0) + '%' : '-';
+              const baseVal = f.base_rate != null ? (f.base_rate * 100).toFixed(0) + '%' : '-';
+              const mult = f.multiplier != null ? f.multiplier.toFixed(2) : '-';
+              const multColor = f.multiplier > 1.05 ? 'text-green-400' : f.multiplier < 0.95 ? 'text-red-400' : 'text-gray-400';
+              const actionBadge = f.action === 'insufficient_data'
+                ? '<span class="badge bg-gray-700 text-gray-400">Waiting</span>'
+                : f.action === 'boosted'
+                  ? '<span class="badge bg-green-900/50 text-green-400">Boosted</span>'
+                  : f.action === 'damped'
+                    ? '<span class="badge bg-red-900/50 text-red-400">Damped</span>'
+                    : `<span class="badge bg-gray-700 text-gray-400">${f.action || 'N/A'}</span>`;
+              return `<tr class="border-b border-gray-800/50">
+                <td class="p-2 text-gray-300 font-mono text-[11px]">${name.replace(/_/g, ' ')}</td>
+                <td class="p-2 text-right stat-value text-gray-400">${f.applied || 0}</td>
+                <td class="p-2 text-right stat-value text-gray-300">${accVal}</td>
+                <td class="p-2 text-right stat-value text-gray-500">${baseVal}</td>
+                <td class="p-2 text-right stat-value ${multColor} font-medium">${mult}x</td>
+                <td class="p-2 text-center">${actionBadge}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  // --- Calibration ---
+  let calHTML = '';
+  if (cal.status) {
+    const calBadge = cal.status === 'insufficient_data'
+      ? '<span class="badge bg-gray-700 text-gray-400">Insufficient Data</span>'
+      : cal.status === 'good'
+        ? '<span class="badge bg-green-900/50 text-green-400">Well Calibrated</span>'
+        : `<span class="badge bg-amber-900/50 text-amber-400">${cal.status}</span>`;
+    const biasText = cal.bias ? `Bias: ${cal.bias}` : '';
+    const mce = cal.mean_calibration_error != null ? `MCE: ${(cal.mean_calibration_error * 100).toFixed(2)}%` : '';
+    calHTML = `<div class="mt-5">
+      <div class="flex items-center justify-between mb-2">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Calibration</h4>
+        ${calBadge}
+      </div>
+      <div class="flex gap-4 text-xs text-gray-400">
+        ${biasText ? `<span>${biasText}</span>` : ''}
+        ${mce ? `<span>${mce}</span>` : ''}
+        ${cal.required ? `<span class="text-gray-600">Need ${cal.required} settled for curve</span>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // --- By Confidence Breakdown ---
+  let confHTML = '';
+  const byConf = ov.by_confidence || {};
+  if (Object.keys(byConf).length) {
+    confHTML = `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Accuracy by Confidence Level</h4>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        ${Object.entries(byConf).map(([level, c]) => {
+          const acc = c.accuracy != null ? (c.accuracy * 100).toFixed(1) + '%' : '-';
+          const n = c.total || 0;
+          const cor = c.correct || 0;
+          const confColors = { 'VERY HIGH': 'border-green-600', 'HIGH': 'border-green-700', 'MEDIUM-HIGH': 'border-lime-700', 'MEDIUM': 'border-amber-700', 'LOW': 'border-red-700', 'VERY LOW': 'border-red-800' };
+          const cls = confColors[level] || 'border-gray-700';
+          return `<div class="bg-gray-900/50 rounded-lg p-3 border ${cls}">
+            <div class="text-[10px] text-gray-500 uppercase">${level}</div>
+            <div class="text-lg font-bold text-white stat-value mt-1">${acc}</div>
+            <div class="text-[10px] text-gray-500">${cor}/${n} correct</div>
+            ${c.warning ? `<div class="text-[10px] text-amber-500 mt-1">${c.warning}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Model Intelligence / Feedback Loop</h3>
+      <div class="flex items-center gap-2">
+        ${reliabilityBadge}
+        <span class="text-[10px] text-gray-500">${ov.n_settled || 0} settled</span>
+      </div>
+    </div>
+
+    <!-- Overview stats -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase">Accuracy</div>
+        <div class="text-xl font-bold ${accColor} stat-value mt-1">${accPct}</div>
+        ${ov.accuracy_ci_lo != null ? `<div class="text-[10px] text-gray-600">CI: ${(ov.accuracy_ci_lo * 100).toFixed(0)}-${(ov.accuracy_ci_hi * 100).toFixed(0)}%</div>` : ''}
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase">Mean Brier</div>
+        <div class="text-xl font-bold ${brierColor} stat-value mt-1">${ov.mean_brier != null ? ov.mean_brier.toFixed(4) : '-'}</div>
+        <div class="text-[10px] text-gray-600">Lower = better</div>
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase">vs Random</div>
+        <div class="text-xl font-bold stat-value mt-1 ${ov.sig_vs_random_p < 0.05 ? 'text-green-400' : 'text-gray-400'}">${ov.sig_vs_random_p != null ? (ov.sig_vs_random_p < 0.001 ? 'p<.001' : 'p=' + ov.sig_vs_random_p.toFixed(3)) : '-'}</div>
+        <div class="text-[10px] text-gray-600">${ov.sig_vs_random_p < 0.05 ? 'Significant' : 'Not significant'}</div>
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase">vs Always Home</div>
+        <div class="text-xl font-bold stat-value mt-1 ${ov.sig_vs_always_home_p < 0.05 ? 'text-green-400' : 'text-gray-400'}">${ov.sig_vs_always_home_p != null ? (ov.sig_vs_always_home_p < 0.001 ? 'p<.001' : 'p=' + ov.sig_vs_always_home_p.toFixed(3)) : '-'}</div>
+        <div class="text-[10px] text-gray-600">${ov.sig_vs_always_home_p < 0.05 ? 'Significant' : 'Not significant'}</div>
+      </div>
+    </div>
+
+    ${ov.formatted_claim ? `<div class="text-[11px] text-gray-500 bg-gray-900/50 rounded-lg p-2 mb-2">${ov.formatted_claim}</div>` : ''}
+
+    ${confHTML}
+    ${methodsHTML}
+    ${weightsHTML}
+    ${factorsHTML}
+    ${calHTML}
+
+    ${xgAcc && Object.keys(xgAcc).length ? `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">xG Accuracy</h4>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        ${xgAcc.mae != null ? `<div class="bg-gray-900/50 rounded-lg p-3"><div class="text-[10px] text-gray-500">MAE</div><div class="text-lg font-bold stat-value ${xgAcc.mae < 1.0 ? 'text-green-400' : 'text-amber-400'}">${xgAcc.mae.toFixed(3)}</div></div>` : ''}
+        ${xgAcc.rmse != null ? `<div class="bg-gray-900/50 rounded-lg p-3"><div class="text-[10px] text-gray-500">RMSE</div><div class="text-lg font-bold stat-value text-gray-300">${xgAcc.rmse.toFixed(3)}</div></div>` : ''}
+        ${xgAcc.correlation != null ? `<div class="bg-gray-900/50 rounded-lg p-3"><div class="text-[10px] text-gray-500">Correlation</div><div class="text-lg font-bold stat-value ${xgAcc.correlation > 0.5 ? 'text-green-400' : 'text-amber-400'}">${xgAcc.correlation.toFixed(3)}</div></div>` : ''}
+        ${xgAcc.n_matches != null ? `<div class="bg-gray-900/50 rounded-lg p-3"><div class="text-[10px] text-gray-500">Matches</div><div class="text-lg font-bold stat-value text-gray-300">${xgAcc.n_matches}</div></div>` : ''}
+      </div>
+    </div>` : ''}
+
+    ${intelEff && Object.keys(intelEff).length ? `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Intelligence Adjustments Effectiveness</h4>
+      <div class="space-y-2">
+        ${Object.entries(intelEff).map(([key, v]) => {
+          const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          const impact = v.impact || v.accuracy_delta || 0;
+          const impColor = impact > 0 ? 'text-green-400' : impact < 0 ? 'text-red-400' : 'text-gray-500';
+          return '<div class="flex items-center justify-between bg-gray-900/50 rounded-lg p-2"><span class="text-[11px] text-gray-300">' + label + '</span><span class="text-[11px] stat-value ' + impColor + ' font-medium">' + (impact >= 0 ? '+' : '') + (impact * 100).toFixed(1) + '%</span></div>';
+        }).join('')}
+      </div>
+    </div>` : ''}
+
+    ${factorCountAcc && Object.keys(factorCountAcc).length ? `<div class="mt-5">
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Factor Count Accuracy</h4>
+      <div class="text-xs text-gray-400">
+        ${factorCountAcc.correlation != null ? '<span>Correlation: <strong class="text-gray-200">' + factorCountAcc.correlation.toFixed(3) + '</strong></span>' : ''}
+        ${factorCountAcc.mean_factors != null ? ' &middot; <span>Avg Factors: <strong class="text-gray-200">' + factorCountAcc.mean_factors.toFixed(1) + '</strong></span>' : ''}
+        ${factorCountAcc.n_matches != null ? ' &middot; <span>n=' + factorCountAcc.n_matches + '</span>' : ''}
+      </div>
+    </div>` : ''}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Deployment State / Model Metadata ─── */
+function renderDeploymentState(ds) {
+  if (!ds || !ds.current_model) return;
+  const el = document.getElementById('deployment-state');
+  const m = ds.metrics || {};
+  const ec = ds.ensemble_config || {};
+  const hist = ds.history || [];
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Deployed Model</h3>
+      <span class="badge bg-blue-900/50 text-blue-400">${ds.model_version || 'unknown'}</span>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500">Model</div>
+        <div class="text-sm font-bold text-white font-mono">${ds.current_model}</div>
+        <div class="text-[10px] text-gray-600">${ds.features_count || '?'} features</div>
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500">Accuracy</div>
+        <div class="text-lg font-bold stat-value ${(m.accuracy || 0) >= 0.5 ? 'text-green-400' : 'text-amber-400'}">${m.accuracy ? (m.accuracy * 100).toFixed(1) + '%' : '-'}</div>
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500">Log Loss</div>
+        <div class="text-lg font-bold stat-value text-gray-300">${m.log_loss ? m.log_loss.toFixed(4) : '-'}</div>
+      </div>
+      <div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500">Betting Yield</div>
+        <div class="text-lg font-bold stat-value ${(m.betting_yield || 0) > 0 ? 'text-green-400' : 'text-red-400'}">${m.betting_yield ? (m.betting_yield * 100).toFixed(1) + '%' : '-'}</div>
+      </div>
+    </div>
+    ${ec.weights ? `<div class="mb-4">
+      <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Ensemble Weights</div>
+      <div class="flex flex-wrap gap-2">
+        ${Object.entries(ec.weights).map(([k, v]) => `<span class="bg-gray-900/50 rounded px-2 py-1 text-[11px]"><span class="text-gray-500">${k}:</span> <span class="text-white stat-value font-medium">${(v * 100).toFixed(1)}%</span></span>`).join('')}
+      </div>
+      ${ec.note ? `<div class="text-[10px] text-gray-600 mt-2">${ec.note}</div>` : ''}
+    </div>` : ''}
+    ${hist.length ? `<details class="mt-3">
+      <summary class="text-[10px] text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-400">Deployment History (${hist.length} events)</summary>
+      <div class="mt-2 space-y-2 max-h-48 overflow-y-auto">
+        ${hist.slice().reverse().map(h => {
+          const actionColors = { deploy: 'text-green-400', initial_deploy: 'text-blue-400', recalibrate: 'text-amber-400', weight_reoptimization: 'text-purple-400', retrain_leakage_free: 'text-cyan-400' };
+          const color = actionColors[h.action] || 'text-gray-400';
+          return `<div class="bg-gray-900/50 rounded-lg p-2 text-[11px]">
+            <div class="flex items-center gap-2"><span class="${color} font-medium">${(h.action || '').replace(/_/g, ' ')}</span><span class="text-gray-600 ml-auto">${h.timestamp ? new Date(h.timestamp).toLocaleDateString() : ''}</span></div>
+            ${h.reason ? `<div class="text-gray-500 mt-1">${h.reason}</div>` : ''}
+            ${h.metrics ? `<div class="text-gray-600 mt-1">acc: ${h.metrics.accuracy ? (h.metrics.accuracy * 100).toFixed(1) + '%' : '-'} | ll: ${h.metrics.log_loss ? h.metrics.log_loss.toFixed(4) : '-'}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    </details>` : ''}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Drift Report (detailed) ─── */
+function renderDriftReport(dr) {
+  if (!dr || !dr.feature_drift) return;
+  const el = document.getElementById('drift-report');
+  const features = Object.entries(dr.feature_drift);
+  const drifted = features.filter(([, f]) => f.drifted);
+  const topXg = dr.top_xg_features || [];
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Feature Drift Report</h3>
+      <div class="flex items-center gap-2">
+        <span class="badge ${drifted.length > 50 ? 'bg-red-900/50 text-red-400' : drifted.length > 20 ? 'bg-amber-900/50 text-amber-400' : 'bg-green-900/50 text-green-400'}">${drifted.length}/${dr.total_features_checked || features.length} drifted</span>
+      </div>
+    </div>
+    ${topXg.length ? `<div class="mb-4">
+      <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Top xG-Important Features</div>
+      <div class="flex flex-wrap gap-1">${topXg.slice(0, 15).map(f => {
+        const fd = dr.feature_drift[f];
+        const isDrifted = fd && fd.drifted;
+        return `<span class="text-[10px] px-2 py-0.5 rounded ${isDrifted ? 'bg-red-900/30 text-red-400' : 'bg-gray-800 text-gray-400'}">${f}</span>`;
+      }).join('')}</div>
+    </div>` : ''}
+    <details>
+      <summary class="text-[10px] text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-400">Drifted Features (${drifted.length})</summary>
+      <div class="overflow-x-auto mt-2">
+        <table class="w-full text-xs">
+          <thead><tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-1.5">Feature</th>
+            <th class="p-1.5 text-right">KS Stat</th>
+            <th class="p-1.5 text-right">p-value</th>
+            <th class="p-1.5 text-right">Mean Shift</th>
+            <th class="p-1.5 text-right">NaN%</th>
+          </tr></thead>
+          <tbody>${drifted.sort((a, b) => (b[1].ks_statistic || 0) - (a[1].ks_statistic || 0)).slice(0, 30).map(([name, f]) => {
+            const ksColor = f.ks_statistic > 0.3 ? 'text-red-400' : f.ks_statistic > 0.1 ? 'text-amber-400' : 'text-gray-400';
+            return `<tr class="border-b border-gray-800/50">
+              <td class="p-1.5 text-gray-300 font-mono text-[10px]">${name}</td>
+              <td class="p-1.5 text-right stat-value ${ksColor}">${(f.ks_statistic || 0).toFixed(4)}</td>
+              <td class="p-1.5 text-right stat-value text-gray-500">${f.ks_p_value != null ? f.ks_p_value.toFixed(4) : '-'}</td>
+              <td class="p-1.5 text-right stat-value text-gray-400">${f.mean_shift != null ? f.mean_shift.toFixed(3) : '-'}</td>
+              <td class="p-1.5 text-right stat-value ${f.recent_nan_pct > 5 ? 'text-red-400' : 'text-gray-500'}">${f.recent_nan_pct != null ? f.recent_nan_pct.toFixed(1) + '%' : '-'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </details>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Prediction Audit ─── */
+function renderPredictionAudit(pa) {
+  if (!pa || !pa.n_settled) return;
+  const el = document.getElementById('prediction-audit');
+  const lr = pa.lineup_reconciliation || {};
+  const cb = pa.confidence_bands || {};
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-white">Prediction Audit</h3>
+      <span class="text-[10px] text-gray-500">${pa.n_settled} settled</span>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      ${lr.predicted || lr.confirmed ? `<div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Lineup Reconciliation</div>
+        <div class="space-y-2">
+          ${lr.predicted ? `<div class="bg-gray-900/50 rounded-lg p-2 flex justify-between text-xs"><span class="text-gray-400">Predicted Lineups</span><span class="text-gray-200">${lr.predicted.count} matches, xG MAE: ${lr.predicted.xg_mae != null ? lr.predicted.xg_mae.toFixed(3) : '-'}</span></div>` : ''}
+          ${lr.confirmed ? `<div class="bg-gray-900/50 rounded-lg p-2 flex justify-between text-xs"><span class="text-gray-400">Confirmed Lineups</span><span class="text-gray-200">${lr.confirmed.count} matches, xG MAE: ${lr.confirmed.xg_mae != null ? lr.confirmed.xg_mae.toFixed(3) : '-'}</span></div>` : ''}
+        </div>
+      </div>` : ''}
+      ${Object.keys(cb).length ? `<div>
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Confidence Band Hit Rates</div>
+        <div class="space-y-2">
+          ${Object.entries(cb).map(([level, c]) => {
+            const hr = c.hit_rate != null ? (c.hit_rate * 100).toFixed(0) + '%' : '-';
+            const hrColor = c.hit_rate >= 0.5 ? 'text-green-400' : c.hit_rate >= 0.35 ? 'text-amber-400' : 'text-red-400';
+            return `<div class="bg-gray-900/50 rounded-lg p-2 flex justify-between text-xs"><span class="text-gray-400">${level}</span><span class="${hrColor} stat-value font-medium">${hr} (${c.correct || 0}/${c.total || 0})</span></div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Lessons Learned + Market Adjustments ─── */
+function renderLessonsLearned(lessons, marketAdj) {
+  if ((!lessons || !lessons.length) && (!marketAdj || !marketAdj.market_multipliers)) return;
+  const el = document.getElementById('lessons-learned');
+
+  let lessonsHTML = '';
+  if (lessons && lessons.length) {
+    const active = lessons.filter(l => l.active);
+    const expired = lessons.filter(l => !l.active);
+    lessonsHTML = `<div class="mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Model Lessons</h4>
+        ${active.length ? `<span class="badge bg-green-900/50 text-green-400">${active.length} active</span>` : ''}
+        ${expired.length ? `<span class="badge bg-gray-700 text-gray-400">${expired.length} expired</span>` : ''}
+      </div>
+      <div class="space-y-2">
+        ${lessons.map(l => {
+          const isActive = l.active;
+          const typeColors = { confidence_shift: 'text-blue-400', market_penalty: 'text-red-400', factor_boost: 'text-green-400' };
+          const tc = typeColors[l.type] || 'text-gray-400';
+          return `<div class="bg-gray-900/50 rounded-lg p-3 ${!isActive ? 'opacity-50' : ''} border border-gray-800/50">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-[10px] font-medium ${tc} uppercase">${(l.type || '').replace(/_/g, ' ')}</span>
+              ${!isActive ? `<span class="badge bg-gray-700 text-gray-500">Expired</span>` : `<span class="badge bg-green-900/50 text-green-400">Active</span>`}
+              <span class="text-[10px] text-gray-600 ml-auto">${l.created || ''}</span>
+            </div>
+            <div class="text-[11px] text-gray-300">${l.evidence || ''}</div>
+            ${l.correction ? `<div class="text-[10px] text-gray-500 mt-1">Correction: ${JSON.stringify(l.correction)}</div>` : ''}
+            <div class="text-[10px] text-gray-600 mt-1">Applied ${l.applied_count || 0}x, helped ${l.helped_count || 0}x${l.deactivated_reason ? ' — ' + l.deactivated_reason : ''}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  let adjHTML = '';
+  if (marketAdj && marketAdj.market_multipliers) {
+    const mults = Object.entries(marketAdj.market_multipliers);
+    adjHTML = `<div>
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Market Confidence Multipliers</h4>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        ${mults.map(([market, mult]) => {
+          const mColor = mult > 1.05 ? 'text-green-400 border-green-800' : mult < 0.95 ? 'text-red-400 border-red-800' : 'text-gray-400 border-gray-800';
+          return `<div class="bg-gray-900/50 rounded-lg p-2 border ${mColor}">
+            <div class="text-[10px] text-gray-500">${market}</div>
+            <div class="text-sm font-bold stat-value ${mColor}">${mult.toFixed(3)}x</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="text-[10px] text-gray-600 mt-2">Source: ${marketAdj.source || 'unknown'} | Min bets for signal: ${marketAdj.min_bets_for_signal || '-'}</div>
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <h3 class="text-sm font-semibold text-white mb-4">Lessons & Market Adjustments</h3>
+    ${lessonsHTML}
+    ${adjHTML}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Data Quality: Null Rates + Season Coverage ─── */
+function renderDataQuality(nullRates, seasonCoverage) {
+  if ((!nullRates || !Object.keys(nullRates).length) && (!seasonCoverage || !Object.keys(seasonCoverage).length)) return;
+  const el = document.getElementById('data-quality');
+
+  let nullHTML = '';
+  if (nullRates && nullRates.features) {
+    const nf = nullRates.features;
+    const nullPct = nf.null_pct || {};
+    const entries = Object.entries(nullPct).filter(([, v]) => v !== 'column_missing');
+    const missing = Object.entries(nullPct).filter(([, v]) => v === 'column_missing');
+    const status = nf.status || 'unknown';
+    const statusBadge = status === 'ok'
+      ? '<span class="badge bg-green-900/50 text-green-400">OK</span>'
+      : '<span class="badge bg-red-900/50 text-red-400">' + status + '</span>';
+
+    nullHTML = `<div class="mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Feature Null Rates</h4>
+        <div class="flex items-center gap-2">
+          ${statusBadge}
+          <span class="text-[10px] text-gray-500">${nf.total_rows || 0} rows</span>
+        </div>
+      </div>
+      ${entries.length ? `<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        ${entries.map(([name, pct]) => {
+          const color = pct > 50 ? 'text-red-400 border-red-800' : pct > 10 ? 'text-amber-400 border-amber-800' : 'text-green-400 border-green-800';
+          return `<div class="bg-gray-900/50 rounded-lg p-2 border ${color}"><div class="text-[10px] text-gray-500 font-mono">${name}</div><div class="text-sm stat-value ${color}">${typeof pct === 'number' ? pct.toFixed(1) + '%' : pct}</div></div>`;
+        }).join('')}
+      </div>` : ''}
+      ${missing.length ? `<div class="mt-2 text-[10px] text-gray-600">Missing columns: ${missing.map(([n]) => n).join(', ')}</div>` : ''}
+    </div>`;
+
+    // Match null rates
+    const mn = nullRates.matches;
+    if (mn && mn.null_pct) {
+      const mEntries = Object.entries(mn.null_pct);
+      nullHTML += `<div class="mb-4">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Match Field Null Rates</div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          ${mEntries.map(([name, pct]) => {
+            const color = pct > 50 ? 'text-red-400' : pct > 10 ? 'text-amber-400' : 'text-green-400';
+            return `<div class="bg-gray-900/50 rounded-lg p-2"><div class="text-[10px] text-gray-500">${name}</div><div class="text-sm stat-value ${color}">${typeof pct === 'number' ? pct.toFixed(1) + '%' : pct}</div></div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }
+  }
+
+  let coverageHTML = '';
+  if (seasonCoverage && Object.keys(seasonCoverage).length) {
+    const sources = Object.entries(seasonCoverage);
+    coverageHTML = `<div>
+      <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Season Coverage</h4>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead><tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-1.5">Source</th>
+            <th class="p-1.5 text-right">Seasons</th>
+            <th class="p-1.5 text-left">Range</th>
+          </tr></thead>
+          <tbody>${sources.map(([src, info]) => {
+            const seasons = info.seasons || [];
+            const range = seasons.length ? seasons[0] + ' → ' + seasons[seasons.length - 1] : '-';
+            return `<tr class="border-b border-gray-800/50">
+              <td class="p-1.5 text-gray-300 font-mono text-[11px]">${src}</td>
+              <td class="p-1.5 text-right stat-value text-gray-400">${info.count || seasons.length}</td>
+              <td class="p-1.5 text-gray-500 text-[10px]">${range}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <h3 class="text-sm font-semibold text-white mb-4">Data Quality</h3>
+    ${nullHTML}
+    ${coverageHTML}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Quick Actions ─── */
+async function quickAction(url, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Running...';
+  const statusEl = document.getElementById('quick-action-status');
+  statusEl.textContent = `Running ${url}...`;
+  try {
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json();
+    if (url.includes('/refresh/snapshot')) {
+      // Poll snapshot status
+      const pollStatus = async () => {
+        const s = await fetch('/api/refresh/snapshot/status').then(r => r.json());
+        if (s.running) { setTimeout(pollStatus, 2000); return; }
+        statusEl.textContent = s.result?.ok
+          ? `Snapshot done: ${s.result.matches} matches, ${s.result.steam_moves || 0} steam moves`
+          : `Snapshot failed: ${s.result?.error || 'unknown'}`;
+        btn.disabled = false;
+        btn.textContent = origText;
+        loadCredits();
+      };
+      setTimeout(pollStatus, 2000);
+    } else if (url.includes('/refresh') && !url.includes('extra')) {
+      statusEl.textContent = data.status === 'started' ? 'Full pipeline started...' : (data.error || 'Done');
+      btn.disabled = false;
+      btn.textContent = origText;
+    } else {
+      statusEl.textContent = data.ok ? 'Done' : (data.error || JSON.stringify(data));
+      btn.disabled = false;
+      btn.textContent = origText;
+      loadCredits();
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function startSofascore(btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Scraping...';
+  const statusEl = document.getElementById('quick-action-status');
+  try {
+    await fetch('/api/sofascore/scrape', { method: 'POST' });
+    statusEl.textContent = 'SofaScore scrape started...';
+    const poll = async () => {
+      const s = await fetch('/api/sofascore/status').then(r => r.json());
+      if (s.running) {
+        statusEl.textContent = `SofaScore scraping... (PID ${s.pid || '?'})`;
+        setTimeout(poll, 5000);
+        return;
+      }
+      statusEl.textContent = s.error ? `SofaScore failed: ${s.error}` : 'SofaScore scrape complete';
+      btn.disabled = false;
+      btn.textContent = origText;
+      loadSofascoreStatus();
+    };
+    setTimeout(poll, 5000);
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+/* ─── Presets & Credit Estimator ─── */
+const PRESETS = {
+  matchday: {
+    snapshot_interval_min: 10, results_interval_min: 15,
+    extra_markets_times: '08:00, 14:00, 18:00', full_pipeline_times: '07:00, 14:00, 20:00',
+    matchday_live_poll_min: 2, auto_live_on_matchday: true,
+    label: 'Matchday — max coverage, ~3,200 cr/day'
+  },
+  standard: {
+    snapshot_interval_min: 15, results_interval_min: 30,
+    extra_markets_times: '08:00, 16:00', full_pipeline_times: '07:00, 19:00',
+    matchday_live_poll_min: 2, auto_live_on_matchday: true,
+    label: 'Standard — balanced, ~2,600 cr/day'
+  },
+  economy: {
+    snapshot_interval_min: 60, results_interval_min: 60,
+    extra_markets_times: '09:00', full_pipeline_times: '08:00',
+    matchday_live_poll_min: 5, auto_live_on_matchday: false,
+    label: 'Economy — low usage, ~800 cr/day'
+  }
+};
+
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  document.getElementById('cfg-snapshot-interval').value = p.snapshot_interval_min;
+  document.getElementById('cfg-results-interval').value = p.results_interval_min;
+  document.getElementById('cfg-extra-times').value = p.extra_markets_times;
+  document.getElementById('cfg-pipeline-times').value = p.full_pipeline_times;
+  document.getElementById('cfg-live-interval').value = p.matchday_live_poll_min;
+  document.getElementById('cfg-auto-live').checked = p.auto_live_on_matchday;
+  updateSchedulerConfig();
+  estimateCredits();
+  const statusEl = document.getElementById('quick-action-status');
+  statusEl.textContent = `Applied "${name}" preset: ${p.label}`;
+  setTimeout(() => { if (statusEl.textContent.includes(name)) statusEl.textContent = ''; }, 4000);
+}
+
+function estimateCredits() {
+  const snapInterval = parseInt(document.getElementById('cfg-snapshot-interval').value) || 15;
+  const resInterval = parseInt(document.getElementById('cfg-results-interval').value) || 30;
+  const extraTimes = document.getElementById('cfg-extra-times').value.split(',').filter(s => s.trim()).length;
+  const pipeTimes = document.getElementById('cfg-pipeline-times').value.split(',').filter(s => s.trim()).length;
+
+  const snapsPerDay = Math.floor(1440 / snapInterval);
+  const resPerDay = Math.floor(1440 / resInterval);
+  const dailyCr = (snapsPerDay * 12) + (resPerDay * 2) + (extraTimes * 504) + (pipeTimes * 20);
+  const monthlyCr = dailyCr * 30;
+  const pctOfLimit = ((monthlyCr / 100000) * 100).toFixed(0);
+
+  const el = document.getElementById('scheduler-estimate');
+  const color = monthlyCr > 95000 ? 'text-red-400' : monthlyCr > 70000 ? 'text-amber-400' : 'text-green-400';
+  el.className = `text-[10px] ${color} mb-2`;
+  el.textContent = `Est. ~${dailyCr.toLocaleString()} cr/day | ~${(monthlyCr / 1000).toFixed(0)}K cr/month (${pctOfLimit}% of 100K)`;
+}
+
+/* ─── Scheduler Controls ─── */
+async function toggleScheduler() {
+  try {
+    const res = await fetch('/api/scheduler/toggle', { method: 'POST' });
+    const data = await res.json();
+    updateSchedulerUI(data);
+  } catch (e) {
+    console.error('Scheduler toggle error:', e);
+  }
+}
+
+function updateSchedulerUI(data) {
+  const btn = document.getElementById('scheduler-toggle');
+  if (data.active) {
+    btn.textContent = 'ON';
+    btn.className = btn.className.replace(/bg-gray-800 text-gray-400 border-gray-700/, 'bg-green-700 text-white border-green-600');
+  } else {
+    btn.textContent = 'OFF';
+    btn.className = btn.className.replace(/bg-green-700 text-white border-green-600/, 'bg-gray-800 text-gray-400 border-gray-700');
+  }
+}
+
+async function updateSchedulerConfig() {
+  const config = {
+    snapshot_interval_min: parseInt(document.getElementById('cfg-snapshot-interval').value),
+    results_interval_min: parseInt(document.getElementById('cfg-results-interval').value),
+    extra_markets_times: document.getElementById('cfg-extra-times').value.split(',').map(s => s.trim()),
+    full_pipeline_times: document.getElementById('cfg-pipeline-times').value.split(',').map(s => s.trim()),
+    matchday_live_poll_min: parseInt(document.getElementById('cfg-live-interval').value),
+    auto_live_on_matchday: document.getElementById('cfg-auto-live').checked,
+  };
+  try {
+    await fetch('/api/scheduler/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    estimateCredits();
+  } catch (e) {
+    console.error('Scheduler config error:', e);
+  }
+}
+
+async function loadSchedulerStatus() {
+  try {
+    const res = await fetch('/api/scheduler/status');
+    const data = await res.json();
+    updateSchedulerUI(data);
+    // Sync config inputs
+    const cfg = data.config || {};
+    if (cfg.snapshot_interval_min) document.getElementById('cfg-snapshot-interval').value = cfg.snapshot_interval_min;
+    if (cfg.results_interval_min) document.getElementById('cfg-results-interval').value = cfg.results_interval_min;
+    if (cfg.extra_markets_times) document.getElementById('cfg-extra-times').value = cfg.extra_markets_times.join(', ');
+    if (cfg.full_pipeline_times) document.getElementById('cfg-pipeline-times').value = cfg.full_pipeline_times.join(', ');
+    if (cfg.matchday_live_poll_min) document.getElementById('cfg-live-interval').value = cfg.matchday_live_poll_min;
+    if (cfg.auto_live_on_matchday !== undefined) document.getElementById('cfg-auto-live').checked = cfg.auto_live_on_matchday;
+    estimateCredits();
+
+    // Next runs
+    const nextEl = document.getElementById('scheduler-next-runs');
+    if (data.next_runs) {
+      const entries = Object.entries(data.next_runs).map(([k, v]) =>
+        `<span class="inline-block mr-3">${k.replace(/_/g, ' ')}: <span class="text-gray-300">${v || 'N/A'}</span></span>`
+      );
+      nextEl.innerHTML = entries.join('');
+    }
+
+    // Log
+    const logEl = document.getElementById('scheduler-log');
+    const log = data.log || [];
+    if (log.length) {
+      logEl.innerHTML = log.slice(-10).reverse().map(entry =>
+        `<div class="text-[10px] text-gray-500 border-b border-gray-800/50 py-1">
+          <span class="text-gray-400">${entry.time || ''}</span> ${entry.action || entry}
+        </div>`
+      ).join('');
+    } else {
+      logEl.innerHTML = '<div class="text-[10px] text-gray-600">No scheduler activity yet</div>';
+    }
+  } catch (e) {
+    console.error('Scheduler status error:', e);
+  }
+}
+
+/* ─── Credits ─── */
+async function loadCredits() {
+  try {
+    const res = await fetch('/api/credits');
+    const data = await res.json();
+    const today = data.today || data.daily_used || 0;
+    const monthly = data.monthly || data.monthly_used || 0;
+    const limit = data.monthly_limit || 100000;
+    const dailyLimit = data.daily_limit || 5000;
+    const pct = limit > 0 ? ((monthly / limit) * 100).toFixed(1) : 0;
+
+    document.getElementById('credits-today').textContent = today.toLocaleString();
+    document.getElementById('credits-today-limit').textContent = `/ ${dailyLimit.toLocaleString()} daily`;
+    document.getElementById('credits-monthly').textContent = monthly.toLocaleString();
+    document.getElementById('credits-monthly-pct').textContent = `${pct}% of ${(limit / 1000).toFixed(0)}K`;
+    document.getElementById('credits-bar').style.width = `${Math.min(pct, 100)}%`;
+    document.getElementById('credits-bar-label').textContent = `${pct}%`;
+    document.getElementById('credits-bar').className = `h-2.5 rounded-full transition-all ${pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-blue-500'}`;
+    document.getElementById('credits-remaining').textContent = `${(limit - monthly).toLocaleString()} credits remaining this month`;
+    document.getElementById('credits-last-call').textContent = data.last_call ? `Last call: ${data.last_call}` : '';
+  } catch (e) {
+    console.error('Credits load error:', e);
+  }
+}
+
+/* ─── SofaScore Status ─── */
+async function loadSofascoreStatus() {
+  try {
+    const res = await fetch('/api/sofascore/status');
+    const raw = await res.json();
+    const info = raw.data || {};
+    const running = raw.running || false;
+    const badge = document.getElementById('sofascore-status-badge');
+
+    if (running) {
+      badge.textContent = 'Scraping';
+      badge.className = 'badge bg-amber-700 text-amber-200';
+    } else if (info.total_records) {
+      badge.textContent = 'Ready';
+      badge.className = 'badge bg-green-900/50 text-green-400';
+    } else {
+      badge.textContent = 'No Data';
+      badge.className = 'badge bg-gray-700 text-gray-400';
+    }
+
+    document.getElementById('ss-records').textContent = info.total_records ? info.total_records.toLocaleString() : '-';
+    document.getElementById('ss-matches').textContent = info.total_matches ? info.total_matches.toLocaleString() : '-';
+    document.getElementById('ss-updated').textContent = info.last_modified ? new Date(info.last_modified).toLocaleString() : '-';
+    document.getElementById('ss-size').textContent = info.size_mb ? `${info.size_mb} MB` : '-';
+    document.getElementById('ss-seasons').textContent = info.seasons ? `${info.seasons.length} seasons: ${info.seasons[0]} — ${info.seasons[info.seasons.length - 1]}` : '';
+    document.getElementById('ss-scrape-status').textContent = running ? 'Scraping in progress...' : '';
+  } catch (e) {
+    console.error('SofaScore status error:', e);
+  }
+}
+
+/* ─── Live Monitoring Controls ─── */
+async function toggleLivePoll() {
+  const btn = document.getElementById('live-toggle-btn');
+  const isRunning = btn.textContent.includes('Stop');
+  try {
+    if (isRunning) {
+      await fetch('/api/live/auto-poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      });
+    } else {
+      const interval = parseInt(document.getElementById('live-interval-select').value);
+      await fetch('/api/live/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval }),
+      });
+      await fetch('/api/live/auto-poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start' }),
+      });
+    }
+    setTimeout(loadLiveStatus, 500);
+  } catch (e) {
+    console.error('Live toggle error:', e);
+  }
+}
+
+async function loadLiveStatus() {
+  try {
+    const res = await fetch('/api/live');
+    const data = await res.json();
+    const active = data.auto_poll_active || false;
+    const interval = data.auto_poll_interval || 120;
+    const nextAt = data.auto_poll_next_at;
+
+    const btn = document.getElementById('live-toggle-btn');
+    const badge = document.getElementById('live-status-badge');
+    const statusEl = document.getElementById('live-poll-status');
+    const intervalEl = document.getElementById('live-poll-interval');
+    const nextEl = document.getElementById('live-next-poll');
+
+    if (active) {
+      btn.textContent = 'Stop Auto-Poll';
+      btn.className = btn.className.replace(/bg-gray-800 text-gray-400 border-gray-700/, 'bg-red-700 text-white border-red-600');
+      badge.textContent = 'Active';
+      badge.className = 'badge bg-green-900/50 text-green-400';
+      statusEl.textContent = 'ON';
+      statusEl.className = 'text-sm font-medium text-green-400';
+    } else {
+      btn.textContent = 'Start Auto-Poll';
+      btn.className = btn.className.replace(/bg-red-700 text-white border-red-600/, 'bg-gray-800 text-gray-400 border-gray-700');
+      badge.textContent = 'Inactive';
+      badge.className = 'badge bg-gray-700 text-gray-400';
+      statusEl.textContent = 'OFF';
+      statusEl.className = 'text-sm font-medium text-gray-500';
+    }
+
+    const mins = Math.floor(interval / 60);
+    const secs = interval % 60;
+    intervalEl.textContent = secs ? `${mins}m ${secs}s` : `${mins} min`;
+
+    if (nextAt && active) {
+      const remaining = Math.max(0, Math.floor((new Date(nextAt).getTime() - Date.now()) / 1000));
+      const rm = Math.floor(remaining / 60);
+      const rs = remaining % 60;
+      nextEl.textContent = `${rm}:${String(rs).padStart(2, '0')}`;
+    } else {
+      nextEl.textContent = '-';
+    }
+
+    // Sync dropdown
+    document.getElementById('live-interval-select').value = interval;
+  } catch (e) {
+    console.error('Live status error:', e);
+  }
+}
+
+/* ─── Main Load ─── */
+async function loadSystem() {
+  try {
+    const res = await fetch('/api/system');
+    const data = await res.json();
+
+    document.getElementById('loading').classList.add('hidden');
+
+    // Always show control panels
+    document.getElementById('quick-actions').classList.remove('hidden');
+    document.getElementById('control-panels').classList.remove('hidden');
+
+    // Load control panel data
+    loadSchedulerStatus();
+    loadCredits();
+    loadSofascoreStatus();
+    loadLiveStatus();
+
+    if (!data.bankroll_health && !data.feature_drift && !(data.prediction_archive || []).length) {
+      document.getElementById('empty').classList.remove('hidden');
+      return;
+    }
+
+    document.getElementById('meta').textContent = data.generated_at
+      ? 'Last updated: ' + new Date(data.generated_at).toLocaleString()
+      : '';
+
+    renderStatusOverview(data);
+    renderBankrollHealth(data.bankroll_health);
+    renderDataFreshness(data.data_freshness);
+    renderFeatureDrift(data.feature_drift);
+    renderPredictionArchive(data.prediction_archive);
+    renderSettledBets(data.settled_bets);
+    renderFeedbackLoop(data.feedback_loop);
+    renderDeploymentState(data.deployment_state);
+    renderDriftReport(data.drift_report);
+    renderPredictionAudit(data.prediction_audit);
+    renderLessonsLearned(data.lessons, data.market_adjustments);
+    renderDataQuality(data.null_rates, data.season_coverage);
+  } catch (err) {
+    document.getElementById('loading').textContent = 'Failed to load system data: ' + err.message;
+  }
+}
+
+loadSystem();
+
+// Refresh control panels every 30s
+setInterval(() => {
+  loadSchedulerStatus();
+  loadCredits();
+  loadSofascoreStatus();
+  loadLiveStatus();
+}, 30000);
+
+
+</script>
+  </div>
+{% endblock %}

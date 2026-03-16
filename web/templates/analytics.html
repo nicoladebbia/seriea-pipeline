@@ -1,0 +1,842 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics — SerieAI{% endblock %}
+{% block page_title %}Analytics{% endblock %}
+
+{% block header_actions %}
+  <button onclick="triggerSettle()" id="settle-btn" class="btn btn--secondary btn--sm" title="Fetch latest results and settle bets">Settle Bets</button>
+  <button onclick="refreshAnalytics()" id="refresh-btn" class="btn btn--secondary btn--sm">Refresh</button>
+  <a href="/api/analytics/export" class="btn btn--secondary btn--sm">Export CSV</a>
+{% endblock %}
+
+{% block head %}
+  <script src="/static/js/tailwind.min.js"></script>
+  <script src="/static/js/chart.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      corePlugins: { preflight: false },
+      theme: { extend: { colors: {
+        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
+        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
+        accent: { blue:'#818cf8' }
+      } } }
+    }
+  </script>
+  <style>
+    .stat-value { font-variant-numeric: tabular-nums; }
+    .section-card { transition: all 0.2s; }
+    .section-card:hover { border-color: #374151; }
+    .badge { font-size: 0.65rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    @keyframes slideInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="text-gray-200">
+    <div id="loading" class="text-center py-20 text-gray-500">Loading analytics...</div>
+
+    <!-- Summary Cards -->
+    <div id="summary" class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"></div>
+
+    <!-- Bankroll Status -->
+    <div id="bankroll-section" class="hidden mb-6"></div>
+
+    <!-- P&L + Confidence Charts -->
+    <div id="charts" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
+        <h3 class="text-sm font-semibold text-white mb-3">Cumulative P&L</h3>
+        <canvas id="pnlChart" height="200"></canvas>
+      </div>
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
+        <h3 class="text-sm font-semibold text-white mb-3">Win Rate by Confidence</h3>
+        <canvas id="confChart" height="200"></canvas>
+      </div>
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 lg:col-span-2 section-card">
+        <h3 class="text-sm font-semibold text-white mb-3">Performance by Market</h3>
+        <canvas id="marketChart" height="150"></canvas>
+      </div>
+    </div>
+
+    <!-- CLV + Model Health Row -->
+    <div id="model-section" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <!-- CLV Tracking -->
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">Closing Line Value (CLV)</h3>
+          <span id="clv-badge" class="badge bg-gray-700 text-gray-400">-</span>
+        </div>
+        <div class="text-[10px] text-gray-600 mb-3">CLV measures if you got better odds than the closing line. Positive CLV = long-term edge.</div>
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <div class="text-[10px] text-gray-500">Running CLV</div>
+            <div class="text-xl font-bold stat-value" id="clv-running">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Positive CLV</div>
+            <div class="text-lg font-bold text-green-400 stat-value" id="clv-positive">-</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-gray-500">Negative CLV</div>
+            <div class="text-lg font-bold text-red-400 stat-value" id="clv-negative">-</div>
+          </div>
+        </div>
+        <div id="clv-bets" class="space-y-2"></div>
+      </div>
+
+      <!-- Model Health -->
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-white">Model Health</h3>
+          <span id="model-settled" class="text-[10px] text-gray-500"></span>
+        </div>
+        <!-- Brier Scores -->
+        <div class="mb-4">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Method Brier Scores <span class="text-gray-600 normal-case">(lower = better)</span></div>
+          <div id="brier-scores" class="space-y-1.5"></div>
+        </div>
+        <!-- Intelligence Effectiveness -->
+        <div class="mb-4">
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Intelligence Adjustments</div>
+          <div id="intel-effectiveness" class="space-y-1.5"></div>
+        </div>
+        <!-- Weight Changes -->
+        <div>
+          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Weight Optimization</div>
+          <div id="weight-changes" class="space-y-1.5"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROI by Market + Streaks -->
+    <div id="roi-section" class="hidden mb-6"></div>
+
+    <!-- Backtest Baselines -->
+    <div id="backtest-section" class="hidden mb-6"></div>
+
+    <!-- Bet History Table -->
+    <div id="history-section" class="hidden mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold text-white">Bet History</h2>
+        <a href="/api/analytics/export" class="text-xs text-blue-400 hover:text-blue-300">Download CSV</a>
+      </div>
+      <div class="bg-dark-800 rounded-xl border border-gray-800 overflow-hidden section-card">
+        <div class="overflow-x-auto">
+          <table id="history-table" class="w-full text-xs">
+            <thead>
+              <tr class="text-gray-500 border-b border-gray-800">
+                <th class="text-left p-2">Date</th>
+                <th class="text-left p-2">Match</th>
+                <th class="text-left p-2">Selection</th>
+                <th class="p-2">Odds</th>
+                <th class="p-2">Stake</th>
+                <th class="p-2">Profit</th>
+                <th class="p-2">Cumulative</th>
+                <th class="p-2">CLV</th>
+                <th class="p-2">Result</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty" class="hidden text-center py-20">
+      <div class="text-gray-500">
+        <svg class="w-16 h-16 mx-auto mb-4 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        <p class="text-xl mb-2">No betting history yet</p>
+        <p class="text-sm">Analytics will appear here after matches are settled.</p>
+        <p class="text-xs text-gray-600 mt-4">Pipeline results are auto-settled via <code class="bg-gray-800 px-1 rounded">results_fetcher.py</code></p>
+      </div>
+    </div>
+<script>
+Chart.defaults.color = '#6b7280';
+Chart.defaults.borderColor = '#1f2937';
+Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+Chart.defaults.font.size = 11;
+
+// Track chart instances for clean re-rendering
+let chartInstances = {};
+
+function destroyCharts() {
+  for (const [id, chart] of Object.entries(chartInstances)) {
+    chart.destroy();
+  }
+  chartInstances = {};
+}
+
+function statCard(label, value, sub, color) {
+  return `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
+    <div class="text-[10px] uppercase tracking-wider text-gray-500">${label}</div>
+    <div class="text-xl font-bold mt-1 stat-value" style="color:${color || '#fff'}">${value}</div>
+    ${sub ? `<div class="text-xs text-gray-500 mt-0.5">${sub}</div>` : ''}
+  </div>`;
+}
+
+function renderSummary(s, clv, bankroll) {
+  const el = document.getElementById('summary');
+  const profitColor = s.total_profit >= 0 ? '#4ade80' : '#f87171';
+  const roiColor = s.roi >= 0 ? '#4ade80' : '#f87171';
+  const record = `${s.wins || 0}W / ${s.losses || 0}L${s.pushes ? ' / ' + s.pushes + 'P' : ''}`;
+  const pendingText = s.pending ? `${s.pending} pending` : `${s.total_bets || 0} total`;
+  const clvPct = clv?.running_clv_pct || 0;
+  const clvColor = clvPct > 0 ? '#4ade80' : clvPct < 0 ? '#f87171' : '#6b7280';
+  const bal = bankroll?.current_balance || 0;
+  const balPnl = bankroll?.net_profit || 0;
+  const balColor = balPnl >= 0 ? '#4ade80' : '#f87171';
+  el.innerHTML =
+    statCard('Settled Bets', s.settled_bets || 0, pendingText, '#818cf8') +
+    statCard('Win Rate', (s.win_rate || 0) + '%', record, s.win_rate >= 50 ? '#4ade80' : '#fbbf24') +
+    statCard('Total Profit', (s.total_profit >= 0 ? '+' : '-') + '\u20ac' + Math.abs(s.total_profit || 0).toFixed(2), `from \u20ac${(s.total_stake || 0).toFixed(0)} staked`, profitColor) +
+    statCard('ROI', (s.roi >= 0 ? '+' : '') + (s.roi || 0) + '%', '', roiColor) +
+    statCard('CLV', (clvPct >= 0 ? '+' : '') + clvPct.toFixed(1) + '%', `${clv?.total_bets_tracked || 0} tracked`, clvColor) +
+    statCard('Bankroll', bal > 0 ? '\u20ac' + bal.toFixed(2) : '-', bal > 0 ? `${balPnl >= 0 ? '+' : ''}\u20ac${balPnl.toFixed(2)}` : '', balColor);
+  el.classList.remove('hidden');
+}
+
+function renderBankroll(b) {
+  if (!b || !Object.keys(b).length) return;
+  const el = document.getElementById('bankroll-section');
+  const current = b.current_balance || 0;
+  const initial = b.initial_balance || 1000;
+  const peak = b.peak_balance || current;
+  const low = b.lowest_balance || current;
+  const pnl = b.net_profit || (current - initial);
+  const pnlColor = pnl >= 0 ? '#4ade80' : '#f87171';
+  const record = `${b.wins || 0}W / ${b.losses || 0}L${b.pushes ? ' / ' + b.pushes + 'P' : ''}`;
+
+  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
+    <div class="flex items-center justify-between">
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-gray-500">Bankroll Status</div>
+        <div class="flex items-baseline gap-3 mt-1">
+          <span class="text-2xl font-bold text-white stat-value">\u20ac${current.toFixed(2)}</span>
+          <span class="text-sm stat-value" style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}\u20ac${pnl.toFixed(2)}</span>
+        </div>
+      </div>
+      <div class="flex gap-6 text-xs text-gray-500">
+        <div><div class="text-[10px]">Initial</div><div class="text-white stat-value">\u20ac${initial.toFixed(0)}</div></div>
+        <div><div class="text-[10px]">Peak</div><div class="text-green-400 stat-value">\u20ac${peak.toFixed(0)}</div></div>
+        <div><div class="text-[10px]">Low</div><div class="text-red-400 stat-value">\u20ac${low.toFixed(0)}</div></div>
+        <div><div class="text-[10px]">Record</div><div class="text-gray-300">${record}</div></div>
+      </div>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+
+  // Update bankroll stat card
+  const summaryEl = document.getElementById('summary');
+  if (summaryEl && summaryEl.children.length >= 6) {
+    summaryEl.children[5].querySelector('.text-xl').textContent = '\u20ac' + current.toFixed(2);
+    summaryEl.children[5].querySelector('.text-xl').style.color = pnlColor;
+  }
+}
+
+function renderPnLChart(timeline) {
+  const ctx = document.getElementById('pnlChart').getContext('2d');
+  if (chartInstances.pnl) chartInstances.pnl.destroy();
+  chartInstances.pnl = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: timeline.map((t, i) => t.date || `Bet ${i + 1}`),
+      datasets: [{
+        label: 'Cumulative P&L',
+        data: timeline.map(t => t.cumulative_profit),
+        borderColor: '#818cf8',
+        backgroundColor: 'rgba(129,140,248,0.1)',
+        fill: true, tension: 0.3, pointRadius: 3,
+        pointBackgroundColor: timeline.map(t => t.profit >= 0 ? '#4ade80' : '#f87171'),
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => timeline[items[0].dataIndex]?.match || '',
+            label: (item) => {
+              const t = timeline[item.dataIndex];
+              return [`P&L: ${t.profit >= 0 ? '+' : ''}\u20ac${t.profit.toFixed(2)}`, `Cumulative: \u20ac${t.cumulative_profit.toFixed(2)}`];
+            }
+          }
+        }
+      },
+      scales: {
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { callback: v => '\u20ac' + v } },
+        x: { grid: { display: false }, ticks: { maxRotation: 45, maxTicksLimit: 10 } }
+      }
+    }
+  });
+}
+
+function renderConfChart(byConfidence) {
+  const labels = Object.keys(byConfidence);
+  if (!labels.length) return;
+  const ctx = document.getElementById('confChart').getContext('2d');
+  if (chartInstances.conf) chartInstances.conf.destroy();
+  chartInstances.conf = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Win Rate %',
+          data: labels.map(l => { const d = byConfidence[l]; return d.bets > 0 ? (d.wins / d.bets * 100).toFixed(1) : 0; }),
+          backgroundColor: labels.map(l => { const wr = byConfidence[l].bets > 0 ? byConfidence[l].wins / byConfidence[l].bets : 0; return wr >= 0.5 ? 'rgba(74,222,128,0.7)' : 'rgba(251,191,36,0.7)'; }),
+          borderRadius: 4,
+        },
+        {
+          label: 'ROI %',
+          data: labels.map(l => { const d = byConfidence[l]; return d.stake > 0 ? (d.profit / d.stake * 100).toFixed(1) : 0; }),
+          backgroundColor: labels.map(l => { const roi = byConfidence[l].stake > 0 ? byConfidence[l].profit / byConfidence[l].stake : 0; return roi >= 0 ? 'rgba(129,140,248,0.7)' : 'rgba(248,113,113,0.7)'; }),
+          borderRadius: 4,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { tooltip: { callbacks: { afterLabel: (item) => { const d = byConfidence[item.label]; return `${d.wins}W / ${d.losses||0}L | \u20ac${d.profit.toFixed(1)}`; } } } },
+      scales: { y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { callback: v => v + '%' } }, x: { grid: { display: false } } }
+    }
+  });
+}
+
+function renderMarketChart(byMarket) {
+  const LABELS = { h2h: '1X2', totals: 'Over/Under', spreads: 'Handicap', cards: 'Cards', btts: 'BTTS', corners: 'Corners', 'O/U 2.5': 'O/U 2.5', DC: 'Double Chance', DNB: 'DNB' };
+  const labels = Object.keys(byMarket);
+  if (!labels.length) return;
+  const ctx = document.getElementById('marketChart').getContext('2d');
+  if (chartInstances.market) chartInstances.market.destroy();
+  chartInstances.market = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels.map(l => LABELS[l] || l),
+      datasets: [
+        { label: 'Bets', data: labels.map(l => byMarket[l].bets), backgroundColor: 'rgba(129,140,248,0.6)', borderRadius: 4, yAxisID: 'y' },
+        { label: 'Profit', data: labels.map(l => byMarket[l].profit.toFixed(2)), backgroundColor: labels.map(l => byMarket[l].profit >= 0 ? 'rgba(74,222,128,0.6)' : 'rgba(248,113,113,0.6)'), borderRadius: 4, yAxisID: 'y1' }
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { position: 'left', grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Bets' } },
+        y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'Profit' } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+}
+
+/* ─── CLV Section ─── */
+function renderCLV(clv) {
+  if (!clv || !clv.bets) return;
+  const running = clv.running_clv_pct || 0;
+  const color = running > 0 ? 'text-green-400' : running < 0 ? 'text-red-400' : 'text-gray-400';
+
+  document.getElementById('clv-running').textContent = (running >= 0 ? '+' : '') + running.toFixed(1) + '%';
+  document.getElementById('clv-running').className = `text-xl font-bold stat-value ${color}`;
+  document.getElementById('clv-positive').textContent = clv.positive_clv_count || 0;
+  document.getElementById('clv-negative').textContent = clv.negative_clv_count || 0;
+
+  const badge = document.getElementById('clv-badge');
+  if (running > 2) { badge.textContent = 'SHARP'; badge.className = 'badge bg-green-900/50 text-green-400'; }
+  else if (running > 0) { badge.textContent = 'POSITIVE'; badge.className = 'badge bg-blue-900/50 text-blue-400'; }
+  else if (running === 0) { badge.textContent = 'NEUTRAL'; badge.className = 'badge bg-gray-700 text-gray-400'; }
+  else { badge.textContent = 'NEGATIVE'; badge.className = 'badge bg-red-900/50 text-red-400'; }
+
+  const betsEl = document.getElementById('clv-bets');
+  betsEl.innerHTML = (clv.bets || []).map(b => {
+    const clvPct = b.clv_pct || 0;
+    const clvColor = clvPct > 0 ? 'text-green-400' : clvPct < 0 ? 'text-red-400' : 'text-gray-500';
+    const resultBadge = b.result === 'won' ? '<span class="badge bg-green-900/50 text-green-400">W</span>'
+      : b.result === 'lost' ? '<span class="badge bg-red-900/50 text-red-400">L</span>'
+      : '<span class="badge bg-gray-700 text-gray-400">P</span>';
+    return `<div class="flex items-center justify-between bg-gray-900/50 rounded-lg p-2.5">
+      <div class="flex items-center gap-2">
+        ${resultBadge}
+        <span class="text-xs text-white">${b.match || '-'}</span>
+        <span class="text-[10px] text-gray-500">${b.selection || ''}</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <span class="text-gray-500">Placed: ${(b.bet_odds || 0).toFixed(2)}</span>
+        <span class="text-gray-500">Closing: ${(b.closing_odds || 0).toFixed(2)}</span>
+        <span class="font-bold stat-value ${clvColor}">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('model-section').classList.remove('hidden');
+}
+
+/* ─── Model Health ─── */
+function renderModelHealth(feedback, weights) {
+  if (!feedback || !feedback.method_brier_scores) return;
+
+  document.getElementById('model-settled').textContent = `${feedback.n_settled || 0} settled predictions`;
+
+  // Brier scores - bar chart style
+  const brier = feedback.method_brier_scores;
+  const methods = Object.keys(brier).sort((a, b) => brier[a].mean_brier - brier[b].mean_brier);
+  const maxBrier = Math.max(...methods.map(m => brier[m].mean_brier), 0.6);
+
+  document.getElementById('brier-scores').innerHTML = methods.map(m => {
+    const b = brier[m];
+    const pct = ((b.mean_brier / maxBrier) * 100).toFixed(0);
+    const color = b.rank <= 2 ? 'bg-green-500' : b.rank <= 4 ? 'bg-amber-500' : 'bg-red-500';
+    const rankBadge = b.rank === 1 ? '<span class="text-[9px] text-green-400 ml-1">#1</span>' : `<span class="text-[9px] text-gray-600 ml-1">#${b.rank}</span>`;
+    return `<div class="flex items-center gap-2">
+      <div class="w-16 text-[10px] text-gray-400 shrink-0">${m}${rankBadge}</div>
+      <div class="flex-1 h-3 bg-gray-800 rounded-full overflow-hidden">
+        <div class="${color} h-3 rounded-full transition-all" style="width:${pct}%"></div>
+      </div>
+      <div class="w-12 text-right text-[10px] text-gray-400 stat-value">${b.mean_brier.toFixed(3)}</div>
+    </div>`;
+  }).join('');
+
+  // Intelligence effectiveness
+  const intel = feedback.intelligence_effectiveness || {};
+  document.getElementById('intel-effectiveness').innerHTML = Object.entries(intel).map(([name, v]) => {
+    const verdict = v.verdict || 'unknown';
+    const color = verdict === 'beneficial' ? 'text-green-400' : verdict === 'harmful' ? 'text-red-400' : 'text-amber-400';
+    const icon = verdict === 'beneficial' ? '+' : verdict === 'harmful' ? '-' : '~';
+    return `<div class="flex items-center justify-between text-[10px]">
+      <span class="text-gray-400">${name.replace(/_/g, ' ')}</span>
+      <div class="flex items-center gap-2">
+        <span class="text-gray-500">${v.helped || 0}/${v.total_applications || 0} helped</span>
+        <span class="font-bold ${color}">${icon}${((v.mean_brier_improvement || 0) * 100).toFixed(1)}pp</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Weight changes
+  const changes = weights?.changes || {};
+  document.getElementById('weight-changes').innerHTML = Object.entries(changes).map(([m, c]) => {
+    const delta = c.delta || 0;
+    const color = Math.abs(c.pct_change) > 20 ? (delta > 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400';
+    const arrow = delta > 0.01 ? '\u2191' : delta < -0.01 ? '\u2193' : '\u2192';
+    return `<div class="flex items-center justify-between text-[10px]">
+      <span class="text-gray-400">${m}</span>
+      <div class="flex items-center gap-2">
+        <span class="text-gray-500">${(c.current || 0).toFixed(2)} \u2192 ${(c.optimized || 0).toFixed(2)}</span>
+        <span class="${color} font-bold">${arrow} ${c.pct_change > 0 ? '+' : ''}${(c.pct_change || 0).toFixed(0)}%</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('model-section').classList.remove('hidden');
+}
+
+/* ─── History Table ─── */
+function renderHistory(timeline, clvBets) {
+  // Build CLV lookup
+  const clvMap = {};
+  (clvBets || []).forEach(b => {
+    const key = (b.match || '') + '_' + (b.selection || '');
+    clvMap[key] = b.clv_pct || 0;
+  });
+
+  const body = document.getElementById('history-body');
+  body.innerHTML = timeline.map(t => {
+    const profitColor = t.profit > 0 ? 'text-green-400' : t.profit < 0 ? 'text-red-400' : 'text-gray-400';
+    const cumColor = t.cumulative_profit >= 0 ? 'text-green-400' : 'text-red-400';
+    const status = (t.status || 'pending').toLowerCase();
+    const statusBadge = status === 'won'
+      ? '<span class="badge bg-green-900/50 text-green-400">WON</span>'
+      : status === 'lost'
+        ? '<span class="badge bg-red-900/50 text-red-400">LOST</span>'
+        : status === 'push'
+          ? '<span class="badge bg-amber-900/50 text-amber-400">PUSH</span>'
+          : `<span class="badge bg-gray-700 text-gray-400">${status.toUpperCase()}</span>`;
+
+    const clvKey = (t.match || '') + '_' + (t.selection || '');
+    const clvPct = clvMap[clvKey];
+    const clvCell = clvPct !== undefined
+      ? `<span class="${clvPct > 0 ? 'text-green-400' : clvPct < 0 ? 'text-red-400' : 'text-gray-500'} stat-value">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>`
+      : '<span class="text-gray-600">-</span>';
+
+    return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
+      <td class="p-2 text-gray-400">${t.date || '-'}</td>
+      <td class="p-2 text-white">${t.match || '-'}</td>
+      <td class="p-2 text-gray-300">${t.selection || '-'}</td>
+      <td class="p-2 text-center stat-value">${(t.odds || 0).toFixed(2)}</td>
+      <td class="p-2 text-center stat-value">\u20ac${(t.stake || 0).toFixed(1)}</td>
+      <td class="p-2 text-center stat-value ${profitColor}">${t.profit >= 0 ? '+' : ''}\u20ac${(t.profit || 0).toFixed(2)}</td>
+      <td class="p-2 text-center stat-value ${cumColor}">${t.cumulative_profit >= 0 ? '+' : ''}\u20ac${(t.cumulative_profit || 0).toFixed(2)}</td>
+      <td class="p-2 text-center">${clvCell}</td>
+      <td class="p-2 text-center">${statusBadge}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('history-section').classList.remove('hidden');
+}
+
+/* ─── ROI Report ─── */
+function renderROIReport(roi) {
+  if (!roi || !roi.by_market || !Object.keys(roi.by_market).length) return;
+  const el = document.getElementById('roi-section');
+
+  const markets = Object.entries(roi.by_market).sort((a, b) => (b[1].roi_pct || 0) - (a[1].roi_pct || 0));
+  const streaks = roi.streaks || {};
+  const kelly = roi.kelly_effectiveness || {};
+  const clvA = roi.clv_analysis || {};
+
+  el.innerHTML = `<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Market ROI Table -->
+    <div class="lg:col-span-2 bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-sm font-semibold text-white">ROI by Market</h3>
+        <span class="text-[10px] text-gray-500">${roi.total_settled || 0} settled / \u20ac${(roi.total_staked || 0).toFixed(0)} staked</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-gray-500 border-b border-gray-800">
+              <th class="text-left p-2">Market</th>
+              <th class="p-2 text-right">Bets</th>
+              <th class="p-2 text-right">Won</th>
+              <th class="p-2 text-right">Win Rate</th>
+              <th class="p-2 text-right">Staked</th>
+              <th class="p-2 text-right">Profit</th>
+              <th class="p-2 text-right">ROI</th>
+              <th class="p-2">Performance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${markets.map(([name, m]) => {
+              const roiPct = m.roi_pct || 0;
+              const roiColor = roiPct > 0 ? 'text-green-400' : roiPct < 0 ? 'text-red-400' : 'text-gray-400';
+              const profitColor = (m.profit || 0) >= 0 ? 'text-green-400' : 'text-red-400';
+              const wrColor = (m.win_rate || 0) >= 0.5 ? 'text-green-400' : (m.win_rate || 0) >= 0.35 ? 'text-amber-400' : 'text-red-400';
+              // ROI bar - scale to max 100%
+              const barWidth = Math.min(Math.abs(roiPct), 250);
+              const barColor = roiPct >= 0 ? 'bg-green-500' : 'bg-red-500';
+              return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
+                <td class="p-2 text-gray-200 font-medium">${name}</td>
+                <td class="p-2 text-right stat-value text-gray-400">${m.bets || 0}</td>
+                <td class="p-2 text-right stat-value text-gray-400">${m.won || 0}</td>
+                <td class="p-2 text-right stat-value ${wrColor}">${((m.win_rate || 0) * 100).toFixed(0)}%</td>
+                <td class="p-2 text-right stat-value text-gray-400">\u20ac${(m.staked || 0).toFixed(0)}</td>
+                <td class="p-2 text-right stat-value ${profitColor}">${(m.profit || 0) >= 0 ? '+' : ''}\u20ac${(m.profit || 0).toFixed(2)}</td>
+                <td class="p-2 text-right stat-value ${roiColor} font-bold">${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}%</td>
+                <td class="p-2"><div class="w-20 h-2.5 bg-gray-800 rounded-full overflow-hidden"><div class="${barColor} h-2.5 rounded-full" style="width:${barWidth / 2.5}%"></div></div></td>
+              </tr>`;
+            }).join('')}
+            <tr class="border-t-2 border-gray-700 font-bold">
+              <td class="p-2 text-white">TOTAL</td>
+              <td class="p-2 text-right stat-value text-white">${roi.total_settled || 0}</td>
+              <td class="p-2 text-right stat-value text-gray-400"></td>
+              <td class="p-2 text-right stat-value text-gray-400"></td>
+              <td class="p-2 text-right stat-value text-white">\u20ac${(roi.total_staked || 0).toFixed(0)}</td>
+              <td class="p-2 text-right stat-value ${(roi.total_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${(roi.total_profit || 0) >= 0 ? '+' : ''}\u20ac${(roi.total_profit || 0).toFixed(2)}</td>
+              <td class="p-2 text-right stat-value ${(roi.overall_roi_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'} font-bold">${(roi.overall_roi_pct || 0) >= 0 ? '+' : ''}${(roi.overall_roi_pct || 0).toFixed(1)}%</td>
+              <td class="p-2"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Side panel: Streaks + Kelly + CLV -->
+    <div class="space-y-4">
+      <!-- Streaks -->
+      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Streaks</h4>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-gray-900/50 rounded-lg p-3">
+            <div class="text-[10px] text-gray-500">Current</div>
+            <div class="text-lg font-bold stat-value ${streaks.current_type === 'win' ? 'text-green-400' : 'text-red-400'}">${streaks.current || 0} ${streaks.current_type || ''}</div>
+          </div>
+          <div class="bg-gray-900/50 rounded-lg p-3">
+            <div class="text-[10px] text-gray-500">Max Win</div>
+            <div class="text-lg font-bold text-green-400 stat-value">${streaks.max_win || 0}</div>
+          </div>
+          <div class="bg-gray-900/50 rounded-lg p-3">
+            <div class="text-[10px] text-gray-500">Max Loss</div>
+            <div class="text-lg font-bold text-red-400 stat-value">${streaks.max_loss || 0}</div>
+          </div>
+          <div class="bg-gray-900/50 rounded-lg p-3">
+            <div class="text-[10px] text-gray-500">Kelly Quality</div>
+            <div class="text-lg font-bold text-white stat-value">${kelly.oversized || kelly.undersized ? (kelly.oversized || 0) + ' over' : 'Clean'}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLV Summary -->
+      ${clvA.positive_clv_bets ? `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">CLV Breakdown</h4>
+        <div class="space-y-2">
+          <div class="flex justify-between text-xs">
+            <span class="text-gray-400">+CLV Bets</span>
+            <span class="text-green-400 stat-value font-medium">${clvA.positive_clv_bets || 0}</span>
+          </div>
+          <div class="flex justify-between text-xs">
+            <span class="text-gray-400">-CLV Bets</span>
+            <span class="text-red-400 stat-value font-medium">${clvA.negative_clv_bets || 0}</span>
+          </div>
+          <div class="h-3 bg-gray-800 rounded-full overflow-hidden mt-2 flex">
+            <div class="bg-green-500 h-3" style="width:${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}%"></div>
+            <div class="bg-red-500 h-3 flex-1"></div>
+          </div>
+          <div class="text-[10px] text-gray-600 text-center">${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}% positive CLV rate</div>
+        </div>
+      </div>` : ''}
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+/* ─── Backtest Baselines ─── */
+function renderBacktests(backtests) {
+  if (!backtests || !Object.keys(backtests).length) return;
+  const el = document.getElementById('backtest-section');
+  const seasons = Object.entries(backtests).filter(([, v]) => v && Object.keys(v).length);
+  if (!seasons.length) return;
+
+  let html = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
+    <h3 class="text-sm font-semibold text-white mb-4">Backtest Baselines</h3>
+    <div class="text-[10px] text-gray-600 mb-3">Historical model performance on completed seasons — use as reference for live performance expectations.</div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs">
+        <thead><tr class="text-gray-500 border-b border-gray-800">
+          <th class="text-left p-2">Market / Model</th>
+          ${seasons.map(([s]) => `<th class="p-2 text-center" colspan="2">${s}</th>`).join('')}
+        </tr>
+        <tr class="text-gray-600 border-b border-gray-800">
+          <th class="p-1"></th>
+          ${seasons.map(() => `<th class="p-1 text-center text-[10px]">Acc</th><th class="p-1 text-center text-[10px]">LogLoss</th>`).join('')}
+        </tr></thead>
+        <tbody>`;
+
+  // Collect all market keys from all seasons
+  const allKeys = new Set();
+  for (const [, data] of seasons) {
+    for (const key of Object.keys(data)) {
+      if (key !== 'season' && key !== 'matches') allKeys.add(key);
+    }
+  }
+
+  const marketLabels = {
+    '1x2_poisson': '1X2 Poisson', '1x2_classifier': '1X2 Classifier', '1x2_ensemble': '1X2 Ensemble',
+    '1x2_pinnacle': '1X2 Pinnacle', 'over_2_5': 'Over 2.5', 'btts': 'BTTS',
+    'ht_result': 'HT Result', 'cards_over_4_5': 'Cards O4.5', 'corners_over_9_5': 'Corners O9.5'
+  };
+
+  for (const key of allKeys) {
+    html += `<tr class="border-b border-gray-800/50">
+      <td class="p-2 text-gray-300 font-medium">${marketLabels[key] || key}</td>`;
+    for (const [, data] of seasons) {
+      const m = data[key] || {};
+      const acc = m.accuracy != null ? (m.accuracy * 100).toFixed(1) : '-';
+      const accColor = m.accuracy >= 0.55 ? 'text-green-400' : m.accuracy >= 0.50 ? 'text-amber-400' : 'text-gray-400';
+      const ll = m.log_loss != null ? m.log_loss.toFixed(4) : '-';
+      html += `<td class="p-2 text-center stat-value ${accColor}">${acc}%</td>`;
+      html += `<td class="p-2 text-center stat-value text-gray-500">${ll}</td>`;
+    }
+    html += `</tr>`;
+  }
+
+  html += `</tbody></table></div></div>`;
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+/* ─── Main Load (re-callable) ─── */
+let lastSettledCount = null;  // track changes for auto-refresh
+
+async function loadAnalytics() {
+  try {
+    const res = await fetch('/api/analytics');
+    const data = await res.json();
+
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('empty').classList.add('hidden');
+
+    const hasHistory = data.timeline && data.timeline.length > 0;
+    const hasBankroll = data.bankroll && Object.keys(data.bankroll).length > 0;
+    const hasCLV = data.clv && data.clv.bets && data.clv.bets.length > 0;
+    const hasFeedback = data.feedback && data.feedback.method_brier_scores;
+
+    // Track if new bets were settled (for auto-refresh detection)
+    const currentSettled = data.summary?.settled_bets || 0;
+    if (lastSettledCount !== null && currentSettled > lastSettledCount) {
+      const newBets = currentSettled - lastSettledCount;
+      showAnalyticsToast(`${newBets} new bet${newBets > 1 ? 's' : ''} settled — analytics updated`, 'success');
+    }
+    lastSettledCount = currentSettled;
+
+    if (!hasHistory && !hasBankroll && !hasCLV && !hasFeedback) {
+      document.getElementById('empty').classList.remove('hidden');
+      return;
+    }
+
+    renderSummary(data.summary || {}, data.clv, data.bankroll);
+    if (hasBankroll) renderBankroll(data.bankroll);
+
+    if (hasHistory) {
+      document.getElementById('charts').classList.remove('hidden');
+      renderPnLChart(data.timeline);
+      if (data.by_confidence && Object.keys(data.by_confidence).length) renderConfChart(data.by_confidence);
+      if (data.by_market && Object.keys(data.by_market).length) renderMarketChart(data.by_market);
+      renderHistory(data.timeline, data.clv?.bets);
+    }
+
+    // CLV + Model Health (always show if data exists)
+    if (hasCLV) renderCLV(data.clv);
+    if (hasFeedback) renderModelHealth(data.feedback, data.weights);
+    if ((hasCLV || hasFeedback) && !hasHistory) {
+      document.getElementById('model-section').classList.remove('hidden');
+    }
+
+    // ROI Report
+    if (data.roi_report && data.roi_report.by_market) {
+      renderROIReport(data.roi_report);
+    }
+
+    // Backtest baselines
+    if (data.backtests) {
+      renderBacktests(data.backtests);
+    }
+
+    if (!hasHistory && !hasCLV && !hasFeedback) {
+      document.getElementById('empty').classList.remove('hidden');
+    }
+
+    // Update last-refreshed indicator
+    updateRefreshTime();
+  } catch (err) {
+    document.getElementById('loading').textContent = 'Failed to load analytics: ' + err.message;
+  }
+}
+
+/* ─── Refresh Button ─── */
+function refreshAnalytics() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = 'Refreshing...';
+  btn.disabled = true;
+  destroyCharts();
+  loadAnalytics().finally(() => {
+    btn.textContent = 'Refresh';
+    btn.disabled = false;
+  });
+}
+
+/* ─── Settle Bets Button ─── */
+async function triggerSettle() {
+  const btn = document.getElementById('settle-btn');
+  btn.textContent = 'Settling...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/settle', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) {
+      showAnalyticsToast(data.message || 'Settlement not started', 'info');
+      btn.textContent = 'Settle Bets';
+      btn.disabled = false;
+      return;
+    }
+    // Poll for result
+    pollSettleAndRefresh();
+  } catch (e) {
+    showAnalyticsToast('Settlement failed: ' + e.message, 'error');
+    btn.textContent = 'Settle Bets';
+    btn.disabled = false;
+  }
+}
+
+async function pollSettleAndRefresh() {
+  const btn = document.getElementById('settle-btn');
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const res = await fetch('/api/settle/status');
+      const data = await res.json();
+      if (!data.running && data.status === 'done') {
+        const settled = data.settled || 0;
+        const profit = data.profit || 0;
+        if (settled === 0) {
+          showAnalyticsToast('No new bets to settle', 'info');
+        } else {
+          const profitStr = profit >= 0 ? `+\u20ac${profit.toFixed(2)}` : `-\u20ac${Math.abs(profit).toFixed(2)}`;
+          showAnalyticsToast(
+            `Settled ${settled}: ${data.won||0}W ${data.lost||0}L ${data.push||0}P | ${profitStr} | Balance: \u20ac${(data.new_balance||0).toFixed(2)}`,
+            profit >= 0 ? 'success' : 'error'
+          );
+        }
+        // Refresh analytics with new data
+        destroyCharts();
+        await loadAnalytics();
+        btn.textContent = 'Settle Bets';
+        btn.disabled = false;
+        return;
+      }
+      if (!data.running && data.status === 'error') {
+        showAnalyticsToast('Settlement error: ' + (data.error || 'unknown'), 'error');
+        btn.textContent = 'Settle Bets';
+        btn.disabled = false;
+        return;
+      }
+    } catch (e) { /* continue polling */ }
+  }
+  showAnalyticsToast('Settlement timed out', 'error');
+  btn.textContent = 'Settle Bets';
+  btn.disabled = false;
+}
+
+/* ─── Auto-refresh: check for new settlements every 60s ─── */
+setInterval(async () => {
+  try {
+    const res = await fetch('/api/settle/status');
+    const data = await res.json();
+    // If a settlement just finished (from betting page or cron), refresh
+    if (!data.running && data.status === 'done' && data.settled > 0) {
+      const finishedAt = new Date(data.finished_at || 0).getTime();
+      const now = Date.now();
+      // Only auto-refresh if settlement finished in the last 90s
+      if (now - finishedAt < 90000) {
+        destroyCharts();
+        loadAnalytics();
+      }
+    }
+  } catch (e) { /* silent */ }
+}, 60000);
+
+/* ─── Toast ─── */
+function showAnalyticsToast(message, type = 'info') {
+  const existing = document.getElementById('analytics-toast');
+  if (existing) existing.remove();
+
+  const colors = {
+    info: 'bg-blue-900/80 border-blue-700/50 text-blue-300',
+    success: 'bg-green-900/80 border-green-700/50 text-green-300',
+    error: 'bg-red-900/80 border-red-700/50 text-red-300',
+  };
+  const toast = document.createElement('div');
+  toast.id = 'analytics-toast';
+  toast.className = `fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium ${colors[type] || colors.info} shadow-lg`;
+  toast.style.cssText = 'animation: slideInUp 0.3s ease';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.3s';
+    setTimeout(() => toast.remove(), 300);
+  }, type === 'info' ? 5000 : 8000);
+}
+
+function updateRefreshTime() {
+  // Update the refresh button title with last refresh time
+  const btn = document.getElementById('refresh-btn');
+  if (btn) btn.title = 'Last refreshed: ' + new Date().toLocaleTimeString();
+}
+
+// Initial load
+loadAnalytics();
+
+</script>
+  </div>
+{% endblock %}

@@ -1,0 +1,2816 @@
+{% extends "base.html" %}
+
+{% block title %}Betting — SerieAI{% endblock %}
+{% block page_title %}Betting{% endblock %}
+
+{% block head %}
+  <script src="/static/js/tailwind.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      corePlugins: { preflight: false },
+      theme: { extend: { colors: {
+        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
+        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
+        accent: { blue:'#818cf8' }
+      } } }
+    }
+  </script>
+  <style>
+    .badge { font-size: 0.65rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-value { font-variant-numeric: tabular-nums; }
+    .prob-bar { height: 6px; border-radius: 3px; transition: width 0.4s ease; }
+
+    /* Form dots */
+    .form-dot {
+      width: 18px; height: 18px; border-radius: 50%; display: inline-flex;
+      align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 700; line-height: 1;
+    }
+    .form-W { background: #22c55e; color: #fff; }
+    .form-D { background: #eab308; color: #000; }
+    .form-L { background: #ef4444; color: #fff; }
+
+    /* Match card */
+    .match-card { transition: all 0.2s ease; cursor: pointer; border-left: 3px solid transparent; }
+    .match-card:hover { border-color: #374151; background: rgba(36,36,66,0.7); }
+    .match-card.has-value { border-left-color: #4ade80; }
+    .match-card.expanded { border-color: #818cf8; cursor: default; }
+
+    /* Tab pills */
+    .tab-pill { padding: 6px 14px; border-radius: 8px; font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid transparent; }
+    .tab-pill:hover { background: rgba(129,140,248,0.1); }
+    .tab-pill.active { background: rgba(129,140,248,0.2); color: #818cf8; border-color: rgba(129,140,248,0.3); }
+    .tab-pill.inactive { color: #6b7280; }
+
+    /* Detail panel */
+    .detail-panel { max-height: 0; overflow: hidden; transition: max-height 0.35s ease; }
+    .detail-panel.open { max-height: 5000px; overflow: visible; }
+
+    /* Formation pitch */
+    .formation-pitch {
+      background: linear-gradient(180deg, #1a4d1a 0%, #1e5e1e 50%, #1a4d1a 100%);
+      border-radius: 8px; padding: 12px; position: relative;
+      border: 1px solid #2d7a2d;
+    }
+    .formation-pitch .player-dot {
+      width: 28px; height: 28px; border-radius: 50%; display: flex;
+      align-items: center; justify-content: center; font-size: 8px; font-weight: 700;
+      background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    }
+
+    /* Bookmaker highlighting */
+    .bk-sharp { background: rgba(34,211,238,0.08); }
+    .bk-best td { font-weight: 600; }
+
+    /* Injury crisis */
+    .injury-crisis { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 8px 12px; }
+
+    /* Steam badge */
+    .steam-badge { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes slideInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Tooltips */
+    .tip { position: relative; cursor: help; border-bottom: 1px dotted #6b7280; }
+    .tip:hover::after {
+      content: attr(data-tip); position: absolute; bottom: 120%; left: 50%;
+      transform: translateX(-50%); background: #374151; color: #e5e7eb;
+      font-size: 10px; padding: 4px 8px; border-radius: 4px;
+      white-space: nowrap; z-index: 20; pointer-events: none;
+    }
+
+    .day-header { position: sticky; top: 52px; z-index: 10; }
+    .str-bar { height: 4px; border-radius: 2px; transition: width 0.4s ease; }
+
+    /* Markdown content */
+    .md-content h2 { font-size: 0.875rem; font-weight: 700; margin: 0.75rem 0 0.25rem; color: #e5e7eb; }
+    .md-content p { font-size: 0.75rem; color: #9ca3af; margin: 0.25rem 0; line-height: 1.5; }
+    .md-content ul, .md-content ol { font-size: 0.75rem; color: #9ca3af; padding-left: 1.25rem; }
+    .md-content strong { color: #d1d5db; }
+    .md-content li { margin: 2px 0; }
+
+    /* Collapsible sections */
+    .market-section.collapsed { display: none; }
+
+    /* Live match states */
+    .match-card.is-live { border-left-color: #ef4444 !important; }
+    .match-card.is-ht { border-left-color: #f59e0b !important; }
+    .match-card.is-completed { border-left-color: #6b7280 !important; opacity: 0.7; }
+    .live-badge {
+      background: #ef4444; color: white; font-size: 10px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; animation: pulse 2s infinite;
+      display: inline-block; letter-spacing: 0.05em;
+    }
+    .ht-badge {
+      background: #f59e0b; color: #000; font-size: 10px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; display: inline-block;
+    }
+    .ft-badge {
+      background: #374151; color: #9ca3af; font-size: 10px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; display: inline-block;
+    }
+    .minute-badge {
+      background: rgba(239,68,68,0.15); color: #ef4444; font-size: 11px;
+      font-weight: 700; padding: 2px 8px; border-radius: 4px;
+    }
+    .live-score { font-size: 1.25rem; font-weight: 800; color: white; letter-spacing: 0.05em; }
+    .countdown-urgent { color: #ef4444 !important; animation: pulse 2s infinite; }
+    .countdown-soon { color: #f59e0b !important; }
+    .bet-won { background: rgba(34,197,94,0.15); color: #4ade80; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+    .bet-lost { background: rgba(239,68,68,0.15); color: #f87171; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+    .bet-open { background: rgba(251,191,36,0.15); color: #fbbf24; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+
+    /* Live banner */
+    .live-banner-card {
+      background: linear-gradient(135deg, rgba(127,29,29,0.4) 0%, rgba(30,30,50,0.95) 100%);
+      border: 1px solid rgba(239,68,68,0.3); border-radius: 12px;
+      padding: 16px; cursor: pointer; transition: border-color 0.2s;
+    }
+    .live-banner-card:hover { border-color: rgba(239,68,68,0.6); }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; animation: pulse 2s infinite; display: inline-block; }
+
+    /* Poll status indicator */
+    .poll-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+    .poll-dot.active { background: #4ade80; }
+    .poll-dot.inactive { background: #f59e0b; }
+
+    @media (max-width: 640px) {
+      .match-card .card-center { display: none; }
+      .tab-pill { padding: 4px 10px; font-size: 0.65rem; }
+    }
+  </style>
+{% endblock %}
+
+{% block header_actions %}
+  <div id="meta" class="text-small text-tertiary" style="text-align:right">
+    <div id="live-clock" class="text-mono"></div>
+    <div id="generated-at" style="font-size:10px"></div>
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div class="text-gray-200">
+    <!-- Data Freshness & Refresh -->
+    <div id="freshness-bar" class="hidden mb-4 bg-dark-800 rounded-xl border border-gray-800 p-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-4 text-xs">
+          <div class="flex items-center gap-2">
+            <span id="odds-status-dot" class="w-2 h-2 rounded-full"></span>
+            <span class="text-gray-500">Odds:</span>
+            <span id="odds-age" class="text-gray-300 font-mono"></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-gray-500">Predictions:</span>
+            <span id="preds-age" class="text-gray-300 font-mono"></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-gray-500">Markets:</span>
+            <span id="markets-age" class="text-gray-300 font-mono"></span>
+          </div>
+          <div id="poll-status" class="flex items-center gap-1.5 hidden">
+            <span id="poll-dot" class="poll-dot inactive"></span>
+            <span id="poll-label" class="text-gray-400">Polling inactive</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="refresh-status" class="text-[10px] text-gray-500"></span>
+          <button id="refresh-btn" onclick="triggerRefresh()" class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <svg id="refresh-icon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span id="refresh-label">Refresh All</span>
+          </button>
+        </div>
+      </div>
+      <div id="refresh-progress" class="hidden mt-2">
+        <div class="flex items-center justify-between text-[10px] text-gray-500 mb-1">
+          <span id="refresh-step-msg">Starting...</span>
+          <span id="refresh-step-num">0/32</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-1.5">
+          <div id="refresh-progress-bar" class="h-1.5 rounded-full bg-blue-500 transition-all duration-500" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="loading" class="text-center py-20 text-gray-500">Loading betting data...</div>
+
+    <!-- View Toggle -->
+    <div id="view-toggle" class="hidden flex items-center gap-2 mb-4">
+      <button id="btn-all-bets" onclick="toggleView('all')" class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30">All Matches</button>
+      <button id="btn-my-bets" onclick="toggleView('mine')" class="px-4 py-1.5 text-xs font-semibold rounded-lg text-gray-400 border border-gray-700 hover:text-white">My Bets <span id="my-bets-count" class="text-accent-green ml-1"></span></button>
+    </div>
+
+    <!-- My Bets Section -->
+    <div id="my-bets-section" class="hidden mb-6"></div>
+
+    <!-- Stats Bar (merged summary + bankroll) -->
+    <div id="stats-bar" class="hidden stats-bar mb-6"></div>
+
+    <!-- LIVE NOW banner -->
+    <div id="live-banner" class="hidden mb-6"></div>
+
+    <!-- SAFEST BETS hero -->
+    <div id="best-bets" class="hidden mb-6"></div>
+
+    <!-- ALL MATCHES GRID -->
+    <div id="matches-grid" class="hidden space-y-2"></div>
+
+    <!-- FULL PARLAYS -->
+    <div id="parlays" class="hidden mt-8"></div>
+
+    <!-- Empty -->
+    <div id="empty" class="hidden text-center py-20 text-gray-500">
+      <p class="text-xl mb-2">No matches available</p>
+      <p class="text-sm">Run the pipeline first to generate predictions.</p>
+    </div>
+<script>
+// ============================================================
+// CONSTANTS & STATE
+// ============================================================
+const SHARP_BOOKMAKERS = ['Pinnacle', 'BetCRIS', 'Matchbook', 'Betfair Exchange', 'Smarkets', 'Betfair'];
+const CONF_COLORS = { HIGH: '#4ade80', MEDIUM: '#fbbf24', LOW: '#f87171', 'Very High': '#4ade80', High: '#4ade80', 'Medium-High': '#a3e635', Medium: '#fbbf24', Low: '#f87171' };
+const MARKET_LABELS = { h2h: '1X2', totals: 'Over/Under', spreads: 'Handicap', cards: 'Cards', btts: 'BTTS', corners: 'Corners', over_under: 'O/U', handicap: 'HC', btts_corners: 'BTTS/Corners' };
+
+let allMatches = {};
+let bestBets = [];
+let parlayData = {};
+let expandedMatch = null;
+let activeTab = {};
+let refreshPollInterval = null;
+let sortedMatchKeys = [];
+let placedBets = [];
+let currentView = 'all';  // 'all' or 'mine'
+let playerPropVBets = [];  // player prop value bets
+let livePropCache = {};    // match_slug → live prop evaluation data from /api/live/props/
+let propPerformance = null; // historical prop performance data from /api/props/performance
+let kellyPnl = null;        // hypothetical Kelly P&L on all prop value bets
+let fairOddsSummary = null; // fair odds historical tracking
+let rejectedBets = [];     // bets filtered out with reasons
+let riskState = {};        // risk management state
+let bttsPredictions = [];  // BTTS probability predictions
+let cornersPredictions = []; // Corners probability predictions
+let marketRules = {};      // enabled/disabled market rules
+const STANDARD_OU_LINES = ['0.5', '1.5', '2.5', '3.5', '4.5'];
+
+// ============================================================
+// UTILITY
+// ============================================================
+function formatAge(isoStr) {
+  if (!isoStr) return 'N/A';
+  const diffMs = new Date() - new Date(isoStr);
+  if (diffMs < 0) return 'just now';
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ${hrs % 24}h ago`;
+}
+
+function getAgeMinutes(s) { return s ? (new Date() - new Date(s)) / 60000 : 9999; }
+
+function formatMatchDate(d) {
+  if (!d) return '';
+  const dt = new Date(d + 'T00:00:00');
+  const today = new Date(); today.setHours(0,0,0,0);
+  const tom = new Date(today); tom.setDate(tom.getDate()+1);
+  if (dt.getTime() === today.getTime()) return 'Today';
+  if (dt.getTime() === tom.getTime()) return 'Tomorrow';
+  return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function timeUntilMatch(d, t, commenceTime) {
+  // Prefer commence_time (UTC ISO string) — all times use browser local TZ
+  const iso = commenceTime || (d ? d + 'T23:59:00Z' : '');
+  return timeUntil(iso);  // Delegate to shared app.js timeUntil
+}
+
+function formatKickoff(commenceTime, date) {
+  // Format kickoff time from UTC commence_time to local time
+  if (commenceTime) {
+    try {
+      const d = new Date(commenceTime);
+      return d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+    } catch { /* fall through */ }
+  }
+  return '--:--';
+}
+
+function formDots(s) {
+  if (!s) return '';
+  return s.split('').map(c =>
+    `<span class="form-dot form-${c}" style="width:16px;height:16px;font-size:8px">${c}</span>`
+  ).join('');
+}
+
+function strengthBar(v) {
+  if (!v) return '';
+  const pct = Math.min(100, v);
+  const col = v >= 80 ? '#4ade80' : v >= 60 ? '#fbbf24' : '#f87171';
+  return `<div class="flex items-center gap-1"><div class="w-12 bg-gray-800 rounded-full h-1 relative"><div class="absolute h-1 rounded-full" style="width:${pct}%;background:${col}"></div></div><span class="text-[10px]" style="color:${col}">${Math.round(v)}</span></div>`;
+}
+
+function statCard(label, value, sub, color) {
+  return `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4">
+    <div class="text-[10px] uppercase tracking-wider text-gray-500">${label}</div>
+    <div class="text-xl font-bold mt-1 stat-value" style="color:${color||'#fff'}">${value}</div>
+    ${sub ? `<div class="text-xs text-gray-500 mt-0.5">${sub}</div>` : ''}
+  </div>`;
+}
+
+function probBar(ourProb, impliedProb, label) {
+  const edge = ourProb - impliedProb;
+  const edgePct = (edge * 100).toFixed(1);
+  const edgeColor = edge > 0.10 ? '#4ade80' : edge > 0.03 ? '#fbbf24' : '#6b7280';
+  return `<div class="py-0.5">
+    <div class="flex items-center justify-between text-[10px] mb-0.5">
+      <span class="text-gray-400">${label}</span>
+      <span style="color:${edgeColor}" class="font-medium">${edge>0?'+':''}${edgePct}%</span>
+    </div>
+    <div class="flex gap-1 items-center">
+      <div class="flex-1 bg-gray-800 rounded-full h-1.5 relative">
+        <div class="absolute h-1.5 rounded-full bg-blue-500" style="width:${(ourProb*100).toFixed(0)}%"></div>
+      </div>
+      <span class="text-[9px] text-blue-400 w-8 text-right stat-value">${(ourProb*100).toFixed(0)}%</span>
+    </div>
+    ${impliedProb > 0 ? `<div class="flex gap-1 items-center mt-0.5">
+      <div class="flex-1 bg-gray-800 rounded-full h-1 relative">
+        <div class="absolute h-1 rounded-full bg-gray-600" style="width:${(impliedProb*100).toFixed(0)}%"></div>
+      </div>
+      <span class="text-[9px] text-gray-500 w-8 text-right stat-value">${(impliedProb*100).toFixed(0)}%</span>
+    </div>` : ''}
+  </div>`;
+}
+
+function esc(s) { return CSS.escape(s); }
+
+// ============================================================
+// FRESHNESS & REFRESH
+// ============================================================
+function showFreshness(data) {
+  const bar = document.getElementById('freshness-bar');
+  bar.classList.remove('hidden');
+  const oAge = getAgeMinutes(data.odds_fetched_at);
+  document.getElementById('odds-age').textContent = formatAge(data.odds_fetched_at);
+  document.getElementById('preds-age').textContent = formatAge(data.predictions_generated_at);
+  document.getElementById('markets-age').textContent = formatAge(data.extended_markets_at);
+  const dot = document.getElementById('odds-status-dot');
+  const oddsEl = document.getElementById('odds-age');
+  if (oAge < 60) { dot.style.background = '#4ade80'; oddsEl.style.color = '#4ade80'; }
+  else if (oAge < 360) { dot.style.background = '#fbbf24'; oddsEl.style.color = '#fbbf24'; }
+  else { dot.style.background = '#f87171'; oddsEl.style.color = '#f87171'; }
+  if (data.pipeline_running) startRefreshPolling();
+}
+
+async function triggerRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  document.getElementById('refresh-label').textContent = 'Running...';
+  document.getElementById('refresh-icon').classList.add('animate-spin');
+  document.getElementById('refresh-progress').classList.remove('hidden');
+  try {
+    const res = await fetch('/api/refresh', { method: 'POST' });
+    const d = await res.json();
+    if (!d.ok) { btn.disabled = false; document.getElementById('refresh-label').textContent = 'Refresh All'; document.getElementById('refresh-icon').classList.remove('animate-spin'); return; }
+    startRefreshPolling();
+  } catch(e) { btn.disabled = false; document.getElementById('refresh-label').textContent = 'Refresh All'; document.getElementById('refresh-icon').classList.remove('animate-spin'); }
+}
+
+function startRefreshPolling() {
+  if (refreshPollInterval) return;
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  document.getElementById('refresh-label').textContent = 'Running...';
+  document.getElementById('refresh-icon').classList.add('animate-spin');
+  document.getElementById('refresh-progress').classList.remove('hidden');
+  refreshPollInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/api/refresh/status');
+      const s = await res.json();
+      const pct = Math.round((s.step / s.total) * 100);
+      document.getElementById('refresh-progress-bar').style.width = pct + '%';
+      document.getElementById('refresh-step-msg').textContent = s.message || '';
+      document.getElementById('refresh-step-num').textContent = `${s.step}/${s.total}`;
+      if (!s.running) {
+        clearInterval(refreshPollInterval); refreshPollInterval = null;
+        btn.disabled = false; document.getElementById('refresh-label').textContent = 'Refresh All';
+        document.getElementById('refresh-icon').classList.remove('animate-spin');
+        if (!s.error) { document.getElementById('refresh-status').textContent = 'Done! Reloading...'; setTimeout(() => location.reload(), 1500); }
+        else document.getElementById('refresh-status').textContent = 'Error: ' + s.error;
+      }
+    } catch(e) {}
+  }, 3000);
+}
+
+// ============================================================
+// STATS BAR (merged summary + bankroll)
+// ============================================================
+function renderStatsBar(bankroll, summary) {
+  const el = document.getElementById('stats-bar');
+  const b = bankroll || {};
+  const s = summary || {};
+  const current = b.current_balance || 0;
+  const initial = b.initial_balance || 1000;
+  const pnl = current - initial;
+  const pnlSign = pnl >= 0 ? '+' : '';
+  const pnlClass = pnl >= 0 ? 'stat-card__trend--up' : 'stat-card__trend--down';
+  const totalStake = s.total_stake || 0;
+  const exposure = initial > 0 ? ((totalStake / initial) * 100).toFixed(1) : '0.0';
+  const totalBets = s.total_bets || 0;
+  const avgStake = totalBets > 0 ? (totalStake / totalBets) : 0;
+  const avgValue = s.average_value || 0;
+
+  el.innerHTML = `
+    <div class="stat-card">
+      <span class="stat-card__label">Bankroll</span>
+      <span class="stat-card__value">\u20ac${current.toFixed(1)}</span>
+      <span class="stat-card__trend ${pnlClass}">${pnlSign}\u20ac${pnl.toFixed(1)}</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">Exposure</span>
+      <span class="stat-card__value">\u20ac${totalStake.toFixed(0)}</span>
+      <span class="stat-card__trend stat-card__trend--neutral">${exposure}% of bkroll</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">Total Bets</span>
+      <span class="stat-card__value">${totalBets}</span>
+      <span class="stat-card__trend stat-card__trend--neutral">\u20ac${avgStake.toFixed(0)} avg</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-card__label">Avg Value</span>
+      <span class="stat-card__value">${avgValue > 0 ? '+' : ''}${avgValue.toFixed(1)}%</span>
+      <span class="stat-card__trend stat-card__trend--neutral">avg edge</span>
+    </div>
+    ${fairOddsSummary && fairOddsSummary.total_predictions > 0 ? `
+    <div class="stat-card">
+      <span class="stat-card__label">Model Accuracy</span>
+      <span class="stat-card__value">${fairOddsSummary.accuracy_pct}%</span>
+      <span class="stat-card__trend ${fairOddsSummary.accuracy_pct >= 40 ? 'stat-card__trend--up' : 'stat-card__trend--down'}">${fairOddsSummary.total_predictions} predictions</span>
+    </div>` : ''}`;
+  el.classList.remove('hidden');
+}
+
+// ============================================================
+// BEST BETS (hero section)
+// ============================================================
+function renderBestBets(bets) {
+  const el = document.getElementById('best-bets');
+  if (!bets || !bets.length) return;
+
+  const top5 = bets.slice(0, 5);
+  let html = `<div class="bg-gradient-to-r from-green-900/20 to-dark-800 rounded-xl border border-green-800/40 p-5">
+    <h2 class="text-lg font-bold text-green-400 mb-4 flex items-center gap-2">
+      <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+      Safest Bets
+      <span class="text-xs text-gray-500 font-normal ml-2">Top picks by value + confidence</span>
+    </h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">`;
+
+  for (const bet of top5) {
+    const mk = bet.match || bet._match_key || '';
+    const m = allMatches[mk] || {};
+    const vp = bet.value_pct || 0;
+    html += `<div class="bg-dark-900/60 rounded-lg border border-green-800/30 p-3 hover:border-green-600/50 transition-colors cursor-pointer" onclick="expandMatch('${esc(mk)}')">
+      <div class="text-[10px] text-gray-500 mb-1">${formatMatchDate(m.date)} ${formatKickoff(m.commence_time, m.date)}</div>
+      <div class="text-xs font-medium text-white mb-1 truncate">${mk}</div>
+      <div class="text-sm font-bold text-green-400 mb-1">${bet.selection||bet.bet||'—'}</div>
+      <div class="grid grid-cols-2 gap-1 text-[10px]">
+        <div><span class="text-gray-500">Odds</span> <span class="text-white font-bold stat-value">${(bet.odds||bet.fair_odds||0).toFixed(2)}</span></div>
+        <div><span class="text-gray-500">Value</span> <span class="text-green-400 font-bold stat-value">+${vp.toFixed(1)}%</span></div>
+        <div><span class="text-gray-500">Prob</span> <span class="text-blue-400 stat-value">${((bet.our_probability||0)*100).toFixed(0)}%</span></div>
+        <div><span class="text-gray-500">Stake</span> <span class="text-white stat-value">${bet.stake ? '\u20ac'+bet.stake.toFixed(1) : '—'}</span></div>
+      </div>
+    </div>`;
+  }
+
+  html += `</div></div>`;
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+// ============================================================
+// MATCH CARDS - COLLAPSED
+// ============================================================
+function renderMatchesGrid() {
+  const el = document.getElementById('matches-grid');
+  let html = `<h2 class="text-lg font-bold text-white mb-3">All Matches <span class="text-xs text-gray-500 font-normal">${sortedMatchKeys.length} upcoming</span></h2>`;
+  let lastDate = '';
+
+  for (const mk of sortedMatchKeys) {
+    const m = allMatches[mk];
+    if (!m) continue;
+
+    const dateLabel = formatMatchDate(m.date);
+    const bets = m.bets || [];
+    const hasValue = bets.length > 0;
+    const isExpanded = expandedMatch === mk;
+
+    // Day separator
+    if (m.date && m.date !== lastDate) {
+      lastDate = m.date;
+      html += `<div class="day-header bg-dark-900/95 backdrop-blur border-b border-gray-800 px-3 py-1.5 rounded-lg">
+        <span class="text-xs font-bold text-blue-400">${dateLabel}</span>
+        <span class="text-[10px] text-gray-500 ml-2">${m.date}</span>
+      </div>`;
+    }
+
+    // Card
+    html += `<div class="match-card bg-dark-800 rounded-xl border border-gray-800 overflow-hidden ${hasValue ? 'has-value' : ''} ${isExpanded ? 'expanded' : ''}" id="card-${esc(mk)}">
+      <!-- Collapsed header -->
+      <div class="p-3 flex items-center gap-3" onclick="expandMatch('${esc(mk)}')">
+        <!-- Left: time + teams -->
+        <div id="timecol-${esc(mk)}" class="w-16 text-center flex-shrink-0">
+          <div class="text-xs font-mono text-white">${formatKickoff(m.commence_time, m.date)}</div>
+          <div id="clock-${esc(mk)}" class="text-[10px] text-amber-400">${timeUntilMatch(m.date, m.time, m.commence_time)}</div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-0.5">
+            ${m.home_position ? `<span class="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">#${m.home_position}</span>` : ''}
+            <a href="/team/${encodeURIComponent(m.home_team)}" class="text-sm font-medium text-white truncate hover:text-accent-blue transition-colors" onclick="event.stopPropagation()">${m.home_team}</a>
+            <span class="flex items-center gap-0.5">${formDots(m.home_form_last5)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            ${m.away_position ? `<span class="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">#${m.away_position}</span>` : ''}
+            <a href="/team/${encodeURIComponent(m.away_team)}" class="text-sm font-medium text-white truncate hover:text-accent-blue transition-colors" onclick="event.stopPropagation()">${m.away_team}</a>
+            <span class="flex items-center gap-0.5">${formDots(m.away_form_last5)}</span>
+          </div>
+        </div>
+
+        <!-- Center: prediction (or live score) -->
+        <div id="centercol-${esc(mk)}" class="card-center text-center flex-shrink-0 w-32">
+          <div class="text-xs font-bold ${m.predicted_outcome === 'HOME' ? 'text-blue-400' : m.predicted_outcome === 'AWAY' ? 'text-red-400' : 'text-yellow-400'}">${m.predicted_outcome || '?'}</div>
+          <div class="text-[10px] text-gray-500">xG ${(m.home_xg||0).toFixed(1)} - ${(m.away_xg||0).toFixed(1)}</div>
+          <span class="badge mt-0.5" style="background:${CONF_COLORS[m.confidence_level]||'#6b7280'}20;color:${CONF_COLORS[m.confidence_level]||'#6b7280'}">${m.confidence_level || 'N/A'}</span>
+        </div>
+
+        <!-- Right: odds + value + bet tracking -->
+        <div class="text-right flex-shrink-0 w-28">
+          ${m.probabilities ? `<div class="text-[10px] text-gray-400 font-mono text-right">${((m.probabilities.home||0)*100).toFixed(0)} / ${((m.probabilities.draw||0)*100).toFixed(0)} / ${((m.probabilities.away||0)*100).toFixed(0)}</div>` : ''}
+          ${hasValue ? (() => {
+            const valueBets = bets.filter(b => !b._advisory && (b.value_pct||0) > 0);
+            const bestEdge = valueBets.length ? Math.max(...valueBets.map(b => b.value_pct||0)) : 0;
+            return `<span class="badge bg-green-900/50 text-green-400 border border-green-700 mt-1">${valueBets.length} BET${valueBets.length>1?'S':''}</span>` +
+              (bestEdge > 0 ? `<span class="badge bg-green-900/30 text-green-300 mt-0.5" style="font-size:9px">VALUE +${bestEdge.toFixed(1)}%</span>` : '');
+          })() : '<span class="text-[10px] text-gray-600">no value</span>'}
+          <div id="bets-badge-${esc(mk)}" class="mt-1"></div>
+        </div>
+
+        <svg class="w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+
+      <!-- Expanded detail panel -->
+      <div class="detail-panel ${isExpanded ? 'open' : ''}" id="detail-${esc(mk)}">
+        ${isExpanded ? renderMatchDetail(mk) : ''}
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+function expandMatch(mk) {
+  const prev = expandedMatch;
+  if (prev === mk) {
+    // Collapse
+    expandedMatch = null;
+    const prevDetail = document.getElementById('detail-' + esc(mk));
+    const prevCard = document.getElementById('card-' + esc(mk));
+    if (prevDetail) { prevDetail.innerHTML = ''; prevDetail.classList.remove('open'); }
+    if (prevCard) prevCard.classList.remove('expanded');
+    return;
+  }
+
+  // Collapse previous
+  if (prev) {
+    const prevDetail = document.getElementById('detail-' + esc(prev));
+    const prevCard = document.getElementById('card-' + esc(prev));
+    if (prevDetail) { prevDetail.innerHTML = ''; prevDetail.classList.remove('open'); }
+    if (prevCard) prevCard.classList.remove('expanded');
+  }
+
+  // Expand new
+  expandedMatch = mk;
+  activeTab[mk] = activeTab[mk] || 'overview';
+  const detail = document.getElementById('detail-' + esc(mk));
+  const card = document.getElementById('card-' + esc(mk));
+  if (detail) {
+    detail.innerHTML = renderMatchDetail(mk);
+    requestAnimationFrame(() => detail.classList.add('open'));
+  }
+  if (card) card.classList.add('expanded');
+
+  // Scroll into view
+  setTimeout(() => card && card.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+}
+
+// ============================================================
+// MATCH DETAIL (7 tabs)
+// ============================================================
+const TABS = [
+  ['overview', 'Overview'],
+  ['markets', 'Markets'],
+  ['props', 'Props'],
+  ['squads', 'Squads'],
+  ['bets', 'Bets'],
+];
+
+function switchTab(mk, tab) {
+  activeTab[mk] = tab;
+  const detail = document.getElementById('detail-' + esc(mk));
+  if (detail) detail.innerHTML = renderMatchDetail(mk);
+}
+
+function renderMatchDetail(mk) {
+  const m = allMatches[mk];
+  if (!m) return '';
+  const tab = activeTab[mk] || 'overview';
+
+  // Tab bar
+  let html = `<div class="px-3 pb-1 flex flex-wrap gap-1 border-t border-gray-800 pt-2">`;
+  for (const [key, label] of TABS) {
+    let badge = '';
+    if (key === 'bets') { const c = (m.bets||[]).filter(b => !b._advisory && (b.value_pct||0) > 0).length; if (c) badge = ` (${c})`; }
+    if (key === 'props') {
+      const matchKey2 = `${m.home_team} vs ${m.away_team}`;
+      const c = playerPropVBets.filter(p => p.match === matchKey2 || p.match === mk).length;
+      if (c) {
+        // Show hit count if live data available
+        const lp = livePropCache[mk];
+        if (lp && lp.props) {
+          const hits = lp.props.filter(p => p.live_status === 'hit').length;
+          const lost = lp.props.filter(p => p.live_status === 'lost').length;
+          if (hits || lost) {
+            badge = ` (${hits}/${c})`;
+          } else {
+            badge = ` (${c})`;
+          }
+        } else {
+          badge = ` (${c})`;
+        }
+      }
+    }
+    html += `<button onclick="event.stopPropagation();switchTab('${esc(mk)}','${key}')" class="tab-pill ${tab===key?'active':'inactive'}">${label}${badge}</button>`;
+  }
+  html += `</div><div class="px-3 pb-4 pt-2">`;
+
+  // Tab content (lazy)
+  switch(tab) {
+    case 'overview': html += renderTabOverview(m, mk); break;
+    case 'markets': html += renderTabMarkets(m, mk); break;
+    case 'props': html += renderTabProps(m, mk); break;
+    case 'squads': html += renderTabSquads(m, mk); break;
+    case 'bets': html += renderTabBets(m, mk); break;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// ---- Tab 1: Overview (Betting-focused — no prediction duplication) ----
+function renderTabOverview(m) {
+  const probs = m.probabilities || {};
+  const mi = m.market_implied || {};
+  let html = '';
+
+  // Live score + odds bar (if match is live/completed) — unique to betting
+  const mk = `${m.home_team} vs ${m.away_team}`;
+  const ci = clockData[mk];
+  if (ci && (ci.status === 'live' || ci.status === 'half_time' || ci.status === 'completed')) {
+    const score = ci.score || [0, 0];
+    const periodLabel = ci.period === '1H' ? '1st Half' : ci.period === 'HT' ? 'Half Time' : ci.period === '2H' ? '2nd Half' : 'Full Time';
+    html += `<div class="bg-gray-900/60 rounded-xl border ${ci.status === 'completed' ? 'border-gray-700' : 'border-red-800/40'} p-4 mb-4">
+      <div class="flex items-center justify-center gap-6 mb-2">
+        <span class="text-sm text-gray-300">${m.home_team}</span>
+        <span class="live-score text-3xl">${score[0]} - ${score[1]}</span>
+        <span class="text-sm text-gray-300">${m.away_team}</span>
+      </div>
+      <div class="text-center text-xs text-gray-500">
+        ${ci.minute ? `Minute: ${ci.minute}'` : ''} | Period: ${periodLabel}
+      </div>`;
+    if (ci.pre_match_odds && ci.live_odds) {
+      const pre = ci.pre_match_odds;
+      const live = ci.live_odds;
+      html += `<div class="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+        <span>Pre: ${pre.home?.toFixed(2)||'?'} / ${pre.draw?.toFixed(2)||'?'} / ${pre.away?.toFixed(2)||'?'}</span>
+        <span>&rarr;</span>
+        <span class="text-cyan-400">Live: ${live.home?.toFixed(2)||'?'} / ${live.draw?.toFixed(2)||'?'} / ${live.away?.toFixed(2)||'?'}</span>
+      </div>`;
+    }
+    if (ci.status !== 'upcoming') html += renderMiniTimeline(mk);
+    html += `</div>`;
+  }
+
+  // ── Quick Betting Verdict ──
+  const pH = probs.home || 0, pD = probs.draw || 0, pA = probs.away || 0;
+  const pred = m.predicted_outcome || '';
+  const conf = m.confidence_level || (m.confidence > 0.5 ? 'HIGH' : m.confidence > 0.35 ? 'MEDIUM' : 'LOW');
+  const confNorm = conf.toUpperCase();
+  const confCol = confNorm.includes('HIGH') ? 'text-green-400' : confNorm === 'MEDIUM' ? 'text-yellow-400' : 'text-gray-400';
+  const confBg = confNorm.includes('HIGH') ? 'bg-green-900/30' : confNorm === 'MEDIUM' ? 'bg-yellow-900/30' : 'bg-gray-800';
+  const bets = m.bets || [];
+  const valueBets = bets.filter(b => !b._advisory && (b.value_pct || 0) > 0);
+  const bestEdge = valueBets.length ? Math.max(...valueBets.map(b => b.value_pct || 0)) : 0;
+  const predLabel = pred === 'HOME' ? m.home_team + ' Win' : pred === 'AWAY' ? m.away_team + ' Win' : pred === 'DRAW' ? 'Draw' : pred;
+
+  html += `<div class="bg-gray-900/50 rounded-xl p-4 mb-4 border border-gray-700/50">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-bold text-white">${predLabel}</span>
+        <span class="badge ${confCol} ${confBg}">${conf}</span>
+        ${valueBets.length ? `<span class="badge bg-green-900/30 text-green-400 border border-green-700/30">${valueBets.length} VALUE BET${valueBets.length>1?'S':''}</span>` : ''}
+        ${bestEdge > 5 ? `<span class="badge bg-green-900/50 text-green-400">+${bestEdge.toFixed(1)}% edge</span>` : ''}
+      </div>
+      <a href="/predictions" class="text-[10px] text-cyan-400 hover:text-cyan-300"
+         style="text-decoration:none">Full Analysis &rarr;</a>
+    </div>
+    <div class="flex items-center gap-3 text-xs text-gray-400">
+      <span>Model: <span class="text-blue-400 stat-value">${(pH*100).toFixed(0)}%</span> H / <span class="text-yellow-400 stat-value">${(pD*100).toFixed(0)}%</span> D / <span class="text-red-400 stat-value">${(pA*100).toFixed(0)}%</span> A</span>
+      ${mi.home ? `<span class="text-gray-600">|</span><span>Market: <span class="stat-value">${((mi.home||0)*100).toFixed(0)}%</span> / <span class="stat-value">${((mi.draw||0)*100).toFixed(0)}%</span> / <span class="stat-value">${((mi.away||0)*100).toFixed(0)}%</span></span>` : ''}
+    </div>
+  </div>`;
+
+  // ── xG & Over Probabilities (betting-relevant for totals markets) ──
+  html += `<div class="grid sm:grid-cols-2 gap-4 mb-4">`;
+  html += `<div class="bg-gray-900/50 rounded-lg p-3">
+    <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Expected Goals</div>
+    <div class="flex items-center justify-center gap-4">
+      <div class="text-center">
+        <div class="text-2xl font-bold text-blue-400 stat-value">${(m.home_xg||0).toFixed(2)}</div>
+        <div class="text-[10px] text-gray-500">${m.home_team}</div>
+      </div>
+      <div class="text-gray-600 text-lg">-</div>
+      <div class="text-center">
+        <div class="text-2xl font-bold text-red-400 stat-value">${(m.away_xg||0).toFixed(2)}</div>
+        <div class="text-[10px] text-gray-500">${m.away_team}</div>
+      </div>
+    </div>
+    <div class="text-center text-xs text-gray-400 mt-1">Total: ${((m.home_xg||0)+(m.away_xg||0)).toFixed(2)}</div>
+  </div>`;
+
+  const gp = m.goal_predictions || {};
+  if (gp.over_1_5 || gp.over_2_5) {
+    html += `<div class="bg-gray-900/50 rounded-lg p-3">
+      <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Over Probabilities</div>
+      <div class="space-y-1">`;
+    for (const line of ['over_1_5','over_2_5','over_3_5','over_4_5']) {
+      const p = gp[line] || 0;
+      const label = line.replace('over_','O').replace('_','.');
+      html += `<div class="flex items-center gap-2">
+        <span class="text-[10px] text-gray-400 w-8">${label}</span>
+        <div class="flex-1 bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full ${p>0.5?'bg-green-500':'bg-gray-600'}" style="width:${(p*100).toFixed(0)}%"></div></div>
+        <span class="text-[10px] ${p>0.5?'text-green-400':'text-gray-500'} stat-value w-8 text-right">${(p*100).toFixed(0)}%</span>
+      </div>`;
+    }
+    html += `</div></div>`;
+  } else {
+    html += `<div></div>`;
+  }
+  html += `</div>`;
+
+  // ── AI Reasoning (unique to betting — collapsed detailed analysis) ──
+  if (m.ai_reasoning) {
+    html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">AI Detailed Analysis</summary>
+    <div class="md-content bg-gray-900/50 rounded-lg p-4 border border-gray-700/30 mt-1">${typeof marked !== 'undefined' && marked.parse ? marked.parse(m.ai_reasoning) : m.ai_reasoning.replace(/\n/g, '<br>')}</div></details>`;
+  }
+
+  // ── Synthetic Quick Summary ──
+  if (!m.ai_reasoning && pH) {
+    let summary = '';
+    if (pred === 'HOME') summary = `Model favours <strong>${m.home_team}</strong> (${(pH*100).toFixed(0)}%). `;
+    else if (pred === 'AWAY') summary = `Model favours <strong>${m.away_team}</strong> (${(pA*100).toFixed(0)}%). `;
+    else if (pred === 'DRAW') summary = `Likely draw (${(pD*100).toFixed(0)}%). `;
+    if (valueBets.length) {
+      const bestBet = valueBets.reduce((a, b) => (b.value_pct || 0) > (a.value_pct || 0) ? b : a, valueBets[0]);
+      summary += `Best value: <strong>${bestBet.selection || bestBet.bet}</strong> @${(bestBet.odds||0).toFixed(2)} (+${(bestBet.value_pct||0).toFixed(1)}% edge).`;
+    }
+    if (summary) {
+      html += `<div class="bg-gray-900/50 rounded-lg p-3 border border-gray-700/30">
+        <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Quick Summary</div>
+        <div class="text-xs text-gray-300 leading-relaxed">${summary}</div>
+      </div>`;
+    }
+  }
+
+  return html;
+}
+
+// ---- Tab: Player Props (value bets + live evaluation) ----
+function renderTabProps(m, mk) {
+  const matchKey = `${m.home_team} vs ${m.away_team}`;
+  const props = playerPropVBets.filter(p => p.match === matchKey || p.match === mk);
+  const ci = clockData[mk];
+  const isLive = ci && (ci.status === 'live' || ci.status === 'half_time');
+  const isCompleted = ci && ci.status === 'completed';
+  const hasLiveData = !!livePropCache[mk];
+
+  if (!props.length) {
+    return `<div class="text-center py-6"><div class="text-sm text-gray-500 mb-1">No player prop value bets for this match</div>
+    <div class="text-[10px] text-gray-600">Player prop odds may not be available from bookmakers yet</div></div>`;
+  }
+
+  // Build live evaluation lookup: player+market → eval data
+  const liveEvals = {};
+  if (hasLiveData) {
+    for (const ep of livePropCache[mk].props || []) {
+      const key = `${(ep.player||'').toLowerCase()}|${(ep.market||'').toLowerCase()}`;
+      liveEvals[key] = ep;
+    }
+  }
+
+  // Sort by edge descending
+  props.sort((a, b) => (b.edge_pct || 0) - (a.edge_pct || 0));
+
+  // Summary with live stats
+  const avgEdge = props.reduce((s, p) => s + (p.edge_pct || 0), 0) / props.length;
+  const topTier = props.filter(p => p.tier === 'A' || p.tier === 'B').length;
+
+  // Count hits/losses from live data
+  let hitCount = 0, lostCount = 0, openCount = 0;
+  if (hasLiveData) {
+    for (const p of props) {
+      const key = `${(p.player||'').toLowerCase()}|${(p.market||'').toLowerCase()}`;
+      const ev = liveEvals[key];
+      if (ev) {
+        if (ev.live_status === 'hit') hitCount++;
+        else if (ev.live_status === 'lost') lostCount++;
+        else openCount++;
+      } else {
+        openCount++;
+      }
+    }
+  }
+
+  let html = '';
+
+  // Historical performance banner (if available)
+  if (propPerformance && propPerformance.total_bets > 0) {
+    const pp = propPerformance;
+    const roiCol = pp.roi_pct > 0 ? 'text-green-400' : pp.roi_pct < -10 ? 'text-red-400' : 'text-yellow-400';
+    html += `<div class="bg-gray-900/60 rounded-lg p-2 mb-3 border border-gray-700/30 flex items-center justify-between text-[10px]">
+      <span class="text-gray-500">Prop Track Record:</span>
+      <span class="text-gray-300">${pp.total_bets} settled</span>
+      <span class="text-gray-300">${pp.hit_rate}% hit rate</span>
+      <span class="${roiCol} font-bold">${pp.roi_pct > 0 ? '+' : ''}${pp.roi_pct}% ROI</span>
+    </div>`;
+  }
+
+  // Hypothetical Kelly P&L banner
+  if (kellyPnl && kellyPnl.bet_count > 0) {
+    const kp = kellyPnl;
+    const pnlCol = kp.total_pnl >= 0 ? 'text-green-400' : 'text-red-400';
+    const pnlSign = kp.total_pnl >= 0 ? '+' : '';
+    html += `<div class="bg-indigo-900/20 rounded-lg p-2 mb-3 border border-indigo-800/30 flex items-center justify-between text-[10px]">
+      <span class="text-indigo-400 font-semibold">Kelly Sim (quarter-K):</span>
+      <span class="text-gray-300">${kp.bet_count} bets</span>
+      <span class="text-gray-300">${kp.hit_rate}% hit</span>
+      <span class="text-gray-300">\u20ac${kp.total_staked} staked</span>
+      <span class="${pnlCol} font-bold">${pnlSign}\u20ac${kp.total_pnl} (${pnlSign}${kp.roi_pct}%)</span>
+    </div>`;
+  }
+
+  html += `<div class="bg-green-900/10 rounded-lg p-3 mb-4 border border-green-800/30">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-bold text-green-400">${props.length} Player Prop Value Bets</span>
+        <span class="text-[10px] text-gray-400">Avg edge: +${avgEdge.toFixed(1)}%</span>
+        ${topTier ? `<span class="badge bg-green-900/30 text-green-400">${topTier} Tier A/B</span>` : ''}
+      </div>
+      ${(isLive || isCompleted) && hasLiveData ? `
+      <div class="flex items-center gap-2">
+        ${hitCount ? `<span class="badge bg-green-900/40 text-green-400">${hitCount} HIT</span>` : ''}
+        ${lostCount ? `<span class="badge bg-red-900/40 text-red-400">${lostCount} LOST</span>` : ''}
+        ${openCount && !isCompleted ? `<span class="badge bg-gray-800 text-gray-400">${openCount} OPEN</span>` : ''}
+      </div>` : ''}
+    </div>
+  </div>`;
+
+  // Group by player
+  const byPlayer = {};
+  for (const p of props) {
+    const key = p.player || 'Unknown';
+    if (!byPlayer[key]) byPlayer[key] = [];
+    byPlayer[key].push(p);
+  }
+
+  html += `<div class="space-y-2">`;
+  for (const [player, bets] of Object.entries(byPlayer)) {
+    const topBet = bets[0];
+    const tierCol = { A: 'text-green-400', B: 'text-cyan-400', C: 'text-yellow-400', D: 'text-gray-400' }[topBet.tier] || 'text-gray-400';
+    const tierBg = { A: 'bg-green-900/30', B: 'bg-cyan-900/30', C: 'bg-yellow-900/30', D: 'bg-gray-800' }[topBet.tier] || 'bg-gray-800';
+
+    // Check if this player has any live hits
+    let playerStatus = '';
+    if (hasLiveData) {
+      const playerHits = bets.filter(b => {
+        const key = `${(b.player||'').toLowerCase()}|${(b.market||'').toLowerCase()}`;
+        return liveEvals[key] && liveEvals[key].live_status === 'hit';
+      }).length;
+      const playerLost = bets.filter(b => {
+        const key = `${(b.player||'').toLowerCase()}|${(b.market||'').toLowerCase()}`;
+        return liveEvals[key] && liveEvals[key].live_status === 'lost';
+      }).length;
+      if (playerHits > 0) playerStatus = `<span class="badge bg-green-900/40 text-green-400 ml-2">${playerHits} HIT</span>`;
+      else if (playerLost === bets.length && isCompleted) playerStatus = `<span class="badge bg-red-900/40 text-red-400 ml-2">LOST</span>`;
+    }
+
+    html += `<div class="bg-gray-900/50 rounded-lg p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-bold text-white">${player}</span>
+          <span class="text-[10px] text-gray-500">${topBet.team || ''}</span>
+          <span class="text-[10px] text-gray-600">${topBet.position || ''}</span>
+          ${playerStatus}
+        </div>
+        <span class="badge ${tierBg} ${tierCol}">Tier ${topBet.tier}</span>
+      </div>`;
+    for (const b of bets) {
+      const edgeCol = b.edge_pct > 20 ? 'text-green-400' : b.edge_pct > 10 ? 'text-cyan-400' : 'text-yellow-400';
+
+      // Live evaluation badge
+      const evKey = `${(b.player||'').toLowerCase()}|${(b.market||'').toLowerCase()}`;
+      const ev = liveEvals[evKey];
+      let liveBadge = '';
+      let actualStr = '';
+      if (ev && ev.live_status !== 'no_data' && ev.live_status !== 'open') {
+        const statusCfg = {
+          'hit': { bg: 'bg-green-500', text: 'text-white', label: 'HIT' },
+          'lost': { bg: 'bg-red-900/60', text: 'text-red-300', label: 'LOST' },
+          'winning': { bg: 'bg-green-900/40', text: 'text-green-400', label: 'WINNING' },
+          'losing': { bg: 'bg-red-900/30', text: 'text-red-400', label: 'LOSING' },
+        }[ev.live_status] || { bg: 'bg-gray-700', text: 'text-gray-300', label: ev.live_status.toUpperCase() };
+        liveBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${statusCfg.bg} ${statusCfg.text}">${statusCfg.label}</span>`;
+        if (ev.actual !== null && ev.actual !== undefined) {
+          actualStr = `<span class="text-[10px] text-gray-400 ml-1">Actual: <span class="text-white font-bold">${ev.actual}</span>${ev.line !== null ? ` / ${ev.line}` : ''}</span>`;
+        }
+      } else if ((isLive || isCompleted) && hasLiveData) {
+        liveBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-400">OPEN</span>`;
+        if (ev && ev.actual !== null && ev.actual !== undefined) {
+          actualStr = `<span class="text-[10px] text-gray-400 ml-1">Current: <span class="text-white">${ev.actual}</span></span>`;
+        }
+      }
+
+      html += `<div class="flex items-center justify-between py-1.5 border-b border-gray-800/30 last:border-0">
+        <div class="flex items-center gap-2 text-xs">
+          <span class="text-gray-300">${b.market || 'Anytime Goalscorer'}</span>
+          ${liveBadge}${actualStr}
+        </div>
+        <div class="flex items-center gap-3 text-xs">
+          <span class="text-gray-400">Model: <span class="stat-value text-white">${(b.model_prob * 100).toFixed(0)}%</span></span>
+          <span class="text-gray-400">Implied: <span class="stat-value text-gray-500">${(b.implied_prob * 100).toFixed(0)}%</span></span>
+          <span class="font-bold text-white stat-value">${b.best_odds.toFixed(2)}</span>
+          <span class="${edgeCol} font-bold stat-value">+${b.edge_pct.toFixed(1)}%</span>
+          <span class="text-[10px] text-gray-500">${b.best_bookmaker || ''}</span>
+          ${b.kelly_fraction > 0.03 ? `<span class="text-[10px] text-cyan-400">K:${(b.kelly_fraction*100).toFixed(1)}%</span>` : ''}
+        </div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// ---- Tab 2: Markets (merged Odds + Intel + Extended) ----
+function renderTabMarkets(m, mk) {
+  let html = '';
+  const om = m.odds_movement || {};
+  const ba = m.bookmaker_analysis || {};
+  const cm = m.cross_market || {};
+
+  // ── Market Summary (plain-language verdict) ──
+  const curH = om.current_home || 0, curD = om.current_draw || 0, curA = om.current_away || 0;
+  const openH = om.opening_home || 0, openA = om.opening_away || 0;
+  if (curH || curA) {
+    const fav = curH < curA ? m.home_team : curA < curH ? m.away_team : 'Neither';
+    const favOdds = Math.min(curH || 99, curA || 99);
+    const favProb = favOdds > 0 ? (1/favOdds*100).toFixed(0) : '?';
+    // Detect drift direction
+    let drift = '';
+    if (openH && openA) {
+      const hShift = curH - openH, aShift = curA - openA;
+      if (Math.abs(hShift) > 0.05 || Math.abs(aShift) > 0.05) {
+        const toward = hShift < -0.05 ? m.home_team : aShift < -0.05 ? m.away_team : '';
+        if (toward) drift = `<span class="text-cyan-400 text-[10px] ml-2">Odds drifting toward ${toward}</span>`;
+      }
+    }
+    const divBadge = (ba.divergence||0) > 3
+      ? `<span class="steam-badge text-amber-400 text-[10px] ml-2">Sharp/Soft divergence ${(ba.divergence).toFixed(1)}%</span>` : '';
+
+    html += `<div class="bg-gray-900/50 rounded-lg p-4 mb-4 border border-gray-700/50">
+      <div class="flex items-center flex-wrap gap-1">
+        <span class="text-xs text-gray-400">Market favourite:</span>
+        <span class="text-sm font-bold text-white">${fav}</span>
+        <span class="text-xs text-gray-500">@${favOdds.toFixed(2)} (${favProb}% implied)</span>
+        ${drift}${divBadge}
+      </div>
+    </div>`;
+  }
+
+  // ── Current odds with movement arrows ──
+  if (curH || curD || curA) {
+    html += `<div class="mb-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Current 1X2 Odds</div>
+    <div class="grid grid-cols-3 gap-3">`;
+    for (const [key, label, team] of [['home', '1', m.home_team], ['draw', 'X', 'Draw'], ['away', '2', m.away_team]]) {
+      const cur = om['current_'+key] || 0;
+      const open = om['opening_'+key] || 0;
+      const shift = cur - open;
+      const shorten = shift < -0.05 ? 'text-green-400' : shift > 0.05 ? 'text-red-400' : 'text-gray-500';
+      const arrow = shift < -0.05 ? '\u2193' : shift > 0.05 ? '\u2191' : '\u2194';
+      const implP = cur > 0 ? (1/cur*100).toFixed(0) : '?';
+      html += `<div class="bg-gray-900/50 rounded-lg p-3 text-center">
+        <div class="text-[10px] text-gray-500 truncate">${team}</div>
+        <div class="text-lg font-bold text-white stat-value">${cur.toFixed(2)}</div>
+        <div class="text-[10px] text-gray-400">${implP}% implied</div>
+        ${open ? `<div class="text-[10px] ${shorten}">${arrow} was ${open.toFixed(2)}</div>` : ''}
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // ── Sharp vs Soft bookmakers ──
+  if (ba.sharp_consensus || ba.soft_consensus) {
+    const sc = ba.sharp_consensus || {};
+    const so = ba.soft_consensus || {};
+    html += `<div class="mb-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Sharp vs Recreational Bookmakers</div>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="bg-cyan-900/10 rounded-lg border border-cyan-800/30 p-3">
+        <div class="text-[10px] text-cyan-400 font-semibold mb-2">SHARP (${ba.sharp_count || 0} books)</div>
+        <div class="text-[9px] text-gray-500 mb-1">Professional bookmakers with tighter margins</div>`;
+    for (const [k, lbl, col] of [['home','H','blue'],['draw','D','yellow'],['away','A','red']]) {
+      const p = ((sc[k]||sc['prob_'+lbl.charAt(0)]||0)*100);
+      html += `<div class="flex items-center gap-2 mb-1">
+        <span class="text-[10px] text-${col}-400 w-4">${lbl}</span>
+        <div class="flex-1 bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bg-${col}-500/70" style="width:${p.toFixed(0)}%"></div></div>
+        <span class="text-[10px] text-${col}-400 stat-value w-8 text-right">${p.toFixed(0)}%</span>
+      </div>`;
+    }
+    html += `</div>
+      <div class="bg-gray-900/50 rounded-lg border border-gray-700 p-3">
+        <div class="text-[10px] text-gray-400 font-semibold mb-2">RECREATIONAL (${(ba.bookmakers_total||0) - (ba.sharp_count||0)} books)</div>
+        <div class="text-[9px] text-gray-500 mb-1">General public bookmakers</div>`;
+    for (const [k, lbl, col] of [['home','H','blue'],['draw','D','yellow'],['away','A','red']]) {
+      const p = ((so[k]||so['prob_'+lbl.charAt(0)]||0)*100);
+      html += `<div class="flex items-center gap-2 mb-1">
+        <span class="text-[10px] text-${col}-400 w-4">${lbl}</span>
+        <div class="flex-1 bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bg-${col}-500/60" style="width:${p.toFixed(0)}%"></div></div>
+        <span class="text-[10px] text-${col}-400 stat-value w-8 text-right">${p.toFixed(0)}%</span>
+      </div>`;
+    }
+    html += `</div></div></div>`;
+  }
+
+  // ── Cross-market signals (simplified) ──
+  if (cm.signals_count) {
+    html += `<div class="mb-4 bg-gray-900/50 rounded-lg p-3">
+      <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Cross-Market Signals</div>
+      <div class="flex flex-wrap gap-2">`;
+    if (cm.offensive_dominance) {
+      const od = cm.offensive_dominance;
+      const odLbl = od > 0.3 ? 'Strong home attack signal' : od < -0.3 ? 'Strong away attack signal' : 'Balanced attack';
+      const odCol = od > 0.3 ? 'text-blue-400' : od < -0.3 ? 'text-red-400' : 'text-gray-400';
+      html += `<span class="text-[10px] bg-gray-800 ${odCol} px-2 py-1 rounded">${odLbl}</span>`;
+    }
+    if (cm.defensive_signal) {
+      const ds = cm.defensive_signal;
+      const dsLbl = ds > 0.3 ? 'Tight defensive match' : ds < -0.3 ? 'Open/attacking match' : 'Normal defensive profile';
+      html += `<span class="text-[10px] bg-gray-800 text-gray-300 px-2 py-1 rounded">${dsLbl}</span>`;
+    }
+    if (cm.has_anomaly) html += `<span class="text-[10px] bg-amber-900/30 text-amber-400 px-2 py-1 rounded font-medium">Market anomaly detected</span>`;
+    html += `</div></div>`;
+  }
+
+  // ── Per-bookmaker odds (collapsible) ──
+  const bk = m.odds_bookmakers || {};
+  const h2hOdds = bk.h2h || [];
+  if (h2hOdds.length) {
+    // Find best odds
+    let bestH = 0, bestD = 0, bestA = 0;
+    for (const o of h2hOdds) { bestH = Math.max(bestH, o.home||0); bestD = Math.max(bestD, o.draw||0); bestA = Math.max(bestA, o.away||0); }
+    // Show best odds summary first
+    html += `<div class="mb-3 bg-gray-900/50 rounded-lg p-3">
+      <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Best Available Odds</div>
+      <div class="grid grid-cols-3 gap-3 text-center">
+        <div><div class="text-[10px] text-gray-500">${m.home_team}</div><div class="text-sm font-bold text-green-400 stat-value">${bestH.toFixed(2)}</div></div>
+        <div><div class="text-[10px] text-gray-500">Draw</div><div class="text-sm font-bold text-green-400 stat-value">${bestD.toFixed(2)}</div></div>
+        <div><div class="text-[10px] text-gray-500">${m.away_team}</div><div class="text-sm font-bold text-green-400 stat-value">${bestA.toFixed(2)}</div></div>
+      </div>
+    </div>`;
+    html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">All ${h2hOdds.length} bookmakers</summary>
+    <div class="overflow-x-auto mt-1"><table class="w-full text-xs">
+      <thead><tr class="text-gray-500 border-b border-gray-800"><th class="text-left p-1.5">Bookmaker</th><th class="p-1.5 text-right">Home</th><th class="p-1.5 text-right">Draw</th><th class="p-1.5 text-right">Away</th></tr></thead>
+      <tbody>`;
+    for (const o of h2hOdds) {
+      const isSharp = SHARP_BOOKMAKERS.includes(o.bookmaker);
+      const isBestH = o.home === bestH, isBestD = o.draw === bestD, isBestA = o.away === bestA;
+      html += `<tr class="border-b border-gray-800/30 ${isSharp ? 'bk-sharp' : ''} hover:bg-gray-800/20">
+        <td class="p-1.5 ${isSharp ? 'text-cyan-400 font-medium' : 'text-gray-300'}">${o.bookmaker}${isSharp ? ' <span class="text-[8px] text-cyan-500">SHARP</span>' : ''}</td>
+        <td class="p-1.5 text-right stat-value ${isBestH ? 'text-green-400 font-bold' : 'text-gray-300'}">${(o.home||0).toFixed(2)}</td>
+        <td class="p-1.5 text-right stat-value ${isBestD ? 'text-green-400 font-bold' : 'text-gray-300'}">${(o.draw||0).toFixed(2)}</td>
+        <td class="p-1.5 text-right stat-value ${isBestA ? 'text-green-400 font-bold' : 'text-gray-300'}">${(o.away||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></details>`;
+  }
+
+  // ── O/U lines (standard only) ──
+  for (const lineKey of Object.keys(bk).filter(k => k.startsWith('totals_'))) {
+    const line = lineKey.replace('totals_', '');
+    if (!STANDARD_OU_LINES.includes(line)) continue;
+    const odds = bk[lineKey] || [];
+    if (!odds.length) continue;
+    html += `<details class="mb-2"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">O/U ${line} (${odds.length} books)</summary>
+    <div class="overflow-x-auto mt-1"><table class="w-full text-xs">
+      <thead><tr class="text-gray-500 border-b border-gray-800"><th class="text-left p-1.5">Bookmaker</th><th class="p-1.5 text-right">Over</th><th class="p-1.5 text-right">Under</th></tr></thead>
+      <tbody>`;
+    for (const o of odds) {
+      const isSharp = SHARP_BOOKMAKERS.includes(o.bookmaker);
+      html += `<tr class="border-b border-gray-800/30 ${isSharp?'bk-sharp':''} hover:bg-gray-800/20">
+        <td class="p-1.5 ${isSharp?'text-cyan-400':'text-gray-300'}">${o.bookmaker}</td>
+        <td class="p-1.5 text-right stat-value text-gray-300">${(o.over||0).toFixed(2)}</td>
+        <td class="p-1.5 text-right stat-value text-gray-300">${(o.under||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></details>`;
+  }
+
+  // ── Market Intelligence (merged from Intel tab) ──
+  const mi2 = m.market_intelligence || {};
+  if (mi2.composite_score !== undefined) {
+    const score = mi2.composite_score || 0;
+    const pct2 = Math.abs(score) * 100;
+    let verdict, verdictCol, verdictBg;
+    if (score >= 0.7) { verdict = 'Very strong market signal'; verdictCol = 'text-green-400'; verdictBg = 'border-green-700/30'; }
+    else if (score >= 0.4) { verdict = 'Moderate market signal'; verdictCol = 'text-cyan-400'; verdictBg = 'border-cyan-700/30'; }
+    else if (score >= 0.2) { verdict = 'Weak market signal'; verdictCol = 'text-yellow-400'; verdictBg = 'border-yellow-700/30'; }
+    else { verdict = 'No clear market signal'; verdictCol = 'text-gray-400'; verdictBg = 'border-gray-700/30'; }
+    const dir = mi2.sharp_direction || mi2.movement_direction || '';
+    const dirText = dir ? ` \u2014 Market leans <span class="font-semibold text-white">${dir}</span>` : '';
+    html += `<div class="mb-4 bg-gray-900/50 rounded-lg p-4 border ${verdictBg}">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-semibold ${verdictCol}">${verdict}</span>
+        ${mi2.steam_detected ? '<span class="steam-badge text-amber-400 text-[10px] font-medium px-2 py-0.5 bg-amber-900/30 rounded">STEAM MOVE</span>' : ''}
+      </div>
+      <div class="flex items-center gap-3 mb-2">
+        <div class="text-3xl font-bold ${verdictCol} stat-value">${pct2.toFixed(0)}</div>
+        <div class="flex-1">
+          <div class="w-full bg-gray-800 rounded-full h-2.5">
+            <div class="h-2.5 rounded-full transition-all" style="width:${pct2}%;background:${score >= 0.4 ? '#4ade80' : score >= 0.2 ? '#fbbf24' : '#6b7280'}"></div>
+          </div>
+        </div>
+      </div>
+      <div class="text-xs text-gray-400">${dirText}</div>
+    </div>`;
+    // Score breakdown
+    const components = mi2.score_components || {};
+    const compEntries = Object.entries(components).filter(([k, v]) => v !== 0 && v !== null);
+    if (compEntries.length) {
+      const compLabels = { 'sharp_soft_divergence': 'Sharp vs recreational disagree', 'line_move': 'Odds moved since opening', 'steam_move': 'Rapid odds shift (steam)', 'cross_market': 'Cross-market signals aligned', 'offensive_dominance': 'Attack/defense market signals', 'handicap_inconsistency': 'HC odds inconsistent with 1X2' };
+      html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Signal breakdown</summary><div class="space-y-1.5 mt-1">`;
+      for (const [k, v] of compEntries) {
+        const label = compLabels[k] || k.replace(/_/g, ' ');
+        const absV = Math.abs(v);
+        const col = absV > 0.3 ? 'text-green-400' : absV > 0.1 ? 'text-yellow-400' : 'text-gray-400';
+        html += `<div class="flex items-center gap-2">
+          <div class="flex-1 text-xs text-gray-300">${label}</div>
+          <div class="w-20 bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full bg-cyan-500/60" style="width:${(absV*100).toFixed(0)}%"></div></div>
+          <span class="text-[10px] ${col} stat-value w-8 text-right">${(absV*100).toFixed(0)}</span>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+  }
+
+  // ── Extended Markets (merged from Extended tab) ──
+  const ext = m.extended_markets || {};
+  if (Object.keys(ext).length) {
+    html += `<div class="border-t border-gray-800 pt-4 mt-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-3">Extended Markets</div>`;
+    // Double chance
+    if (ext.double_chance) {
+      html += `<div class="mb-4"><div class="text-[10px] text-gray-500 mb-2">Double Chance</div><div class="grid grid-cols-3 gap-2">`;
+      for (const [k, v] of Object.entries(ext.double_chance)) {
+        const col = v.prob >= 0.60 ? 'green' : 'blue';
+        html += `<div class="bg-gray-900/50 rounded-lg p-2 text-center ${col === 'green' ? 'border border-green-700/30' : ''}">
+          <div class="text-xs font-bold text-white">${k}</div>
+          <div class="text-sm font-bold ${col==='green'?'text-green-400':'text-blue-400'} stat-value">${(v.prob*100).toFixed(0)}%</div>
+          <div class="text-[10px] text-gray-500">fair ${v.fair_odds.toFixed(2)}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    // Exact score
+    if (ext.exact_score && ext.exact_score.length) {
+      html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Exact Score (Top 5)</summary><div class="mt-1">`;
+      for (const s of ext.exact_score.slice(0, 5)) {
+        const isTop = s === ext.exact_score[0];
+        html += `<div class="flex items-center gap-2 py-0.5">
+          <span class="text-xs ${isTop ? 'text-green-300 font-semibold' : 'text-gray-300'} w-12">${s.score}</span>
+          <div class="flex-1 bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full ${isTop?'bg-green-500/70':'bg-blue-500/70'}" style="width:${(s.prob*100*5).toFixed(0)}%"></div></div>
+          <span class="text-[10px] ${isTop?'text-green-400':'text-blue-400'} stat-value w-8 text-right">${(s.prob*100).toFixed(1)}%</span>
+          <span class="text-[9px] text-gray-500 stat-value w-10 text-right">${s.fair_odds.toFixed(1)}</span>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+    // HT/FT
+    if (ext.htft && ext.htft.length) {
+      html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Half-Time / Full-Time</summary>
+      <div class="grid grid-cols-3 gap-1 mt-1">`;
+      const htftMax = Math.max(...ext.htft.map(h => h.prob));
+      for (const h of ext.htft) {
+        const isTop = h.prob === htftMax;
+        html += `<div class="bg-gray-900/50 rounded p-1.5 text-center ${isTop ? 'border border-green-700/30' : ''}">
+          <div class="text-[10px] text-gray-400">${h.combo}</div>
+          <div class="text-xs font-bold ${isTop ? 'text-green-400' : h.prob > 0.12 ? 'text-blue-400' : 'text-gray-400'} stat-value">${(h.prob*100).toFixed(1)}%</div>
+          <div class="text-[9px] text-gray-500">${h.fair_odds.toFixed(1)}</div>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+    html += `</div>`;
+  }
+
+  // ── Asian Handicap / Margin Predictions ──
+  const mp = m.margin_predictions || {};
+  if (mp.handicap_probs || mp.expected_margin !== undefined) {
+    html += `<div class="border-t border-gray-800 pt-4 mt-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-3">Asian Handicap Analysis</div>`;
+    if (mp.expected_margin !== undefined) {
+      const margin = mp.expected_margin;
+      const fav = margin > 0.2 ? m.home_team : margin < -0.2 ? m.away_team : 'Neither';
+      const marginCol = Math.abs(margin) > 1.0 ? 'text-green-400' : Math.abs(margin) > 0.5 ? 'text-yellow-400' : 'text-gray-400';
+      html += `<div class="bg-gray-900/50 rounded-lg p-3 mb-3">
+        <div class="flex items-center gap-3">
+          <div class="text-center"><div class="text-[10px] text-gray-500">Expected Margin</div>
+            <div class="text-lg font-bold ${marginCol} stat-value">${margin > 0 ? '+' : ''}${margin.toFixed(2)}</div></div>
+          <div class="text-center"><div class="text-[10px] text-gray-500">Favourite</div>
+            <div class="text-sm font-medium text-white">${fav}</div></div>
+          <div class="text-center"><div class="text-[10px] text-gray-500">Std Dev</div>
+            <div class="text-sm text-gray-300 stat-value">${(mp.margin_std_dev||0).toFixed(2)}</div></div>
+          <div class="text-center"><div class="text-[10px] text-gray-500">Confidence</div>
+            <div class="text-sm text-gray-300">${mp.confidence || 'N/A'}</div></div>
+        </div>
+      </div>`;
+    }
+    if (mp.handicap_probs) {
+      html += `<div class="overflow-x-auto"><table class="w-full text-xs mb-3">
+        <thead><tr class="text-gray-500 border-b border-gray-800"><th class="p-1.5 text-left">Line</th><th class="p-1.5 text-right">Home Cover</th><th class="p-1.5 text-right">Away Cover</th><th class="p-1.5 text-right">Fair Home</th><th class="p-1.5 text-right">Fair Away</th></tr></thead><tbody>`;
+      for (const [line, probs] of Object.entries(mp.handicap_probs)) {
+        const hProb = probs.home || 0, aProb = probs.away || 0;
+        const hOdds = hProb > 0 ? (1/hProb) : 0, aOdds = aProb > 0 ? (1/aProb) : 0;
+        const highlight = Math.abs(parseFloat(line)) <= 1.0 ? 'bg-gray-900/50' : '';
+        html += `<tr class="border-b border-gray-800/30 ${highlight}">
+          <td class="p-1.5 font-medium text-white">${parseFloat(line) > 0 ? '+' : ''}${line}</td>
+          <td class="p-1.5 text-right stat-value ${hProb > 0.55 ? 'text-green-400' : hProb < 0.45 ? 'text-red-400' : 'text-gray-300'}">${(hProb*100).toFixed(1)}%</td>
+          <td class="p-1.5 text-right stat-value ${aProb > 0.55 ? 'text-green-400' : aProb < 0.45 ? 'text-red-400' : 'text-gray-300'}">${(aProb*100).toFixed(1)}%</td>
+          <td class="p-1.5 text-right stat-value text-gray-400">${hOdds > 0 ? hOdds.toFixed(2) : '-'}</td>
+          <td class="p-1.5 text-right stat-value text-gray-400">${aOdds > 0 ? aOdds.toFixed(2) : '-'}</td>
+        </tr>`;
+      }
+      html += `</tbody></table></div>`;
+    }
+    html += `</div>`;
+  }
+
+  // ── Additional Extended Markets (winning margin, team totals, first half, etc.) ──
+  const ext2 = m.extended_markets || {};
+  const hasExtra = ext2.winning_margin || ext2.team_totals || ext2.first_half || ext2.win_to_nil || ext2.goal_both_halves;
+  if (hasExtra) {
+    html += `<div class="border-t border-gray-800 pt-4 mt-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-3">Additional Markets</div>`;
+
+    // Winning Margin
+    if (ext2.winning_margin) {
+      const wm = ext2.winning_margin;
+      html += `<details class="mb-3"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Winning Margin</summary>
+      <div class="grid grid-cols-3 sm:grid-cols-4 gap-1 mt-1">`;
+      const wmLabels = { draw: 'Draw', home_by_1: `${m.home_team} by 1`, home_by_2: `${m.home_team} by 2`, home_by_3_plus: `${m.home_team} by 3+`, away_by_1: `${m.away_team} by 1`, away_by_2: `${m.away_team} by 2`, away_by_3_plus: `${m.away_team} by 3+` };
+      const wmMax = Math.max(...Object.values(wm).map(v => v.prob || 0));
+      for (const [key, data] of Object.entries(wm)) {
+        const isTop = data.prob === wmMax;
+        const col = key.startsWith('home') ? 'blue' : key.startsWith('away') ? 'red' : 'yellow';
+        html += `<div class="bg-gray-900/50 rounded p-2 text-center ${isTop ? 'border border-green-700/30' : ''}">
+          <div class="text-[10px] text-gray-400">${wmLabels[key] || key}</div>
+          <div class="text-xs font-bold text-${col}-400 stat-value">${(data.prob*100).toFixed(1)}%</div>
+          <div class="text-[9px] text-gray-500">${data.fair_odds?.toFixed(2) || '-'}</div>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+
+    // Team Totals
+    if (ext2.team_totals) {
+      const tt = ext2.team_totals;
+      html += `<details class="mb-3"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Team Goal Totals</summary>
+      <div class="grid grid-cols-2 gap-3 mt-1">`;
+      for (const [side, label] of [['home', m.home_team], ['away', m.away_team]]) {
+        const lines = tt[side] || {};
+        html += `<div class="bg-gray-900/50 rounded-lg p-2">
+          <div class="text-[10px] text-gray-500 mb-1">${label}</div>`;
+        for (const [lineKey, data] of Object.entries(lines)) {
+          if (!lineKey.startsWith('over_')) continue;
+          const line = lineKey.replace('over_', 'O');
+          html += `<div class="flex items-center gap-2 py-0.5">
+            <span class="text-[10px] text-gray-400 w-8">${line}</span>
+            <div class="flex-1 bg-gray-800 rounded-full h-1"><div class="h-1 rounded-full ${data.prob > 0.5 ? 'bg-green-500/70' : 'bg-gray-600'}" style="width:${(data.prob*100)}%"></div></div>
+            <span class="text-[10px] stat-value ${data.prob > 0.5 ? 'text-green-400' : 'text-gray-500'} w-8 text-right">${(data.prob*100).toFixed(0)}%</span>
+          </div>`;
+        }
+        html += `</div>`;
+      }
+      html += `</div></details>`;
+    }
+
+    // First Half
+    if (ext2.first_half && ext2.first_half.result_1x2) {
+      const fh = ext2.first_half;
+      html += `<details class="mb-3"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">First Half Result</summary>
+      <div class="grid grid-cols-3 gap-2 mt-1">`;
+      for (const [key, label] of [['home', m.home_team], ['draw', 'Draw'], ['away', m.away_team]]) {
+        const data = fh.result_1x2[key] || {};
+        html += `<div class="bg-gray-900/50 rounded-lg p-2 text-center">
+          <div class="text-[10px] text-gray-500">${label}</div>
+          <div class="text-sm font-bold ${key === 'home' ? 'text-blue-400' : key === 'away' ? 'text-red-400' : 'text-yellow-400'} stat-value">${((data.prob||0)*100).toFixed(0)}%</div>
+          <div class="text-[9px] text-gray-500">${data.fair_odds?.toFixed(2) || '-'}</div>
+        </div>`;
+      }
+      html += `</div>`;
+      if (fh.home_xg_1h || fh.away_xg_1h) {
+        html += `<div class="text-[10px] text-gray-500 mt-1">1H xG: ${(fh.home_xg_1h||0).toFixed(2)} - ${(fh.away_xg_1h||0).toFixed(2)}</div>`;
+      }
+      html += `</details>`;
+    }
+
+    // Win to Nil / Clean Sheet
+    if (ext2.win_to_nil) {
+      const wtn = ext2.win_to_nil;
+      html += `<details class="mb-3"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Win to Nil / Clean Sheet</summary>
+      <div class="grid grid-cols-2 gap-2 mt-1">`;
+      const wtnItems = [
+        ['home_win_to_nil', `${m.home_team} Win to Nil`], ['away_win_to_nil', `${m.away_team} Win to Nil`],
+        ['home_clean_sheet', `${m.home_team} Clean Sheet`], ['away_clean_sheet', `${m.away_team} Clean Sheet`]
+      ];
+      for (const [key, label] of wtnItems) {
+        if (!wtn[key]) continue;
+        const prob = wtn[key].prob || 0;
+        html += `<div class="bg-gray-900/50 rounded p-2">
+          <div class="text-[10px] text-gray-400">${label}</div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold ${prob > 0.35 ? 'text-green-400' : 'text-gray-300'} stat-value">${(prob*100).toFixed(0)}%</span>
+            <span class="text-[9px] text-gray-500">${wtn[key].fair_odds?.toFixed(2) || '-'}</span>
+          </div>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+
+    // Goal Both Halves
+    if (ext2.goal_both_halves) {
+      const gbh = ext2.goal_both_halves;
+      html += `<details class="mb-3"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Goal in Both Halves</summary>
+      <div class="grid grid-cols-2 gap-2 mt-1">`;
+      for (const [key, label] of [['goal_both_halves_yes', 'Yes'], ['goal_both_halves_no', 'No'], ['home_scores_both_halves', `${m.home_team} Both Halves`], ['away_scores_both_halves', `${m.away_team} Both Halves`]]) {
+        if (!gbh[key]) continue;
+        html += `<div class="bg-gray-900/50 rounded p-2 flex items-center justify-between">
+          <span class="text-[10px] text-gray-400">${label}</span>
+          <div class="flex items-center gap-1"><span class="text-xs stat-value text-gray-300">${((gbh[key].prob||0)*100).toFixed(0)}%</span>
+          <span class="text-[9px] text-gray-500">${gbh[key].fair_odds?.toFixed(2) || '-'}</span></div>
+        </div>`;
+      }
+      html += `</div></details>`;
+    }
+
+    html += `</div>`;
+  }
+
+  // ── BTTS + Corners Predictions ──
+  const matchName = mk;
+  const bttsP = bttsPredictions.find(b => b.match === matchName);
+  const cornersP = cornersPredictions.find(c => c.match === matchName);
+  if (bttsP || cornersP) {
+    html += `<details class="mb-4 mt-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">BTTS &amp; Corners Predictions</summary><div class="grid grid-cols-2 gap-3 mt-1">`;
+    if (bttsP) {
+      const yPct = ((bttsP.btts_yes||0)*100).toFixed(0);
+      const nPct = ((bttsP.btts_no||0)*100).toFixed(0);
+      const bttsCol = bttsP.btts_yes > 0.55 ? 'text-green-400' : bttsP.btts_yes > 0.45 ? 'text-amber-400' : 'text-red-400';
+      html += `<div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase mb-2">BTTS</div>
+        <div class="flex gap-3 mb-2">
+          <div><div class="text-[10px] text-gray-500">Yes</div><div class="text-lg font-bold ${bttsCol} stat-value">${yPct}%</div></div>
+          <div><div class="text-[10px] text-gray-500">No</div><div class="text-lg font-bold text-gray-400 stat-value">${nPct}%</div></div>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-2 flex overflow-hidden">
+          <div class="h-2 bg-green-500" style="width:${yPct}%"></div>
+          <div class="h-2 bg-gray-600 flex-1"></div>
+        </div>
+        <div class="text-[10px] text-gray-600 mt-1">xG: ${(bttsP.expected_home_goals||0).toFixed(2)} - ${(bttsP.expected_away_goals||0).toFixed(2)}</div>
+      </div>`;
+    }
+    if (cornersP) {
+      html += `<div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase mb-2">Corners</div>
+        <div class="text-lg font-bold text-white stat-value mb-1">${(cornersP.expected_corners||0).toFixed(1)} expected</div>
+        <div class="text-[10px] text-gray-500">${m.home_team}: ${(cornersP.expected_home_corners||0).toFixed(1)} | ${m.away_team}: ${(cornersP.expected_away_corners||0).toFixed(1)}</div>
+        <div class="mt-2 space-y-1">
+          ${cornersP.over_8_5 != null ? `<div class="flex justify-between text-[10px]"><span class="text-gray-500">Over 8.5</span><span class="text-gray-300 stat-value">${(cornersP.over_8_5*100).toFixed(0)}%</span></div>` : ''}
+          ${cornersP.over_9_5 != null ? `<div class="flex justify-between text-[10px]"><span class="text-gray-500">Over 9.5</span><span class="text-gray-300 stat-value">${(cornersP.over_9_5*100).toFixed(0)}%</span></div>` : ''}
+          ${cornersP.over_10_5 != null ? `<div class="flex justify-between text-[10px]"><span class="text-gray-500">Over 10.5</span><span class="text-gray-300 stat-value">${(cornersP.over_10_5*100).toFixed(0)}%</span></div>` : ''}
+        </div>
+      </div>`;
+    }
+    html += `</div></details>`;
+  }
+
+  // ── Sentiment (merged from Intel tab) ──
+  const sent = m.sentiment || {};
+  if (sent.home_fan_confidence || sent.away_fan_confidence) {
+    html += `<details class="mb-4 mt-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Public Sentiment</summary>
+    <div class="grid grid-cols-2 gap-3 mt-1">`;
+    for (const [team, conf, key] of [[m.home_team, sent.home_fan_confidence||0, 'home'], [m.away_team, sent.away_fan_confidence||0, 'away']]) {
+      const confCol = conf > 65 ? 'text-green-400' : conf > 40 ? 'text-yellow-400' : 'text-red-400';
+      html += `<div class="bg-gray-900/50 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 mb-1">${team}</div>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-lg font-bold ${confCol} stat-value">${conf.toFixed(0)}%</span>
+          <span class="text-[10px] text-gray-500">fan confidence</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-1.5"><div class="h-1.5 rounded-full" style="width:${conf}%;background:${conf>65?'#4ade80':conf>40?'#fbbf24':'#f87171'}"></div></div>
+      </div>`;
+    }
+    html += `</div></details>`;
+  }
+
+  // ── Intelligence adjustments ──
+  const ia = m.intelligence_adjustments || [];
+  if (ia.length) {
+    html += `<details class="mb-4"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 py-1">Probability Adjustments (${ia.length})</summary>
+    <div class="space-y-1 mt-1">`;
+    for (const adj of ia) {
+      html += `<div class="bg-gray-900/50 rounded px-3 py-2 text-xs">
+        <span class="text-gray-400">${adj.source || 'unknown'}</span>
+        <span class="ml-2 text-blue-400">${adj.home_shift > 0 ? '+' : ''}${((adj.home_shift||0)*100).toFixed(1)}pp H</span>
+        <span class="ml-1 text-yellow-400">${adj.draw_shift > 0 ? '+' : ''}${((adj.draw_shift||0)*100).toFixed(1)}pp D</span>
+        <span class="ml-1 text-red-400">${adj.away_shift > 0 ? '+' : ''}${((adj.away_shift||0)*100).toFixed(1)}pp A</span>
+      </div>`;
+    }
+    html += `</div></details>`;
+  }
+
+  return html || '<div class="text-sm text-gray-500">No market data available</div>';
+}
+
+// ---- Tab 3: Squads ----
+function renderTabSquads(m, mk) {
+  let html = '';
+
+  // Lineup Predictions (from lineup_predictor.py)
+  const lp = m.lineup_prediction || {};
+  const hlp = lp.home_lineup || {};
+  const alp = lp.away_lineup || {};
+
+  // Formations: prefer lineup prediction, fallback to formation_analysis
+  const hf = (hlp.formation || {}).predicted || m.home_formation || '';
+  const af = (alp.formation || {}).predicted || m.away_formation || '';
+  const hfConf = (hlp.formation || {}).confidence || m.home_formation_confidence || 0;
+  const afConf = (alp.formation || {}).confidence || m.away_formation_confidence || 0;
+
+  if (hf || af) {
+    // Use lineup prediction XI for formation diagram (much more accurate than key_players)
+    const homeXI = (hlp.predicted_xi || []);
+    const awayXI = (alp.predicted_xi || []);
+    html += `<div class="grid sm:grid-cols-2 gap-4 mb-4">`;
+    for (const [team, formation, conf, xi] of [[m.home_team, hf, hfConf, homeXI], [m.away_team, af, afConf, awayXI]]) {
+      html += `<div class="formation-pitch">
+        <div class="text-center mb-2">
+          <span class="text-xs font-bold text-white">${team}</span>
+          <span class="text-[10px] text-green-300 ml-2">${formation}</span>
+          ${conf ? `<span class="text-[10px] text-green-400/60 ml-1">(${(conf*100).toFixed(0)}% conf)</span>` : ''}
+        </div>
+        ${renderFormationDiagram(formation, xi)}
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Predicted Starting XI (from lineup_predictor)
+  if (hlp.predicted_xi || alp.predicted_xi) {
+    const statusColors = { certain: 'text-green-400', likely: 'text-blue-400', rotation: 'text-amber-400', unlikely: 'text-gray-500', 'fill-in': 'text-purple-400' };
+    function renderXI(team, tl) {
+      if (!tl || !tl.predicted_xi) return '';
+      const xi = tl.predicted_xi || [];
+      const unavail = tl.unavailable || [];
+      const suspRisk = tl.suspension_risk || [];
+      let rows = xi.map(p => {
+        const col = statusColors[p.status] || 'text-gray-300';
+        return `<div class="flex items-center justify-between py-0.5 border-b border-gray-800/20">
+          <div class="flex items-center gap-1">
+            <span class="text-[9px] text-gray-600 w-8 font-mono">${p.position_label}</span>
+            <span class="text-[10px] text-gray-500 w-6">${p.shirt_number ? '#' + p.shirt_number : ''}</span>
+            <span class="text-xs ${col}">${p.name}</span>
+          </div>
+          <span class="text-[9px] text-gray-500">${p.start_pct}%</span>
+        </div>`;
+      }).join('');
+      // Clean up injury descriptions
+      function cleanDesc(raw) {
+        if (!raw) return '';
+        const d = raw.toLowerCase().trim();
+        if (d === 'unavailable' || d === 'unknown' || d === 'n/a') return '';
+        // Capitalize first letter
+        return raw.charAt(0).toUpperCase() + raw.slice(1);
+      }
+      let unavailHtml = unavail.length ? `<div class="mt-2 pt-1 border-t border-red-900/20">
+        <div class="text-[9px] text-red-400 uppercase mb-0.5">Out (${unavail.length})</div>
+        ${unavail.map(u => {
+          const desc = cleanDesc(u.description || u.reason || '');
+          const ret = u.expected_return ? u.expected_return.slice(0, 10) : '';
+          const typeBadge = u.type === 'doubtful'
+            ? ' <span class="text-[8px] bg-amber-900/40 text-amber-300 px-1 rounded">DOUBT</span>'
+            : u.type === 'suspended'
+            ? ' <span class="text-[8px] bg-purple-900/40 text-purple-300 px-1 rounded">SUSP</span>'
+            : '';
+          const descText = [desc, ret].filter(Boolean).join(' \u2022 ');
+          return `<div class="flex items-center justify-between text-[10px] py-0.5">
+            <span class="text-red-300">\u2716 ${u.name}${typeBadge}</span>
+            ${descText ? `<span class="text-gray-500 text-right max-w-[50%] truncate">${descText}</span>` : ''}
+          </div>`;
+        }).join('')}
+      </div>` : '';
+      let suspHtml = suspRisk.length ? `<div class="mt-1">
+        <div class="text-[9px] text-amber-400 uppercase mb-0.5">Suspension Risk</div>
+        ${suspRisk.map(s => `<div class="text-[10px] text-amber-400">\u26A0 ${s.name} <span class="text-gray-500">(${s.yellows} yellows — 1 more = ban)</span></div>`).join('')}
+      </div>` : '';
+      return `<div>
+        <div class="text-[10px] text-gray-500 mb-1">${team} — Predicted XI</div>
+        ${rows}${unavailHtml}${suspHtml}
+      </div>`;
+    }
+    html += `<div class="grid sm:grid-cols-2 gap-4 mb-4">
+      ${renderXI(m.home_team, hlp)}
+      ${renderXI(m.away_team, alp)}
+    </div>`;
+  }
+
+  // Injuries / Absences — only show if lineup XI section didn't already render them
+  // Use structured data from lineup predictions for clean display
+  const hUnavailList = hlp.unavailable || [];
+  const aUnavailList = alp.unavailable || [];
+  const hSuspList = hlp.suspension_risk || [];
+  const aSuspList = alp.suspension_risk || [];
+  const hFitness = hlp.fitness_concerns || [];
+  const aFitness = alp.fitness_concerns || [];
+  // Only show this section if we have data AND didn't already render in lineup XI
+  const hasLineupXI = hlp.predicted_xi || alp.predicted_xi;
+  if (!hasLineupXI && (hUnavailList.length || aUnavailList.length || hSuspList.length || aSuspList.length)) {
+    function _injClean(raw) {
+      if (!raw) return '';
+      const d = raw.toLowerCase().trim();
+      if (['unavailable','unknown','n/a',''].includes(d)) return '';
+      return raw.charAt(0).toUpperCase() + raw.slice(1);
+    }
+    function _renderInjSide(team, unavail, susp, fitness) {
+      let s = '';
+      if (unavail.length) {
+        s += unavail.map(u => {
+          const desc = _injClean(u.description || u.reason || '');
+          const ret = u.expected_return ? u.expected_return.slice(0, 10) : '';
+          const badge = u.type === 'suspended'
+            ? ' <span class="text-[8px] bg-purple-900/40 text-purple-300 px-1 rounded">SUSP</span>'
+            : u.type === 'doubtful'
+            ? ' <span class="text-[8px] bg-amber-900/40 text-amber-300 px-1 rounded">DOUBT</span>'
+            : '';
+          const detail = [desc, ret].filter(Boolean).join(' \u2022 ');
+          return `<div class="flex items-center justify-between text-[10px] py-0.5">
+            <span class="text-red-300">\u2716 ${u.name}${badge}</span>
+            ${detail ? `<span class="text-gray-500 text-right max-w-[50%] truncate">${detail}</span>` : ''}
+          </div>`;
+        }).join('');
+      }
+      if (susp.length) {
+        s += `<div class="mt-1">${susp.map(sr => `<div class="text-[10px] text-amber-400">\u26A0 ${sr.name} <span class="text-gray-500">(${sr.yellows} yellows)</span></div>`).join('')}</div>`;
+      }
+      return s ? `<div><div class="text-[10px] text-gray-500 mb-1">${team}</div>${s}</div>` : '';
+    }
+    const homeHtml = _renderInjSide(m.home_team, hUnavailList, hSuspList, hFitness);
+    const awayHtml = _renderInjSide(m.away_team, aUnavailList, aSuspList, aFitness);
+    if (homeHtml || awayHtml) {
+      html += `<div class="injury-crisis mb-4">
+        <div class="text-xs font-bold text-red-400 mb-2 flex items-center gap-1">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          INJURIES / ABSENCES
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3">${homeHtml}${awayHtml}</div>
+      </div>`;
+    }
+  }
+
+  // Player analysis
+  const pa = m.player_analysis || {};
+  if (pa.home_key_players || pa.away_key_players || pa.key_matchups) {
+    html += `<div class="mb-4"><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Key Players & Matchups</div>`;
+    if (pa.key_matchups && pa.key_matchups.length) {
+      html += `<div class="space-y-1 mb-3">`;
+      for (const mu of pa.key_matchups.slice(0, 5)) {
+        html += `<div class="flex items-center justify-between bg-gray-900/50 rounded px-3 py-1.5 text-xs">
+          <span class="text-blue-400">${mu.home_player || mu.player_1 || ''}</span>
+          <span class="text-gray-600">vs</span>
+          <span class="text-red-400">${mu.away_player || mu.player_2 || ''}</span>
+          ${mu.advantage ? `<span class="text-[10px] text-gray-500">${mu.advantage}</span>` : ''}
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    // Squad strength
+    if (m.home_strength || m.away_strength) {
+      html += `<div class="flex gap-4 text-xs">
+        <div class="flex items-center gap-2"><span class="text-gray-400">${m.home_team} Squad:</span>${strengthBar(m.home_strength)}</div>
+        <div class="flex items-center gap-2"><span class="text-gray-400">${m.away_team} Squad:</span>${strengthBar(m.away_strength)}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Goalscorer predictions — uses lineup prediction XI as primary source, enriched with Odds API props where names match
+  {
+    const pp = m.player_props || {};
+    const propsPlayers = pp.players || [];
+
+    // Build props lookup by lowercase surname for cross-referencing
+    const propsLookup = {};
+    for (const p of propsPlayers) {
+      const n = (p.name || '').toLowerCase();
+      propsLookup[n] = p;
+      const parts = n.split(' ');
+      if (parts.length > 1) propsLookup['_sur_' + parts[parts.length - 1] + '_' + (p.team||'')] = p;
+    }
+
+    function getPropsForPlayer(name, team) {
+      const n = (name || '').toLowerCase();
+      if (propsLookup[n]) return propsLookup[n];
+      const parts = n.split(' ');
+      if (parts.length > 1) return propsLookup['_sur_' + parts[parts.length - 1] + '_' + team] || null;
+      return null;
+    }
+
+    // Build goalscorer list per side from lineup predictions (forwards + attacking mids)
+    const scorerPositions = new Set(['FWD', 'ST', 'CF', 'RW', 'LW', 'AM', 'SS']);
+    const sides = [
+      [m.home_team, hlp],
+      [m.away_team, alp]
+    ];
+
+    const hasScorerData = sides.some(([t, tl]) => (tl.predicted_xi || []).length > 0);
+    if (hasScorerData || propsPlayers.length) {
+      html += `<div><div class="text-[10px] uppercase tracking-wider text-gray-500 mb-2">Goalscorer Predictions</div>
+      <div class="grid sm:grid-cols-2 gap-3">`;
+      for (const [team, tl] of sides) {
+        const xi = tl.predicted_xi || [];
+        // Get forwards & attacking players from XI, sorted by avg_rating desc
+        let scorers = xi
+          .filter(p => scorerPositions.has(p.position_label) || scorerPositions.has(p.position))
+          .sort((a, b) => (b.avg_rating || 0) - (a.avg_rating || 0));
+        // If no positional forwards, take top 3 outfield by rating
+        if (!scorers.length) {
+          scorers = xi.filter(p => p.position_label !== 'GK').sort((a, b) => (b.avg_rating || 0) - (a.avg_rating || 0)).slice(0, 3);
+        }
+
+        html += `<div><div class="text-[10px] text-gray-500 mb-1">${team}</div>
+        <table class="w-full"><thead><tr class="text-[9px] text-gray-600"><th class="text-left">Player</th><th>Rating</th><th>Start%</th><th>Status</th></tr></thead><tbody>`;
+        for (const p of scorers.slice(0, 5)) {
+          const props = getPropsForPlayer(p.name, team);
+          const statusCol = { certain: 'text-green-400', likely: 'text-blue-400', rotation: 'text-amber-400' }[p.status] || 'text-gray-400';
+          // If props available, show xG/90 and anytime prob; otherwise show rating and start%
+          if (props && props.xg_per_90) {
+            html += `<tr class="border-b border-gray-800/30"><td class="py-1 text-xs text-gray-300">${p.name}</td>
+              <td class="py-1 text-xs text-center stat-value text-cyan-400">${(props.xg_per_90||0).toFixed(2)} xG</td>
+              <td class="py-1 text-xs text-center stat-value ${(props.anytime_goal_prob||0)>0.3?'text-green-400':'text-gray-300'}">${((props.anytime_goal_prob||0)*100).toFixed(0)}%</td>
+              <td class="py-1 text-xs text-center ${statusCol}">${p.status}</td>
+            </tr>`;
+          } else {
+            html += `<tr class="border-b border-gray-800/30"><td class="py-1 text-xs text-gray-300">${p.name}</td>
+              <td class="py-1 text-xs text-center stat-value text-gray-400">${(p.avg_rating||0).toFixed(1)}</td>
+              <td class="py-1 text-xs text-center stat-value text-gray-400">${(p.start_pct||0).toFixed(0)}%</td>
+              <td class="py-1 text-xs text-center ${statusCol}">${p.status}</td>
+            </tr>`;
+          }
+        }
+        html += `</tbody></table></div>`;
+      }
+      html += `</div></div>`;
+    }
+  }
+
+  return html || '<div class="text-sm text-gray-500">No formation or player data available</div>';
+}
+
+function renderFormationDiagram(formation, players) {
+  if (!formation) return '';
+  const parts = formation.split('-').map(Number);
+  if (!parts.length || parts.some(isNaN)) return `<div class="text-center text-xs text-green-300/60">${formation}</div>`;
+
+  const lines = [1, ...parts]; // [1(GK), DEF, MID, ..., FWD]
+  const playersByLine = Array.from({length: lines.length}, () => []);
+
+  if (Array.isArray(players) && players.length) {
+    // XI array format from lineup_predictor: [{name, position_label, ...}, ...]
+    // Already ordered GK → DEF → MID → FWD — split by formation line counts
+    let idx = 0;
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      for (let j = 0; j < lines[lineIdx] && idx < players.length; j++, idx++) {
+        playersByLine[lineIdx].push(players[idx].name || '');
+      }
+    }
+  } else if (players && typeof players === 'object') {
+    // Legacy keyPlayers dict format: {pos: name, ...}
+    const posMap = { 'GK': 0, 'CB': 1, 'LB': 1, 'RB': 1, 'LWB': 1, 'RWB': 1,
+      'CDM': 2, 'CM': 2, 'CAM': 2, 'LM': 2, 'RM': 2, 'DM': 2 };
+    const fwdPos = ['ST', 'CF', 'LW', 'RW', 'SS'];
+    for (const [pos, name] of Object.entries(players)) {
+      if (pos === 'GK') { playersByLine[0].push(name); continue; }
+      if (fwdPos.includes(pos)) { playersByLine[lines.length - 1].push(name); continue; }
+      const lineIdx = posMap[pos];
+      if (lineIdx !== undefined && lineIdx < lines.length) {
+        playersByLine[lineIdx].push(name);
+      } else if (lines.length > 2) {
+        playersByLine[Math.floor(lines.length / 2)].push(name);
+      }
+    }
+  }
+
+  let html = '<div class="flex flex-col gap-1">';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const n = lines[i];
+    const pls = playersByLine[i] || [];
+    html += `<div class="flex justify-center gap-3">`;
+    for (let j = 0; j < n; j++) {
+      const name = pls[j] || '';
+      const surname = name ? name.split(' ').pop() : (i === 0 ? 'GK' : '');
+      html += `<div class="flex flex-col items-center">
+        <div class="player-dot">${i === 0 && !name ? 'GK' : ''}</div>
+        <div class="text-[8px] text-green-300/70 mt-0.5 max-w-[60px] truncate text-center">${surname}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+// ---- Tab 7: Our Bets ----
+function renderTabBets(m) {
+  const allBets = m.bets || [];
+  const mk = `${m.home_team} vs ${m.away_team}`;
+
+  // Split: real bets (with edge and real bookmaker odds) vs advisory (fair odds, no edge)
+  const realBets = allBets.filter(b => !b._advisory && (b.value_pct || 0) > 0);
+  const advisoryBets = allBets.filter(b => b._advisory || (b.value_pct || 0) <= 0);
+
+  if (!realBets.length && !advisoryBets.length) {
+    return `<div class="text-center py-6">
+      <div class="text-sm text-gray-500 mb-1">No value bets for this match</div>
+      <div class="text-[10px] text-gray-600">Our model didn't find sufficient edge over market odds</div>
+    </div>`;
+  }
+
+  let html = '';
+  if (!realBets.length) {
+    html += `<div class="text-center py-4 mb-3">
+      <div class="text-sm text-gray-500">No value bets with real bookmaker odds</div>
+      <div class="text-[10px] text-gray-600">Only fair-odds estimates available below</div>
+    </div>`;
+  }
+
+  // Render real bets first
+  html += `<div class="space-y-3">`;
+  const betsToRender = realBets.length ? realBets : [];
+  for (const bet of betsToRender) {
+    const impliedProb = bet.odds > 0 ? 1 / bet.odds : 0;
+    const valuePct = bet.value_pct || 0;
+    const mktLabel = MARKET_LABELS[bet.market] || MARKET_LABELS[bet._specialty_type] || bet.market || '';
+
+    // Check live tracking status
+    const tracking = getBetTrackingStatus(mk, bet);
+    let trackingHtml = '';
+    let borderClass = valuePct > 10 ? 'border-l-green-400' : valuePct > 3 ? 'border-l-amber-400' : 'border-l-gray-600';
+    if (tracking) {
+      const st = tracking.status || '';
+      if (st === 'won' || st === 'virtually_won') {
+        trackingHtml = `<div class="bet-won mt-2">WON — ${bet.selection || bet.bet} hit at ${tracking.decided_at_minute || '?'}' (${tracking.score_when_decided ? tracking.score_when_decided[0]+'-'+tracking.score_when_decided[1] : ''})</div>`;
+        borderClass = 'border-l-green-400';
+      } else if (st === 'lost' || st === 'virtually_lost') {
+        trackingHtml = `<div class="bet-lost mt-2">LOST — ${bet.selection || bet.bet} busted at ${tracking.decided_at_minute || '?'}' (${tracking.score_when_decided ? tracking.score_when_decided[0]+'-'+tracking.score_when_decided[1] : ''})</div>`;
+        borderClass = 'border-l-red-400';
+      }
+    } else {
+      // If match is live/completed, evaluate bet from score
+      const ci = clockData[mk];
+      if (ci && (ci.status === 'live' || ci.status === 'half_time' || ci.status === 'completed')) {
+        const score = ci.score || [0, 0];
+        const totalGoals = score[0] + score[1];
+        const sel = (bet.selection || bet.bet || '').toLowerCase();
+        const market = (bet.market || bet._specialty_type || '').toLowerCase();
+        const isCompleted = ci.status === 'completed';
+
+        // Evaluate common bet types
+        let evalResult = null; // 'won', 'lost', or null (still open)
+        if (market.includes('o/u') || market.includes('over') || market.includes('total')) {
+          const lineMatch = sel.match(/(\d+\.?\d*)/);
+          const line = lineMatch ? parseFloat(lineMatch[1]) : null;
+          if (line !== null) {
+            if (sel.includes('over') && totalGoals > line) evalResult = 'won';
+            else if (sel.includes('under') && isCompleted && totalGoals < line) evalResult = 'won';
+            else if (sel.includes('over') && isCompleted && totalGoals <= line) evalResult = 'lost';
+            else if (sel.includes('under') && totalGoals > line) evalResult = 'lost';
+          }
+        } else if (market === '1x2' || market === 'h2h') {
+          if (isCompleted) {
+            if (sel.includes('home') || sel === bet.home_team?.toLowerCase()) evalResult = score[0] > score[1] ? 'won' : 'lost';
+            else if (sel.includes('away') || sel === bet.away_team?.toLowerCase()) evalResult = score[1] > score[0] ? 'won' : 'lost';
+            else if (sel.includes('draw')) evalResult = score[0] === score[1] ? 'won' : 'lost';
+          }
+        } else if (market === 'btts') {
+          if (sel.includes('yes') && score[0] > 0 && score[1] > 0) evalResult = 'won';
+          else if (sel.includes('no') && isCompleted && (score[0] === 0 || score[1] === 0)) evalResult = 'won';
+          else if (sel.includes('yes') && isCompleted && (score[0] === 0 || score[1] === 0)) evalResult = 'lost';
+          else if (sel.includes('no') && score[0] > 0 && score[1] > 0) evalResult = 'lost';
+        } else if (market === 'dc' || market === 'double_chance') {
+          if (isCompleted) {
+            const hWin = score[0] > score[1], draw = score[0] === score[1], aWin = score[1] > score[0];
+            if (sel.includes('1x') || sel.includes('home or draw')) evalResult = (hWin || draw) ? 'won' : 'lost';
+            else if (sel.includes('x2') || sel.includes('draw or away')) evalResult = (draw || aWin) ? 'won' : 'lost';
+            else if (sel.includes('12') || sel.includes('home or away')) evalResult = (hWin || aWin) ? 'won' : 'lost';
+          }
+        }
+
+        if (evalResult === 'won') {
+          trackingHtml = `<div class="bet-won mt-2">HIT — ${bet.selection || bet.bet} (${score[0]}-${score[1]} at ${ci.minute || '?'}')</div>`;
+          borderClass = 'border-l-green-400';
+        } else if (evalResult === 'lost') {
+          trackingHtml = `<div class="bet-lost mt-2">LOST — ${bet.selection || bet.bet} (${score[0]}-${score[1]})</div>`;
+          borderClass = 'border-l-red-400';
+        } else {
+          trackingHtml = `<div class="text-xs mt-2 px-2 py-1 rounded bg-gray-800/50 text-gray-400">OPEN — ${bet.selection || bet.bet} (${score[0]}-${score[1]} at ${ci.minute || '?'}')</div>`;
+        }
+      }
+    }
+
+    html += `<div class="bg-gray-900/50 rounded-lg border-l-2 ${borderClass} p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="badge bg-gray-800 text-gray-300">${mktLabel}</span>
+          <span class="text-sm font-bold text-white">${bet.selection || bet.bet || ''}</span>
+        </div>
+        <span class="text-xl font-bold text-white stat-value">${(bet.odds||0).toFixed(2)}</span>
+        ${bet._advisory ? '<span class="text-[10px] text-amber-400 ml-1">FAIR</span>' : ''}
+      </div>
+      ${probBar(bet.our_probability || 0, impliedProb, bet.selection || bet.bet || '')}
+      <div class="grid grid-cols-4 gap-3 mt-2 text-center">
+        ${bet._advisory ? `
+        <div><div class="text-[10px] text-gray-500">Fair Odds</div><div class="text-sm font-medium text-amber-400 stat-value">${(bet.odds||0).toFixed(2)}</div></div>
+        <div><div class="text-[10px] text-gray-500">Prob</div><div class="text-sm font-medium stat-value">${((bet.our_probability||0)*100).toFixed(0)}%</div></div>
+        <div><div class="text-[10px] text-gray-500">Value</div><div class="text-sm font-medium text-gray-500 stat-value">Need odds</div></div>
+        <div><div class="text-[10px] text-gray-500">Stake</div><div class="text-sm font-medium text-gray-500 stat-value">\u2014</div></div>
+        ` : `
+        <div><div class="text-[10px] text-gray-500">Stake</div><div class="text-sm font-medium stat-value">\u20ac${(bet.stake||0).toFixed(1)}</div></div>
+        <div><div class="text-[10px] text-gray-500">Profit</div><div class="text-sm font-medium text-green-400 stat-value">+\u20ac${(bet.potential_profit||0).toFixed(1)}</div></div>
+        <div><div class="text-[10px] text-gray-500">Value</div><div class="text-sm font-medium ${valuePct>0?'text-green-400':'text-red-400'} stat-value">${valuePct.toFixed(1)}%</div></div>
+        <div><div class="text-[10px] text-gray-500">Prob</div><div class="text-sm font-medium stat-value">${((bet.our_probability||0)*100).toFixed(0)}%</div></div>
+        `}
+      </div>
+      ${trackingHtml}
+      ${bet.factors && bet.factors.length ? `<div class="flex flex-wrap gap-1 mt-2">${bet.factors.map(f => `<span class="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">${f}</span>`).join('')}</div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Advisory bets: collapsed section for fair-odds estimates (corners, cards, BTTS)
+  if (advisoryBets.length) {
+    const advisoryId = `advisory-${mk.replace(/[^a-zA-Z0-9]/g, '')}`;
+    html += `<div class="mt-4 border-t border-gray-800 pt-3">
+      <button onclick="document.getElementById('${advisoryId}').classList.toggle('hidden');this.querySelector('svg').classList.toggle('rotate-180')"
+        class="flex items-center gap-2 text-[10px] text-gray-500 hover:text-gray-300 transition-colors w-full">
+        <svg class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        <span>Fair-odds estimates (${advisoryBets.length})</span>
+        <span class="text-gray-600 ml-1">— No bookmaker odds, model estimates only</span>
+      </button>
+      <div id="${advisoryId}" class="hidden mt-2 space-y-1">`;
+    for (const ab of advisoryBets) {
+      const mktLabel = MARKET_LABELS[ab.market] || MARKET_LABELS[ab._specialty_type] || ab.market || '';
+      html += `<div class="flex items-center justify-between bg-gray-900/30 rounded px-3 py-1.5 text-xs">
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-gray-600">${mktLabel}</span>
+          <span class="text-gray-400">${ab.selection || ab.bet || ''}</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="text-gray-500">Fair: ${(ab.odds||0).toFixed(2)}</span>
+          ${ab.our_probability ? `<span class="text-gray-600">${((ab.our_probability||0)*100).toFixed(0)}%</span>` : ''}
+        </div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  return html;
+}
+
+// ============================================================
+// FULL PARLAYS (bottom section)
+// ============================================================
+let parlayTab = 'banker_combos';
+const PARLAY_CATEGORIES = [
+  ['banker_combos', 'Banker Combos', 'emerald'],
+  ['safe_doubles', 'Safe Doubles', 'green'],
+  ['value_trebles', 'Value Trebles', 'blue'],
+  ['same_game', 'Same-Game', 'purple'],
+  ['sharp_specials', 'Sharp Specials', 'cyan'],
+  ['long_shots', 'Long Shots', 'amber'],
+];
+
+function qualityColor(q) { return q >= 70 ? '#4ade80' : q >= 50 ? '#fbbf24' : '#f87171'; }
+
+function renderParlays(data) {
+  const el = document.getElementById('parlays');
+  const cats = data.categories || {};
+  const total = data.total_parlays || 0;
+  if (total === 0) return;
+
+  // Find best parlay for summary header
+  let bestParlay = null;
+  for (const [key, items] of Object.entries(cats)) {
+    for (const p of items) {
+      if (!bestParlay || (p.combined_odds||0) > (bestParlay.combined_odds||0)) bestParlay = p;
+    }
+  }
+  const bestHit = bestParlay ? ((bestParlay.hit_probability||{}).median || (bestParlay.hit_probability||{}).naive || 0) : 0;
+
+  let tabsHtml = '<div class="flex flex-wrap gap-1 mb-4">';
+  for (const [key, label, color] of PARLAY_CATEGORIES) {
+    const count = (cats[key] || []).length;
+    const active = parlayTab === key;
+    tabsHtml += `<button onclick="parlayTab='${key}';renderParlays(window._parlayData)" class="tab-pill ${active?'active':'inactive'}">${label} (${count})</button>`;
+  }
+  tabsHtml += '</div>';
+
+  const items = cats[parlayTab] || [];
+  let cardsHtml = '';
+  for (const p of items) {
+    const pq = p.parlay_quality || 0;
+    const hp = p.hit_probability || {};
+    const catBadge = p.category === 'safe'
+      ? '<span class="badge bg-emerald-900/30 text-emerald-400 border border-emerald-700/30">SAFE</span>'
+      : p.category === 'value'
+      ? '<span class="badge bg-blue-900/30 text-blue-400 border border-blue-700/30">VALUE</span>'
+      : '';
+    cardsHtml += `<div class="bg-dark-800 rounded-lg border border-gray-700 p-4 mb-3">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="badge bg-gray-800 text-gray-300">${p.n_legs}-Leg</span>
+          ${catBadge}
+          <span class="badge" style="background:${qualityColor(pq)}15;color:${qualityColor(pq)}">Q${Math.round(pq)}</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="text-2xl font-bold text-white stat-value">${p.combined_odds.toFixed(2)}</span>
+          <span class="badge bg-green-900/50 text-green-400 border border-green-700">${(p.value_pct||0).toFixed(1)}% value</span>
+        </div>
+      </div>
+      ${p.combined_prob ? `<div class="text-[10px] text-cyan-400 mb-2">Combined probability: ${(p.combined_prob*100).toFixed(1)}%</div>` : ''}
+      <div class="space-y-1 mb-3">`;
+    for (const leg of p.legs) {
+      const legProb = (leg.probability||0) * 100;
+      const legCol = legProb >= 70 ? 'text-green-400' : legProb >= 50 ? 'text-yellow-400' : 'text-red-400';
+      const legBg = legProb >= 70 ? 'border-l-2 border-l-green-500/40' : legProb >= 50 ? 'border-l-2 border-l-yellow-500/30' : 'border-l-2 border-l-red-500/30';
+      cardsHtml += `<div class="flex items-center justify-between bg-gray-900/50 rounded px-3 py-1.5 text-xs ${legBg}">
+        <div class="flex items-center gap-2">
+          <span class="text-gray-500">${MARKET_LABELS[leg.market]||leg.market}</span>
+          <span class="text-white">${leg.match}</span>
+          <span class="text-gray-300">${leg.selection}</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="${legCol} font-medium stat-value">${legProb.toFixed(0)}%</span>
+          <span class="text-white stat-value">${leg.odds.toFixed(2)}</span>
+        </div>
+      </div>`;
+    }
+    cardsHtml += `</div>
+      <div class="flex items-center justify-between text-xs border-t border-gray-800 pt-2">
+        <span class="text-gray-500">Hit: <span class="text-cyan-400 stat-value">${((hp.median||hp.naive||0)*100).toFixed(1)}%</span></span>
+        <span class="text-gray-500">Stake <span class="text-white font-medium">\u20ac${(p.stake||0).toFixed(2)}</span> &rarr; Profit <span class="text-green-400 font-medium">\u20ac${(p.potential_profit||0).toFixed(2)}</span></span>
+      </div>
+    </div>`;
+  }
+
+  if (!items.length) cardsHtml = '<p class="text-center text-gray-500 text-sm py-6">No parlays in this category</p>';
+
+  el.innerHTML = `<div id="parlays-anchor" class="border-t border-gray-800 pt-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-bold text-white flex items-center gap-2">
+        Parlays
+        <span class="text-xs text-gray-500 font-normal">${total} combinations${bestParlay ? ` \u00b7 Best: ${bestParlay.n_legs}-Leg @${bestParlay.combined_odds.toFixed(2)} (${(bestHit*100).toFixed(0)}% hit)` : ''}</span>
+      </h2>
+    </div>
+    ${tabsHtml}${cardsHtml}
+  </div>`;
+  el.classList.remove('hidden');
+}
+
+// ============================================================
+// LIVE HELPERS (mini timeline, bet tracking in tabs)
+// ============================================================
+function renderMiniTimeline(mk) {
+  // Build timeline from clockData bet_tracking events
+  const ci = clockData[mk];
+  if (!ci || !ci.bet_tracking || ci.bet_tracking.length === 0) return '';
+  let html = '<div class="flex flex-wrap items-center gap-1 mt-3 text-[10px] text-gray-500">';
+  html += '<span class="text-gray-600">KO</span>';
+  for (const bt of ci.bet_tracking) {
+    const min = bt.decided_at_minute || '?';
+    const score = bt.score_when_decided || [0, 0];
+    const st = bt.status || '';
+    const col = st.includes('won') ? 'text-green-400' : st.includes('lost') ? 'text-red-400' : 'text-gray-400';
+    html += ` <span class="text-gray-700">&rarr;</span> <span class="${col}">${min}' [${score[0]}-${score[1]}]</span>`;
+  }
+  if (ci.period === 'HT') html += ' <span class="text-gray-700">&rarr;</span> <span class="text-yellow-400">HT</span>';
+  if (ci.period === 'FT') html += ' <span class="text-gray-700">&rarr;</span> <span class="text-gray-400">FT</span>';
+  html += '</div>';
+  return html;
+}
+
+function getBetTrackingStatus(mk, bet) {
+  const ci = clockData[mk];
+  if (!ci || !ci.bet_tracking) return null;
+  const sel = (bet.selection || bet.bet || '').toUpperCase();
+  const market = bet.market || bet._specialty_type || '';
+  for (const bt of ci.bet_tracking) {
+    if (bt.market === market && (bt.selection || '').toUpperCase() === sel) {
+      return bt;
+    }
+  }
+  return null;
+}
+
+// ============================================================
+// LOAD
+// ============================================================
+// ============================================================
+// MY BETS VIEW
+// ============================================================
+function toggleView(view) {
+  currentView = view;
+  const btnAll = document.getElementById('btn-all-bets');
+  const btnMine = document.getElementById('btn-my-bets');
+  const mySection = document.getElementById('my-bets-section');
+  const allSections = ['stats-bar', 'best-bets', 'matches-grid', 'parlays'];
+
+  if (view === 'mine') {
+    btnMine.className = 'px-4 py-1.5 text-xs font-semibold rounded-lg bg-green-600/20 text-green-400 border border-green-600/30';
+    btnAll.className = 'px-4 py-1.5 text-xs font-semibold rounded-lg text-gray-400 border border-gray-700 hover:text-white';
+    allSections.forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
+    renderMyBets();
+    mySection.classList.remove('hidden');
+  } else {
+    btnAll.className = 'px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30';
+    btnMine.className = 'px-4 py-1.5 text-xs font-semibold rounded-lg text-gray-400 border border-gray-700 hover:text-white';
+    mySection.classList.add('hidden');
+    allSections.forEach(id => { const el = document.getElementById(id); if (el) el.classList.remove('hidden'); });
+  }
+}
+
+function renderMyBets() {
+  const container = document.getElementById('my-bets-section');
+  if (!placedBets.length) {
+    container.innerHTML = '<div class="text-center py-12 text-gray-500 text-sm">No placed bets found</div>';
+    return;
+  }
+
+  // Group by match
+  const byMatch = {};
+  for (const b of placedBets) {
+    const mk = b.match || 'Unknown';
+    if (!byMatch[mk]) byMatch[mk] = [];
+    byMatch[mk].push(b);
+  }
+
+  let html = '<div class="space-y-3">';
+  // Summary row
+  const totalStake = placedBets.reduce((s, b) => s + (b.stake || 0), 0);
+  const pending = placedBets.filter(b => b.status === 'pending');
+  const currentBets = placedBets.filter(b => b.pipeline_status === 'current');
+  const staleBets = placedBets.filter(b => b.pipeline_status === 'stale');
+  const currentStake = currentBets.reduce((s, b) => s + (b.stake || 0), 0);
+  const staleStake = staleBets.reduce((s, b) => s + (b.stake || 0), 0);
+  html += `<div class="bg-dark-800 rounded-xl border border-green-700/30 p-4 mb-2">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-sm font-bold text-green-400">My Active Bets</h3>
+      <span class="text-xs text-gray-400">${placedBets.length} bets | ${pending.length} pending</span>
+    </div>
+    <div class="flex items-center gap-6 text-xs">
+      <span class="text-gray-400">Total Staked: <span class="text-white font-semibold">\u20AC${totalStake.toFixed(2)}</span></span>
+      <span class="text-green-400">${currentBets.length} current (\u20AC${currentStake.toFixed(0)})</span>
+      ${staleBets.length ? `<span class="text-amber-400">${staleBets.length} old pipeline (\u20AC${staleStake.toFixed(0)})</span>` : ''}
+    </div>
+  </div>`;
+
+  // Match cards
+  for (const [mk, bets] of Object.entries(byMatch).sort((a, b) => (a[1][0].date || '').localeCompare(b[1][0].date || ''))) {
+    const m = allMatches[mk] || {};
+    const parts = mk.split(' vs ');
+    html += `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <span class="text-sm font-bold text-white">${mk}</span>
+          <span class="text-xs text-gray-500 ml-2">${bets[0].date || m.date || ''}</span>
+        </div>
+        ${m.predicted_outcome ? `<span class="badge ${m.predicted_outcome === 'HOME' ? 'bg-green-900/30 text-green-400' : m.predicted_outcome === 'AWAY' ? 'bg-red-900/30 text-red-400' : 'bg-amber-900/30 text-amber-400'}">${m.predicted_outcome}</span>` : ''}
+      </div>
+      <div class="space-y-2">`;
+    for (const b of bets) {
+      const statusColor = b.status === 'settled' ? (b.profit > 0 ? 'text-green-400' : 'text-red-400') : 'text-amber-400';
+      const statusText = b.status === 'settled' ? (b.profit > 0 ? 'WON' : 'LOST') : 'PENDING';
+      const isStale = b.pipeline_status === 'stale';
+      const rowBorder = isStale ? 'border border-amber-700/30' : '';
+      html += `<div class="flex items-center justify-between bg-gray-900/50 rounded-lg px-3 py-2 ${rowBorder}">
+        <div class="flex items-center gap-3">
+          <span class="badge bg-accent-blue/20 text-accent-blue border border-accent-blue/30 text-[9px]">${MARKET_LABELS[b.market] || b.market || '1X2'}</span>
+          <span class="text-sm text-white font-medium">${b.selection || ''}</span>
+          ${isStale ? '<span class="text-[9px] text-amber-400 bg-amber-900/30 px-1 rounded">old</span>' : ''}
+        </div>
+        <div class="flex items-center gap-4 text-xs">
+          <span class="text-gray-400">\u20AC${(b.stake || 0).toFixed(0)}</span>
+          <span class="text-white font-mono font-bold">@${(b.odds || 0).toFixed(2)}</span>
+          ${b.edge_pct ? `<span class="text-green-400">${b.edge_pct.toFixed(1)}% edge</span>` : ''}
+          <span class="font-semibold ${statusColor}">${statusText}</span>
+        </div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function loadBetting() {
+  try {
+    const res = await fetch('/api/betting');
+    const data = await res.json();
+
+    document.getElementById('loading').classList.add('hidden');
+    showFreshness(data);
+
+    // Store data
+    allMatches = data.matches || {};
+    bestBets = data.best_bets || [];
+    parlayData = data.parlays || {};
+    placedBets = data.placed_bets || [];
+    playerPropVBets = data.player_prop_value_bets || [];
+    rejectedBets = data.rejected_bets || [];
+
+    // Fetch prop performance + Kelly P&L in background
+    fetch('/api/props/performance').then(r => r.json()).then(d => {
+      propPerformance = d.performance || null;
+    }).catch(() => {});
+    fetch('/api/props/kelly-pnl').then(r => r.json()).then(d => {
+      if (!d.error) kellyPnl = d;
+    }).catch(() => {});
+    fetch('/api/fair-odds/summary').then(r => r.json()).then(d => {
+      if (!d.error) fairOddsSummary = d;
+    }).catch(() => {});
+    riskState = data.risk_state || {};
+    bttsPredictions = data.btts_predictions || [];
+    cornersPredictions = data.corners_predictions || [];
+    marketRules = data.market_rules || {};
+
+    // Sort match keys by date/time
+    sortedMatchKeys = Object.keys(allMatches).sort((a, b) => {
+      const ma = allMatches[a], mb = allMatches[b];
+      const da = (ma.date||'9999') + (ma.time||'99:99');
+      const db = (mb.date||'9999') + (mb.time||'99:99');
+      return da.localeCompare(db);
+    });
+
+    const hasMatches = sortedMatchKeys.length > 0;
+    const hasParlays = parlayData && parlayData.total_parlays > 0;
+
+    if (!hasMatches && !hasParlays) {
+      document.getElementById('empty').classList.remove('hidden');
+      return;
+    }
+
+    // Show relative "generated X ago" instead of a raw timestamp
+    document.getElementById('generated-at').textContent = data.generated_at ? 'Data ' + formatAge(data.generated_at) : '';
+
+    // Start live clock in nav
+    if (!window._liveClockStarted) {
+      window._liveClockStarted = true;
+      function updateNavClock() {
+        const el = document.getElementById('live-clock');
+        if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      }
+      updateNavClock();
+      setInterval(updateNavClock, 1000);
+    }
+
+    // Show view toggle with bet count
+    document.getElementById('view-toggle').classList.remove('hidden');
+    if (placedBets.length) {
+      document.getElementById('my-bets-count').textContent = `(${placedBets.length})`;
+    }
+
+    // Risk state banner
+    renderRiskState(riskState);
+
+    // Stats bar (merged summary + bankroll)
+    renderStatsBar(data.bankroll, data.summary || {});
+
+    // Best bets hero
+    if (bestBets.length) renderBestBets(bestBets);
+
+    // All matches grid
+    if (hasMatches) renderMatchesGrid();
+
+    // Full parlays
+    if (hasParlays) {
+      window._parlayData = parlayData;
+      renderParlays(parlayData);
+    }
+
+    // Rejected bets
+    if (rejectedBets.length) renderRejectedBets(rejectedBets);
+    if (Object.keys(marketRules).length) renderMarketRules(marketRules);
+
+  } catch (err) {
+    document.getElementById('loading').textContent = 'Failed to load data: ' + err.message;
+  }
+}
+
+// ============================================================
+// RISK STATE BANNER
+// ============================================================
+function renderRiskState(rs) {
+  if (!rs || !Object.keys(rs).length) return;
+  const el = document.createElement('div');
+  el.id = 'risk-banner';
+
+  if (!rs.allow_betting) {
+    el.className = 'bg-red-900/30 border border-red-700/50 rounded-xl p-4 mb-4';
+    el.innerHTML = `<div class="flex items-center gap-3">
+      <svg class="w-6 h-6 text-red-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+      <div>
+        <div class="text-sm font-bold text-red-400">BETTING SUSPENDED</div>
+        <div class="text-xs text-red-300">${rs.reason || 'Risk checks failed'}</div>
+      </div>
+    </div>`;
+  } else if (rs.reduce_stakes) {
+    el.className = 'bg-amber-900/20 border border-amber-700/30 rounded-xl p-3 mb-4';
+    el.innerHTML = `<div class="flex items-center gap-3">
+      <svg class="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+      <div class="flex items-center gap-4">
+        <span class="text-xs text-amber-400 font-medium">Stakes reduced to ${((rs.stake_multiplier||1)*100).toFixed(0)}%</span>
+        <span class="text-[10px] text-amber-300">${rs.reason || ''}</span>
+      </div>
+    </div>`;
+  } else {
+    // Show compact risk stats
+    const checks = rs.checks || {};
+    const dd = checks.drawdown || {};
+    const cl = checks.consecutive_losses || {};
+    const bf = checks.bankroll_floor || {};
+    el.className = 'flex items-center gap-4 text-[10px] text-gray-500 mb-3 px-1';
+    el.innerHTML = `
+      <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Risk: OK</span>
+      ${dd.current_drawdown_pct !== undefined ? `<span>Drawdown: <span class="text-gray-300">${dd.current_drawdown_pct.toFixed(1)}%</span> (max ${(dd.max_drawdown_pct||0).toFixed(1)}%)</span>` : ''}
+      ${cl.current_streak !== undefined ? `<span>Loss streak: <span class="text-gray-300">${cl.current_streak}</span> (max ${cl.max_streak||0})</span>` : ''}
+      ${bf.bankroll_floor_pct !== undefined ? `<span>Floor: <span class="text-gray-300">${bf.bankroll_floor_pct.toFixed(0)}%</span></span>` : ''}
+    `;
+  }
+
+  const target = document.getElementById('freshness-bar');
+  if (target) target.after(el);
+}
+
+// ============================================================
+// REJECTED BETS
+// ============================================================
+function renderRejectedBets(bets) {
+  if (!bets || !bets.length) return;
+  const container = document.getElementById('parlays');
+  if (!container) return;
+
+  // Group by match
+  const byMatch = {};
+  for (const b of bets) { const mk = b.match || 'Unknown'; if (!byMatch[mk]) byMatch[mk] = []; byMatch[mk].push(b); }
+
+  let html = `<div class="border-t border-gray-800 pt-6 mt-6">
+    <details>
+      <summary class="flex items-center gap-2 cursor-pointer hover:text-gray-300 transition-colors">
+        <span class="text-sm font-bold text-gray-400">Filtered Out</span>
+        <span class="badge bg-gray-800 text-gray-500">${bets.length}</span>
+        <span class="text-[10px] text-gray-600">— Bets considered but didn't pass thresholds</span>
+      </summary>
+      <div class="mt-3 space-y-2">`;
+  for (const [mk, matchBets] of Object.entries(byMatch)) {
+    html += `<div class="bg-dark-800 rounded-lg border border-gray-800/50 p-3">
+      <div class="text-xs font-medium text-gray-400 mb-2">${mk}</div>`;
+    for (const b of matchBets) {
+      const edgeCol = (b.edge_pct||0) > 3 ? 'text-yellow-400' : 'text-gray-500';
+      html += `<div class="flex items-center justify-between py-1 border-b border-gray-800/20 last:border-0">
+        <div class="flex items-center gap-2 text-xs">
+          <span class="text-gray-600">${b.market || '1X2'}</span>
+          <span class="text-gray-400">${b.selection || ''}</span>
+        </div>
+        <div class="flex items-center gap-3 text-[10px]">
+          <span class="${edgeCol} stat-value">+${(b.edge_pct||0).toFixed(1)}%</span>
+          <span class="text-gray-500">@${(b.best_odds||b.odds||0).toFixed(2)}</span>
+          <span class="text-gray-600">${b.best_bookmaker || ''}</span>
+          ${b.confidence_tier ? `<span class="text-gray-600">${b.confidence_tier}</span>` : ''}
+          <span class="text-gray-600 stat-value">\u20ac${(b.stake_amount||0).toFixed(1)}</span>
+        </div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div></details></div>`;
+
+  container.insertAdjacentHTML('afterend', html);
+}
+
+// ============================================================
+// Market Rules Reference
+// ============================================================
+function renderMarketRules(rules) {
+  if (!rules || !Object.keys(rules).length) return;
+  const container = document.getElementById('parlays');
+  if (!container) return;
+
+  let html = `<div class="border-t border-gray-800 pt-6 mt-6">
+    <details>
+      <summary class="flex items-center gap-2 cursor-pointer hover:text-gray-300 transition-colors">
+        <span class="text-sm font-bold text-gray-400">Market Rules</span>
+        <span class="text-[10px] text-gray-600">— Active/disabled markets with edge thresholds</span>
+      </summary>
+      <div class="mt-3 overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead><tr class="text-gray-500 border-b border-gray-800">
+            <th class="text-left p-2">Market</th>
+            <th class="p-2 text-center">Status</th>
+            <th class="p-2 text-right">Min Edge</th>
+            <th class="p-2 text-left">Backtest ROI</th>
+          </tr></thead>
+          <tbody>
+            ${Object.entries(rules).map(([mkt, r]) => `<tr class="border-b border-gray-800/50">
+              <td class="p-2 text-gray-300 font-medium">${mkt}</td>
+              <td class="p-2 text-center">${r.enabled ? '<span class="badge bg-green-900/50 text-green-400">ON</span>' : '<span class="badge bg-red-900/50 text-red-400">OFF</span>'}</td>
+              <td class="p-2 text-right stat-value text-gray-400">${r.min_edge}%</td>
+              <td class="p-2 text-gray-500 text-[10px]">${r.backtest_roi || '-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </div>`;
+
+  // Find the last inserted section and append after it
+  const existing = container.parentNode.querySelectorAll('.border-t.border-gray-800');
+  const lastSection = existing[existing.length - 1];
+  if (lastSection) {
+    lastSection.insertAdjacentHTML('afterend', html);
+  } else {
+    container.insertAdjacentHTML('afterend', html);
+  }
+}
+
+loadBetting();
+
+// ============================================================
+// LIVE MATCH CLOCK SYSTEM
+// ============================================================
+let clockData = {};           // match_key → clock info from /api/match-clock
+let clockLastPoll = 0;        // timestamp of last server poll
+let autoPollTriggered = false; // whether we've triggered backend auto-poll
+let clockTickerInterval = null;
+let prevMatchStatuses = {};   // track previous status per match for completion detection
+let settleTimeout = null;     // debounce timer for auto-settlement
+let settleTriggeredFor = new Set();  // matches already settled (avoid duplicate triggers)
+
+// ---- Server poll: every 30s ----
+async function pollMatchClock() {
+  try {
+    const res = await fetch('/api/match-clock');
+    const data = await res.json();
+    const newClockData = data.matches || {};
+
+    // ── Detect match completions ──
+    const newlyCompleted = [];
+    for (const [mk, info] of Object.entries(newClockData)) {
+      const prev = prevMatchStatuses[mk];
+      const now = info.status;
+      // Transition to completed from any live state
+      if (now === 'completed' && prev && prev !== 'completed' && !settleTriggeredFor.has(mk)) {
+        newlyCompleted.push(mk);
+        settleTriggeredFor.add(mk);
+      }
+      prevMatchStatuses[mk] = now;
+    }
+
+    clockData = newClockData;
+    clockLastPoll = Date.now();
+
+    // ── Auto-trigger settlement when match completes ──
+    if (newlyCompleted.length > 0) {
+      console.log('Match(es) completed:', newlyCompleted.join(', '));
+      // Debounce: wait 60s for Odds API to finalize scores, then settle
+      if (settleTimeout) clearTimeout(settleTimeout);
+      settleTimeout = setTimeout(() => autoSettle(newlyCompleted), 60000);
+      showToast(`${newlyCompleted.join(', ')} — FT. Settling bets in 60s...`, 'info');
+    }
+
+    // Update poll status indicator
+    updatePollStatus(data.auto_poll_active, data.auto_poll_interval);
+
+    // Auto-trigger backend live polling if any match ≤15 min from kickoff
+    if (!autoPollTriggered) {
+      for (const [mk, info] of Object.entries(clockData)) {
+        if (info.secs_until !== null && info.secs_until <= 900 && info.secs_until > 0) {
+          autoPollTriggered = true;
+          try {
+            await fetch('/api/live/config', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({interval: 120})
+            });
+            await fetch('/api/live/auto-poll', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({action: 'start'})
+            });
+          } catch(e) { console.warn('Auto-poll trigger failed:', e); }
+          break;
+        }
+      }
+    }
+
+    // Update DOM
+    updateMatchClocks();
+    renderLiveBanner();
+
+    // Fetch live prop evaluations for all live/completed matches
+    pollLiveProps();
+  } catch(e) {
+    console.warn('Match clock poll failed:', e);
+  }
+}
+
+// ---- Live prop evaluation polling ----
+async function pollLiveProps() {
+  const liveMatches = Object.entries(clockData).filter(([mk, info]) =>
+    info.status === 'live' || info.status === 'half_time' || info.status === 'completed'
+  );
+  if (!liveMatches.length) return;
+
+  for (const [mk, info] of liveMatches) {
+    const slug = mk.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    try {
+      const res = await fetch(`/api/live/props/${slug}`);
+      const data = await res.json();
+      if (data.found && data.props && data.props.length > 0) {
+        livePropCache[mk] = data;
+        // If props tab is active for this match, refresh it
+        if (activeTab[mk] === 'props') {
+          const detail = document.getElementById('detail-' + esc(mk));
+          if (detail) detail.innerHTML = renderMatchDetail(mk);
+        }
+      }
+    } catch(e) {
+      // Silent — live props are best-effort
+    }
+  }
+}
+
+// ---- Auto-settle: fetch results + settle bets ----
+async function autoSettle(completedMatches) {
+  showToast('Settling bets...', 'info');
+  try {
+    const res = await fetch('/api/settle', {method: 'POST'});
+    const data = await res.json();
+    if (!data.ok) {
+      // Already running or smart refresh in progress — just wait
+      console.log('Settle response:', data.message);
+      showToast(data.message, 'info');
+      return;
+    }
+    // Poll for settlement result
+    pollSettleResult();
+  } catch(e) {
+    console.warn('Auto-settle trigger failed:', e);
+    showToast('Settlement failed to start', 'error');
+  }
+}
+
+async function pollSettleResult() {
+  const maxAttempts = 30;  // 30 × 2s = 60s max wait
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const res = await fetch('/api/settle/status');
+      const data = await res.json();
+      if (!data.running && data.status === 'done') {
+        // Settlement complete — show results
+        const won = data.won || 0;
+        const lost = data.lost || 0;
+        const push = data.push || 0;
+        const profit = data.profit || 0;
+        const balance = data.new_balance || 0;
+        const settled = data.settled || 0;
+
+        if (settled === 0) {
+          showToast('No new bets to settle', 'info');
+        } else {
+          const profitStr = profit >= 0 ? `+\u20ac${profit.toFixed(2)}` : `-\u20ac${Math.abs(profit).toFixed(2)}`;
+          const col = profit >= 0 ? 'success' : 'error';
+          showToast(
+            `Settled ${settled} bet${settled > 1 ? 's' : ''}: ${won}W ${lost}L ${push}P | ${profitStr} | Balance: \u20ac${balance.toFixed(2)}`,
+            col
+          );
+        }
+        // Reload betting page data to reflect new balances
+        setTimeout(() => loadBetting(), 1500);
+        return;
+      }
+      if (!data.running && data.status === 'error') {
+        showToast(`Settlement error: ${data.error || 'unknown'}`, 'error');
+        return;
+      }
+    } catch(e) {
+      console.warn('Settle status poll error:', e);
+    }
+  }
+  showToast('Settlement timed out', 'error');
+}
+
+// ---- Toast notifications ----
+function showToast(message, type = 'info') {
+  // Remove existing toast
+  const existing = document.getElementById('settle-toast');
+  if (existing) existing.remove();
+
+  const colors = {
+    info: 'bg-blue-900/80 border-blue-700/50 text-blue-300',
+    success: 'bg-green-900/80 border-green-700/50 text-green-300',
+    error: 'bg-red-900/80 border-red-700/50 text-red-300',
+  };
+  const toast = document.createElement('div');
+  toast.id = 'settle-toast';
+  toast.className = `fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium ${colors[type] || colors.info} shadow-lg transition-all`;
+  toast.style.cssText = 'animation: slideInUp 0.3s ease';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  // Auto-dismiss after 8s (longer for settlement results)
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+    setTimeout(() => toast.remove(), 300);
+  }, type === 'info' ? 5000 : 8000);
+}
+
+// ---- Client-side ticker: every 1s ----
+function tickMatchClocks() {
+  const elapsed = (Date.now() - clockLastPoll) / 1000;
+  for (const [mk, info] of Object.entries(clockData)) {
+    if (info.status === 'upcoming' && info.secs_until !== null) {
+      // Decrement countdown
+      const remaining = Math.max(0, info.secs_until - elapsed);
+      const el = document.getElementById('clock-' + CSS.escape(mk));
+      if (el) {
+        el.textContent = formatCountdown(remaining);
+        // Urgency classes
+        el.className = 'text-[10px] font-mono';
+        if (remaining <= 120) el.className += ' countdown-urgent';
+        else if (remaining <= 900) el.className += ' countdown-urgent';
+        else if (remaining <= 3600) el.className += ' countdown-soon';
+        else el.className += ' text-amber-400';
+      }
+    } else if (info.status === 'live' && info.kickoff_utc && info.period !== 'HT') {
+      // Increment minute from kickoff
+      const kick = new Date(info.kickoff_utc).getTime();
+      const now = Date.now();
+      const elapsedMin = (now - kick) / 60000;
+      let minute;
+      if (elapsedMin <= 47) minute = Math.min(Math.floor(elapsedMin), 45);
+      else if (elapsedMin <= 62) minute = 45;
+      else minute = Math.min(45 + Math.floor(elapsedMin - 62), 90);
+
+      const minEl = document.getElementById('minute-' + CSS.escape(mk));
+      if (minEl) minEl.textContent = minute + "'";
+    }
+  }
+}
+
+function formatCountdown(secs) {
+  if (secs <= 0) return 'NOW';
+  secs = Math.floor(secs);
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d >= 2) return `in ${d}d ${h}h`;
+  if (d === 1) return `in 1d ${h}h`;
+  if (h > 0) return `in ${h}h ${m}m`;
+  if (m > 0) return `in ${m}m`;
+  return `in ${secs}s`;
+}
+
+function updatePollStatus(active, interval) {
+  const wrapper = document.getElementById('poll-status');
+  const dot = document.getElementById('poll-dot');
+  const label = document.getElementById('poll-label');
+  if (!wrapper) return;
+  wrapper.classList.remove('hidden');
+  if (active) {
+    dot.className = 'poll-dot active';
+    label.textContent = `Live polling (${Math.round(interval/60)}m)`;
+    label.className = 'text-green-400';
+  } else {
+    dot.className = 'poll-dot inactive';
+    label.textContent = 'Polling inactive';
+    label.className = 'text-gray-400';
+  }
+}
+
+// ---- Update match card clocks without full re-render ----
+function updateMatchClocks() {
+  for (const mk of sortedMatchKeys) {
+    const info = clockData[mk];
+    if (!info) continue;
+    const card = document.getElementById('card-' + CSS.escape(mk));
+    if (!card) continue;
+
+    // Update card classes
+    card.classList.remove('is-live', 'is-ht', 'is-completed');
+    if (info.status === 'live') card.classList.add('is-live');
+    else if (info.status === 'half_time') card.classList.add('is-ht');
+    else if (info.status === 'completed') card.classList.add('is-completed');
+
+    // Update time zone (left side)
+    const timeZone = document.getElementById('timecol-' + CSS.escape(mk));
+    if (timeZone) {
+      if (info.status === 'live') {
+        timeZone.innerHTML = `<span class="live-badge">LIVE</span><div id="minute-${CSS.escape(mk)}" class="minute-badge mt-1">${info.clock}</div>`;
+      } else if (info.status === 'half_time') {
+        timeZone.innerHTML = `<span class="ht-badge">HT</span>`;
+      } else if (info.status === 'completed') {
+        timeZone.innerHTML = `<span class="ft-badge">FT</span>`;
+      } else {
+        // Upcoming — show countdown
+        const m = allMatches[mk];
+        timeZone.innerHTML = `<div class="text-xs font-mono text-white">${m ? formatKickoff(m.commence_time, m.date) : '--:--'}</div>
+          <div id="clock-${CSS.escape(mk)}" class="text-[10px] ${info.secs_until <= 900 ? 'countdown-urgent' : info.secs_until <= 3600 ? 'countdown-soon' : 'text-amber-400'} font-mono">${info.clock}</div>`;
+      }
+    }
+
+    // Update center zone with score for live/completed
+    const centerZone = document.getElementById('centercol-' + CSS.escape(mk));
+    if (centerZone) {
+      if ((info.status === 'live' || info.status === 'half_time') && info.score) {
+        centerZone.innerHTML = `<div class="live-score">${info.score[0]} - ${info.score[1]}</div>
+          <div class="minute-badge mt-1">${info.clock}</div>`;
+      } else if (info.status === 'completed' && info.score) {
+        centerZone.innerHTML = `<div class="live-score" style="color:#9ca3af">${info.score[0]} - ${info.score[1]}</div>
+          <span class="ft-badge mt-1">FT</span>`;
+      }
+      // For upcoming, leave the original prediction content
+    }
+
+    // Update bet tracking badges (right side)
+    const betZone = document.getElementById('bets-badge-' + CSS.escape(mk));
+    if (betZone && info.bet_tracking && info.bet_tracking.length > 0) {
+      let badgeHtml = '';
+      for (const bt of info.bet_tracking) {
+        const st = bt.status || '';
+        if (st.includes('won')) badgeHtml += `<span class="bet-won">${bt.selection} WON</span> `;
+        else if (st.includes('lost')) badgeHtml += `<span class="bet-lost">${bt.selection} LOST</span> `;
+        else badgeHtml += `<span class="bet-open">${bt.selection} OPEN</span> `;
+      }
+      betZone.innerHTML = badgeHtml;
+    }
+  }
+}
+
+// ---- Live banner ----
+function renderLiveBanner() {
+  const el = document.getElementById('live-banner');
+  if (!el) return;
+
+  const liveMatches = Object.entries(clockData).filter(([mk, info]) =>
+    info.status === 'live' || info.status === 'half_time'
+  );
+
+  if (liveMatches.length === 0) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+
+  let html = `<div class="space-y-3">
+    <div class="flex items-center gap-2 mb-2">
+      <span class="live-dot"></span>
+      <span class="text-sm font-bold text-red-400">LIVE NOW</span>
+      <span class="text-xs text-gray-500">${liveMatches.length} match${liveMatches.length > 1 ? 'es' : ''}</span>
+    </div>`;
+
+  for (const [mk, info] of liveMatches) {
+    const m = allMatches[mk] || {};
+    const score = info.score || [0, 0];
+    const preOdds = info.pre_match_odds || {};
+    const liveOdds = info.live_odds || {};
+    const bets = info.bet_tracking || [];
+
+    // Odds shift
+    let oddsShiftHtml = '';
+    if (preOdds.home && liveOdds.home) {
+      const shift = (liveOdds.home - preOdds.home).toFixed(2);
+      const shiftCol = parseFloat(shift) < 0 ? 'text-green-400' : 'text-red-400';
+      oddsShiftHtml = `<div class="text-[10px] text-gray-500 mt-1">
+        Pre: ${preOdds.home?.toFixed(2) || '?'} / ${preOdds.draw?.toFixed(2) || '?'} / ${preOdds.away?.toFixed(2) || '?'}
+        <span class="mx-1">&rarr;</span>
+        Live: <span class="${shiftCol}">${liveOdds.home?.toFixed(2) || '?'} / ${liveOdds.draw?.toFixed(2) || '?'} / ${liveOdds.away?.toFixed(2) || '?'}</span>
+      </div>`;
+    }
+
+    // Evaluate recommended bets against live score
+    let betsHtml = '';
+    const matchBets = (m.bets || []).filter(b => !b._advisory && (b.value_pct || 0) > 0);
+    const totalGoals = score[0] + score[1];
+    const isCompleted = info.status === 'completed';
+    for (const b of matchBets.slice(0, 3)) {
+      const sel = (b.selection || b.bet || '').toLowerCase();
+      const mkt = (b.market || b._specialty_type || '').toLowerCase();
+      let status = 'open';
+
+      if (mkt.includes('o/u') || mkt.includes('over') || mkt.includes('total')) {
+        const lineMatch = sel.match(/(\d+\.?\d*)/);
+        const line = lineMatch ? parseFloat(lineMatch[1]) : null;
+        if (line !== null) {
+          if (sel.includes('over') && totalGoals > line) status = 'won';
+          else if (sel.includes('under') && totalGoals > line) status = 'lost';
+          else if (isCompleted && sel.includes('over') && totalGoals <= line) status = 'lost';
+          else if (isCompleted && sel.includes('under') && totalGoals < line) status = 'won';
+        }
+      } else if (mkt === 'btts') {
+        if (sel.includes('yes') && score[0] > 0 && score[1] > 0) status = 'won';
+        else if (sel.includes('no') && score[0] > 0 && score[1] > 0) status = 'lost';
+        else if (isCompleted && sel.includes('no') && (score[0] === 0 || score[1] === 0)) status = 'won';
+      } else if ((mkt === '1x2' || mkt === 'h2h') && isCompleted) {
+        if ((sel.includes('home') || sel === m.home_team?.toLowerCase()) && score[0] > score[1]) status = 'won';
+        else if ((sel.includes('away') || sel === m.away_team?.toLowerCase()) && score[1] > score[0]) status = 'won';
+        else if (sel.includes('draw') && score[0] === score[1]) status = 'won';
+        else status = 'lost';
+      }
+
+      if (status === 'won') {
+        betsHtml += `<div class="bet-won mt-1">${b.selection || b.bet} HIT (€${(b.stake||0).toFixed(0)} → +€${(b.potential_profit||0).toFixed(0)})</div>`;
+      } else if (status === 'lost') {
+        betsHtml += `<div class="bet-lost mt-1">${b.selection || b.bet} LOST</div>`;
+      } else {
+        betsHtml += `<div class="text-[10px] text-gray-500 mt-1">${b.selection || b.bet} OPEN (€${(b.stake||0).toFixed(0)} staked)</div>`;
+      }
+    }
+
+    html += `<div class="live-banner-card" onclick="expandMatch('${CSS.escape(mk)}');document.getElementById('card-${CSS.escape(mk)}')?.scrollIntoView({behavior:'smooth',block:'start'})">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="live-badge">LIVE</span>
+          <span class="minute-badge">${info.clock}</span>
+        </div>
+        <div class="text-[10px] text-gray-500">
+          <span class="poll-dot ${clockData._auto_poll_active ? 'active' : 'inactive'}"></span>
+          Auto-poll: ${autoPollTriggered ? 'ON' : 'OFF'}
+        </div>
+      </div>
+      <div class="flex items-center justify-center gap-4 mb-1">
+        <span class="text-sm font-medium text-gray-300">${m.home_team || mk.split(' vs ')[0] || ''}</span>
+        <span class="live-score text-2xl">${score[0]} - ${score[1]}</span>
+        <span class="text-sm font-medium text-gray-300">${m.away_team || mk.split(' vs ')[1] || ''}</span>
+      </div>
+      ${oddsShiftHtml}
+      ${betsHtml}
+    </div>`;
+  }
+
+  html += `</div>`;
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
+// ---- Start clock system after a short delay (data should be loaded) ----
+function startClockSystem() {
+  // Initial poll
+  pollMatchClock();
+  // 30s server poll
+  setInterval(pollMatchClock, 30000);
+  // 1s client ticker
+  clockTickerInterval = setInterval(tickMatchClocks, 1000);
+}
+
+// Start after 2s delay to ensure loadBetting() has populated allMatches
+setTimeout(startClockSystem, 2000);
+
+
+</script>
+  </div>
+{% endblock %}
