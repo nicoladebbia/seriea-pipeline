@@ -20,6 +20,10 @@ Usage as module:
 Usage as CLI (test mode):
     python -m scripts.pipeline.notify --test
     python -m scripts.pipeline.notify --test --message "Custom message"
+
+Coaching narratives:
+    Use notify_value_bet(), notify_settlement(), notify_goal(), notify_retrain()
+    for rich, coach-style messages instead of raw data dumps.
 """
 
 from __future__ import annotations
@@ -348,6 +352,261 @@ def notify_status() -> dict:
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Coaching-style narrative generators
+# ---------------------------------------------------------------------------
+# These functions take raw data and produce human, coach-style messages
+# that feel like a sharp friend texting you — not a robot dumping stats.
+
+import random
+
+_VALUE_BET_OPENERS = [
+    "I've been scanning the markets and something caught my eye.",
+    "Just finished my deep scan of the odds.",
+    "The model and the market are disagreeing on this one.",
+    "Here's something most people aren't seeing right now.",
+    "I found an edge worth looking at.",
+    "The numbers are telling me something interesting.",
+]
+
+_SETTLEMENT_WIN_OPENERS = [
+    "Good call on that one.",
+    "That's the kind of pick that builds bankrolls.",
+    "Clean execution.",
+    "Nailed it.",
+    "The model delivered.",
+]
+
+_SETTLEMENT_LOSS_OPENERS = [
+    "That one didn't go our way.",
+    "Can't win them all.",
+    "Variance happens. The process was right.",
+    "Tough break, but the edge was real.",
+]
+
+_GOAL_OPENERS = [
+    "GOAL!",
+    "It's in!",
+    "The net is shaking!",
+]
+
+_FT_WIN_OPENERS = [
+    "That's the final whistle, and we're smiling.",
+    "Full time. Another one in the bag.",
+    "Match over. The model called it.",
+]
+
+_FT_LOSS_OPENERS = [
+    "Full time. Not our day on this one.",
+    "That's the whistle. Didn't go as expected.",
+    "Match over. The edge was there, the result wasn't.",
+]
+
+
+def notify_value_bets(bets: list[dict]) -> dict:
+    """Send a coaching-style notification about new value bets found.
+
+    Args:
+        bets: list of bet dicts from unified_bet_slip.json
+    """
+    if not bets:
+        return {}
+
+    # Pick the best bet to lead with
+    best = max(bets, key=lambda b: b.get("edge_pct", 0))
+    match = best.get("match", "?")
+    selection = best.get("selection", "?")
+    market = best.get("market", "?")
+    edge = best.get("edge_pct", 0)
+    odds = best.get("best_odds", "?")
+    model_prob = best.get("model_prob", 0)
+    confidence = best.get("confidence_tier", "")
+
+    opener = random.choice(_VALUE_BET_OPENERS)
+
+    # Build the why
+    reasons = []
+    away_factors = best.get("away_factors", [])
+    home_factors = best.get("home_factors", [])
+    if "cold_home" in (home_factors or []):
+        reasons.append("the home side has been cold recently")
+    if "big_away_favorite" in (away_factors or []):
+        reasons.append("the away team is the clear favorite here")
+    if edge > 10:
+        reasons.append(f"the market is pricing this at {edge:.0f}% off what the model sees")
+    elif edge > 6:
+        reasons.append(f"there's a solid {edge:.1f}% gap between our model and the market")
+    if model_prob > 0.7:
+        reasons.append(f"the model gives this a {model_prob*100:.0f}% probability")
+
+    reason_text = ""
+    if reasons:
+        reason_text = " " + reasons[0].capitalize()
+        if len(reasons) > 1:
+            reason_text += f", and {reasons[1]}"
+        reason_text += "."
+
+    # Main message
+    msg = f"{opener}\n\n"
+    msg += f"{match} — {selection} ({market}) at {odds}"
+    if confidence:
+        msg += f" [{confidence}]"
+    msg += f"\nEdge: {edge:.1f}% over the market."
+    if reason_text:
+        msg += f"\n{reason_text}"
+
+    if len(bets) > 1:
+        msg += f"\n\n{len(bets) - 1} more value bet{'s' if len(bets) > 2 else ''} in the slip."
+
+    return notify(msg, title=f"Value: {match}", level="info", category="betting")
+
+
+def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
+                      profit: float = 0, balance: float = 0,
+                      best_win: dict | None = None, worst_loss: dict | None = None) -> dict:
+    """Send a coaching-style settlement notification.
+
+    Args:
+        settled/won/lost/push: bet counts
+        profit: total P&L from this settlement
+        balance: new bankroll balance
+        best_win: dict with match, selection, profit of best winning bet
+        worst_loss: dict with match, selection, profit of worst losing bet
+    """
+    if settled == 0:
+        return {}
+
+    is_positive = profit >= 0
+    opener = random.choice(_SETTLEMENT_WIN_OPENERS if is_positive else _SETTLEMENT_LOSS_OPENERS)
+
+    msg = f"{opener}\n\n"
+    msg += f"{won}W-{lost}L"
+    if push:
+        msg += f"-{push}P"
+    msg += f" | P&L: {'+'  if profit >= 0 else ''}${profit:.2f}"
+    if balance:
+        msg += f" | Balance: ${balance:,.2f}"
+
+    if best_win and profit > 0:
+        msg += f"\n\nBest pick: {best_win.get('match','')} {best_win.get('selection','')} (+${best_win.get('profit',0):.2f})"
+
+    if won > lost:
+        msg += f"\n\nYou're {won}-{lost} this round. Keep trusting the process."
+    elif lost > won:
+        msg += f"\n\nDown {lost}-{won} this round. Don't chase it — the edge is still there long-term."
+
+    level = "success" if is_positive else "warning"
+    return notify(msg, title=f"Settled: {'+'  if profit >= 0 else ''}${profit:.2f}", level=level, category="betting")
+
+
+def notify_goal(match_key: str, scorer: str, team: str,
+                home_score: int, away_score: int, minute: int,
+                is_home: bool, has_bet: bool = False, bet_selection: str = "") -> dict:
+    """Send a coaching-style goal notification.
+
+    Args:
+        match_key: "Inter vs Genoa"
+        scorer: player name
+        team: scoring team
+        home_score/away_score: current score after goal
+        minute: match minute
+        has_bet: whether user has a bet on this match
+        bet_selection: what the user's bet is (e.g. "Over 2.5")
+    """
+    opener = random.choice(_GOAL_OPENERS)
+
+    msg = f"{opener} {scorer} ({team}) {minute}'\n"
+    msg += f"{match_key.replace(' vs ', ' ')} {home_score}-{away_score}"
+
+    if has_bet:
+        total = home_score + away_score
+        msg += f"\n\nYou have {bet_selection} on this match."
+        if "over" in bet_selection.lower():
+            line = float(bet_selection.lower().replace("over", "").strip()) if "over" in bet_selection.lower() else 0
+            if total > line:
+                msg += " That's looking good right now."
+            else:
+                msg += f" Need {line - total + 1:.0f} more goal{'s' if line - total + 1 > 1 else ''} to hit."
+        elif "home" in bet_selection.lower() or "1" == bet_selection.strip():
+            if home_score > away_score:
+                msg += " Your pick is winning."
+            else:
+                msg += " Still need the turnaround."
+
+    return notify(msg, title=f"GOAL {home_score}-{away_score}", level="info", category="live")
+
+
+def notify_full_time(match_key: str, home_score: int, away_score: int,
+                     had_bet: bool = False, bet_won: bool | None = None,
+                     bet_profit: float = 0) -> dict:
+    """Send a coaching-style full-time notification."""
+    if had_bet and bet_won is not None:
+        if bet_won:
+            opener = random.choice(_FT_WIN_OPENERS)
+            msg = f"{opener}\n\n{match_key}: {home_score}-{away_score}"
+            if bet_profit:
+                msg += f"\nThat's +${bet_profit:.2f} in the bank."
+            level = "success"
+        else:
+            opener = random.choice(_FT_LOSS_OPENERS)
+            msg = f"{opener}\n\n{match_key}: {home_score}-{away_score}"
+            level = "warning"
+    else:
+        msg = f"Full time: {match_key} {home_score}-{away_score}"
+        level = "info"
+
+    return notify(msg, title=f"FT {home_score}-{away_score}", level=level, category="live")
+
+
+def notify_retrain(mode: str, matchweek: int, promoted: bool,
+                   old_ll: float = 0, new_ll: float = 0, reason: str = "") -> dict:
+    """Send a coaching-style retrain notification."""
+    if promoted:
+        improved = new_ll < old_ll - 0.005
+        if improved:
+            msg = f"MW {matchweek} data is in. Retrained the model and it got sharper.\n\n"
+            msg += f"Log-loss: {old_ll:.4f} -> {new_ll:.4f} ({reason})\n"
+            msg += "Next matchweek's predictions will use the upgraded model."
+        else:
+            msg = f"MW {matchweek} done. Retrained the model — performance is steady.\n\n"
+            msg += f"Log-loss: {new_ll:.4f} ({reason})\n"
+            msg += "Model promoted. Predictions are fresh."
+        level = "success"
+    else:
+        msg = f"MW {matchweek} retrain ran but the new model wasn't better.\n\n"
+        msg += f"{reason}\n"
+        msg += "Keeping the current model. No action needed."
+        level = "warning"
+
+    title = f"Retrain: MW {matchweek} {'upgraded' if promoted else 'unchanged'}"
+    return notify(msg, title=title, level=level, category="retrain")
+
+
+def notify_stale_data(source: str, age_hours: float, threshold_hours: float) -> dict:
+    """Send a coaching-style stale data alert."""
+    if age_hours < threshold_hours * 2:
+        msg = f"Heads up — {source} data is {age_hours:.0f}h old (threshold: {threshold_hours:.0f}h).\n"
+        msg += "Might want to refresh before placing any bets."
+        level = "warning"
+    else:
+        msg = f"The {source} data is seriously stale ({age_hours:.0f}h old).\n"
+        msg += "Don't trust the current predictions until this is refreshed."
+        level = "error"
+    return notify(msg, title=f"Stale: {source}", level=level, category="alert")
+
+
+def notify_drawdown(current: float, peak: float, drawdown_pct: float) -> dict:
+    """Send a coaching-style drawdown warning."""
+    msg = f"Bankroll is ${current:,.2f}, down {drawdown_pct:.0f}% from the peak of ${peak:,.2f}.\n\n"
+    if drawdown_pct < 15:
+        msg += "Normal variance. Stay disciplined, stick to the model's edges."
+    elif drawdown_pct < 25:
+        msg += "Getting uncomfortable. Consider reducing stake sizes until momentum turns."
+    else:
+        msg += "This is a significant drawdown. Pause, review your recent bets, and only take high-confidence plays."
+    return notify(msg, title=f"Drawdown: {drawdown_pct:.0f}%", level="warning", category="alert")
 
 
 # ---------------------------------------------------------------------------

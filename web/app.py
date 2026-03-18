@@ -3297,27 +3297,16 @@ def api_refresh_smart():
             _smart_refresh_result["finished_at"] = datetime.now().isoformat()
             _smart_refresh_progress["message"] = "Complete"
 
-            # Notify if new value bets were found
+            # Notify if new value bets were found (coaching style)
             try:
-                from scripts.pipeline.notify import notify
-                vb_count = result.get("value_bets", result.get("n_value_bets", 0))
-                avg_edge = result.get("avg_edge", 0)
-                if not vb_count:
-                    # Try loading from file
-                    vb_file = DATA_DIR / "upcoming" / "value_bets.json"
-                    if vb_file.exists():
-                        vb_data = _load_json(vb_file)
-                        bets_list = vb_data.get("bets", []) if isinstance(vb_data, dict) else vb_data if isinstance(vb_data, list) else []
-                        if bets_list:
-                            vb_count = len(bets_list)
-                            avg_edge = sum(b.get("edge_pct", b.get("edge", 0)) for b in bets_list) / len(bets_list) if bets_list else 0
-                if vb_count and vb_count > 0:
-                    notify(
-                        f"Found {vb_count} value bets with avg edge {avg_edge:.1f}%",
-                        title="Value Bets Found",
-                        level="info",
-                        category="betting",
-                    )
+                from scripts.pipeline.notify import notify_value_bets
+                # Load the full bet slip for rich narratives
+                slip_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
+                if slip_path.exists():
+                    slip_data = _load_json(slip_path)
+                    vb_list = slip_data.get("selected_bets", [])
+                    if vb_list:
+                        notify_value_bets(vb_list)
             except Exception as e:
                 log.debug(f"Value bet notification failed: {e}")
         except Exception as e:
@@ -3459,20 +3448,19 @@ def api_settle():
                 "finished_at": datetime.now().isoformat(),
             }
 
-            # Send settlement notification
+            # Send coaching-style settlement notification
             try:
-                from scripts.pipeline.notify import notify
+                from scripts.pipeline.notify import notify_settlement
                 n_settled = summary.get("settled", 0)
                 won = summary.get("won", 0)
                 lost = summary.get("lost", 0)
+                push = summary.get("push", 0)
                 profit = summary.get("profit", summary.get("net_profit", 0)) or 0
                 balance = summary.get("balance", summary.get("bankroll", 0)) or 0
                 if n_settled > 0:
-                    notify(
-                        f"Settled {n_settled} bets: {won}W {lost}L | P&L: ${profit:+.2f} | Balance: ${balance:.2f}",
-                        title="Bets Settled",
-                        level="success" if profit > 0 else "warning",
-                        category="betting",
+                    notify_settlement(
+                        settled=n_settled, won=won, lost=lost, push=push,
+                        profit=profit, balance=balance,
                     )
             except Exception as e:
                 log.debug(f"Settlement notification failed: {e}")

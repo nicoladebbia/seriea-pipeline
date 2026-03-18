@@ -451,13 +451,19 @@ def quick_retrain(dry_run: bool = False) -> dict:
             # Re-run predictions with the new model
             _refresh_predictions()
 
-            msg = (
-                f"Quick retrain complete. "
-                f"LL: {new_metrics.get('ensemble_log_loss', 0):.4f} "
-                f"({reason}). Predictions refreshed."
-            )
-            log.info(msg)
-            _notify(msg, "Retrain SUCCESS")
+            log.info("Quick retrain complete. LL: %.4f (%s)", new_metrics.get('ensemble_log_loss', 0), reason)
+            try:
+                from scripts.pipeline.notify import notify_retrain
+                notify_retrain(
+                    mode="quick",
+                    matchweek=result.get("matchweek", 0),
+                    promoted=True,
+                    old_ll=current_metrics.get("ensemble_log_loss", 0) if current_metrics else 0,
+                    new_ll=new_metrics.get("ensemble_log_loss", 0),
+                    reason=reason,
+                )
+            except Exception:
+                _notify("Quick retrain complete. Predictions refreshed.", "Retrain SUCCESS")
 
         except Exception as e:
             log.error("Model promotion failed: %s", e)
