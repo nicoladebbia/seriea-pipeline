@@ -453,6 +453,70 @@
     </div>
   </details>
 
+  <!-- ═══ SECTION 6.5: NOTIFICATIONS ═══ -->
+  <details class="pipe-section" id="section-notifications">
+    <summary>
+      <div style="display:flex;align-items:center;gap:var(--space-2);">
+        <span class="pipe-section__title">Notifications</span>
+        <span id="notif-badge" class="pipe-section__badge" style="background:var(--bg-tertiary);color:var(--text-tertiary);">--</span>
+      </div>
+    </summary>
+    <div class="pipe-section__body" id="notifications-body">
+
+      <!-- Channel Status -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-4);">
+        <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
+          <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Channels</div>
+          <div id="notif-channels" style="display:flex;flex-direction:column;gap:4px;">
+            <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
+              <span class="dot dot--green"></span>
+              <span style="color:var(--text-secondary);">macOS — Always on</span>
+            </div>
+            <div id="notif-telegram-status" style="display:flex;align-items:center;gap:6px;font-size:11px;">
+              <span class="dot dot--gray"></span>
+              <span style="color:var(--text-secondary);">Telegram — Checking...</span>
+            </div>
+          </div>
+        </div>
+        <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);display:flex;flex-direction:column;justify-content:space-between;">
+          <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Actions</div>
+          <div style="display:flex;gap:var(--space-2);">
+            <button onclick="sendTestNotification(this)" class="btn btn--secondary btn--sm" style="font-size:11px;padding:4px 12px;">
+              Test Notification
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Category Preferences -->
+      <div style="margin-bottom:var(--space-4);">
+        <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Category Preferences</div>
+        <table class="pipe-table" id="notif-prefs-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th style="text-align:center;">macOS</th>
+              <th style="text-align:center;">Telegram</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody id="notif-prefs-body">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Recent History -->
+      <div>
+        <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Recent Notifications</div>
+        <div id="notif-history" style="max-height:300px;overflow-y:auto;">
+          <div style="font-size:11px;color:var(--text-tertiary);padding:var(--space-3);text-align:center;">Loading...</div>
+        </div>
+      </div>
+
+    </div>
+  </details>
+
   <!-- ═══ SECTION 7: MODEL & FEEDBACK ═══ -->
   <details class="pipe-section" id="section-model">
     <summary>
@@ -1506,6 +1570,139 @@ async function pollLiveStatus() {
 // ── MAIN LOAD ──────────────────────────────────────────────
 let _systemData = null;
 
+// ── NOTIFICATIONS ──────────────────────────────────────────
+const NOTIF_CATEGORY_DESCRIPTIONS = {
+  system: 'Pipeline runs, health checks, API errors',
+  betting: 'Bet settlements, P&L updates, new value bets',
+  live: 'Goal alerts, red cards, match results',
+  retrain: 'Model retraining, promotion, rollback',
+  alert: 'Stale data, drawdown warnings, critical errors',
+};
+
+const NOTIF_LEVEL_ICONS = {
+  info: '<svg width="12" height="12" fill="none" stroke="var(--accent)" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-width="2" d="M12 16v-4m0-4h.01"/></svg>',
+  success: '<svg width="12" height="12" fill="none" stroke="var(--green)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+  warning: '<svg width="12" height="12" fill="none" stroke="var(--amber)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>',
+  error: '<svg width="12" height="12" fill="none" stroke="var(--red)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+  critical: '<svg width="12" height="12" fill="none" stroke="var(--red)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+};
+
+async function loadNotifications() {
+  const badge = document.getElementById('notif-badge');
+
+  // Load channel status
+  try {
+    const statusData = await fetch('/api/notifications/status').then(r => r.json());
+    const tgEl = document.getElementById('notif-telegram-status');
+    if (statusData.ok && statusData.channels?.telegram) {
+      const tg = statusData.channels.telegram;
+      tgEl.innerHTML = `<span class="dot ${tg.configured ? 'dot--green' : 'dot--gray'}"></span>
+        <span style="color:var(--text-secondary);">Telegram — ${tg.detail}</span>`;
+    }
+  } catch (e) { console.error('Notification status:', e); }
+
+  // Load preferences
+  try {
+    const prefsData = await fetch('/api/notifications/preferences').then(r => r.json());
+    if (prefsData.ok) {
+      renderNotifPreferences(prefsData.preferences);
+    }
+  } catch (e) { console.error('Notification prefs:', e); }
+
+  // Load history
+  try {
+    const histData = await fetch('/api/notifications/history?limit=10').then(r => r.json());
+    if (histData.ok) {
+      renderNotifHistory(histData.history);
+      badge.textContent = histData.count > 0 ? histData.count + ' recent' : 'No history';
+      badge.style.background = 'var(--accent-muted)';
+      badge.style.color = 'var(--accent)';
+    }
+  } catch (e) { console.error('Notification history:', e); }
+}
+
+function renderNotifPreferences(prefs) {
+  const tbody = document.getElementById('notif-prefs-body');
+  if (!tbody) return;
+  const cats = prefs.categories || {};
+  let html = '';
+  for (const [cat, channels] of Object.entries(cats)) {
+    const desc = NOTIF_CATEGORY_DESCRIPTIONS[cat] || '';
+    html += `<tr>
+      <td style="color:var(--text-primary);text-transform:capitalize;font-weight:600;">${cat}</td>
+      <td style="text-align:center;">
+        <input type="checkbox" ${channels.macos ? 'checked' : ''} onchange="updateNotifPref('${cat}','macos',this.checked)" style="cursor:pointer;">
+      </td>
+      <td style="text-align:center;">
+        <input type="checkbox" ${channels.telegram ? 'checked' : ''} onchange="updateNotifPref('${cat}','telegram',this.checked)" style="cursor:pointer;">
+      </td>
+      <td style="color:var(--text-tertiary);font-size:11px;">${desc}</td>
+    </tr>`;
+  }
+  tbody.innerHTML = html;
+}
+
+function renderNotifHistory(history) {
+  const el = document.getElementById('notif-history');
+  if (!el) return;
+  if (!history || history.length === 0) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:var(--space-3);text-align:center;">No notifications yet</div>';
+    return;
+  }
+  let html = '<table class="pipe-table"><thead><tr><th>Time</th><th style="text-align:center">Level</th><th>Title</th><th>Message</th><th>Channels</th></tr></thead><tbody>';
+  for (const n of history) {
+    const ts = n.timestamp ? relTime(n.timestamp) : '--';
+    const icon = NOTIF_LEVEL_ICONS[n.level] || NOTIF_LEVEL_ICONS.info;
+    const chList = [];
+    if (n.channels?.macos) chList.push('macOS');
+    if (n.channels?.telegram) chList.push('TG');
+    html += `<tr>
+      <td class="mono" style="color:var(--text-secondary);">${ts}</td>
+      <td style="text-align:center;" title="${n.level}">${icon}</td>
+      <td style="color:var(--text-primary);font-weight:600;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;">${n.title || '--'}</td>
+      <td style="color:var(--text-secondary);font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;" title="${(n.message||'').replace(/"/g, '&quot;')}">${n.message || '--'}</td>
+      <td style="font-size:10px;color:var(--text-tertiary);">${chList.join(', ') || 'none'}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function updateNotifPref(category, channel, enabled) {
+  try {
+    const body = { categories: {} };
+    body.categories[category] = {};
+    body.categories[category][channel] = enabled;
+    await fetch('/api/notifications/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) { console.error('Update notification pref:', e); }
+}
+
+async function sendTestNotification(btn) {
+  const origText = btn.textContent;
+  btn.textContent = 'Sending...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/notifications/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Test notification from Pipeline dashboard' }),
+    });
+    const data = await res.json();
+    btn.textContent = data.ok ? 'Sent!' : 'Failed';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+    // Reload history to show the test
+    setTimeout(loadNotifications, 1000);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+  }
+}
+
+
 async function loadSystemData() {
   try {
     const data = await fetch('/api/system').then(r => r.json());
@@ -1529,6 +1726,7 @@ async function loadSystemData() {
 loadSystemData();
 loadCredits();
 loadSchedulerStatus();
+loadNotifications();
 
 // Restore scheduler from localStorage on cold start
 const savedCfg = loadSchedLocal();

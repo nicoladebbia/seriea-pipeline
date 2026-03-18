@@ -3296,6 +3296,30 @@ def api_refresh_smart():
             _smart_refresh_result = result
             _smart_refresh_result["finished_at"] = datetime.now().isoformat()
             _smart_refresh_progress["message"] = "Complete"
+
+            # Notify if new value bets were found
+            try:
+                from scripts.pipeline.notify import notify
+                vb_count = result.get("value_bets", result.get("n_value_bets", 0))
+                avg_edge = result.get("avg_edge", 0)
+                if not vb_count:
+                    # Try loading from file
+                    vb_file = DATA_DIR / "upcoming" / "value_bets.json"
+                    if vb_file.exists():
+                        vb_data = _load_json(vb_file)
+                        bets_list = vb_data.get("bets", []) if isinstance(vb_data, dict) else vb_data if isinstance(vb_data, list) else []
+                        if bets_list:
+                            vb_count = len(bets_list)
+                            avg_edge = sum(b.get("edge_pct", b.get("edge", 0)) for b in bets_list) / len(bets_list) if bets_list else 0
+                if vb_count and vb_count > 0:
+                    notify(
+                        f"Found {vb_count} value bets with avg edge {avg_edge:.1f}%",
+                        title="Value Bets Found",
+                        level="info",
+                        category="betting",
+                    )
+            except Exception as e:
+                log.debug(f"Value bet notification failed: {e}")
         except Exception as e:
             log.error(f"Smart refresh failed: {e}")
             _smart_refresh_result = {
@@ -3434,6 +3458,24 @@ def api_settle():
                 "matchday_update": matchday_summary,
                 "finished_at": datetime.now().isoformat(),
             }
+
+            # Send settlement notification
+            try:
+                from scripts.pipeline.notify import notify
+                n_settled = summary.get("settled", 0)
+                won = summary.get("won", 0)
+                lost = summary.get("lost", 0)
+                profit = summary.get("profit", summary.get("net_profit", 0)) or 0
+                balance = summary.get("balance", summary.get("bankroll", 0)) or 0
+                if n_settled > 0:
+                    notify(
+                        f"Settled {n_settled} bets: {won}W {lost}L | P&L: ${profit:+.2f} | Balance: ${balance:.2f}",
+                        title="Bets Settled",
+                        level="success" if profit > 0 else "warning",
+                        category="betting",
+                    )
+            except Exception as e:
+                log.debug(f"Settlement notification failed: {e}")
         except Exception as e:
             log.error(f"Auto-settle failed: {e}")
             _settle_result = {
@@ -5911,6 +5953,51 @@ def api_notifications_status():
     try:
         from scripts.pipeline.notify import notify_status
         return jsonify({"ok": True, "channels": notify_status()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/preferences")
+def api_notifications_preferences_get():
+    """Return current notification preferences."""
+    try:
+        from scripts.pipeline.notify import load_preferences
+        return jsonify({"ok": True, "preferences": load_preferences()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/preferences", methods=["POST"])
+def api_notifications_preferences_set():
+    """Update notification preferences."""
+    try:
+        from scripts.pipeline.notify import load_preferences, save_preferences
+        data = flask_request.get_json(silent=True) or {}
+        # Merge incoming data with existing preferences
+        prefs = load_preferences()
+        if "channels" in data:
+            prefs["channels"].update(data["channels"])
+        if "categories" in data:
+            for cat, ch_map in data["categories"].items():
+                if cat in prefs["categories"]:
+                    prefs["categories"][cat].update(ch_map)
+                else:
+                    prefs["categories"][cat] = ch_map
+        ok = save_preferences(prefs)
+        return jsonify({"ok": ok, "preferences": prefs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/history")
+def api_notifications_history():
+    """Return recent notification history."""
+    try:
+        from scripts.pipeline.notify import get_notification_history
+        limit = int(flask_request.args.get("limit", 50))
+        limit = min(limit, 200)
+        history = get_notification_history(limit=limit)
+        return jsonify({"ok": True, "history": history, "count": len(history)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

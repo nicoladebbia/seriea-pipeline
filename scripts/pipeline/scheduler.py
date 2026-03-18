@@ -630,39 +630,25 @@ def run_pre_kickoff(bankroll: float = 100.0) -> bool:
 # =============================================================================
 
 def send_notification(message: str, title: str = "Serie A Betting Pipeline"):
-    """Send notification (Slack, email, or macOS notification)."""
-
-    # Try Slack webhook
-    slack_webhook = os.environ.get("SLACK_WEBHOOK_URL")
-    if slack_webhook:
-        try:
-            import urllib.request
-            data = json.dumps({"text": f"*{title}*\n{message}"}).encode()
-            req = urllib.request.Request(
-                slack_webhook,
-                data=data,
-                headers={"Content-Type": "application/json"}
-            )
-            urllib.request.urlopen(req, timeout=10)
-            log.info("Sent Slack notification")
-            return
-        except Exception as e:
-            log.warning(f"Slack notification failed: {e}")
-
-    # Try macOS notification
-    if sys.platform == "darwin":
-        try:
-            subprocess.run([
-                "osascript", "-e",
-                f'display notification "{message}" with title "{title}"'
-            ], capture_output=True)
-            log.info("Sent macOS notification")
-            return
-        except Exception as e:
-            log.debug(f"Failed to send macOS notification: {e}")
-
-    # Fallback: just log
-    log.info(f"Notification: {title} - {message}")
+    """Send notification via all configured channels."""
+    try:
+        from scripts.pipeline.notify import notify
+        # Infer level from title
+        title_lower = title.lower()
+        if "error" in title_lower or "fail" in title_lower:
+            level = "error"
+        elif "warning" in title_lower or "warn" in title_lower:
+            level = "warning"
+        else:
+            level = "info"
+        notify(message, title=title, level=level)
+    except Exception as e:
+        # Fallback to macOS if import fails
+        if sys.platform == "darwin":
+            try:
+                subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], capture_output=True, timeout=5)
+            except Exception:
+                pass
 
 
 # =============================================================================

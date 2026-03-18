@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Unified notification system -- macOS + Telegram.
+"""Unified notification system -- macOS + Telegram with categories & history.
 
 Sends notifications via all configured channels. Telegram is optional:
 if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not set in .env, only
 macOS notifications are sent.
 
+Categories control which channels receive each notification:
+  - system  — pipeline runs, health checks, API errors
+  - betting — bet settlements, P&L updates, new value bets found
+  - live    — goal alerts, red cards, match results
+  - retrain — model retraining, promotion, rollback
+  - alert   — stale data, drawdown warnings, critical errors
+
 Usage as module:
     from scripts.pipeline.notify import notify
     notify("Pipeline complete", title="SerieAI", level="success")
+    notify("Goal!", title="GOAL", level="info", category="live")
 
 Usage as CLI (test mode):
     python -m scripts.pipeline.notify --test
@@ -21,11 +29,14 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
 
 log = logging.getLogger("notify")
 
@@ -37,6 +48,34 @@ _LEVEL_EMOJI = {
     "error": "\u274c",             # cross mark
     "critical": "\u274c",          # cross mark
 }
+
+# Valid categories
+VALID_CATEGORIES = {"system", "betting", "live", "retrain", "alert"}
+
+# Default preferences — used when data/notification_preferences.json doesn't exist
+_DEFAULT_PREFERENCES = {
+    "channels": {
+        "macos": True,
+        "telegram": True,
+    },
+    "categories": {
+        "system":  {"macos": True, "telegram": False},
+        "betting": {"macos": True, "telegram": True},
+        "live":    {"macos": True, "telegram": True},
+        "retrain": {"macos": True, "telegram": True},
+        "alert":   {"macos": True, "telegram": True},
+    },
+}
+
+# Thread lock for history file writes
+_history_lock = threading.Lock()
+
+# Max history entries to keep
+_MAX_HISTORY = 200
+
+# Preferences path
+_PREFS_PATH = DATA_DIR / "notification_preferences.json"
+_HISTORY_PATH = DATA_DIR / "notification_history.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +97,113 @@ def _load_env_key(name: str) -> str:
                     if k.strip() == name:
                         return v.strip()
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Preferences
+# ---------------------------------------------------------------------------
+
+def load_preferences() -> dict:
+    """Load notification preferences from disk. Returns defaults if file missing."""
+    try:
+        if _PREFS_PATH.exists():
+            with open(_PREFS_PATH) as f:
+                prefs = json.load(f)
+            # Merge with defaults to ensure all categories exist
+            merged = json.loads(json.dumps(_DEFAULT_PREFERENCES))
+            if "channels" in prefs:
+                merged["channels"].update(prefs["channels"])
+            if "categories" in prefs:
+                for cat, ch_map in prefs["categories"].items():
+                    if cat in merged["categories"]:
+                        merged["categories"][cat].update(ch_map)
+                    else:
+                        merged["categories"][cat] = ch_map
+            return merged
+    except Exception as e:
+        log.warning("Failed to load notification preferences: %s", e)
+    return json.loads(json.dumps(_DEFAULT_PREFERENCES))
+
+
+def save_preferences(prefs: dict) -> bool:
+    """Save notification preferences to disk. Returns True on success."""
+    try:
+        _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_PREFS_PATH, "w") as f:
+            json.dump(prefs, f, indent=2)
+        return True
+    except Exception as e:
+        log.warning("Failed to save notification preferences: %s", e)
+        return False
+
+
+def _should_send(channel: str, category: str) -> bool:
+    """Check if a notification should be sent to a given channel for a category."""
+    prefs = load_preferences()
+    # Check global channel toggle
+    if not prefs.get("channels", {}).get(channel, True):
+        return False
+    # Check category-specific toggle
+    cat_prefs = prefs.get("categories", {}).get(category, {})
+    # Default to True if category not in prefs
+    return cat_prefs.get(channel, True)
+
+
+# ---------------------------------------------------------------------------
+# Notification History
+# ---------------------------------------------------------------------------
+
+def _record_history(title: str, message: str, level: str, category: str, channels: dict):
+    """Append notification to history file (JSONL). Keeps last _MAX_HISTORY entries."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "title": title,
+        "message": message,
+        "level": level,
+        "category": category,
+        "channels": channels,
+    }
+    try:
+        _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _history_lock:
+            # Read existing lines
+            lines = []
+            if _HISTORY_PATH.exists():
+                with open(_HISTORY_PATH) as f:
+                    lines = f.readlines()
+            # Append new entry
+            lines.append(json.dumps(entry) + "\n")
+            # Keep only last _MAX_HISTORY
+            if len(lines) > _MAX_HISTORY:
+                lines = lines[-_MAX_HISTORY:]
+            # Write back
+            with open(_HISTORY_PATH, "w") as f:
+                f.writelines(lines)
+    except Exception as e:
+        log.debug("Failed to record notification history: %s", e)
+
+
+def get_notification_history(limit: int = 50) -> list:
+    """Return the last `limit` notification history entries (newest first)."""
+    try:
+        if not _HISTORY_PATH.exists():
+            return []
+        with open(_HISTORY_PATH) as f:
+            lines = f.readlines()
+        entries = []
+        for line in reversed(lines):
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            if len(entries) >= limit:
+                break
+        return entries
+    except Exception as e:
+        log.warning("Failed to read notification history: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -150,20 +296,43 @@ def _notify_telegram(message: str, title: str, level: str = "info") -> bool:
 # Unified entry point
 # ---------------------------------------------------------------------------
 
-def notify(message: str, title: str = "SerieAI", level: str = "info") -> dict:
-    """Send notification via all configured channels.
+def notify(message: str, title: str = "SerieAI", level: str = "info",
+           category: str = "system") -> dict:
+    """Send notification via configured channels, respecting category preferences.
 
     Args:
         message: Notification body text.
         title: Short title / subject line.
         level: One of "info", "success", "warning", "error", "critical".
+        category: One of "system", "betting", "live", "retrain", "alert".
 
     Returns:
         Dict with channel results, e.g. {"macos": True, "telegram": True}.
     """
+    # Normalize category
+    if category not in VALID_CATEGORIES:
+        category = "system"
+
     results = {}
-    results["macos"] = _notify_macos(message, title)
-    results["telegram"] = _notify_telegram(message, title, level)
+
+    # macOS — check preferences
+    if _should_send("macos", category):
+        results["macos"] = _notify_macos(message, title)
+    else:
+        results["macos"] = False
+
+    # Telegram — check preferences
+    if _should_send("telegram", category):
+        results["telegram"] = _notify_telegram(message, title, level)
+    else:
+        results["telegram"] = False
+
+    # Record to history (non-blocking)
+    try:
+        _record_history(title, message, level, category, results)
+    except Exception:
+        pass
+
     return results
 
 
