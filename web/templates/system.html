@@ -463,7 +463,7 @@
     </summary>
     <div class="pipe-section__body" id="notifications-body">
 
-      <!-- Channel Status -->
+      <!-- Channel Status + Actions row -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-4);">
         <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
           <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Channels</div>
@@ -472,18 +472,31 @@
               <span class="dot dot--green"></span>
               <span style="color:var(--text-secondary);">macOS — Always on</span>
             </div>
-            <div id="notif-telegram-status" style="display:flex;align-items:center;gap:6px;font-size:11px;">
-              <span class="dot dot--gray"></span>
-              <span style="color:var(--text-secondary);">Telegram — Checking...</span>
+            <div id="notif-telegram-status" style="display:flex;flex-direction:column;gap:2px;">
+              <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
+                <span class="dot dot--gray"></span>
+                <span style="color:var(--text-secondary);">Telegram — Checking...</span>
+              </div>
+              <div id="notif-telegram-detail" style="font-size:10px;color:var(--text-tertiary);padding-left:14px;"></div>
             </div>
           </div>
         </div>
         <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);display:flex;flex-direction:column;justify-content:space-between;">
           <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Actions</div>
-          <div style="display:flex;gap:var(--space-2);">
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
             <button onclick="sendTestNotification(this)" class="btn btn--secondary btn--sm" style="font-size:11px;padding:4px 12px;">
               Test Notification
             </button>
+            <button onclick="sendDigestNow(this)" class="btn btn--secondary btn--sm" style="font-size:11px;padding:4px 12px;">
+              Send Digest Now
+            </button>
+          </div>
+          <!-- Mute All Toggle -->
+          <div style="display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-2);">
+            <label style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="notif-mute-all" onchange="updateMuteAll(this.checked)" style="cursor:pointer;">
+              Mute All Notifications
+            </label>
           </div>
         </div>
       </div>
@@ -506,10 +519,67 @@
         </table>
       </div>
 
+      <!-- Quiet Hours + Sound -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-4);">
+        <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
+          <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Quiet Hours</div>
+          <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:var(--space-2);">During quiet hours, only <strong>alert</strong> and <strong>live</strong> categories send Telegram. macOS always sends.</div>
+          <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;">
+            <label style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="notif-qh-enabled" onchange="updateQuietHours()" style="cursor:pointer;">
+              Enabled
+            </label>
+            <input type="time" id="notif-qh-start" value="23:00" onchange="updateQuietHours()" style="font-size:11px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 6px;">
+            <span style="font-size:11px;color:var(--text-tertiary);">to</span>
+            <input type="time" id="notif-qh-end" value="07:00" onchange="updateQuietHours()" style="font-size:11px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px 6px;">
+          </div>
+        </div>
+        <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
+          <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">macOS Sound</div>
+          <select id="notif-sound" onchange="updateSound(this.value)" style="font-size:11px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;cursor:pointer;">
+            <option value="Basso">Basso (default)</option>
+            <option value="Glass">Glass</option>
+            <option value="Ping">Ping</option>
+            <option value="Pop">Pop</option>
+            <option value="Purr">Purr</option>
+            <option value="Sosumi">Sosumi</option>
+            <option value="Tink">Tink</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Notification Stats -->
+      <div style="margin-bottom:var(--space-4);">
+        <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Statistics</div>
+        <div id="notif-stats" style="display:grid;grid-template-columns:repeat(4, 1fr);gap:var(--space-2);">
+          <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-2);text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);" id="notif-stat-today">--</div>
+            <div style="font-size:10px;color:var(--text-tertiary);">Today</div>
+          </div>
+          <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-2);text-align:center;">
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);" id="notif-stat-week">--</div>
+            <div style="font-size:10px;color:var(--text-tertiary);">This Week</div>
+          </div>
+          <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-2);">
+            <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:2px;">By Category</div>
+            <div id="notif-stat-categories" style="font-size:10px;color:var(--text-secondary);">--</div>
+          </div>
+          <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-2);">
+            <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:2px;">By Channel</div>
+            <div id="notif-stat-channels" style="font-size:10px;color:var(--text-secondary);">--</div>
+          </div>
+        </div>
+      </div>
+
       <!-- Recent History -->
       <div>
-        <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Recent Notifications</div>
-        <div id="notif-history" style="max-height:300px;overflow-y:auto;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2);">
+          <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);font-weight:600;">Recent Notifications</div>
+          <button onclick="clearNotifHistory(this)" class="btn btn--secondary btn--sm" style="font-size:10px;padding:2px 8px;color:var(--red);">
+            Clear History
+          </button>
+        </div>
+        <div id="notif-history" style="max-height:400px;overflow-y:auto;">
           <div style="font-size:11px;color:var(--text-tertiary);padding:var(--space-3);text-align:center;">Loading...</div>
         </div>
       </div>
@@ -1684,6 +1754,26 @@ const NOTIF_LEVEL_ICONS = {
   critical: '<svg width="12" height="12" fill="none" stroke="var(--red)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
 };
 
+const NOTIF_LEVEL_BG = {
+  info: 'transparent',
+  success: 'rgba(34,197,94,0.04)',
+  warning: 'rgba(234,179,8,0.06)',
+  error: 'rgba(239,68,68,0.06)',
+  critical: 'rgba(239,68,68,0.08)',
+};
+
+function _notifDateLabel(isoStr) {
+  const d = new Date(isoStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const entry = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.floor((today - entry) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7) return d.toLocaleDateString('en-US', { weekday: 'long' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 async function loadNotifications() {
   const badge = document.getElementById('notif-badge');
 
@@ -1691,10 +1781,20 @@ async function loadNotifications() {
   try {
     const statusData = await fetch('/api/notifications/status').then(r => r.json());
     const tgEl = document.getElementById('notif-telegram-status');
+    const tgDetail = document.getElementById('notif-telegram-detail');
     if (statusData.ok && statusData.channels?.telegram) {
       const tg = statusData.channels.telegram;
-      tgEl.innerHTML = `<span class="dot ${tg.configured ? 'dot--green' : 'dot--gray'}"></span>
-        <span style="color:var(--text-secondary);">Telegram — ${tg.detail}</span>`;
+      const dotClass = tg.configured ? (tg.connection === 'ok' ? 'dot--green' : 'dot--amber') : 'dot--gray';
+      let label = `Telegram \u2014 ${tg.detail}`;
+      if (tg.bot_username) label = `Telegram \u2014 @${tg.bot_username}`;
+      tgEl.querySelector('div').innerHTML = `<span class="dot ${dotClass}"></span>
+        <span style="color:var(--text-secondary);">${label}</span>`;
+
+      // Detail line: connection + last send
+      let detailParts = [];
+      if (tg.connection) detailParts.push(`Connection: ${tg.connection}`);
+      if (tg.last_send) detailParts.push(`Last send: ${relTime(tg.last_send)}`);
+      if (tgDetail) tgDetail.textContent = detailParts.join(' | ');
     }
   } catch (e) { console.error('Notification status:', e); }
 
@@ -1703,12 +1803,51 @@ async function loadNotifications() {
     const prefsData = await fetch('/api/notifications/preferences').then(r => r.json());
     if (prefsData.ok) {
       renderNotifPreferences(prefsData.preferences);
+      // Populate quiet hours, mute all, sound
+      const p = prefsData.preferences;
+      const qh = p.quiet_hours || {};
+      const qhEnabled = document.getElementById('notif-qh-enabled');
+      const qhStart = document.getElementById('notif-qh-start');
+      const qhEnd = document.getElementById('notif-qh-end');
+      const muteAll = document.getElementById('notif-mute-all');
+      const soundSel = document.getElementById('notif-sound');
+      if (qhEnabled) qhEnabled.checked = !!qh.enabled;
+      if (qhStart) qhStart.value = qh.start || '23:00';
+      if (qhEnd) qhEnd.value = qh.end || '07:00';
+      if (muteAll) muteAll.checked = !!p.mute_all;
+      if (soundSel) soundSel.value = p.sound || 'Basso';
     }
   } catch (e) { console.error('Notification prefs:', e); }
 
-  // Load history
+  // Load stats
   try {
-    const histData = await fetch('/api/notifications/history?limit=10').then(r => r.json());
+    const statsData = await fetch('/api/notifications/stats').then(r => r.json());
+    if (statsData.ok) {
+      const s = statsData.stats;
+      const todayEl = document.getElementById('notif-stat-today');
+      const weekEl = document.getElementById('notif-stat-week');
+      const catEl = document.getElementById('notif-stat-categories');
+      const chEl = document.getElementById('notif-stat-channels');
+      if (todayEl) todayEl.textContent = s.today || 0;
+      if (weekEl) weekEl.textContent = s.this_week || 0;
+      if (catEl) {
+        const cats = s.by_category || {};
+        catEl.innerHTML = Object.keys(cats).length > 0
+          ? Object.entries(cats).map(([k,v]) => `<span style="text-transform:capitalize;">${k}</span>: ${v}`).join('<br>')
+          : 'No data';
+      }
+      if (chEl) {
+        const chs = s.by_channel || {};
+        chEl.innerHTML = Object.keys(chs).length > 0
+          ? Object.entries(chs).map(([k,v]) => `${k === 'macos' ? 'macOS' : 'Telegram'}: ${v}`).join('<br>')
+          : 'No data';
+      }
+    }
+  } catch (e) { console.error('Notification stats:', e); }
+
+  // Load history (20 entries, grouped by date)
+  try {
+    const histData = await fetch('/api/notifications/history?limit=20').then(r => r.json());
     if (histData.ok) {
       renderNotifHistory(histData.history);
       badge.textContent = histData.count > 0 ? histData.count + ' recent' : 'No history';
@@ -1746,22 +1885,41 @@ function renderNotifHistory(history) {
     el.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:var(--space-3);text-align:center;">No notifications yet</div>';
     return;
   }
-  let html = '<table class="pipe-table"><thead><tr><th>Time</th><th style="text-align:center">Level</th><th>Title</th><th>Message</th><th>Channels</th></tr></thead><tbody>';
+
+  // Group by date
+  const groups = {};
   for (const n of history) {
-    const ts = n.timestamp ? relTime(n.timestamp) : '--';
-    const icon = NOTIF_LEVEL_ICONS[n.level] || NOTIF_LEVEL_ICONS.info;
-    const chList = [];
-    if (n.channels?.macos) chList.push('macOS');
-    if (n.channels?.telegram) chList.push('TG');
-    html += `<tr>
-      <td class="mono" style="color:var(--text-secondary);">${ts}</td>
-      <td style="text-align:center;" title="${n.level}">${icon}</td>
-      <td style="color:var(--text-primary);font-weight:600;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;">${n.title || '--'}</td>
-      <td style="color:var(--text-secondary);font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;" title="${(n.message||'').replace(/"/g, '&quot;')}">${n.message || '--'}</td>
-      <td style="font-size:10px;color:var(--text-tertiary);">${chList.join(', ') || 'none'}</td>
-    </tr>`;
+    const label = n.timestamp ? _notifDateLabel(n.timestamp) : 'Unknown';
+    if (!groups[label]) groups[label] = [];
+    groups[label].push(n);
   }
-  html += '</tbody></table>';
+
+  let html = '';
+  for (const [dateLabel, entries] of Object.entries(groups)) {
+    html += `<div style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;padding:var(--space-2) 0 var(--space-1) 0;border-bottom:1px solid var(--border);margin-top:var(--space-2);">${dateLabel}</div>`;
+    html += '<table class="pipe-table" style="margin-bottom:0;"><thead><tr><th>Time</th><th style="text-align:center">Level</th><th>Title</th><th>Message</th><th>Channels</th></tr></thead><tbody>';
+    for (const n of entries) {
+      const ts = n.timestamp ? relTime(n.timestamp) : '--';
+      const icon = NOTIF_LEVEL_ICONS[n.level] || NOTIF_LEVEL_ICONS.info;
+      const bg = NOTIF_LEVEL_BG[n.level] || 'transparent';
+      const chList = [];
+      if (n.channels?.macos) chList.push('macOS');
+      if (n.channels?.telegram) chList.push('TG');
+      const safeMsg = (n.message || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      const shortMsg = (n.message || '--').length > 80 ? (n.message || '').substring(0, 80) + '...' : (n.message || '--');
+      html += `<tr style="background:${bg};cursor:pointer;" onclick="this.querySelector('.notif-full-msg').style.display=this.querySelector('.notif-full-msg').style.display==='none'?'block':'none'">
+        <td class="mono" style="color:var(--text-secondary);white-space:nowrap;">${ts}</td>
+        <td style="text-align:center;" title="${n.level}">${icon}</td>
+        <td style="color:var(--text-primary);font-weight:600;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${n.title || '--'}</td>
+        <td style="color:var(--text-secondary);font-size:11px;max-width:300px;">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${shortMsg.replace(/</g, '&lt;')}</div>
+          <div class="notif-full-msg" style="display:none;white-space:pre-wrap;padding-top:4px;color:var(--text-primary);font-size:11px;border-top:1px solid var(--border);margin-top:4px;">${safeMsg}</div>
+        </td>
+        <td style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;">${chList.join(', ') || 'none'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+  }
   el.innerHTML = html;
 }
 
@@ -1778,6 +1936,74 @@ async function updateNotifPref(category, channel, enabled) {
   } catch (e) { console.error('Update notification pref:', e); }
 }
 
+async function updateQuietHours() {
+  try {
+    const enabled = document.getElementById('notif-qh-enabled').checked;
+    const start = document.getElementById('notif-qh-start').value;
+    const end = document.getElementById('notif-qh-end').value;
+    await fetch('/api/notifications/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quiet_hours: { enabled, start, end } }),
+    });
+  } catch (e) { console.error('Update quiet hours:', e); }
+}
+
+async function updateMuteAll(enabled) {
+  try {
+    await fetch('/api/notifications/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mute_all: enabled }),
+    });
+  } catch (e) { console.error('Update mute all:', e); }
+}
+
+async function updateSound(sound) {
+  try {
+    await fetch('/api/notifications/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sound }),
+    });
+  } catch (e) { console.error('Update sound:', e); }
+}
+
+async function clearNotifHistory(btn) {
+  if (!confirm('Clear all notification history?')) return;
+  const origText = btn.textContent;
+  btn.textContent = 'Clearing...';
+  btn.disabled = true;
+  try {
+    await fetch('/api/notifications/history', { method: 'DELETE' });
+    btn.textContent = 'Cleared!';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+    setTimeout(loadNotifications, 500);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+  }
+}
+
+async function sendDigestNow(btn) {
+  const origText = btn.textContent;
+  btn.textContent = 'Sending...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/notifications/digest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    btn.textContent = data.ok ? 'Sent!' : 'Failed';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+    setTimeout(loadNotifications, 1000);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+  }
+}
+
 async function sendTestNotification(btn) {
   const origText = btn.textContent;
   btn.textContent = 'Sending...';
@@ -1792,6 +2018,26 @@ async function sendTestNotification(btn) {
     btn.textContent = data.ok ? 'Sent!' : 'Failed';
     setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
     // Reload history to show the test
+    setTimeout(loadNotifications, 1000);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+  }
+}
+
+
+async function sendDigestNow(btn) {
+  const origText = btn.textContent;
+  btn.textContent = 'Sending...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/notifications/digest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    btn.textContent = data.ok ? 'Sent!' : 'Failed';
+    setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
     setTimeout(loadNotifications, 1000);
   } catch (e) {
     btn.textContent = 'Error';

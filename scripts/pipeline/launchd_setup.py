@@ -98,6 +98,15 @@ JOBS = [
         "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.telegram_bot"],
         "keep_alive": True,  # Restart if it crashes
     },
+    {
+        "name": "daily-digest",
+        "label": f"{LABEL_PREFIX}.daily-digest",
+        "description": "Daily betting summary notification at 23:00",
+        "mode": "daily-digest",
+        "hour": 23,
+        "minute": 0,
+        "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.notify", "--digest"],
+    },
 ]
 
 

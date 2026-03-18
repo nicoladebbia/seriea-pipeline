@@ -2758,6 +2758,16 @@ def api_refresh_snapshot():
             from scripts.data.odds_tracker import run_single_snapshot
             result = run_single_snapshot()
             log.info(f"Snapshot complete: {result}")
+
+            # Notify odds snapshot complete
+            try:
+                from scripts.pipeline.notify import notify_odds_snapshot
+                notify_odds_snapshot(
+                    n_matches=result.get("matches", 0) if isinstance(result, dict) else 0,
+                    n_bookmakers=result.get("bookmakers", 0) if isinstance(result, dict) else 0,
+                )
+            except Exception:
+                pass
         except Exception as e:
             log.error(f"Snapshot failed: {e}")
         finally:
@@ -3003,6 +3013,16 @@ def _scheduler_loop():
                     from scripts.data.odds_tracker import run_single_snapshot
                     result = run_single_snapshot()
                     _scheduler_add_log("snapshot_done", f"{result.get('matches', 0)} matches, {result.get('steam_moves', 0)} steam")
+
+                    # Notify odds snapshot
+                    try:
+                        from scripts.pipeline.notify import notify_odds_snapshot
+                        notify_odds_snapshot(
+                            n_matches=result.get("matches", 0) if isinstance(result, dict) else 0,
+                            n_bookmakers=result.get("bookmakers", 0) if isinstance(result, dict) else 0,
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
                     _scheduler_add_log("snapshot_error", str(e))
                 last_snapshot = now_ts
@@ -3504,6 +3524,35 @@ def api_settle():
                     )
             except Exception as e:
                 log.debug(f"Settlement notification failed: {e}")
+
+            # Bankroll milestone and drawdown notifications
+            try:
+                from scripts.pipeline.notify import notify_bankroll_milestone, notify_drawdown
+                old_balance = summary.get("old_balance", summary.get("previous_balance", 0)) or 0
+                new_balance = summary.get("balance", summary.get("bankroll", 0)) or 0
+                if old_balance and new_balance:
+                    notify_bankroll_milestone(old_balance, new_balance)
+
+                # Drawdown check: if drawdown from peak > 15%
+                peak = summary.get("peak_balance", 0) or 0
+                if not peak:
+                    # Try to load peak from bankroll files
+                    try:
+                        _br = _load_json(BETTING_DIR / "bankroll.json")
+                        _bs = _load_json(BANKROLL_DIR / "state.json")
+                        peak = max(
+                            _br.get("peak_balance", 0),
+                            _bs.get("peak_bankroll", 0),
+                            new_balance,
+                        )
+                    except Exception:
+                        peak = new_balance
+                if peak > 0 and new_balance > 0:
+                    dd_pct = (peak - new_balance) / peak * 100
+                    if dd_pct > 15:
+                        notify_drawdown(new_balance, peak, dd_pct)
+            except Exception as e:
+                log.debug(f"Bankroll milestone/drawdown notification failed: {e}")
         except Exception as e:
             log.error(f"Auto-settle failed: {e}")
             _settle_result = {
@@ -3662,6 +3711,39 @@ def _auto_settle_loop():
                 if settled > 0:
                     log.info("Auto-settle: settled %d bets | P&L: %+.2f | Balance: %.2f",
                              settled, summary.get("profit", 0), summary.get("new_balance", 0))
+
+                    # Settlement, bankroll milestone, and drawdown notifications
+                    try:
+                        from scripts.pipeline.notify import (
+                            notify_settlement, notify_bankroll_milestone, notify_drawdown,
+                        )
+                        won = summary.get("won", 0)
+                        lost = summary.get("lost", 0)
+                        push = summary.get("push", 0)
+                        profit = summary.get("profit", summary.get("net_profit", 0)) or 0
+                        new_balance = summary.get("new_balance", summary.get("balance", 0)) or 0
+                        notify_settlement(
+                            settled=settled, won=won, lost=lost, push=push,
+                            profit=profit, balance=new_balance,
+                        )
+                        old_balance = summary.get("old_balance", summary.get("previous_balance", 0)) or 0
+                        if old_balance and new_balance:
+                            notify_bankroll_milestone(old_balance, new_balance)
+                        # Drawdown check
+                        peak = summary.get("peak_balance", 0) or 0
+                        if not peak:
+                            try:
+                                _br = _load_json(BETTING_DIR / "bankroll.json")
+                                _bs = _load_json(BANKROLL_DIR / "state.json")
+                                peak = max(_br.get("peak_balance", 0), _bs.get("peak_bankroll", 0), new_balance)
+                            except Exception:
+                                peak = new_balance
+                        if peak > 0 and new_balance > 0:
+                            dd_pct = (peak - new_balance) / peak * 100
+                            if dd_pct > 15:
+                                notify_drawdown(new_balance, peak, dd_pct)
+                    except Exception as e:
+                        log.debug("Auto-settle notification failed: %s", e)
                 else:
                     log.debug("Auto-settle: no new results to settle")
             except Exception as e:
@@ -6011,6 +6093,12 @@ def api_notifications_preferences_set():
                     prefs["categories"][cat].update(ch_map)
                 else:
                     prefs["categories"][cat] = ch_map
+        if "quiet_hours" in data:
+            prefs.setdefault("quiet_hours", {}).update(data["quiet_hours"])
+        if "mute_all" in data:
+            prefs["mute_all"] = bool(data["mute_all"])
+        if "sound" in data:
+            prefs["sound"] = data["sound"]
         ok = save_preferences(prefs)
         return jsonify({"ok": ok, "preferences": prefs})
     except Exception as e:
@@ -6026,6 +6114,50 @@ def api_notifications_history():
         limit = min(limit, 200)
         history = get_notification_history(limit=limit)
         return jsonify({"ok": True, "history": history, "count": len(history)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/history", methods=["DELETE"])
+def api_notifications_history_clear():
+    """Clear all notification history."""
+    try:
+        from scripts.pipeline.notify import clear_notification_history
+        ok = clear_notification_history()
+        return jsonify({"ok": ok})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/stats")
+def api_notifications_stats():
+    """Return notification statistics."""
+    try:
+        from scripts.pipeline.notify import get_notification_stats
+        stats = get_notification_stats()
+        return jsonify({"ok": True, "stats": stats})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/digest", methods=["POST"])
+def api_notifications_digest():
+    """Send a daily digest notification now."""
+    try:
+        from scripts.pipeline.notify import notify, get_notification_stats
+        stats = get_notification_stats()
+        today = stats.get("today", 0)
+        week = stats.get("this_week", 0)
+        by_cat = stats.get("by_category", {})
+
+        lines = [f"Today: {today} notifications, This week: {week}"]
+        if by_cat:
+            breakdown = ", ".join(f"{k}: {v}" for k, v in sorted(by_cat.items()))
+            lines.append(f"By category: {breakdown}")
+
+        message = "\n".join(lines)
+        results = notify(message, title="Daily Digest", level="info", category="system")
+        return jsonify({"ok": True, "results": results})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

@@ -408,6 +408,13 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
                    "fetch_and_save_lineups()"]
             subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=60)
             send_notification(f"Lineups fetched for: {matches_str}", "Match Clock: Lineups")
+
+            # Coaching-style lineup notification
+            try:
+                from scripts.pipeline.notify import notify_lineups_confirmed
+                notify_lineups_confirmed(matches=matches_str)
+            except Exception:
+                pass
         except Exception as e:
             log.warning("Lineup fetch failed: %s", e)
 
@@ -421,6 +428,13 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
                 f"Pre-kickoff predictions updated for: {matches_str}",
                 "Match Clock: Predictions"
             )
+
+            # Coaching-style predictions ready notification
+            try:
+                from scripts.pipeline.notify import notify_predictions_ready
+                notify_predictions_ready(n_matches=len(actions_needed["prediction_update"]))
+            except Exception:
+                pass
 
     # Stage 3: Settlement check
     if actions_needed["settlement_check"]:

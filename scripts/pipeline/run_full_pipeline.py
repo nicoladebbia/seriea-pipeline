@@ -1045,6 +1045,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     print(f"  Mode: {mode_label}")
     print(f"  Bankroll: ${bankroll:.2f}")
 
+    # Notify pipeline start
+    try:
+        from scripts.pipeline.notify import notify_pipeline_start
+        notify_pipeline_start()
+    except Exception:
+        pass
+
     # Archive previous predictions before they get overwritten
     try:
         from scripts.analysis.performance_dashboard import archive_predictions
@@ -1731,6 +1738,19 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         from scripts.betting.parlay_generator import generate_parlay_report
         parlay_report = generate_parlay_report(bankroll=bankroll)
         print(f"  Generated {parlay_report['total_parlays']} parlays from {parlay_report['total_legs_available']} value legs")
+
+        # Notify parlays ready
+        try:
+            from scripts.pipeline.notify import notify_parlays_ready
+            n_parlays = parlay_report.get("total_parlays", 0)
+            best = parlay_report.get("parlays", [{}])[0] if parlay_report.get("parlays") else {}
+            notify_parlays_ready(
+                n_parlays=n_parlays,
+                best_odds=best.get("combined_odds", 0),
+                best_prob=best.get("win_probability", 0) * 100 if best.get("win_probability") else 0,
+            )
+        except Exception:
+            pass
     except Exception as e:
         print(f"  Parlay generator warning: {e}")
         log.warning(f"Parlay generator error: {e}")
@@ -2017,6 +2037,15 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     banner("PIPELINE COMPLETE")
     print(f"\n  Elapsed Time: {elapsed:.1f} seconds")
     print(f"  Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Notify pipeline complete
+    try:
+        from scripts.pipeline.notify import notify_pipeline_done
+        n_preds = len(predictions) if predictions else 0
+        n_vbets = report["summary"].get("total_bets", 0) if report else 0
+        notify_pipeline_done(n_predictions=n_preds, n_value_bets=n_vbets, elapsed_sec=elapsed)
+    except Exception:
+        pass
 
     if report:
         print("\n" + "=" * 70)

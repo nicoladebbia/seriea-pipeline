@@ -937,8 +937,27 @@ def poll_once() -> Dict:
             }
 
         match_entry = matchday["matches"][mk]
+        prev_status = match_entry.get("status", "pre_match")
         match_entry["status"] = status
         match_entry["snapshots"].append(snapshot)
+
+        # ── Kickoff notification (transition into first_half) ──
+        if status == "first_half" and prev_status in ("pre_match", None) and not match_entry.get("_kickoff_notified"):
+            try:
+                from scripts.pipeline.notify import notify_kickoff
+                notify_kickoff(mk)
+            except Exception:
+                pass
+            match_entry["_kickoff_notified"] = True
+
+        # ── Half-time notification ──
+        if status == "half_time" and prev_status != "half_time" and not match_entry.get("_ht_notified"):
+            try:
+                from scripts.pipeline.notify import notify_halftime
+                notify_halftime(mk, home_score, away_score)
+            except Exception:
+                pass
+            match_entry["_ht_notified"] = True
 
         if completed:
             match_entry["final_score"] = [home_score, away_score]
