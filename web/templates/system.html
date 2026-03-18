@@ -542,8 +542,8 @@
       <!-- Log file tabs (populated dynamically) -->
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:var(--space-3);" id="log-tabs"></div>
       <!-- Controls row -->
-      <div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3);">
-        <input id="log-search" type="text" placeholder="Search logs..." oninput="debouncedLogSearch()" class="input" style="flex:1;font-size:11px;background:var(--bg-tertiary);border-color:var(--border-subtle);padding:4px 8px;max-width:250px;">
+      <div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3);flex-wrap:wrap;">
+        <input id="log-search" type="text" placeholder="Search logs..." oninput="debouncedLogSearch()" class="input" style="flex:1;font-size:11px;background:var(--bg-tertiary);border-color:var(--border-subtle);padding:4px 8px;max-width:250px;min-width:120px;">
         <select id="log-level-filter" onchange="loadLogContent()" class="input" style="font-size:11px;background:var(--bg-tertiary);border-color:var(--border-subtle);padding:4px 8px;">
           <option value="">All levels</option>
           <option value="error">Errors only</option>
@@ -554,8 +554,21 @@
           <option value="100" selected>100 lines</option>
           <option value="200">200 lines</option>
           <option value="500">500 lines</option>
+          <option value="1000">1000 lines</option>
+          <option value="5000">All (5000)</option>
         </select>
-        <span id="log-info" style="font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);margin-left:auto;"></span>
+        <div style="display:flex;gap:4px;margin-left:auto;">
+          <button onclick="copyLogs('all')" title="Copy all visible log lines to clipboard" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:var(--accent-muted);color:var(--accent);border:1px solid var(--accent);transition:all 0.15s;">
+            Copy All
+          </button>
+          <button onclick="copyLogs('errors')" title="Copy only error/warning lines to clipboard" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.3);transition:all 0.15s;">
+            Copy Errors
+          </button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-2);">
+        <span id="log-info" style="font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);"></span>
+        <span id="log-copy-status" style="font-size:10px;color:var(--green);font-weight:600;display:none;"></span>
       </div>
       <div id="log-content" class="pipe-log">
         <div style="color:var(--text-tertiary);">Select a log file above...</div>
@@ -1509,6 +1522,7 @@ async function loadLogContent() {
     }
 
     const logLines = data.lines || [];
+    _rawLogLines = logLines; // Store raw lines for copy
     infoEl.textContent = `${logLines.length} of ${data.total || '?'} lines | ${data.label || _currentLog}`;
 
     if (!logLines.length) {
@@ -1542,6 +1556,58 @@ async function loadLogContent() {
   } catch (e) {
     content.innerHTML = `<div class="log-err">Failed to load: ${escHtml(e.message)}</div>`;
   }
+}
+
+// Store raw log lines for copy (without HTML formatting)
+let _rawLogLines = [];
+
+async function copyLogs(mode) {
+  let textToCopy = '';
+  if (mode === 'errors') {
+    // Filter to only error/warning lines
+    const errorLines = _rawLogLines.filter(l => {
+      const lower = l.toLowerCase();
+      return lower.includes('error') || lower.includes('traceback') || lower.includes('exception')
+          || lower.includes('failed') || lower.includes('warn') || lower.includes('critical');
+    });
+    textToCopy = errorLines.join('\n');
+    if (!textToCopy) {
+      _showCopyStatus('No errors found in current view');
+      return;
+    }
+  } else {
+    textToCopy = _rawLogLines.join('\n');
+  }
+
+  if (!textToCopy) {
+    _showCopyStatus('No logs to copy');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(textToCopy);
+    const count = textToCopy.split('\n').length;
+    _showCopyStatus(`Copied ${count} lines to clipboard`);
+  } catch (e) {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = textToCopy;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const count = textToCopy.split('\n').length;
+    _showCopyStatus(`Copied ${count} lines to clipboard`);
+  }
+}
+
+function _showCopyStatus(msg) {
+  const el = document.getElementById('log-copy-status');
+  el.textContent = msg;
+  el.style.display = 'inline';
+  setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
 // Auto-refresh logs when section is expanded

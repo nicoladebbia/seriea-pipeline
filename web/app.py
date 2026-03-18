@@ -1697,7 +1697,12 @@ _LOG_FILES = {
     "morning":       {"file": "launchd-morning.log",                 "label": "Morning Run",      "desc": "Morning pipeline"},
     "morning-err":   {"file": "launchd-morning-err.log",             "label": "Morning Err",      "desc": "Morning errors"},
     "evening":       {"file": "launchd-evening.log",                 "label": "Evening Run",      "desc": "Evening pipeline"},
+    "evening-err":   {"file": "launchd-evening-err.log",             "label": "Evening Err",      "desc": "Evening errors"},
     "health-monitor":{"file": "launchd-health-monitor.log",          "label": "Health (launchd)", "desc": "Launchd health checks"},
+    "health-mon-err":{"file": "launchd-health-monitor-err.log",      "label": "Health Err",       "desc": "Health check errors"},
+    "weekly-mon-err":{"file": "launchd-weekly-monitor-err.log",      "label": "Weekly Mon Err",   "desc": "Weekly monitor errors"},
+    "telegram-bot":  {"file": "telegram-bot.log",                    "label": "Telegram Bot",     "desc": "Telegram bot activity"},
+    "performance":   {"file": "performance.log",                     "label": "Performance",      "desc": "Model performance tracking"},
 }
 
 
@@ -1712,8 +1717,11 @@ def api_logs():
     # If no specific log requested, return the file list
     if not log_key:
         result = []
+        # Known log files
+        seen_files = set()
         for key, info in _LOG_FILES.items():
             path = _LOG_DIR / info["file"]
+            seen_files.add(info["file"])
             size = 0
             modified = ""
             exists = False
@@ -1731,12 +1739,42 @@ def api_logs():
                 "size_human": f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB",
                 "modified": modified,
             })
+
+        # Auto-discover any .log files not in the known list
+        if _LOG_DIR.exists():
+            for log_file in sorted(_LOG_DIR.glob("*.log")):
+                if log_file.name in seen_files:
+                    continue
+                if log_file.stat().st_size == 0:
+                    continue
+                auto_key = log_file.stem.replace(".", "-")
+                auto_label = log_file.stem.replace("-", " ").replace("_", " ").title()
+                result.append({
+                    "key": auto_key,
+                    "label": auto_label,
+                    "desc": f"Auto-discovered: {log_file.name}",
+                    "file": log_file.name,
+                    "exists": True,
+                    "size": log_file.stat().st_size,
+                    "size_human": f"{log_file.stat().st_size / 1024:.0f}KB" if log_file.stat().st_size < 1048576 else f"{log_file.stat().st_size / 1048576:.1f}MB",
+                    "modified": datetime.fromtimestamp(log_file.stat().st_mtime).isoformat(),
+                })
+
         return jsonify({"logs": result})
 
     # Return specific log content
     info = _LOG_FILES.get(log_key)
     if not info:
-        return jsonify({"error": f"Unknown log: {log_key}"}), 404
+        # Try auto-discovered file
+        candidate = _LOG_DIR / f"{log_key.replace('-', '.')}.log"
+        if not candidate.exists():
+            candidate = _LOG_DIR / f"{log_key}.log"
+        if not candidate.exists():
+            candidate = _LOG_DIR / f"{log_key.replace('-', '_')}.log"
+        if candidate.exists():
+            info = {"file": candidate.name, "label": log_key}
+        else:
+            return jsonify({"error": f"Unknown log: {log_key}"}), 404
 
     path = _LOG_DIR / info["file"]
     if not path.exists():
@@ -1749,8 +1787,10 @@ def api_logs():
             f.seek(0, 2)
             fsize = f.tell()
             # Read last ~200KB max
-            read_size = min(fsize, 200_000)
-            f.seek(max(0, fsize - read_size))
+            # Read enough bytes to cover the requested lines
+            # ~150 bytes per line average, with generous buffer
+            max_bytes = min(fsize, max(500_000, lines * 200))
+            f.seek(max(0, fsize - max_bytes))
             raw = f.read().decode("utf-8", errors="replace")
 
         all_lines = raw.splitlines()
