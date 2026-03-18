@@ -558,11 +558,14 @@
           <option value="5000">All (5000)</option>
         </select>
         <div style="display:flex;gap:4px;margin-left:auto;">
-          <button onclick="copyLogs('all')" title="Copy all visible log lines to clipboard" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:var(--accent-muted);color:var(--accent);border:1px solid var(--accent);transition:all 0.15s;">
-            Copy All
+          <button onclick="copyLogs('recent')" title="Copy last 24h of logs" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:var(--accent-muted);color:var(--accent);border:1px solid var(--accent);transition:all 0.15s;">
+            Copy Recent
           </button>
-          <button onclick="copyLogs('errors')" title="Copy only error/warning lines to clipboard" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.3);transition:all 0.15s;">
+          <button onclick="copyLogs('errors')" title="Copy unique errors only (deduplicated, newest first)" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.3);transition:all 0.15s;">
             Copy Errors
+          </button>
+          <button onclick="copyLogs('all')" title="Copy everything visible" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:var(--bg-tertiary);color:var(--text-tertiary);border:1px solid var(--border-subtle);transition:all 0.15s;">
+            Copy All
           </button>
         </div>
       </div>
@@ -1571,7 +1574,8 @@ async function loadLogContent() {
 let _rawLogLines = [];
 
 async function copyLogs(mode) {
-  let textToCopy = '';
+  let lines = [];
+
   if (mode === 'errors') {
     // Filter to only error/warning lines
     const errorLines = _rawLogLines.filter(l => {
@@ -1579,26 +1583,45 @@ async function copyLogs(mode) {
       return lower.includes('error') || lower.includes('traceback') || lower.includes('exception')
           || lower.includes('failed') || lower.includes('warn') || lower.includes('critical');
     });
-    textToCopy = errorLines.join('\n');
-    if (!textToCopy) {
+    if (!errorLines.length) {
       _showCopyStatus('No errors found in current view');
       return;
     }
+    // Deduplicate: strip timestamps, keep only unique error messages, newest first
+    // Lines are already newest-first from the API
+    const seen = new Set();
+    for (const line of errorLines) {
+      // Strip the timestamp prefix to compare the actual error message
+      const msgOnly = line.replace(/^\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}[,.]?\d*\s*(\[.*?\]\s*)?/, '').trim();
+      // Normalize: strip module path variations like "scraper.injuries.scrape_team:329"
+      const normalized = msgOnly.replace(/:\d+$/, '').replace(/\s+/g, ' ');
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        lines.push(line); // Keep the full line with timestamp (newest occurrence)
+      }
+    }
+  } else if (mode === 'recent') {
+    // Last 24h of logs only — lines are newest-first, find cutoff
+    const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+    for (const line of _rawLogLines) {
+      const dateMatch = line.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch && dateMatch[1] < cutoff) break; // Stop at old lines
+      lines.push(line);
+    }
+    if (!lines.length) lines = _rawLogLines.slice(0, 50); // Fallback to latest 50
   } else {
-    textToCopy = _rawLogLines.join('\n');
+    lines = _rawLogLines;
   }
 
-  if (!textToCopy) {
+  if (!lines.length) {
     _showCopyStatus('No logs to copy');
     return;
   }
 
+  const textToCopy = lines.join('\n');
   try {
     await navigator.clipboard.writeText(textToCopy);
-    const count = textToCopy.split('\n').length;
-    _showCopyStatus(`Copied ${count} lines to clipboard`);
   } catch (e) {
-    // Fallback for older browsers
     const ta = document.createElement('textarea');
     ta.value = textToCopy;
     ta.style.position = 'fixed';
@@ -1607,9 +1630,8 @@ async function copyLogs(mode) {
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
-    const count = textToCopy.split('\n').length;
-    _showCopyStatus(`Copied ${count} lines to clipboard`);
   }
+  _showCopyStatus(`Copied ${lines.length} lines to clipboard`);
 }
 
 function _showCopyStatus(msg) {
