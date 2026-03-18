@@ -1530,6 +1530,10 @@ async function loadLogContent() {
       return;
     }
 
+    // Preserve scroll position within the log panel during auto-refresh
+    const prevScroll = content.scrollTop;
+    const wasScrolledToTop = prevScroll < 20;
+
     content.innerHTML = logLines.map(line => {
       const lower = line.toLowerCase();
       let cls = '';
@@ -1553,6 +1557,11 @@ async function loadLogContent() {
 
       return `<div class="${cls}">${html}</div>`;
     }).join('');
+
+    // Restore scroll position (don't jump to top on auto-refresh)
+    if (!wasScrolledToTop && prevScroll > 0) {
+      content.scrollTop = prevScroll;
+    }
   } catch (e) {
     content.innerHTML = `<div class="log-err">Failed to load: ${escHtml(e.message)}</div>`;
   }
@@ -1769,8 +1778,38 @@ async function sendTestNotification(btn) {
 }
 
 
+function _savePageState() {
+  // Save which <details> sections are open and current scroll position
+  const state = { scroll: window.scrollY, open: {} };
+  document.querySelectorAll('details.pipe-section').forEach(d => {
+    if (d.id) state.open[d.id] = d.open;
+  });
+  // Save log viewer scroll position
+  const logEl = document.getElementById('log-content');
+  if (logEl) state.logScroll = logEl.scrollTop;
+  return state;
+}
+
+function _restorePageState(state) {
+  if (!state) return;
+  // Restore <details> open/closed state
+  for (const [id, isOpen] of Object.entries(state.open || {})) {
+    const el = document.getElementById(id);
+    if (el) el.open = isOpen;
+  }
+  // Restore page scroll
+  if (state.scroll) window.scrollTo({ top: state.scroll });
+  // Restore log scroll
+  if (state.logScroll) {
+    const logEl = document.getElementById('log-content');
+    if (logEl) logEl.scrollTop = state.logScroll;
+  }
+}
+
 async function loadSystemData() {
   try {
+    const pageState = _savePageState();
+
     const data = await fetch('/api/system').then(r => r.json());
     _systemData = data;
 
@@ -1782,6 +1821,9 @@ async function loadSystemData() {
     renderPipelineHistory(data);
     renderHealthMonitor(data);
     renderModelFeedback(data);
+
+    // Restore scroll position and expanded sections after render
+    requestAnimationFrame(() => _restorePageState(pageState));
   } catch (err) {
     document.getElementById('loading').innerHTML =
       '<span style="color:var(--red);">Failed to load pipeline data: ' + err.message + '</span>';
