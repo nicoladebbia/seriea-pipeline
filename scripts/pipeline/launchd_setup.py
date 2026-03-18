@@ -90,6 +90,14 @@ JOBS = [
         "interval_seconds": 1800,  # Every 30 minutes
         "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.monitor", "--quiet"],
     },
+    {
+        "name": "telegram-bot",
+        "label": f"{LABEL_PREFIX}.telegram-bot",
+        "description": "Telegram chat bot — AI advisor on your phone",
+        "mode": "telegram-bot",
+        "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.telegram_bot"],
+        "keep_alive": True,  # Restart if it crashes
+    },
 ]
 
 
@@ -121,14 +129,18 @@ def generate_plist(job: dict) -> dict:
             "PYTHONPATH": str(PROJECT_ROOT),
         },
         # Run even if user is not logged in (requires load with -w flag)
-        "RunAtLoad": False,
-        # Retry on failure
-        "KeepAlive": False,
-        "ThrottleInterval": 300,  # Min 5 min between retries
+        "RunAtLoad": bool(job.get("keep_alive")),
+        # Retry on failure — keep_alive jobs auto-restart, others don't
+        "KeepAlive": bool(job.get("keep_alive")),
+        "ThrottleInterval": 10 if job.get("keep_alive") else 300,
     }
 
-    # Interval-based jobs (e.g., pre-kickoff monitor every 30 min)
-    if "interval_seconds" in job:
+    # Schedule: keep_alive daemons run continuously (no schedule needed),
+    # interval-based jobs use StartInterval, others use StartCalendarInterval
+    if job.get("keep_alive"):
+        # Continuous daemon — RunAtLoad + KeepAlive handles it
+        pass
+    elif "interval_seconds" in job:
         plist["StartInterval"] = job["interval_seconds"]
     else:
         cal = {
@@ -154,7 +166,8 @@ def generate_plist(job: dict) -> dict:
                     k, _, v = line.partition("=")
                     dotenv_vars[k.strip()] = v.strip()
 
-    for key in ("ODDS_API_KEY", "APIFOOTBALL_KEY", "SLACK_WEBHOOK_URL"):
+    for key in ("ODDS_API_KEY", "APIFOOTBALL_KEY", "SLACK_WEBHOOK_URL",
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY"):
         val = os.environ.get(key) or dotenv_vars.get(key)
         if val:
             plist["EnvironmentVariables"][key] = val
@@ -179,7 +192,9 @@ def generate_all():
 
         print(f"  {plist_path.name}")
         print(f"    {job['description']}")
-        if "interval_seconds" in job:
+        if job.get("keep_alive"):
+            print(f"    Schedule: always-on (auto-restart)")
+        elif "interval_seconds" in job:
             print(f"    Schedule: every {job['interval_seconds'] // 60} minutes")
         elif "weekday" in job:
             days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
@@ -267,7 +282,9 @@ def status():
         loaded = label in result.stdout
 
         status_str = "LOADED" if loaded else ("installed" if installed else "not installed")
-        if "interval_seconds" in job:
+        if job.get("keep_alive"):
+            schedule = "always-on"
+        elif "interval_seconds" in job:
             schedule = f"every {job['interval_seconds'] // 60}m"
         elif "weekday" in job:
             days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
