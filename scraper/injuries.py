@@ -50,7 +50,9 @@ TM_HEADERS = {
 }
 
 # ESPN base URL for injuries
-ESPN_BASE = "https://www.espn.com/soccer/team/injuries/_/id"
+# ESPN changed URL format in late 2025 — try both old and new patterns
+ESPN_BASE_NEW = "https://www.espn.com/soccer/team/injuries/_/id"
+ESPN_BASE_OLD = "https://www.espn.com/soccer/team/injuries"
 ESPN_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -284,13 +286,32 @@ def scrape_team_injuries_espn(team: str) -> list[PlayerInjury]:
         return []
 
     espn_id = SERIE_A_TEAMS_ESPN[team]
-    url = f"{ESPN_BASE}/{espn_id}/league/ita.1"
+
+    # Try new URL format first, fall back to old
+    urls_to_try = [
+        f"{ESPN_BASE_NEW}/{espn_id}/league/ita.1",
+        f"{ESPN_BASE_NEW}/{espn_id}",
+        f"{ESPN_BASE_OLD}/_/id/{espn_id}",
+    ]
+
+    resp = None
+    for url in urls_to_try:
+        try:
+            _espn_limiter.wait()
+            log.info(f"Trying ESPN injuries for {team}: {url}")
+            resp = requests.get(url, headers=ESPN_HEADERS, timeout=15)
+            if resp.status_code == 200:
+                break
+            log.debug(f"ESPN returned {resp.status_code} for {url}")
+            resp = None
+        except requests.RequestException:
+            continue
+
+    if not resp or resp.status_code != 200:
+        log.warning(f"ESPN injuries unavailable for {team} (all URL formats failed)")
+        return []
 
     try:
-        _espn_limiter.wait()
-        log.info(f"Scraping injuries for {team} from ESPN")
-        resp = requests.get(url, headers=ESPN_HEADERS, timeout=15)
-        resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
         injuries = []
