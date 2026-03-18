@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}Teams — SerieAI{% endblock %}
-{% block page_title %}Teams{% endblock %}
+{% block title %}Standings — SerieAI{% endblock %}
+{% block page_title %}Standings{% endblock %}
 
 {% block header_actions %}
 <div style="display:flex;align-items:center;gap:12px;">
@@ -107,6 +107,41 @@
   .zone-legend__dot {
     width: 10px; height: 10px; border-radius: 3px;
   }
+
+  /* Zone filter pills */
+  .zone-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: var(--space-4); }
+  .zone-pill {
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border-default);
+    background: transparent; color: var(--text-secondary); font-size: 11px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .zone-pill:hover { border-color: var(--accent); color: var(--accent); }
+  .zone-pill--active { background: var(--accent-muted); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+  /* Form trend arrow */
+  .form-trend { font-size: 13px; font-weight: 700; margin-left: 4px; vertical-align: middle; }
+  .form-trend--up { color: var(--green); }
+  .form-trend--down { color: var(--red); }
+  .form-trend--flat { color: var(--text-tertiary); }
+
+  /* Opponent strength dot */
+  .opp-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px;
+    vertical-align: middle; flex-shrink: 0;
+  }
+  .opp-dot--weak { background: var(--green); }
+  .opp-dot--mid { background: var(--amber); }
+  .opp-dot--strong { background: var(--red); }
+
+  /* Responsive: horizontal scroll on mobile, hide advanced cols on < 1024px */
+  @media (max-width: 1023px) {
+    .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #league-table .col-xpts,
+    #league-table .col-ptsdiff,
+    #league-table .col-xg,
+    #league-table .col-xga,
+    #league-table .col-elo { display: none; }
+  }
 </style>
 
 <!-- Compare Banner (hidden until 2 teams selected) -->
@@ -137,6 +172,15 @@
       <button onclick="sortTable('xg_diff')" class="btn btn--sm btn--secondary sort-btn" data-sort="xg_diff">xG Diff</button>
     </div>
   </div>
+  <!-- Zone filter pills -->
+  <div class="zone-filters" id="zone-filters">
+    <button class="zone-pill zone-pill--active" data-zone="all" onclick="filterZone('all')">All</button>
+    <button class="zone-pill" data-zone="ucl" onclick="filterZone('ucl')">Champions League (1-4)</button>
+    <button class="zone-pill" data-zone="uel" onclick="filterZone('uel')">Europa (5-6)</button>
+    <button class="zone-pill" data-zone="uecl" onclick="filterZone('uecl')">Conference (7)</button>
+    <button class="zone-pill" data-zone="mid" onclick="filterZone('mid')">Mid-table (8-17)</button>
+    <button class="zone-pill" data-zone="rel" onclick="filterZone('rel')">Relegation (18-20)</button>
+  </div>
   <div class="table-wrapper" id="league-table-wrap">
     <table class="ds-table" id="league-table">
       <thead>
@@ -151,11 +195,11 @@
           <th style="text-align:center;">GA</th>
           <th style="text-align:center;">GD</th>
           <th style="text-align:center;">Pts</th>
-          <th style="text-align:center;">xPts</th>
-          <th style="text-align:center;">+/-</th>
-          <th style="text-align:center;">xG</th>
-          <th style="text-align:center;">xGA</th>
-          <th style="text-align:center;">Elo</th>
+          <th class="col-xpts" style="text-align:center;">xPts</th>
+          <th class="col-ptsdiff" style="text-align:center;">+/-</th>
+          <th class="col-xg" style="text-align:center;">xG</th>
+          <th class="col-xga" style="text-align:center;">xGA</th>
+          <th class="col-elo" style="text-align:center;">Elo</th>
           <th style="text-align:center;">Form</th>
           <th style="text-align:center;">Home</th>
           <th style="text-align:center;">Away</th>
@@ -294,7 +338,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tick = () => { clockEl.textContent = new Date().toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'}); };
     tick(); setInterval(tick, 1000);
   }
+  // Restore persisted sort from localStorage
+  try {
+    const savedSort = localStorage.getItem('seriea_sort');
+    if (savedSort && ['position','xpts','elo','xg_diff'].includes(savedSort)) {
+      _currentSort = savedSort;
+    }
+  } catch(e) {}
   await loadTeams();
+  // Apply restored sort button state
+  sortTable(_currentSort);
 });
 
 // --- Load Data ---
@@ -336,13 +389,26 @@ function renderTable() {
     const ptsDiffColor = ptsDiff > 0 ? 'var(--green)' : ptsDiff < 0 ? 'var(--red)' : 'var(--text-tertiary)';
     const ptsDiffStr = ptsDiff > 0 ? `+${ptsDiff}` : `${ptsDiff}`;
 
-    // Form display — W/D/L squares with gaps
-    const form = (s.form_last5 || '').split('').map(c => {
+    // Form display — W/D/L squares with gaps + trend arrow
+    const formStr = s.form_last5 || '';
+    const form = formStr.split('').map(c => {
       if (c === 'W') return '<span class="form-square form-square--W">W</span>';
       if (c === 'D') return '<span class="form-square form-square--D">D</span>';
       if (c === 'L') return '<span class="form-square form-square--L">L</span>';
       return '';
     }).join('');
+
+    // Trend arrow: compare last-5 PPG vs season PPG
+    let trendHTML = '';
+    if (formStr.length > 0 && s.played > 0) {
+      const formPts = formStr.split('').reduce((sum, c) => sum + (c === 'W' ? 3 : c === 'D' ? 1 : 0), 0);
+      const formPPG = formPts / formStr.length;
+      const seasonPPG = s.points / s.played;
+      const diff = formPPG - seasonPPG;
+      if (diff > 0.15) trendHTML = '<span class="form-trend form-trend--up" title="Trending up">↑</span>';
+      else if (diff < -0.15) trendHTML = '<span class="form-trend form-trend--down" title="Trending down">↓</span>';
+      else trendHTML = '<span class="form-trend form-trend--flat" title="Stable">→</span>';
+    }
 
     // Home/away records
     const hr = st.home || {};
@@ -352,14 +418,19 @@ function renderTable() {
     const homePPG = hr.ppg ? `<span class="text-tertiary" style="font-size:10px;">(${hr.ppg})</span>` : '';
     const awayPPG = ar.ppg ? `<span class="text-tertiary" style="font-size:10px;">(${ar.ppg})</span>` : '';
 
-    // Upcoming — always show as pill with H/A badge
+    // Upcoming — always show as pill with H/A badge + opponent strength dot
     const up = t.upcoming;
     let nextHTML = '<span class="text-tertiary" style="font-size:11px;">-</span>';
     if (up) {
       const venueClass = up.is_home ? 'next-pill__venue--home' : 'next-pill__venue--away';
       const venueLabel = up.is_home ? 'H' : 'A';
       const oppName = TEAM_ABBR[up.opponent] || up.opponent;
+      // Opponent strength dot based on league position
+      const oppData = _teamsData.find(x => x.team === up.opponent);
+      const oppPos = oppData ? oppData.standing.position : 10;
+      const dotCls = oppPos <= 7 ? 'opp-dot--strong' : oppPos <= 13 ? 'opp-dot--mid' : 'opp-dot--weak';
       nextHTML = `<a href="/team/${encodeURIComponent(up.opponent)}" class="next-pill" onclick="event.stopPropagation();">
+        <span class="opp-dot ${dotCls}" title="${up.opponent}: ${ordinal(oppPos)}"></span>
         <span class="next-pill__venue ${venueClass}">${venueLabel}</span>
         <span style="color:var(--text-primary);font-weight:500;">${oppName}</span>
       </a>`;
@@ -383,7 +454,10 @@ function renderTable() {
     const teamColor = TEAM_COLORS[t.team] || '#555';
     const teamAbbr = (TEAM_ABBR[t.team] || t.team.slice(0,3).toUpperCase()).slice(0,3);
 
-    return `<tr class="${zoneClass} ${dividerClass}" style="cursor:pointer;" onclick="window.location='/team/${encodeURIComponent(t.team)}'">
+    // Zone key for filtering
+    const zoneKey = s.position <= 4 ? 'ucl' : s.position <= 6 ? 'uel' : s.position === 7 ? 'uecl' : s.position >= 18 ? 'rel' : 'mid';
+
+    return `<tr class="${zoneClass} ${dividerClass}" data-zone="${zoneKey}" style="cursor:pointer;" onclick="window.location='/team/${encodeURIComponent(t.team)}'">
       <td><span class="pos-badge ${posCls}">${pos}</span></td>
       <td>
         <div style="display:flex;align-items:center;gap:8px;">
@@ -399,12 +473,12 @@ function renderTable() {
       <td style="text-align:center;">${s.ga}</td>
       <td style="text-align:center;font-weight:600;color:${s.gd > 0 ? 'var(--green)' : s.gd < 0 ? 'var(--red)' : 'var(--text-tertiary)'};">${s.gd > 0 ? '+' : ''}${s.gd}</td>
       <td style="text-align:center;font-weight:700;color:var(--text-primary);font-size:14px;">${s.points}</td>
-      <td style="text-align:center;color:var(--text-secondary);">${st.xpts || '-'}</td>
-      <td style="text-align:center;color:${ptsDiffColor};font-weight:600;">${ptsDiffStr}</td>
-      <td style="text-align:center;color:var(--text-secondary);">${st.avg_xg ? st.avg_xg.toFixed(2) : '-'}</td>
-      <td style="text-align:center;color:var(--text-secondary);">${st.avg_xga ? st.avg_xga.toFixed(2) : '-'}</td>
-      <td style="text-align:center;font-family:var(--font-mono);font-size:12px;">${st.elo || '-'}</td>
-      <td style="text-align:center;white-space:nowrap;">${form || '-'}</td>
+      <td class="col-xpts" style="text-align:center;color:var(--text-secondary);">${st.xpts || '-'}</td>
+      <td class="col-ptsdiff" style="text-align:center;color:${ptsDiffColor};font-weight:600;">${ptsDiffStr}</td>
+      <td class="col-xg" style="text-align:center;color:var(--text-secondary);">${st.avg_xg ? st.avg_xg.toFixed(2) : '-'}</td>
+      <td class="col-xga" style="text-align:center;color:var(--text-secondary);">${st.avg_xga ? st.avg_xga.toFixed(2) : '-'}</td>
+      <td class="col-elo" style="text-align:center;font-family:var(--font-mono);font-size:12px;">${st.elo || '-'}</td>
+      <td style="text-align:center;white-space:nowrap;">${form || '-'}${trendHTML}</td>
       <td style="text-align:center;font-size:12px;white-space:nowrap;">${homeStr} ${homePPG}</td>
       <td style="text-align:center;font-size:12px;white-space:nowrap;">${awayStr} ${awayPPG}</td>
       <td style="white-space:nowrap;">${nextHTML}</td>
@@ -503,15 +577,30 @@ function setView(view) {
   document.getElementById('btn-view-grid').classList.toggle('btn--secondary', view !== 'grid');
 }
 
-// --- Sort ---
+// --- Sort (with localStorage persistence) ---
 function sortTable(field) {
   _currentSort = field;
+  try { localStorage.setItem('seriea_sort', field); } catch(e) {}
   document.querySelectorAll('.sort-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.sort === field);
     b.style.background = b.dataset.sort === field ? 'var(--accent-muted)' : '';
     b.style.color = b.dataset.sort === field ? 'var(--accent)' : '';
   });
   renderTable();
+}
+
+// --- Zone filter ---
+let _currentZone = 'all';
+function filterZone(zone) {
+  _currentZone = zone;
+  document.querySelectorAll('.zone-pill').forEach(b => {
+    b.classList.toggle('zone-pill--active', b.dataset.zone === zone);
+  });
+  const rows = document.querySelectorAll('#league-table-body tr[data-zone]');
+  rows.forEach(row => {
+    if (zone === 'all') { row.style.display = ''; }
+    else { row.style.display = row.dataset.zone === zone ? '' : 'none'; }
+  });
 }
 
 // --- Compare ---

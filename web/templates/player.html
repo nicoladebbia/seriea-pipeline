@@ -44,11 +44,29 @@
   .form-bar__label { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-size: 8px; color: var(--text-tertiary); white-space: nowrap; }
   .form-bar__value { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 600; font-family: var(--font-mono); }
 
-  /* Market value chart */
-  .mv-chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 8px; }
-  .mv-bar { flex: 1; border-radius: 3px 3px 0 0; background: var(--accent); opacity: 0.7; position: relative; cursor: pointer; }
-  .mv-bar:hover { opacity: 1; }
-  .mv-bar__label { position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%); font-size: 8px; color: var(--text-tertiary); white-space: nowrap; }
+  /* Market value — redesigned */
+  .mv-section { position: relative; }
+  .mv-header { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: var(--space-4); }
+  .mv-current { font-size: 28px; font-weight: 800; font-family: var(--font-mono); color: var(--text-primary); }
+  .mv-change { font-size: 14px; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
+  .mv-change--up { background: rgba(74,222,128,0.12); color: var(--green); }
+  .mv-change--down { background: rgba(248,113,113,0.12); color: var(--red); }
+  .mv-change--flat { background: var(--bg-tertiary); color: var(--text-tertiary); }
+
+  /* Area chart canvas */
+  .mv-chart-wrap { position: relative; height: 180px; margin-bottom: 8px; }
+  .mv-canvas { width: 100%; height: 100%; }
+
+  /* Timeline labels */
+  .mv-timeline { display: flex; justify-content: space-between; padding: 0 4px; }
+  .mv-timeline__label { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+
+  /* Peak/current markers */
+  .mv-stats { display: flex; gap: var(--space-4); margin-top: var(--space-4); }
+  .mv-stat { flex: 1; background: var(--bg-tertiary); border-radius: var(--radius-md); padding: 10px 14px; }
+  .mv-stat__label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
+  .mv-stat__value { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); margin-top: 2px; }
+  .mv-stat__sub { font-size: 10px; color: var(--text-tertiary); }
 
   /* Career summary */
   .career-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
@@ -284,25 +302,171 @@ function renderCareer(career) {
   </div>`;
 }
 
+function fmtValue(v) {
+  if (v >= 1000000) return '€' + (v / 1000000).toFixed(1) + 'M';
+  if (v >= 1000) return '€' + (v / 1000).toFixed(0) + 'K';
+  return '€' + v;
+}
+
 function renderMarketValue(mvh) {
   if (!mvh.length) return '';
-  const maxVal = Math.max(...mvh.map(v => v.value));
-
-  const bars = mvh.map(v => {
-    const h = Math.max(4, (v.value / maxVal) * 60);
-    const fmtVal = v.value >= 1000000 ? '€' + (v.value / 1000000).toFixed(1) + 'M' : '€' + (v.value / 1000).toFixed(0) + 'K';
-    return `<div class="mv-bar" style="height:${h}px;" title="${v.season}: ${fmtVal}">
-      <div class="mv-bar__label">${v.season.slice(2, 4)}/${v.season.slice(-2)}</div>
-    </div>`;
-  }).join('');
 
   const latest = mvh[mvh.length - 1];
-  const fmtLatest = latest.value >= 1000000 ? '€' + (latest.value / 1000000).toFixed(1) + 'M' : '€' + (latest.value / 1000).toFixed(0) + 'K';
+  const prev = mvh.length > 1 ? mvh[mvh.length - 2] : null;
+  const peak = mvh.reduce((a, b) => b.value > a.value ? b : a, mvh[0]);
+  const lowest = mvh.reduce((a, b) => b.value < a.value ? b : a, mvh[0]);
 
-  return `<div class="section">
-    <div class="section__title">Market Value History — Current: ${fmtLatest}</div>
-    <div class="mv-chart" style="padding-bottom:18px;">${bars}</div>
+  // Change badge
+  let changeHtml = '';
+  if (prev) {
+    const diff = latest.value - prev.value;
+    const pct = ((diff / prev.value) * 100).toFixed(0);
+    const cls = diff > 0 ? 'mv-change--up' : diff < 0 ? 'mv-change--down' : 'mv-change--flat';
+    const arrow = diff > 0 ? '&#9650;' : diff < 0 ? '&#9660;' : '&#8212;';
+    changeHtml = `<span class="mv-change ${cls}">${arrow} ${diff > 0 ? '+' : ''}${pct}%</span>`;
+  }
+
+  // Canvas ID
+  const canvasId = 'mv-canvas-' + Date.now();
+
+  // Stats row
+  const peakSeason = peak.season.slice(2, 4) + '/' + peak.season.slice(-2);
+  const lowestSeason = lowest.season.slice(2, 4) + '/' + lowest.season.slice(-2);
+  const totalChange = mvh.length > 1 ? latest.value - mvh[0].value : 0;
+  const totalPct = mvh.length > 1 && mvh[0].value > 0 ? ((totalChange / mvh[0].value) * 100).toFixed(0) : 0;
+
+  const html = `<div class="section mv-section">
+    <div class="mv-header">
+      <div>
+        <div class="section__title" style="margin-bottom:4px;">Market Value</div>
+        <div class="mv-current">${fmtValue(latest.value)}</div>
+      </div>
+      <div style="text-align:right;">
+        ${changeHtml}
+        <div style="font-size:10px;color:var(--text-tertiary);margin-top:4px;">${latest.season}</div>
+      </div>
+    </div>
+    <div class="mv-chart-wrap">
+      <canvas id="${canvasId}" class="mv-canvas"></canvas>
+    </div>
+    <div class="mv-timeline">
+      ${mvh.map(v => `<span class="mv-timeline__label">${v.season.slice(2, 4)}/${v.season.slice(-2)}</span>`).join('')}
+    </div>
+    <div class="mv-stats">
+      <div class="mv-stat">
+        <div class="mv-stat__label">Peak Value</div>
+        <div class="mv-stat__value">${fmtValue(peak.value)}</div>
+        <div class="mv-stat__sub">${peakSeason}</div>
+      </div>
+      <div class="mv-stat">
+        <div class="mv-stat__label">Lowest</div>
+        <div class="mv-stat__value">${fmtValue(lowest.value)}</div>
+        <div class="mv-stat__sub">${lowestSeason}</div>
+      </div>
+      <div class="mv-stat">
+        <div class="mv-stat__label">All-Time Change</div>
+        <div class="mv-stat__value" style="color:${totalChange >= 0 ? 'var(--green)' : 'var(--red)'}">${totalChange >= 0 ? '+' : ''}${fmtValue(Math.abs(totalChange))}</div>
+        <div class="mv-stat__sub">${totalChange >= 0 ? '+' : ''}${totalPct}% over ${mvh.length} seasons</div>
+      </div>
+    </div>
   </div>`;
+
+  // Draw the area chart after DOM is ready
+  setTimeout(() => drawMvChart(canvasId, mvh, peak), 50);
+
+  return html;
+}
+
+function drawMvChart(canvasId, mvh, peak) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width;
+  const H = rect.height;
+  const pad = { top: 20, right: 16, bottom: 8, left: 16 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+
+  const maxVal = peak.value * 1.15;
+  const minVal = Math.min(...mvh.map(v => v.value)) * 0.85;
+  const range = maxVal - minVal || 1;
+
+  const points = mvh.map((v, i) => ({
+    x: pad.left + (i / Math.max(mvh.length - 1, 1)) * cW,
+    y: pad.top + cH - ((v.value - minVal) / range) * cH,
+    value: v.value,
+    season: v.season,
+  }));
+
+  // Grid lines
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--border-subtle') || 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (cH / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    // Y-axis label
+    const val = maxVal - (range / 4) * i;
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-tertiary') || '#666';
+    ctx.font = '9px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(fmtValue(val), pad.left, y - 3);
+  }
+
+  // Gradient fill
+  const gradient = ctx.createLinearGradient(0, pad.top, 0, H);
+  gradient.addColorStop(0, 'rgba(129,140,248,0.25)');
+  gradient.addColorStop(1, 'rgba(129,140,248,0.02)');
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, H - pad.bottom);
+  points.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(points[points.length - 1].x, H - pad.bottom);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const cpx = (prev.x + curr.x) / 2;
+    ctx.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
+  }
+  ctx.strokeStyle = 'rgba(129,140,248,0.9)';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Data points
+  points.forEach((p, i) => {
+    const isPeak = p.value === peak.value;
+    const isLatest = i === points.length - 1;
+    const radius = isPeak || isLatest ? 5 : 3;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = isPeak ? 'var(--green, #4ade80)' : isLatest ? 'var(--accent, #818cf8)' : 'rgba(129,140,248,0.6)';
+    ctx.fill();
+    ctx.strokeStyle = 'var(--bg-secondary, #1a1a2e)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Value label on peak and latest
+    if (isPeak || isLatest) {
+      ctx.fillStyle = isPeak ? 'var(--green, #4ade80)' : 'var(--accent, #818cf8)';
+      ctx.font = 'bold 10px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(fmtValue(p.value), p.x, p.y - 10);
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', loadPlayer);

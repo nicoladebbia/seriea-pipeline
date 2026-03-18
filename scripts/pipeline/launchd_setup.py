@@ -74,13 +74,21 @@ JOBS = [
         "minute": 0,
     },
     {
-        "name": "monthly-retrain",
-        "label": f"{LABEL_PREFIX}.monthly-retrain",
-        "description": "Monthly model retraining with walk-forward validation",
-        "mode": "retrain",
-        "day": 1,  # 1st of every month
-        "hour": 10,
-        "minute": 0,
+        "name": "matchweek-retrain",
+        "label": f"{LABEL_PREFIX}.matchweek-retrain",
+        "description": "Nightly check: if matchweek complete, retrain models (quick or full auto-detect)",
+        "mode": "matchweek-retrain",
+        "hour": 0,
+        "minute": 15,
+        "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.weekly_retrain"],
+    },
+    {
+        "name": "health-monitor",
+        "label": f"{LABEL_PREFIX}.health-monitor",
+        "description": "Health monitor: API keys, pipeline staleness, pending bets (every 30 min)",
+        "mode": "health-monitor",
+        "interval_seconds": 1800,  # Every 30 minutes
+        "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.monitor", "--quiet"],
     },
 ]
 
@@ -90,13 +98,16 @@ def generate_plist(job: dict) -> dict:
     log_out = str(LOG_DIR / f"launchd-{job['name']}.log")
     log_err = str(LOG_DIR / f"launchd-{job['name']}-err.log")
 
-    args = [
-        str(PYTHON_PATH),
-        str(SCHEDULER_PATH),
-        job["mode"],
-    ]
-    if job.get("bankroll"):
-        args.extend(["--bankroll", str(job["bankroll"])])
+    if job.get("custom_args"):
+        args = job["custom_args"]
+    else:
+        args = [
+            str(PYTHON_PATH),
+            str(SCHEDULER_PATH),
+            job["mode"],
+        ]
+        if job.get("bankroll"):
+            args.extend(["--bankroll", str(job["bankroll"])])
 
     plist = {
         "Label": job["label"],

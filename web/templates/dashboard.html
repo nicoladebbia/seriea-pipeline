@@ -92,60 +92,33 @@
   <button onclick="smartRefresh()" class="btn btn--sm btn--accent">Refresh</button>
 </div>
 
-<!-- Live Section -->
-<div id="live-section" class="section hidden">
-  <div class="card match-card--live" style="border-color: rgba(74,222,128,0.2);">
-    <div class="card__header" style="border-bottom-color: rgba(74,222,128,0.15);">
-      <div class="flex items-center gap-3">
-        <div class="flex items-center gap-2">
-          <span style="width:10px;height:10px;background:var(--green);border-radius:50%;" class="animate-pulse"></span>
-          <span class="text-card-title font-semibold text-green">LIVE</span>
-        </div>
-        <span id="live-meta" class="text-small text-tertiary"></span>
-      </div>
-      <div class="flex items-center gap-2">
-        <button id="btn-poll-now" onclick="triggerPoll()" class="btn btn--sm" style="background:rgba(74,222,128,0.1);color:var(--green);border:1px solid rgba(74,222,128,0.2);">Poll Now</button>
-        <select id="poll-interval-select" onchange="updatePollInterval(this.value)" class="select">
-          <option value="60">1 min</option>
-          <option value="120" selected>2 min</option>
-          <option value="300">5 min</option>
-          <option value="900">15 min</option>
-        </select>
-        <button id="btn-auto-poll" onclick="toggleAutoPoll()" class="btn btn--sm btn--secondary">Live: OFF</button>
-        <span id="live-countdown" class="text-mono text-green" style="width:48px;font-size:12px;"></span>
-      </div>
-    </div>
-    <div id="live-matches"></div>
-    <div id="live-bets" class="hidden" style="border-top: 1px solid rgba(74,222,128,0.15);"></div>
+<!-- Live Status Bar — compact link to /live -->
+<div id="live-bar" class="section" style="display:none;">
+  <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;background:rgba(74,222,128,0.06);border:1px solid rgba(74,222,128,0.18);border-radius:var(--radius-md);">
+    <span style="width:10px;height:10px;background:var(--green);border-radius:50%;flex-shrink:0;" class="animate-pulse"></span>
+    <span id="live-bar-text" style="font-size:13px;font-weight:600;color:var(--green);flex:1;">Matches live</span>
+    <a href="/live" class="btn btn--sm" style="background:rgba(74,222,128,0.12);color:var(--green);border:1px solid rgba(74,222,128,0.25);text-decoration:none;font-weight:600;">Watch Live &rarr;</a>
   </div>
 </div>
 
-<!-- Recommended Bets Panel -->
-<div id="bets-panel-section" class="section hidden">
-  <div class="bets-panel">
-    <div class="bets-panel__header">
-      <div class="bets-panel__header-title">
-        <svg width="16" height="16" fill="none" stroke="var(--green)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-        <span>Recommended Bets</span>
-        <span id="bets-count" class="badge badge--green"></span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <select id="bets-sort" onchange="resortBets()" style="background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer;">
-          <option value="edge-desc">Edge: High &rarr; Low</option>
-          <option value="edge-asc">Edge: Low &rarr; High</option>
-          <option value="odds-desc">Odds: High &rarr; Low</option>
-          <option value="stake-desc">Stake: High &rarr; Low</option>
-        </select>
-        <span id="bets-exposure" class="bets-panel__header-meta"></span>
-      </div>
+<!-- Quick Stats Panel -->
+<div id="quick-stats-section" class="section">
+  <div style="display:flex;align-items:center;gap:var(--space-4);padding:var(--space-3) var(--space-4);background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius-md);flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <svg width="14" height="14" fill="none" stroke="var(--green)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <span id="quick-vb-count" style="font-size:13px;font-weight:600;color:var(--text-primary);">-- value bets</span>
+      <a href="/betting" style="font-size:11px;color:var(--accent);text-decoration:none;font-weight:500;">View &rarr;</a>
     </div>
-    <div id="bets-list"></div>
-    <div id="bets-show-more" class="hidden" style="text-align:center;padding:8px;">
-      <button onclick="toggleAllBets()" style="background:none;border:1px solid var(--border);color:var(--green);padding:4px 16px;border-radius:6px;font-size:12px;cursor:pointer;">
-        <span id="show-more-label">Show all</span>
-      </button>
+    <div style="width:1px;height:20px;background:var(--border-subtle);"></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:11px;color:var(--text-tertiary);">Bankroll:</span>
+      <span id="quick-bankroll" style="font-size:13px;font-weight:600;color:var(--text-primary);">--</span>
+      <span id="quick-roi" style="font-size:11px;font-weight:500;">--</span>
     </div>
-    <div id="bets-footer" class="bets-panel__footer hidden"></div>
+    <div style="width:1px;height:20px;background:var(--border-subtle);"></div>
+    <div id="quick-freshness" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary);">
+      Checking freshness...
+    </div>
   </div>
 </div>
 
@@ -213,9 +186,6 @@ function renderMatchRow(m) {
       <span class="text-tertiary">-</span>
       <span class="text-red">${xgFmt(m.away_xg)}</span>
     </td>
-    <td style="text-align:center">
-      ${h2h.home ? `<span class="text-mono" style="font-size:10px;color:var(--text-secondary)">${oddsFmt(h2h.home)} / ${oddsFmt(h2h.draw)} / ${oddsFmt(h2h.away)}</span>` : '<span class="text-tertiary">-</span>'}
-    </td>
     <td class="edge-cell ${edgeVal > 3 ? 'text-green' : edgeVal < -3 ? 'text-red' : 'text-tertiary'}">
       ${edgeVal ? (edgeVal > 0 ? '+' : '') + edgeVal.toFixed(1) + '%' : '-'}
     </td>
@@ -226,119 +196,80 @@ function renderMatchRow(m) {
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// LIVE MONITOR
+// LIVE STATUS BAR — lightweight check, full experience on /live
 // ═══════════════════════════════════════════════════════════════════════
-let liveRefreshInterval = null, autoPollActive = false, autoPollNextAt = 0, autoPollInterval = 120, countdownInterval = null;
+async function updateLiveBar() {
+  try {
+    const data = await apiFetch('/api/live');
+    const matches = data.matches || {};
+    const keys = Object.keys(matches);
+    const bar = document.getElementById('live-bar');
+    const text = document.getElementById('live-bar-text');
 
-function renderLiveMatch(mk, md) {
-  const snaps=md.snapshots||[], lastSnap=snaps.length?snaps[snaps.length-1]:null, status=md.status||'unknown';
-  const isLive=['first_half','half_time','second_half'].includes(status);
-  let score=[0,0]; if(md.final_score) score=md.final_score; else if(lastSnap) score=lastSnap.score||[0,0];
-  const minute=lastSnap?lastSnap.min:null;
-  const statusLabel={first_half:'1st Half',half_time:'Half Time',second_half:'2nd Half',completed:'Full Time',pre_match:'Pre-Match'}[status]||status;
-  const statusColor=isLive?'text-green':status==='completed'?'text-secondary':'text-tertiary';
-  const pre=md.pre_match_odds||{}, avgOdds=lastSnap?(lastSnap.avg_odds||{}):{};
-  let oddsHtml='';
-  if(avgOdds.home){oddsHtml='<div class="flex gap-4 mt-2">';for(const side of['home','draw','away']){const cur=avgOdds[side],prv=pre[side];let sh='';if(prv&&cur){const diff=(1/cur*100)-(1/prv*100);if(Math.abs(diff)>0.5)sh=`<span class="${diff>0?'text-green':'text-red'}" style="font-size:10px">${diff>0?'\u25B2':'\u25BC'}${Math.abs(diff).toFixed(1)}pp</span>`;}const labels={home:'H',draw:'D',away:'A'};const colors={home:'text-green',draw:'text-amber',away:'text-red'};oddsHtml+=`<div class="text-center"><div class="text-label">${labels[side]}</div><div class="text-mono text-small ${colors[side]}">${cur?cur.toFixed(2):'-'}</div>${prv?`<div class="text-tertiary" style="font-size:10px">was ${prv.toFixed(2)}</div>`:''}${sh}</div>`;}oddsHtml+='</div>';}
-  return `<div style="padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border-subtle)"><div class="flex items-center justify-between"><div class="flex items-center gap-4 flex-1"><div class="text-right flex-1"><a href="/team/${encodeURIComponent(md.home_team)}" class="text-small font-semibold">${md.home_team}</a></div><div class="flex flex-col items-center" style="min-width:80px"><div class="text-mono-lg">${score[0]} - ${score[1]}</div><div class="flex items-center gap-1 mt-1">${isLive?'<span style="width:6px;height:6px;background:var(--green);border-radius:50%" class="animate-pulse"></span>':''}<span class="text-small ${statusColor} font-medium">${statusLabel}${minute?` ${minute}'`:''}</span></div></div><div class="flex-1"><a href="/team/${encodeURIComponent(md.away_team)}" class="text-small font-semibold">${md.away_team}</a></div></div><div style="margin-left:var(--space-4);text-align:right;min-width:140px">${oddsHtml}</div></div></div>`;
-}
+    const liveStatuses = ['first_half','half_time','second_half'];
+    const liveKeys = keys.filter(k => liveStatuses.includes(matches[k].status));
+    const trackedCount = keys.length;
 
-function renderLiveBets(bets) {
-  if(!bets||!bets.length)return'';let total=0;const rows=bets.map(bt=>{const pnl=bt.potential_profit||0;total+=pnl;const isWon=bt.status.includes('won'),isLost=bt.status.includes('lost');return`<div class="flex items-center justify-between" style="padding:var(--space-2) var(--space-4)"><div class="flex items-center gap-2 text-small">${isWon?'<span class="text-green">\u2713</span>':isLost?'<span class="text-red">\u2717</span>':'<span class="text-tertiary">\u25CB</span>'}<span class="text-secondary">${bt.match}</span><span class="text-tertiary">|</span><span class="text-secondary">${bt.selection}</span><span class="text-tertiary">@${bt.placed_odds}</span></div><div class="flex items-center gap-3 text-small"><span class="${isWon?'text-green':isLost?'text-red':'text-amber'} font-medium">${bt.status}</span><span class="${pnl>=0?'text-green':'text-red'} text-mono font-medium">${pnl>=0?'+':''}$${pnl.toFixed(2)}</span></div></div>`;}).join('');
-  return`<div class="flex items-center justify-between" style="padding:var(--space-2) var(--space-4);border-bottom:1px solid var(--border-subtle)"><span class="text-label">Bet Tracker</span><span class="text-mono text-small ${total>=0?'text-green':'text-red'} font-semibold">Net: ${total>=0?'+':''}$${total.toFixed(2)}</span></div>${rows}`;
-}
-
-async function loadLive(){try{const data=await apiFetch('/api/live');const section=document.getElementById('live-section'),matchesDiv=document.getElementById('live-matches'),betsDiv=document.getElementById('live-bets'),meta=document.getElementById('live-meta');const matches=data.matches||{},matchKeys=Object.keys(matches);if(!matchKeys.length&&!data.polls){section.classList.add('hidden');return;}section.classList.remove('hidden');const lp=matchKeys.length?matches[matchKeys[0]]?.snapshots?.slice(-1)[0]?.ts:null;meta.textContent=`${matchKeys.length} match${matchKeys.length!==1?'es':''} | Poll #${data.polls} | ${data.api_calls} API calls${lp?' | Last: '+new Date(lp).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):''}`;autoPollActive=data.auto_poll_active||false;autoPollInterval=data.auto_poll_interval||120;autoPollNextAt=data.auto_poll_next_at||0;const sel=document.getElementById('poll-interval-select');if(sel){const c=[...sel.options].reduce((a,b)=>Math.abs(b.value-autoPollInterval)<Math.abs(a.value-autoPollInterval)?b:a);sel.value=c.value;}updateAutoPollButton();matchesDiv.innerHTML=matchKeys.map(mk=>renderLiveMatch(mk,matches[mk])).join('');const bets=data.bet_tracking||[];if(bets.length){betsDiv.innerHTML=renderLiveBets(bets);betsDiv.classList.remove('hidden');}else betsDiv.classList.add('hidden');}catch(err){console.warn('Live data fetch failed:',err);}}
-async function triggerPoll(){const btn=document.getElementById('btn-poll-now');btn.textContent='Polling...';btn.disabled=true;try{await fetch('/api/live/trigger',{method:'POST'});await loadLive();}catch(err){console.error('Poll trigger failed:',err);}btn.textContent='Poll Now';btn.disabled=false;}
-function updateAutoPollButton(){const btn=document.getElementById('btn-auto-poll');if(!btn)return;if(autoPollActive){btn.textContent='Live: '+((autoPollInterval>=60)?Math.floor(autoPollInterval/60)+'min':autoPollInterval+'s');btn.className='btn btn--sm';btn.style.background='rgba(74,222,128,0.1)';btn.style.color='var(--green)';btn.style.border='1px solid rgba(74,222,128,0.2)';startCountdown();}else{btn.textContent='Live: OFF';btn.className='btn btn--sm btn--secondary';btn.style.background='';btn.style.color='';btn.style.border='';stopCountdown();}}
-function startCountdown(){stopCountdown();countdownInterval=setInterval(()=>{const el=document.getElementById('live-countdown');if(!autoPollActive||!autoPollNextAt){el.textContent='';return;}const r=Math.max(0,Math.floor(autoPollNextAt-Date.now()/1000));el.textContent=Math.floor(r/60)+':'+String(r%60).padStart(2,'0');},1000);}
-function stopCountdown(){if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}const el=document.getElementById('live-countdown');if(el)el.textContent='';}
-async function updatePollInterval(secs){secs=parseInt(secs);try{await fetch('/api/live/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval:secs})});autoPollInterval=secs;updateAutoPollButton();}catch(err){console.error('Failed to update poll interval:',err);}}
-async function toggleAutoPoll(){const action=autoPollActive?'stop':'start';try{const res=await fetch('/api/live/auto-poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});const data=await res.json();autoPollActive=data.active||false;updateAutoPollButton();if(autoPollActive)await triggerPoll();}catch(err){console.error('Auto-poll toggle failed:',err);}}
-function startLiveRefresh(){loadLive();liveRefreshInterval=setInterval(loadLive,30000);}
-
-
-// ═══════════════════════════════════════════════════════════════════════
-// RECOMMENDED BETS & STATS BAR
-// ═══════════════════════════════════════════════════════════════════════
-async function loadRecommendedBets(){try{const data=await apiFetch('/api/betting');const bets=data.bets||[];const b=data.bankroll||{};
-  // Stats bar
-  const bal=b.current_balance||1000;
-  const el=id=>document.getElementById(id);
-  if(el('stat-bankroll')){el('stat-bankroll').textContent=eurFmt(bal);const t=el('stat-bankroll-trend');if(t){const d=b.net_profit||0;t.className='stat-card__trend '+(d>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=(d>=0?'+':'')+eurFmt(d);}}
-  if(el('stat-winrate')){el('stat-winrate').textContent=(b.win_rate??0)+'%';const t=el('stat-winrate-trend');if(t){t.textContent=`${b.wins||0}W / ${b.losses||0}L`+(b.pushes?` / ${b.pushes}P`:'');t.className='stat-card__trend stat-card__trend--neutral';}}
-  if(el('stat-roi')){const roi=b.roi??0;el('stat-roi').textContent=signedPct(roi);const t=el('stat-roi-trend');if(t){t.className='stat-card__trend '+(roi>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=b.total_stake>0?`on ${eurFmt(b.total_stake)} staked`:`${b.settled_bets||0} settled`;}}
-  // Bets panel — sorted by edge, top 5 visible
-  const section=el('bets-panel-section'),list=el('bets-list'),footer=el('bets-footer'),countEl=el('bets-count'),exposureEl=el('bets-exposure');
-  if(!bets.length){list.innerHTML='<div class="bets-panel__empty">No value bets found &mdash; run the pipeline to generate recommendations</div>';section.classList.remove('hidden');countEl.textContent='0';footer.classList.add('hidden');return;}
-
-  window._allBets = bets;
-  window._showAllBets = false;
-  bets.sort((a, b) => (b.value_pct || b.edge || 0) - (a.value_pct || a.edge || 0));
-
-  const totalExp=bets.reduce((s,b)=>s+(b.stake||0),0), totalRet=bets.reduce((s,b)=>s+(b.stake||0)*(b.odds||b.placed_odds||0),0), avg=bets.reduce((s,b)=>s+(b.odds||b.placed_odds||0),0)/bets.length;
-  countEl.textContent=`${bets.length}`;exposureEl.textContent=`${eurFmt(totalExp)} exposure`;
-
-  renderBetRows(bets, false);
-
-  footer.innerHTML=`<span>${bets.length} bet${bets.length!==1?'s':''} &middot; Potential return: ${eurFmt(totalRet)}</span><span>Avg odds: ${avg.toFixed(2)}</span>`;
-  footer.classList.remove('hidden');section.classList.remove('hidden');
-}catch{}}
-
-function renderBetRows(bets, showAll) {
-  const $ = id => document.getElementById(id);
-  const list = $('bets-list');
-  const showMore = $('bets-show-more');
-  const visible = showAll ? bets : bets.slice(0, 5);
-  const hidden = bets.length - visible.length;
-
-  list.innerHTML = visible.map(b => {
-    const edge = b.value_pct || b.edge || 0;
-    const odds = b.odds || b.placed_odds || 0;
-    const ct = b.commence_time || b.date || '';
-    const dateLbl = ct ? new Date(ct).toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'}) : '';
-    const timeLbl = ct ? new Date(ct).toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}) : '';
-    const dateStr = dateLbl && timeLbl ? `${dateLbl} ${timeLbl}` : dateLbl || '';
-    return `<div class="bets-panel__row">
-      <div class="bets-panel__match"><div>${b.match || '-'}</div>${dateStr ? `<div style="margin-top:2px;font-size:11px;color:var(--text-tertiary);font-weight:400">${dateStr}</div>` : ''}${b.confidence_level || b.confidence ? `<div style="margin-top:2px">${confBadge(b.confidence_level || b.confidence)}</div>` : ''}</div>
-      <div class="bets-panel__selection"><span class="bets-panel__selection-label">${b.selection || b.recommendation || '-'}</span><span class="bets-panel__selection-market">${b.market || '1X2'}</span></div>
-      <div class="bets-panel__odds">@${oddsFmt(odds)}</div>
-      <div class="bets-panel__edge"><span class="badge badge--green">+${edge.toFixed(1)}%</span></div>
-      <div class="bets-panel__stake">${eurFmt(b.stake || 0)}</div>
-    </div>`;
-  }).join('');
-
-  if (hidden > 0 && !showAll) {
-    showMore.classList.remove('hidden');
-    $('show-more-label').textContent = `Show all ${bets.length} bets`;
-  } else if (showAll && bets.length > 5) {
-    showMore.classList.remove('hidden');
-    $('show-more-label').textContent = 'Show top 5 only';
-  } else {
-    showMore.classList.add('hidden');
+    if (liveKeys.length > 0) {
+      // Active live matches — show bar with match summaries
+      const summaries = liveKeys.slice(0, 3).map(k => {
+        const m = matches[k];
+        const snaps = m.snapshots || [];
+        const last = snaps.length ? snaps[snaps.length - 1] : null;
+        const score = m.final_score || (last ? last.score : null) || [0, 0];
+        const min = last ? last.min : '';
+        const slug = k.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const label = `${m.home_team} ${score[0]}-${score[1]} ${m.away_team}${min ? " (" + min + "')" : ""}`;
+        return `<a href="/live#match-${slug}" style="color:var(--green);text-decoration:none;border-bottom:1px dotted rgba(74,222,128,0.4);" onclick="event.stopPropagation()">${label}</a>`;
+      });
+      let label = `${liveKeys.length} match${liveKeys.length !== 1 ? 'es' : ''} live`;
+      if (summaries.length) label += ': ' + summaries.join(' <span style="color:var(--text-tertiary)">|</span> ');
+      if (liveKeys.length > 3) label += ` +${liveKeys.length - 3} more`;
+      text.innerHTML = label;
+      bar.style.display = '';
+    } else if (trackedCount > 0) {
+      // Tracked but not live (pre-match or completed)
+      text.textContent = `${trackedCount} match${trackedCount !== 1 ? 'es' : ''} tracked`;
+      text.style.color = 'var(--text-secondary)';
+      bar.querySelector('.animate-pulse').style.background = 'var(--text-tertiary)';
+      bar.style.display = '';
+    } else {
+      bar.style.display = 'none';
+    }
+  } catch (err) {
+    // Silent — bar just stays hidden
   }
 }
 
-function toggleAllBets() {
-  window._showAllBets = !window._showAllBets;
-  renderBetRows(window._allBets || [], window._showAllBets);
+function startLiveBarRefresh() {
+  updateLiveBar();
+  setInterval(updateLiveBar, 60000);  // check every 60s (lightweight)
 }
 
-function resortBets() {
-  const mode = document.getElementById('bets-sort').value;
-  const bets = window._allBets || [];
-  if (mode === 'edge-desc') bets.sort((a, b) => (b.value_pct || b.edge || 0) - (a.value_pct || a.edge || 0));
-  else if (mode === 'edge-asc') bets.sort((a, b) => (a.value_pct || a.edge || 0) - (b.value_pct || b.edge || 0));
-  else if (mode === 'odds-desc') bets.sort((a, b) => (b.odds || b.placed_odds || 0) - (a.odds || a.placed_odds || 0));
-  else if (mode === 'stake-desc') bets.sort((a, b) => (b.stake || 0) - (a.stake || 0));
-  renderBetRows(bets, window._showAllBets);
-}
+
+// ═══════════════════════════════════════════════════════════════════════
+// QUICK STATS (compact summary — details on dedicated pages)
+// ═══════════════════════════════════════════════════════════════════════
+async function loadQuickStats(){try{const data=await apiFetch('/api/betting');const bets=data.bets||[];const b=data.bankroll||{};
+  const el=id=>document.getElementById(id);
+  // Value bets count
+  const vbCount = bets.length;
+  if(el('quick-vb-count')) el('quick-vb-count').textContent = vbCount + ' value bet' + (vbCount !== 1 ? 's' : '') + ' found';
+  // Bankroll + ROI in stats bar
+  const bal=b.current_balance||1000;
+  if(el('stat-bankroll')){el('stat-bankroll').textContent=eurFmt(bal);const t=el('stat-bankroll-trend');if(t){const d=b.net_profit||0;t.className='stat-card__trend '+(d>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=(d>=0?'+':'')+eurFmt(d);}}
+  if(el('stat-winrate')){el('stat-winrate').textContent=(b.win_rate??0)+'%';const t=el('stat-winrate-trend');if(t){t.textContent=`${b.wins||0}W / ${b.losses||0}L`+(b.pushes?` / ${b.pushes}P`:'');t.className='stat-card__trend stat-card__trend--neutral';}}
+  if(el('stat-roi')){const roi=b.roi??0;el('stat-roi').textContent=signedPct(roi);const t=el('stat-roi-trend');if(t){t.className='stat-card__trend '+(roi>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=b.total_stake>0?`on ${eurFmt(b.total_stake)} staked`:`${b.settled_bets||0} settled`;}}
+  // Quick stats panel
+  if(el('quick-bankroll')) el('quick-bankroll').textContent = eurFmt(bal);
+  if(el('quick-roi')){const roi=b.roi??0;el('quick-roi').textContent = (roi>=0?'+':'')+roi+'% ROI';el('quick-roi').style.color = roi>=0?'var(--green)':'var(--red)';}
+}catch{}}
 
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA FRESHNESS
 // ═══════════════════════════════════════════════════════════════════════
-async function loadFreshness(){try{const data=await apiFetch('/api/system');const f=data.data_freshness||{};const bar=document.getElementById('freshness-bar'),text=document.getElementById('freshness-text');if(!bar||!f)return;const stale=[];for(const[src,info]of Object.entries(f)){if(!info)continue;const ts=info.updated_at||info.timestamp||info;if(typeof ts==='string'&&ts){const age=(Date.now()-new Date(ts).getTime())/3600000;if(age>12)stale.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);}}if(stale.length>0){text.textContent=stale.join(' \u00B7 ');bar.classList.remove('hidden');}else bar.classList.add('hidden');}catch{}}
+async function loadFreshness(){try{const data=await apiFetch('/api/system');const f=data.data_freshness||{};const bar=document.getElementById('freshness-bar'),text=document.getElementById('freshness-text');if(!bar||!f)return;const stale=[];const freshParts=[];for(const[src,info]of Object.entries(f)){if(!info)continue;const ts=info.updated_at||info.timestamp||info;if(typeof ts==='string'&&ts){const age=(Date.now()-new Date(ts).getTime())/3600000;if(age>12)stale.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);freshParts.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);}}if(stale.length>0){text.textContent=stale.join(' \u00B7 ');bar.classList.remove('hidden');}else bar.classList.add('hidden');const qf=document.getElementById('quick-freshness');if(qf){if(stale.length>0){qf.innerHTML='<span style="color:var(--amber)">Data stale</span> &middot; '+stale.slice(0,2).join(' &middot; ');}else{qf.innerHTML='<span style="color:var(--green)">\u2713</span> Data fresh';}}}catch{}}
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -461,7 +392,6 @@ async function loadDashboard() {
               <th>Pred</th>
               <th>H-D-A</th>
               <th>xG</th>
-              <th>Odds</th>
               <th style="text-align:center">Edge</th>
               <th style="text-align:center">Conf</th>
               <th>Flags</th>
@@ -505,10 +435,10 @@ async function loadLineupAssessment() {
 }
 
 loadDashboard();
-loadRecommendedBets();
+loadQuickStats();
 loadFreshness();
 loadLineupAssessment();
-startLiveRefresh();
+startLiveBarRefresh();
 
 // Live clock
 (function() {

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from models.schemas import MatchData
@@ -14,6 +17,9 @@ from parser.lineups import lineups_to_records
 from storage.paths import parsed_path
 
 log = logging.getLogger(__name__)
+
+_BASE = Path(__file__).parent.parent
+_SOFASCORE_FIXTURES = _BASE / "data" / "external" / "sofascore"
 
 
 def save_all(matches: list[MatchData]) -> None:
@@ -62,6 +68,104 @@ def _coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _fill_missing_matchweeks(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill NaN matchweeks using Sofascore fixtures, then chronological fallback.
+
+    Strategy (in priority order):
+    1. Sofascore fixtures — authoritative matchweek assignments from official data
+    2. Chronological inference — for each team, count matches in date order
+       and assign matchweek = ceil(match_number_for_home_team)
+
+    Only operates on rows where matchweek is NaN.
+    """
+    if "matchweek" not in df.columns:
+        return df
+
+    nan_mask = df["matchweek"].isna()
+    n_missing = nan_mask.sum()
+    if n_missing == 0:
+        return df
+
+    log.info("Filling %d missing matchweek values", n_missing)
+
+    # --- Strategy 1: Sofascore fixtures lookup ---
+    try:
+        from config.team_names import normalize_team
+    except ImportError:
+        normalize_team = None
+
+    sofascore_lookup: dict[tuple[str, str, str], int] = {}
+    for fixture_file in sorted(_SOFASCORE_FIXTURES.glob("fixtures_*.json")):
+        try:
+            with open(fixture_file) as f:
+                fixtures = json.load(f)
+            if not isinstance(fixtures, list):
+                continue
+            for m in fixtures:
+                round_info = m.get("roundInfo", {})
+                mw = round_info.get("round") if isinstance(round_info, dict) else None
+                if mw is None:
+                    continue
+                home_raw = m.get("homeTeam", {}).get("name", "")
+                away_raw = m.get("awayTeam", {}).get("name", "")
+                # Normalize team names (Sofascore uses "Hellas Verona" etc.)
+                home = normalize_team(home_raw) if normalize_team else home_raw
+                away = normalize_team(away_raw) if normalize_team else away_raw
+                # Key by home_team + away_team (season-unique fixture)
+                sofascore_lookup[(home, away)] = int(mw)
+        except Exception as e:
+            log.debug("Failed to load Sofascore fixtures %s: %s", fixture_file.name, e)
+
+    if sofascore_lookup:
+        filled_sofa = 0
+        for idx in df.index[nan_mask]:
+            home = df.at[idx, "home_team"]
+            away = df.at[idx, "away_team"]
+            mw = sofascore_lookup.get((home, away))
+            if mw is not None:
+                df.at[idx, "matchweek"] = mw
+                filled_sofa += 1
+        if filled_sofa:
+            log.info("Filled %d matchweeks from Sofascore fixtures", filled_sofa)
+        nan_mask = df["matchweek"].isna()
+
+    # --- Strategy 2: Chronological inference ---
+    # For remaining NaN: count each team's matches in date order within the season
+    still_missing = nan_mask.sum()
+    if still_missing > 0:
+        log.info("Inferring %d remaining matchweeks chronologically", still_missing)
+        for season in df.loc[nan_mask, "season"].unique():
+            season_mask = df["season"] == season
+            season_df = df[season_mask].sort_values("match_date").reset_index()
+
+            # Count matches per team in chronological order
+            team_match_num: dict[str, int] = {}
+            for _, row in season_df.iterrows():
+                orig_idx = row["index"]
+                if pd.notna(df.at[orig_idx, "matchweek"]):
+                    # Already has a matchweek — still count for team tracking
+                    team_match_num[row["home_team"]] = team_match_num.get(row["home_team"], 0) + 1
+                    team_match_num[row["away_team"]] = team_match_num.get(row["away_team"], 0) + 1
+                    continue
+                h = row["home_team"]
+                a = row["away_team"]
+                team_match_num[h] = team_match_num.get(h, 0) + 1
+                team_match_num[a] = team_match_num.get(a, 0) + 1
+                # Use the average of both teams' match counts
+                inferred_mw = round((team_match_num[h] + team_match_num[a]) / 2)
+                df.at[orig_idx, "matchweek"] = inferred_mw
+
+        filled_chrono = still_missing - df["matchweek"].isna().sum()
+        if filled_chrono:
+            log.info("Filled %d matchweeks via chronological inference", filled_chrono)
+
+    remaining = df["matchweek"].isna().sum()
+    if remaining:
+        log.warning("Still %d rows with NaN matchweek after all strategies", remaining)
+
+    return df
+
+
 def _append_or_create(df: pd.DataFrame, table_name: str) -> None:
     """Append df to an existing Parquet table, or create it."""
     path = parsed_path(table_name)
@@ -76,6 +180,11 @@ def _append_or_create(df: pd.DataFrame, table_name: str) -> None:
 
     # Coerce mixed-type columns to avoid ArrowInvalid on parquet write
     df = _coerce_numeric_columns(df)
+
+    # Fill any NaN matchweeks before saving (matches table only)
+    if table_name == "matches" and "matchweek" in df.columns:
+        df = _fill_missing_matchweeks(df)
+
     df.to_parquet(path, index=False)
     log.info("Saved %s: %d rows to %s", table_name, len(df), path)
 

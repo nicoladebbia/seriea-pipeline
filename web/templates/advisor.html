@@ -4,15 +4,28 @@
 
 {% block head %}
 <style>
-  .advisor-fullpage {
+  /* Prevent page scroll — advisor must fit in viewport */
+  .main-content:has(.advisor-fullpage) {
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
     display: flex;
-    gap: var(--space-6);
-    height: calc(100vh - 73px);
-    padding: 0;
+    flex-direction: column;
   }
-  .advisor-fullpage .main-inner {
+  .main-content:has(.advisor-fullpage) > header {
+    flex-shrink: 0;
+  }
+  .main-content:has(.advisor-fullpage) .main-inner {
     padding: 0;
     max-width: none;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .advisor-fullpage {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
   }
   .advisor-chat-area {
     flex: 1;
@@ -20,9 +33,10 @@
     flex-direction: column;
     min-width: 0;
     height: 100%;
+    overflow: hidden;
   }
   .advisor-sidebar-right {
-    width: 280px;
+    width: 260px;
     flex-shrink: 0;
     border-left: 1px solid var(--border-subtle);
     padding: var(--space-5);
@@ -59,10 +73,12 @@
     flex: 1;
     overflow-y: auto;
     padding: var(--space-6) var(--space-8);
+    min-height: 0; /* critical for flex overflow */
   }
   .fp-input-area {
     border-top: 1px solid var(--border-subtle);
     padding: var(--space-4) var(--space-8);
+    flex-shrink: 0;
     display: flex;
     gap: var(--space-3);
     align-items: flex-end;

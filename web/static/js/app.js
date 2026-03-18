@@ -457,6 +457,193 @@ function toggleAlerts(enabled) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// LIVE MATCH NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════
+const LiveNotifications = (() => {
+  let _prevState = {};  // {matchKey: {score:[h,a], status, events_count, cards_count}}
+  let _pollTimer = null;
+  const POLL_INTERVAL = 30000;  // 30s
+  const NOTIF_DURATION = 8000;  // 8s toast duration
+  let _container = null;
+
+  function _getContainer() {
+    if (_container) return _container;
+    _container = document.getElementById('live-notif-stack');
+    if (!_container) {
+      _container = document.createElement('div');
+      _container.id = 'live-notif-stack';
+      _container.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:380px;pointer-events:none;';
+      document.body.appendChild(_container);
+    }
+    return _container;
+  }
+
+  function _showNotif(icon, title, body, color) {
+    const container = _getContainer();
+    const el = document.createElement('div');
+    const borderColor = {green:'74,222,128', red:'248,113,113', amber:'251,191,36', blue:'96,165,250'}[color] || '148,163,184';
+    el.style.cssText = `pointer-events:auto;background:var(--bg-elevated);border:1px solid rgba(${borderColor},0.4);border-radius:var(--radius-lg);padding:12px 16px;box-shadow:var(--shadow-lg);animation:slideIn 0.3s ease-out;min-width:280px;`;
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;line-height:1;">${icon}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:600;color:var(--text-primary);">${title}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${body}</div>
+        </div>
+        <button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;color:var(--text-tertiary);font-size:16px;cursor:pointer;padding:0 0 0 8px;">&times;</button>
+      </div>`;
+    container.appendChild(el);
+
+    // Browser notification
+    if (Notification.permission === 'granted') {
+      try { new Notification(title, { body: body, icon: '/static/img/favicon.png', tag: 'live-' + Date.now() }); } catch(e) {}
+    }
+
+    // Auto-remove
+    setTimeout(() => { if (el.parentElement) el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, NOTIF_DURATION);
+  }
+
+  function _getScore(match) {
+    if (match.final_score) return [...match.final_score];
+    if (match.snapshots?.length) {
+      const s = match.snapshots[match.snapshots.length - 1].score;
+      if (s) return [...s];
+    }
+    return [0, 0];
+  }
+
+  function _diffEvents(matchKey, match) {
+    const prev = _prevState[matchKey];
+    if (!prev) return;  // first load, no diff
+
+    const score = _getScore(match);
+    const prevScore = prev.score || [0, 0];
+    const events = match.live_events || [];
+    const goalEvents = events.filter(e => e.type === 'goal');
+    const redCardEvents = events.filter(e => e.type === 'card' && (e.card_type === 'red' || e.card_type === 'yellowRed'));
+    const yellowCardEvents = events.filter(e => e.type === 'card' && e.card_type === 'yellow');
+    const status = match.status || 'unknown';
+    const home = match.home_team || matchKey.split(' vs ')[0] || '?';
+    const away = match.away_team || matchKey.split(' vs ')[1] || '?';
+    const matchLabel = `${home} vs ${away}`;
+
+    // GOAL — events may be in reverse order (newest first), so sort by minute
+    const sortedGoals = [...goalEvents].sort((a, b) => (a.minute || 0) - (b.minute || 0));
+    const prevGoalCount = prev.goal_count || 0;
+    if (sortedGoals.length > prevGoalCount) {
+      // New goals are the ones after the previously seen count (in chronological order)
+      const newGoals = sortedGoals.slice(prevGoalCount);
+      for (const ge of newGoals) {
+        const scorer = ge.player || '?';
+        const min = ge.minute || '?';
+        const team = ge.is_home ? home : away;
+        _showNotif('⚽', `GOAL! ${score[0]}-${score[1]}`, `${scorer} (${team}) ${min}'  —  ${matchLabel}`, 'green');
+      }
+    } else if ((score[0] !== prevScore[0] || score[1] !== prevScore[1]) && sortedGoals.length === prevGoalCount) {
+      // Score changed but no new event detail — show generic goal notification
+      _showNotif('⚽', `GOAL! ${score[0]}-${score[1]}`, matchLabel, 'green');
+    }
+
+    // RED CARD — sort by minute to handle reverse order
+    const sortedReds = [...redCardEvents].sort((a, b) => (a.minute || 0) - (b.minute || 0));
+    const prevRedCount = prev.red_cards || 0;
+    if (sortedReds.length > prevRedCount) {
+      const newReds = sortedReds.slice(prevRedCount);
+      for (const rc of newReds) {
+        const player = rc.player || '?';
+        const min = rc.minute || '?';
+        const team = rc.is_home ? home : away;
+        _showNotif('🟥', `RED CARD`, `${player} (${team}) ${min}'  —  ${matchLabel}`, 'red');
+      }
+    }
+
+    // YELLOW CARD — sort by minute to handle reverse order
+    const sortedYellows = [...yellowCardEvents].sort((a, b) => (a.minute || 0) - (b.minute || 0));
+    const prevYellowCount = prev.yellow_cards || 0;
+    if (sortedYellows.length > prevYellowCount) {
+      const newYellows = sortedYellows.slice(prevYellowCount);
+      for (const yc of newYellows) {
+        const player = yc.player || '?';
+        const min = yc.minute || '?';
+        const team = yc.is_home ? home : away;
+        _showNotif('🟨', `Yellow Card`, `${player} (${team}) ${min}'  —  ${matchLabel}`, 'amber');
+      }
+    }
+
+    // HALF TIME
+    if (status === 'half_time' && prev.status !== 'half_time') {
+      _showNotif('⏸️', `Half Time: ${score[0]}-${score[1]}`, matchLabel, 'blue');
+    }
+
+    // FULL TIME
+    if (status === 'completed' && prev.status !== 'completed') {
+      _showNotif('🏁', `Full Time: ${score[0]}-${score[1]}`, matchLabel, 'blue');
+    }
+
+    // KICK OFF
+    if ((status === 'first_half') && (!prev.status || prev.status === 'pre_match')) {
+      _showNotif('📣', 'Kick Off!', matchLabel, 'green');
+    }
+
+    // SECOND HALF START
+    if (status === 'second_half' && prev.status === 'half_time') {
+      _showNotif('📣', `2nd Half: ${score[0]}-${score[1]}`, matchLabel, 'blue');
+    }
+  }
+
+  function _saveState(matches) {
+    for (const [key, m] of Object.entries(matches)) {
+      const score = _getScore(m);
+      const events = m.live_events || [];
+      _prevState[key] = {
+        score: score,
+        status: m.status,
+        goal_count: events.filter(e => e.type === 'goal').length,
+        red_cards: events.filter(e => e.type === 'card' && (e.card_type === 'red' || e.card_type === 'yellowRed')).length,
+        yellow_cards: events.filter(e => e.type === 'card' && e.card_type === 'yellow').length,
+      };
+    }
+  }
+
+  async function poll() {
+    try {
+      const data = await apiFetch('/api/live');
+      const matches = data.matches || {};
+      if (!Object.keys(matches).length) return;
+
+      // Diff against previous state
+      for (const [key, m] of Object.entries(matches)) {
+        _diffEvents(key, m);
+      }
+      // Save current state for next diff
+      _saveState(matches);
+    } catch (e) {
+      // Silent fail — notifications are non-critical
+    }
+  }
+
+  function start() {
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    // Initial load (just save state, don't notify)
+    apiFetch('/api/live').then(data => {
+      _saveState(data.matches || {});
+    }).catch(() => {});
+    // Start polling
+    _pollTimer = setInterval(poll, POLL_INTERVAL);
+  }
+
+  function stop() {
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  }
+
+  return { start, stop, poll };
+})();
+
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
   initSidebar();
@@ -465,4 +652,5 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSidebarStats();
   loadNextMatchCountdown();
   initAlerts();
+  LiveNotifications.start();
 });

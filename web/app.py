@@ -24,6 +24,7 @@ except ImportError:
 from flask import Flask, render_template, jsonify, request as flask_request
 from config.settings import DATA_DIR, get_current_season
 
+_BASE = Path(__file__).parent.parent  # project root
 BETTING_DIR = DATA_DIR / "betting"
 UPCOMING_DIR = DATA_DIR / "upcoming"
 LIVE_DIR = DATA_DIR / "live"
@@ -142,6 +143,11 @@ def analytics():
 @app.route("/system")
 def system():
     return render_template("system.html", active_page="system")
+
+
+@app.route("/live")
+def live_page():
+    return render_template("live.html", active_page="live")
 
 
 @app.route("/matches")
@@ -1672,6 +1678,109 @@ def api_health():
 
 
 # ---------------------------------------------------------------------------
+# API: Log viewer
+# ---------------------------------------------------------------------------
+
+_LOG_DIR = _BASE / "logs"
+
+# Available log files with display names and descriptions
+_LOG_FILES = {
+    "pipeline":      {"file": "pipeline.log",                        "label": "Pipeline",         "desc": "Main pipeline execution"},
+    "errors":        {"file": "errors.log",                          "label": "Errors",           "desc": "Error tracebacks"},
+    "scheduler":     {"file": "scheduler.log",                       "label": "Scheduler",        "desc": "Scheduler events"},
+    "monitor":       {"file": "monitor.log",                         "label": "Health Monitor",   "desc": "Health check results"},
+    "retrain":       {"file": "retrain.log",                         "label": "Retrain",          "desc": "Model retraining"},
+    "settlement":    {"file": "launchd-settlement.log",              "label": "Settlement",       "desc": "Bet settlement"},
+    "settlement-err":{"file": "launchd-settlement-err.log",          "label": "Settlement Err",   "desc": "Settlement errors"},
+    "pre-kickoff":   {"file": "launchd-pre-kickoff-monitor.log",     "label": "Pre-Kickoff",      "desc": "Lineup & prediction updates"},
+    "pre-kickoff-err":{"file": "launchd-pre-kickoff-monitor-err.log","label": "Pre-Kickoff Err",  "desc": "Pre-kickoff errors"},
+    "morning":       {"file": "launchd-morning.log",                 "label": "Morning Run",      "desc": "Morning pipeline"},
+    "morning-err":   {"file": "launchd-morning-err.log",             "label": "Morning Err",      "desc": "Morning errors"},
+    "evening":       {"file": "launchd-evening.log",                 "label": "Evening Run",      "desc": "Evening pipeline"},
+    "health-monitor":{"file": "launchd-health-monitor.log",          "label": "Health (launchd)", "desc": "Launchd health checks"},
+}
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Return available log files with metadata."""
+    log_key = flask_request.args.get("log", "")
+    lines = int(flask_request.args.get("lines", 100))
+    search = flask_request.args.get("search", "").strip().lower()
+    level = flask_request.args.get("level", "").strip().lower()  # error, warning, info
+
+    # If no specific log requested, return the file list
+    if not log_key:
+        result = []
+        for key, info in _LOG_FILES.items():
+            path = _LOG_DIR / info["file"]
+            size = 0
+            modified = ""
+            exists = False
+            if path.exists():
+                exists = True
+                size = path.stat().st_size
+                modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+            result.append({
+                "key": key,
+                "label": info["label"],
+                "desc": info["desc"],
+                "file": info["file"],
+                "exists": exists,
+                "size": size,
+                "size_human": f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB",
+                "modified": modified,
+            })
+        return jsonify({"logs": result})
+
+    # Return specific log content
+    info = _LOG_FILES.get(log_key)
+    if not info:
+        return jsonify({"error": f"Unknown log: {log_key}"}), 404
+
+    path = _LOG_DIR / info["file"]
+    if not path.exists():
+        return jsonify({"lines": [], "total": 0, "file": info["file"]})
+
+    try:
+        # Read last N lines efficiently (read from end)
+        with open(path, "rb") as f:
+            # Seek to approximate position for last N lines
+            f.seek(0, 2)
+            fsize = f.tell()
+            # Read last ~200KB max
+            read_size = min(fsize, 200_000)
+            f.seek(max(0, fsize - read_size))
+            raw = f.read().decode("utf-8", errors="replace")
+
+        all_lines = raw.splitlines()
+
+        # Apply search filter
+        if search:
+            all_lines = [l for l in all_lines if search in l.lower()]
+
+        # Apply level filter
+        if level == "error":
+            all_lines = [l for l in all_lines if "error" in l.lower() or "traceback" in l.lower() or "exception" in l.lower()]
+        elif level == "warning":
+            all_lines = [l for l in all_lines if "warn" in l.lower()]
+
+        # Return last N lines, newest first
+        result_lines = all_lines[-lines:]
+        result_lines.reverse()
+
+        return jsonify({
+            "lines": result_lines,
+            "total": len(all_lines),
+            "file": info["file"],
+            "label": info["label"],
+            "size": fsize,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "lines": [], "total": 0})
+
+
+# ---------------------------------------------------------------------------
 # API: Live monitoring data
 # ---------------------------------------------------------------------------
 
@@ -1699,9 +1808,18 @@ def api_live():
             "auto_poll_next_at": 0,
         })
 
+    # Filter out matches from previous days (they leak in when monitor runs past midnight)
+    filtered_matches = {}
+    for mk, md in data.get("matches", {}).items():
+        commence = md.get("commence_time", "")
+        if commence and commence[:10] < today:
+            continue  # skip yesterday's matches
+        filtered_matches[mk] = md
+    data["matches"] = filtered_matches
+
     # Determine if any match is currently live
     has_live = False
-    for mk, md in data.get("matches", {}).items():
+    for mk, md in filtered_matches.items():
         st = md.get("status", "")
         if st in ("first_half", "half_time", "second_half"):
             has_live = True
@@ -1843,14 +1961,15 @@ def api_live_props(match_slug):
     if not target:
         return jsonify({"found": False, "match_slug": match_slug, "props": []})
 
-    # Get live player stats
+    # Get live player stats and events
     player_stats = target.get("live_player_stats", {})
+    live_events = target.get("live_events", [])
     match_status = target.get("status", "")
     snapshots = target.get("snapshots", [])
     last_snap = snapshots[-1] if snapshots else {}
     is_completed = match_status == "completed"
 
-    # Build player stat lookup: lowercase name -> stat dict (with accent stripping)
+    # Build event lookup: lowercase player name -> list of events
     import unicodedata
 
     def _strip_accents(s):
@@ -1872,6 +1991,95 @@ def api_live_props(match_slug):
                 if len(parts) > 1:
                     stat_lookup[parts[-1].lower()] = p
                     stat_lookup[_strip_accents(parts[-1]).lower()] = p
+
+    # Build event lookup: lowercase player name -> list of relevant events
+    event_lookup = {}
+    for ev in live_events:
+        ev_type = ev.get("type", "")
+        minute = ev.get("minute", "")
+        added = ev.get("added_time", 0)
+        min_str = f"{minute}'" if not added else f"{minute}+{added}'"
+
+        if ev_type == "goal":
+            scorer = ev.get("player", "")
+            assister = ev.get("assist", "")
+            goal_type = ev.get("goal_type", "regular")
+            if scorer:
+                key = _strip_accents(scorer).lower()
+                event_lookup.setdefault(key, []).append(f"Scored {min_str}" + (f" ({goal_type})" if goal_type != "regular" else ""))
+            if assister:
+                key = _strip_accents(assister).lower()
+                event_lookup.setdefault(key, []).append(f"Assist {min_str}")
+        elif ev_type == "card":
+            player = ev.get("player", "")
+            card_type = ev.get("card_type", "yellow")
+            if player:
+                key = _strip_accents(player).lower()
+                event_lookup.setdefault(key, []).append(f"{card_type.capitalize()} card {min_str}")
+
+    def _get_live_evidence(player_name, market, pstats_data, result):
+        """Build human-readable live evidence string."""
+        # Check event lookup for this player (try multiple name forms)
+        name_keys = [_strip_accents(player_name).lower()]
+        parts = player_name.split()
+        if len(parts) > 1:
+            name_keys.append(_strip_accents(parts[-1]).lower())
+
+        player_events = []
+        for nk in name_keys:
+            player_events.extend(event_lookup.get(nk, []))
+        # Deduplicate while preserving order
+        seen = set()
+        unique_events = []
+        for e in player_events:
+            if e not in seen:
+                seen.add(e)
+                unique_events.append(e)
+
+        market_lower = market.lower()
+        status = result.get("status", "open") if result else "no_data"
+        actual = result.get("actual") if result else None
+        line = result.get("line") if result else None
+
+        # For goalscorer props, prioritize event-based evidence
+        if "goal" in market_lower:
+            goal_evs = [e for e in unique_events if e.startswith("Scored")]
+            if goal_evs:
+                return "; ".join(goal_evs)
+            if actual is not None and actual == 0:
+                return "No goals yet" if not is_completed else "No goals"
+
+        # For assist props
+        if "assist" in market_lower:
+            assist_evs = [e for e in unique_events if e.startswith("Assist")]
+            if assist_evs:
+                return "; ".join(assist_evs)
+            if actual is not None:
+                return f"{actual} assist(s)" if actual > 0 else ("No assists yet" if not is_completed else "No assists")
+
+        # For card props
+        if "card" in market_lower or "booked" in market_lower:
+            card_evs = [e for e in unique_events if "card" in e.lower()]
+            if card_evs:
+                return "; ".join(card_evs)
+            if actual is not None:
+                return f"{actual} card(s)" if actual > 0 else ("Not carded yet" if not is_completed else "Not carded")
+
+        # For shot props
+        if "shot" in market_lower:
+            stat_key = "shots_on_target" if ("sot" in market_lower or "target" in market_lower) else "shots"
+            label = "SOT" if stat_key == "shots_on_target" else "shots"
+            if pstats_data and actual is not None:
+                return f"{actual} {label}" + (f" (line {line})" if line else "")
+
+        # For tackle/foul/cross/key pass props with numeric stats
+        if actual is not None and line is not None:
+            return f"{actual} (line {line})"
+
+        if not pstats_data:
+            return "No live stats available"
+
+        return None
 
     # Load prop value bets
     prop_vb = _load_json(UPCOMING_DIR / "player_prop_value_bets.json")
@@ -1927,18 +2135,27 @@ def api_live_props(match_slug):
             if actual_value is not None:
                 result_status = actual_value.get("status", "open")
 
+        # Build live evidence string from events and stats
+        live_evidence = _get_live_evidence(player_name, market, pstats, actual_value)
+
         evaluated.append({
-            **bet,
-            "live_status": result_status,
+            "player": player_name,
+            "market": market,
+            "selection": bet.get("selection", "Yes"),
+            "odds": bet.get("best_odds"),
+            "status": result_status,
+            "live_evidence": live_evidence,
             "actual": actual_value.get("actual") if actual_value else None,
             "line": actual_value.get("line") if actual_value else None,
-            "is_completed": is_completed,
+            "edge_pct": bet.get("edge_pct"),
+            "tier": bet.get("tier"),
+            "best_bookmaker": bet.get("best_bookmaker"),
         })
 
     return jsonify({
         "found": True,
+        "match": target_key,
         "match_slug": match_slug,
-        "match_key": target_key,
         "match_status": match_status,
         "is_completed": is_completed,
         "minute": last_snap.get("min"),
@@ -2107,7 +2324,7 @@ def api_live_trigger():
 
 _auto_poll_active = False
 _auto_poll_thread = None
-_auto_poll_interval = 120  # seconds (2 min default for matchday)
+_auto_poll_interval = 60  # seconds (1 min default for matchday)
 _auto_poll_next_at = 0.0  # timestamp of next poll
 
 def _auto_poll_loop():
@@ -2139,13 +2356,15 @@ def _auto_poll_loop():
         except Exception as e:
             log.error(f"Auto-poll error: {e}")
 
-        # Sleep in 5s chunks for responsive stop
+        # Sleep in 5s chunks for responsive stop and interval changes
         _auto_poll_next_at = _time.time() + _auto_poll_interval
-        chunks = int(_auto_poll_interval / 5)
-        for _ in range(max(chunks, 1)):
-            if not _auto_poll_active:
-                break
+        elapsed = 0
+        while elapsed < _auto_poll_interval and _auto_poll_active:
             _time.sleep(5)
+            elapsed += 5
+            # Re-read interval in case it changed mid-sleep
+            if elapsed < _auto_poll_interval and _auto_poll_interval < elapsed + 5:
+                break  # interval was shortened, break early
 
     _auto_poll_active = False
     _auto_poll_next_at = 0.0
@@ -2652,6 +2871,7 @@ def api_credits():
 
 _scheduler_active = False
 _scheduler_thread = None
+_SCHEDULER_CONFIG_PATH = DATA_DIR / "scheduler_config.json"
 _scheduler_config = {
     "snapshot_interval_min": 15,
     "extra_markets_times": ["08:00", "16:00"],
@@ -2663,6 +2883,40 @@ _scheduler_config = {
 _scheduler_log = []  # last 50 events
 
 
+def _load_scheduler_config():
+    """Load scheduler config from disk (survives app restarts)."""
+    global _scheduler_config
+    if _SCHEDULER_CONFIG_PATH.exists():
+        try:
+            with open(_SCHEDULER_CONFIG_PATH) as f:
+                saved = json.load(f)
+            _scheduler_config.update(saved.get("config", saved))
+            # Restore log
+            for entry in saved.get("log", [])[-30:]:
+                _scheduler_log.append(entry)
+            log.info("Loaded scheduler config from disk")
+        except Exception as e:
+            log.warning("Failed to load scheduler config: %s", e)
+
+
+def _save_scheduler_config():
+    """Persist scheduler config + recent log to disk."""
+    try:
+        _SCHEDULER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SCHEDULER_CONFIG_PATH, "w") as f:
+            json.dump({
+                "config": _scheduler_config,
+                "log": _scheduler_log[-30:],
+                "saved_at": datetime.now().isoformat(),
+            }, f, indent=2)
+    except Exception as e:
+        log.warning("Failed to save scheduler config: %s", e)
+
+
+# Load config on startup
+_load_scheduler_config()
+
+
 def _scheduler_add_log(action: str, detail: str = ""):
     _scheduler_log.append({
         "timestamp": datetime.now().isoformat(),
@@ -2671,6 +2925,7 @@ def _scheduler_add_log(action: str, detail: str = ""):
     })
     if len(_scheduler_log) > 50:
         _scheduler_log.pop(0)
+    _save_scheduler_config()  # persist after every log entry
 
 
 def _scheduler_loop():
@@ -2818,12 +3073,13 @@ def api_scheduler_toggle():
 
 @app.route("/api/scheduler/status")
 def api_scheduler_status():
-    """Get scheduler status, config, and recent log."""
-    # Compute next scheduled runs
+    """Get scheduler status, config, launchd jobs, upcoming match windows, and log."""
     now = datetime.now()
     time_str = now.strftime("%H:%M")
+    today_str = now.strftime("%Y-%m-%d")
     cfg = _scheduler_config
 
+    # ── Next scheduled runs (from in-app scheduler) ──
     next_runs = {}
     for fp_time in cfg.get("full_pipeline_times", []):
         if fp_time > time_str:
@@ -2839,10 +3095,99 @@ def api_scheduler_status():
     if "extra_markets" not in next_runs and cfg.get("extra_markets_times"):
         next_runs["extra_markets"] = f"Tomorrow {cfg['extra_markets_times'][0]}"
 
+    # ── Real launchd jobs status ──
+    launchd_jobs = []
+    try:
+        import subprocess as _sub
+        # Get all loaded seriea jobs in one call
+        ls_result = _sub.run(["launchctl", "list"],
+                             capture_output=True, text=True, timeout=5)
+        loaded_labels = set()
+        for line in ls_result.stdout.splitlines():
+            if "com.seriea-pipeline." in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    loaded_labels.add(parts[-1])
+
+        plist_dir = Path.home() / "Library" / "LaunchAgents"
+        for plist in sorted(plist_dir.glob("com.seriea-pipeline.*.plist")):
+            label = plist.stem
+            short_name = label.replace("com.seriea-pipeline.", "")
+            loaded = label in loaded_labels
+
+            # Get last run from log
+            log_path = _BASE / "logs" / f"launchd-{short_name}.log"
+            last_run = ""
+            log_size = 0
+            if log_path.exists():
+                log_size = log_path.stat().st_size
+                mtime = log_path.stat().st_mtime
+                last_run = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+            launchd_jobs.append({
+                "name": short_name,
+                "label": label,
+                "loaded": loaded,
+                "last_run": last_run,
+                "log_size": log_size,
+            })
+    except Exception as e:
+        log.warning("Failed to check launchd jobs: %s", e)
+
+    # ── Upcoming match windows (T-60, T-30, T+120) ──
+    match_windows = []
+    try:
+        manual_path = DATA_DIR / "upcoming" / "manual_matches.json"
+        preds_path = DATA_DIR / "upcoming" / "predictions.json"
+        matches_list = []
+
+        if manual_path.exists():
+            with open(manual_path) as f:
+                manual = json.load(f)
+            matches_list = manual.get("matches", [])
+        elif preds_path.exists():
+            with open(preds_path) as f:
+                preds = json.load(f)
+            matches_list = preds.get("predictions", [])
+
+        for m in matches_list:
+            match_date = m.get("date", "")
+            match_time = m.get("time", "")
+            if not match_date or not match_time:
+                continue
+            # Only show next 7 days
+            try:
+                from datetime import timedelta
+                kickoff = datetime.strptime(f"{match_date} {match_time}", "%Y-%m-%d %H:%M")
+                if kickoff < now - timedelta(hours=3) or kickoff > now + timedelta(days=7):
+                    continue
+                t60 = kickoff - timedelta(minutes=60)
+                t30 = kickoff - timedelta(minutes=30)
+                t120 = kickoff + timedelta(minutes=120)
+
+                match_windows.append({
+                    "match": f"{m.get('home_team', '?')} vs {m.get('away_team', '?')}",
+                    "date": match_date,
+                    "kickoff": match_time,
+                    "t60_lineups": t60.strftime("%H:%M"),
+                    "t30_predict": t30.strftime("%H:%M"),
+                    "t120_settle": t120.strftime("%H:%M"),
+                    "status": "live" if now >= kickoff and now < t120 else
+                              "upcoming" if now < kickoff else "settling",
+                })
+            except Exception:
+                continue
+
+        match_windows.sort(key=lambda x: (x["date"], x["kickoff"]))
+    except Exception as e:
+        log.debug("Failed to build match windows: %s", e)
+
     return jsonify({
         "active": _scheduler_active,
         "config": _scheduler_config,
         "next_runs": next_runs,
+        "launchd_jobs": launchd_jobs,
+        "match_windows": match_windows[:20],
         "log": _scheduler_log[-20:],
         "pipeline_running": _pipeline_running,
         "snapshot_running": _snapshot_running,
@@ -2871,6 +3216,7 @@ def api_scheduler_config():
         cfg["auto_live_on_matchday"] = bool(data["auto_live_on_matchday"])
 
     _scheduler_add_log("config_update", json.dumps(data))
+    _save_scheduler_config()
     return jsonify({"ok": True, "config": cfg})
 
 
@@ -2880,8 +3226,10 @@ def api_scheduler_config():
 
 _smart_refresh_running = False
 _smart_refresh_result = {}
+_smart_refresh_progress = {"step": 0, "total": 6, "message": "Idle", "steps_done": []}
 _settle_running = False
 _settle_result = {}
+_settle_progress = {"step": 0, "total": 3, "message": "Idle", "steps_done": []}
 
 @app.route("/api/refresh/smart", methods=["POST"])
 def api_refresh_smart():
@@ -2902,15 +3250,52 @@ def api_refresh_smart():
         "started_at": datetime.now().isoformat(),
         "message": "Starting incremental refresh...",
     }
+    _smart_refresh_progress["step"] = 0
+    _smart_refresh_progress["message"] = "Starting..."
+    _smart_refresh_progress["steps_done"] = []
 
     def _run():
-        global _smart_refresh_running, _smart_refresh_result
+        global _smart_refresh_running, _smart_refresh_result, _smart_refresh_progress
         _smart_refresh_running = True
         try:
+            # Step-by-step progress tracking
+            def _step(n, total, msg):
+                _smart_refresh_progress["step"] = n
+                _smart_refresh_progress["total"] = total
+                _smart_refresh_progress["message"] = msg
+                _smart_refresh_progress["steps_done"].append(msg)
+
+            _step(1, 6, "Fetching results & settling bets...")
             from scripts.pipeline.run_full_pipeline import run_incremental
-            result = run_incremental()
+            # We hook into the summary dict to track progress
+            import scripts.pipeline.run_full_pipeline as _pipeline_mod
+            _orig_print = _pipeline_mod.print if hasattr(_pipeline_mod, 'print') else print
+
+            # Override print to capture step messages
+            import builtins
+            _real_print = builtins.print
+            def _progress_print(*args, **kwargs):
+                msg = " ".join(str(a) for a in args)
+                # Detect step markers like [1/6], [2/6] etc
+                import re
+                m = re.match(r'\[(\d+)/(\d+)\]\s*(.*)', msg.strip())
+                if m:
+                    step_n, step_total, step_msg = int(m.group(1)), int(m.group(2)), m.group(3)
+                    _smart_refresh_progress["step"] = step_n
+                    _smart_refresh_progress["total"] = step_total
+                    _smart_refresh_progress["message"] = step_msg.strip()
+                    _smart_refresh_progress["steps_done"].append(step_msg.strip())
+                _real_print(*args, **kwargs)
+
+            builtins.print = _progress_print
+            try:
+                result = run_incremental()
+            finally:
+                builtins.print = _real_print
+
             _smart_refresh_result = result
             _smart_refresh_result["finished_at"] = datetime.now().isoformat()
+            _smart_refresh_progress["message"] = "Complete"
         except Exception as e:
             log.error(f"Smart refresh failed: {e}")
             _smart_refresh_result = {
@@ -2918,6 +3303,7 @@ def api_refresh_smart():
                 "error": str(e),
                 "finished_at": datetime.now().isoformat(),
             }
+            _smart_refresh_progress["message"] = f"Error: {e}"
         finally:
             _smart_refresh_running = False
 
@@ -2930,6 +3316,7 @@ def api_refresh_smart_status():
     """Check smart refresh progress and results."""
     result = dict(_smart_refresh_result)
     result["running"] = _smart_refresh_running
+    result["progress"] = dict(_smart_refresh_progress)
 
     # Also include pipeline state summary
     try:
@@ -2965,15 +3352,24 @@ def api_settle():
         "started_at": datetime.now().isoformat(),
         "message": "Fetching results and settling bets...",
     }
+    _settle_progress["step"] = 0
+    _settle_progress["message"] = "Starting..."
+    _settle_progress["steps_done"] = []
 
     def _run_settle():
-        global _settle_running, _settle_result
+        global _settle_running, _settle_result, _settle_progress
         _settle_running = True
         try:
+            _settle_progress.update({"step": 1, "total": 4, "message": "Fetching scores from Odds API..."})
+            _settle_progress["steps_done"].append("Fetching scores...")
             from scripts.data.results_fetcher import fetch_and_settle
             summary = fetch_and_settle()
+            _settle_progress.update({"step": 2, "message": f"Settled {summary.get('settled', 0)} bets"})
+            _settle_progress["steps_done"].append(f"Settled {summary.get('settled', 0)} bets")
 
             # Also settle player props
+            _settle_progress.update({"step": 3, "message": "Settling player props..."})
+            _settle_progress["steps_done"].append("Settling player props...")
             prop_summary = {}
             try:
                 from scripts.betting.prop_tracker import settle_props
@@ -3015,7 +3411,8 @@ def api_settle():
             }
 
             # Ingest new match data and regenerate standings + features
-            # (this takes 2-5 min but bets are already settled above)
+            _settle_progress.update({"step": 4, "message": "Rebuilding standings & features..."})
+            _settle_progress["steps_done"].append("Rebuilding standings & features...")
             matchday_summary = {}
             try:
                 from scripts.data.matchday_updater import run_matchday_update
@@ -3056,6 +3453,7 @@ def api_settle_status():
     """Check settlement progress and results."""
     result = dict(_settle_result)
     result["running"] = _settle_running
+    result["progress"] = dict(_settle_progress)
     return jsonify(result)
 
 
@@ -5477,6 +5875,44 @@ def api_player_detail(team_name, player_name):
         pass
 
     return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# API: Notification Test
+# ---------------------------------------------------------------------------
+
+@app.route("/api/notifications/test", methods=["POST"])
+def api_notifications_test():
+    """Send a test notification on all configured channels."""
+    try:
+        from scripts.pipeline.notify import notify, notify_status
+
+        data = flask_request.get_json(silent=True) or {}
+        message = data.get("message", "Test notification from SerieAI dashboard")
+
+        status = notify_status()
+        results = notify(message, title="SerieAI Test", level="info")
+
+        return jsonify({
+            "ok": True,
+            "channels": {
+                ch: {"configured": status[ch]["configured"], "sent": results.get(ch, False)}
+                for ch in status
+            },
+        })
+    except Exception as e:
+        log.error("Notification test failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/status")
+def api_notifications_status():
+    """Return configuration status for each notification channel."""
+    try:
+        from scripts.pipeline.notify import notify_status
+        return jsonify({"ok": True, "channels": notify_status()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------

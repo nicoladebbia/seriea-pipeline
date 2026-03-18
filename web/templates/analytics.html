@@ -1,161 +1,358 @@
 {% extends "base.html" %}
 
-{% block title %}Analytics — SerieAI{% endblock %}
-{% block page_title %}Analytics{% endblock %}
+{% block title %}Performance — SerieAI{% endblock %}
+{% block page_title %}Performance{% endblock %}
 
 {% block header_actions %}
-  <button onclick="triggerSettle()" id="settle-btn" class="btn btn--secondary btn--sm" title="Fetch latest results and settle bets">Settle Bets</button>
-  <button onclick="refreshAnalytics()" id="refresh-btn" class="btn btn--secondary btn--sm">Refresh</button>
-  <a href="/api/analytics/export" class="btn btn--secondary btn--sm">Export CSV</a>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <button onclick="triggerSettle()" id="settle-btn" class="btn btn--secondary btn--sm">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <span>Settle Bets</span>
+    </button>
+    <button onclick="refreshAnalytics()" id="refresh-btn" class="btn btn--secondary btn--sm">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      <span>Refresh</span>
+    </button>
+    <a href="/api/analytics/export" class="btn btn--secondary btn--sm">Export CSV</a>
+  </div>
 {% endblock %}
 
 {% block head %}
-  <script src="/static/js/tailwind.min.js"></script>
-  <script src="/static/js/chart.min.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      corePlugins: { preflight: false },
-      theme: { extend: { colors: {
-        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
-        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
-        accent: { blue:'#818cf8' }
-      } } }
-    }
-  </script>
-  <style>
-    .stat-value { font-variant-numeric: tabular-nums; }
-    .section-card { transition: all 0.2s; }
-    .section-card:hover { border-color: #374151; }
-    .badge { font-size: 0.65rem; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-    @keyframes slideInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-  </style>
+<script src="/static/js/chart.min.js"></script>
+<style>
+  /* ── Performance Page Styles ──────────────────────────── */
+
+  /* Status bar stat cards (horizontal row) */
+  .perf-status-bar {
+    display:grid; grid-template-columns:repeat(6,1fr); gap:var(--space-3);
+    margin-bottom:var(--space-6);
+  }
+  @media (max-width:1024px) { .perf-status-bar { grid-template-columns:repeat(3,1fr); } }
+  @media (max-width:640px)  { .perf-status-bar { grid-template-columns:repeat(2,1fr); } }
+
+  .pipe-stat {
+    background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); padding:var(--space-3) var(--space-4);
+  }
+  .pipe-stat__label {
+    font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text-tertiary); font-weight:600;
+  }
+  .pipe-stat__value {
+    font-size:20px; font-weight:700; color:var(--text-primary);
+    font-family:var(--font-mono); margin-top:2px; line-height:1.2;
+  }
+  .pipe-stat__sub {
+    font-size:11px; color:var(--text-tertiary); margin-top:2px;
+  }
+
+  /* Section cards (expandable) */
+  .pipe-section {
+    background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); margin-bottom:var(--space-4);
+    overflow:hidden;
+  }
+  .pipe-section summary {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:var(--space-4); cursor:pointer; user-select:none;
+    list-style:none;
+  }
+  .pipe-section summary::-webkit-details-marker { display:none; }
+  .pipe-section summary::after {
+    content:''; width:16px; height:16px; flex-shrink:0;
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='%2371717a' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-size:contain; transition:transform 0.2s;
+  }
+  .pipe-section[open] summary::after { transform:rotate(180deg); }
+  .pipe-section__title { font-size:14px; font-weight:600; color:var(--text-primary); }
+  .pipe-section__badge {
+    font-size:10px; padding:2px 8px; border-radius:var(--radius-sm);
+    font-weight:600; margin-left:var(--space-2);
+  }
+  .pipe-section__body { padding:0 var(--space-4) var(--space-4); }
+
+  /* Dashboard-style compact table */
+  .pipe-table {
+    width:100%; border-collapse:collapse; font-size:12px;
+    background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-md); overflow:hidden;
+  }
+  .pipe-table th {
+    padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase;
+    letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary);
+    border-bottom:1px solid var(--border-default); font-weight:600; white-space:nowrap;
+  }
+  .pipe-table td {
+    padding:8px 10px; border-bottom:1px solid var(--border-subtle); white-space:nowrap;
+  }
+  .pipe-table tbody tr { transition:background 0.15s; }
+  .pipe-table tbody tr:hover { background:rgba(129,140,248,0.04); }
+  .pipe-table .mono { font-family:var(--font-mono); font-size:11px; }
+
+  /* Chart containers */
+  .perf-chart-wrap {
+    background:var(--bg-primary); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-sm); padding:var(--space-3);
+  }
+
+  /* Two-column grid */
+  .perf-grid-2 {
+    display:grid; grid-template-columns:repeat(2,1fr); gap:var(--space-4);
+  }
+  @media (max-width:1024px) { .perf-grid-2 { grid-template-columns:1fr; } }
+
+  /* Three-column grid (2 + side) */
+  .perf-grid-2-1 {
+    display:grid; grid-template-columns:2fr 1fr; gap:var(--space-4);
+  }
+  @media (max-width:1024px) { .perf-grid-2-1 { grid-template-columns:1fr; } }
+
+  /* Inline stat rows inside sections */
+  .perf-inline-stats {
+    display:grid; grid-template-columns:repeat(3,1fr); gap:var(--space-3);
+    margin-bottom:var(--space-3);
+  }
+  .perf-inline-stat {
+    background:var(--bg-primary); border-radius:var(--radius-sm); padding:var(--space-3);
+  }
+  .perf-inline-stat__label { font-size:10px; color:var(--text-tertiary); }
+  .perf-inline-stat__value {
+    font-size:18px; font-weight:700; font-family:var(--font-mono); margin-top:2px;
+  }
+
+  /* CLV bet rows */
+  .perf-clv-row {
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--bg-primary); border-radius:var(--radius-sm);
+    padding:var(--space-2) var(--space-3); margin-bottom:var(--space-2);
+  }
+  .perf-clv-row__left { display:flex; align-items:center; gap:var(--space-2); }
+  .perf-clv-row__right { display:flex; align-items:center; gap:var(--space-3); font-size:12px; }
+
+  /* Progress bar (for brier scores etc) */
+  .perf-bar-track {
+    flex:1; height:10px; background:var(--bg-tertiary);
+    border-radius:5px; overflow:hidden;
+  }
+  .perf-bar-fill { height:100%; border-radius:5px; transition:width 0.3s; }
+
+  /* Mini badges */
+  .perf-badge {
+    font-size:9px; padding:1px 7px; border-radius:var(--radius-sm);
+    font-weight:600; text-transform:uppercase; letter-spacing:0.05em; display:inline-block;
+  }
+  .perf-badge--won  { background:var(--green-muted); color:var(--green); }
+  .perf-badge--lost { background:var(--red-muted); color:var(--red); }
+  .perf-badge--push { background:var(--amber-muted); color:var(--amber); }
+  .perf-badge--sharp    { background:var(--green-muted); color:var(--green); }
+  .perf-badge--positive { background:var(--accent-muted); color:var(--accent); }
+  .perf-badge--negative { background:var(--red-muted); color:var(--red); }
+  .perf-badge--neutral  { background:var(--bg-tertiary); color:var(--text-tertiary); }
+
+  /* Metric rows in model health */
+  .perf-metric-row {
+    display:flex; align-items:center; gap:var(--space-2); margin-bottom:6px;
+  }
+  .perf-metric-row__label {
+    width:80px; flex-shrink:0; font-size:10px; color:var(--text-tertiary);
+  }
+  .perf-metric-row__value {
+    width:50px; text-align:right; font-size:10px; color:var(--text-tertiary);
+    font-family:var(--font-mono);
+  }
+  .perf-kv-row {
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; padding:4px 0;
+  }
+
+  /* Streaks grid */
+  .perf-streaks-grid {
+    display:grid; grid-template-columns:repeat(2,1fr); gap:var(--space-3);
+  }
+  .perf-streak-card {
+    background:var(--bg-primary); border-radius:var(--radius-sm); padding:var(--space-3);
+  }
+  .perf-streak-card__label { font-size:10px; color:var(--text-tertiary); }
+  .perf-streak-card__value {
+    font-size:18px; font-weight:700; font-family:var(--font-mono); margin-top:2px;
+  }
+
+  /* Empty state */
+  .perf-empty {
+    text-align:center; padding:var(--space-12) var(--space-4);
+    color:var(--text-tertiary);
+  }
+  .perf-empty__icon { margin-bottom:var(--space-3); opacity:0.5; }
+  .perf-empty__title { font-size:18px; color:var(--text-secondary); margin-bottom:var(--space-2); }
+  .perf-empty__sub { font-size:13px; }
+
+  /* Toast */
+  @keyframes slideInUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+</style>
 {% endblock %}
 
 {% block content %}
-  <div class="text-gray-200">
-    <div id="loading" class="text-center py-20 text-gray-500">Loading analytics...</div>
+<!-- Loading -->
+<div id="loading" style="text-align:center;padding:80px 16px;color:var(--text-tertiary);">Loading performance data...</div>
 
-    <!-- Summary Cards -->
-    <div id="summary" class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"></div>
+<!-- Summary Status Bar -->
+<div id="summary" class="perf-status-bar" style="display:none;"></div>
 
-    <!-- Bankroll Status -->
-    <div id="bankroll-section" class="hidden mb-6"></div>
+<!-- Bankroll link -->
+<div id="bankroll-link" style="display:none;font-size:12px;color:var(--text-tertiary);margin-bottom:var(--space-4);">
+  Bankroll details on <a href="/" style="color:var(--accent);text-decoration:none;">Dashboard</a>
+</div>
 
-    <!-- P&L + Confidence Charts -->
-    <div id="charts" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
-        <h3 class="text-sm font-semibold text-white mb-3">Cumulative P&L</h3>
-        <canvas id="pnlChart" height="200"></canvas>
-      </div>
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
-        <h3 class="text-sm font-semibold text-white mb-3">Win Rate by Confidence</h3>
-        <canvas id="confChart" height="200"></canvas>
-      </div>
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-4 lg:col-span-2 section-card">
-        <h3 class="text-sm font-semibold text-white mb-3">Performance by Market</h3>
-        <canvas id="marketChart" height="150"></canvas>
+<!-- P&L Chart -->
+<details id="section-pnl" class="pipe-section" style="display:none;" open>
+  <summary>
+    <span class="pipe-section__title">Cumulative P&L</span>
+  </summary>
+  <div class="pipe-section__body">
+    <div class="perf-chart-wrap">
+      <canvas id="pnlChart" height="200"></canvas>
+    </div>
+  </div>
+</details>
+
+<!-- Confidence Calibration + Market Breakdown -->
+<div id="section-charts-row" class="perf-grid-2" style="display:none;">
+  <details class="pipe-section" open>
+    <summary>
+      <span class="pipe-section__title">Win Rate by Confidence</span>
+    </summary>
+    <div class="pipe-section__body">
+      <div class="perf-chart-wrap">
+        <canvas id="confChart" height="220"></canvas>
       </div>
     </div>
-
-    <!-- CLV + Model Health Row -->
-    <div id="model-section" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-      <!-- CLV Tracking -->
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-sm font-semibold text-white">Closing Line Value (CLV)</h3>
-          <span id="clv-badge" class="badge bg-gray-700 text-gray-400">-</span>
-        </div>
-        <div class="text-[10px] text-gray-600 mb-3">CLV measures if you got better odds than the closing line. Positive CLV = long-term edge.</div>
-        <div class="grid grid-cols-3 gap-3 mb-3">
-          <div>
-            <div class="text-[10px] text-gray-500">Running CLV</div>
-            <div class="text-xl font-bold stat-value" id="clv-running">-</div>
-          </div>
-          <div>
-            <div class="text-[10px] text-gray-500">Positive CLV</div>
-            <div class="text-lg font-bold text-green-400 stat-value" id="clv-positive">-</div>
-          </div>
-          <div>
-            <div class="text-[10px] text-gray-500">Negative CLV</div>
-            <div class="text-lg font-bold text-red-400 stat-value" id="clv-negative">-</div>
-          </div>
-        </div>
-        <div id="clv-bets" class="space-y-2"></div>
-      </div>
-
-      <!-- Model Health -->
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-sm font-semibold text-white">Model Health</h3>
-          <span id="model-settled" class="text-[10px] text-gray-500"></span>
-        </div>
-        <!-- Brier Scores -->
-        <div class="mb-4">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Method Brier Scores <span class="text-gray-600 normal-case">(lower = better)</span></div>
-          <div id="brier-scores" class="space-y-1.5"></div>
-        </div>
-        <!-- Intelligence Effectiveness -->
-        <div class="mb-4">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Intelligence Adjustments</div>
-          <div id="intel-effectiveness" class="space-y-1.5"></div>
-        </div>
-        <!-- Weight Changes -->
-        <div>
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Weight Optimization</div>
-          <div id="weight-changes" class="space-y-1.5"></div>
-        </div>
+  </details>
+  <details class="pipe-section" open>
+    <summary>
+      <span class="pipe-section__title">Performance by Market</span>
+    </summary>
+    <div class="pipe-section__body">
+      <div class="perf-chart-wrap">
+        <canvas id="marketChart" height="220"></canvas>
       </div>
     </div>
+  </details>
+</div>
 
-    <!-- ROI by Market + Streaks -->
-    <div id="roi-section" class="hidden mb-6"></div>
+<!-- ROI by Market + Streaks -->
+<div id="roi-section" style="display:none;"></div>
 
-    <!-- Backtest Baselines -->
-    <div id="backtest-section" class="hidden mb-6"></div>
-
-    <!-- Bet History Table -->
-    <div id="history-section" class="hidden mb-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-bold text-white">Bet History</h2>
-        <a href="/api/analytics/export" class="text-xs text-blue-400 hover:text-blue-300">Download CSV</a>
+<!-- CLV + Model Health -->
+<div id="section-model-row" class="perf-grid-2" style="display:none;">
+  <!-- CLV Tracking -->
+  <details class="pipe-section" open>
+    <summary>
+      <div style="display:flex;align-items:center;gap:var(--space-2);">
+        <span class="pipe-section__title">Closing Line Value (CLV)</span>
+        <span id="clv-badge" class="perf-badge perf-badge--neutral">-</span>
       </div>
-      <div class="bg-dark-800 rounded-xl border border-gray-800 overflow-hidden section-card">
-        <div class="overflow-x-auto">
-          <table id="history-table" class="w-full text-xs">
-            <thead>
-              <tr class="text-gray-500 border-b border-gray-800">
-                <th class="text-left p-2">Date</th>
-                <th class="text-left p-2">Match</th>
-                <th class="text-left p-2">Selection</th>
-                <th class="p-2">Odds</th>
-                <th class="p-2">Stake</th>
-                <th class="p-2">Profit</th>
-                <th class="p-2">Cumulative</th>
-                <th class="p-2">CLV</th>
-                <th class="p-2">Result</th>
-              </tr>
-            </thead>
-            <tbody id="history-body"></tbody>
-          </table>
+    </summary>
+    <div class="pipe-section__body">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:var(--space-3);">
+        CLV measures if you got better odds than the closing line. Positive CLV = long-term edge.
+      </div>
+      <div class="perf-inline-stats">
+        <div class="perf-inline-stat">
+          <div class="perf-inline-stat__label">Running CLV</div>
+          <div class="perf-inline-stat__value" id="clv-running">-</div>
+        </div>
+        <div class="perf-inline-stat">
+          <div class="perf-inline-stat__label">Positive CLV</div>
+          <div class="perf-inline-stat__value" id="clv-positive" style="color:var(--green);">-</div>
+        </div>
+        <div class="perf-inline-stat">
+          <div class="perf-inline-stat__label">Negative CLV</div>
+          <div class="perf-inline-stat__value" id="clv-negative" style="color:var(--red);">-</div>
         </div>
       </div>
+      <div id="clv-bets"></div>
     </div>
+  </details>
 
-    <!-- Empty State -->
-    <div id="empty" class="hidden text-center py-20">
-      <div class="text-gray-500">
-        <svg class="w-16 h-16 mx-auto mb-4 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-        </svg>
-        <p class="text-xl mb-2">No betting history yet</p>
-        <p class="text-sm">Analytics will appear here after matches are settled.</p>
-        <p class="text-xs text-gray-600 mt-4">Pipeline results are auto-settled via <code class="bg-gray-800 px-1 rounded">results_fetcher.py</code></p>
+  <!-- Model Health -->
+  <details class="pipe-section" open>
+    <summary>
+      <div style="display:flex;align-items:center;gap:var(--space-2);">
+        <span class="pipe-section__title">Model Health</span>
+        <span id="model-settled" style="font-size:10px;color:var(--text-tertiary);"></span>
+      </div>
+    </summary>
+    <div class="pipe-section__body">
+      <!-- Brier Scores -->
+      <div style="margin-bottom:var(--space-4);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);font-weight:600;margin-bottom:var(--space-2);">
+          Method Brier Scores <span style="text-transform:none;color:var(--text-tertiary);font-weight:400;">(lower = better)</span>
+        </div>
+        <div id="brier-scores"></div>
+      </div>
+      <!-- Intelligence Effectiveness -->
+      <div style="margin-bottom:var(--space-4);">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);font-weight:600;margin-bottom:var(--space-2);">Intelligence Adjustments</div>
+        <div id="intel-effectiveness"></div>
+      </div>
+      <!-- Weight Changes -->
+      <div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);font-weight:600;margin-bottom:var(--space-2);">Weight Optimization</div>
+        <div id="weight-changes"></div>
       </div>
     </div>
+  </details>
+</div>
+
+<!-- Backtest Baselines -->
+<div id="backtest-section" style="display:none;"></div>
+
+<!-- Bet History -->
+<details id="section-history" class="pipe-section" style="display:none;" open>
+  <summary>
+    <div style="display:flex;align-items:center;gap:var(--space-2);">
+      <span class="pipe-section__title">Bet History</span>
+    </div>
+  </summary>
+  <div class="pipe-section__body">
+    <div style="overflow-x:auto;">
+      <table class="pipe-table" id="history-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Match</th>
+            <th>Selection</th>
+            <th style="text-align:right;">Odds</th>
+            <th style="text-align:right;">Stake</th>
+            <th style="text-align:right;">Profit</th>
+            <th style="text-align:right;">Cumulative</th>
+            <th style="text-align:right;">CLV</th>
+            <th style="text-align:center;">Result</th>
+          </tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+  </div>
+</details>
+
+<!-- Empty State -->
+<div id="empty" class="perf-empty" style="display:none;">
+  <div class="perf-empty__icon">
+    <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="opacity:0.4;">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+    </svg>
+  </div>
+  <div class="perf-empty__title">No betting history yet</div>
+  <div class="perf-empty__sub">Analytics will appear here after matches are settled.</div>
+  <div style="font-size:11px;color:var(--text-tertiary);margin-top:var(--space-4);">
+    Pipeline results are auto-settled via <code style="background:var(--bg-tertiary);padding:1px 5px;border-radius:var(--radius-sm);">results_fetcher.py</code>
+  </div>
+</div>
+
 <script>
-Chart.defaults.color = '#6b7280';
-Chart.defaults.borderColor = '#1f2937';
+Chart.defaults.color = '#71717a';
+Chart.defaults.borderColor = '#1f1f23';
 Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
 Chart.defaults.font.size = 11;
 
@@ -170,70 +367,37 @@ function destroyCharts() {
 }
 
 function statCard(label, value, sub, color) {
-  return `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
-    <div class="text-[10px] uppercase tracking-wider text-gray-500">${label}</div>
-    <div class="text-xl font-bold mt-1 stat-value" style="color:${color || '#fff'}">${value}</div>
-    ${sub ? `<div class="text-xs text-gray-500 mt-0.5">${sub}</div>` : ''}
+  return `<div class="pipe-stat">
+    <div class="pipe-stat__label">${label}</div>
+    <div class="pipe-stat__value" style="color:${color || 'var(--text-primary)'}">${value}</div>
+    ${sub ? `<div class="pipe-stat__sub">${sub}</div>` : ''}
   </div>`;
 }
 
 function renderSummary(s, clv, bankroll) {
   const el = document.getElementById('summary');
-  const profitColor = s.total_profit >= 0 ? '#4ade80' : '#f87171';
-  const roiColor = s.roi >= 0 ? '#4ade80' : '#f87171';
+  const profitColor = s.total_profit >= 0 ? 'var(--green)' : 'var(--red)';
+  const roiColor = s.roi >= 0 ? 'var(--green)' : 'var(--red)';
   const record = `${s.wins || 0}W / ${s.losses || 0}L${s.pushes ? ' / ' + s.pushes + 'P' : ''}`;
   const pendingText = s.pending ? `${s.pending} pending` : `${s.total_bets || 0} total`;
   const clvPct = clv?.running_clv_pct || 0;
-  const clvColor = clvPct > 0 ? '#4ade80' : clvPct < 0 ? '#f87171' : '#6b7280';
+  const clvColor = clvPct > 0 ? 'var(--green)' : clvPct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
   const bal = bankroll?.current_balance || 0;
   const balPnl = bankroll?.net_profit || 0;
-  const balColor = balPnl >= 0 ? '#4ade80' : '#f87171';
+  const balColor = balPnl >= 0 ? 'var(--green)' : 'var(--red)';
   el.innerHTML =
-    statCard('Settled Bets', s.settled_bets || 0, pendingText, '#818cf8') +
-    statCard('Win Rate', (s.win_rate || 0) + '%', record, s.win_rate >= 50 ? '#4ade80' : '#fbbf24') +
+    statCard('Settled Bets', s.settled_bets || 0, pendingText, 'var(--accent)') +
+    statCard('Win Rate', (s.win_rate || 0) + '%', record, s.win_rate >= 50 ? 'var(--green)' : 'var(--amber)') +
     statCard('Total Profit', (s.total_profit >= 0 ? '+' : '-') + '\u20ac' + Math.abs(s.total_profit || 0).toFixed(2), `from \u20ac${(s.total_stake || 0).toFixed(0)} staked`, profitColor) +
     statCard('ROI', (s.roi >= 0 ? '+' : '') + (s.roi || 0) + '%', '', roiColor) +
     statCard('CLV', (clvPct >= 0 ? '+' : '') + clvPct.toFixed(1) + '%', `${clv?.total_bets_tracked || 0} tracked`, clvColor) +
     statCard('Bankroll', bal > 0 ? '\u20ac' + bal.toFixed(2) : '-', bal > 0 ? `${balPnl >= 0 ? '+' : ''}\u20ac${balPnl.toFixed(2)}` : '', balColor);
-  el.classList.remove('hidden');
+  el.style.display = '';
 }
 
 function renderBankroll(b) {
-  if (!b || !Object.keys(b).length) return;
-  const el = document.getElementById('bankroll-section');
-  const current = b.current_balance || 0;
-  const initial = b.initial_balance || 1000;
-  const peak = b.peak_balance || current;
-  const low = b.lowest_balance || current;
-  const pnl = b.net_profit || (current - initial);
-  const pnlColor = pnl >= 0 ? '#4ade80' : '#f87171';
-  const record = `${b.wins || 0}W / ${b.losses || 0}L${b.pushes ? ' / ' + b.pushes + 'P' : ''}`;
-
-  el.innerHTML = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-4 section-card">
-    <div class="flex items-center justify-between">
-      <div>
-        <div class="text-[10px] uppercase tracking-wider text-gray-500">Bankroll Status</div>
-        <div class="flex items-baseline gap-3 mt-1">
-          <span class="text-2xl font-bold text-white stat-value">\u20ac${current.toFixed(2)}</span>
-          <span class="text-sm stat-value" style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}\u20ac${pnl.toFixed(2)}</span>
-        </div>
-      </div>
-      <div class="flex gap-6 text-xs text-gray-500">
-        <div><div class="text-[10px]">Initial</div><div class="text-white stat-value">\u20ac${initial.toFixed(0)}</div></div>
-        <div><div class="text-[10px]">Peak</div><div class="text-green-400 stat-value">\u20ac${peak.toFixed(0)}</div></div>
-        <div><div class="text-[10px]">Low</div><div class="text-red-400 stat-value">\u20ac${low.toFixed(0)}</div></div>
-        <div><div class="text-[10px]">Record</div><div class="text-gray-300">${record}</div></div>
-      </div>
-    </div>
-  </div>`;
-  el.classList.remove('hidden');
-
-  // Update bankroll stat card
-  const summaryEl = document.getElementById('summary');
-  if (summaryEl && summaryEl.children.length >= 6) {
-    summaryEl.children[5].querySelector('.text-xl').textContent = '\u20ac' + current.toFixed(2);
-    summaryEl.children[5].querySelector('.text-xl').style.color = pnlColor;
-  }
+  const el = document.getElementById('bankroll-link');
+  if (el) el.style.display = '';
 }
 
 function renderPnLChart(timeline) {
@@ -332,48 +496,47 @@ function renderMarketChart(byMarket) {
   });
 }
 
-/* ─── CLV Section ─── */
+/* --- CLV Section --- */
 function renderCLV(clv) {
   if (!clv || !clv.bets) return;
   const running = clv.running_clv_pct || 0;
-  const color = running > 0 ? 'text-green-400' : running < 0 ? 'text-red-400' : 'text-gray-400';
+  const color = running > 0 ? 'var(--green)' : running < 0 ? 'var(--red)' : 'var(--text-tertiary)';
 
   document.getElementById('clv-running').textContent = (running >= 0 ? '+' : '') + running.toFixed(1) + '%';
-  document.getElementById('clv-running').className = `text-xl font-bold stat-value ${color}`;
+  document.getElementById('clv-running').style.color = color;
   document.getElementById('clv-positive').textContent = clv.positive_clv_count || 0;
   document.getElementById('clv-negative').textContent = clv.negative_clv_count || 0;
 
   const badge = document.getElementById('clv-badge');
-  if (running > 2) { badge.textContent = 'SHARP'; badge.className = 'badge bg-green-900/50 text-green-400'; }
-  else if (running > 0) { badge.textContent = 'POSITIVE'; badge.className = 'badge bg-blue-900/50 text-blue-400'; }
-  else if (running === 0) { badge.textContent = 'NEUTRAL'; badge.className = 'badge bg-gray-700 text-gray-400'; }
-  else { badge.textContent = 'NEGATIVE'; badge.className = 'badge bg-red-900/50 text-red-400'; }
+  if (running > 2)      { badge.textContent = 'SHARP';    badge.className = 'perf-badge perf-badge--sharp'; }
+  else if (running > 0) { badge.textContent = 'POSITIVE'; badge.className = 'perf-badge perf-badge--positive'; }
+  else if (running === 0){ badge.textContent = 'NEUTRAL';  badge.className = 'perf-badge perf-badge--neutral'; }
+  else                   { badge.textContent = 'NEGATIVE'; badge.className = 'perf-badge perf-badge--negative'; }
 
   const betsEl = document.getElementById('clv-bets');
   betsEl.innerHTML = (clv.bets || []).map(b => {
     const clvPct = b.clv_pct || 0;
-    const clvColor = clvPct > 0 ? 'text-green-400' : clvPct < 0 ? 'text-red-400' : 'text-gray-500';
-    const resultBadge = b.result === 'won' ? '<span class="badge bg-green-900/50 text-green-400">W</span>'
-      : b.result === 'lost' ? '<span class="badge bg-red-900/50 text-red-400">L</span>'
-      : '<span class="badge bg-gray-700 text-gray-400">P</span>';
-    return `<div class="flex items-center justify-between bg-gray-900/50 rounded-lg p-2.5">
-      <div class="flex items-center gap-2">
-        ${resultBadge}
-        <span class="text-xs text-white">${b.match || '-'}</span>
-        <span class="text-[10px] text-gray-500">${b.selection || ''}</span>
+    const clvColor = clvPct > 0 ? 'var(--green)' : clvPct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+    const badgeClass = b.result === 'won' ? 'perf-badge--won' : b.result === 'lost' ? 'perf-badge--lost' : 'perf-badge--push';
+    const badgeLabel = b.result === 'won' ? 'W' : b.result === 'lost' ? 'L' : 'P';
+    return `<div class="perf-clv-row">
+      <div class="perf-clv-row__left">
+        <span class="perf-badge ${badgeClass}">${badgeLabel}</span>
+        <span style="font-size:12px;color:var(--text-primary);">${b.match || '-'}</span>
+        <span style="font-size:10px;color:var(--text-tertiary);">${b.selection || ''}</span>
       </div>
-      <div class="flex items-center gap-3 text-xs">
-        <span class="text-gray-500">Placed: ${(b.bet_odds || 0).toFixed(2)}</span>
-        <span class="text-gray-500">Closing: ${(b.closing_odds || 0).toFixed(2)}</span>
-        <span class="font-bold stat-value ${clvColor}">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>
+      <div class="perf-clv-row__right">
+        <span style="color:var(--text-tertiary);">Placed: ${(b.bet_odds || 0).toFixed(2)}</span>
+        <span style="color:var(--text-tertiary);">Closing: ${(b.closing_odds || 0).toFixed(2)}</span>
+        <span style="font-weight:700;font-family:var(--font-mono);color:${clvColor};">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>
       </div>
     </div>`;
   }).join('');
 
-  document.getElementById('model-section').classList.remove('hidden');
+  document.getElementById('section-model-row').style.display = '';
 }
 
-/* ─── Model Health ─── */
+/* --- Model Health --- */
 function renderModelHealth(feedback, weights) {
   if (!feedback || !feedback.method_brier_scores) return;
 
@@ -387,14 +550,14 @@ function renderModelHealth(feedback, weights) {
   document.getElementById('brier-scores').innerHTML = methods.map(m => {
     const b = brier[m];
     const pct = ((b.mean_brier / maxBrier) * 100).toFixed(0);
-    const color = b.rank <= 2 ? 'bg-green-500' : b.rank <= 4 ? 'bg-amber-500' : 'bg-red-500';
-    const rankBadge = b.rank === 1 ? '<span class="text-[9px] text-green-400 ml-1">#1</span>' : `<span class="text-[9px] text-gray-600 ml-1">#${b.rank}</span>`;
-    return `<div class="flex items-center gap-2">
-      <div class="w-16 text-[10px] text-gray-400 shrink-0">${m}${rankBadge}</div>
-      <div class="flex-1 h-3 bg-gray-800 rounded-full overflow-hidden">
-        <div class="${color} h-3 rounded-full transition-all" style="width:${pct}%"></div>
+    const color = b.rank <= 2 ? 'var(--green)' : b.rank <= 4 ? 'var(--amber)' : 'var(--red)';
+    const rankBadge = b.rank === 1 ? `<span style="font-size:9px;color:var(--green);margin-left:4px;">#1</span>` : `<span style="font-size:9px;color:var(--text-tertiary);margin-left:4px;">#${b.rank}</span>`;
+    return `<div class="perf-metric-row">
+      <div class="perf-metric-row__label">${m}${rankBadge}</div>
+      <div class="perf-bar-track">
+        <div class="perf-bar-fill" style="width:${pct}%;background:${color};"></div>
       </div>
-      <div class="w-12 text-right text-[10px] text-gray-400 stat-value">${b.mean_brier.toFixed(3)}</div>
+      <div class="perf-metric-row__value">${b.mean_brier.toFixed(3)}</div>
     </div>`;
   }).join('');
 
@@ -402,13 +565,13 @@ function renderModelHealth(feedback, weights) {
   const intel = feedback.intelligence_effectiveness || {};
   document.getElementById('intel-effectiveness').innerHTML = Object.entries(intel).map(([name, v]) => {
     const verdict = v.verdict || 'unknown';
-    const color = verdict === 'beneficial' ? 'text-green-400' : verdict === 'harmful' ? 'text-red-400' : 'text-amber-400';
+    const color = verdict === 'beneficial' ? 'var(--green)' : verdict === 'harmful' ? 'var(--red)' : 'var(--amber)';
     const icon = verdict === 'beneficial' ? '+' : verdict === 'harmful' ? '-' : '~';
-    return `<div class="flex items-center justify-between text-[10px]">
-      <span class="text-gray-400">${name.replace(/_/g, ' ')}</span>
-      <div class="flex items-center gap-2">
-        <span class="text-gray-500">${v.helped || 0}/${v.total_applications || 0} helped</span>
-        <span class="font-bold ${color}">${icon}${((v.mean_brier_improvement || 0) * 100).toFixed(1)}pp</span>
+    return `<div class="perf-kv-row">
+      <span style="color:var(--text-tertiary);">${name.replace(/_/g, ' ')}</span>
+      <div style="display:flex;align-items:center;gap:var(--space-2);">
+        <span style="color:var(--text-tertiary);">${v.helped || 0}/${v.total_applications || 0} helped</span>
+        <span style="font-weight:700;font-family:var(--font-mono);color:${color};">${icon}${((v.mean_brier_improvement || 0) * 100).toFixed(1)}pp</span>
       </div>
     </div>`;
   }).join('');
@@ -417,23 +580,22 @@ function renderModelHealth(feedback, weights) {
   const changes = weights?.changes || {};
   document.getElementById('weight-changes').innerHTML = Object.entries(changes).map(([m, c]) => {
     const delta = c.delta || 0;
-    const color = Math.abs(c.pct_change) > 20 ? (delta > 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400';
+    const color = Math.abs(c.pct_change) > 20 ? (delta > 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)';
     const arrow = delta > 0.01 ? '\u2191' : delta < -0.01 ? '\u2193' : '\u2192';
-    return `<div class="flex items-center justify-between text-[10px]">
-      <span class="text-gray-400">${m}</span>
-      <div class="flex items-center gap-2">
-        <span class="text-gray-500">${(c.current || 0).toFixed(2)} \u2192 ${(c.optimized || 0).toFixed(2)}</span>
-        <span class="${color} font-bold">${arrow} ${c.pct_change > 0 ? '+' : ''}${(c.pct_change || 0).toFixed(0)}%</span>
+    return `<div class="perf-kv-row">
+      <span style="color:var(--text-tertiary);">${m}</span>
+      <div style="display:flex;align-items:center;gap:var(--space-2);">
+        <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:11px;">${(c.current || 0).toFixed(2)} \u2192 ${(c.optimized || 0).toFixed(2)}</span>
+        <span style="font-weight:700;font-family:var(--font-mono);color:${color};">${arrow} ${c.pct_change > 0 ? '+' : ''}${(c.pct_change || 0).toFixed(0)}%</span>
       </div>
     </div>`;
   }).join('');
 
-  document.getElementById('model-section').classList.remove('hidden');
+  document.getElementById('section-model-row').style.display = '';
 }
 
-/* ─── History Table ─── */
+/* --- History Table --- */
 function renderHistory(timeline, clvBets) {
-  // Build CLV lookup
   const clvMap = {};
   (clvBets || []).forEach(b => {
     const key = (b.match || '') + '_' + (b.selection || '');
@@ -442,40 +604,35 @@ function renderHistory(timeline, clvBets) {
 
   const body = document.getElementById('history-body');
   body.innerHTML = timeline.map(t => {
-    const profitColor = t.profit > 0 ? 'text-green-400' : t.profit < 0 ? 'text-red-400' : 'text-gray-400';
-    const cumColor = t.cumulative_profit >= 0 ? 'text-green-400' : 'text-red-400';
+    const profitColor = t.profit > 0 ? 'var(--green)' : t.profit < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+    const cumColor = t.cumulative_profit >= 0 ? 'var(--green)' : 'var(--red)';
     const status = (t.status || 'pending').toLowerCase();
-    const statusBadge = status === 'won'
-      ? '<span class="badge bg-green-900/50 text-green-400">WON</span>'
-      : status === 'lost'
-        ? '<span class="badge bg-red-900/50 text-red-400">LOST</span>'
-        : status === 'push'
-          ? '<span class="badge bg-amber-900/50 text-amber-400">PUSH</span>'
-          : `<span class="badge bg-gray-700 text-gray-400">${status.toUpperCase()}</span>`;
+    const badgeClass = status === 'won' ? 'perf-badge--won' : status === 'lost' ? 'perf-badge--lost' : status === 'push' ? 'perf-badge--push' : 'perf-badge--neutral';
+    const badgeLabel = status.toUpperCase();
 
     const clvKey = (t.match || '') + '_' + (t.selection || '');
     const clvPct = clvMap[clvKey];
     const clvCell = clvPct !== undefined
-      ? `<span class="${clvPct > 0 ? 'text-green-400' : clvPct < 0 ? 'text-red-400' : 'text-gray-500'} stat-value">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>`
-      : '<span class="text-gray-600">-</span>';
+      ? `<span class="mono" style="color:${clvPct > 0 ? 'var(--green)' : clvPct < 0 ? 'var(--red)' : 'var(--text-tertiary)'};">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>`
+      : '<span style="color:var(--text-tertiary);">-</span>';
 
-    return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
-      <td class="p-2 text-gray-400">${t.date || '-'}</td>
-      <td class="p-2 text-white">${t.match || '-'}</td>
-      <td class="p-2 text-gray-300">${t.selection || '-'}</td>
-      <td class="p-2 text-center stat-value">${(t.odds || 0).toFixed(2)}</td>
-      <td class="p-2 text-center stat-value">\u20ac${(t.stake || 0).toFixed(1)}</td>
-      <td class="p-2 text-center stat-value ${profitColor}">${t.profit >= 0 ? '+' : ''}\u20ac${(t.profit || 0).toFixed(2)}</td>
-      <td class="p-2 text-center stat-value ${cumColor}">${t.cumulative_profit >= 0 ? '+' : ''}\u20ac${(t.cumulative_profit || 0).toFixed(2)}</td>
-      <td class="p-2 text-center">${clvCell}</td>
-      <td class="p-2 text-center">${statusBadge}</td>
+    return `<tr>
+      <td style="color:var(--text-tertiary);">${t.date || '-'}</td>
+      <td style="color:var(--text-primary);">${t.match || '-'}</td>
+      <td style="color:var(--text-secondary);">${t.selection || '-'}</td>
+      <td class="mono" style="text-align:right;">${(t.odds || 0).toFixed(2)}</td>
+      <td class="mono" style="text-align:right;">\u20ac${(t.stake || 0).toFixed(1)}</td>
+      <td class="mono" style="text-align:right;color:${profitColor};">${t.profit >= 0 ? '+' : ''}\u20ac${(t.profit || 0).toFixed(2)}</td>
+      <td class="mono" style="text-align:right;color:${cumColor};">${t.cumulative_profit >= 0 ? '+' : ''}\u20ac${(t.cumulative_profit || 0).toFixed(2)}</td>
+      <td style="text-align:right;">${clvCell}</td>
+      <td style="text-align:center;"><span class="perf-badge ${badgeClass}">${badgeLabel}</span></td>
     </tr>`;
   }).join('');
 
-  document.getElementById('history-section').classList.remove('hidden');
+  document.getElementById('section-history').style.display = '';
 }
 
-/* ─── ROI Report ─── */
+/* --- ROI Report --- */
 function renderROIReport(roi) {
   if (!roi || !roi.by_market || !Object.keys(roi.by_market).length) return;
   const el = document.getElementById('roi-section');
@@ -485,134 +642,139 @@ function renderROIReport(roi) {
   const kelly = roi.kelly_effectiveness || {};
   const clvA = roi.clv_analysis || {};
 
-  el.innerHTML = `<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  el.innerHTML = `<div class="perf-grid-2-1" style="margin-bottom:var(--space-4);">
     <!-- Market ROI Table -->
-    <div class="lg:col-span-2 bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-sm font-semibold text-white">ROI by Market</h3>
-        <span class="text-[10px] text-gray-500">${roi.total_settled || 0} settled / \u20ac${(roi.total_staked || 0).toFixed(0)} staked</span>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-xs">
-          <thead>
-            <tr class="text-gray-500 border-b border-gray-800">
-              <th class="text-left p-2">Market</th>
-              <th class="p-2 text-right">Bets</th>
-              <th class="p-2 text-right">Won</th>
-              <th class="p-2 text-right">Win Rate</th>
-              <th class="p-2 text-right">Staked</th>
-              <th class="p-2 text-right">Profit</th>
-              <th class="p-2 text-right">ROI</th>
-              <th class="p-2">Performance</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${markets.map(([name, m]) => {
-              const roiPct = m.roi_pct || 0;
-              const roiColor = roiPct > 0 ? 'text-green-400' : roiPct < 0 ? 'text-red-400' : 'text-gray-400';
-              const profitColor = (m.profit || 0) >= 0 ? 'text-green-400' : 'text-red-400';
-              const wrColor = (m.win_rate || 0) >= 0.5 ? 'text-green-400' : (m.win_rate || 0) >= 0.35 ? 'text-amber-400' : 'text-red-400';
-              // ROI bar - scale to max 100%
-              const barWidth = Math.min(Math.abs(roiPct), 250);
-              const barColor = roiPct >= 0 ? 'bg-green-500' : 'bg-red-500';
-              return `<tr class="border-b border-gray-800/50 hover:bg-gray-800/20">
-                <td class="p-2 text-gray-200 font-medium">${name}</td>
-                <td class="p-2 text-right stat-value text-gray-400">${m.bets || 0}</td>
-                <td class="p-2 text-right stat-value text-gray-400">${m.won || 0}</td>
-                <td class="p-2 text-right stat-value ${wrColor}">${((m.win_rate || 0) * 100).toFixed(0)}%</td>
-                <td class="p-2 text-right stat-value text-gray-400">\u20ac${(m.staked || 0).toFixed(0)}</td>
-                <td class="p-2 text-right stat-value ${profitColor}">${(m.profit || 0) >= 0 ? '+' : ''}\u20ac${(m.profit || 0).toFixed(2)}</td>
-                <td class="p-2 text-right stat-value ${roiColor} font-bold">${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}%</td>
-                <td class="p-2"><div class="w-20 h-2.5 bg-gray-800 rounded-full overflow-hidden"><div class="${barColor} h-2.5 rounded-full" style="width:${barWidth / 2.5}%"></div></div></td>
-              </tr>`;
-            }).join('')}
-            <tr class="border-t-2 border-gray-700 font-bold">
-              <td class="p-2 text-white">TOTAL</td>
-              <td class="p-2 text-right stat-value text-white">${roi.total_settled || 0}</td>
-              <td class="p-2 text-right stat-value text-gray-400"></td>
-              <td class="p-2 text-right stat-value text-gray-400"></td>
-              <td class="p-2 text-right stat-value text-white">\u20ac${(roi.total_staked || 0).toFixed(0)}</td>
-              <td class="p-2 text-right stat-value ${(roi.total_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${(roi.total_profit || 0) >= 0 ? '+' : ''}\u20ac${(roi.total_profit || 0).toFixed(2)}</td>
-              <td class="p-2 text-right stat-value ${(roi.overall_roi_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'} font-bold">${(roi.overall_roi_pct || 0) >= 0 ? '+' : ''}${(roi.overall_roi_pct || 0).toFixed(1)}%</td>
-              <td class="p-2"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Side panel: Streaks + Kelly + CLV -->
-    <div class="space-y-4">
-      <!-- Streaks -->
-      <div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Streaks</h4>
-        <div class="grid grid-cols-2 gap-3">
-          <div class="bg-gray-900/50 rounded-lg p-3">
-            <div class="text-[10px] text-gray-500">Current</div>
-            <div class="text-lg font-bold stat-value ${streaks.current_type === 'win' ? 'text-green-400' : 'text-red-400'}">${streaks.current || 0} ${streaks.current_type || ''}</div>
-          </div>
-          <div class="bg-gray-900/50 rounded-lg p-3">
-            <div class="text-[10px] text-gray-500">Max Win</div>
-            <div class="text-lg font-bold text-green-400 stat-value">${streaks.max_win || 0}</div>
-          </div>
-          <div class="bg-gray-900/50 rounded-lg p-3">
-            <div class="text-[10px] text-gray-500">Max Loss</div>
-            <div class="text-lg font-bold text-red-400 stat-value">${streaks.max_loss || 0}</div>
-          </div>
-          <div class="bg-gray-900/50 rounded-lg p-3">
-            <div class="text-[10px] text-gray-500">Kelly Quality</div>
-            <div class="text-lg font-bold text-white stat-value">${kelly.oversized || kelly.undersized ? (kelly.oversized || 0) + ' over' : 'Clean'}</div>
-          </div>
+    <details class="pipe-section" open>
+      <summary>
+        <div style="display:flex;align-items:center;gap:var(--space-2);">
+          <span class="pipe-section__title">ROI by Market</span>
+          <span style="font-size:10px;color:var(--text-tertiary);">${roi.total_settled || 0} settled / \u20ac${(roi.total_staked || 0).toFixed(0)} staked</span>
+        </div>
+      </summary>
+      <div class="pipe-section__body">
+        <div style="overflow-x:auto;">
+          <table class="pipe-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th style="text-align:right;">Bets</th>
+                <th style="text-align:right;">Won</th>
+                <th style="text-align:right;">Win Rate</th>
+                <th style="text-align:right;">Staked</th>
+                <th style="text-align:right;">Profit</th>
+                <th style="text-align:right;">ROI</th>
+                <th>Performance</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${markets.map(([name, m]) => {
+                const roiPct = m.roi_pct || 0;
+                const roiColor = roiPct > 0 ? 'var(--green)' : roiPct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+                const profitColor = (m.profit || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                const wrColor = (m.win_rate || 0) >= 0.5 ? 'var(--green)' : (m.win_rate || 0) >= 0.35 ? 'var(--amber)' : 'var(--red)';
+                const barWidth = Math.min(Math.abs(roiPct), 250);
+                const barColor = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
+                return `<tr>
+                  <td style="color:var(--text-primary);font-weight:500;">${name}</td>
+                  <td class="mono" style="text-align:right;color:var(--text-tertiary);">${m.bets || 0}</td>
+                  <td class="mono" style="text-align:right;color:var(--text-tertiary);">${m.won || 0}</td>
+                  <td class="mono" style="text-align:right;color:${wrColor};">${((m.win_rate || 0) * 100).toFixed(0)}%</td>
+                  <td class="mono" style="text-align:right;color:var(--text-tertiary);">\u20ac${(m.staked || 0).toFixed(0)}</td>
+                  <td class="mono" style="text-align:right;color:${profitColor};">${(m.profit || 0) >= 0 ? '+' : ''}\u20ac${(m.profit || 0).toFixed(2)}</td>
+                  <td class="mono" style="text-align:right;color:${roiColor};font-weight:700;">${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}%</td>
+                  <td><div style="width:80px;height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;"><div style="height:100%;border-radius:4px;background:${barColor};width:${barWidth / 2.5}%;"></div></div></td>
+                </tr>`;
+              }).join('')}
+              <tr style="border-top:2px solid var(--border-default);font-weight:700;">
+                <td style="color:var(--text-primary);">TOTAL</td>
+                <td class="mono" style="text-align:right;color:var(--text-primary);">${roi.total_settled || 0}</td>
+                <td class="mono" style="text-align:right;"></td>
+                <td class="mono" style="text-align:right;"></td>
+                <td class="mono" style="text-align:right;color:var(--text-primary);">\u20ac${(roi.total_staked || 0).toFixed(0)}</td>
+                <td class="mono" style="text-align:right;color:${(roi.total_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${(roi.total_profit || 0) >= 0 ? '+' : ''}\u20ac${(roi.total_profit || 0).toFixed(2)}</td>
+                <td class="mono" style="text-align:right;color:${(roi.overall_roi_pct || 0) >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:700;">${(roi.overall_roi_pct || 0) >= 0 ? '+' : ''}${(roi.overall_roi_pct || 0).toFixed(1)}%</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
+    </details>
+
+    <!-- Side panel: Streaks + CLV -->
+    <div>
+      <!-- Streaks -->
+      <details class="pipe-section" open>
+        <summary><span class="pipe-section__title">Streaks</span></summary>
+        <div class="pipe-section__body">
+          <div class="perf-streaks-grid">
+            <div class="perf-streak-card">
+              <div class="perf-streak-card__label">Current</div>
+              <div class="perf-streak-card__value" style="color:${streaks.current_type === 'win' ? 'var(--green)' : 'var(--red)'};">${streaks.current || 0} ${streaks.current_type || ''}</div>
+            </div>
+            <div class="perf-streak-card">
+              <div class="perf-streak-card__label">Max Win</div>
+              <div class="perf-streak-card__value" style="color:var(--green);">${streaks.max_win || 0}</div>
+            </div>
+            <div class="perf-streak-card">
+              <div class="perf-streak-card__label">Max Loss</div>
+              <div class="perf-streak-card__value" style="color:var(--red);">${streaks.max_loss || 0}</div>
+            </div>
+            <div class="perf-streak-card">
+              <div class="perf-streak-card__label">Kelly Quality</div>
+              <div class="perf-streak-card__value" style="color:var(--text-primary);">${kelly.oversized || kelly.undersized ? (kelly.oversized || 0) + ' over' : 'Clean'}</div>
+            </div>
+          </div>
+        </div>
+      </details>
 
       <!-- CLV Summary -->
-      ${clvA.positive_clv_bets ? `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-        <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">CLV Breakdown</h4>
-        <div class="space-y-2">
-          <div class="flex justify-between text-xs">
-            <span class="text-gray-400">+CLV Bets</span>
-            <span class="text-green-400 stat-value font-medium">${clvA.positive_clv_bets || 0}</span>
+      ${clvA.positive_clv_bets ? `<details class="pipe-section" open>
+        <summary><span class="pipe-section__title">CLV Breakdown</span></summary>
+        <div class="pipe-section__body">
+          <div class="perf-kv-row">
+            <span style="color:var(--text-tertiary);">+CLV Bets</span>
+            <span class="mono" style="color:var(--green);font-weight:500;">${clvA.positive_clv_bets || 0}</span>
           </div>
-          <div class="flex justify-between text-xs">
-            <span class="text-gray-400">-CLV Bets</span>
-            <span class="text-red-400 stat-value font-medium">${clvA.negative_clv_bets || 0}</span>
+          <div class="perf-kv-row">
+            <span style="color:var(--text-tertiary);">-CLV Bets</span>
+            <span class="mono" style="color:var(--red);font-weight:500;">${clvA.negative_clv_bets || 0}</span>
           </div>
-          <div class="h-3 bg-gray-800 rounded-full overflow-hidden mt-2 flex">
-            <div class="bg-green-500 h-3" style="width:${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}%"></div>
-            <div class="bg-red-500 h-3 flex-1"></div>
+          <div style="display:flex;height:10px;background:var(--bg-tertiary);border-radius:5px;overflow:hidden;margin-top:var(--space-2);">
+            <div style="background:var(--green);height:100%;width:${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}%;"></div>
+            <div style="background:var(--red);height:100%;flex:1;"></div>
           </div>
-          <div class="text-[10px] text-gray-600 text-center">${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}% positive CLV rate</div>
+          <div style="font-size:10px;color:var(--text-tertiary);text-align:center;margin-top:var(--space-2);">${((clvA.positive_clv_bets || 0) / ((clvA.positive_clv_bets || 0) + (clvA.negative_clv_bets || 1)) * 100).toFixed(0)}% positive CLV rate</div>
         </div>
-      </div>` : ''}
+      </details>` : ''}
     </div>
   </div>`;
-  el.classList.remove('hidden');
+  el.style.display = '';
 }
 
-/* ─── Backtest Baselines ─── */
+/* --- Backtest Baselines --- */
 function renderBacktests(backtests) {
   if (!backtests || !Object.keys(backtests).length) return;
   const el = document.getElementById('backtest-section');
   const seasons = Object.entries(backtests).filter(([, v]) => v && Object.keys(v).length);
   if (!seasons.length) return;
 
-  let html = `<div class="bg-dark-800 rounded-xl border border-gray-800 p-5 section-card">
-    <h3 class="text-sm font-semibold text-white mb-4">Backtest Baselines</h3>
-    <div class="text-[10px] text-gray-600 mb-3">Historical model performance on completed seasons — use as reference for live performance expectations.</div>
-    <div class="overflow-x-auto">
-      <table class="w-full text-xs">
-        <thead><tr class="text-gray-500 border-b border-gray-800">
-          <th class="text-left p-2">Market / Model</th>
-          ${seasons.map(([s]) => `<th class="p-2 text-center" colspan="2">${s}</th>`).join('')}
-        </tr>
-        <tr class="text-gray-600 border-b border-gray-800">
-          <th class="p-1"></th>
-          ${seasons.map(() => `<th class="p-1 text-center text-[10px]">Acc</th><th class="p-1 text-center text-[10px]">LogLoss</th>`).join('')}
-        </tr></thead>
-        <tbody>`;
+  let html = `<details class="pipe-section" open>
+    <summary><span class="pipe-section__title">Backtest Baselines</span></summary>
+    <div class="pipe-section__body">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:var(--space-3);">Historical model performance on completed seasons -- use as reference for live performance expectations.</div>
+      <div style="overflow-x:auto;">
+        <table class="pipe-table">
+          <thead><tr>
+            <th>Market / Model</th>
+            ${seasons.map(([s]) => `<th style="text-align:center;" colspan="2">${s}</th>`).join('')}
+          </tr>
+          <tr>
+            <th></th>
+            ${seasons.map(() => `<th style="text-align:center;font-size:9px;">Acc</th><th style="text-align:center;font-size:9px;">LogLoss</th>`).join('')}
+          </tr></thead>
+          <tbody>`;
 
-  // Collect all market keys from all seasons
   const allKeys = new Set();
   for (const [, data] of seasons) {
     for (const key of Object.keys(data)) {
@@ -627,50 +789,49 @@ function renderBacktests(backtests) {
   };
 
   for (const key of allKeys) {
-    html += `<tr class="border-b border-gray-800/50">
-      <td class="p-2 text-gray-300 font-medium">${marketLabels[key] || key}</td>`;
+    html += `<tr>
+      <td style="color:var(--text-secondary);font-weight:500;">${marketLabels[key] || key}</td>`;
     for (const [, data] of seasons) {
       const m = data[key] || {};
       const acc = m.accuracy != null ? (m.accuracy * 100).toFixed(1) : '-';
-      const accColor = m.accuracy >= 0.55 ? 'text-green-400' : m.accuracy >= 0.50 ? 'text-amber-400' : 'text-gray-400';
+      const accColor = m.accuracy >= 0.55 ? 'var(--green)' : m.accuracy >= 0.50 ? 'var(--amber)' : 'var(--text-tertiary)';
       const ll = m.log_loss != null ? m.log_loss.toFixed(4) : '-';
-      html += `<td class="p-2 text-center stat-value ${accColor}">${acc}%</td>`;
-      html += `<td class="p-2 text-center stat-value text-gray-500">${ll}</td>`;
+      html += `<td class="mono" style="text-align:center;color:${accColor};">${acc}%</td>`;
+      html += `<td class="mono" style="text-align:center;color:var(--text-tertiary);">${ll}</td>`;
     }
     html += `</tr>`;
   }
 
-  html += `</tbody></table></div></div>`;
+  html += `</tbody></table></div></div></details>`;
   el.innerHTML = html;
-  el.classList.remove('hidden');
+  el.style.display = '';
 }
 
-/* ─── Main Load (re-callable) ─── */
-let lastSettledCount = null;  // track changes for auto-refresh
+/* --- Main Load (re-callable) --- */
+let lastSettledCount = null;
 
 async function loadAnalytics() {
   try {
     const res = await fetch('/api/analytics');
     const data = await res.json();
 
-    document.getElementById('loading').classList.add('hidden');
-    document.getElementById('empty').classList.add('hidden');
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('empty').style.display = 'none';
 
     const hasHistory = data.timeline && data.timeline.length > 0;
     const hasBankroll = data.bankroll && Object.keys(data.bankroll).length > 0;
     const hasCLV = data.clv && data.clv.bets && data.clv.bets.length > 0;
     const hasFeedback = data.feedback && data.feedback.method_brier_scores;
 
-    // Track if new bets were settled (for auto-refresh detection)
     const currentSettled = data.summary?.settled_bets || 0;
     if (lastSettledCount !== null && currentSettled > lastSettledCount) {
       const newBets = currentSettled - lastSettledCount;
-      showAnalyticsToast(`${newBets} new bet${newBets > 1 ? 's' : ''} settled — analytics updated`, 'success');
+      showAnalyticsToast(`${newBets} new bet${newBets > 1 ? 's' : ''} settled -- analytics updated`, 'success');
     }
     lastSettledCount = currentSettled;
 
     if (!hasHistory && !hasBankroll && !hasCLV && !hasFeedback) {
-      document.getElementById('empty').classList.remove('hidden');
+      document.getElementById('empty').style.display = '';
       return;
     }
 
@@ -678,78 +839,77 @@ async function loadAnalytics() {
     if (hasBankroll) renderBankroll(data.bankroll);
 
     if (hasHistory) {
-      document.getElementById('charts').classList.remove('hidden');
+      document.getElementById('section-pnl').style.display = '';
+      document.getElementById('section-charts-row').style.display = '';
       renderPnLChart(data.timeline);
       if (data.by_confidence && Object.keys(data.by_confidence).length) renderConfChart(data.by_confidence);
       if (data.by_market && Object.keys(data.by_market).length) renderMarketChart(data.by_market);
       renderHistory(data.timeline, data.clv?.bets);
     }
 
-    // CLV + Model Health (always show if data exists)
     if (hasCLV) renderCLV(data.clv);
     if (hasFeedback) renderModelHealth(data.feedback, data.weights);
     if ((hasCLV || hasFeedback) && !hasHistory) {
-      document.getElementById('model-section').classList.remove('hidden');
+      document.getElementById('section-model-row').style.display = '';
     }
 
-    // ROI Report
     if (data.roi_report && data.roi_report.by_market) {
       renderROIReport(data.roi_report);
     }
 
-    // Backtest baselines
     if (data.backtests) {
       renderBacktests(data.backtests);
     }
 
     if (!hasHistory && !hasCLV && !hasFeedback) {
-      document.getElementById('empty').classList.remove('hidden');
+      document.getElementById('empty').style.display = '';
     }
 
-    // Update last-refreshed indicator
     updateRefreshTime();
   } catch (err) {
     document.getElementById('loading').textContent = 'Failed to load analytics: ' + err.message;
   }
 }
 
-/* ─── Refresh Button ─── */
+/* --- Refresh Button --- */
 function refreshAnalytics() {
   const btn = document.getElementById('refresh-btn');
-  btn.textContent = 'Refreshing...';
+  const label = btn.querySelector('span');
+  if (label) label.textContent = 'Refreshing...';
   btn.disabled = true;
   destroyCharts();
   loadAnalytics().finally(() => {
-    btn.textContent = 'Refresh';
+    if (label) label.textContent = 'Refresh';
     btn.disabled = false;
   });
 }
 
-/* ─── Settle Bets Button ─── */
+/* --- Settle Bets Button --- */
 async function triggerSettle() {
   const btn = document.getElementById('settle-btn');
-  btn.textContent = 'Settling...';
+  const label = btn.querySelector('span');
+  if (label) label.textContent = 'Settling...';
   btn.disabled = true;
   try {
     const res = await fetch('/api/settle', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) {
       showAnalyticsToast(data.message || 'Settlement not started', 'info');
-      btn.textContent = 'Settle Bets';
+      if (label) label.textContent = 'Settle Bets';
       btn.disabled = false;
       return;
     }
-    // Poll for result
     pollSettleAndRefresh();
   } catch (e) {
     showAnalyticsToast('Settlement failed: ' + e.message, 'error');
-    btn.textContent = 'Settle Bets';
+    if (label) label.textContent = 'Settle Bets';
     btn.disabled = false;
   }
 }
 
 async function pollSettleAndRefresh() {
   const btn = document.getElementById('settle-btn');
+  const label = btn.querySelector('span');
   for (let i = 0; i < 30; i++) {
     await new Promise(r => setTimeout(r, 2000));
     try {
@@ -767,36 +927,33 @@ async function pollSettleAndRefresh() {
             profit >= 0 ? 'success' : 'error'
           );
         }
-        // Refresh analytics with new data
         destroyCharts();
         await loadAnalytics();
-        btn.textContent = 'Settle Bets';
+        if (label) label.textContent = 'Settle Bets';
         btn.disabled = false;
         return;
       }
       if (!data.running && data.status === 'error') {
         showAnalyticsToast('Settlement error: ' + (data.error || 'unknown'), 'error');
-        btn.textContent = 'Settle Bets';
+        if (label) label.textContent = 'Settle Bets';
         btn.disabled = false;
         return;
       }
     } catch (e) { /* continue polling */ }
   }
   showAnalyticsToast('Settlement timed out', 'error');
-  btn.textContent = 'Settle Bets';
+  if (label) label.textContent = 'Settle Bets';
   btn.disabled = false;
 }
 
-/* ─── Auto-refresh: check for new settlements every 60s ─── */
+/* --- Auto-refresh: check for new settlements every 60s --- */
 setInterval(async () => {
   try {
     const res = await fetch('/api/settle/status');
     const data = await res.json();
-    // If a settlement just finished (from betting page or cron), refresh
     if (!data.running && data.status === 'done' && data.settled > 0) {
       const finishedAt = new Date(data.finished_at || 0).getTime();
       const now = Date.now();
-      // Only auto-refresh if settlement finished in the last 90s
       if (now - finishedAt < 90000) {
         destroyCharts();
         loadAnalytics();
@@ -805,20 +962,20 @@ setInterval(async () => {
   } catch (e) { /* silent */ }
 }, 60000);
 
-/* ─── Toast ─── */
+/* --- Toast --- */
 function showAnalyticsToast(message, type = 'info') {
   const existing = document.getElementById('analytics-toast');
   if (existing) existing.remove();
 
   const colors = {
-    info: 'bg-blue-900/80 border-blue-700/50 text-blue-300',
-    success: 'bg-green-900/80 border-green-700/50 text-green-300',
-    error: 'bg-red-900/80 border-red-700/50 text-red-300',
+    info:    { bg: 'var(--accent-muted)', border: 'rgba(129,140,248,0.3)', text: 'var(--accent)' },
+    success: { bg: 'var(--green-muted)',  border: 'rgba(74,222,128,0.3)',  text: 'var(--green)' },
+    error:   { bg: 'var(--red-muted)',    border: 'rgba(248,113,113,0.3)', text: 'var(--red)' },
   };
+  const c = colors[type] || colors.info;
   const toast = document.createElement('div');
   toast.id = 'analytics-toast';
-  toast.className = `fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium ${colors[type] || colors.info} shadow-lg`;
-  toast.style.cssText = 'animation: slideInUp 0.3s ease';
+  toast.style.cssText = `position:fixed;bottom:16px;right:16px;z-index:50;padding:12px 16px;border-radius:var(--radius-md);border:1px solid ${c.border};background:${c.bg};color:${c.text};font-size:13px;font-weight:500;box-shadow:var(--shadow-lg);animation:slideInUp 0.3s ease;`;
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => {
@@ -829,14 +986,11 @@ function showAnalyticsToast(message, type = 'info') {
 }
 
 function updateRefreshTime() {
-  // Update the refresh button title with last refresh time
   const btn = document.getElementById('refresh-btn');
   if (btn) btn.title = 'Last refreshed: ' + new Date().toLocaleTimeString();
 }
 
 // Initial load
 loadAnalytics();
-
 </script>
-  </div>
 {% endblock %}

@@ -15,12 +15,12 @@
 
   /* ── Match Hero ─────────────────────────────────────── */
   .match-hero {
-    background:var(--bg-card); border:1px solid var(--border-subtle);
+    background:var(--bg-secondary); border:1px solid var(--border-default);
     border-radius:var(--radius-lg); overflow:hidden; margin-bottom:var(--space-5);
   }
   .match-hero__header {
     display:flex; align-items:center; justify-content:space-between;
-    padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border-subtle);
+    padding:var(--space-3) var(--space-5); border-bottom:1px solid var(--border-subtle);
     flex-wrap:wrap; gap:var(--space-2);
   }
   .match-hero__teams {
@@ -42,23 +42,50 @@
   .match-hero__odds { font-size:12px; color:var(--text-tertiary); font-family:var(--font-mono); }
   .match-hero__prob-bar { width:200px; margin:var(--space-2) 0; }
 
-  /* ── Intelligence Sections ──────────────────────────── */
-  .intel-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-4); }
-  @media (max-width:900px) { .intel-grid { grid-template-columns:1fr; } }
-  .intel-section {
-    background:var(--bg-card); border:1px solid var(--border-subtle);
+  /* ── Section Cards ──────────────────────────────────── */
+  .pd-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-4); }
+  @media (max-width:900px) { .pd-grid { grid-template-columns:1fr; } }
+
+  .pd-card {
+    background:var(--bg-secondary); border:1px solid var(--border-default);
     border-radius:var(--radius-lg); overflow:hidden;
   }
-  .intel-section--full { grid-column:1/-1; }
-  .intel-section__header {
+  .pd-card--full { grid-column:1/-1; }
+  .pd-card--value { border-color:rgba(74,222,128,0.25); border-left:3px solid var(--green); }
+  .pd-card--glow { box-shadow:0 0 20px rgba(74,222,128,0.06); }
+
+  .pd-card__header {
     display:flex; align-items:center; justify-content:space-between;
-    padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border-subtle);
+    padding:var(--space-3) var(--space-5); border-bottom:1px solid var(--border-subtle);
   }
-  .intel-section__title {
-    font-size:11px; text-transform:uppercase; letter-spacing:0.5px;
-    font-weight:600; color:var(--accent); display:flex; align-items:center; gap:6px;
+  .pd-card__title {
+    font-size:13px; font-weight:600; color:var(--text-primary);
+    display:flex; align-items:center; gap:8px;
   }
-  .intel-section__body { padding:var(--space-4); }
+  .pd-card__title svg { color:var(--accent); flex-shrink:0; }
+  .pd-card__body { padding:var(--space-4) var(--space-5); }
+
+  /* ── Verdict Section ────────────────────────────────── */
+  .verdict-row {
+    display:grid; grid-template-columns:1fr auto 1fr; gap:var(--space-3);
+    align-items:center; text-align:center; margin-bottom:var(--space-4);
+  }
+  .verdict-outcome {
+    font-size:28px; font-weight:800; line-height:1;
+    font-family:var(--font-mono);
+  }
+  .verdict-conf {
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;
+    margin-top:var(--space-1);
+  }
+  .verdict-prob-bar {
+    display:flex; height:10px; border-radius:5px; overflow:hidden;
+    background:var(--bg-tertiary); margin-bottom:var(--space-2);
+  }
+  .verdict-prob-labels {
+    display:flex; justify-content:space-between; font-size:12px;
+    font-family:var(--font-mono); font-weight:600;
+  }
 
   /* ── Model vs Market Chart ──────────────────────────── */
   .mvm-row { display:flex; align-items:center; gap:var(--space-2); margin-bottom:var(--space-2); }
@@ -83,6 +110,32 @@
   .ens-call { width:20px; font-weight:700; text-align:center; flex-shrink:0; }
   .ens-agree-icon { width:16px; text-align:center; flex-shrink:0; font-size:11px; }
   .ens-separator { border-top:1px solid var(--border-default); margin:var(--space-2) 0; }
+
+  /* ── Value Bet Cards ────────────────────────────────── */
+  .vb-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:var(--space-3); }
+  .vb-card {
+    background:linear-gradient(135deg,rgba(74,222,128,0.04),rgba(52,211,153,0.02));
+    border:1px solid rgba(74,222,128,0.2); border-radius:var(--radius-md);
+    padding:var(--space-4); display:flex; flex-direction:column; gap:var(--space-2);
+    transition:all 0.15s;
+  }
+  .vb-card:hover { border-color:rgba(74,222,128,0.4); transform:translateY(-1px); }
+  .vb-card__market { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); font-weight:600; }
+  .vb-card__selection { font-size:15px; font-weight:700; color:var(--text-primary); }
+  .vb-card__row { display:flex; justify-content:space-between; align-items:baseline; }
+  .vb-card__odds { font-family:var(--font-mono); font-size:14px; font-weight:600; color:var(--accent); }
+  .vb-card__edge { font-family:var(--font-mono); font-size:13px; font-weight:700; color:var(--green); }
+  .vb-no-edge { text-align:center; padding:var(--space-4); color:var(--text-tertiary); font-size:12px; }
+
+  /* ── Key Stats Grid ─────────────────────────────────── */
+  .ks-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:var(--space-3); }
+  .ks-item {
+    background:var(--bg-tertiary); border-radius:var(--radius-md);
+    padding:var(--space-3); display:flex; flex-direction:column; gap:2px;
+  }
+  .ks-item__label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); font-weight:600; }
+  .ks-item__value { font-family:var(--font-mono); font-size:16px; font-weight:700; color:var(--text-primary); line-height:1.2; }
+  .ks-item__sub { font-size:10px; color:var(--text-tertiary); }
 
   /* ── H2H ────────────────────────────────────────────── */
   .h2h-grid { display:grid; grid-template-columns:1fr auto 1fr; gap:var(--space-2); align-items:center; text-align:center; }
@@ -138,7 +191,7 @@
   /* ── Calibration ────────────────────────────────────── */
   .cal-note { font-size:12px; padding:var(--space-2) var(--space-3); background:var(--bg-tertiary); border-radius:var(--radius-sm); margin-top:var(--space-3); }
 
-  /* ── Recommended Bets ───────────────────────────────── */
+  /* ── Bet Card ───────────────────────────────────────── */
   .bet-card {
     background:var(--bg-tertiary); border:1px solid var(--border-subtle);
     border-radius:var(--radius-md); padding:var(--space-3) var(--space-4);
@@ -210,6 +263,15 @@
     font-size:11px; color:var(--text-tertiary);
   }
   .refresh-indicator .animate-spin { width:12px; height:12px; }
+
+  /* ── Responsive ─────────────────────────────────────── */
+  @media (max-width:600px) {
+    .match-hero__teams { flex-direction:column; gap:var(--space-3); padding:var(--space-4); }
+    .match-hero__team--home, .match-hero__team--away { text-align:center; }
+    .match-hero__team-name { font-size:18px; }
+    .ks-grid { grid-template-columns:repeat(2,1fr); }
+    .vb-grid { grid-template-columns:1fr; }
+  }
 </style>
 {% endblock %}
 
@@ -235,169 +297,220 @@
 
 <!-- Live Match Section (shown only when match is live) -->
 <div id="live-section" class="hidden" style="margin-bottom:var(--space-4)">
-  <div class="intel-grid">
+  <div class="pd-grid">
     <!-- Live Score + Events -->
-    <div class="intel-section">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <span class="live-dot animate-pulse"></span>
           Live Match
         </span>
         <span class="refresh-indicator" id="live-refresh-status"></span>
       </div>
-      <div class="intel-section__body" id="body-live-score" style="padding:0"></div>
+      <div class="pd-card__body" id="body-live-score" style="padding:0"></div>
     </div>
 
     <!-- Live Stats -->
-    <div class="intel-section">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
           Live Statistics
         </span>
       </div>
-      <div class="intel-section__body" id="body-live-stats"></div>
+      <div class="pd-card__body" id="body-live-stats"></div>
     </div>
   </div>
 
   <!-- Live Events Timeline (full width) -->
-  <div class="intel-grid" style="margin-top:0">
-    <div class="intel-section intel-section--full">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  <div class="pd-grid" style="margin-top:0">
+    <div class="pd-card pd-card--full">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           Match Events
         </span>
         <span id="live-events-count" class="text-small text-tertiary"></span>
       </div>
-      <div class="intel-section__body" id="body-live-events"></div>
+      <div class="pd-card__body" id="body-live-events"></div>
     </div>
   </div>
 </div>
 
 <!-- Intelligence Sections -->
 <div id="intel-sections" class="hidden">
-  <!-- Row 1: Prediction Analysis + Match Context -->
-  <div class="intel-grid">
-    <div class="intel-section" id="sec-prediction">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+
+  <!-- 1. Verdict: Prediction + Confidence (full-width) -->
+  <div class="pd-grid">
+    <div class="pd-card pd-card--full" id="sec-verdict">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 100 12 6 6 0 000-12z"/></svg>
-          Prediction Analysis
+          Verdict
         </span>
+        <span id="verdict-agreement-badge"></span>
       </div>
-      <div class="intel-section__body" id="body-prediction"></div>
+      <div class="pd-card__body" id="body-verdict"></div>
     </div>
-    <div class="intel-section" id="sec-context">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  </div>
+
+  <!-- 2. Value Bets (full-width, highlighted) -->
+  <div class="pd-grid" id="sec-value-bets-wrap">
+    <div class="pd-card pd-card--full pd-card--value pd-card--glow" id="sec-value-bets">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Value Bets
+        </span>
+        <span id="value-bets-count" class="text-small text-tertiary"></span>
+      </div>
+      <div class="pd-card__body" id="body-value-bets"></div>
+    </div>
+  </div>
+
+  <!-- 3. Key Stats + Prediction Analysis -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-key-stats">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-          Match Context
+          Key Stats
         </span>
       </div>
-      <div class="intel-section__body" id="body-context"></div>
+      <div class="pd-card__body" id="body-key-stats"></div>
     </div>
-  </div>
-
-  <!-- Row 2: Key Factors + Market Intelligence -->
-  <div class="intel-grid">
-    <div class="intel-section" id="sec-factors">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card" id="sec-prediction">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          Key Factors
+          Ensemble Breakdown
         </span>
       </div>
-      <div class="intel-section__body" id="body-factors"></div>
-    </div>
-    <div class="intel-section" id="sec-market">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
-          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
-          Market Intelligence
-        </span>
-      </div>
-      <div class="intel-section__body" id="body-market"></div>
+      <div class="pd-card__body" id="body-prediction"></div>
     </div>
   </div>
 
-  <!-- Row 3: Lineups + Injuries -->
-  <div class="intel-grid">
-    <div class="intel-section" id="sec-lineups">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  <!-- 4. H2H History + League Position -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-h2h">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 5H4m0 0l4-4m-4 4l4 4"/></svg>
+          H2H History
+        </span>
+      </div>
+      <div class="pd-card__body" id="body-h2h"></div>
+    </div>
+    <div class="pd-card" id="sec-context">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          League Position
+        </span>
+      </div>
+      <div class="pd-card__body" id="body-context"></div>
+    </div>
+  </div>
+
+  <!-- 5. Lineups + Injuries -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-lineups">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
           Lineups
         </span>
         <span id="lineup-badge"></span>
       </div>
-      <div class="intel-section__body" id="body-lineups"></div>
+      <div class="pd-card__body" id="body-lineups"></div>
     </div>
-    <div class="intel-section" id="sec-injuries">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card" id="sec-injuries">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           Injuries &amp; Suspensions
         </span>
       </div>
-      <div class="intel-section__body" id="body-injuries"></div>
+      <div class="pd-card__body" id="body-injuries"></div>
     </div>
   </div>
 
-  <!-- Row 4: Cross-Market + Draw Analysis -->
-  <div class="intel-grid">
-    <div class="intel-section" id="sec-cross-market">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  <!-- 6. Market Intelligence + Key Factors -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-market">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+          Market Intelligence
+        </span>
+      </div>
+      <div class="pd-card__body" id="body-market"></div>
+    </div>
+    <div class="pd-card" id="sec-factors">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          Key Factors
+        </span>
+      </div>
+      <div class="pd-card__body" id="body-factors"></div>
+    </div>
+  </div>
+
+  <!-- 7. Cross-Market + Draw Analysis -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-cross-market">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
           Cross-Market Signals
         </span>
       </div>
-      <div class="intel-section__body" id="body-cross-market"></div>
+      <div class="pd-card__body" id="body-cross-market"></div>
     </div>
-    <div class="intel-section" id="sec-draw">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card" id="sec-draw">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           Draw Analysis
         </span>
       </div>
-      <div class="intel-section__body" id="body-draw"></div>
+      <div class="pd-card__body" id="body-draw"></div>
     </div>
   </div>
 
-  <!-- Row 5: Conditions + Sentiment -->
-  <div class="intel-grid">
-    <div class="intel-section" id="sec-conditions">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  <!-- 8. Conditions + Sentiment -->
+  <div class="pd-grid">
+    <div class="pd-card" id="sec-conditions">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.9 2.999"/></svg>
           Conditions
         </span>
       </div>
-      <div class="intel-section__body" id="body-conditions"></div>
+      <div class="pd-card__body" id="body-conditions"></div>
     </div>
-    <div class="intel-section" id="sec-sentiment">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+    <div class="pd-card" id="sec-sentiment">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
           Sentiment
         </span>
       </div>
-      <div class="intel-section__body" id="body-sentiment"></div>
+      <div class="pd-card__body" id="body-sentiment"></div>
     </div>
   </div>
 
-  <!-- Row 6: Betting Recommendations (full-width) -->
-  <div class="intel-grid">
-    <div class="intel-section intel-section--full" id="sec-betting">
-      <div class="intel-section__header">
-        <span class="intel-section__title">
+  <!-- 9. Betting Recommendation (full-width) -->
+  <div class="pd-grid">
+    <div class="pd-card pd-card--full" id="sec-betting">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
           <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
           Betting Recommendation
         </span>
       </div>
-      <div class="intel-section__body" id="body-betting"></div>
+      <div class="pd-card__body" id="body-betting"></div>
     </div>
   </div>
 </div>
@@ -550,14 +663,214 @@ function renderHero(m, ctx) {
 
 
 // ═══════════════════════════════════════════════════════════════
-// RENDER: Prediction Analysis (Model vs Market + Ensemble)
+// RENDER: Verdict (probabilities bar + confidence + agreement)
+// ═══════════════════════════════════════════════════════════════
+function renderVerdict(m) {
+  const p = m.probabilities || {};
+  const mk = m.market_implied || {};
+  const outcomeCol = OUTCOME_COLORS[m.predicted_outcome] || 'var(--text-tertiary)';
+  const outcomeLabel = m.predicted_outcome === 'HOME' ? m.home_team + ' Win'
+    : m.predicted_outcome === 'AWAY' ? m.away_team + ' Win' : 'Draw';
+  const conf = m.confidence_level || 'medium';
+  const agr = getAgreement(m);
+
+  // Probabilities
+  const pH = ((p.home||0)*100).toFixed(0);
+  const pD = ((p.draw||0)*100).toFixed(0);
+  const pA = ((p.away||0)*100).toFixed(0);
+
+  let html = `
+    <div style="text-align:center;margin-bottom:var(--space-4)">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-tertiary);margin-bottom:var(--space-1)">Model Prediction</div>
+      <div style="font-size:28px;font-weight:800;color:${outcomeCol};font-family:var(--font-mono);line-height:1">${outcomeLabel}</div>
+      <div style="margin-top:var(--space-2)">${confBadge(conf)}</div>
+    </div>
+
+    <div style="max-width:500px;margin:0 auto">
+      <div class="verdict-prob-bar">
+        <div style="width:${pH}%;background:var(--green);transition:width 0.6s"></div>
+        <div style="width:${pD}%;background:var(--amber);transition:width 0.6s"></div>
+        <div style="width:${pA}%;background:var(--red);transition:width 0.6s"></div>
+      </div>
+      <div class="verdict-prob-labels">
+        <span class="text-green">${pH}% H</span>
+        <span class="text-amber">${pD}% D</span>
+        <span class="text-red">${pA}% A</span>
+      </div>
+    </div>`;
+
+  // Agreement badge
+  if (agr) {
+    const agrCol = agr.agree === agr.total ? 'text-green' : agr.agree >= agr.total * 0.5 ? 'text-amber' : 'text-red';
+    document.getElementById('verdict-agreement-badge').innerHTML =
+      `<span class="badge badge--neutral">${agr.agree}/${agr.total} models agree</span>`;
+    html += `<div style="text-align:center;margin-top:var(--space-3);font-size:12px;color:var(--text-tertiary)">
+      <span class="${agrCol} font-semibold">${agr.agree}/${agr.total}</span> ensemble models agree on this call
+    </div>`;
+  }
+
+  // Market comparison summary
+  if (mk.home || mk.away) {
+    const edges = getMatchEdges(m);
+    const bestSide = edges.home >= edges.draw && edges.home >= edges.away ? 'home'
+      : edges.away >= edges.home && edges.away >= edges.draw ? 'away' : 'draw';
+    const bestEdge = edges[bestSide] || 0;
+    const edgeCol = bestEdge > 3 ? 'text-green' : bestEdge > 0 ? 'text-amber' : 'text-red';
+    html += `<div style="display:flex;justify-content:center;gap:var(--space-6);margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-subtle)">
+      <div style="text-align:center"><span class="text-label">Best Edge</span><div class="text-mono font-semibold ${edgeCol}" style="font-size:16px;margin-top:2px">${bestEdge > 0 ? '+' : ''}${bestEdge.toFixed(1)}%</div></div>
+      <div style="text-align:center"><span class="text-label">Market H</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.home||0)*100).toFixed(0)}%</div></div>
+      <div style="text-align:center"><span class="text-label">Market D</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.draw||0)*100).toFixed(0)}%</div></div>
+      <div style="text-align:center"><span class="text-label">Market A</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.away||0)*100).toFixed(0)}%</div></div>
+    </div>`;
+  }
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Value Bets
+// ═══════════════════════════════════════════════════════════════
+function renderValueBets(m) {
+  const edges = getMatchEdges(m);
+  const h2h = m.odds?.h2h || {};
+  const totals = m.odds?.totals || [];
+  const rec = m.betting_recommendation;
+  let bets = [];
+
+  // 1X2 edges
+  for (const [side, label, col] of [['home', m.home_team + ' Win', '--green'], ['draw', 'Draw', '--amber'], ['away', m.away_team + ' Win', '--red']]) {
+    const edge = edges[side];
+    if (edge && edge > 3) {
+      bets.push({ market: '1X2', selection: label, odds: h2h[side], edge, col });
+    }
+  }
+
+  if (!bets.length) {
+    // Hide the entire value bets section if no edges
+    const wrap = document.getElementById('sec-value-bets-wrap');
+    if (wrap) wrap.style.display = 'none';
+    return '';
+  }
+
+  let html = '<div class="vb-grid">';
+  for (const b of bets) {
+    html += `<div class="vb-card">
+      <div class="vb-card__market">${b.market}</div>
+      <div class="vb-card__selection">${b.selection}</div>
+      <div class="vb-card__row">
+        <span class="vb-card__odds">${b.odds ? '@' + b.odds.toFixed(2) : ''}</span>
+        <span class="vb-card__edge">+${b.edge.toFixed(1)}% edge</span>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Totals as secondary bets
+  if (totals.length) {
+    html += '<div style="margin-top:var(--space-3)"><div class="text-label mb-2">Totals (O/U)</div><div style="display:flex;gap:var(--space-2);flex-wrap:wrap">';
+    for (const t of totals.slice(0, 4)) {
+      const point = t.point || t.total;
+      html += `<div style="background:var(--bg-tertiary);padding:6px 12px;border-radius:var(--radius-sm);font-size:11px;border:1px solid var(--border-subtle)">
+        <span class="text-tertiary">${point}</span>
+        <span class="text-mono text-green">O ${oddsFmt(t.over)}</span>
+        <span class="text-mono text-red">U ${oddsFmt(t.under)}</span>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+
+  // Recommendation
+  if (rec) {
+    html += `<div style="margin-top:var(--space-3);padding:var(--space-3) var(--space-4);background:rgba(74,222,128,0.04);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
+      <div class="text-label" style="color:var(--green)">Recommendation</div>
+      <div class="text-secondary font-medium mt-1" style="font-size:13px">${rec}</div>
+    </div>`;
+  }
+
+  // Update count badge
+  const countEl = document.getElementById('value-bets-count');
+  if (countEl) countEl.textContent = `${bets.length} value bet${bets.length !== 1 ? 's' : ''}`;
+
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Key Stats
+// ═══════════════════════════════════════════════════════════════
+function renderKeyStats(m) {
+  const p = m.probabilities || {};
+  const da = m.draw_analysis || {};
+  const cm = m.cross_market || {};
+  const totals = m.odds?.totals || [];
+  const h2h = m.odds?.h2h || {};
+  const mi = m.market_intelligence || {};
+
+  let items = [];
+
+  // xG
+  items.push({ label: 'Home xG', value: xgFmt(m.home_xg), col: 'text-green' });
+  items.push({ label: 'Away xG', value: xgFmt(m.away_xg), col: 'text-red' });
+
+  // BTTS
+  if (m.btts_probability != null) {
+    const btts = (m.btts_probability * 100).toFixed(0);
+    items.push({ label: 'BTTS Prob', value: btts + '%', col: btts > 50 ? 'text-green' : 'text-tertiary' });
+  }
+
+  // O/U 2.5
+  const ou25 = totals.find(t => (t.point || t.total) === 2.5);
+  if (ou25) {
+    items.push({ label: 'O2.5', value: oddsFmt(ou25.over), sub: 'odds' });
+    items.push({ label: 'U2.5', value: oddsFmt(ou25.under), sub: 'odds' });
+  }
+
+  // Draw score
+  if (da.draw_score != null) {
+    const ds = (da.draw_score * 100).toFixed(0);
+    items.push({ label: 'Draw Score', value: ds + '%', col: da.is_draw_candidate ? 'text-amber' : 'text-tertiary' });
+  }
+
+  // Confidence
+  if (m.confidence_score != null) {
+    items.push({ label: 'Confidence', value: (m.confidence_score * 100).toFixed(0) + '%' });
+  }
+
+  // Sharp direction
+  if (mi.sharp_direction) {
+    items.push({ label: 'Sharp Money', value: mi.sharp_direction, col: 'text-accent' });
+  }
+
+  // Steam
+  if (mi.steam_detected || (m.odds_movement || {}).is_steam_move) {
+    items.push({ label: 'Steam Move', value: 'DETECTED', col: 'text-red' });
+  }
+
+  if (!items.length) return '<div class="text-small text-tertiary">No stats data</div>';
+
+  let html = '<div class="ks-grid">';
+  for (const item of items) {
+    html += `<div class="ks-item">
+      <span class="ks-item__label">${item.label}</span>
+      <span class="ks-item__value ${item.col || 'text-primary'}">${item.value}</span>
+      ${item.sub ? `<span class="ks-item__sub">${item.sub}</span>` : ''}
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Prediction Analysis (Ensemble only, MvM moved to verdict)
 // ═══════════════════════════════════════════════════════════════
 function renderPredictionAnalysis(m) {
   const p = m.probabilities || {}, mk = m.market_implied || {};
   const hasMarket = mk.home || mk.away;
   let html = '';
 
-  // Model vs Market
+  // Model vs Market bars
   if (p.home || p.away) {
     const sides = [
       ['H', m.home_team, p.home||0, mk.home||0, '--green'],
@@ -639,16 +952,13 @@ function renderPredictionAnalysis(m) {
 
 
 // ═══════════════════════════════════════════════════════════════
-// RENDER: Match Context (H2H + League Position)
+// RENDER: H2H History
 // ═══════════════════════════════════════════════════════════════
-function renderMatchContext(m, ctx) {
+function renderH2H(m, ctx) {
   let html = '';
-  const standings = ctx.standings || {};
-
-  // H2H
   const matchKey = m.match || `${m.home_team} vs ${m.away_team}`;
   const h2h = (ctx.h2h || {})[matchKey];
-  html += '<div class="text-label mb-2">Head to Head</div>';
+
   if (h2h && h2h.total_meetings) {
     const total = h2h.total_meetings;
     const hW = h2h.home_wins||0, d = h2h.draws||0, aW = h2h.away_wins||0;
@@ -675,11 +985,20 @@ function renderMatchContext(m, ctx) {
         ${lastScore ? `<div><span class="text-tertiary">Last:</span> <span class="${lastCol} text-mono">${lastScore}</span></div>` : ''}
       </div>`;
   } else {
-    html += '<div class="text-small text-tertiary mb-3">No H2H data available</div>';
+    html += '<div class="text-small text-tertiary">No H2H data available</div>';
   }
 
-  // League Position
-  html += '<div style="margin-top:var(--space-4)"><div class="text-label mb-2">League Position</div>';
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: League Context (Position only, H2H split out)
+// ═══════════════════════════════════════════════════════════════
+function renderLeagueContext(m, ctx) {
+  let html = '';
+  const standings = ctx.standings || {};
+
   for (const [team, isHome] of [[m.home_team, true], [m.away_team, false]]) {
     const s = standings[team];
     if (!s) { html += `<div class="text-small text-tertiary mb-2">${team}: no data</div>`; continue; }
@@ -699,7 +1018,6 @@ function renderMatchContext(m, ctx) {
       </div>
     </div>`;
   }
-  html += '</div>';
 
   // Calibration
   const cal = ctx.calibration || {};
@@ -712,7 +1030,7 @@ function renderMatchContext(m, ctx) {
     html += `<div class="cal-note"><span class="text-tertiary">At <strong>${level}</strong> confidence:</span> <span class="${col} font-semibold">${acc}% accuracy</span> <span class="text-tertiary">(${calData.total} predictions)</span></div>`;
   }
 
-  return html;
+  return html || '<div class="text-small text-tertiary">No league data</div>';
 }
 
 
@@ -1212,13 +1530,17 @@ async function loadMatchDetail() {
     // Show intelligence sections
     document.getElementById('intel-sections').classList.remove('hidden');
 
-    // Render all sections
+    // Render all sections (new order)
+    document.getElementById('body-verdict').innerHTML = renderVerdict(match);
+    document.getElementById('body-value-bets').innerHTML = renderValueBets(match);
+    document.getElementById('body-key-stats').innerHTML = renderKeyStats(match);
     document.getElementById('body-prediction').innerHTML = renderPredictionAnalysis(match);
-    document.getElementById('body-context').innerHTML = renderMatchContext(match, ctxData);
-    document.getElementById('body-factors').innerHTML = renderFactors(match);
-    document.getElementById('body-market').innerHTML = renderMarketIntel(match);
+    document.getElementById('body-h2h').innerHTML = renderH2H(match, ctxData);
+    document.getElementById('body-context').innerHTML = renderLeagueContext(match, ctxData);
     document.getElementById('body-lineups').innerHTML = renderLineups(match);
     document.getElementById('body-injuries').innerHTML = renderInjuries(match);
+    document.getElementById('body-market').innerHTML = renderMarketIntel(match);
+    document.getElementById('body-factors').innerHTML = renderFactors(match);
     document.getElementById('body-cross-market').innerHTML = renderCrossMarket(match);
     document.getElementById('body-draw').innerHTML = renderDrawAnalysis(match);
     document.getElementById('body-conditions').innerHTML = renderConditions(match);

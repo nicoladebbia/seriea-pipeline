@@ -1,0 +1,541 @@
+{% extends "base.html" %}
+
+{% block title %}Live — SerieAI{% endblock %}
+
+{% block head %}
+<style>
+  .live-page { padding: var(--space-4) 0; }
+
+  /* Controls bar */
+  .live-controls {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); margin-bottom: var(--space-4);
+  }
+  .live-controls__left { display: flex; align-items: center; gap: var(--space-3); }
+  .live-controls__right { display: flex; align-items: center; gap: var(--space-3); }
+
+  /* Status indicator */
+  .live-status { display: flex; align-items: center; gap: 8px; }
+  .live-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .live-dot--on { background: var(--green); animation: pulse-dot 2s infinite; }
+  .live-dot--off { background: var(--text-tertiary); opacity: 0.4; }
+
+  /* Match card */
+  .live-match {
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); margin-bottom: var(--space-4); overflow: hidden;
+  }
+  .live-match--active { border-color: rgba(74,222,128,0.3); }
+  .live-match--completed { opacity: 0.8; }
+
+  .live-match__header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-4) var(--space-5);
+    cursor: pointer;
+  }
+  .live-match__header:hover { background: var(--bg-tertiary); }
+  .live-match[data-match-id] { scroll-margin-top: 80px; }
+
+  .live-match__teams {
+    display: flex; align-items: center; gap: var(--space-5); flex: 1;
+  }
+  .live-match__team {
+    flex: 1; font-size: 15px; font-weight: 600; color: var(--text-primary);
+  }
+  .live-match__team--home { text-align: right; }
+  .live-match__team--away { text-align: left; }
+
+  .live-match__score {
+    display: flex; flex-direction: column; align-items: center;
+    min-width: 90px;
+  }
+  .live-match__score-num {
+    font-size: 28px; font-weight: 700; font-family: var(--font-mono);
+    color: var(--text-primary); letter-spacing: 4px;
+  }
+  .live-match__status {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    display: flex; align-items: center; gap: 4px; margin-top: 4px;
+  }
+
+  .live-match__odds {
+    display: flex; gap: var(--space-4); min-width: 180px; justify-content: flex-end;
+  }
+  .live-match__odd {
+    text-align: center;
+  }
+  .live-match__odd-label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; }
+  .live-match__odd-val { font-size: 14px; font-family: var(--font-mono); font-weight: 500; }
+  .live-match__odd-prev { font-size: 10px; color: var(--text-tertiary); }
+  .live-match__odd-shift { font-size: 10px; }
+
+  /* Expanded detail */
+  .live-match__detail {
+    display: none; border-top: 1px solid var(--border-subtle);
+    padding: var(--space-4) var(--space-5);
+  }
+  .live-match__detail.open { display: block; }
+
+  .live-detail-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5);
+  }
+
+  /* Stats bars */
+  .live-stat { margin-bottom: var(--space-3); }
+  .live-stat__header {
+    display: flex; justify-content: space-between; margin-bottom: 4px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .live-stat__label { font-size: 11px; color: var(--text-tertiary); text-align: center; }
+  .live-stat__bar {
+    display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+    background: var(--bg-tertiary);
+  }
+  .live-stat__bar-home {
+    background: var(--accent); border-radius: 3px 0 0 3px;
+    transition: width 0.5s ease;
+  }
+  .live-stat__bar-away {
+    background: var(--red); border-radius: 0 3px 3px 0;
+    margin-left: auto;
+    transition: width 0.5s ease;
+  }
+
+  /* Events timeline */
+  .live-events { max-height: 300px; overflow-y: auto; }
+  .live-event {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-2) 0;
+    font-size: 12px; color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .live-event:last-child { border-bottom: none; }
+  .live-event__min {
+    font-family: var(--font-mono); font-weight: 600;
+    min-width: 32px; color: var(--text-tertiary);
+  }
+  .live-event__icon { font-size: 16px; min-width: 24px; text-align: center; }
+  .live-event__text { flex: 1; }
+
+  /* Bet tracker */
+  .live-bets {
+    margin-top: var(--space-4); border-top: 1px solid var(--border-subtle);
+    padding-top: var(--space-4);
+  }
+  .live-bet {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-2) 0; font-size: 12px;
+  }
+  .live-bet__status {
+    font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
+    font-size: 11px; text-transform: uppercase;
+  }
+  .live-bet__status--won { background: rgba(74,222,128,0.1); color: var(--green); }
+  .live-bet__status--lost { background: rgba(248,113,113,0.1); color: var(--red); }
+  .live-bet__status--open { background: rgba(251,191,36,0.1); color: var(--amber); }
+
+  /* No matches state */
+  .live-empty {
+    text-align: center; padding: var(--space-8);
+    color: var(--text-tertiary);
+  }
+  .live-empty__icon { font-size: 48px; margin-bottom: var(--space-4); opacity: 0.4; }
+  .live-empty__title { font-size: 16px; font-weight: 600; color: var(--text-secondary); margin-bottom: var(--space-2); }
+
+  @media (max-width: 768px) {
+    .live-match__odds { display: none; }
+    .live-detail-grid { grid-template-columns: 1fr; }
+  }
+</style>
+{% endblock %}
+
+{% block page_title %}Live{% endblock %}
+
+{% block content %}
+<div class="live-page">
+  <!-- Controls -->
+  <div class="live-controls">
+    <div class="live-controls__left">
+      <div class="live-status">
+        <span id="lp-dot" class="live-dot live-dot--off"></span>
+        <span id="lp-status-text" class="text-small font-semibold" style="color:var(--text-tertiary)">Checking...</span>
+      </div>
+      <span id="lp-meta" class="text-small text-tertiary"></span>
+    </div>
+    <div class="live-controls__right">
+      <button id="lp-poll-btn" onclick="lpTriggerPoll()" class="btn btn--sm" style="background:rgba(74,222,128,0.1);color:var(--green);border:1px solid rgba(74,222,128,0.2);">Poll Now</button>
+      <select id="lp-interval" onchange="lpSetInterval(this.value)" class="select" style="width:auto;">
+        <option value="30">30s</option>
+        <option value="60" selected>1 min</option>
+        <option value="120">2 min</option>
+        <option value="300">5 min</option>
+      </select>
+      <button id="lp-auto-btn" onclick="lpToggleAuto()" class="btn btn--sm btn--secondary">Auto: OFF</button>
+      <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:40px;"></span>
+    </div>
+  </div>
+
+  <!-- Matches container -->
+  <div id="lp-matches"></div>
+
+  <!-- Bet tracker summary -->
+  <div id="lp-bet-summary" class="hidden" style="margin-top:var(--space-4);"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _lpAutoActive = false, _lpInterval = 60, _lpNextAt = 0, _lpTimer = null, _lpCountdown = null;
+
+// -----------------------------------------------------------------------
+// Rendering
+// -----------------------------------------------------------------------
+function lpRenderStat(label, home, away) {
+  const total = (home || 0) + (away || 0);
+  const hPct = total > 0 ? (home / total * 100) : 50;
+  const aPct = total > 0 ? (away / total * 100) : 50;
+  return `<div class="live-stat">
+    <div class="live-stat__header">
+      <span class="font-medium">${typeof home === 'number' && home % 1 !== 0 ? home.toFixed(2) : home}</span>
+      <span class="live-stat__label">${label}</span>
+      <span class="font-medium">${typeof away === 'number' && away % 1 !== 0 ? away.toFixed(2) : away}</span>
+    </div>
+    <div class="live-stat__bar">
+      <div class="live-stat__bar-home" style="width:${hPct}%"></div>
+      <div class="live-stat__bar-away" style="width:${aPct}%"></div>
+    </div>
+  </div>`;
+}
+
+function lpFormatMinute(minute, status, addedTime) {
+  if (addedTime && addedTime > 0) {
+    const base = (status === 'second_half' || minute > 90) ? 90 : 45;
+    return `${base}+${addedTime}'`;
+  }
+  if (typeof minute === 'number') {
+    if (minute > 90) return `90+${minute - 90}'`;
+    if (minute > 45 && status === 'first_half') return `45+${minute - 45}'`;
+  }
+  return (minute || '?') + "'";
+}
+
+function lpRenderEvent(ev) {
+  const icons = {goal:'&#9917;', card:'&#128994;', substitution:'&#128260;', var:'&#128250;'};
+  let icon = icons[ev.type] || '&#9679;';
+  let text = '';
+  if (ev.type === 'goal') {
+    icon = '&#9917;';
+    text = `<span class="font-semibold">${ev.player || '?'}</span>`;
+    if (ev.assist) text += ` <span class="text-tertiary">(assist: ${ev.assist})</span>`;
+  } else if (ev.type === 'card') {
+    icon = ev.card_type === 'yellow' ? '&#129320;' : ev.card_type === 'red' || ev.card_type === 'yellowRed' ? '&#128308;' : '&#128994;';
+    icon = ev.card_type === 'yellow' ? '🟨' : '🟥';
+    text = `${ev.player || '?'}`;
+  } else if (ev.type === 'substitution') {
+    icon = '🔄';
+    text = `${ev.player_in || '?'} <span class="text-tertiary">for</span> ${ev.player_out || ev.player || '?'}`;
+  } else if (ev.type === 'var') {
+    icon = '📺';
+    text = ev.detail ? `VAR: ${ev.detail}` : 'VAR Review';
+  }
+  const side = ev.is_home ? '' : ' style="text-align:right;direction:rtl"';
+  const displayMin = lpFormatMinute(ev.minute, ev.status, ev.added_time);
+  return `<div class="live-event"${side}>
+    <span class="live-event__min">${displayMin}</span>
+    <span class="live-event__icon">${icon}</span>
+    <span class="live-event__text">${text}</span>
+  </div>`;
+}
+
+function lpRenderOddCell(label, cur, pre) {
+  let shift = '';
+  if (pre && cur) {
+    const diff = (1/cur*100) - (1/pre*100);
+    if (Math.abs(diff) > 0.5) {
+      shift = `<div class="live-match__odd-shift ${diff > 0 ? 'text-green' : 'text-red'}">${diff > 0 ? '&#9650;' : '&#9660;'}${Math.abs(diff).toFixed(1)}pp</div>`;
+    }
+  }
+  return `<div class="live-match__odd">
+    <div class="live-match__odd-label">${label}</div>
+    <div class="live-match__odd-val">${cur ? cur.toFixed(2) : '-'}</div>
+    ${pre ? `<div class="live-match__odd-prev">was ${pre.toFixed(2)}</div>` : ''}
+    ${shift}
+  </div>`;
+}
+
+function lpRenderMatch(mk, md, bets) {
+  const snaps = md.snapshots || [];
+  const lastSnap = snaps.length ? snaps[snaps.length - 1] : null;
+  const status = md.status || 'unknown';
+  const isLive = ['first_half','half_time','second_half'].includes(status);
+  const isCompleted = status === 'completed';
+
+  let score = [0, 0];
+  if (md.final_score) score = md.final_score;
+  else if (lastSnap && lastSnap.score) score = lastSnap.score;
+
+  const minute = lastSnap ? lastSnap.min : null;
+  const addedTime = lastSnap ? lastSnap.added_time : null;
+  const displayMinute = minute ? lpFormatMinute(minute, status, addedTime) : null;
+  const statusLabels = {first_half:'1st Half', half_time:'Half Time', second_half:'2nd Half', completed:'Full Time', pre_match:'Pre-Match'};
+  const statusLabel = statusLabels[status] || status;
+
+  const pre = md.pre_match_odds || {};
+  const avg = lastSnap ? (lastSnap.avg_odds || {}) : {};
+
+  const events = md.live_events || [];
+  const stats = md.live_stats || {};
+
+  const matchBets = (bets || []).filter(b => {
+    const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const betNorm = norm(b.match);
+    const homeNorm = norm(md.home_team);
+    const awayNorm = norm(md.away_team);
+    // Split match key by "vs" and compare each side
+    const mkParts = mk.toLowerCase().split(/\s*vs\s*/);
+    const mkHome = norm(mkParts[0] || '');
+    const mkAway = norm(mkParts[1] || '');
+    return betNorm === norm(mk)
+      || (homeNorm && betNorm.includes(homeNorm))
+      || (awayNorm && betNorm.includes(awayNorm))
+      || (mkHome && betNorm.includes(mkHome))
+      || (mkAway && betNorm.includes(mkAway));
+  });
+
+  const id = mk.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  let statsHtml = '';
+  if (stats.possession) statsHtml += lpRenderStat('Possession', stats.possession.home, stats.possession.away);
+  if (stats.xg) statsHtml += lpRenderStat('xG', stats.xg.home, stats.xg.away);
+  if (stats.shots) statsHtml += lpRenderStat('Shots', stats.shots.home, stats.shots.away);
+  if (stats.shots_on_target) statsHtml += lpRenderStat('On Target', stats.shots_on_target.home, stats.shots_on_target.away);
+  if (stats.blocked_shots) statsHtml += lpRenderStat('Blocked', stats.blocked_shots.home, stats.blocked_shots.away);
+  if (stats.big_chances) statsHtml += lpRenderStat('Big Chances', stats.big_chances.home, stats.big_chances.away);
+  if (stats.saves) statsHtml += lpRenderStat('Saves', stats.saves.home, stats.saves.away);
+  if (stats.corners) statsHtml += lpRenderStat('Corners', stats.corners.home, stats.corners.away);
+  if (stats.tackles) statsHtml += lpRenderStat('Tackles', stats.tackles.home, stats.tackles.away);
+  if (stats.clearances) statsHtml += lpRenderStat('Clearances', stats.clearances.home, stats.clearances.away);
+  if (stats.fouls) statsHtml += lpRenderStat('Fouls', stats.fouls.home, stats.fouls.away);
+
+  let eventsHtml = events.length ? events.map(lpRenderEvent).join('') : '<div class="text-small text-tertiary" style="padding:var(--space-3)">No events yet</div>';
+
+  let betsHtml = '';
+  if (matchBets.length) {
+    betsHtml = `<div class="live-bets"><div class="text-label mb-2">Your Bets</div>` +
+      matchBets.map(b => {
+        const st = b.status || 'open';
+        const cls = st.includes('won') ? 'won' : st.includes('lost') ? 'lost' : 'open';
+        return `<div class="live-bet">
+          <div><span class="text-secondary">${b.selection}</span> <span class="text-tertiary">@ ${b.placed_odds}</span> <span class="text-tertiary">($${b.placed_stake})</span></div>
+          <span class="live-bet__status live-bet__status--${cls}">${st}</span>
+        </div>`;
+      }).join('') + `</div>`;
+  }
+
+  const anchorSlug = mk.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  return `<div class="live-match ${isLive ? 'live-match--active' : ''} ${isCompleted ? 'live-match--completed' : ''}" data-match-id="${id}" id="match-${anchorSlug}">
+    <div class="live-match__header" onclick="document.getElementById('${id}').classList.toggle('open')">
+      <div class="live-match__teams">
+        <div class="live-match__team live-match__team--home">${md.home_team || mk.split(' vs ')[0]}</div>
+        <div class="live-match__score">
+          <div class="live-match__score-num">${score[0]} - ${score[1]}</div>
+          <div class="live-match__status ${isLive ? 'text-green' : isCompleted ? 'text-secondary' : 'text-tertiary'}">
+            ${isLive ? '<span class="live-dot live-dot--on" style="width:6px;height:6px;"></span>' : ''}
+            ${statusLabel}${displayMinute ? ` ${displayMinute}` : ''}
+          </div>
+        </div>
+        <div class="live-match__team live-match__team--away">${md.away_team || mk.split(' vs ')[1]}</div>
+      </div>
+      <div class="live-match__odds">
+        ${lpRenderOddCell('H', avg.home, pre.home)}
+        ${lpRenderOddCell('D', avg.draw, pre.draw)}
+        ${lpRenderOddCell('A', avg.away, pre.away)}
+      </div>
+    </div>
+    <div id="${id}" class="live-match__detail ${isLive ? 'open' : ''}">
+      <div class="live-detail-grid">
+        <div>
+          <div class="text-label mb-3">Match Stats</div>
+          ${statsHtml || '<div class="text-small text-tertiary">No stats available</div>'}
+        </div>
+        <div>
+          <div class="text-label mb-3">Events</div>
+          <div class="live-events">${eventsHtml}</div>
+        </div>
+      </div>
+      ${betsHtml}
+    </div>
+  </div>`;
+}
+
+// -----------------------------------------------------------------------
+// Data loading
+// -----------------------------------------------------------------------
+async function lpLoad() {
+  try {
+    const data = await apiFetch('/api/live');
+    const matches = data.matches || {};
+    const keys = Object.keys(matches);
+    const bets = data.bet_tracking || [];
+
+    // Update status
+    const hasLive = keys.some(k => ['first_half','half_time','second_half'].includes(matches[k].status));
+    const dot = document.getElementById('lp-dot');
+    const statusText = document.getElementById('lp-status-text');
+
+    if (hasLive) {
+      dot.className = 'live-dot live-dot--on';
+      const liveCount = keys.filter(k => ['first_half','half_time','second_half'].includes(matches[k].status)).length;
+      statusText.textContent = `${liveCount} LIVE`;
+      statusText.style.color = 'var(--green)';
+    } else if (keys.length) {
+      dot.className = 'live-dot live-dot--off';
+      statusText.textContent = `${keys.length} match${keys.length !== 1 ? 'es' : ''} tracked`;
+      statusText.style.color = 'var(--text-secondary)';
+    } else {
+      dot.className = 'live-dot live-dot--off';
+      statusText.textContent = 'No matches';
+      statusText.style.color = 'var(--text-tertiary)';
+    }
+
+    document.getElementById('lp-meta').textContent = `Poll #${data.polls || 0} | ${data.api_calls || 0} API calls`;
+
+    // Update auto-poll state
+    _lpAutoActive = data.auto_poll_active || false;
+    _lpInterval = data.auto_poll_interval || 60;
+    _lpNextAt = data.auto_poll_next_at || 0;
+    lpUpdateAutoBtn();
+
+    // Render matches
+    const container = document.getElementById('lp-matches');
+    if (!keys.length) {
+      container.innerHTML = `<div class="live-empty">
+        <div class="live-empty__icon">&#128225;</div>
+        <div class="live-empty__title">No live matches right now</div>
+        <div class="text-small text-tertiary">Matches will appear here when they kick off.<br>Hit "Poll Now" or enable auto-polling to check.</div>
+      </div>`;
+    } else {
+      // Sort: live first, then pre-match, then completed
+      const order = {first_half:0, second_half:0, half_time:0, pre_match:1, completed:2};
+      const sorted = keys.sort((a,b) => (order[matches[a].status]||1) - (order[matches[b].status]||1));
+      container.innerHTML = sorted.map(k => lpRenderMatch(k, matches[k], bets)).join('');
+    }
+
+    // Bet summary
+    const betSummary = document.getElementById('lp-bet-summary');
+    if (bets.length) {
+      const won = bets.filter(b => b.status?.includes('won')).length;
+      const lost = bets.filter(b => b.status?.includes('lost')).length;
+      const open = bets.length - won - lost;
+      const pnl = bets.reduce((s, b) => s + (b.potential_profit || 0), 0);
+      betSummary.innerHTML = `<div class="card" style="padding:var(--space-4);">
+        <div class="flex items-center justify-between">
+          <div class="text-label">Bet Tracker</div>
+          <div class="flex items-center gap-4">
+            <span class="text-small"><span class="text-green font-semibold">${won}W</span> / <span class="text-red font-semibold">${lost}L</span> / <span class="text-amber font-semibold">${open} open</span></span>
+            <span class="text-mono font-semibold ${pnl >= 0 ? 'text-green' : 'text-red'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>`;
+      betSummary.classList.remove('hidden');
+    } else {
+      betSummary.classList.add('hidden');
+    }
+  } catch (err) {
+    console.warn('Live page load failed:', err);
+  }
+}
+
+// -----------------------------------------------------------------------
+// Controls
+// -----------------------------------------------------------------------
+async function lpTriggerPoll() {
+  const btn = document.getElementById('lp-poll-btn');
+  btn.textContent = 'Polling...'; btn.disabled = true;
+  try { await fetch('/api/live/trigger', {method:'POST'}); await lpLoad(); }
+  catch(e) { console.error(e); }
+  btn.textContent = 'Poll Now'; btn.disabled = false;
+}
+
+async function lpToggleAuto() {
+  const action = _lpAutoActive ? 'stop' : 'start';
+  try {
+    // Set the interval BEFORE starting, so the thread uses the correct value
+    if (action === 'start') {
+      const selectedInterval = parseInt(document.getElementById('lp-interval').value) || 60;
+      await fetch('/api/live/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interval: selectedInterval})});
+      _lpInterval = selectedInterval;
+    }
+    const res = await fetch('/api/live/auto-poll', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
+    const data = await res.json();
+    _lpAutoActive = data.active || false;
+    lpUpdateAutoBtn();
+    if (_lpAutoActive) await lpTriggerPoll();
+  } catch(e) { console.error(e); }
+}
+
+async function lpSetInterval(secs) {
+  secs = parseInt(secs);
+  try {
+    await fetch('/api/live/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interval:secs})});
+    _lpInterval = secs;
+    if (_lpAutoActive) {
+      _lpNextAt = Date.now() / 1000 + secs;
+    }
+    lpUpdateAutoBtn();
+  } catch(e) { console.error(e); }
+}
+
+function lpUpdateAutoBtn() {
+  const btn = document.getElementById('lp-auto-btn');
+  if (_lpAutoActive) {
+    btn.textContent = 'Auto: ON';
+    btn.style.background = 'rgba(74,222,128,0.1)'; btn.style.color = 'var(--green)'; btn.style.border = '1px solid rgba(74,222,128,0.2)';
+    lpStartCountdown();
+  } else {
+    btn.textContent = 'Auto: OFF';
+    btn.style.background = ''; btn.style.color = ''; btn.style.border = '';
+    lpStopCountdown();
+  }
+}
+
+function lpStartCountdown() {
+  lpStopCountdown();
+  _lpCountdown = setInterval(() => {
+    const el = document.getElementById('lp-countdown');
+    if (!_lpAutoActive || !_lpNextAt) { el.textContent = ''; return; }
+    const r = Math.max(0, Math.floor(_lpNextAt - Date.now()/1000));
+    el.textContent = Math.floor(r/60) + ':' + String(r%60).padStart(2,'0');
+  }, 1000);
+}
+
+function lpStopCountdown() {
+  if (_lpCountdown) { clearInterval(_lpCountdown); _lpCountdown = null; }
+  const el = document.getElementById('lp-countdown');
+  if (el) el.textContent = '';
+}
+
+// -----------------------------------------------------------------------
+// Init
+// -----------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', async () => {
+  await lpLoad();
+  // If URL has a hash like #match-napoli-vs-roma, scroll to and expand that match
+  if (window.location.hash) {
+    const target = document.querySelector(window.location.hash);
+    if (target) {
+      target.scrollIntoView({behavior: 'smooth', block: 'start'});
+      const detail = target.querySelector('.live-match__detail');
+      if (detail && !detail.classList.contains('open')) detail.classList.add('open');
+      target.style.boxShadow = '0 0 0 2px var(--green)';
+      setTimeout(() => { target.style.boxShadow = ''; }, 3000);
+    }
+  }
+  // Auto-refresh every 30s
+  setInterval(lpLoad, 30000);
+});
+</script>
+{% endblock %}

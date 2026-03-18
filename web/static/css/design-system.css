@@ -185,7 +185,8 @@ input, select, textarea { font: inherit; }
 .sidebar.collapsed .sidebar__brand-text,
 .sidebar.collapsed .sidebar__nav-label,
 .sidebar.collapsed .sidebar__footer-text,
-.sidebar.collapsed .sidebar__divider-label {
+.sidebar.collapsed .sidebar__divider-label,
+.sidebar.collapsed .sidebar__nav-section {
   display: none;
 }
 
@@ -229,6 +230,20 @@ input, select, textarea { font: inherit; }
   height: 1px;
   background: var(--border-subtle);
   margin: var(--space-2) var(--space-3);
+}
+
+.sidebar__nav-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+  padding: 12px 12px 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sidebar__nav-section:first-child {
+  padding-top: 0;
 }
 
 .sidebar__footer {
@@ -882,6 +897,7 @@ table.ds-table {
   50% { box-shadow: 0 0 12px 4px rgba(74,222,128,0.1); }
 }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes slideIn { from { opacity: 0; transform: translateX(80px); } to { opacity: 1; transform: none; } }
 
 .animate-spin { animation: spin 1s linear infinite; }
 .animate-pulse { animation: pulse-dot 2s infinite; }
@@ -1679,7 +1695,8 @@ table.ds-table {
   .sidebar .sidebar__brand-text,
   .sidebar .sidebar__nav-label,
   .sidebar .sidebar__footer-text,
-  .sidebar .sidebar__divider-label {
+  .sidebar .sidebar__divider-label,
+  .sidebar .sidebar__nav-section {
     display: none;
   }
 
@@ -1702,4 +1719,202 @@ table.ds-table {
   .dp-intel-grid { grid-template-columns: 1fr 1fr; }
   .dp-odds-move { grid-template-columns: repeat(3, 1fr); }
   .dp-row { grid-template-columns: 50px 1fr 32px 32px 36px; font-size: 11px; }
+}
+
+
+/* ============================================================
+   Mobile Responsiveness
+   Utility classes and responsive overrides for tablet/mobile
+   ============================================================ */
+
+/* --- Responsive Utility Classes --- */
+@media (max-width: 767px) {
+  .hide-mobile { display: none !important; }
+}
+
+@media (max-width: 1023px) {
+  .hide-tablet { display: none !important; }
+}
+
+/* --- Mobile (<768px): Main Layout --- */
+@media (max-width: 767px) {
+
+  /* Reduce main content horizontal padding */
+  .main-inner {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  /* Header bar: tighter padding, allow wrapping */
+  .main-content > header {
+    padding: var(--space-3) var(--space-4) !important;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* Cards: less padding on mobile */
+  .card,
+  .pipe-section,
+  .pipe-action,
+  .pipe-stat {
+    padding: var(--space-3);
+  }
+  .pipe-section summary {
+    padding: var(--space-3);
+  }
+
+  /* --- Dashboard Table: hide less-important columns --- */
+  /* Column order: 1=KO, 2=Match, 3=Pred, 4=H-D-A, 5=xG, 6=Edge, 7=Conf, 8=Flags */
+  .dash-table th:nth-child(4),
+  .dash-table td:nth-child(4),
+  .dash-table th:nth-child(5),
+  .dash-table td:nth-child(5),
+  .dash-table th:nth-child(6),
+  .dash-table td:nth-child(6),
+  .dash-table th:nth-child(7),
+  .dash-table td:nth-child(7) {
+    display: none;
+  }
+
+  /* Compact table text */
+  .dash-table {
+    font-size: 11px;
+  }
+  .dash-table th {
+    font-size: 9px;
+    padding: 6px 8px;
+  }
+  .dash-table td {
+    padding: 10px 8px;
+  }
+
+  /* Larger touch targets for tappable rows */
+  .dash-table tbody tr {
+    min-height: 44px;
+  }
+  .dash-table tbody tr td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  /* All tables: smaller text on mobile */
+  table {
+    font-size: 11px;
+  }
+
+  /* Day header: stack on narrow screens */
+  .dash-day-header {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-2);
+  }
+
+  /* Quick stats panel: allow wrapping */
+  #quick-stats-section > div {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+  #quick-stats-section > div > div[style*="width:1px"] {
+    width: 100% !important;
+    height: 1px !important;
+  }
+
+  /* --- Pipeline Page: Action Cards 1-col --- */
+  .pipe-actions {
+    grid-template-columns: 1fr;
+  }
+
+  /* --- Live Page: Full-width match cards --- */
+  .live-match__header {
+    padding: var(--space-3) var(--space-4);
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  .live-match__teams {
+    gap: var(--space-3);
+    width: 100%;
+  }
+
+  .live-match__team {
+    font-size: 13px;
+  }
+
+  .live-match__score-num {
+    font-size: 22px;
+    letter-spacing: 2px;
+  }
+
+  .live-match__detail {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  /* Live detail grid: stack on mobile */
+  .live-detail-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+
+  /* Live controls: stack vertically */
+  .live-controls {
+    flex-direction: column;
+    gap: var(--space-3);
+    align-items: stretch;
+  }
+  .live-controls__left,
+  .live-controls__right {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  /* Freshness bar in header: smaller */
+  #dash-freshness {
+    font-size: 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+
+/* --- Small Mobile (<480px): Extra Compact --- */
+@media (max-width: 480px) {
+
+  /* Also hide Flags column on very small screens */
+  .dash-table th:nth-child(8),
+  .dash-table td:nth-child(8) {
+    display: none;
+  }
+
+  /* Match team names: truncate if too long */
+  .dash-table td:nth-child(2) {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Live match: tighter layout */
+  .live-match__score {
+    min-width: 70px;
+  }
+
+  .live-match__score-num {
+    font-size: 20px;
+    letter-spacing: 1px;
+  }
+
+  .live-match__team {
+    font-size: 12px;
+  }
+
+  /* Pipeline stat bar: value text smaller */
+  .pipe-stat__value {
+    font-size: 16px;
+  }
+
+  /* Advisor FAB: ensure it doesn't overlap content */
+  .advisor-fab {
+    bottom: 16px;
+    right: 16px;
+    width: 44px;
+    height: 44px;
+  }
 }

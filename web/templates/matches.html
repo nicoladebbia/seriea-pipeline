@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Matches — SerieAI{% endblock %}
-{% block page_title %}Matches{% endblock %}
+{% block title %}Results — SerieAI{% endblock %}
+{% block page_title %}Results{% endblock %}
 
 {% block head %}
 <style>
@@ -57,7 +57,7 @@
   .match-card__stat-val { font-family: var(--font-mono); color: var(--text-secondary); font-weight: 600; }
 
   /* Scorers */
-  .match-card__scorers { font-size: 9px; color: var(--text-tertiary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .match-card__scorers { font-size: 9px; color: var(--text-tertiary); margin-top: 2px; white-space: normal; word-wrap: break-word; line-height: 1.4; }
 
   /* Date column */
   .match-card__date { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); width: 48px; text-align: center; flex-shrink: 0; }
@@ -70,10 +70,34 @@
   .matches-filter__btn:hover { border-color: var(--accent); color: var(--accent); }
   .matches-filter__btn.active { background: rgba(96,165,250,0.12); border-color: var(--accent); color: var(--accent); }
 
+  /* Sort select */
+  .matches-filter__select { padding: 6px 12px; font-size: 11px; font-weight: 600; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-secondary); cursor: pointer; }
+  .matches-filter__select:focus { outline: none; border-color: var(--accent); }
+
+  /* Formation labels */
+  .match-card__formation { font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 1px; letter-spacing: 0.3px; }
+
+  /* Flat list matchweek label */
+  .match-card__mw-label { font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); background: rgba(96,165,250,0.08); padding: 1px 6px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; }
+
+  /* Page header stats */
+  .matches-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+  .matches-header__title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+  .matches-header__stat { font-size: 13px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .matches-header__stat strong { color: var(--text-secondary); font-weight: 700; }
+
   /* Responsive */
   @media (max-width: 640px) {
-    .match-card__xg, .match-card__stats { display: none; }
+    .match-card { flex-direction: column; }
     .match-card__main { padding: 8px 12px; }
+    .match-card__stats { flex-direction: row; width: 100%; border-left: none; border-top: 1px solid var(--border-subtle); padding: 6px 12px; gap: 12px; flex-wrap: wrap; }
+    .match-card__xg { width: 80px; }
+    .matches-summary { gap: 8px; }
+    .matches-summary__stat { padding: 6px 10px; }
+    .matches-summary__value { font-size: 15px; }
+    .matches-header { flex-direction: column; gap: 4px; }
+    .mw-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .mw-header__meta { margin-top: 2px; }
   }
 </style>
 {% endblock %}
@@ -83,6 +107,7 @@
   <div class="text-secondary text-sm">Loading matches...</div>
 </div>
 <div id="matches-content" class="hidden">
+  <div class="matches-header" id="matches-header"></div>
   <div class="matches-summary" id="matches-summary"></div>
   <div class="matches-filter">
     <select id="season-select" class="matches-filter__input" style="max-width:160px;cursor:pointer;"></select>
@@ -91,6 +116,12 @@
     <button class="matches-filter__btn" data-filter="big" onclick="filterMatches('big', this)">Big Results</button>
     <button class="matches-filter__btn" data-filter="draws" onclick="filterMatches('draws', this)">Draws</button>
     <button class="matches-filter__btn" data-filter="clean" onclick="filterMatches('clean', this)">Clean Sheets</button>
+    <select id="sort-select" class="matches-filter__select" onchange="changeSort(this.value)">
+      <option value="default">Sort: by matchweek</option>
+      <option value="margin">Sort: goal margin (high&rarr;low)</option>
+      <option value="total_goals">Sort: total goals</option>
+      <option value="xg_diff">Sort: xG difference</option>
+    </select>
   </div>
   <div id="matchweeks-list"></div>
 </div>
@@ -102,6 +133,7 @@ let _matchesData = null;
 let _currentFilter = 'all';
 let _searchQuery = '';
 let _currentSeason = '2025-2026';
+let _currentSort = 'default';
 
 async function loadSeasons() {
   try {
@@ -154,6 +186,13 @@ function renderSummary(data) {
   const btts = allMatches.filter(m => m.home_score > 0 && m.away_score > 0).length;
   const over25 = allMatches.filter(m => m.home_score + m.away_score > 2).length;
 
+  document.getElementById('matches-header').innerHTML = `
+    <span class="matches-header__title">Results</span>
+    <span class="matches-header__stat"><strong>${data.total_matches}</strong> matches played</span>
+    <span class="matches-header__stat"><strong>${avgGoals}</strong> goals/match</span>
+    <span class="matches-header__stat"><strong>${totalGoals}</strong> total goals</span>
+  `;
+
   document.getElementById('matches-summary').innerHTML = `
     <div class="matches-summary__stat"><div class="matches-summary__label">Matches</div><div class="matches-summary__value">${data.total_matches}</div></div>
     <div class="matches-summary__stat"><div class="matches-summary__label">Matchweeks</div><div class="matches-summary__value">${data.matchweeks.length}</div></div>
@@ -179,6 +218,25 @@ function matchFilter(m) {
 
 function renderMatchweeks(matchweeks) {
   const container = document.getElementById('matchweeks-list');
+
+  // Flat sorted mode
+  if (_currentSort !== 'default') {
+    const allFiltered = matchweeks.flatMap(mw => mw.matches.filter(matchFilter));
+    const sortFns = {
+      margin: (a, b) => Math.abs(b.home_score - b.away_score) - Math.abs(a.home_score - a.away_score),
+      total_goals: (a, b) => (b.home_score + b.away_score) - (a.home_score + a.away_score),
+      xg_diff: (a, b) => {
+        const da = Math.abs((a.home_xg || 0) - (a.away_xg || 0));
+        const db = Math.abs((b.home_xg || 0) - (b.away_xg || 0));
+        return db - da;
+      },
+    };
+    allFiltered.sort(sortFns[_currentSort] || (() => 0));
+    container.innerHTML = `<div class="mw-section"><div class="mw-matches open" style="max-height:none;">${allFiltered.map(m => renderMatchCard(m, true)).join('')}</div></div>`;
+    return;
+  }
+
+  // Default grouped mode
   container.innerHTML = matchweeks.map((mw, idx) => {
     const filtered = mw.matches.filter(matchFilter);
     if (filtered.length === 0) return '';
@@ -205,7 +263,7 @@ function renderMatchweeks(matchweeks) {
   }).join('');
 }
 
-function renderMatchCard(m) {
+function renderMatchCard(m, showMW) {
   const hWin = m.home_score > m.away_score;
   const aWin = m.away_score > m.home_score;
   const draw = m.home_score === m.away_score;
@@ -226,9 +284,13 @@ function renderMatchCard(m) {
 
   const matchUrl = `/match/${m.date}/${encodeURIComponent(m.home_team)}/${encodeURIComponent(m.away_team)}`;
 
+  const formationHtml = m.home_formation && m.away_formation
+    ? `<div class="match-card__formation">${m.home_formation} vs ${m.away_formation}</div>` : '';
+  const mwLabel = showMW ? `<span class="match-card__mw-label">MW${m.matchweek}</span>` : '';
+
   return `<div class="match-card">
     <a class="match-card__main" href="${matchUrl}">
-      <div class="match-card__date">${m.date.slice(5)}</div>
+      <div class="match-card__date">${m.date.slice(5)}${mwLabel ? '<br>' + mwLabel : ''}</div>
       <div class="match-card__teams">
         <div class="match-card__row">
           <span class="match-card__team ${hTeamCls}">${m.home_team}</span>
@@ -238,6 +300,7 @@ function renderMatchCard(m) {
           <span class="match-card__team ${aTeamCls}">${m.away_team}</span>
           <span class="match-card__score ${aScoreCls}">${m.away_score}</span>
         </div>
+        ${formationHtml}
       </div>
       <div class="match-card__xg">
         <div class="match-card__xg-row">
@@ -265,16 +328,28 @@ function toggleMW(idx) {
   if (chev) chev.classList.toggle('open');
 }
 
+function changeSort(val) {
+  _currentSort = val;
+  renderMatchweeks(_matchesData.matchweeks);
+  if (_currentSort === 'default') {
+    const first = document.querySelector('.mw-matches');
+    const firstChev = document.querySelector('.mw-chevron');
+    if (first) first.classList.add('open');
+    if (firstChev) firstChev.classList.add('open');
+  }
+}
+
 function filterMatches(filter, btn) {
   _currentFilter = filter;
   document.querySelectorAll('.matches-filter__btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   renderMatchweeks(_matchesData.matchweeks);
-  // Re-expand first matchweek
-  const first = document.querySelector('.mw-matches');
-  const firstChev = document.querySelector('.mw-chevron');
-  if (first) first.classList.add('open');
-  if (firstChev) firstChev.classList.add('open');
+  if (_currentSort === 'default') {
+    const first = document.querySelector('.mw-matches');
+    const firstChev = document.querySelector('.mw-chevron');
+    if (first) first.classList.add('open');
+    if (firstChev) firstChev.classList.add('open');
+  }
 }
 
 function initMatchSearch() {

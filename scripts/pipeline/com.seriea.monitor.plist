@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Label: unique identifier for this job -->
+    <key>Label</key>
+    <string>com.seriea-pipeline.monitor</string>
+
+    <!-- Run every 1800 seconds (30 minutes) -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- Command: python -m scripts.pipeline.monitor --quiet -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nicoladebbia/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>scripts.pipeline.monitor</string>
+        <string>--quiet</string>
+    </array>
+
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+
+    <!-- Environment -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/nicoladebbia</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+    </dict>
+
+    <!-- Logging -->
+    <key>StandardOutPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/monitor-err.log</string>
+
+    <!-- Don't run at load — wait for first interval -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Don't keep alive — just run on schedule -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Minimum 5 minutes between retries on failure -->
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+</dict>
+</plist>

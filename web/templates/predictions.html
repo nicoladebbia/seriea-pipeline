@@ -72,9 +72,7 @@
   .pred-row__prob-nums { font-family:var(--font-mono); font-size:9px; color:var(--text-tertiary); display:flex; justify-content:space-between; }
   .pred-row__right { width:90px; flex-shrink:0; text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
   .pred-row__arrow { width:16px; flex-shrink:0; color:var(--text-tertiary); }
-  .pred-row__live-dot { width:8px; height:8px; border-radius:50%; background:var(--green); display:inline-block; animation:pulse-dot 1.5s infinite; }
-  @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-  .pred-row__live-score { font-family:var(--font-mono); font-size:14px; font-weight:700; color:var(--green); }
+  /* Live styles removed — live tracking belongs on /live */
   @media (max-width:768px) {
     .pred-row__prob { display:none; }
     .pred-row__right { width:60px; }
@@ -147,7 +145,6 @@
         <tr>
           <th>KO</th>
           <th>Match</th>
-          <th style="text-align:center">Pos</th>
           <th style="text-align:center">H Edge</th>
           <th style="text-align:center">D Edge</th>
           <th style="text-align:center">A Edge</th>
@@ -277,7 +274,6 @@ function renderHeatmap(matches) {
     return `<tr onclick="window.location.href='/prediction/${slug}'" style="cursor:pointer">
       <td class="text-mono text-tertiary">${formatKickoffTime(m.commence_time) || '-'}</td>
       <td><span class="text-secondary font-medium">${m.home_team}</span> <span class="text-tertiary">vs</span> <span class="text-secondary font-medium">${m.away_team}</span></td>
-      <td style="text-align:center">${posBadge(hPos)} <span class="text-tertiary">v</span> ${posBadge(aPos)}</td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.home)}">${edgeFmt(edges.home)}</span></td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.draw)}">${edgeFmt(edges.draw)}</span></td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.away)}">${edgeFmt(edges.away)}</span></td>
@@ -532,50 +528,7 @@ async function loadPredictions() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// LIVE DATA POLLING
-// ═══════════════════════════════════════════════════════════════
-let _liveData = {};
-
-async function pollLiveData() {
-  try {
-    const res = await fetch('/api/match-clock');
-    const data = await res.json();
-    _liveData = data.matches || {};
-    updateLiveRows();
-  } catch(e) {
-    // Silent fail — live data is best-effort
-  }
-}
-
-function updateLiveRows() {
-  for (const m of _allMatches) {
-    const mk = m.match || `${m.home_team} vs ${m.away_team}`;
-    const info = _liveData[mk];
-    if (!info) continue;
-
-    const anchor = matchAnchor(m);
-    const row = document.getElementById('row-' + anchor);
-    if (!row) continue;
-
-    const timeEl = row.querySelector('.pred-row__time');
-    const centerEl = row.querySelector('.pred-row__center');
-
-    if (info.status === 'live' || info.status === 'half_time') {
-      // Show live score instead of kickoff time
-      const minute = info.minute || '';
-      const score = info.score || [0, 0];
-      if (timeEl) timeEl.innerHTML = `<span class="pred-row__live-dot"></span><br><span style="font-size:9px;color:var(--green)">${minute}'</span>`;
-      if (centerEl) centerEl.innerHTML = `<div class="pred-row__live-score">${score[0]} - ${score[1]}</div><div class="pred-row__xg" style="color:var(--green)">${info.status === 'half_time' ? 'HT' : 'LIVE'}</div>`;
-      row.style.borderColor = 'rgba(74,222,128,0.3)';
-    } else if (info.status === 'completed') {
-      const score = info.score || [0, 0];
-      if (timeEl) timeEl.innerHTML = '<span style="font-size:9px;color:var(--text-tertiary)">FT</span>';
-      if (centerEl) centerEl.innerHTML = `<div style="font-family:var(--font-mono);font-size:14px;font-weight:700;color:var(--text-secondary)">${score[0]} - ${score[1]}</div><div class="pred-row__xg">Full Time</div>`;
-      row.style.borderColor = '';
-    }
-  }
-}
+// Live data polling removed — live tracking belongs on /live page
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -589,7 +542,6 @@ loadPredictions();
   tick(); setInterval(tick, 1000);
 })();
 
-// Live match data polling (30s)
-setTimeout(() => { pollLiveData(); setInterval(pollLiveData, 30000); }, 3000);
+// Live match data polling removed — live tracking belongs on /live page
 </script>
 {% endblock %}

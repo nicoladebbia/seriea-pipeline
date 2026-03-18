@@ -1010,14 +1010,63 @@ def _tool_get_match_players(args: dict) -> str:
 
 
 def _tool_get_live_matches(args: dict) -> str:
-    live = _load_json(LIVE_DIR / "scores.json", default=[])
-    if not live:
-        live = _load_json(LIVE_DIR / "live_state.json", default={})
-        if isinstance(live, dict):
-            live = live.get("matches", [])
-    if not live:
-        return json.dumps({"status": "No live matches currently."})
-    return json.dumps({"live_matches": live}, default=str)
+    """Get live match data from today's matchday file."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    matchday = _load_json(LIVE_DIR / f"{today}.json")
+
+    if not matchday or not matchday.get("matches"):
+        # Try yesterday (late matches may still be in yesterday's file)
+        from datetime import timedelta
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        matchday = _load_json(LIVE_DIR / f"{yesterday}.json")
+        if not matchday or not matchday.get("matches"):
+            return json.dumps({"status": "No live match data available for today."})
+
+    matches = matchday.get("matches", {})
+    result = []
+    for key, m in matches.items():
+        status = m.get("status", "unknown")
+        match_info = {
+            "match": key,
+            "home_team": m.get("home_team"),
+            "away_team": m.get("away_team"),
+            "status": status,
+            "score": m.get("final_score") or (m.get("snapshots", [{}])[-1].get("score") if m.get("snapshots") else None),
+        }
+        # Add current minute estimate from latest snapshot
+        if m.get("snapshots"):
+            latest = m["snapshots"][-1]
+            match_info["minute"] = latest.get("min")
+            match_info["current_odds"] = latest.get("avg_odds")
+        # Add pre-match odds
+        if m.get("pre_match_odds"):
+            match_info["pre_match_odds"] = m["pre_match_odds"]
+        # Add key events (goals, red cards)
+        events = m.get("live_events", [])
+        key_events = [e for e in events if e.get("type") in ("goal", "card") and e.get("card_type", "") != "yellow"]
+        if key_events:
+            match_info["key_events"] = key_events[:10]
+        # Add live stats summary
+        if m.get("live_stats"):
+            stats = m["live_stats"]
+            match_info["stats"] = {
+                "possession": stats.get("possession"),
+                "xg": stats.get("xg"),
+                "shots": stats.get("shots"),
+                "corners": stats.get("corners"),
+            }
+        # Add bet tracking
+        bet_tracking = matchday.get("bet_tracking", [])
+        match_bets = [b for b in bet_tracking if key in b.get("match", "")]
+        if match_bets:
+            match_info["bets"] = [
+                {"market": b.get("market"), "selection": b.get("selection"),
+                 "odds": b.get("placed_odds"), "status": b.get("status")}
+                for b in match_bets
+            ]
+        result.append(match_info)
+
+    return json.dumps({"date": matchday.get("date", today), "matches": result, "polls": matchday.get("polls", 0)}, default=str)
 
 
 def _tool_get_results(args: dict) -> str:
@@ -1149,6 +1198,283 @@ def _tool_get_bankroll_status(args: dict) -> str:
             k: {**v, "profit": round(v["profit"], 2), "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1)}
             for k, v in market_stats.items()
         }
+
+    return json.dumps(result, default=str)
+
+
+def _tool_get_betting_performance(args: dict) -> str:
+    """Personal betting track record — win rates, streaks, calibration, patterns."""
+    days = args.get("days", 30)
+    cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+
+    # Load data sources
+    history = _load_json(BETTING_DIR / "history.json")
+    journal = _load_json(BETTING_DIR / "bet_journal.json")
+    pnl = _load_json(BETTING_DIR / "pnl_history.json", default=[])
+    perf_dash = _load_json(DATA_DIR / "performance_dashboard.json")
+
+    # Settled bets — normalise to a list
+    settled: list[dict] = []
+    if isinstance(history, dict):
+        settled = history.get("settled_bets", [])
+    elif isinstance(history, list):
+        settled = history
+
+    # Journal bets (richer data with confidence/edge)
+    journal_bets: list[dict] = []
+    if isinstance(journal, dict):
+        raw = journal.get("bets", journal.get("settled", []))
+        # bets may be a dict keyed by bet_id — extract values
+        if isinstance(raw, dict):
+            journal_bets = list(raw.values())
+        elif isinstance(raw, list):
+            journal_bets = raw
+    elif isinstance(journal, list):
+        journal_bets = journal
+
+    # Build a lookup from journal for extra fields (confidence, edge)
+    journal_lookup: dict[str, dict] = {}
+    for jb in journal_bets:
+        key = f"{jb.get('match', jb.get('home', '') + ' v ' + jb.get('away', ''))}|{jb.get('market', '')}|{jb.get('selection', '')}"
+        journal_lookup[key] = jb
+
+    # Filter by time window if bets have timestamps
+    def _in_window(bet: dict) -> bool:
+        ts = bet.get("placed_at") or bet.get("settled_at") or bet.get("date", "")
+        if isinstance(ts, (int, float)):
+            return ts >= cutoff
+        if isinstance(ts, str) and ts:
+            try:
+                from datetime import datetime as _dt
+                dt = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                return dt.timestamp() >= cutoff
+            except (ValueError, TypeError):
+                pass
+        return True  # include if no timestamp
+
+    filtered = [b for b in settled if _in_window(b)]
+    if not filtered:
+        filtered = settled  # fall back to all if nothing in window
+
+    result: dict[str, Any] = {"period_days": days, "total_bets": len(filtered)}
+
+    # --- recent_form: last 10 bets ---
+    recent = filtered[-10:] if len(filtered) > 10 else filtered
+    result["recent_form"] = [
+        {
+            "match": b.get("match", f"{b.get('home', '?')} v {b.get('away', '?')}"),
+            "market": b.get("market", "?"),
+            "selection": b.get("selection", "?"),
+            "odds": b.get("odds"),
+            "status": b.get("status", "?"),
+            "profit": round(b.get("profit", b.get("profit_loss", 0)), 2),
+        }
+        for b in reversed(recent)
+    ]
+
+    # --- market_breakdown ---
+    market_stats: dict[str, dict] = {}
+    for b in filtered:
+        mkt = b.get("market", "unknown")
+        ms = market_stats.setdefault(mkt, {"wins": 0, "losses": 0, "profit": 0.0, "count": 0})
+        ms["count"] += 1
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            ms["wins"] += 1
+        elif status in ("lost", "loss"):
+            ms["losses"] += 1
+        ms["profit"] += b.get("profit", b.get("profit_loss", 0))
+
+    result["market_breakdown"] = {
+        k: {
+            **v,
+            "profit": round(v["profit"], 2),
+            "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
+        }
+        for k, v in market_stats.items()
+    }
+
+    # --- confidence_calibration ---
+    conf_stats: dict[str, dict] = {}
+    for b in filtered:
+        key = f"{b.get('match', '')}|{b.get('market', '')}|{b.get('selection', '')}"
+        jb = journal_lookup.get(key, {})
+        conf = jb.get("confidence") or b.get("confidence") or "UNKNOWN"
+        cs = conf_stats.setdefault(conf, {"wins": 0, "losses": 0, "profit": 0.0, "count": 0})
+        cs["count"] += 1
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            cs["wins"] += 1
+        elif status in ("lost", "loss"):
+            cs["losses"] += 1
+        cs["profit"] += b.get("profit", b.get("profit_loss", 0))
+
+    result["confidence_calibration"] = {
+        k: {
+            **v,
+            "profit": round(v["profit"], 2),
+            "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
+        }
+        for k, v in conf_stats.items()
+    }
+
+    # --- edge_calibration ---
+    edge_buckets: dict[str, dict] = {"3-6%": {"wins": 0, "losses": 0, "profit": 0.0, "count": 0},
+                                      "6-10%": {"wins": 0, "losses": 0, "profit": 0.0, "count": 0},
+                                      "10%+": {"wins": 0, "losses": 0, "profit": 0.0, "count": 0}}
+    for b in filtered:
+        key = f"{b.get('match', '')}|{b.get('market', '')}|{b.get('selection', '')}"
+        jb = journal_lookup.get(key, {})
+        edge = jb.get("edge") or b.get("edge") or b.get("edge_pct")
+        if edge is None:
+            continue
+        try:
+            edge_val = float(str(edge).replace("%", ""))
+        except (ValueError, TypeError):
+            continue
+        if edge_val < 3:
+            continue
+        elif edge_val < 6:
+            bucket = "3-6%"
+        elif edge_val < 10:
+            bucket = "6-10%"
+        else:
+            bucket = "10%+"
+        eb = edge_buckets[bucket]
+        eb["count"] += 1
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            eb["wins"] += 1
+        elif status in ("lost", "loss"):
+            eb["losses"] += 1
+        eb["profit"] += b.get("profit", b.get("profit_loss", 0))
+
+    result["edge_calibration"] = {
+        k: {
+            **v,
+            "profit": round(v["profit"], 2),
+            "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
+        }
+        for k, v in edge_buckets.items()
+        if v["count"] > 0
+    }
+
+    # --- streak ---
+    current_streak = 0
+    streak_type = None
+    best_win_streak = 0
+    worst_loss_streak = 0
+    running_win = 0
+    running_loss = 0
+    for b in filtered:
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            running_win += 1
+            running_loss = 0
+            best_win_streak = max(best_win_streak, running_win)
+        elif status in ("lost", "loss"):
+            running_loss += 1
+            running_win = 0
+            worst_loss_streak = max(worst_loss_streak, running_loss)
+        else:
+            continue
+    # Current streak from the end
+    current_streak = 0
+    streak_type = None
+    for b in reversed(filtered):
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            if streak_type is None:
+                streak_type = "win"
+            if streak_type == "win":
+                current_streak += 1
+            else:
+                break
+        elif status in ("lost", "loss"):
+            if streak_type is None:
+                streak_type = "loss"
+            if streak_type == "loss":
+                current_streak += 1
+            else:
+                break
+        else:
+            break
+
+    result["streak"] = {
+        "current": f"{current_streak} {'wins' if streak_type == 'win' else 'losses'}" if streak_type else "N/A",
+        "best_win_streak": best_win_streak,
+        "worst_loss_streak": worst_loss_streak,
+    }
+
+    # --- trend: last 7 days P&L from pnl_history ---
+    if isinstance(pnl, list) and pnl:
+        result["trend_7d"] = [
+            {
+                "date": p.get("date"),
+                "profit": p.get("profit_this_run", p.get("profit", 0)),
+                "bankroll": p.get("bankroll_after", p.get("current_bankroll")),
+            }
+            for p in pnl[-7:]
+        ]
+
+    # --- best_pattern / worst_pattern: market + confidence combo ---
+    combo_stats: dict[str, dict] = {}
+    for b in filtered:
+        mkt = b.get("market", "unknown")
+        key_lookup = f"{b.get('match', '')}|{mkt}|{b.get('selection', '')}"
+        jb = journal_lookup.get(key_lookup, {})
+        conf = jb.get("confidence") or b.get("confidence") or "UNKNOWN"
+        combo_key = f"{mkt} / {conf}"
+        cs = combo_stats.setdefault(combo_key, {"wins": 0, "losses": 0, "profit": 0.0, "count": 0})
+        cs["count"] += 1
+        status = (b.get("status") or "").lower()
+        if status in ("won", "win"):
+            cs["wins"] += 1
+        elif status in ("lost", "loss"):
+            cs["losses"] += 1
+        cs["profit"] += b.get("profit", b.get("profit_loss", 0))
+
+    # Only consider combos with at least 3 bets
+    qualified = {k: v for k, v in combo_stats.items() if v["count"] >= 3}
+    if qualified:
+        best_key = max(qualified, key=lambda k: qualified[k]["profit"])
+        worst_key = min(qualified, key=lambda k: qualified[k]["profit"])
+        bv = qualified[best_key]
+        wv = qualified[worst_key]
+        result["best_pattern"] = {
+            "combo": best_key,
+            "count": bv["count"],
+            "win_rate": round(bv["wins"] / max(bv["wins"] + bv["losses"], 1) * 100, 1),
+            "profit": round(bv["profit"], 2),
+        }
+        result["worst_pattern"] = {
+            "combo": worst_key,
+            "count": wv["count"],
+            "win_rate": round(wv["wins"] / max(wv["wins"] + wv["losses"], 1) * 100, 1),
+            "profit": round(wv["profit"], 2),
+        }
+    elif combo_stats:
+        # Less than 3 bets per combo — use all combos
+        best_key = max(combo_stats, key=lambda k: combo_stats[k]["profit"])
+        worst_key = min(combo_stats, key=lambda k: combo_stats[k]["profit"])
+        for label, k in [("best_pattern", best_key), ("worst_pattern", worst_key)]:
+            v = combo_stats[k]
+            result[label] = {
+                "combo": k,
+                "count": v["count"],
+                "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
+                "profit": round(v["profit"], 2),
+                "note": "small sample size",
+            }
+
+    # --- accuracy from performance dashboard ---
+    if isinstance(perf_dash, dict):
+        accuracy = {}
+        for key in ("overall_accuracy", "accuracy_by_market", "accuracy_by_confidence", "roi"):
+            if key in perf_dash:
+                accuracy[key] = perf_dash[key]
+        if accuracy:
+            result["dashboard_accuracy"] = accuracy
 
     return json.dumps(result, default=str)
 
@@ -2164,6 +2490,7 @@ TOOL_HANDLERS = {
     "get_value_bets": _tool_get_value_bets,
     "get_live_matches": _tool_get_live_matches,
     "get_bankroll_status": _tool_get_bankroll_status,
+    "get_betting_performance": _tool_get_betting_performance,
     "get_match_context": _tool_get_match_context,
     "get_results": _tool_get_results,
     "get_match_scorers": _tool_get_match_scorers,
@@ -2253,6 +2580,20 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_betting_performance",
+        "description": "Get the user's personal betting track record — win rates by market, confidence calibration, streak, recent form, and edge analysis. Use this when the user asks how they're doing, or PROACTIVELY when making recommendations to reference their personal history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to look back (default: 30)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_match_context",
         "description": "Get contextual intelligence for a match: referee, weather, odds movement, injuries, cross-market signals. Use alongside get_match_prediction for deep analysis.",
         "input_schema": {
@@ -2288,7 +2629,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_match_players",
-        "description": "Get FULL RATED LINEUPS for both teams in a specific match. Returns Sofascore ratings, goals, assists, shots, key passes, touches for every player on both sides, plus match events (goals, subs, cards). Defaults to the MOST RECENT match between the two teams if no date given. Use this when asked 'who was the best player in X vs Y', 'show me ratings', 'match analysis', 'full analysis of X vs Y', or ANY question about player performances in a past match. ALWAYS call this tool when a user asks about a match between two teams — do NOT ask for clarification about dates.",
+        "description": "Get FULL RATED LINEUPS for a PAST (already played) match. Returns Sofascore ratings, goals, assists, shots, key passes, touches for every player on both sides, plus match events (goals, subs, cards). Defaults to the MOST RECENT PLAYED match between the two teams. ONLY use for matches that have ALREADY BEEN PLAYED. Do NOT use for upcoming/future matches — use get_match_prediction or get_match_scorers instead for upcoming matches.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2383,14 +2724,31 @@ TOOL_DEFINITIONS = [
 
 def _build_system_prompt() -> str:
     parts = [
-        """You are SerieAI Advisor — an opinionated Serie A betting analyst. You have real data tools. NEVER guess, speculate, or say "I don't have access". If you don't know, call a tool.
+        """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. NEVER guess, speculate, or say "I don't have access". If you don't know, call a tool.
 
-## PERSONALITY
-- Talk like a sharp bettor, not a chatbot. Be direct, concise, opinionated.
+## PERSONALITY — BETTING MENTAL COACH
+You are NOT a chatbot summarizing data. You are a mental coach who:
+1. **Builds confidence** — remind the user of their good calls, reinforce patterns they've already spotted
+2. **Finds what others miss** — cross-reference data to surface hidden insights the model alone doesn't catch
+3. **Coaches decisions** — tell the user when to trust the pick and when to hold back, with the WHY behind it
+
+### Voice & Tone
+- Talk like a sharp coach briefing someone before a decision — direct, warm, confident.
 - Give a clear VERDICT on every match/bet question. Never sit on the fence.
-- Say "I'd bet this" or "I'd skip this" — not "it depends on your risk tolerance."
-- Use numbers to back every claim. No vague statements like "they're in good form."
+- Say "I'd back this" or "I'd stay away" — not "it depends on your risk tolerance."
 - The user understands betting, odds, xG, Kelly — don't over-explain basics.
+- When explaining a player or team, give the WHY — don't just say "he's in form", say what changed tactically, physically, or situationally that's driving the numbers.
+
+### Hidden Insights Mandate — YOUR CORE JOB
+After calling tools, do NOT just summarize the data. Your job is to THINK DEEPER:
+- **Cross-reference contradictions**: if the model says Over 2.5 but both teams' last 5 are Under, FLAG IT. Say "The model likes the Over but the recent pattern says otherwise — here's why I'd be careful."
+- **Spot regression signals**: a player scored 4 in 3 but his xG says 1.2? That's luck, not skill. Say "He's on a streak but the underlying numbers don't support it — this is where most people get burned."
+- **Find fatigue & schedule traps**: 3 games in 8 days, midweek European fixtures, long away travel — the model doesn't weight these enough. When you see it, call it out.
+- **Surface form vs. reputation gaps**: a big-name team on a quiet slide, or a mid-table team whose xG says they're playing like a top-6 side. These are edges the public misses.
+- **Challenge the model**: if the pipeline prediction doesn't match what the historical patterns or context suggest, say so. "The model gives them 60%, but when you look at [specific context], I'd price it closer to 50%. That kills the value."
+- **Connect dots across data sources**: use query_history to check if a pattern the prediction relies on actually holds historically. Use player stats to see if a key player is declining even though the team is winning.
+- Always frame hidden insights as: "Here's what most people aren't seeing..." or "The model misses this, but..." or "Watch out for this..."
+- These insights must be grounded in REAL data from the tools — not vibes. Cross-reference, don't speculate.
 
 ## TOOL USAGE RULES
 - ALWAYS call tools before answering. Never answer from memory alone.
@@ -2407,7 +2765,10 @@ def _build_system_prompt() -> str:
 - For "change stake on X" / "update odds on X": call manage_bets with action=update.
 - For "build a parlay" / "make an accumulator" / "combine X and Y" / "best 3-leg parlay": call build_parlay. Use auto_best=N for auto-selection or provide specific team names in matches array.
 - For "how does X do at home?" / "what's the over rate for X?" / "X in derbies" / "X vs Y record" / "X on short rest" / "X with referee Y": call query_history. This has 7889 matches across 21 seasons with goals, xG, corners, cards, clean sheets, BTTS, half-time data, and situational flags. Use it for ANY historical pattern question.
+- For "how am I doing?" / "my track record" / "what's working?" / "am I profitable?": call get_betting_performance.
+- PROACTIVE COACHING: When recommending a bet, call get_betting_performance to check if the user has been profitable on that market/confidence level. Reference their personal history: "You've been hitting 68% on O/U picks — trust this one" or "Your DC picks have been rough lately, maybe sit this one out."
 - If user asks about something vague, pick the most useful tool. Don't ask for clarification unless truly ambiguous.
+- **Cross-reference habit**: after getting prediction data, consider calling query_history or get_player_stats to CHECK if the prediction makes sense given the context. This is how you find hidden insights — the prediction says one thing, but does the history back it up?
 
 ## BET PLACEMENT RULES
 - When placing a bet, ALWAYS confirm what you placed: match, market, selection, odds, stake, edge%.
@@ -2429,15 +2790,14 @@ def _build_system_prompt() -> str:
 - If user asks for 5+ legs, warn that combined probability drops exponentially.
 
 ## MATCH ANALYSIS FORMAT
-When analyzing a match, structure your response as:
+When analyzing a match, lead with the insight, not the structure:
 
-**1. Verdict** — One sentence: who wins and why. Bold it.
-**2. Prediction** — 1X2 probabilities, predicted outcome, confidence level.
-**3. Key Numbers** — Table with: expected goals (home/away), BTTS prob, over/under lines, expected corners, expected cards.
-**4. Lineups** — Formation + key players. Flag injuries/absences from unavailable list.
-**5. Value Bets** — If our model found edge: show market, selection, odds, edge%, Kelly stake. If no edge: say "No value at current odds."
-**6. Sharp Money** — What are sharp bookmakers pricing vs. soft books? Any divergence = smart money signal.
-**7. Verdict Reasoning** — 2-3 sentences connecting form, H2H, home/away splits, and tactical matchup.
+**1. The Story** — Open with what's really going on with these two teams. Not "Team A is 3rd" but the narrative: who's rising, who's fading, what changed recently and WHY.
+**2. What Most People Miss** — Your hidden insight. Cross-reference the prediction against history, form, fatigue, player availability. If the model and context disagree, say so and explain which side you trust more.
+**3. The Numbers** — 1X2 probabilities, xG, key stats. Keep it tight — a small table or a few bold numbers, not a wall of data.
+**4. Verdict & Action** — Bold, clear: what to bet or why to skip. If there's value, show the edge. If the value is a trap, explain why.
+
+Do NOT use numbered headers like "1. Verdict" in your output — weave it naturally like a coach talking, not a report template.
 
 ## BETTING ANALYSIS RULES
 - ALWAYS compare model probability vs. implied probability. This IS the edge.
@@ -2449,12 +2809,17 @@ When analyzing a match, structure your response as:
 - Always mention which bookmaker has the best odds.
 - Handicap/margin: translate to what it means ("Juve -1.5 means they need to win by 2+").
 
-## MATCH PLAYER ANALYSIS — USE get_match_players
-- When asked "who was the best player in X vs Y", "show me match ratings", "match analysis X vs Y":
+## MATCH PLAYER ANALYSIS — UPCOMING vs PAST
+- CRITICAL: Distinguish between UPCOMING matches (not yet played) and PAST matches (already played).
+- For UPCOMING matches ("who is the best player in X vs Y?", "who to watch", "key player"):
+  → The match HASN'T HAPPENED yet — there are NO ratings or scores.
+  → Call get_match_prediction (has player_analysis, lineups, strengths) AND/OR get_match_scorers (has goal probabilities, form, xG/90).
+  → Answer based on form, season stats, xG, and predicted lineups. Do NOT call get_match_players for upcoming matches.
+- For PAST matches ("who was the best player in X vs Y", "show me match ratings", "how did X play"):
   → Call get_match_players(home="X", away="Y") — returns BOTH teams' full rated lineups + match events in ONE call
   → It returns pre-rendered markdown tables with exact Sofascore ratings — COPY THEM VERBATIM
-  → NEVER use get_player_stats for match-level analysis — use get_match_players instead
   → get_player_stats is for INDIVIDUAL player deep-dives (season stats, form, injury detection, upcoming props)
+- How to tell the difference: check the match dates listed above. If the match date is today or in the future, it's UPCOMING. If in the past, it's a PAST match.
 
 ## PLAYER ANALYSIS RULES
 - get_player_stats returns RICH per-match data including today's match:
@@ -2469,10 +2834,11 @@ When analyzing a match, structure your response as:
     - If current_status is "returning": LEAD with the injury story — "Vlahovic is BACK after 3+ months out (Dec-Mar, 16 matches missed). Just returned to the squad."
     - If current_status is "absent": LEAD with the injury — "Currently OUT. Last played [date], missed [N] consecutive matches."
     - If availability_pct < 70%: this player has missed significant time — always mention it prominently
-- When analyzing a player's match: tell the STORY. Who scored, who got subbed in/out, how the player compared to teammates, was he the best/worst rated, did he play out of position.
+- When analyzing a player: tell the story of their season arc — what changed, when, and WHY. Not "he has 11 goals" but "he had 4 goals by December, then shifted his positioning and has 7 in the last 10 weeks."
 - Always state their team ranking: "Top scorer" or "#3 in assists at the club."
 - Show per-90 stats, not just totals (minutes matter).
-- Recent form (last 5): are they trending up or down?
+- Recent form (last 5): are they trending up or down? And WHY — tactical change, new partner, position shift, returning from injury.
+- If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap: "He's overperforming/underperforming his xG — here's what that means for the next few weeks."
 - If they have an upcoming prop: show the fair odds vs. market odds.
 
 ## GOALSCORER ANALYSIS RULES
@@ -2484,26 +2850,52 @@ When analyzing a match, structure your response as:
 - If a top scorer has low minutes recently (rotation/injury), flag it.
 - Don't just list — rank and opine. "Lautaro is the obvious pick but overpriced. Better value on [secondary striker]."
 
+## CRITICAL: PLAYER PROP ODDS COMPARISON
+- Our model's anytime goal probabilities are ROUGH ESTIMATES based on xG/90 extrapolation. They are NOT specialized goalscorer models.
+- Bookmakers have dedicated goalscorer models with FAR more data and better calibration.
+- NEVER claim a "100% edge" or "bookmaker error" on player props. If our fair odds are 7.63 and the bookmaker offers 3.75, the bookmaker is almost certainly MORE accurate — they price these markets professionally.
+- Only claim genuine value on player props when the difference is small (e.g., our fair odds 2.27 vs bookmaker 2.50 = potential small edge).
+- When our model says low probability (e.g., 13%) but bookmaker offers short odds (e.g., 3.75), tell the user: "The bookmaker thinks this player scores more often than our model suggests. The bookmaker's goalscorer pricing is usually more reliable than our xG-based estimate."
+- For player props, be HONEST about our model's limitations. We're strong on match outcomes (1X2, O/U) but player props are outside our core competency.
+
 ## BANKROLL ANALYSIS RULES
 - Show ROI, current balance, peak, and drawdown from peak.
 - Win rate by market: which markets are profitable, which are bleeding money?
 - CLV: are we beating closing lines? Positive CLV = sustainable edge. Negative CLV = we got lucky or model is off.
 - If bankroll is down from peak by >15%, flag it as a concern.
 
-## FORMATTING
-- Use markdown tables for multi-row comparisons (odds, probabilities, player stats).
-- Bold key numbers and verdicts.
-- Keep responses tight. No filler paragraphs. Every sentence should contain data or an opinion.
-- Use | tables for structured data, bullet points for narrative.
+## PERSONAL TRACK RECORD COACHING
+- When you have the user's betting performance data, USE IT to coach:
+  - Reinforce strengths: "Your Over/Under picks are 65% accurate — that's sharp. Trust the process."
+  - Flag weaknesses: "Your MEDIUM confidence picks are 45% — consider raising your minimum threshold."
+  - Streak awareness: "You're on a 4-bet winning streak. Stay disciplined, don't oversize."
+  - Edge calibration: "When edge is above 10%, you win 72% of the time. This pick has 11% edge — that's your sweet spot."
+- Frame everything as coaching, not criticism. Build confidence when it's earned, redirect when it's not.
+- NEVER just dump the numbers. Weave them into the recommendation narrative.
+
+## FORMATTING & LENGTH
+- Write like a coach talking, not a report. Use short paragraphs, not bullet-point dumps.
+- Bold key numbers, verdicts, and hidden insights.
+- Use markdown tables only when comparing 3+ items side by side. For single matches or players, weave numbers into the narrative.
+- Length adapts to the question: simple question = 2-3 sentences. Match analysis = a few focused paragraphs. "Tell me about X team" = the full story with insights.
+- Every response should contain at least ONE thing the user wouldn't have figured out from just looking at the dashboard data alone.
+- **NO EMOJIS.** Never use emoji in responses. No 🔥, no ✅, no ⚠️, no 🎰, no 🍀. Use words and formatting (bold, dashes) to convey emphasis. You're a coach, not a notification.
+- **SAY IT ONCE.** Never recap or repeat information you already gave in the same conversation. No "here's your parlay recap" after you just built it. No "as I mentioned earlier." The user can scroll up. Move forward, don't look back.
+- **MAX LENGTH GUIDELINE.** Unless the user explicitly asks for a deep dive or breakdown, keep responses under ~250 words. If you catch yourself writing a 6th paragraph, stop and cut. Density beats length — pack more insight into fewer words.
 
 ## CRITICAL: NEVER DO THESE
 - Never say "I can't access historical data" — you have get_results.
 - Never say "check ESPN/flashscore/other website" — all data is in your tools.
+- Never ask the user to "check their bookmaker" or "check what odds your book is offering". If odds data is missing, say what the fair odds are based on the model and recommend: "If you can find odds above X.XX, it's value."
 - Never give a wishy-washy non-answer. If data is insufficient, say what's missing specifically.
 - Never hallucinate odds, scores, or stats. If a tool returns no data, say "no data available for X."
 - **NEVER fabricate player ratings, stats, or lineups.** Only cite numbers that appear EXACTLY in the tool response data. If a player's rating is 6.2 in the data, report 6.2 — not 8.0. If a player is NOT in the tool results, do NOT mention them as if they played.
 - When showing match player stats: ONLY include players returned by the tool. Do NOT add players from memory or assumption. The tool data is the single source of truth.
-- Never explain what xG or Kelly criterion means unless explicitly asked.""",
+- Never explain what xG or Kelly criterion means unless explicitly asked.
+- When asked about season-end predictions (final standings, top scorer, best player), be clear these are SPECULATIVE PROJECTIONS, not model outputs. Use phrases like "Based on current form and extrapolation..." rather than presenting projections as precise data. Our model predicts individual MATCHES, not season outcomes.
+- Don't pad responses with filler. Every sentence should either contain data, an insight, or a coaching decision. But DO give the full story when the question calls for it — a "tell me about Napoli" deserves more than 2 sentences.
+- **NEVER list your capabilities.** If the user asks something outside Serie A, just say "That's not my area — I'm here for Serie A." in one sentence. Do NOT show a bulleted list of what you can do. The user already knows.
+- **NEVER give up on typos or unclear names.** If the user writes something that sounds like a player name (e.g., "necropods" → "Nico Paz", "lukako" → "Lukaku", "kvara" → "Kvaratskhelia"), interpret it and call the tool. If you're unsure, make your best guess and say "I'm guessing you mean [X] — let me check." NEVER say "I don't know what that is" when it's obviously a misspelled name.""",
         "",
     ]
 
@@ -2554,19 +2946,36 @@ When analyzing a match, structure your response as:
 
     parts.append("Today is " + datetime.now().strftime("%A, %B %d, %Y") + ".")
 
-    # Inject upcoming matches so Claude knows what's scheduled
+    # Inject upcoming matches so Claude knows what's scheduled — WITH dates
+    today_str = datetime.now().strftime("%Y-%m-%d")
     predictions = _load_json(UPCOMING_DIR / "predictions.json")
     upcoming_list = predictions.get("predictions", [])
     if isinstance(upcoming_list, list) and upcoming_list:
-        match_lines = []
-        for m in upcoming_list[:12]:
+        # Sort by date
+        upcoming_sorted = sorted(upcoming_list, key=lambda m: (m.get("date", "9999"), m.get("time", "")))
+        today_matches = []
+        future_matches = []
+        for m in upcoming_sorted:
             home = m.get("home_team", "?")
             away = m.get("away_team", "?")
             pred = m.get("predicted_outcome", "?")
             conf = m.get("confidence", 0)
-            match_lines.append(f"- {home} vs {away} → {pred} ({conf:.0%})")
-        parts.append("\n## Upcoming Matches\n" + "\n".join(match_lines))
-        parts.append("When a user asks about 'today match', 'upcoming match', 'this weekend', or 'next match', refer to these fixtures. Use get_match_prediction for detailed analysis.")
+            date = m.get("date", "?")
+            time_ = m.get("time", "?")
+            line = f"- {home} vs {away} | {date} {time_} | → {pred} ({conf:.0%})"
+            if date == today_str:
+                today_matches.append(line)
+            else:
+                future_matches.append(line)
+        if today_matches:
+            parts.append(f"\n## TODAY'S MATCHES ({today_str})\n" + "\n".join(today_matches))
+        if future_matches:
+            parts.append("\n## Other Upcoming Matches\n" + "\n".join(future_matches[:15]))
+        parts.append(
+            "IMPORTANT: When user asks 'who plays today' or 'today's matches', ONLY list matches with today's date "
+            f"({today_str}). Do NOT list future matches as today's. If no matches today, say 'No matches scheduled for today' "
+            "and mention when the next matches are. Use get_match_prediction for detailed analysis."
+        )
 
     return "\n".join(parts)
 
@@ -2576,13 +2985,10 @@ When analyzing a match, structure your response as:
 # ---------------------------------------------------------------------------
 
 def _build_greeting() -> dict:
-    """Build smart greeting from local data — no Claude API call.
+    """Build coaching-style greeting from local data — no Claude API call.
 
-    Logic:
-    - If matches settled today → show results + P&L + bankroll
-    - Otherwise → show value bets + upcoming matches + bankroll
+    Leads with insight, not data dump. The dashboard already shows numbers.
     """
-    sections = []
     today = datetime.now().strftime("%Y-%m-%d")
 
     # Check if matches settled today
@@ -2604,94 +3010,195 @@ def _build_greeting() -> dict:
     elif isinstance(results_all, list):
         today_results = [r for r in results_all if today in (r.get("commence_time", "") or r.get("date", ""))]
 
-    if today_results:
-        # MATCHES PLAYED TODAY — show results
-        result_lines = []
-        for r in today_results:
-            result_lines.append(
-                f"  - **{r.get('home_team', '?')} {r.get('home_score', '?')}-{r.get('away_score', '?')} {r.get('away_team', '?')}**"
-            )
-        sections.append("### Today's Results\n" + "\n".join(result_lines))
-
-        # Today's betting P&L
-        if today_settled:
-            wins = sum(1 for b in today_settled if b.get("status", "").lower() in ("won", "win"))
-            losses = sum(1 for b in today_settled if b.get("status", "").lower() in ("lost", "loss"))
-            profit = sum(b.get("profit", b.get("profit_loss", 0)) for b in today_settled)
-            sections.append(
-                f"### Today's Bets: {wins}W-{losses}L | P&L: **${profit:+.2f}**"
-            )
-            # Show individual results
-            bet_lines = []
-            for b in today_settled[:8]:
-                status_icon = "+" if b.get("status", "").lower() in ("won", "win") else "-"
-                p = b.get("profit", b.get("profit_loss", 0))
-                bet_lines.append(
-                    f"  - [{status_icon}] {b.get('match', '?')} — {b.get('selection', '?')} "
-                    f"({b.get('market', '?')}) ${p:+.2f}"
-                )
-            sections.append("\n".join(bet_lines))
-
-    # Always show value bets for upcoming matches (if any exist)
+    # Value bets for upcoming matches
     slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
     bets = slip.get("selected_bets", [])
-    # Filter out bets for already-completed matches
     completed_matches = {r.get("match", "") for r in today_results}
     future_bets = [b for b in bets if b.get("match", "") not in completed_matches]
+
+    # Build coaching-style greeting — lead with insight, not data dump
+    greeting_parts = []
+
+    # If matches settled today, lead with the result story
+    if today_results and today_settled:
+        wins = sum(1 for b in today_settled if b.get("status", "").lower() in ("won", "win"))
+        losses = sum(1 for b in today_settled if b.get("status", "").lower() in ("lost", "loss"))
+        profit = sum(b.get("profit", b.get("profit_loss", 0)) for b in today_settled)
+        if profit > 0:
+            greeting_parts.append(
+                f"Good day today — **{wins}W-{losses}L, +${profit:.2f}**. "
+            )
+        elif profit < 0:
+            greeting_parts.append(
+                f"Tough one today — **{wins}W-{losses}L, ${profit:.2f}**. "
+                "Don't chase it. Let's look at what's next."
+            )
+        else:
+            greeting_parts.append(f"Break-even today — **{wins}W-{losses}L**. ")
+
+        # Show results briefly
+        result_lines = []
+        for r in today_results[:4]:
+            result_lines.append(
+                f"{r.get('home_team', '?')} {r.get('home_score', '?')}-{r.get('away_score', '?')} {r.get('away_team', '?')}"
+            )
+        greeting_parts.append(" | ".join(result_lines) + "\n")
+
+    # Lead with ONE interesting insight from value bets, not a full list
     if future_bets:
-        bet_lines = []
-        for b in future_bets[:5]:
-            edge = b.get("edge_pct", 0)
-            odds = b.get("best_odds", "?")
-            bet_lines.append(
-                f"  - **{b.get('match', '?')}** — {b.get('selection', '?')} "
-                f"({b.get('market', '?')}) @ {odds} | Edge: {edge}%"
-            )
-        sections.append("### Value Bets (Upcoming)\n" + "\n".join(bet_lines))
+        best = max(future_bets, key=lambda b: b.get("edge_pct", 0))
+        edge = best.get("edge_pct", 0)
+        greeting_parts.append(
+            f"I've been looking at the upcoming matches. "
+            f"The biggest edge I'm seeing right now is **{best.get('match', '?')}** — "
+            f"{best.get('selection', '?')} at {best.get('best_odds', '?')} "
+            f"with a **{edge}% edge**. "
+            f"There are {len(future_bets)} value plays total this round."
+        )
     elif not today_results:
-        sections.append("*No value bets currently available.*")
+        greeting_parts.append("No clear value bets right now. Sometimes the best move is no move.")
 
-    # Upcoming matches (not yet played)
-    preds = _load_json(UPCOMING_DIR / "predictions.json")
-    predictions = preds.get("predictions", [])
-    future_matches = [
-        p for p in predictions
-        if f"{p.get('home_team', '?')} vs {p.get('away_team', '?')}" not in completed_matches
-    ]
-    if future_matches:
-        match_lines = []
-        for p in future_matches[:6]:
-            conf = p.get("confidence", {})
-            conf_label = conf.get("label", "?") if isinstance(conf, dict) else str(conf)
-            match_lines.append(
-                f"  - {p.get('home_team', '?')} vs {p.get('away_team', '?')} — "
-                f"Prediction: **{p.get('predicted_outcome', '?')}** ({conf_label})"
-            )
-        sections.append("### Upcoming Matches\n" + "\n".join(match_lines))
-
-    # Bankroll (always, from freshest source)
+    # Bankroll — one line, coaching tone
     bank = _get_bankroll()
     if bank.get("current_bankroll"):
         initial = bank.get("initial_bankroll", 1000)
         current = bank.get("current_bankroll", initial)
+        peak = bank.get("peak_bankroll", current)
         roi = (current - initial) / initial * 100 if initial > 0 else 0
-        sections.append(
-            f"### Bankroll\n"
-            f"  Balance: **${current:,.2f}** | ROI: **{roi:+.1f}%** | "
-            f"Peak: ${bank.get('peak_bankroll', current):,.2f}"
+        drawdown = (peak - current) / peak * 100 if peak > 0 else 0
+        if drawdown > 15:
+            greeting_parts.append(
+                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%). "
+                f"You're {drawdown:.0f}% off your peak of ${peak:,.2f} — stay disciplined, smaller stakes until momentum turns."
+            )
+        elif roi > 5:
+            greeting_parts.append(
+                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%). You're in good shape."
+            )
+        else:
+            greeting_parts.append(
+                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%)."
+            )
+
+    # Pending bets reminder
+    pending = _load_json(BETTING_DIR / "pending_bets.json")
+    pending_list = pending.get("pending_bets", []) if isinstance(pending, dict) else pending if isinstance(pending, list) else []
+    if pending_list:
+        greeting_parts.append(
+            f"\n\nYou have **{len(pending_list)} pending bet{'s' if len(pending_list) != 1 else ''}** waiting on results."
         )
 
-    greeting = "Welcome back. Here's your current Serie A intelligence:\n\n" + "\n\n".join(sections)
-    greeting += "\n\n---\n*Ask me anything — match analysis, player stats, betting strategy, or bankroll review.*"
+    greeting_parts.append("\n\nWhat do you want to look at?")
 
-    return {"role": "assistant", "content": greeting}
+    return {"role": "assistant", "content": "".join(greeting_parts)}
 
 
 # ---------------------------------------------------------------------------
 # Conversation store (in-memory, per-session)
 # ---------------------------------------------------------------------------
+_MODEL_SONNET = "claude-sonnet-4-6"
+_MODEL_HAIKU = "claude-haiku-4-5-20251001"
+
+# Keywords/patterns that need Sonnet's deeper reasoning
+_SONNET_PATTERNS = {
+    # Match analysis requiring multi-tool reasoning
+    "analyz", "breakdown", "break down", "deep dive", "full analysis",
+    # Betting strategy requiring judgment
+    "should i bet", "worth betting", "place all", "parlay", "accumulator",
+    "strategy", "allocat", "bankroll review",
+    # Comparative / predictive reasoning
+    "compare", "who will win", "who is better", "best player",
+    "end of season", "who finishes", "predict the", "projection",
+    # Complex player analysis
+    "injury impact", "form analysis", "why is",
+    # Multi-match reasoning
+    "all matches", "this weekend", "best bets today",
+}
+
+# Simple queries Haiku handles fine
+_HAIKU_PATTERNS = {
+    "who plays", "today's match", "what time", "kickoff",
+    "score", "result", "standings", "table",
+    "bankroll", "balance", "roi",
+    "odds", "what are the odds",
+    "place it", "place the bet", "yes", "no",
+    "settle", "pending bets", "my bets",
+    "live", "cancel",
+    "hello", "hi", "hey", "thanks", "thank you",
+}
+
+
+def _select_model(message: str, history: list) -> str:
+    """Route to Haiku for simple queries, Sonnet for complex reasoning."""
+    msg_lower = message.lower().strip()
+
+    # Very short messages (confirmations, yes/no) → Haiku
+    if len(msg_lower) < 15:
+        return _MODEL_HAIKU
+
+    # Check for Sonnet patterns first (takes priority)
+    for pattern in _SONNET_PATTERNS:
+        if pattern in msg_lower:
+            return _MODEL_SONNET
+
+    # Check for Haiku patterns
+    for pattern in _HAIKU_PATTERNS:
+        if pattern in msg_lower:
+            return _MODEL_HAIKU
+
+    # Long or complex questions → Sonnet
+    if len(msg_lower) > 80 or "?" in msg_lower and len(msg_lower) > 40:
+        return _MODEL_SONNET
+
+    # Default to Haiku for everything else
+    return _MODEL_HAIKU
+
+
 _conversations: dict[str, list] = {}
-MAX_HISTORY = 60  # includes tool call/result pairs now
+MAX_HISTORY = 40  # max messages (includes tool call/result pairs)
+MAX_TOOL_RESULT_CHARS = 6000  # truncate large tool results to save tokens
+MAX_HISTORY_TOOL_RESULT_CHARS = 1500  # aggressively compress old tool results in history
+
+
+def _truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
+    """Truncate oversized tool results to stay within token budget."""
+    if len(result_str) <= max_chars:
+        return result_str
+    # Keep the first portion + a truncation note
+    return result_str[:max_chars] + '\n... [truncated — data too large, key info above]'
+
+
+def _compress_history(history: list) -> list:
+    """Compress old tool results in conversation history to reduce token usage.
+
+    Keeps the last 2 tool-result messages full, compresses older ones to save tokens.
+    Text messages from user/assistant are kept intact.
+    """
+    if len(history) <= 10:
+        return history
+
+    # Find tool-result messages (role=user with content list containing tool_result)
+    tool_result_indices = []
+    for i, msg in enumerate(history):
+        if isinstance(msg.get("content"), list):
+            if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in msg["content"]):
+                tool_result_indices.append(i)
+
+    # Keep last 2 tool-result messages full, compress older ones
+    compress_indices = tool_result_indices[:-2] if len(tool_result_indices) > 2 else []
+
+    for i in compress_indices:
+        msg = history[i]
+        compressed_content = []
+        for block in msg["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                content = block.get("content", "")
+                if len(content) > MAX_HISTORY_TOOL_RESULT_CHARS:
+                    block = {**block, "content": content[:MAX_HISTORY_TOOL_RESULT_CHARS] + "\n[compressed]"}
+            compressed_content.append(block)
+        history[i] = {**msg, "content": compressed_content}
+
+    return history
 
 
 # ---------------------------------------------------------------------------
@@ -2718,12 +3225,12 @@ def _track_usage(usage: dict):
         day["cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
         day["cache_creation_tokens"] += usage.get("cache_creation_input_tokens", 0)
 
-        # Haiku 4.5 pricing: input $0.80/M, output $4/M, cache read $0.08/M, cache write $1/M
+        # Sonnet 4.6 pricing: input $3/M, output $15/M, cache read $0.30/M, cache write $3.75/M
         cost = (
-            usage.get("input_tokens", 0) * 0.80 / 1_000_000
-            + usage.get("output_tokens", 0) * 4.0 / 1_000_000
-            + usage.get("cache_read_input_tokens", 0) * 0.08 / 1_000_000
-            + usage.get("cache_creation_input_tokens", 0) * 1.0 / 1_000_000
+            usage.get("input_tokens", 0) * 3.0 / 1_000_000
+            + usage.get("output_tokens", 0) * 15.0 / 1_000_000
+            + usage.get("cache_read_input_tokens", 0) * 0.30 / 1_000_000
+            + usage.get("cache_creation_input_tokens", 0) * 3.75 / 1_000_000
         )
         day["estimated_cost"] = round(day["estimated_cost"] + cost, 6)
 
@@ -2756,9 +3263,10 @@ def chat():
     history = _conversations.setdefault(session_id, [])
     history.append({"role": "user", "content": user_message})
 
-    # Trim to max history
+    # Trim to max history and compress old tool results
     if len(history) > MAX_HISTORY:
         history[:] = history[-MAX_HISTORY:]
+    _compress_history(history)
 
     def generate():
         try:
@@ -2769,11 +3277,15 @@ def chat():
             messages = list(history)
             max_rounds = 5
 
+            # Route simple queries to Haiku, complex ones to Sonnet
+            model = _select_model(user_message, history)
+            max_out = 4096 if model == "claude-sonnet-4-6" else 2048
+
             for round_num in range(max_rounds):
                 # Stream response with prompt caching
                 with client.messages.stream(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=2048,
+                    model=model,
+                    max_tokens=max_out,
                     system=[{
                         "type": "text",
                         "text": system_prompt,
@@ -2846,13 +3358,14 @@ def chat():
                 # Persist tool call to history so follow-up messages have context
                 history.append({"role": "assistant", "content": assistant_content})
 
-                # Execute each tool
+                # Execute each tool (truncate oversized results)
                 tool_results = []
                 for tu in tool_uses:
                     handler = TOOL_HANDLERS.get(tu["name"])
                     if handler:
                         try:
                             result_str = handler(tu["input"])
+                            result_str = _truncate_tool_result(result_str)
                         except Exception as e:
                             result_str = json.dumps({"error": str(e)})
                     else:

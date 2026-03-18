@@ -37,17 +37,47 @@
   .player-row__name a:hover { color: var(--accent); }
   .player-row__stat { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); text-align: right; width: 36px; flex-shrink: 0; }
   .player-row__stat--highlight { color: var(--text-secondary); font-weight: 600; }
-  .player-row__rating { font-size: 10px; font-family: var(--font-mono); font-weight: 600; text-align: right; width: 30px; flex-shrink: 0; }
+  .player-row__rating { font-size: 10px; font-family: var(--font-mono); font-weight: 600; text-align: right; width: 38px; flex-shrink: 0; }
   .player-row__value { font-size: 9px; color: var(--text-tertiary); text-align: right; width: 48px; flex-shrink: 0; }
 
   /* Stats header */
   .players-header { display: flex; align-items: center; gap: 6px; padding: 4px 16px; font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); border-top: 1px solid var(--border-default); background: var(--bg-tertiary); }
   .players-header span { font-weight: 600; }
 
-  /* Search */
-  .player-search-wrap { margin-bottom: 16px; }
+  /* Search — sticky */
+  .player-search-wrap { margin-bottom: 16px; position: sticky; top: 0; z-index: 20; background: var(--bg-primary); padding: 8px 0; }
   .player-search { width: 100%; max-width: 400px; padding: 8px 12px; font-size: 13px; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); }
   .player-search:focus { outline: none; border-color: var(--accent); }
+
+  /* Position filter pills */
+  .pos-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pos-pill { padding: 4px 14px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; user-select: none; }
+  .pos-pill:hover { border-color: var(--text-tertiary); }
+  .pos-pill.active { color: #fff; }
+  .pos-pill[data-pos="all"].active { background: var(--accent); border-color: var(--accent); }
+  .pos-pill[data-pos="gk"].active { background: var(--amber); border-color: var(--amber); }
+  .pos-pill[data-pos="df"].active { background: var(--accent); border-color: var(--accent); }
+  .pos-pill[data-pos="mf"].active { background: var(--green); border-color: var(--green); }
+  .pos-pill[data-pos="fw"].active { background: var(--red); border-color: var(--red); }
+
+  /* Minutes toggle */
+  .min-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); cursor: pointer; user-select: none; }
+  .min-toggle input { accent-color: var(--accent); }
+
+  /* Filter bar layout */
+  .filter-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+  /* Responsive table scroll — only when panel is open */
+  .team-card__players.open { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .players-header, .player-row { min-width: 600px; }
+
+  /* Hide less-critical cols on mobile */
+  @media (max-width: 640px) {
+    .col-sca90, .col-passpct, .col-value { display: none !important; }
+  }
+
+  /* Rating trend arrow */
+  .rating-trend { font-size: 9px; margin-left: 1px; }
 
   /* Summary bar */
   .summary-bar { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -68,6 +98,16 @@
   <div class="summary-bar" id="players-summary"></div>
   <div class="player-search-wrap">
     <input type="text" id="player-search-input" class="player-search" placeholder="Search players by name, team, or position..." autocomplete="off">
+    <div class="filter-bar" style="margin-top:8px;">
+      <div class="pos-filters">
+        <span class="pos-pill active" data-pos="all" onclick="filterPos('all',this)">All</span>
+        <span class="pos-pill" data-pos="gk" onclick="filterPos('gk',this)">GK</span>
+        <span class="pos-pill" data-pos="df" onclick="filterPos('df',this)">DF</span>
+        <span class="pos-pill" data-pos="mf" onclick="filterPos('mf',this)">MF</span>
+        <span class="pos-pill" data-pos="fw" onclick="filterPos('fw',this)">FW</span>
+      </div>
+      <label class="min-toggle"><input type="checkbox" id="min-180-toggle" onchange="applyFilters()"> Min 180 min</label>
+    </div>
   </div>
   <div class="teams-list" id="teams-list"></div>
 </div>
@@ -105,6 +145,71 @@ function fmtValue(v) {
   if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
   if (v >= 1000) return (v / 1000).toFixed(0) + 'K';
   return v.toString();
+}
+
+function posGroup(pos) {
+  if (!pos) return '';
+  const p = pos.toUpperCase();
+  if (p.includes('GK') || p === 'G') return 'gk';
+  if (p.includes('D') || p.includes('CB') || p.includes('LB') || p.includes('RB')) return 'df';
+  if (p.includes('M') || p.includes('CM') || p.includes('AM') || p.includes('DM')) return 'mf';
+  if (p.includes('F') || p.includes('ST') || p.includes('CF') || p.includes('W')) return 'fw';
+  return '';
+}
+
+function ratingTrend(player, allPlayers) {
+  if (!player.rating || !player.matches || player.matches < 5) return '';
+  // Compare player rating to positional average for players with 5+ matches
+  const pg = posGroup(player.position);
+  const peers = allPlayers.filter(p => posGroup(p.position) === pg && p.rating && p.matches >= 5);
+  if (!peers.length) return '';
+  const posAvg = peers.reduce((s, p) => s + p.rating, 0) / peers.length;
+  const diff = player.rating - posAvg;
+  if (Math.abs(diff) < 0.15) return '';
+  if (diff > 0) return '<span class="rating-trend" style="color:var(--green)">&#8593;</span>';
+  return '<span class="rating-trend" style="color:var(--red)">&#8595;</span>';
+}
+
+let _activePos = 'all';
+function filterPos(pos, el) {
+  _activePos = pos;
+  document.querySelectorAll('.pos-pill').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = (document.getElementById('player-search-input')?.value || '').toLowerCase().trim();
+  const min180 = document.getElementById('min-180-toggle')?.checked || false;
+  document.querySelectorAll('.team-card').forEach(card => {
+    const rows = card.querySelectorAll('.player-row');
+    let visible = 0;
+    rows.forEach(row => {
+      const name = row.dataset.name || '';
+      const team = row.dataset.team || '';
+      const pos = row.dataset.pos || '';
+      const posgrp = row.dataset.posgroup || '';
+      const minutes = parseInt(row.dataset.minutes) || 0;
+      const matchSearch = !q || name.includes(q) || team.includes(q) || pos.includes(q);
+      const matchPos = _activePos === 'all' || posgrp === _activePos;
+      const matchMin = !min180 || minutes >= 180;
+      const show = matchSearch && matchPos && matchMin;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    const playersDiv = card.querySelector('.team-card__players');
+    if ((q || _activePos !== 'all' || min180) && visible > 0) {
+      playersDiv.classList.add('open');
+      card.querySelector('.team-card__chevron')?.classList.add('open');
+      card.style.display = '';
+    } else if ((q || _activePos !== 'all' || min180) && visible === 0) {
+      card.style.display = 'none';
+    } else {
+      card.style.display = '';
+      playersDiv.classList.remove('open');
+      card.querySelector('.team-card__chevron')?.classList.remove('open');
+    }
+  });
 }
 
 function renderPlayers(teams) {
@@ -159,11 +264,11 @@ function renderPlayers(teams) {
           <span style="width:30px;text-align:right;">Rtg</span>
           <span style="width:32px;text-align:right;">Sh</span>
           <span style="width:32px;text-align:right;">SoT%</span>
-          <span style="width:36px;text-align:right;">SCA90</span>
-          <span style="width:36px;text-align:right;">Pass%</span>
-          <span style="width:48px;text-align:right;">Value</span>
+          <span class="col-sca90" style="width:36px;text-align:right;">SCA90</span>
+          <span class="col-passpct" style="width:36px;text-align:right;">Pass%</span>
+          <span class="col-value" style="width:48px;text-align:right;">Value</span>
         </div>
-        ${t.players.map(p => `<div class="player-row" data-name="${(p.name || '').toLowerCase()}" data-team="${t.team.toLowerCase()}" data-pos="${(p.position || '').toLowerCase()}">
+        ${t.players.map(p => `<div class="player-row" data-name="${(p.name || '').toLowerCase()}" data-team="${t.team.toLowerCase()}" data-pos="${(p.position || '').toLowerCase()}" data-minutes="${p.minutes || 0}" data-posgroup="${posGroup(p.position)}">
           <div class="player-row__pos ${posClass(p.position)}">${p.position || '?'}</div>
           <div class="player-row__number">${p.number || ''}</div>
           <div class="player-row__name"><a href="/player/${encodeURIComponent(t.team)}/${encodeURIComponent(p.name)}">${p.name}</a></div>
@@ -172,12 +277,12 @@ function renderPlayers(teams) {
           <div class="player-row__stat">${p.starts || 0}</div>
           <div class="player-row__stat">${p.minutes ? (p.minutes >= 1000 ? (p.minutes / 1000).toFixed(1) + 'k' : p.minutes) : '0'}</div>
           <div class="player-row__stat player-row__stat--highlight">${(p.goals || 0)}/${(p.assists || 0)}</div>
-          <div class="player-row__rating" style="color:${p.rating >= 7.0 ? 'var(--green)' : p.rating >= 6.0 ? 'var(--amber)' : p.rating ? 'var(--red)' : 'var(--text-tertiary)'}">${p.rating ? p.rating.toFixed(1) : '-'}</div>
+          <div class="player-row__rating" style="color:${p.rating >= 7.0 ? 'var(--green)' : p.rating >= 6.0 ? 'var(--amber)' : p.rating ? 'var(--red)' : 'var(--text-tertiary)'}">${p.rating ? p.rating.toFixed(1) : '-'}${ratingTrend(p, allPlayers)}</div>
           <div class="player-row__stat" style="width:32px;color:var(--text-tertiary)">${p.fbref?.shots || '-'}</div>
           <div class="player-row__stat" style="width:32px;color:${(p.fbref?.shot_accuracy||0)>=40?'var(--green)':'var(--text-tertiary)'}">${p.fbref?.shot_accuracy != null ? p.fbref.shot_accuracy.toFixed(0)+'%' : '-'}</div>
-          <div class="player-row__stat" style="width:36px;color:${(p.fbref?.sca_per_90||0)>=2?'var(--accent)':'var(--text-tertiary)'}">${p.fbref?.sca_per_90 != null ? p.fbref.sca_per_90.toFixed(1) : '-'}</div>
-          <div class="player-row__stat" style="width:36px;color:${(p.fbref?.pass_pct||0)>=80?'var(--green)':'var(--text-tertiary)'}">${p.fbref?.pass_pct != null ? p.fbref.pass_pct.toFixed(0)+'%' : '-'}</div>
-          <div class="player-row__value">${fmtValue(p.market_value)}</div>
+          <div class="player-row__stat col-sca90" style="width:36px;color:${(p.fbref?.sca_per_90||0)>=2?'var(--accent)':'var(--text-tertiary)'}">${p.fbref?.sca_per_90 != null ? p.fbref.sca_per_90.toFixed(1) : '-'}</div>
+          <div class="player-row__stat col-passpct" style="width:36px;color:${(p.fbref?.pass_pct||0)>=80?'var(--green)':'var(--text-tertiary)'}">${p.fbref?.pass_pct != null ? p.fbref.pass_pct.toFixed(0)+'%' : '-'}</div>
+          <div class="player-row__value col-value">${fmtValue(p.market_value)}</div>
         </div>`).join('')}
       </div>
     </div>`;
@@ -195,35 +300,7 @@ function toggleTeamCard(idx) {
 function initPlayerSearch() {
   const input = document.getElementById('player-search-input');
   if (!input) return;
-  input.addEventListener('input', () => {
-    const q = input.value.toLowerCase().trim();
-    document.querySelectorAll('.team-card').forEach(card => {
-      const rows = card.querySelectorAll('.player-row');
-      let visible = 0;
-      rows.forEach(row => {
-        const name = row.dataset.name || '';
-        const team = row.dataset.team || '';
-        const pos = row.dataset.pos || '';
-        const match = !q || name.includes(q) || team.includes(q) || pos.includes(q);
-        row.style.display = match ? '' : 'none';
-        if (match) visible++;
-      });
-      const playersDiv = card.querySelector('.team-card__players');
-      if (q && visible > 0) {
-        playersDiv.classList.add('open');
-        card.querySelector('.team-card__chevron')?.classList.add('open');
-        card.style.display = '';
-      } else if (q && visible === 0) {
-        card.style.display = 'none';
-      } else {
-        card.style.display = '';
-        if (!q) {
-          playersDiv.classList.remove('open');
-          card.querySelector('.team-card__chevron')?.classList.remove('open');
-        }
-      }
-    });
-  });
+  input.addEventListener('input', () => applyFilters());
 }
 
 document.addEventListener('DOMContentLoaded', loadPlayers);

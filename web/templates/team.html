@@ -4,283 +4,540 @@
 {% block page_title %}{{ team_name }}{% endblock %}
 
 {% block head %}
-  <script src="/static/js/tailwind.min.js"></script>
   <script src="/static/js/chart.min.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      corePlugins: { preflight: false },
-      theme: { extend: { colors: {
-        gray: { 200:'#e4e4e7', 300:'#d4d4d8', 400:'#a1a1aa', 500:'#71717a', 600:'#52525b', 700:'#3f3f46', 800:'#27272a', 900:'#18181b' },
-        dark: { 700:'#27272a', 800:'#18181b', 900:'#09090b' },
-        accent: { blue:'#818cf8', green:'#4ade80', red:'#f87171', amber:'#fbbf24', purple:'#a78bfa' }
-      } } }
-    }
-  </script>
   <style>
-    .tab-btn { transition: all 0.2s; background: transparent; color: #a1a1aa; border: 1px solid transparent; }
-    .tab-btn:hover { color: #e4e4e7; background: rgba(255,255,255,0.05); }
-    .tab-btn.active { background: rgba(129,140,248,0.2); color: #818cf8; border-color: rgba(129,140,248,0.4); }
+    /* ── Team Page (design-system native) ──────────────────── */
+
+    /* Team header card */
+    .team-header {
+      display:flex; align-items:center; justify-content:space-between;
+      background:var(--bg-secondary); border:1px solid var(--border-default);
+      border-radius:var(--radius-lg); padding:var(--space-5) var(--space-6);
+      margin-bottom:var(--space-5);
+    }
+    .team-header__left { display:flex; align-items:center; gap:var(--space-4); }
+    .team-header__name { font-size:22px; font-weight:700; color:var(--text-primary); }
+    .team-header__badges { display:flex; align-items:center; gap:var(--space-2); }
+    .team-header__form { display:flex; align-items:center; gap:4px; }
+    .form-dot {
+      width:26px; height:26px; border-radius:50%; display:flex; align-items:center;
+      justify-content:center; font-size:10px; font-weight:700; color:#fff;
+    }
+    .form-dot--W { background:var(--green); }
+    .form-dot--D { background:var(--amber); }
+    .form-dot--L { background:var(--red); }
+    .form-dot--X { background:var(--bg-tertiary); }
+
+    /* Stats grid (reuses pipe-stat pattern from system/dashboard) */
+    .team-stats-grid {
+      display:grid; grid-template-columns:repeat(8,1fr); gap:var(--space-3);
+      margin-bottom:var(--space-5);
+    }
+    @media (max-width:1024px) { .team-stats-grid { grid-template-columns:repeat(4,1fr); } }
+    @media (max-width:640px) { .team-stats-grid { grid-template-columns:repeat(2,1fr); } }
+
+    .team-stat {
+      background:var(--bg-secondary); border:1px solid var(--border-default);
+      border-radius:var(--radius-md); padding:var(--space-3) var(--space-4); text-align:center;
+    }
+    .team-stat__label {
+      font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
+      color:var(--text-tertiary); font-weight:600;
+    }
+    .team-stat__value {
+      font-size:20px; font-weight:700; color:var(--text-primary);
+      font-family:var(--font-mono); margin-top:2px; line-height:1.2;
+    }
+
+    /* Metric rows (Attack / Defense) */
+    .team-metrics {
+      display:grid; grid-template-columns:repeat(5,1fr); gap:var(--space-3);
+      margin-bottom:var(--space-4);
+    }
+    @media (max-width:768px) { .team-metrics { grid-template-columns:repeat(2,1fr); } }
+
+    .team-metrics-label {
+      font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
+      color:var(--text-tertiary); font-weight:600; margin-bottom:var(--space-2); margin-top:var(--space-2);
+    }
+
+    /* Tabs */
+    .team-tabs {
+      display:flex; gap:var(--space-2); border-bottom:1px solid var(--border-default);
+      padding-bottom:var(--space-3); margin-bottom:var(--space-5);
+    }
+    .tab-btn {
+      padding:var(--space-2) var(--space-4); font-size:13px; font-weight:500;
+      border-radius:var(--radius-md); border:1px solid transparent;
+      background:transparent; color:var(--text-tertiary); cursor:pointer;
+      transition:all 0.15s;
+    }
+    .tab-btn:hover { color:var(--text-secondary); background:var(--bg-tertiary); }
+    .tab-btn.active {
+      background:var(--accent-muted); color:var(--accent);
+      border-color:rgba(129,140,248,0.3);
+    }
+
+    /* Section cards */
+    .team-card {
+      background:var(--bg-secondary); border:1px solid var(--border-default);
+      border-radius:var(--radius-lg); overflow:hidden; margin-bottom:var(--space-4);
+    }
+    .team-card__header {
+      padding:var(--space-4) var(--space-5); border-bottom:1px solid var(--border-subtle);
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .team-card__title { font-size:14px; font-weight:600; color:var(--text-primary); }
+    .team-card__body { padding:var(--space-4) var(--space-5); }
+
+    /* Compact tables (matches dashboard pattern) */
+    .team-table {
+      width:100%; border-collapse:collapse; font-size:12px;
+    }
+    .team-table th {
+      padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase;
+      letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary);
+      border-bottom:1px solid var(--border-default); font-weight:600; white-space:nowrap;
+    }
+    .team-table td {
+      padding:8px 10px; border-bottom:1px solid var(--border-subtle); white-space:nowrap;
+    }
+    .team-table tbody tr { transition:background 0.15s; }
+    .team-table tbody tr:hover { background:rgba(129,140,248,0.04); }
+
+    /* Filter buttons */
+    .filter-btn {
+      padding:var(--space-1) var(--space-3); font-size:11px; font-weight:600;
+      border-radius:var(--radius-sm); border:1px solid var(--border-default);
+      background:transparent; color:var(--text-tertiary); cursor:pointer;
+      transition:all 0.15s;
+    }
+    .filter-btn:hover { border-color:var(--accent); color:var(--text-secondary); }
+    .filter-btn.active {
+      background:var(--accent-muted); color:var(--accent);
+      border-color:rgba(129,140,248,0.3);
+    }
+
+    /* Filter select */
+    .filter-select {
+      background:var(--bg-secondary); border:1px solid var(--border-default);
+      color:var(--text-secondary); font-size:11px; border-radius:var(--radius-sm);
+      padding:var(--space-1) var(--space-2);
+    }
+
+    /* Charts grid */
+    .charts-grid {
+      display:grid; grid-template-columns:repeat(2,1fr); gap:var(--space-5);
+      margin-bottom:var(--space-5);
+    }
+    @media (max-width:768px) { .charts-grid { grid-template-columns:1fr; } }
+
+    /* Key numbers row */
+    .key-numbers {
+      display:grid; grid-template-columns:repeat(6,1fr); gap:var(--space-3);
+      margin-top:var(--space-5);
+    }
+    @media (max-width:768px) { .key-numbers { grid-template-columns:repeat(3,1fr); } }
+
+    /* Home/Away split */
+    .splits-grid {
+      display:grid; grid-template-columns:repeat(2,1fr); gap:var(--space-4);
+    }
+
+    /* Season card (expandable) */
+    .season-card {
+      background:var(--bg-secondary); border:1px solid var(--border-default);
+      border-radius:var(--radius-lg); overflow:hidden; margin-bottom:var(--space-2);
+    }
+    .season-card__header {
+      padding:var(--space-3); cursor:pointer; transition:background 0.15s;
+    }
+    .season-card__header:hover { background:var(--bg-tertiary); }
+    .season-bar {
+      display:flex; height:6px; border-radius:3px; overflow:hidden;
+      background:var(--bg-tertiary); margin-bottom:var(--space-2);
+    }
+    .season-bar__w { background:var(--green); }
+    .season-bar__d { background:var(--amber); }
+    .season-bar__l { background:var(--red); }
+    .season-stats-row {
+      display:flex; align-items:center; justify-content:space-between;
+      font-size:11px;
+    }
+
+    /* Utility helpers */
+    .text-green { color:var(--green); }
+    .text-amber { color:var(--amber); }
+    .text-red { color:var(--red); }
+    .text-accent { color:var(--accent); }
+    .text-purple { color:#a78bfa; }
+    .text-muted { color:var(--text-tertiary); }
+    .text-secondary { color:var(--text-secondary); }
+    .text-primary { color:var(--text-primary); }
+    .font-mono { font-family:var(--font-mono); }
+    .font-bold { font-weight:700; }
+    .font-semi { font-weight:600; }
+    .text-xs { font-size:12px; }
+    .text-xxs { font-size:10px; }
+    .text-sm { font-size:13px; }
+    .text-lg { font-size:18px; }
+    .text-xl { font-size:22px; }
+    .text-center { text-align:center; }
+    .hidden { display:none !important; }
+    .mb-2 { margin-bottom:var(--space-2); }
+    .mb-3 { margin-bottom:var(--space-3); }
+    .mb-4 { margin-bottom:var(--space-4); }
+    .mb-5 { margin-bottom:var(--space-5); }
+    .mt-2 { margin-top:var(--space-2); }
+    .mt-4 { margin-top:var(--space-4); }
+    .mt-5 { margin-top:var(--space-5); }
+    .gap-2 { gap:var(--space-2); }
+    .gap-3 { gap:var(--space-3); }
+    .gap-4 { gap:var(--space-4); }
+    .flex { display:flex; }
+    .flex-wrap { flex-wrap:wrap; }
+    .items-center { align-items:center; }
+    .justify-between { justify-content:space-between; }
+    .justify-center { justify-content:center; }
+    .flex-1 { flex:1; }
+    .space-y-2 > * + * { margin-top:var(--space-2); }
+    .space-y-1 > * + * { margin-top:var(--space-1); }
+
+    /* Loading state */
+    .team-loading {
+      text-align:center; padding:var(--space-12) var(--space-4);
+      color:var(--text-tertiary); font-size:13px;
+    }
+
+    /* Prob bar helper */
+    .prob-row { display:flex; align-items:center; gap:var(--space-2); margin-bottom:6px; }
+    .prob-label { width:48px; font-size:12px; color:var(--text-tertiary); }
+    .prob-track {
+      flex:1; background:var(--bg-tertiary); border-radius:4px; height:10px;
+      overflow:hidden;
+    }
+    .prob-fill { height:100%; border-radius:4px; transition:width 0.3s; }
+    .prob-fill--green { background:var(--green); }
+    .prob-fill--amber { background:var(--amber); }
+    .prob-fill--red { background:var(--red); }
+    .prob-pct {
+      width:40px; text-align:right; font-size:12px; font-family:var(--font-mono);
+    }
+
+    /* Pitch legend / alerts (formation) */
+    .pitch-legend {
+      display:flex; flex-wrap:wrap; gap:var(--space-3); margin-top:var(--space-3);
+      font-size:10px; color:var(--text-secondary);
+    }
+    .pitch-legend__dot {
+      width:8px; height:8px; border-radius:50%; display:inline-block;
+    }
+    .alert-row { margin-top:var(--space-3); }
+    .alert-label {
+      font-size:9px; text-transform:uppercase; font-weight:600; margin-bottom:var(--space-1);
+    }
+    .alert-tag {
+      display:inline-block; font-size:10px; border-radius:var(--radius-sm);
+      padding:2px 6px; border:1px solid;
+    }
   </style>
 {% endblock %}
 
 {% block content %}
-  <div class="text-gray-200">
 
   <!-- Loading -->
-  <div id="loading" class="max-w-7xl mx-auto px-4 py-20 text-center text-gray-500">
-    Loading team data...
-  </div>
+  <div id="loading" class="team-loading">Loading team data...</div>
 
   <!-- Main Content (hidden until loaded) -->
-  <div id="content" class="max-w-7xl mx-auto px-4 py-6 hidden">
+  <div id="content" class="hidden">
 
-    <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
-      <div class="flex items-center gap-4">
-        <h1 id="team-title" class="text-2xl font-bold text-white">{{ team_name }}</h1>
-        <span id="position-badge" class="badge bg-accent-blue/20 text-accent-blue border border-accent-blue/30"></span>
-        <span id="elo-badge" class="badge bg-accent-purple/20 text-accent-purple border border-accent-purple/30"></span>
+    <!-- ── Team Header ─────────────────────────────────────── -->
+    <div class="team-header">
+      <div class="team-header__left">
+        <h1 id="team-title" class="team-header__name">{{ team_name }}</h1>
+        <div class="team-header__badges">
+          <span id="position-badge" class="badge badge--accent"></span>
+          <span id="elo-badge" class="badge" style="background:rgba(167,139,250,0.12);color:#a78bfa;"></span>
+        </div>
       </div>
-      <div id="form-dots" class="flex items-center gap-1"></div>
+      <div id="form-dots" class="team-header__form"></div>
     </div>
 
-    <!-- Tabs -->
-    <div class="flex gap-2 mb-6 border-b border-gray-800 pb-3">
-      <button class="tab-btn active px-4 py-2 text-sm font-medium rounded-lg border border-transparent" onclick="switchTab('overview')">Overview</button>
-      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('history')">Match History</button>
-      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('stats')">Stats & Trends</button>
-      <button class="tab-btn px-4 py-2 text-sm font-medium rounded-lg border border-transparent text-gray-400 hover:text-white" onclick="switchTab('next')">Next Match</button>
+    <!-- ── Tabs ────────────────────────────────────────────── -->
+    <div class="team-tabs">
+      <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+      <button class="tab-btn" onclick="switchTab('history')">Match History</button>
+      <button class="tab-btn" onclick="switchTab('stats')">Stats & Trends</button>
+      <button class="tab-btn" onclick="switchTab('next')">Next Match</button>
     </div>
 
-    <!-- Tab: Overview -->
+    <!-- ══════════════════════════════════════════════════════
+         Tab: Overview
+         ══════════════════════════════════════════════════════ -->
     <div id="tab-overview" class="tab-content">
-      <!-- Season stats grid -->
-      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Played</div>
-          <div id="stat-played" class="text-xl font-bold text-white">-</div>
+
+      <!-- Season stats grid: P W D L GF GA GD Pts -->
+      <div class="team-stats-grid">
+        <div class="team-stat">
+          <div class="team-stat__label">Played</div>
+          <div id="stat-played" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Won</div>
-          <div id="stat-won" class="text-xl font-bold text-green-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Won</div>
+          <div id="stat-won" class="team-stat__value text-green">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Drawn</div>
-          <div id="stat-drawn" class="text-xl font-bold text-amber-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Drawn</div>
+          <div id="stat-drawn" class="team-stat__value text-amber">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Lost</div>
-          <div id="stat-lost" class="text-xl font-bold text-red-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Lost</div>
+          <div id="stat-lost" class="team-stat__value text-red">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GF</div>
-          <div id="stat-gf" class="text-xl font-bold text-white">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">GF</div>
+          <div id="stat-gf" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GA</div>
-          <div id="stat-ga" class="text-xl font-bold text-white">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">GA</div>
+          <div id="stat-ga" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">GD</div>
-          <div id="stat-gd" class="text-xl font-bold">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">GD</div>
+          <div id="stat-gd" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Points</div>
-          <div id="stat-pts" class="text-xl font-bold text-accent-blue">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Points</div>
+          <div id="stat-pts" class="team-stat__value text-accent">-</div>
         </div>
       </div>
 
-      <!-- Key metrics: Attack -->
-      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mb-2 mt-2">Attack (Last 10)</h3>
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Avg xG</div>
-          <div id="stat-xg" class="text-xl font-bold text-green-400">-</div>
+      <!-- Attack (Last 10) -->
+      <div class="team-metrics-label">Attack (Last 10)</div>
+      <div class="team-metrics">
+        <div class="team-stat">
+          <div class="team-stat__label">Avg xG</div>
+          <div id="stat-xg" class="team-stat__value text-green">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Shots / G</div>
-          <div id="stat-shots" class="text-xl font-bold text-white">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Shots / G</div>
+          <div id="stat-shots" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">On Target</div>
-          <div id="stat-sot" class="text-xl font-bold text-white">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">On Target</div>
+          <div id="stat-sot" class="team-stat__value">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Big Chances</div>
-          <div id="stat-bc" class="text-xl font-bold text-green-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Big Chances</div>
+          <div id="stat-bc" class="team-stat__value text-green">-</div>
         </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Key Passes</div>
-          <div id="stat-kp" class="text-xl font-bold text-white">-</div>
-        </div>
-      </div>
-
-      <!-- Key metrics: Defense & General -->
-      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Defense & Style</h3>
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Avg xGA</div>
-          <div id="stat-xga" class="text-xl font-bold text-red-400">-</div>
-        </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Clean Sheet %</div>
-          <div id="stat-cs" class="text-xl font-bold text-accent-blue">-</div>
-        </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">BTTS %</div>
-          <div id="stat-btts" class="text-xl font-bold text-accent-amber">-</div>
-        </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Possession</div>
-          <div id="stat-poss" class="text-xl font-bold text-white">-</div>
-        </div>
-        <div class="stat-card bg-dark-800 rounded-xl p-3 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Pass Acc.</div>
-          <div id="stat-pass" class="text-xl font-bold text-white">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Key Passes</div>
+          <div id="stat-kp" class="team-stat__value">-</div>
         </div>
       </div>
 
-      <!-- Predicted Formation & Key Info -->
-      <div id="overview-lineup" class="mb-6"></div>
+      <!-- Defense & Style -->
+      <div class="team-metrics-label">Defense & Style</div>
+      <div class="team-metrics mb-5">
+        <div class="team-stat">
+          <div class="team-stat__label">Avg xGA</div>
+          <div id="stat-xga" class="team-stat__value text-red">-</div>
+        </div>
+        <div class="team-stat">
+          <div class="team-stat__label">Clean Sheet %</div>
+          <div id="stat-cs" class="team-stat__value text-accent">-</div>
+        </div>
+        <div class="team-stat">
+          <div class="team-stat__label">BTTS %</div>
+          <div id="stat-btts" class="team-stat__value text-amber">-</div>
+        </div>
+        <div class="team-stat">
+          <div class="team-stat__label">Possession</div>
+          <div id="stat-poss" class="team-stat__value">-</div>
+        </div>
+        <div class="team-stat">
+          <div class="team-stat__label">Pass Acc.</div>
+          <div id="stat-pass" class="team-stat__value">-</div>
+        </div>
+      </div>
 
-      <!-- Season summaries -->
-      <div id="season-summaries" class="mb-6"></div>
+      <!-- Predicted Formation -->
+      <div id="overview-lineup" class="mb-5"></div>
 
-      <!-- Recent form -->
-      <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-        <h3 class="text-sm font-semibold text-gray-300 mb-3">Recent Form (Last 5)</h3>
-        <div id="recent-form-detail" class="space-y-2"></div>
+      <!-- Season Summaries -->
+      <div id="season-summaries" class="mb-5"></div>
+
+      <!-- Recent Form -->
+      <div class="team-card">
+        <div class="team-card__header">
+          <span class="team-card__title">Recent Form (Last 5)</span>
+        </div>
+        <div class="team-card__body">
+          <div id="recent-form-detail" class="space-y-2"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Tab: Match History -->
+    <!-- ══════════════════════════════════════════════════════
+         Tab: Match History
+         ══════════════════════════════════════════════════════ -->
     <div id="tab-history" class="tab-content hidden">
-      <div class="flex items-center gap-3 mb-4 flex-wrap">
-        <span class="text-sm text-gray-400">Venue:</span>
-        <button id="filter-all" class="px-3 py-1 text-xs rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30" onclick="filterHistory('all')">All</button>
-        <button id="filter-home" class="px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white" onclick="filterHistory('home')">Home</button>
-        <button id="filter-away" class="px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white" onclick="filterHistory('away')">Away</button>
-        <span class="text-sm text-gray-400 ml-4">Season:</span>
-        <select id="season-select" onchange="filterHistory(_currentVenueFilter)" class="bg-dark-800 border border-gray-700 text-gray-300 text-xs rounded-lg px-2 py-1">
+      <div class="flex items-center gap-3 mb-4" style="flex-wrap:wrap;">
+        <span class="text-sm text-muted">Venue:</span>
+        <button id="filter-all" class="filter-btn active" onclick="filterHistory('all')">All</button>
+        <button id="filter-home" class="filter-btn" onclick="filterHistory('home')">Home</button>
+        <button id="filter-away" class="filter-btn" onclick="filterHistory('away')">Away</button>
+        <span class="text-sm text-muted" style="margin-left:var(--space-4);">Season:</span>
+        <select id="season-select" onchange="filterHistory(_currentVenueFilter)" class="filter-select">
           <option value="all">All Seasons</option>
         </select>
       </div>
-      <div class="bg-dark-800 rounded-xl border border-gray-700/50 overflow-x-auto">
-        <table class="w-full">
-          <thead>
-            <tr class="border-b border-gray-700/50 text-[10px] text-gray-500 uppercase tracking-wider">
-              <th class="px-2 py-2 text-center w-4"></th>
-              <th class="px-2 py-2 text-center">MW</th>
-              <th class="px-3 py-2 text-left">Date</th>
-              <th class="px-3 py-2 text-left">Opponent</th>
-              <th class="px-2 py-2 text-center">H/A</th>
-              <th class="px-2 py-2 text-center">Score</th>
-              <th class="px-2 py-2 text-center">Result</th>
-              <th class="px-2 py-2 text-center">xG</th>
-              <th class="px-2 py-2 text-center">xGA</th>
-              <th class="px-2 py-2 text-center">Poss</th>
-              <th class="px-2 py-2 text-center">Rating</th>
-              <th class="px-3 py-2 text-center">Formation</th>
-            </tr>
-          </thead>
-          <tbody id="history-table" class="divide-y divide-gray-800/50"></tbody>
-        </table>
+
+      <div class="team-card">
+        <div style="overflow-x:auto;">
+          <table class="team-table">
+            <thead>
+              <tr>
+                <th style="width:20px;text-align:center;"></th>
+                <th style="text-align:center;">MW</th>
+                <th>Date</th>
+                <th>Opponent</th>
+                <th style="text-align:center;">H/A</th>
+                <th style="text-align:center;">Score</th>
+                <th style="text-align:center;">Result</th>
+                <th style="text-align:center;">xG</th>
+                <th style="text-align:center;">xGA</th>
+                <th style="text-align:center;">Poss</th>
+                <th style="text-align:center;">Rating</th>
+                <th style="text-align:center;">Formation</th>
+              </tr>
+            </thead>
+            <tbody id="history-table"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
-    <!-- Tab: Stats & Trends -->
+    <!-- ══════════════════════════════════════════════════════
+         Tab: Stats & Trends
+         ══════════════════════════════════════════════════════ -->
     <div id="tab-stats" class="tab-content hidden">
+
       <!-- Charts row 1: xG + Elo -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <h3 class="text-sm font-semibold text-gray-300 mb-3">xG Trend (Last 30 Matches)</h3>
-          <canvas id="chart-xg" height="200"></canvas>
+      <div class="charts-grid">
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title">xG Trend (Last 30 Matches)</span>
+          </div>
+          <div class="team-card__body">
+            <canvas id="chart-xg" height="200"></canvas>
+          </div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <h3 class="text-sm font-semibold text-gray-300 mb-3">Elo Rating Trend</h3>
-          <canvas id="chart-elo" height="200"></canvas>
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title">Elo Rating Trend</span>
+          </div>
+          <div class="team-card__body">
+            <canvas id="chart-elo" height="200"></canvas>
+          </div>
         </div>
       </div>
 
       <!-- Charts row 2: Form + Goals Distribution -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <h3 class="text-sm font-semibold text-gray-300 mb-3">Form Trend (Points per Game, Rolling 5)</h3>
-          <canvas id="chart-form" height="200"></canvas>
+      <div class="charts-grid">
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title">Form Trend (PPG, Rolling 5)</span>
+          </div>
+          <div class="team-card__body">
+            <canvas id="chart-form" height="200"></canvas>
+          </div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <h3 class="text-sm font-semibold text-gray-300 mb-3">Goals Distribution (This Season)</h3>
-          <canvas id="chart-goals" height="200"></canvas>
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title">Goals Distribution (This Season)</span>
+          </div>
+          <div class="team-card__body">
+            <canvas id="chart-goals" height="200"></canvas>
+          </div>
         </div>
       </div>
 
-      <!-- Home vs Away comparison -->
-      <h3 class="text-[10px] text-gray-500 uppercase tracking-wider mt-6 mb-3">Home vs Away (This Season)</h3>
-      <div class="grid grid-cols-2 gap-4">
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <div class="flex items-center gap-2 mb-3">
-            <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            <span class="text-sm font-semibold text-gray-300">Home</span>
+      <!-- Home vs Away -->
+      <div class="team-metrics-label">Home vs Away (This Season)</div>
+      <div class="splits-grid mb-5">
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title" style="display:flex;align-items:center;gap:var(--space-2);">
+              <span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;"></span> Home
+            </span>
           </div>
-          <div id="home-record" class="space-y-2"></div>
+          <div class="team-card__body">
+            <div id="home-record"></div>
+          </div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <div class="flex items-center gap-2 mb-3">
-            <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-            <span class="text-sm font-semibold text-gray-300">Away</span>
+        <div class="team-card">
+          <div class="team-card__header">
+            <span class="team-card__title" style="display:flex;align-items:center;gap:var(--space-2);">
+              <span style="width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;"></span> Away
+            </span>
           </div>
-          <div id="away-record" class="space-y-2"></div>
+          <div class="team-card__body">
+            <div id="away-record"></div>
+          </div>
         </div>
       </div>
 
-      <!-- Key numbers row -->
-      <div class="grid grid-cols-3 md:grid-cols-6 gap-3 mt-6">
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Win %</div>
-          <div id="stat-win-pct" class="text-2xl font-bold text-green-400">-</div>
+      <!-- Key numbers -->
+      <div class="key-numbers">
+        <div class="team-stat">
+          <div class="team-stat__label">Win %</div>
+          <div id="stat-win-pct" class="team-stat__value text-green">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Draw %</div>
-          <div id="stat-draw-pct" class="text-2xl font-bold text-amber-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Draw %</div>
+          <div id="stat-draw-pct" class="team-stat__value text-amber">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Loss %</div>
-          <div id="stat-loss-pct" class="text-2xl font-bold text-red-400">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Loss %</div>
+          <div id="stat-loss-pct" class="team-stat__value text-red">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Avg Rating</div>
-          <div id="stat-avg-rating" class="text-2xl font-bold text-accent-blue">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Avg Rating</div>
+          <div id="stat-avg-rating" class="team-stat__value text-accent">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Tackles/G</div>
-          <div id="stat-tackles" class="text-2xl font-bold text-gray-300">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Tackles/G</div>
+          <div id="stat-tackles" class="team-stat__value">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50 text-center">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Interceptions</div>
-          <div id="stat-intercepts" class="text-2xl font-bold text-gray-300">-</div>
+        <div class="team-stat">
+          <div class="team-stat__label">Interceptions</div>
+          <div id="stat-intercepts" class="team-stat__value">-</div>
         </div>
       </div>
 
       <!-- Elo info -->
-      <div class="grid grid-cols-2 gap-4 mt-4">
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Current Elo</div>
-          <div id="stat-elo-current" class="text-2xl font-bold text-accent-purple">-</div>
+      <div class="splits-grid mt-4">
+        <div class="team-stat" style="padding:var(--space-4) var(--space-5);">
+          <div class="team-stat__label">Current Elo</div>
+          <div id="stat-elo-current" class="team-stat__value text-purple">-</div>
         </div>
-        <div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Elo Trend (20 matches)</div>
-          <div id="stat-elo-trend" class="text-2xl font-bold">-</div>
+        <div class="team-stat" style="padding:var(--space-4) var(--space-5);">
+          <div class="team-stat__label">Elo Trend (20 matches)</div>
+          <div id="stat-elo-trend" class="team-stat__value">-</div>
         </div>
       </div>
     </div>
 
-    <!-- Tab: Next Match -->
+    <!-- ══════════════════════════════════════════════════════
+         Tab: Next Match
+         ══════════════════════════════════════════════════════ -->
     <div id="tab-next" class="tab-content hidden">
       <div id="next-match-content"></div>
-      <div id="no-next-match" class="text-center py-12 text-gray-500 hidden">
-        <p class="text-lg mb-2">No upcoming match prediction available</p>
-        <p class="text-sm">Run the pipeline to generate predictions</p>
+      <div id="no-next-match" class="team-loading hidden">
+        <p style="font-size:16px;margin-bottom:var(--space-2);">No upcoming match prediction available</p>
+        <p style="font-size:12px;">Run the pipeline to generate predictions</p>
       </div>
     </div>
   </div>
@@ -296,13 +553,9 @@ let _charts = {};
 // ─── Tab switching ──────────────────────────────────────────────────────
 function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('.tab-btn').forEach(el => {
-    el.classList.remove('active');
-    el.classList.add('text-gray-400');
-  });
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.remove('hidden');
   event.target.classList.add('active');
-  event.target.classList.remove('text-gray-400');
 
   // Lazy-init charts
   if (tab === 'stats' && _teamData) {
@@ -366,7 +619,7 @@ function renderOverview(data) {
   const gd = o.goal_difference || 0;
   const gdEl = document.getElementById('stat-gd');
   gdEl.textContent = (gd > 0 ? '+' : '') + gd;
-  gdEl.classList.add(gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400');
+  gdEl.className = 'team-stat__value ' + (gd > 0 ? 'text-green' : gd < 0 ? 'text-red' : 'text-muted');
 
   document.getElementById('stat-pts').textContent = o.points || '-';
 
@@ -509,32 +762,32 @@ function renderPitchFormation(lp, compact) {
   // Alerts under the pitch
   let alertsHtml = '';
   if (unavail.length) {
-    alertsHtml += `<div class="mt-3">
-      <div class="text-[9px] text-red-400 uppercase font-semibold mb-1">Unavailable (${unavail.length})</div>
-      <div class="flex flex-wrap gap-1">
+    alertsHtml += `<div class="alert-row">
+      <div class="alert-label text-red">Unavailable (${unavail.length})</div>
+      <div class="flex flex-wrap gap-2">
         ${unavail.map(u => {
-          const typeCol = u.type === 'suspended' ? 'bg-purple-900/30 text-purple-300 border-purple-800/30' : u.type === 'doubtful' ? 'bg-amber-900/30 text-amber-300 border-amber-800/30' : 'bg-red-900/30 text-red-300 border-red-800/30';
-          return `<span class="text-[10px] rounded px-1.5 py-0.5 border ${typeCol}">${u.name} — ${u.description || u.reason}</span>`;
+          const typeCol = u.type === 'suspended' ? 'color:#c084fc;border-color:rgba(168,85,247,0.3);background:rgba(168,85,247,0.08);' : u.type === 'doubtful' ? 'color:var(--amber);border-color:rgba(251,191,36,0.3);background:rgba(251,191,36,0.08);' : 'color:var(--red);border-color:rgba(248,113,113,0.3);background:rgba(248,113,113,0.08);';
+          return `<span class="alert-tag" style="${typeCol}">${u.name} — ${u.description || u.reason}</span>`;
         }).join('')}
       </div>
     </div>`;
   }
   if (suspRisk.length) {
-    alertsHtml += `<div class="mt-2">
-      <div class="text-[9px] text-amber-400 uppercase font-semibold mb-1">Suspension Risk</div>
-      <div class="flex flex-wrap gap-1">
-        ${suspRisk.map(s => `<span class="text-[10px] bg-amber-900/30 text-amber-300 rounded px-1.5 py-0.5 border border-amber-800/30">${s.name} (${s.yellows} YC)</span>`).join('')}
+    alertsHtml += `<div class="alert-row">
+      <div class="alert-label text-amber">Suspension Risk</div>
+      <div class="flex flex-wrap gap-2">
+        ${suspRisk.map(s => `<span class="alert-tag" style="color:var(--amber);border-color:rgba(251,191,36,0.3);background:rgba(251,191,36,0.08);">${s.name} (${s.yellows} YC)</span>`).join('')}
       </div>
     </div>`;
   }
 
   // Legend
-  const legend = `<div class="flex flex-wrap gap-3 mt-3" style="font-size:10px;">
-    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(74,222,128,0.9);display:inline-block;"></span> Certain</span>
-    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(96,165,250,0.9);display:inline-block;"></span> Likely</span>
-    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(251,191,36,0.9);display:inline-block;"></span> Rotation</span>
-    <span class="flex items-center gap-1"><span style="width:8px;height:8px;border-radius:50%;background:rgba(168,85,247,0.9);display:inline-block;"></span> Fill-in</span>
-    <span class="flex items-center gap-1"><span style="width:6px;height:6px;border-radius:50%;background:#fbbf24;display:inline-block;border:1px solid #000;"></span> Contested</span>
+  const legend = `<div class="pitch-legend">
+    <span class="flex items-center gap-2"><span class="pitch-legend__dot" style="background:rgba(74,222,128,0.9);"></span> Certain</span>
+    <span class="flex items-center gap-2"><span class="pitch-legend__dot" style="background:rgba(96,165,250,0.9);"></span> Likely</span>
+    <span class="flex items-center gap-2"><span class="pitch-legend__dot" style="background:rgba(251,191,36,0.9);"></span> Rotation</span>
+    <span class="flex items-center gap-2"><span class="pitch-legend__dot" style="background:rgba(168,85,247,0.9);"></span> Fill-in</span>
+    <span class="flex items-center gap-2"><span class="pitch-legend__dot" style="width:6px;height:6px;background:#fbbf24;border:1px solid #000;"></span> Contested</span>
   </div>`;
 
   return { pitch, alertsHtml, legend, fm, confPct };
@@ -548,24 +801,26 @@ function renderOverviewLineup(lp) {
   const fm = r.fm;
   const alts = fm.alternatives || [];
   const altHtml = alts.length ? `<div class="flex gap-2 mb-3">
-    ${alts.map(a => `<div class="bg-gray-800/50 rounded-lg p-1.5 text-center ${a.formation === fm.predicted ? 'border border-accent-blue/30' : ''}">
-      <div class="text-xs font-bold ${a.formation === fm.predicted ? 'text-accent-blue' : 'text-gray-400'}">${a.formation}</div>
-      <div class="text-[9px] text-gray-500">${a.pct}%</div>
+    ${alts.map(a => `<div style="background:var(--bg-tertiary);border-radius:var(--radius-md);padding:var(--space-2);text-align:center;${a.formation === fm.predicted ? 'border:1px solid rgba(129,140,248,0.3);' : 'border:1px solid var(--border-subtle);'}">
+      <div style="font-size:12px;font-weight:700;font-family:var(--font-mono);${a.formation === fm.predicted ? 'color:var(--accent);' : 'color:var(--text-tertiary);'}">${a.formation}</div>
+      <div class="text-xxs text-muted">${a.pct}%</div>
     </div>`).join('')}
   </div>` : '';
 
-  el.innerHTML = `<div class="bg-dark-800 rounded-xl p-4 border border-gray-700/50">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-sm font-semibold text-gray-300">Predicted Formation</h3>
+  el.innerHTML = `<div class="team-card">
+    <div class="team-card__header">
+      <span class="team-card__title">Predicted Formation</span>
       <div class="flex items-center gap-2">
-        <span class="text-xl font-bold text-accent-blue font-mono">${fm.predicted || '?'}</span>
-        <span class="text-[10px] text-gray-500">${r.confPct}% conf</span>
+        <span style="font-size:20px;font-weight:700;color:var(--accent);font-family:var(--font-mono);">${fm.predicted || '?'}</span>
+        <span class="text-xxs text-muted">${r.confPct}% conf</span>
       </div>
     </div>
-    ${altHtml}
-    <div class="flex justify-center">${r.pitch}</div>
-    ${r.legend}
-    ${r.alertsHtml}
+    <div class="team-card__body">
+      ${altHtml}
+      <div class="flex justify-center">${r.pitch}</div>
+      ${r.legend}
+      ${r.alertsHtml}
+    </div>
   </div>`;
 }
 
@@ -587,9 +842,8 @@ function renderFormDots(form) {
       result = (item.result || '').toUpperCase();
     }
     const r = result.charAt(0);
-    const colorMap = { W: 'bg-green-500', D: 'bg-amber-500', L: 'bg-red-500' };
-    const color = colorMap[r] || 'bg-gray-600';
-    return `<div class="w-7 h-7 ${color} rounded-full flex items-center justify-center text-[10px] font-bold text-white">${r || '?'}</div>`;
+    const cls = r === 'W' ? 'form-dot--W' : r === 'D' ? 'form-dot--D' : r === 'L' ? 'form-dot--L' : 'form-dot--X';
+    return `<div class="form-dot ${cls}">${r || '?'}</div>`;
   }).join('');
 }
 
@@ -597,24 +851,25 @@ function renderFormDetail(history) {
   const container = document.getElementById('recent-form-detail');
   const recent = history.slice(0, 5);
   if (recent.length === 0) {
-    container.innerHTML = '<p class="text-xs text-gray-500">No recent matches</p>';
+    container.innerHTML = '<p class="text-xs text-muted">No recent matches</p>';
     return;
   }
   container.innerHTML = recent.map(m => {
     const r = (m.result || '').toUpperCase();
-    const rc = r === 'W' ? 'text-green-400' : r === 'D' ? 'text-amber-400' : 'text-red-400';
+    const rc = r === 'W' ? 'text-green' : r === 'D' ? 'text-amber' : 'text-red';
     const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
     const score = (m.goals_scored !== undefined && m.goals_conceded !== undefined) ?
       `${m.goals_scored}-${m.goals_conceded}` : '-';
-    return `<div class="flex items-center justify-between py-1.5">
+    return `<div class="flex items-center justify-between" style="padding:6px 0;">
       <div class="flex items-center gap-3">
-        <span class="w-5 font-bold ${rc}">${r || '?'}</span>
-        <span class="text-[10px] text-gray-500 w-5">${venue}</span>
-        <a href="/team/${encodeURIComponent(m.opponent || '')}" class="text-sm text-gray-200 hover:text-accent-blue transition-colors">${m.opponent || '?'}</a>
+        <span style="width:20px;font-weight:700;" class="${rc}">${r || '?'}</span>
+        <span class="text-xxs text-muted" style="width:20px;">${venue}</span>
+        <a href="/team/${encodeURIComponent(m.opponent || '')}" class="text-sm" style="color:var(--text-secondary);transition:color 0.15s;"
+           onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-secondary)'">${m.opponent || '?'}</a>
       </div>
       <div class="flex items-center gap-4 text-xs">
-        <span class="font-mono text-white">${score}</span>
-        <span class="text-gray-500">${m.match_date || ''}</span>
+        <span class="font-mono text-primary">${score}</span>
+        <span class="text-muted">${m.match_date || ''}</span>
       </div>
     </div>`;
   }).join('');
@@ -631,8 +886,8 @@ function renderSeasonSummaries(summaries) {
     return;
   }
   container.innerHTML = `
-    <h3 class="text-sm font-semibold text-gray-300 mb-3">Season-by-Season Record</h3>
-    <div class="space-y-2" id="season-cards">
+    <div class="team-metrics-label" style="margin-bottom:var(--space-3);">Season-by-Season Record</div>
+    <div id="season-cards">
       ${seasons.map(s => {
         const d = summaries[s];
         const total = d.played || 1;
@@ -641,29 +896,29 @@ function renderSeasonSummaries(summaries) {
         const lPct = ((d.lost || 0) / total * 100).toFixed(0);
         const gd = (d.gf || 0) - (d.ga || 0);
         const gdStr = (gd > 0 ? '+' : '') + gd;
-        const gdColor = gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400';
+        const gdColor = gd > 0 ? 'text-green' : gd < 0 ? 'text-red' : 'text-muted';
         const safeS = s.replace(/[^a-zA-Z0-9-]/g, '_');
-        return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 overflow-hidden" id="season-card-${safeS}">
-          <div class="p-3 cursor-pointer hover:bg-gray-800/50 transition-colors" onclick="toggleSeason('${s}')">
+        return `<div class="season-card" id="season-card-${safeS}">
+          <div class="season-card__header" onclick="toggleSeason('${s}')">
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2">
-                <span class="text-sm font-semibold text-white">${s}</span>
-                <span class="text-[10px] text-gray-500">${d.played} matches</span>
-                ${d.win_pct ? `<span class="text-[10px] text-gray-500">(${d.win_pct.toFixed(0)}% win)</span>` : ''}
+                <span class="text-sm font-semi text-primary">${s}</span>
+                <span class="text-xxs text-muted">${d.played} matches</span>
+                ${d.win_pct ? `<span class="text-xxs text-muted">(${d.win_pct.toFixed(0)}% win)</span>` : ''}
               </div>
-              <svg id="chevron-${safeS}" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-gray-500 transition-transform" style="transition:transform 0.2s;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              <svg id="chevron-${safeS}" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:var(--text-tertiary);transition:transform 0.2s;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             </div>
-            <div class="flex h-1.5 rounded-full overflow-hidden bg-gray-700 mb-2">
-              <div class="bg-green-500" style="width:${wPct}%"></div>
-              <div class="bg-amber-500" style="width:${dPct}%"></div>
-              <div class="bg-red-500" style="width:${lPct}%"></div>
+            <div class="season-bar">
+              <div class="season-bar__w" style="width:${wPct}%"></div>
+              <div class="season-bar__d" style="width:${dPct}%"></div>
+              <div class="season-bar__l" style="width:${lPct}%"></div>
             </div>
-            <div class="flex items-center justify-between text-[11px]">
-              <span class="text-green-400">${d.won}W</span>
-              <span class="text-amber-400">${d.drawn}D</span>
-              <span class="text-red-400">${d.lost}L</span>
-              <span class="text-gray-400">${d.gf || 0} scored</span>
-              <span class="text-gray-400">${d.ga || 0} conceded</span>
+            <div class="season-stats-row">
+              <span class="text-green">${d.won}W</span>
+              <span class="text-amber">${d.drawn}D</span>
+              <span class="text-red">${d.lost}L</span>
+              <span class="text-muted">${d.gf || 0} scored</span>
+              <span class="text-muted">${d.ga || 0} conceded</span>
               <span class="${gdColor}">${gdStr}</span>
             </div>
           </div>
@@ -705,7 +960,7 @@ function toggleSeason(season) {
   // Get matches for this season
   const matches = (_allSeasons[season] || []).sort((a, b) => (b.match_date || '').localeCompare(a.match_date || ''));
   if (matches.length === 0) {
-    detail.innerHTML = '<div class="px-3 pb-3 text-xs text-gray-500">No match data available for this season.</div>';
+    detail.innerHTML = '<div style="padding:var(--space-3);font-size:12px;color:var(--text-tertiary);">No match data available for this season.</div>';
     detail.classList.remove('hidden');
     detail.style.maxHeight = '60px';
     return;
@@ -714,10 +969,10 @@ function toggleSeason(season) {
   // Build match rows
   const rows = matches.map(m => {
     const r = (m.result || '').toUpperCase();
-    const rc = r === 'W' ? 'text-green-400' : r === 'D' ? 'text-amber-400' : 'text-red-400';
-    const bg = r === 'W' ? 'bg-green-900/5' : r === 'L' ? 'bg-red-900/5' : '';
+    const rc = r === 'W' ? 'text-green' : r === 'D' ? 'text-amber' : 'text-red';
+    const bg = r === 'W' ? 'background:rgba(74,222,128,0.02);' : r === 'L' ? 'background:rgba(248,113,113,0.02);' : '';
     const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
-    const venueCol = venue === 'H' ? 'text-green-500' : 'text-red-400';
+    const venueCol = venue === 'H' ? 'text-green' : 'text-red';
     const score = (m.goals_scored !== undefined && m.goals_conceded !== undefined) ?
       `${m.goals_scored}-${m.goals_conceded}` : '-';
     const xgStr = m.xg ? `${m.xg.toFixed(1)}-${(m.xg_against || 0).toFixed(1)}` : '';
@@ -729,24 +984,24 @@ function toggleSeason(season) {
     const awayT = venue === 'H' ? (m.opponent || '') : _teamData.team;
     const matchUrl = m.match_date ? `/match/${m.match_date}/${encodeURIComponent(homeT)}/${encodeURIComponent(awayT)}` : '';
 
-    return `<tr class="${bg} hover:bg-gray-800/50">
-      <td class="px-2 py-1.5 text-[10px] text-gray-500 font-mono">
-        <div class="flex items-center gap-1">
-          ${matchUrl ? `<a href="${matchUrl}" class="text-gray-600 hover:text-accent-blue transition-colors" title="Match details" style="line-height:1;">
+    return `<tr style="${bg}" class="team-table-hover">
+      <td style="padding:6px 8px;font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);">
+        <span style="display:flex;align-items:center;gap:4px;">
+          ${matchUrl ? `<a href="${matchUrl}" style="color:var(--text-tertiary);transition:color 0.15s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-tertiary)'" title="Match details">
             <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
           </a>` : ''}
           <span>${date}</span>
-        </div>
+        </span>
       </td>
-      <td class="px-2 py-1.5 text-[10px] text-gray-500">${mw}</td>
-      <td class="px-1 py-1.5 text-center"><span class="font-bold ${rc} text-xs">${r}</span></td>
-      <td class="px-1 py-1.5 text-center text-[10px] ${venueCol} font-bold">${venue}</td>
-      <td class="px-2 py-1.5 text-xs">
-        <a href="/team/${encodeURIComponent(m.opponent || '')}" class="text-gray-200 hover:text-accent-blue transition-colors">${m.opponent || '?'}</a>
+      <td style="padding:6px 8px;font-size:10px;color:var(--text-tertiary);">${mw}</td>
+      <td style="padding:6px 4px;text-align:center;"><span class="font-bold ${rc}" style="font-size:12px;">${r}</span></td>
+      <td style="padding:6px 4px;text-align:center;font-size:10px;font-weight:700;" class="${venueCol}">${venue}</td>
+      <td style="padding:6px 8px;font-size:12px;">
+        <a href="/team/${encodeURIComponent(m.opponent || '')}" style="color:var(--text-secondary);transition:color 0.15s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-secondary)'">${m.opponent || '?'}</a>
       </td>
-      <td class="px-2 py-1.5 text-center text-xs font-mono font-bold text-white">${matchUrl ? `<a href="${matchUrl}" class="text-white hover:text-accent-blue transition-colors">${score}</a>` : score}</td>
-      <td class="px-2 py-1.5 text-center text-[10px] text-gray-500 font-mono">${xgStr}</td>
-      <td class="px-2 py-1.5 text-right text-[10px] text-gray-500 font-mono">${m.possession ? m.possession + '%' : ''}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:12px;font-family:var(--font-mono);font-weight:700;color:var(--text-primary);">${matchUrl ? `<a href="${matchUrl}" style="color:var(--text-primary);transition:color 0.15s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-primary)'">${score}</a>` : score}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);">${xgStr}</td>
+      <td style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);">${m.possession ? m.possession + '%' : ''}</td>
     </tr>`;
   }).join('');
 
@@ -761,26 +1016,26 @@ function toggleSeason(season) {
   const avgXg = matches.filter(m => m.xg).reduce((s, m) => s + m.xg, 0) / (matches.filter(m => m.xg).length || 1);
   const avgXga = matches.filter(m => m.xg_against).reduce((s, m) => s + m.xg_against, 0) / (matches.filter(m => m.xg_against).length || 1);
 
-  detail.innerHTML = `<div class="border-t border-gray-700/50">
+  detail.innerHTML = `<div style="border-top:1px solid var(--border-subtle);">
     <!-- Quick splits -->
-    <div class="flex gap-4 px-3 py-2 text-[10px] text-gray-500 bg-gray-800/30">
-      <span>Home: <span class="text-green-400 font-semibold">${homeW}W</span>/${homeTotal}</span>
-      <span>Away: <span class="text-green-400 font-semibold">${awayW}W</span>/${awayTotal}</span>
-      ${avgXg ? `<span>Avg xG: <span class="text-gray-300">${avgXg.toFixed(2)}</span> - <span class="text-gray-300">${avgXga.toFixed(2)}</span></span>` : ''}
+    <div class="flex gap-4" style="padding:var(--space-2) var(--space-3);font-size:10px;color:var(--text-tertiary);background:var(--bg-tertiary);">
+      <span>Home: <span class="text-green font-semi">${homeW}W</span>/${homeTotal}</span>
+      <span>Away: <span class="text-green font-semi">${awayW}W</span>/${awayTotal}</span>
+      ${avgXg ? `<span>Avg xG: <span style="color:var(--text-secondary);">${avgXg.toFixed(2)}</span> - <span style="color:var(--text-secondary);">${avgXga.toFixed(2)}</span></span>` : ''}
     </div>
     <!-- Match table -->
     <div style="max-height:400px;overflow-y:auto;">
-      <table class="w-full">
-        <thead class="sticky top-0 bg-dark-800">
-          <tr class="text-[9px] text-gray-500 uppercase border-b border-gray-700">
-            <th class="px-2 py-1 text-left">Date</th>
-            <th class="px-2 py-1 text-left">MW</th>
-            <th class="px-1 py-1 text-center">R</th>
-            <th class="px-1 py-1 text-center">V</th>
-            <th class="px-2 py-1 text-left">Opponent</th>
-            <th class="px-2 py-1 text-center">Score</th>
-            <th class="px-2 py-1 text-center">xG</th>
-            <th class="px-2 py-1 text-right">Poss</th>
+      <table class="team-table" style="font-size:11px;">
+        <thead>
+          <tr>
+            <th style="padding:4px 8px;font-size:9px;">Date</th>
+            <th style="padding:4px 8px;font-size:9px;">MW</th>
+            <th style="padding:4px 4px;font-size:9px;text-align:center;">R</th>
+            <th style="padding:4px 4px;font-size:9px;text-align:center;">V</th>
+            <th style="padding:4px 8px;font-size:9px;">Opponent</th>
+            <th style="padding:4px 8px;font-size:9px;text-align:center;">Score</th>
+            <th style="padding:4px 8px;font-size:9px;text-align:center;">xG</th>
+            <th style="padding:4px 8px;font-size:9px;text-align:right;">Poss</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -804,9 +1059,9 @@ function filterHistory(venueType) {
   ['all', 'home', 'away'].forEach(t => {
     const btn = document.getElementById('filter-' + t);
     if (t === venueType) {
-      btn.className = 'px-3 py-1 text-xs rounded-lg bg-accent-blue/20 text-accent-blue border border-accent-blue/30';
+      btn.className = 'filter-btn active';
     } else {
-      btn.className = 'px-3 py-1 text-xs rounded-lg text-gray-400 border border-gray-700 hover:text-white';
+      btn.className = 'filter-btn';
     }
   });
   renderHistoryFiltered(venueType);
@@ -833,7 +1088,7 @@ function renderHistoryFiltered(venueType) {
 
   const tbody = document.getElementById('history-table');
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="12" class="px-4 py-8 text-center text-gray-500 text-sm">No matches found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="padding:var(--space-8);text-align:center;color:var(--text-tertiary);font-size:13px;">No matches found</td></tr>';
     return;
   }
 
@@ -843,7 +1098,7 @@ function renderHistoryFiltered(venueType) {
 
   tbody.innerHTML = filtered.map((m, idx) => {
     const r = (m.result || '').toUpperCase();
-    const rc = r === 'W' ? 'text-green-400 bg-green-900/20' : r === 'D' ? 'text-amber-400 bg-amber-900/20' : 'text-red-400 bg-red-900/20';
+    const rcBadge = r === 'W' ? 'badge--green' : r === 'D' ? 'badge--amber' : 'badge--red';
     const venue = m.is_home === true || m.is_home === 1 ? 'H' : 'A';
     // Inject formation from enriched data
     if (!m.formation && _enrichedHistory) {
@@ -855,30 +1110,30 @@ function renderHistoryFiltered(venueType) {
     const score = (m.goals_scored != null && m.goals_conceded != null) ?
       `${m.goals_scored}-${m.goals_conceded}` : '-';
     const isPartial = m.partial === true;
-    const rowClass = isPartial ? 'hover:bg-dark-700/30 transition-colors border-l-2 border-accent-blue/40 cursor-pointer' : 'hover:bg-dark-700/30 transition-colors cursor-pointer';
     const dateStr = m.match_date || '';
     const opponent = m.opponent || '';
     const home = venue === 'H' ? TEAM_NAME : opponent;
     const away = venue === 'H' ? opponent : TEAM_NAME;
     const rowId = `match-${idx}`;
-    return `<tr class="${rowClass}" onclick="toggleMatchDetail('${rowId}', '${dateStr}', '${encodeURIComponent(home)}', '${encodeURIComponent(away)}')">
-      <td class="px-2 py-2 text-center text-gray-500"><span id="arrow-${rowId}" class="text-[10px]">&#9654;</span></td>
-      <td class="px-2 py-2 text-center text-[10px] text-gray-500 font-mono">${m.matchweek || '-'}</td>
-      <td class="px-3 py-2 text-xs text-gray-400 whitespace-nowrap">${dateStr}</td>
-      <td class="px-3 py-2 text-sm"><a href="/team/${encodeURIComponent(opponent)}" class="text-gray-200 hover:text-accent-blue transition-colors" onclick="event.stopPropagation()">${opponent}</a>${isPartial ? ' <span class="text-[9px] text-accent-blue/60">NEW</span>' : ''}</td>
-      <td class="px-2 py-2 text-center"><span class="badge ${venue === 'H' ? 'bg-green-900/30 text-green-400' : 'bg-blue-900/30 text-blue-400'}">${venue}</span></td>
-      <td class="px-2 py-2 text-center font-mono text-white text-sm">${score}</td>
-      <td class="px-2 py-2 text-center"><span class="badge ${rc}">${r || '?'}</span></td>
-      <td class="px-2 py-2 text-center text-xs ${m.xg != null ? 'text-green-400' : 'text-gray-600'}">${fmtF(m.xg)}</td>
-      <td class="px-2 py-2 text-center text-xs ${m.xg_against != null ? 'text-red-400' : 'text-gray-600'}">${fmtF(m.xg_against)}</td>
-      <td class="px-2 py-2 text-center text-xs text-gray-400">${fmtPct(m.possession)}</td>
-      <td class="px-2 py-2 text-center text-xs ${m.rating != null && m.rating >= 7 ? 'text-green-400 font-semibold' : m.rating != null && m.rating < 6.5 ? 'text-red-400' : 'text-gray-400'}">${fmtF(m.rating, 1)}</td>
-      <td class="px-3 py-2 text-center text-xs text-gray-400 font-mono">${m.formation || '-'}</td>
+    const venueBadge = venue === 'H' ? 'badge--green' : 'badge--accent';
+    return `<tr style="cursor:pointer;${isPartial ? 'border-left:2px solid rgba(129,140,248,0.4);' : ''}" onclick="toggleMatchDetail('${rowId}', '${dateStr}', '${encodeURIComponent(home)}', '${encodeURIComponent(away)}')">
+      <td style="text-align:center;color:var(--text-tertiary);"><span id="arrow-${rowId}" style="font-size:10px;">&#9654;</span></td>
+      <td style="text-align:center;font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);">${m.matchweek || '-'}</td>
+      <td style="font-size:12px;color:var(--text-tertiary);white-space:nowrap;">${dateStr}</td>
+      <td style="font-size:13px;"><a href="/team/${encodeURIComponent(opponent)}" style="color:var(--text-secondary);transition:color 0.15s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-secondary)'" onclick="event.stopPropagation()">${opponent}</a>${isPartial ? ' <span style="font-size:9px;color:rgba(129,140,248,0.6);">NEW</span>' : ''}</td>
+      <td style="text-align:center;"><span class="badge badge--sm ${venueBadge}">${venue}</span></td>
+      <td style="text-align:center;font-family:var(--font-mono);color:var(--text-primary);font-size:13px;">${score}</td>
+      <td style="text-align:center;"><span class="badge badge--sm ${rcBadge}">${r || '?'}</span></td>
+      <td style="text-align:center;font-size:11px;color:${m.xg != null ? 'var(--green)' : 'var(--text-tertiary)'};">${fmtF(m.xg)}</td>
+      <td style="text-align:center;font-size:11px;color:${m.xg_against != null ? 'var(--red)' : 'var(--text-tertiary)'};">${fmtF(m.xg_against)}</td>
+      <td style="text-align:center;font-size:11px;color:var(--text-tertiary);">${fmtPct(m.possession)}</td>
+      <td style="text-align:center;font-size:11px;color:${m.rating != null && m.rating >= 7 ? 'var(--green)' : m.rating != null && m.rating < 6.5 ? 'var(--red)' : 'var(--text-tertiary)'};${m.rating != null && m.rating >= 7 ? 'font-weight:600;' : ''}">${fmtF(m.rating, 1)}</td>
+      <td style="text-align:center;font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);">${m.formation || '-'}</td>
     </tr>
     <tr id="detail-${rowId}" class="hidden">
-      <td colspan="12" class="p-0">
-        <div class="px-4 py-3 bg-dark-900/80 border-t border-b border-gray-700/30">
-          <div class="text-xs text-gray-500 text-center">Loading match details...</div>
+      <td colspan="12" style="padding:0;">
+        <div style="padding:var(--space-4);background:var(--bg-primary);border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle);">
+          <div style="font-size:12px;color:var(--text-tertiary);text-align:center;">Loading match details...</div>
         </div>
       </td>
     </tr>`;
@@ -896,10 +1151,6 @@ async function loadEnrichedHistory() {
       data.matches.forEach(m => {
         const key = `${m.date}_${m.home_team}_${m.away_team}`;
         _enrichedHistory[key] = m;
-      });
-      // Update formation column in current table
-      document.querySelectorAll('#history-table tr[id^="detail-"]').forEach(tr => {
-        // formations are updated via the match lookup
       });
       // Re-render to pick up formations
       renderHistoryFiltered(_currentVenueFilter);
@@ -945,14 +1196,14 @@ async function toggleMatchDetail(rowId, date, homeEnc, awayEnc) {
   try {
     const res = await fetch(`/api/match-events/${date}/${homeEnc}/${awayEnc}`);
     if (!res.ok) {
-      detailRow.querySelector('div').innerHTML = '<div class="text-xs text-red-400 text-center py-2">Match events not available</div>';
+      detailRow.querySelector('div').innerHTML = '<div style="font-size:12px;color:var(--red);text-align:center;padding:var(--space-2);">Match events not available</div>';
       return;
     }
     const data = await res.json();
     _detailCache[cacheKey] = data;
     renderMatchDetail(detailRow, data);
   } catch (e) {
-    detailRow.querySelector('div').innerHTML = '<div class="text-xs text-red-400 text-center py-2">Failed to load match events</div>';
+    detailRow.querySelector('div').innerHTML = '<div style="font-size:12px;color:var(--red);text-align:center;padding:var(--space-2);">Failed to load match events</div>';
   }
 }
 
@@ -967,16 +1218,16 @@ function renderMatchDetail(row, data) {
     const formation = lineup.formation || '?';
     const teamName = side === 'home' ? data.home_team : data.away_team;
     const isOurTeam = teamName === TEAM_NAME;
-    const highlight = isOurTeam ? 'text-accent-blue' : 'text-gray-400';
+    const highlight = isOurTeam ? 'color:var(--accent);' : 'color:var(--text-tertiary);';
 
-    lineupHtml += `<div class="flex-1 min-w-[200px]">
+    lineupHtml += `<div style="flex:1;min-width:200px;">
       <div class="flex items-center gap-2 mb-2">
-        <span class="text-sm font-semibold ${highlight}">${teamName}</span>
-        <span class="text-xs text-gray-500 font-mono">${formation}</span>
+        <span style="font-size:13px;font-weight:600;${highlight}">${teamName}</span>
+        <span style="font-size:12px;color:var(--text-tertiary);font-family:var(--font-mono);">${formation}</span>
       </div>
-      <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:2px 12px;font-size:11px;">
         ${(lineup.starters || []).map(p =>
-          `<span class="text-gray-300"><span class="text-gray-600 w-5 inline-block text-right mr-1">#${p.shirt_number || ''}</span>${p.name} <span class="text-gray-600">${p.position}</span></span>`
+          `<span style="color:var(--text-secondary);"><span style="color:var(--text-tertiary);width:24px;display:inline-block;text-align:right;margin-right:4px;">#${p.shirt_number || ''}</span>${p.name} <span style="color:var(--text-tertiary);">${p.position}</span></span>`
         ).join('')}
       </div>
     </div>`;
@@ -986,40 +1237,40 @@ function renderMatchDetail(row, data) {
   const events = [];
   (data.goals || []).forEach(g => events.push({
     min: g.minute, added: g.added_time || 0, type: 'goal',
-    html: `<span class="text-green-400">&#9917;</span> <span class="font-medium text-white">${g.player}</span>
-           ${g.type === 'penalty' ? '<span class="text-yellow-500 text-[9px]">(P)</span>' : ''}
-           ${g.type === 'ownGoal' ? '<span class="text-red-400 text-[9px]">(OG)</span>' : ''}
-           ${g.assist ? `<span class="text-gray-500">(${g.assist})</span>` : ''}
-           <span class="text-[9px] ${g.is_home ? 'text-blue-400' : 'text-purple-400'}">${g.is_home ? data.home_team : data.away_team}</span>`
+    html: `<span class="text-green">&#9917;</span> <span style="font-weight:500;color:var(--text-primary);">${g.player}</span>
+           ${g.type === 'penalty' ? '<span style="color:var(--amber);font-size:9px;">(P)</span>' : ''}
+           ${g.type === 'ownGoal' ? '<span style="color:var(--red);font-size:9px;">(OG)</span>' : ''}
+           ${g.assist ? `<span style="color:var(--text-tertiary);">(${g.assist})</span>` : ''}
+           <span style="font-size:9px;color:${g.is_home ? 'var(--accent)' : '#a78bfa'};">${g.is_home ? data.home_team : data.away_team}</span>`
   }));
   (data.cards || []).forEach(c => events.push({
     min: c.minute, added: c.added_time || 0, type: 'card',
-    html: `<span class="${c.card_type === 'yellow' ? 'text-yellow-400' : 'text-red-500'}">&#9646;</span> ${c.player}
-           <span class="text-[9px] ${c.is_home ? 'text-blue-400' : 'text-purple-400'}">${c.is_home ? data.home_team : data.away_team}</span>`
+    html: `<span style="color:${c.card_type === 'yellow' ? 'var(--amber)' : 'var(--red)'};">&#9646;</span> ${c.player}
+           <span style="font-size:9px;color:${c.is_home ? 'var(--accent)' : '#a78bfa'};">${c.is_home ? data.home_team : data.away_team}</span>`
   }));
   (data.substitutions || []).forEach(s => events.push({
     min: s.minute, added: s.added_time || 0, type: 'sub',
-    html: `<span class="text-gray-400">&#8644;</span> <span class="text-red-300">${s.player_out || '?'}</span> &rarr; <span class="text-green-300">${s.player_in}</span>
-           <span class="text-[9px] ${s.is_home ? 'text-blue-400' : 'text-purple-400'}">${s.is_home ? data.home_team : data.away_team}</span>`
+    html: `<span style="color:var(--text-tertiary);">&#8644;</span> <span style="color:var(--red);">${s.player_out || '?'}</span> &rarr; <span style="color:var(--green);">${s.player_in}</span>
+           <span style="font-size:9px;color:${s.is_home ? 'var(--accent)' : '#a78bfa'};">${s.is_home ? data.home_team : data.away_team}</span>`
   }));
   events.sort((a, b) => a.min - b.min || a.added - b.added);
 
   const timelineHtml = events.map(e =>
-    `<div class="flex items-start gap-2 py-0.5">
-      <span class="text-[10px] text-gray-500 font-mono w-10 text-right flex-shrink-0">${fmtMin(e.min, e.added)}</span>
-      <span class="text-[11px]">${e.html}</span>
+    `<div class="flex items-center gap-2" style="padding:2px 0;">
+      <span style="font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);width:40px;text-align:right;flex-shrink:0;">${fmtMin(e.min, e.added)}</span>
+      <span style="font-size:11px;">${e.html}</span>
     </div>`
   ).join('');
 
   cell.innerHTML = `
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div class="lg:col-span-2">
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Lineups</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:var(--space-4);">
+      <div>
+        <div class="team-metrics-label">Lineups</div>
         <div class="flex gap-4 flex-wrap">${lineupHtml}</div>
       </div>
       <div>
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Match Events</div>
-        <div class="max-h-60 overflow-y-auto">${timelineHtml || '<span class="text-xs text-gray-600">No events data</span>'}</div>
+        <div class="team-metrics-label">Match Events</div>
+        <div style="max-height:240px;overflow-y:auto;">${timelineHtml || '<span style="font-size:12px;color:var(--text-tertiary);">No events data</span>'}</div>
       </div>
     </div>`;
 }
@@ -1039,7 +1290,7 @@ function renderStats(stats) {
   if (stats.elo_trend != null) {
     const t = stats.elo_trend;
     trendEl.textContent = (t >= 0 ? '+' : '') + Math.round(t);
-    trendEl.classList.add(t >= 0 ? 'text-green-400' : 'text-red-400');
+    trendEl.className = 'team-stat__value ' + (t >= 0 ? 'text-green' : 'text-red');
   }
 
   // Home vs Away records
@@ -1049,23 +1300,23 @@ function renderStats(stats) {
 
 function renderSplitRecord(elId, rec) {
   const el = document.getElementById(elId);
-  if (!rec || !rec.played) { el.innerHTML = '<p class="text-xs text-gray-500">No data</p>'; return; }
+  if (!rec || !rec.played) { el.innerHTML = '<p class="text-xs text-muted">No data</p>'; return; }
   const gd = rec.gf - rec.ga;
   const gdStr = (gd > 0 ? '+' : '') + gd;
-  const gdColor = gd > 0 ? 'text-green-400' : gd < 0 ? 'text-red-400' : 'text-gray-400';
+  const gdColor = gd > 0 ? 'text-green' : gd < 0 ? 'text-red' : 'text-muted';
   el.innerHTML = `
-    <div class="flex items-center justify-between text-xs mb-1">
-      <span class="text-gray-400">${rec.played} played</span>
-      <span class="font-semibold text-white">${rec.win_pct}% win rate</span>
+    <div class="flex items-center justify-between text-xs mb-2">
+      <span class="text-muted">${rec.played} played</span>
+      <span class="font-semi text-primary">${rec.win_pct}% win rate</span>
     </div>
-    <div class="flex items-center gap-2 text-[11px] mb-2">
-      <span class="text-green-400">${rec.won}W</span>
-      <span class="text-amber-400">${rec.drawn}D</span>
-      <span class="text-red-400">${rec.lost}L</span>
+    <div class="flex items-center gap-2 mb-2" style="font-size:11px;">
+      <span class="text-green">${rec.won}W</span>
+      <span class="text-amber">${rec.drawn}D</span>
+      <span class="text-red">${rec.lost}L</span>
     </div>
-    <div class="flex items-center justify-between text-[11px]">
-      <span class="text-gray-400">Avg GF: <span class="text-white">${rec.avg_gf}</span></span>
-      <span class="text-gray-400">Avg GA: <span class="text-white">${rec.avg_ga}</span></span>
+    <div class="flex items-center justify-between" style="font-size:11px;">
+      <span class="text-muted">Avg GF: <span class="text-primary">${rec.avg_gf}</span></span>
+      <span class="text-muted">Avg GA: <span class="text-primary">${rec.avg_ga}</span></span>
       <span class="${gdColor}">${gdStr} GD</span>
     </div>
   `;
@@ -1158,8 +1409,8 @@ function renderNextMatch(upcoming) {
   const probA = Math.round((upcoming.probabilities?.away || 0) * 100);
 
   const predColor = {
-    HOME: 'text-green-400', DRAW: 'text-amber-400', AWAY: 'text-red-400'
-  }[upcoming.predicted_outcome] || 'text-gray-400';
+    HOME: 'text-green', DRAW: 'text-amber', AWAY: 'text-red'
+  }[upcoming.predicted_outcome] || 'text-muted';
 
   // Market implied probabilities
   const mi = upcoming.market_implied || {};
@@ -1168,14 +1419,14 @@ function renderNextMatch(upcoming) {
   const miA = Math.round((mi.away || 0) * 100);
 
   // Factors
-  const hFactors = (upcoming.home_factors || []).map(f => `<span class="text-[10px] bg-green-900/30 text-green-400 px-1.5 py-0.5 rounded">${f}</span>`).join(' ');
-  const aFactors = (upcoming.away_factors || []).map(f => `<span class="text-[10px] bg-red-900/30 text-red-400 px-1.5 py-0.5 rounded">${f}</span>`).join(' ');
+  const hFactors = (upcoming.home_factors || []).map(f => `<span class="badge badge--sm badge--green">${f}</span>`).join(' ');
+  const aFactors = (upcoming.away_factors || []).map(f => `<span class="badge badge--sm badge--red">${f}</span>`).join(' ');
 
   // Form comparison
   const hForm = upcoming.home_form || {};
   const aForm = upcoming.away_form || {};
 
-  // Component predictions (filter to only actual prediction entries)
+  // Component predictions
   const comps = upcoming.component_predictions || {};
   let compRows = '';
   for (const [method, pred] of Object.entries(comps)) {
@@ -1184,13 +1435,13 @@ function renderNextMatch(upcoming) {
     const pD = Math.round((pred.prob_D || 0) * 100);
     const pA = Math.round((pred.prob_A || 0) * 100);
     const winner = pH >= pD && pH >= pA ? 'H' : pD >= pA ? 'D' : 'A';
-    const wColor = winner === 'H' ? 'text-green-400' : winner === 'D' ? 'text-amber-400' : 'text-red-400';
-    compRows += `<tr class="border-b border-gray-800/30">
-      <td class="px-3 py-1.5 text-xs text-gray-400 capitalize">${method}</td>
-      <td class="px-3 py-1.5 text-center text-xs text-green-400">${pH}%</td>
-      <td class="px-3 py-1.5 text-center text-xs text-amber-400">${pD}%</td>
-      <td class="px-3 py-1.5 text-center text-xs text-red-400">${pA}%</td>
-      <td class="px-3 py-1.5 text-center text-xs font-bold ${wColor}">${winner}</td>
+    const wColor = winner === 'H' ? 'text-green' : winner === 'D' ? 'text-amber' : 'text-red';
+    compRows += `<tr>
+      <td style="padding:6px 12px;font-size:12px;color:var(--text-tertiary);text-transform:capitalize;">${method}</td>
+      <td style="padding:6px 12px;text-align:center;font-size:12px;" class="text-green">${pH}%</td>
+      <td style="padding:6px 12px;text-align:center;font-size:12px;" class="text-amber">${pD}%</td>
+      <td style="padding:6px 12px;text-align:center;font-size:12px;" class="text-red">${pA}%</td>
+      <td style="padding:6px 12px;text-align:center;font-size:12px;font-weight:700;" class="${wColor}">${winner}</td>
     </tr>`;
   }
 
@@ -1199,100 +1450,110 @@ function renderNextMatch(upcoming) {
 
   document.getElementById('next-match-content').innerHTML = `
     <!-- Match Header -->
-    <div class="bg-dark-800 rounded-xl border border-gray-700/50 p-6 mb-4">
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <h3 class="text-lg font-bold text-white">${upcoming.match}</h3>
-          <div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
-            <span>${upcoming.commence_time ? formatTime(upcoming.commence_time) : (upcoming.date || 'TBD')}</span>
-            ${upcoming.commence_time ? `<span class="text-amber-400 font-mono">${timeUntil(upcoming.commence_time)}</span>` : ''}
-            ${upcoming.venue ? `<span>${upcoming.venue}</span>` : ''}
-            ${upcoming.referee ? `<span>Ref: ${upcoming.referee}${upcoming.referee_bias ? ' (' + upcoming.referee_bias.replace(/_/g,' ') + ')' : ''}</span>` : ''}
+    <div class="team-card mb-4">
+      <div class="team-card__body">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 style="font-size:18px;font-weight:700;color:var(--text-primary);">${upcoming.match}</h3>
+            <div class="flex items-center gap-3 mt-2" style="font-size:12px;color:var(--text-tertiary);">
+              <span>${upcoming.commence_time ? formatTime(upcoming.commence_time) : (upcoming.date || 'TBD')}</span>
+              ${upcoming.commence_time ? `<span class="text-amber font-mono">${timeUntil(upcoming.commence_time)}</span>` : ''}
+              ${upcoming.venue ? `<span>${upcoming.venue}</span>` : ''}
+              ${upcoming.referee ? `<span>Ref: ${upcoming.referee}${upcoming.referee_bias ? ' (' + upcoming.referee_bias.replace(/_/g,' ') + ')' : ''}</span>` : ''}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:13px;color:var(--text-tertiary);">Prediction</div>
+            <div style="font-size:24px;font-weight:700;" class="${predColor}">${upcoming.predicted_outcome || '?'}</div>
+            <div style="font-size:12px;color:var(--text-tertiary);">${upcoming.confidence || ''}</div>
           </div>
         </div>
-        <div class="text-right">
-          <div class="text-sm text-gray-400">Prediction</div>
-          <div class="text-2xl font-bold ${predColor}">${upcoming.predicted_outcome || '?'}</div>
-          <div class="text-xs text-gray-500">${upcoming.confidence || ''}</div>
-        </div>
-      </div>
 
-      ${upcoming.betting_recommendation ? `<div class="bg-accent-blue/10 border border-accent-blue/20 rounded-lg px-3 py-2 mb-4 text-sm text-accent-blue font-medium">${upcoming.betting_recommendation}</div>` : ''}
+        ${upcoming.betting_recommendation ? `<div style="background:var(--accent-muted);border:1px solid rgba(129,140,248,0.2);border-radius:var(--radius-md);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-4);font-size:13px;color:var(--accent);font-weight:500;">${upcoming.betting_recommendation}</div>` : ''}
 
-      <!-- Probability bars: Model vs Market -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div>
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Our Model</div>
-          ${_probBar('Home', probH, 'green')}
-          ${_probBar('Draw', probD, 'amber')}
-          ${_probBar('Away', probA, 'red')}
+        <!-- Probability bars: Model vs Market -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-5);margin-bottom:var(--space-4);">
+          <div>
+            <div class="team-metrics-label" style="margin-bottom:var(--space-2);">Our Model</div>
+            ${_probBar('Home', probH, 'green')}
+            ${_probBar('Draw', probD, 'amber')}
+            ${_probBar('Away', probA, 'red')}
+          </div>
+          <div>
+            <div class="team-metrics-label" style="margin-bottom:var(--space-2);">Market Implied</div>
+            ${_probBar('Home', miH, 'green')}
+            ${_probBar('Draw', miD, 'amber')}
+            ${_probBar('Away', miA, 'red')}
+          </div>
         </div>
-        <div>
-          <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Market Implied</div>
-          ${_probBar('Home', miH, 'green')}
-          ${_probBar('Draw', miD, 'amber')}
-          ${_probBar('Away', miA, 'red')}
-        </div>
-      </div>
 
-      <!-- xG & Edge -->
-      <div class="grid grid-cols-3 gap-3">
-        ${upcoming.home_xg != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
-          <div class="text-[10px] text-gray-500 mb-1">Expected Goals</div>
-          <div class="text-lg font-bold text-white">${upcoming.home_xg?.toFixed(2) || '?'} - ${upcoming.away_xg?.toFixed(2) || '?'}</div>
-          <div class="text-[10px] text-gray-500">Total: ${upcoming.expected_goals?.toFixed(2) || '?'}</div>
-        </div>` : ''}
-        ${upcoming.over_25 != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
-          <div class="text-[10px] text-gray-500 mb-1">Over 2.5</div>
-          <div class="text-lg font-bold ${upcoming.over_25 ? 'text-green-400' : 'text-red-400'}">${upcoming.over_25 ? 'YES' : 'NO'}</div>
-        </div>` : ''}
-        ${upcoming.market_edge != null ? `<div class="bg-gray-800/50 rounded-lg p-3 text-center">
-          <div class="text-[10px] text-gray-500 mb-1">Market Edge</div>
-          <div class="text-lg font-bold ${upcoming.market_edge > 0 ? 'text-green-400' : 'text-red-400'}">${(upcoming.market_edge * 100).toFixed(1)}%</div>
-        </div>` : ''}
+        <!-- xG & Edge -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-3);">
+          ${upcoming.home_xg != null ? `<div class="team-stat" style="text-align:center;">
+            <div class="team-stat__label">Expected Goals</div>
+            <div style="font-size:18px;font-weight:700;color:var(--text-primary);font-family:var(--font-mono);margin-top:4px;">${upcoming.home_xg?.toFixed(2) || '?'} - ${upcoming.away_xg?.toFixed(2) || '?'}</div>
+            <div class="text-xxs text-muted">Total: ${upcoming.expected_goals?.toFixed(2) || '?'}</div>
+          </div>` : ''}
+          ${upcoming.over_25 != null ? `<div class="team-stat" style="text-align:center;">
+            <div class="team-stat__label">Over 2.5</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;" class="${upcoming.over_25 ? 'text-green' : 'text-red'}">${upcoming.over_25 ? 'YES' : 'NO'}</div>
+          </div>` : ''}
+          ${upcoming.market_edge != null ? `<div class="team-stat" style="text-align:center;">
+            <div class="team-stat__label">Market Edge</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;" class="${upcoming.market_edge > 0 ? 'text-green' : 'text-red'}">${(upcoming.market_edge * 100).toFixed(1)}%</div>
+          </div>` : ''}
+        </div>
       </div>
     </div>
 
     <!-- Factors -->
-    ${(hFactors || aFactors) ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
-      <h4 class="text-sm font-semibold text-gray-300 mb-3">Key Factors</h4>
-      ${hFactors ? `<div class="mb-2"><span class="text-[10px] text-gray-500 mr-2">Home:</span>${hFactors}</div>` : ''}
-      ${aFactors ? `<div><span class="text-[10px] text-gray-500 mr-2">Away:</span>${aFactors}</div>` : ''}
+    ${(hFactors || aFactors) ? `<div class="team-card mb-4">
+      <div class="team-card__header"><span class="team-card__title">Key Factors</span></div>
+      <div class="team-card__body">
+        ${hFactors ? `<div class="mb-2"><span class="text-xxs text-muted" style="margin-right:var(--space-2);">Home:</span>${hFactors}</div>` : ''}
+        ${aFactors ? `<div><span class="text-xxs text-muted" style="margin-right:var(--space-2);">Away:</span>${aFactors}</div>` : ''}
+      </div>
     </div>` : ''}
 
     <!-- Component Predictions Table -->
-    ${compRows ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
-      <h4 class="text-sm font-semibold text-gray-300 mb-3">Model Components</h4>
-      <table class="w-full">
-        <thead><tr class="text-[10px] text-gray-500 uppercase">
-          <th class="px-3 py-1 text-left">Method</th>
-          <th class="px-3 py-1 text-center">H%</th>
-          <th class="px-3 py-1 text-center">D%</th>
-          <th class="px-3 py-1 text-center">A%</th>
-          <th class="px-3 py-1 text-center">Pick</th>
-        </tr></thead>
-        <tbody>${compRows}</tbody>
-      </table>
+    ${compRows ? `<div class="team-card mb-4">
+      <div class="team-card__header"><span class="team-card__title">Model Components</span></div>
+      <div style="overflow-x:auto;">
+        <table class="team-table">
+          <thead><tr>
+            <th>Method</th>
+            <th style="text-align:center;">H%</th>
+            <th style="text-align:center;">D%</th>
+            <th style="text-align:center;">A%</th>
+            <th style="text-align:center;">Pick</th>
+          </tr></thead>
+          <tbody>${compRows}</tbody>
+        </table>
+      </div>
     </div>` : ''}
 
     <!-- Form Comparison -->
-    ${hForm.team || aForm.team ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
-      <h4 class="text-sm font-semibold text-gray-300 mb-3">Form Comparison (Last 5)</h4>
-      <div class="grid grid-cols-2 gap-4">
-        ${_renderFormBox(hForm, 'Home')}
-        ${_renderFormBox(aForm, 'Away')}
+    ${hForm.team || aForm.team ? `<div class="team-card mb-4">
+      <div class="team-card__header"><span class="team-card__title">Form Comparison (Last 5)</span></div>
+      <div class="team-card__body">
+        <div class="splits-grid">
+          ${_renderFormBox(hForm, 'Home')}
+          ${_renderFormBox(aForm, 'Away')}
+        </div>
       </div>
     </div>` : ''}
 
     <!-- Formation -->
-    ${fa.home_formation ? `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
-      <h4 class="text-sm font-semibold text-gray-300 mb-3">Tactical Matchup</h4>
-      <div class="flex items-center justify-between text-sm">
-        <span class="text-white font-mono">${fa.home_formation}</span>
-        <span class="text-gray-500">vs</span>
-        <span class="text-white font-mono">${fa.away_formation}</span>
+    ${fa.home_formation ? `<div class="team-card mb-4">
+      <div class="team-card__header"><span class="team-card__title">Tactical Matchup</span></div>
+      <div class="team-card__body">
+        <div class="flex items-center justify-between text-sm">
+          <span class="font-mono text-primary font-bold">${fa.home_formation}</span>
+          <span class="text-muted">vs</span>
+          <span class="font-mono text-primary font-bold">${fa.away_formation}</span>
+        </div>
+        ${fa.matchup_advantage != null ? `<div class="mt-2 text-xs text-muted">Advantage: <span class="${fa.matchup_advantage > 0 ? 'text-green' : fa.matchup_advantage < 0 ? 'text-red' : 'text-muted'}">${fa.matchup_advantage > 0 ? '+' : ''}${(fa.matchup_advantage * 100).toFixed(1)}%</span> (${fa.confidence || 'medium'} confidence)</div>` : ''}
       </div>
-      ${fa.matchup_advantage != null ? `<div class="mt-2 text-xs text-gray-400">Advantage: <span class="${fa.matchup_advantage > 0 ? 'text-green-400' : fa.matchup_advantage < 0 ? 'text-red-400' : 'text-gray-400'}">${fa.matchup_advantage > 0 ? '+' : ''}${(fa.matchup_advantage * 100).toFixed(1)}%</span> (${fa.confidence || 'medium'} confidence)</div>` : ''}
     </div>` : ''}
 
     ${_teamData && _teamData.lineup_prediction ? renderLineupPrediction(_teamData.lineup_prediction) : ''}
@@ -1300,8 +1561,8 @@ function renderNextMatch(upcoming) {
     ${_teamData && _teamData.h2h ? renderH2H(_teamData.h2h) : ''}
 
     <!-- Link to full dashboard -->
-    <div class="text-center mt-4">
-      <a href="/" class="text-sm text-accent-blue hover:underline">View all predictions on Dashboard &rarr;</a>
+    <div style="text-align:center;margin-top:var(--space-4);">
+      <a href="/" style="font-size:13px;color:var(--accent);transition:opacity 0.15s;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">View all predictions on Dashboard &rarr;</a>
     </div>
   `;
 }
@@ -1324,24 +1585,24 @@ function renderLineupPrediction(lp) {
   const alts = fm.alternatives || [];
   let altHtml2 = '';
   if (alts.length > 0) {
-    altHtml2 = `<div class="flex gap-2 mb-4">${alts.map(a => `<div class="bg-gray-800/50 rounded-lg p-2 text-center ${a.formation === fm.predicted ? 'border border-accent-blue/30' : ''}">
-      <div class="text-sm font-bold ${a.formation === fm.predicted ? 'text-accent-blue' : 'text-gray-400'}">${a.formation}</div>
-      <div class="text-[10px] text-gray-500">${a.pct}% (${a.count} matches)</div>
+    altHtml2 = `<div class="flex gap-2 mb-4">${alts.map(a => `<div style="background:var(--bg-tertiary);border-radius:var(--radius-md);padding:var(--space-2);text-align:center;${a.formation === fm.predicted ? 'border:1px solid rgba(129,140,248,0.3);' : 'border:1px solid var(--border-subtle);'}">
+      <div style="font-size:13px;font-weight:700;font-family:var(--font-mono);${a.formation === fm.predicted ? 'color:var(--accent);' : 'color:var(--text-tertiary);'}">${a.formation}</div>
+      <div class="text-xxs text-muted">${a.pct}% (${a.count} matches)</div>
     </div>`).join('')}</div>`;
   }
 
-  // Bench list (compact, under the pitch)
+  // Bench list
   let benchHtml = '';
   if (bench.length) {
-    benchHtml = `<div class="mt-3">
-      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Bench (${bench.length})</div>
-      <div class="flex flex-wrap gap-1">
+    benchHtml = `<div class="alert-row">
+      <div class="alert-label text-muted">Bench (${bench.length})</div>
+      <div class="flex flex-wrap gap-2">
         ${bench.map(p => {
           const pctC = pctColor(p.start_pct);
-          return `<span class="text-[10px] bg-gray-800 rounded px-1.5 py-0.5 border border-gray-700/50 flex items-center gap-1">
-            <span class="text-gray-600 font-mono">${p.position_label}</span>
-            <span class="text-gray-300">${p.name}</span>
-            <span style="color:${pctC}" class="font-mono">${p.start_pct.toFixed(0)}%</span>
+          return `<span class="alert-tag" style="color:var(--text-secondary);border-color:var(--border-default);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:4px;">
+            <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:10px;">${p.position_label}</span>
+            <span>${p.name}</span>
+            <span style="color:${pctC};font-family:var(--font-mono);">${p.start_pct.toFixed(0)}%</span>
           </span>`;
         }).join('')}
       </div>
@@ -1352,12 +1613,12 @@ function renderLineupPrediction(lp) {
   const hist = fm.history || [];
   let histHtml = '';
   if (hist.length) {
-    histHtml = `<div class="mt-3">
-      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Recent Formations</div>
+    histHtml = `<div class="alert-row">
+      <div class="alert-label text-muted">Recent Formations</div>
       <div class="flex gap-2">
-        ${hist.map(h => `<div class="bg-gray-800/50 rounded px-2 py-1 text-center">
-          <div class="text-xs font-mono font-bold text-white">${h.formation}</div>
-          <div class="text-[9px] text-gray-500">vs ${h.opponent}</div>
+        ${hist.map(h => `<div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:4px 8px;text-align:center;">
+          <div style="font-size:12px;font-family:var(--font-mono);font-weight:700;color:var(--text-primary);">${h.formation}</div>
+          <div style="font-size:9px;color:var(--text-tertiary);">vs ${h.opponent}</div>
         </div>`).join('')}
       </div>
     </div>`;
@@ -1367,14 +1628,14 @@ function renderLineupPrediction(lp) {
   let yellowEntries = Object.entries(yellows).sort((a, b) => b[1].yellows - a[1].yellows);
   let yellowHtml = '';
   if (yellowEntries.length) {
-    yellowHtml = `<div class="mt-3">
-      <div class="text-[9px] text-gray-500 uppercase font-semibold mb-1">Yellow Cards</div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-1">
+    yellowHtml = `<div class="alert-row">
+      <div class="alert-label text-muted">Yellow Cards</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;">
         ${yellowEntries.slice(0, 9).map(([pid, yc]) => {
-          const riskCol = yc.risk_level === 'high' ? 'text-red-400 bg-red-900/10' : yc.risk_level === 'medium' ? 'text-amber-400 bg-amber-900/10' : 'text-gray-400 bg-gray-800/50';
-          return `<div class="flex items-center justify-between rounded px-2 py-1 ${riskCol}">
-            <span class="text-[10px]">${yc.name}</span>
-            <span class="text-[10px] font-mono font-bold">${yc.yellows}</span>
+          const riskStyle = yc.risk_level === 'high' ? 'color:var(--red);background:rgba(248,113,113,0.06);' : yc.risk_level === 'medium' ? 'color:var(--amber);background:rgba(251,191,36,0.06);' : 'color:var(--text-tertiary);background:var(--bg-tertiary);';
+          return `<div class="flex items-center justify-between" style="border-radius:var(--radius-sm);padding:4px 8px;${riskStyle}">
+            <span style="font-size:10px;">${yc.name}</span>
+            <span style="font-size:10px;font-family:var(--font-mono);font-weight:700;">${yc.yellows}</span>
           </div>`;
         }).join('')}
       </div>
@@ -1384,25 +1645,28 @@ function renderLineupPrediction(lp) {
   // Changes
   let changesHtml = '';
   if (changes.length) {
-    changesHtml = `<div class="mt-3">
-      <div class="text-[9px] text-purple-400 uppercase font-semibold mb-1">Expected Changes</div>
-      ${changes.map(c => `<div class="flex items-center gap-2 text-xs py-0.5">
-        <span class="text-red-400 line-through">${c.out}</span>
-        <span class="text-gray-500">&rarr;</span>
-        <span class="text-green-400">${c.in}</span>
-        <span class="text-[10px] text-gray-500">(${c.reason})</span>
+    changesHtml = `<div class="alert-row">
+      <div class="alert-label text-purple">Expected Changes</div>
+      ${changes.map(c => `<div class="flex items-center gap-2 text-xs" style="padding:2px 0;">
+        <span class="text-red" style="text-decoration:line-through;">${c.out}</span>
+        <span class="text-muted">&rarr;</span>
+        <span class="text-green">${c.in}</span>
+        <span class="text-xxs text-muted">(${c.reason})</span>
       </div>`).join('')}
     </div>`;
   }
 
-  return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mb-4">
-    <h4 class="text-sm font-semibold text-gray-300 mb-3">Predicted Lineup</h4>
+  return `<div class="team-card mb-4">
+    <div class="team-card__header">
+      <span class="team-card__title">Predicted Lineup</span>
+    </div>
+    <div class="team-card__body">
 
     <div class="flex items-center gap-4 mb-4">
-      <div class="text-3xl font-bold text-accent-blue font-mono">${fm.predicted || '?'}</div>
+      <div style="font-size:28px;font-weight:700;color:var(--accent);font-family:var(--font-mono);">${fm.predicted || '?'}</div>
       <div>
-        <div class="text-xs text-gray-400">Predicted Formation</div>
-        <div class="text-[10px] text-gray-500">${confPct}% confidence (${fm.based_on_matches || '?'} matches analyzed)</div>
+        <div style="font-size:12px;color:var(--text-tertiary);">Predicted Formation</div>
+        <div class="text-xxs text-muted">${confPct}% confidence (${fm.based_on_matches || '?'} matches analyzed)</div>
       </div>
     </div>
 
@@ -1415,29 +1679,30 @@ function renderLineupPrediction(lp) {
     ${r.alertsHtml}
     ${yellowHtml}
     ${histHtml}
+    </div>
   </div>`;
 }
 
 function _probBar(label, pct, color) {
-  return `<div class="flex items-center gap-2 mb-1.5">
-    <span class="w-12 text-xs text-gray-400">${label}</span>
-    <div class="flex-1 bg-gray-800 rounded-full h-2.5 overflow-hidden">
-      <div class="h-full bg-${color}-500 rounded-full" style="width:${pct}%"></div>
+  return `<div class="prob-row">
+    <span class="prob-label">${label}</span>
+    <div class="prob-track">
+      <div class="prob-fill prob-fill--${color}" style="width:${pct}%"></div>
     </div>
-    <span class="w-10 text-xs text-${color}-400 text-right font-mono">${pct}%</span>
+    <span class="prob-pct text-${color}">${pct}%</span>
   </div>`;
 }
 
 function _renderFormBox(form, label) {
   if (!form || !form.team) return '';
   const ppg = form.total_matches ? (form.total_points / form.total_matches).toFixed(2) : '-';
-  return `<div class="bg-gray-800/30 rounded-lg p-3">
-    <div class="text-xs font-semibold text-gray-300 mb-2">${form.team} (${label})</div>
-    <div class="grid grid-cols-2 gap-1 text-[11px]">
-      <span class="text-gray-500">Points:</span><span class="text-white">${form.total_points || 0} / ${(form.total_matches || 0) * 3}</span>
-      <span class="text-gray-500">PPG:</span><span class="text-white">${ppg}</span>
-      <span class="text-gray-500">Goals:</span><span class="text-white">${form.goals_scored || 0} scored, ${form.goals_conceded || 0} conceded</span>
-      <span class="text-gray-500">Clean Sh.:</span><span class="text-white">${form.clean_sheets || 0}</span>
+  return `<div style="background:var(--bg-tertiary);border-radius:var(--radius-md);padding:var(--space-3);">
+    <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:var(--space-2);">${form.team} (${label})</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px;">
+      <span class="text-muted">Points:</span><span class="text-primary">${form.total_points || 0} / ${(form.total_matches || 0) * 3}</span>
+      <span class="text-muted">PPG:</span><span class="text-primary">${ppg}</span>
+      <span class="text-muted">Goals:</span><span class="text-primary">${form.goals_scored || 0} scored, ${form.goals_conceded || 0} conceded</span>
+      <span class="text-muted">Clean Sh.:</span><span class="text-primary">${form.clean_sheets || 0}</span>
     </div>
   </div>`;
 }
@@ -1450,31 +1715,48 @@ function renderH2H(h2h) {
       // Try to render summary stats
       const keys = Object.keys(h2h);
       const items = keys.filter(k => typeof h2h[k] !== 'object').map(k =>
-        `<div class="flex justify-between py-1"><span class="text-gray-400 text-xs">${k.replace(/_/g, ' ')}</span><span class="text-white text-sm">${h2h[k]}</span></div>`
+        `<div class="flex justify-between" style="padding:4px 0;"><span class="text-muted text-xs">${k.replace(/_/g, ' ')}</span><span class="text-primary text-sm">${h2h[k]}</span></div>`
       ).join('');
       if (items) {
-        return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mt-4">
-          <h4 class="text-sm font-semibold text-gray-300 mb-3">Head-to-Head</h4>
-          ${items}
+        return `<div class="team-card mt-4">
+          <div class="team-card__header"><span class="team-card__title">Head-to-Head</span></div>
+          <div class="team-card__body">${items}</div>
         </div>`;
       }
     }
     return '';
   }
-  return `<div class="bg-dark-800 rounded-xl border border-gray-700/50 p-4 mt-4">
-    <h4 class="text-sm font-semibold text-gray-300 mb-3">Head-to-Head (${meetings.length} meetings)</h4>
-    <div class="space-y-1">${meetings.slice(0, 5).map(m =>
-      `<div class="flex items-center justify-between text-xs py-1">
-        <span class="text-gray-500">${m.date || ''}</span>
-        <span class="text-white">${m.score || m.result || ''}</span>
-      </div>`
-    ).join('')}</div>
+  return `<div class="team-card mt-4">
+    <div class="team-card__header"><span class="team-card__title">Head-to-Head (${meetings.length} meetings)</span></div>
+    <div class="team-card__body">
+      <div class="space-y-1">${meetings.slice(0, 5).map(m =>
+        `<div class="flex items-center justify-between text-xs" style="padding:4px 0;">
+          <span class="text-muted">${m.date || ''}</span>
+          <span class="text-primary">${m.score || m.result || ''}</span>
+        </div>`
+      ).join('')}</div>
+    </div>
   </div>`;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+function formatTime(iso) {
+  try { return new Date(iso).toLocaleString('en-GB', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }); }
+  catch(e) { return iso; }
+}
+function timeUntil(iso) {
+  try {
+    const diff = new Date(iso) - new Date();
+    if (diff < 0) return 'Started';
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    if (h > 24) return Math.floor(h/24) + 'd ' + (h%24) + 'h';
+    return h + 'h ' + m + 'm';
+  } catch(e) { return ''; }
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────
 loadTeam();
 
 </script>
-  </div>
 {% endblock %}

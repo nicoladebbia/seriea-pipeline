@@ -405,6 +405,94 @@ def optimize(trials: int | None, top_k: int | None, corr_threshold: float | None
 
 
 @ml.command()
+@click.option("--full", is_flag=True, help="Force full Optuna retrain (2-3 hours)")
+@click.option("--quick", is_flag=True, help="Force quick retrain (~15-20 min)")
+@click.option("--check", is_flag=True, help="Just check matchweek status")
+@click.option("--force", is_flag=True, help="Force retrain even if matchweek not complete")
+@click.option("--dry-run", is_flag=True, help="Compare only, don't promote")
+def retrain(full: bool, quick: bool, check: bool, force: bool, dry_run: bool):
+    """Retrain models — auto-triggered when a matchweek completes."""
+    from scripts.pipeline.weekly_retrain import (
+        auto_retrain, full_retrain, get_matchweek_status, quick_retrain,
+    )
+
+    if check:
+        from scripts.pipeline.weekly_retrain import MATCHES_PER_MATCHWEEK
+        status = get_matchweek_status()
+        if "error" in status:
+            click.echo(f"Error: {status['error']}")
+            return
+        click.echo(f"Completed matchweeks: {status['completed_matchweeks']} ({status['total_matches']} matches)")
+        if status["matches_in_progress"]:
+            click.echo(f"MW {status['completed_matchweeks'] + 1} in progress: "
+                        f"{status['matches_in_progress']}/{MATCHES_PER_MATCHWEEK} played")
+        click.echo(f"Last retrained: MW {status['last_retrained_matchweek']}")
+        click.echo(f"Needs retrain: {'YES' if status['needs_retrain'] else 'NO'}")
+        return
+
+    if full:
+        click.echo("Starting FULL retrain (Optuna + feature selection, ~2-3 hours)...")
+        result = full_retrain(dry_run=dry_run)
+    elif quick:
+        click.echo("Starting QUICK retrain (reuse hyperparams, ~15-20 min)...")
+        result = quick_retrain(dry_run=dry_run)
+    else:
+        click.echo("Checking matchweek status...")
+        result = auto_retrain(dry_run=dry_run, force=force)
+        if result.get("action") == "skipped":
+            click.echo(f"Skipped: {result.get('reason')}")
+            return
+
+    status = "PROMOTED" if result.get("promoted") else "NOT PROMOTED"
+    click.echo(f"\nResult: {status}")
+    if result.get("matchweek"):
+        click.echo(f"Matchweek: {result['matchweek']}")
+    click.echo(f"Reason: {result.get('comparison', result.get('error', '?'))}")
+    if result.get("new_metrics"):
+        m = result["new_metrics"]
+        click.echo(f"New LL: {m.get('ensemble_log_loss', 0):.4f}")
+
+
+@ml.command()
+@click.option("--version", default=None, help="Archive version to restore (default: latest)")
+def rollback(version: str | None):
+    """Rollback models to a previous archived version."""
+    from scripts.pipeline.weekly_retrain import rollback as do_rollback
+
+    success = do_rollback(version)
+    if success:
+        click.echo("Rollback complete.")
+    else:
+        click.echo("Rollback failed.")
+
+
+@ml.command()
+def retrain_history():
+    """Show retrain history (promotions, metrics, comparisons)."""
+    from scripts.pipeline.weekly_retrain import METRICS_HISTORY
+
+    if not METRICS_HISTORY.exists():
+        click.echo("No retrain history yet. Run `seriea ml retrain` first.")
+        return
+
+    import json
+    click.echo(f"{'Date':<22} {'Mode':<8} {'Promoted':<10} {'LL Old':<10} {'LL New':<10} {'Reason'}")
+    click.echo("-" * 85)
+    with open(METRICS_HISTORY) as f:
+        for line in f:
+            entry = json.loads(line)
+            ts = entry.get("timestamp", "?")[:19]
+            mode = entry.get("mode", "?")
+            promoted = "YES" if entry.get("promoted") else "NO"
+            old_m = entry.get("current_metrics") or {}
+            new_m = entry.get("new_metrics") or {}
+            old = f"{old_m.get('ensemble_log_loss', 0):.4f}" if old_m else "N/A"
+            new = f"{new_m.get('ensemble_log_loss', 0):.4f}" if new_m else "N/A"
+            reason = entry.get("comparison", entry.get("error", "?"))[:30]
+            click.echo(f"{ts:<22} {mode:<8} {promoted:<10} {old:<10} {new:<10} {reason}")
+
+
+@ml.command()
 def ablation():
     """Compare models with and without betting odds features."""
     from ml.feature_selection import exclude_odds
