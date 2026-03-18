@@ -547,12 +547,48 @@ def _signal_handler(sig, frame):
     _running = False
 
 
+_PID_FILE = PROJECT_ROOT / "logs" / "telegram-bot.pid"
+
+
+def _acquire_lock():
+    """Ensure only one bot instance runs. Kill old one if needed."""
+    if _PID_FILE.exists():
+        try:
+            old_pid = int(_PID_FILE.read_text().strip())
+            os.kill(old_pid, 0)  # Check if alive
+            log.info("Killing previous bot instance (PID %d)", old_pid)
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(3)
+            try:
+                os.kill(old_pid, 0)
+                os.kill(old_pid, 9)
+                time.sleep(1)
+            except ProcessLookupError:
+                pass
+        except (ProcessLookupError, ValueError):
+            pass
+        except PermissionError:
+            log.warning("Cannot kill old bot — may get 409 conflicts")
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PID_FILE.write_text(str(os.getpid()))
+    log.info("Acquired lock (PID %d)", os.getpid())
+
+
+def _release_lock():
+    try:
+        if _PID_FILE.exists() and _PID_FILE.read_text().strip() == str(os.getpid()):
+            _PID_FILE.unlink()
+    except Exception:
+        pass
+
+
 def run_bot():
     """Main bot loop — long-polls Telegram for messages."""
     global _running
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+    _acquire_lock()
 
     token = _get_env("TELEGRAM_BOT_TOKEN")
     chat_id = _get_env("TELEGRAM_CHAT_ID")
@@ -669,6 +705,7 @@ def run_bot():
             time.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
+    _release_lock()
     log.info("Bot stopped.")
 
 
