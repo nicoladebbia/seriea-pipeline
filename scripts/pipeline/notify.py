@@ -2487,9 +2487,27 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
         journal = _json.load(open(journal_path))
         bets = journal.get("bets", {})
 
-        # Get bets from the last 7 days (approximate matchweek window)
+        # Detect current matchweek from matches data
+        if matchweek == 0:
+            try:
+                import pandas as pd
+                matches_path = _Path(__file__).parent.parent.parent / "data" / "parsed" / "matches.parquet"
+                if matches_path.exists():
+                    mdf = pd.read_parquet(matches_path)
+                    current = mdf[mdf["season"] == "2025-2026"]
+                    if "matchweek" in current.columns:
+                        # Find the latest matchweek that has at least 5 matches
+                        mw_counts = current.groupby("matchweek").size()
+                        for mw in sorted(mw_counts.index, reverse=True):
+                            if mw_counts[mw] >= 5:
+                                matchweek = int(mw)
+                                break
+            except Exception:
+                pass
+
+        # Get bets from the last 10 days (covers split matchweeks)
         from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cutoff = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
         week_bets = []
         for bet_id, bet in bets.items():
@@ -2544,6 +2562,7 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
             stake = b.get("stake", 0)
             status = b.get("status", "")
             score = b.get("result_score", "")
+            bet_date = b.get("date", "")
 
             if status == "won":
                 profit = b.get("profit", 0)
@@ -2556,8 +2575,11 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
                 icon = "\u2796"
                 result_str = "Push (stake returned)"
 
-            tg.raw(f"{icon} <b>{_html_escape(match)}</b>"
-                   + (f"  ({_html_escape(score)})" if score else ""))
+            # Date + match header
+            date_str = f"  {_html_escape(bet_date)}" if bet_date else ""
+            score_str = f"  ({_html_escape(score)})" if score else ""
+            tg.raw(f"{icon} <b>{_html_escape(match)}</b>{score_str}")
+            tg.raw(f"   {_html_escape(bet_date)}")
             tg.raw(f"   {_html_escape(market)}: {_html_escape(sel)} @{odds:.2f}")
             tg.raw(f"   {result_str}")
             tg.blank()
