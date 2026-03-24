@@ -236,7 +236,8 @@ def fit_calibrator_from_cv(
         params = cfg.xgb_params if model_type == "xgboost" else cfg.lgb_params
 
     model = _build_model(model_type, params)
-    sw = _compute_sample_weights(y[train_mask]) if use_sample_weights else None
+    cal_seasons = X[train_mask]["_season"] if "_season" in X.columns else None
+    sw = _compute_sample_weights(y[train_mask], seasons=cal_seasons) if use_sample_weights else None
     _fit_with_early_stopping(model, X_tr, y_tr, model_type, sample_weight=sw)
     y_proba_raw = model.predict_proba(X_te)
 

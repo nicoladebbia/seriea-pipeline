@@ -40,6 +40,8 @@ MODEL_EXTENSIONS: Dict[str, str] = {
 ODDS_COLUMN_PATTERNS: List[str] = [
     "odds_", "pinnacle_", "implied_prob_", "overround",
     "market_ou_", "sharp_soft_", "ah_line_", "market_goal_total",
+    "market_home_prob", "market_away_prob", "market_draw_prob",  # Raw implied probs (leakage)
+    "market_overround",                                         # Raw overround (leakage)
     "ou_consistency", "ou_over_prob_best", "ou_under_prob_best",
     "home_prob_best", "draw_prob_best", "away_prob_best",
     "market_elo_disagreement", "goal_total_vs_xg", "ah_x_form",
@@ -65,6 +67,13 @@ ODDS_META_KEEP: frozenset = frozenset({
     "odds_consistency",          # Bookmaker agreement level (32% coverage)
     "odds_home_fav",             # Binary home favourite flag (66% coverage)
     "sharp_soft_x_elo",          # Sharp-soft divergence × Elo interaction
+    # Odds velocity: direction of sharp money movement (Pinnacle line moves).
+    # Captures WHERE sharp bettors are moving before kickoff — strong signal
+    # for mispricings that the model can exploit. 65% coverage (Pinnacle).
+    "line_vel_pin_home",         # Pinnacle implied prob change: home (open→close)
+    "line_vel_pin_draw",         # Pinnacle implied prob change: draw
+    "line_vel_pin_away",         # Pinnacle implied prob change: away
+    "steam_move_flag",           # Binary: >3% implied prob shift (sharp steam)
 })
 
 # Reproducibility seed used everywhere
@@ -83,8 +92,16 @@ class ModelConfig:
     early_stopping_rounds: int = 50
     early_stopping_val_fraction: float = 0.15
 
-    # Draw class weight multiplier (on top of inverse-frequency balancing)
-    draw_weight_multiplier: float = 2.0
+    # Draw class weight: "auto" computes per-fold from actual draw rate,
+    # float value is a fixed multiplier (legacy). "auto" targets 1/3 effective
+    # draw weight (equal-class prior), which adapts to each fold's draw rate.
+    draw_weight_mode: str = "auto"
+    draw_weight_multiplier: float = 2.0  # Only used when draw_weight_mode != "auto"
+
+    # Time-decay: exponential decay per season gap from the most recent training
+    # season. 0.85 means a match 5 seasons old has weight 0.85^5 = 0.44.
+    # 1.0 disables time-decay (legacy). Dixon-Coles (1997) recommends ~0.85.
+    time_decay_per_season: float = 0.85
 
     xgb_params: dict = field(default_factory=lambda: {
         "objective": "multi:softprob",
@@ -147,6 +164,13 @@ class ValidationConfig:
     expanding_window: bool = True
     purge_matchweeks: int = 2  # Drop last N matchweeks from training (leakage prevention)
 
+    # Minimum season to include in training data. Seasons before this are dropped.
+    # "2017-2018" unlocks advanced features (xG, pressing, odds velocity, lineup)
+    # that have near-zero coverage pre-2017. With time-decay=0.85, pre-2017 matches
+    # contribute <4% weight anyway — dropping them loses almost nothing but unlocks
+    # the best feature sources.
+    min_train_season: str = "2017-2018"
+
 
 # ---------------------------------------------------------------------------
 # Feature selection
@@ -157,8 +181,11 @@ class FeatureConfig:
     """Feature tier thresholds and selection parameters."""
 
     # A feature is "universal" if NaN fraction < this across all seasons
-    # (applied AFTER smart imputation, so more features qualify)
-    universal_nan_threshold: float = 0.20
+    # (applied AFTER smart imputation, so more features qualify).
+    # Raised from 0.20 to 0.45: with min_train_season="2017-2018" and
+    # time-decay weighting, pre-2017 NaN doesn't matter. This unlocks
+    # xG, pressing, odds velocity, and lineup features (~90% coverage post-2017).
+    universal_nan_threshold: float = 0.45
 
     # Correlation pruning: drop less-important feature when |r| > threshold
     correlation_threshold: float = 0.70
@@ -174,6 +201,17 @@ class FeatureConfig:
 
     # Train/val split ratio for rich model evaluation
     rich_val_ratio: float = 0.20
+
+    # Recency weighting for feature selection importance averaging.
+    # Exponential decay: weight = recency_base ^ (n_folds - 1 - fold_idx).
+    # 1.0 = equal weighting (legacy), >1.0 = recent folds weighted higher.
+    # 1.5 means the last fold is weighted ~1.5^15 ≈ 437× more than fold 0.
+    recency_weight_base: float = 1.5
+
+    # Number of recent-only folds for supplementary feature selection pass.
+    # Features that rank in the top max_features in this recent-only pass
+    # are added even if they failed the all-folds pass. 0 = disabled.
+    recent_folds_for_supplement: int = 4
 
 
 # ---------------------------------------------------------------------------

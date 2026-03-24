@@ -33,6 +33,8 @@ def add_derived_features(team_log: pd.DataFrame) -> pd.DataFrame:
     df = _add_form_vs_difficulty(df)
     df = _add_goal_diff_momentum(df)
     df = _add_scoring_efficiency(df)
+    df = _add_momentum_sequences(df)
+    df = _add_opposition_adjusted_xg(df)
 
     return df
 
@@ -231,6 +233,116 @@ def _add_scoring_efficiency(df: pd.DataFrame) -> pd.DataFrame:
             .transform(lambda s: s.shift(1).rolling(5, min_periods=2).mean())
         )
         df.drop(columns=["_xg_diff"], inplace=True)
+
+    return df
+
+
+def _add_momentum_sequences(df: pd.DataFrame) -> pd.DataFrame:
+    """Momentum sequence features: gradient, EWMA, and form acceleration.
+
+    Captures DIRECTION of form changes, not just current level:
+      momentum_gradient  — linear slope of form_points over last 5 matches
+                           (positive = improving, negative = declining)
+      ewma_form          — exponentially weighted form (alpha=0.3, recent = 3x older)
+      last3_vs_prev3     — form_points_3 minus the 3 before that (acceleration)
+
+    All shifted by 1 to prevent leakage.
+    """
+    if "points" not in df.columns:
+        # Need match points (3=win, 1=draw, 0=loss) for form computations
+        if "result" in df.columns:
+            df["_pts"] = df["result"].map({"W": 3, "D": 1, "L": 0}).fillna(0)
+        elif "goals_scored" in df.columns and "goals_conceded" in df.columns:
+            gs, gc = df["goals_scored"], df["goals_conceded"]
+            df["_pts"] = np.where(gs > gc, 3, np.where(gs == gc, 1, 0))
+        else:
+            return df
+    else:
+        df["_pts"] = df["points"]
+
+    for team, grp in df.groupby("team"):
+        idx = grp.index
+        pts = grp["_pts"].shift(1)  # Previous match only
+
+        # 1. Momentum gradient: slope of form over last 5 matches
+        # Use simple linear regression slope: cov(x,y)/var(x) where x=0..4
+        rolling_vals = pts.rolling(5, min_periods=3)
+        slopes = rolling_vals.apply(
+            lambda w: np.polyfit(range(len(w)), w, 1)[0] if len(w) >= 3 else np.nan,
+            raw=False,
+        )
+        df.loc[idx, "momentum_gradient"] = slopes
+
+        # 2. EWMA form: exponentially weighted moving average (alpha=0.3)
+        # Recent matches matter ~3x more than 5 matches ago
+        df.loc[idx, "ewma_form"] = pts.ewm(alpha=0.3, min_periods=3).mean()
+
+        # 3. Last 3 vs previous 3: form acceleration
+        last3 = pts.rolling(3, min_periods=2).sum()
+        prev3 = pts.shift(3).rolling(3, min_periods=2).sum()
+        df.loc[idx, "last3_vs_prev3"] = last3 - prev3
+
+    df.drop(columns=["_pts"], inplace=True, errors="ignore")
+    return df
+
+
+def _add_opposition_adjusted_xg(df: pd.DataFrame) -> pd.DataFrame:
+    """Opposition-adjusted xG: normalize team xG by opponent defensive quality.
+
+    Like adj_attack/adj_defense but specifically for xG:
+      adj_xg_attack_5  — rolling xG-for / opponent defense strength (normalized)
+      adj_xg_defense_5 — rolling xG-against / opponent attack strength (normalized)
+
+    High adj_xg_attack = scoring well even against strong defenses.
+    High adj_xg_defense = conceding a lot even against weak attacks (bad).
+    """
+    if "xg_for" not in df.columns:
+        return df
+
+    # Need opponent strength — merge via (match_date, opponent) self-join
+    if "defense_strength" not in df.columns or "attack_strength" not in df.columns:
+        return df
+
+    # Get opponent's defensive/attacking strength at match time
+    opp_cols = ["team", "match_date", "defense_strength", "attack_strength"]
+    if not all(c in df.columns for c in opp_cols):
+        return df
+
+    opp = df[opp_cols].copy()
+    opp.columns = ["opponent", "match_date", "opp_defense_strength", "opp_attack_strength"]
+
+    if "opponent" not in df.columns:
+        return df
+
+    merged = df.merge(opp, on=["match_date", "opponent"], how="left")
+
+    # Adjusted xG attack: xg_for / opp_defense_strength
+    # Higher opp_defense_strength = opponent concedes more (weaker defense)
+    # So high adjusted xG attack means creating xG even vs solid defenses
+    if "opp_defense_strength" in merged.columns:
+        adj_xg = merged["xg_for"] / merged["opp_defense_strength"].replace(0, np.nan)
+        merged["_adj_xg_attack"] = adj_xg
+
+        merged["adj_xg_attack_5"] = (
+            merged.groupby("team")["_adj_xg_attack"]
+            .transform(lambda s: s.shift(1).rolling(5, min_periods=2).mean())
+        )
+        df["adj_xg_attack_5"] = merged["adj_xg_attack_5"].values
+
+    # Adjusted xG defense: xg_against / opp_attack_strength
+    if "xg_against" in df.columns and "opp_attack_strength" in merged.columns:
+        adj_xg_def = merged["xg_against"] / merged["opp_attack_strength"].replace(0, np.nan)
+        merged["_adj_xg_defense"] = adj_xg_def
+
+        merged["adj_xg_defense_5"] = (
+            merged.groupby("team")["_adj_xg_defense"]
+            .transform(lambda s: s.shift(1).rolling(5, min_periods=2).mean())
+        )
+        df["adj_xg_defense_5"] = merged["adj_xg_defense_5"].values
+
+    # Diff: attacking quality minus defensive vulnerability
+    if "adj_xg_attack_5" in df.columns and "adj_xg_defense_5" in df.columns:
+        df["adj_xg_balance_5"] = df["adj_xg_attack_5"] - df["adj_xg_defense_5"]
 
     return df
 

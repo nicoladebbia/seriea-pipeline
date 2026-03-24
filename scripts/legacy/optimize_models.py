@@ -57,7 +57,7 @@ def load_data_and_features():
 
 def walk_forward_cv(df: pd.DataFrame, features: List[str], target_col: str,
                     task: str = "classification", n_classes: int = 2,
-                    min_train_seasons: int = 8) -> List[Dict]:
+                    min_train_seasons: int = 5) -> List[Dict]:
     """Walk-forward CV: for each test season, train on all prior seasons.
 
     Returns list of fold results with predictions.

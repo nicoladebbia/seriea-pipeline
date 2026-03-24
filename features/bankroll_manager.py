@@ -45,10 +45,10 @@ class BankrollManager:
     """
 
     DEFAULT_CONFIG = {
-        "max_bet_pct": 0.05,          # Max 5% of bankroll per bet
+        "max_bet_pct": 0.025,         # Max 2.5% of bankroll per bet (aligned with BettingConfig)
         "max_drawdown_pct": 0.20,     # Stop at 20% drawdown
         "max_daily_loss_pct": 0.10,   # Max 10% daily loss
-        "kelly_fraction": 0.15,       # Quarter Kelly
+        "kelly_fraction": 0.10,       # 10% Kelly (aligned with BettingConfig)
         "min_bet_units": 5,           # Minimum bet in units
         "losing_streak_reduce": 3,    # Reduce bets after 3 losses
         "losing_streak_factor": 0.5,  # Reduce to 50% size
@@ -76,8 +76,17 @@ class BankrollManager:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     def load_state(self) -> bool:
-        """Load bankroll state from file."""
+        """Load bankroll state from file.
+
+        DEPRECATED: state.json is no longer the source of truth.
+        Use scripts.betting.bankroll_loader.get_effective_bankroll() instead,
+        which derives balance from bet_journal.json.
+        """
         if self.state_file.exists():
+            log.warning(
+                "DEPRECATED: loading from state.json. "
+                "Use bankroll_loader.get_effective_bankroll() for journal-derived balance."
+            )
             try:
                 with open(self.state_file) as f:
                     state = json.load(f)
@@ -466,11 +475,11 @@ def get_betting_tracker() -> BettingTracker:
 # =============================================================================
 # BACKWARD-COMPAT FUNCTIONAL API
 # Migrated from scripts/bankroll_manager.py so callers (tests, alert_system)
-# use the same Kelly fraction as production (0.15, not 0.25).
+# use the same Kelly fraction as production (0.10).
 # =============================================================================
 
-KELLY_FRACTION = BankrollManager.DEFAULT_CONFIG["kelly_fraction"]  # 0.15
-MAX_SINGLE_BET_PCT = BankrollManager.DEFAULT_CONFIG["max_bet_pct"]  # 0.05
+KELLY_FRACTION = BankrollManager.DEFAULT_CONFIG["kelly_fraction"]  # 0.10
+MAX_SINGLE_BET_PCT = BankrollManager.DEFAULT_CONFIG["max_bet_pct"]  # 0.025
 
 
 def calculate_kelly_stake(

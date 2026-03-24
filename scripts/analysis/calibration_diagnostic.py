@@ -282,7 +282,7 @@ def _predict_raw_ensemble(row, ml_model):
                 proba = ml_model.predict_proba(X)[0]
                 eps = 1e-10
                 logits = np.log(proba + eps)
-                scaled = np.exp(logits / 0.40)
+                scaled = np.exp(logits / 0.75)
                 proba = scaled / scaled.sum()
                 predictions["ml"] = {
                     "prob_H": float(proba[0]),
@@ -314,7 +314,7 @@ def _predict_raw_ensemble(row, ml_model):
 
 
 def _get_ml_probs(row, ml_model):
-    """Get raw ML probabilities (with T=0.40 sharpening)."""
+    """Get raw ML probabilities (with T=0.75 sharpening)."""
     if ml_model is None:
         return None
     try:
@@ -331,7 +331,7 @@ def _get_ml_probs(row, ml_model):
         proba = ml_model.predict_proba(X)[0]
         eps = 1e-10
         logits = np.log(proba + eps)
-        scaled = np.exp(logits / 0.40)
+        scaled = np.exp(logits / 0.75)
         proba = scaled / scaled.sum()
         return {"prob_H": float(proba[0]), "prob_D": float(proba[1]), "prob_A": float(proba[2])}
     except Exception:

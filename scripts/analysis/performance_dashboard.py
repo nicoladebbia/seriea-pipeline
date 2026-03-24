@@ -402,10 +402,14 @@ def check_feature_drift() -> dict:
             "healthy": not is_constant and std > 0.1,
         }
 
-    # Interaction features
+    # Interaction features — skip structurally sparse features
+    # (features where >95% of values are zero are not "drifted", they're just sparse)
     interact_cols = [c for c in df.columns if "_x_" in c or "combined_disruption" in c]
     for col in interact_cols:
         vals = df[col].dropna()
+        zero_pct = (vals == 0).sum() / len(vals) if len(vals) > 0 else 1
+        if zero_pct > 0.95:
+            continue  # Skip structurally sparse features
         drift_checks[col] = {
             "nunique": int(vals.nunique()),
             "std": round(float(vals.std()), 4),

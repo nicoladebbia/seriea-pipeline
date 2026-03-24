@@ -144,7 +144,7 @@ def _predict_market(row):
     return np.array([rh / t, rd / t, ra / t])
 
 
-def _predict_ml(row, model, ml_temperature=0.40):
+def _predict_ml(row, model, ml_temperature=0.75):
     if model is None:
         return None
     try:
@@ -170,7 +170,7 @@ def _predict_ml(row, model, ml_temperature=0.40):
 # --------------------------------------------------------------------------
 # Ensemble with parameterized weights/draw_boost/temperature
 # --------------------------------------------------------------------------
-def _ensemble_predict(row, model, weights, draw_boost, temperature, ml_temperature=0.40):
+def _ensemble_predict(row, model, weights, draw_boost, temperature, ml_temperature=0.75):
     """Predict with given ensemble parameters."""
     preds = {}
     preds["factor"] = _predict_factor(row)
@@ -211,7 +211,7 @@ def _ensemble_predict(row, model, weights, draw_boost, temperature, ml_temperatu
     return prob
 
 
-def _evaluate(df, model, weights, draw_boost, temperature, ml_temperature=0.40):
+def _evaluate(df, model, weights, draw_boost, temperature, ml_temperature=0.75):
     """Evaluate log-loss and draw F1 on a DataFrame.
 
     Returns (log_loss, draw_f1, n_matches).
@@ -250,7 +250,7 @@ def _evaluate(df, model, weights, draw_boost, temperature, ml_temperature=0.40):
     return ll, draw_f1, n
 
 
-def _evaluate_accuracy(df, model, weights, draw_boost, temperature, ml_temperature=0.40):
+def _evaluate_accuracy(df, model, weights, draw_boost, temperature, ml_temperature=0.75):
     """Evaluate accuracy + log-loss."""
     total_ll = 0
     correct = 0
@@ -416,9 +416,9 @@ def main():
         "factor": 0.035, "xg": 0.124, "ml": 0.605,
         "player_xg": 0.032, "market": 0.205,
     }
-    current_draw_boost = 1.28
-    current_temperature = 1.08
-    current_ml_temperature = 0.40
+    current_draw_boost = 1.12
+    current_temperature = 0.90
+    current_ml_temperature = 0.75
 
     log.info("\nCurrent (production) weights performance per fold:")
     current_fold_lls = []

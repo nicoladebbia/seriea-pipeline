@@ -271,9 +271,9 @@ Per-situation baselines: high_elo_diff 63.3% (best), close_match 40.7% (worst), 
 **New learnings:**
 1. Scheduler lineup fetch was silently failing since Feb 16 deployment — import path was wrong until fixed today.
 2. Substitution features add no signal despite temporal leakage prevention. 41.4% coverage insufficient.
-3. CatBoost is non-negotiable for no-odds classification — 51% vs 40-43% on same data. NaN handling and ordered boosting essential.
-4. No-odds model ceiling is ~51-52% — architectural limit, not feature shortage. Improvements require odds incorporation or ensemble architecture changes.
-5. Post-hoc calibration (Platt, isotonic, temperature) overfits with 380 samples/fold. Raw ensemble T=1.0 is optimal.
+3. CatBoost is non-negotiable for no-odds classification — 51% vs 40-43% on same data (with all-data training). NaN handling and ordered boosting essential.
+4. No-odds model ceiling WAS ~51-52% with all-data training — broken by 2017+ data + time-decay 0.85 + auto draw weights → 61.55% CV accuracy (Mar 23 2026).
+5. Post-hoc calibration (Platt, isotonic, temperature) overfits with 380 samples/fold. Raw ensemble T=1.0 is optimal on old data; T=0.75 + blend calibrator works on 2017+ data.
 
 **Files modified:**
 - `scripts/pipeline/scheduler.py` — Fixed lineup fetch import
@@ -297,4 +297,4 @@ Per-situation baselines: high_elo_diff 63.3% (best), close_match 40.7% (worst), 
 - Substitution features → feature selection eliminates them
 - XGBoost / LightGBM for 1X2 → 40-43% accuracy, dead ends
 - Post-hoc calibration → worsens ECE on every fold
-- Adding more features to improve accuracy → ceiling is ~51-52%, architectural constraint
+- Adding more features to improve accuracy with all-data training → old ceiling ~51-52% (broken by 2017+ data, Mar 23)

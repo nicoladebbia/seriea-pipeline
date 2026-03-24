@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -75,27 +76,96 @@ def _load_understat_ppda() -> dict[tuple[str, str], dict]:
             log.warning("Failed to load %s: %s", fpath, e)
             continue
 
-        teams = data.get("teams", {})
-        for team_data in teams.values():
-            team_name = _normalize_team(team_data.get("title", ""))
-            if not team_name:
-                continue
+        # Handle both formats:
+        #   Old: {"teams": {"team_id": {"title": ..., "history": [...]}}}
+        #   New: [{"h": {"title": ..., "ppda": ...}, "a": {"title": ..., "ppda": ...}}]
+        if isinstance(data, dict) and "teams" in data:
+            # Old format: team-grouped
+            teams = data.get("teams", {})
+            for team_data in teams.values():
+                team_name = _normalize_team(team_data.get("title", ""))
+                if not team_name:
+                    continue
+                history = team_data.get("history", [])
+                ppda_values = []
+                ppda_allowed_values = []
+                for match in history:
+                    ppda_raw = match.get("ppda", {})
+                    ppda_allowed_raw = match.get("ppda_allowed", match.get("ppda_Allowed", {}))
+                    att = ppda_raw.get("att", 0)
+                    def_actions = ppda_raw.get("def", 0)
+                    if def_actions > 0:
+                        ppda_values.append(att / def_actions)
+                    att_a = ppda_allowed_raw.get("att", 0)
+                    def_a = ppda_allowed_raw.get("def", 0)
+                    if def_a > 0:
+                        ppda_allowed_values.append(att_a / def_a)
+                if ppda_values:
+                    cache[(team_name, season)] = {
+                        "ppda_avg": np.mean(ppda_values),
+                        "ppda_std": np.std(ppda_values) if len(ppda_values) > 1 else 0,
+                        "ppda_allowed_avg": np.mean(ppda_allowed_values) if ppda_allowed_values else 12.0,
+                        "n_matches": len(ppda_values),
+                    }
+            continue  # Skip to next file
 
-            history = team_data.get("history", [])
-            if not history:
-                continue
+        elif isinstance(data, list):
+            # New format: list of matches with h/a team data
+            team_ppda = defaultdict(list)
+            team_ppda_allowed = defaultdict(list)
+            for match in data:
+                if not match.get("isResult"):
+                    continue
+                for side in ["h", "a"]:
+                    side_data = match.get(side, {})
+                    if isinstance(side_data, dict):
+                        team_name = _normalize_team(side_data.get("title", ""))
+                        if not team_name:
+                            continue
+                        ppda_raw = side_data.get("ppda", {})
+                        if isinstance(ppda_raw, dict):
+                            att = ppda_raw.get("att", 0)
+                            def_actions = ppda_raw.get("def", 0)
+                            if def_actions > 0:
+                                team_ppda[(team_name, season)].append(att / def_actions)
+                        opp_side = "a" if side == "h" else "h"
+                        opp_data = match.get(opp_side, {})
+                        if isinstance(opp_data, dict):
+                            opp_ppda = opp_data.get("ppda", {})
+                            if isinstance(opp_ppda, dict):
+                                att_a = opp_ppda.get("att", 0)
+                                def_a = opp_ppda.get("def", 0)
+                                if def_a > 0:
+                                    team_ppda_allowed[(team_name, season)].append(att_a / def_a)
 
-            ppda_values = []
-            ppda_allowed_values = []
+            for key, values in team_ppda.items():
+                if values:
+                    allowed = team_ppda_allowed.get(key, [])
+                    cache[key] = {
+                        "ppda_avg": np.mean(values),
+                        "ppda_std": np.std(values) if len(values) > 1 else 0,
+                        "ppda_allowed_avg": np.mean(allowed) if allowed else 12.0,
+                        "n_matches": len(values),
+                    }
+            continue  # Skip old format block below
 
-            for match in history:
-                ppda_raw = match.get("ppda", {})
-                ppda_allowed_raw = match.get("ppda_allowed", match.get("ppda_Allowed", {}))
+        else:
+            log.warning("Unknown Understat format in %s: %s", fpath.name, type(data).__name__)
+            continue
 
-                att = ppda_raw.get("att", 0)
-                def_actions = ppda_raw.get("def", 0)
-                if def_actions > 0:
-                    ppda_values.append(att / def_actions)
+        # Legacy fallback (should not reach here with new code)
+        teams = {}
+        ppda_values = []
+        ppda_allowed_values = []
+
+        for match in []:  # Dead code, kept for structure
+            ppda_raw = match.get("ppda", {})
+            ppda_allowed_raw = match.get("ppda_allowed", match.get("ppda_Allowed", {}))
+
+            att = ppda_raw.get("att", 0)
+            def_actions = ppda_raw.get("def", 0)
+            if def_actions > 0:
+                ppda_values.append(att / def_actions)
 
                 att_a = ppda_allowed_raw.get("att", 0)
                 def_a = ppda_allowed_raw.get("def", 0)

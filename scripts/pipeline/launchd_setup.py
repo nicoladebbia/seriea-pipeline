@@ -36,7 +36,6 @@ JOBS = [
         "mode": "once",
         "hour": 8,
         "minute": 0,
-        "bankroll": 1000,
     },
     {
         "name": "evening",
@@ -45,7 +44,6 @@ JOBS = [
         "mode": "once",
         "hour": 20,
         "minute": 0,
-        "bankroll": 1000,
     },
     {
         "name": "pre-kickoff-monitor",
@@ -53,7 +51,6 @@ JOBS = [
         "description": "Smart pre-kickoff: checks actual match times every 30 min",
         "mode": "pre-kickoff-monitor",
         "interval_seconds": 1800,  # Every 30 minutes
-        "bankroll": 1000,
     },
     {
         "name": "settlement",
@@ -62,7 +59,6 @@ JOBS = [
         "mode": "settle",
         "hour": 23,
         "minute": 30,
-        "bankroll": 1000,
     },
     {
         "name": "weekly-monitor",
@@ -76,10 +72,10 @@ JOBS = [
     {
         "name": "matchweek-retrain",
         "label": f"{LABEL_PREFIX}.matchweek-retrain",
-        "description": "Nightly check: if matchweek complete, retrain models (quick or full auto-detect)",
+        "description": "Post-morning check: if matchweek complete, retrain all models (ensemble + no-odds + xG)",
         "mode": "matchweek-retrain",
-        "hour": 0,
-        "minute": 15,
+        "hour": 9,
+        "minute": 30,
         "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.weekly_retrain"],
     },
     {

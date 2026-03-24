@@ -58,11 +58,11 @@ def load_rejection_thresholds() -> Dict[str, float]:
     """Load rejection thresholds from deployment_state.json."""
     deploy_path = MODELS_DIR / "deployment_state.json"
     if not deploy_path.exists():
-        # Fallback to hardcoded thresholds
+        # Fallback thresholds (calibrated for 2017+ model with time-decay)
         return {
-            "accuracy_min": 0.50,
-            "log_loss_max": 0.99,
-            "brier_max": 0.20,
+            "accuracy_min": 0.55,
+            "log_loss_max": 0.92,
+            "brier_max": 0.18,
             "betting_yield_min": 0.05,
         }
 
@@ -70,9 +70,9 @@ def load_rejection_thresholds() -> Dict[str, float]:
         state = json.load(f)
 
     return state.get("rejection_thresholds", {
-        "accuracy_min": 0.50,
-        "log_loss_max": 0.99,
-        "brier_max": 0.20,
+        "accuracy_min": 0.55,
+        "log_loss_max": 0.92,
+        "brier_max": 0.18,
         "betting_yield_min": 0.05,
     })
 
@@ -115,7 +115,8 @@ def walk_forward_validate(
         y_test_str = y_test_str.reset_index(drop=True)
 
         model = CatBoostClassifier(**params)
-        sample_weights = _compute_sample_weights(y_train)
+        train_seasons = X_train_with_meta["_season"] if "_season" in X_train_with_meta.columns else None
+        sample_weights = _compute_sample_weights(y_train, seasons=train_seasons)
 
         model.fit(
             X_train, y_train,
@@ -152,7 +153,8 @@ def train_final_model(
 ) -> CatBoostClassifier:
     """Train final model on all available data."""
     X_train = _strip_meta(X)
-    sample_weights = _compute_sample_weights(y)
+    all_seasons = X["_season"] if "_season" in X.columns else None
+    sample_weights = _compute_sample_weights(y, seasons=all_seasons)
 
     model = CatBoostClassifier(**params)
     model.fit(X_train, y, sample_weight=sample_weights, verbose=100)
@@ -204,6 +206,15 @@ def main(dry_run: bool = False):
     # Add _season column if needed (for walk-forward splitting)
     if "_season" not in df.columns and "season" in df.columns:
         df["_season"] = df["season"]
+
+    # Apply min_train_season filter (2017+ only — unlocks xG, lineup, odds velocity)
+    min_season = ValidationConfig().min_train_season
+    if min_season and "_season" in df.columns:
+        before = len(df)
+        df = df[df["_season"] >= min_season].copy()
+        y_str = y_str.loc[df.index].copy()
+        y = y.loc[df.index].copy()
+        log.info(f"min_train_season={min_season}: {before} -> {len(df)} rows")
 
     # Check that all required features exist (except _has_* indicators which are added at prediction time)
     metadata_indicators = ["_has_gk_data", "_has_shot_data", "_has_odds"]
@@ -370,6 +381,15 @@ def main(dry_run: bool = False):
     else:
         deploy_state = {}
 
+    # Track which model is the active production ML classifier
+    deploy_state["active_ml_model"] = {
+        "name": "catboost_no_odds",
+        "path": "universal/catboost_no_odds.cbm",
+        "metadata_path": "universal/catboost_no_odds_metadata.json",
+        "n_features": len(feature_names),
+        "last_trained": datetime.now(timezone.utc).isoformat(),
+    }
+
     deploy_state["metrics"] = {
         "accuracy": round(last3_acc, 3),
         "log_loss": round(last3_ll, 4),
@@ -382,9 +402,9 @@ def main(dry_run: bool = False):
     deploy_state["history"] = deploy_state.get("history", [])
     deploy_state["history"].append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": "retrain_aligned_features",
+        "action": "retrain_no_odds",
         "model": "catboost_no_odds.cbm",
-        "reason": "Retrained after training-serving skew fixes (6 feature alignment bugs fixed in ensemble_prediction_engine.py)",
+        "n_features": len(feature_names),
         "metrics": {
             "accuracy": round(last3_acc, 4),
             "log_loss": round(last3_ll, 4),

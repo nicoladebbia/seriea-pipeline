@@ -74,29 +74,58 @@
 
 ## Planned Improvements
 
-### High Priority (clear ROI, should do next)
+> **See also:** `.claude/system_guide.md` Section 13 (Research Frontier) for detailed
+> implementation notes, risks, and prerequisites for each item below.
 
-- **Scale bankroll**: Increase weekly staking from ~EUR 140 to EUR 500-1,000 — +9.2% ROI is proven, bet bigger
-- **Premier League expansion**: Add EPL data, scrapers, models — doubles bet volume, diversifies risk. Infrastructure exists in `config/settings.py` LEAGUES dict.
-- **Walk-forward backtest fix**: Production CatBoost is trained on ALL data — backtest ROI is inflated by data leakage. Need proper walk-forward retraining per backtest fold for reliable historical analysis.
-- **Confirmed lineups integration**: Sofascore fetcher works, lineup data flows to ensemble (player_xg 5%→12%, O/U lineup_xg 15%→40%). Need to verify on live matchday that scheduler T-60min fetch triggers correctly.
+### Tier 0: Fix Known Bugs Degrading Current Performance
 
-### Medium Priority (good ideas, need validation)
+These are not improvements — they are documented bugs actively hurting results.
 
-- **Specialized draw model**: Current 1X2 disabled because model can't predict draws accurately enough (28% WR, need 31%). A dedicated draw classifier trained on draw-specific features could re-enable 1X2 draws profitably.
-- **Learn from mistakes feedback loop**: Track prediction errors by game conditions (form, injuries, weather) and feed back into next prediction. Currently `learning_loop.py` exists but doesn't track errors by condition.
-- **Feature drift monitoring**: Alert when feature importance shifts significantly between training runs
-- **LiveBiasCorrector activation**: `features/prediction_calibration.py` will auto-activate once 30+ predictions settle with fair_odds_ledger data
-- **Test coverage expansion**: Increase test coverage for `ml/` and `features/` modules
+- ~~**Feature selection fold-0 bias** (KB #37)~~: **FIXED (2026-03-22).** `ml/feature_selection.py` now uses recency-weighted importance averaging (exponential decay, base=1.5) + supplementary recent-folds pass (last 4 folds). Modern Sofascore/FBref features are no longer penalized by early-fold imputation. Next: retrain to see how many new features are recovered.
+- ~~**Walk-forward backtest leakage**~~: **FIXED (2026-03-22).** `ml/ensemble.py` has `build_fold_models()` / `load_fold_model()` for per-fold CatBoost persistence. `backtest_multimarket.py --walk-forward` flag. Results now include `evaluation_type` and leakage warnings. Next: build fold models and re-run production backtest for honest ROI.
+- ~~**Deployment state uncertainty** (KB #19)~~: **FIXED (2026-03-22).** Two models exist by design: catboost_no_odds (`catboost_no_odds_metadata.json`) and ensemble (`training_report.json`). `deployment_state.json` has `active_ml_model` field. `health_check.py` validates consistency at runtime.
 
-### Low Priority (nice-to-have, future)
+### Tier 1: Change the Optimization Target
 
-- **Multi-league support**: La Liga, Bundesliga (after EPL proves the architecture generalizes)
-- **Live in-play predictions**: Real-time probability updates during matches
-- **Automated retraining**: Scheduled model retraining as new season data accumulates
-- **API endpoint**: REST API for predictions (replacing Flask dashboard)
-- **Historical backtest dashboard**: Interactive visualization of historical prediction accuracy
-- **Transfer window impact**: Better modeling of January/summer window effects on team strength
+The system optimizes for 1X2 classification accuracy. But money comes from calibrated probabilities in specific market contexts. Accuracy is the wrong metric.
+
+- **Train for calibration, not accuracy**: Custom eval metric = Brier score or ECE instead of log-loss/accuracy. A 50% accurate model with perfect calibration makes more money via Kelly than a 54% accurate model with poor calibration.
+- **Closing Line Value (CLV) as training signal**: Target = `(model_fair_odds / closing_odds) - 1`. `fair_odds_ledger.json` has 1,261 predictions. `clv_history.json` has per-bet CLV. A model that beats the closing line prints money regardless of accuracy.
+- **Situation-weighted loss**: Weight training samples by situational tag profitability. Derbies, promoted teams, manager changes — these are where ROI lives. `Pool()` sample weights in CatBoost.
+
+### Tier 2: Unlock Underutilized Market Signals
+
+The system collects rich market microstructure data but uses it only as multiplicative confidence adjustments (0.3x-1.15x). These signals could be fundamental.
+
+- **Promote odds velocity features to ODDS_META_KEEP**: 14 `line_vel_*` features are excluded despite capturing sharp money direction. Add `line_vel_pin_home/draw/away` and `steam_move_flag` to `ml/config.py:ODDS_META_KEEP`. 15-minute fix, then retrain.
+- **Market microstructure edge modifier**: Replace flat 0.70x-1.15x adjustments with a learned function of (raw_edge, steam_direction, sharp_soft_divergence, odds_consistency, overround, bookmaker_count). A 6% edge with 20 bookmakers and sharps agreeing ≠ 6% edge in a thin market with sharps moving against you.
+- **Bookmaker-specific CLV analysis**: `clv_history.json` records which bookmaker gave best price. Which books systematically offer better CLV per market type? Pure analysis, no model changes.
+- **Activate StaticCorrector**: `correction_layer.py` logistic regression corrector was waiting for 30+ settled predictions. `fair_odds_ledger.json` now has 1,261 entries. Check activation condition and deploy.
+
+### Tier 3: Situation-Specific Models
+
+One universal model + post-hoc adjustments leaves money on the table for subpopulations that behave fundamentally differently.
+
+- **Specialist ensemble**: Separate CatBoost models for derbies, promoted teams, post-international break, manager change matches. Use specialist when tag matches, universal otherwise. Derby specialist MVP: pool all derbies across 21 seasons (~150 matches), train, compare calibration.
+- **Regime-aware ensemble weights**: Rule-based market regime detector → dynamic weight overrides. Early season → boost factor model. Late season → boost ML. Volatile odds day → boost market weight. Similar to situational edge adjustments but applied to ensemble blending.
+
+### Tier 4: Scale Data via Multi-League Expansion
+
+Multiple research paths are blocked by sample size (meta-learner needs 5K+, specialists need more per-situation data). This is the structural unlock.
+
+- **Premier League first**: Infrastructure exists in `config/settings.py` LEAGUES dict. FBref + Sofascore coverage is excellent. 5 leagues × 380 matches/season × 21 seasons = ~40K matches. Meta-learner becomes viable. Specialists become viable. Fold-0 bias disappears.
+- **La Liga, Bundesliga, Ligue 1**: After EPL proves the architecture generalizes. Need league indicator features or separate per-league models.
+
+### Tier 5: Post-Prediction Edge
+
+- **Live odds monitoring for entry timing**: Don't bet immediately. Set target odds, wait for market movement. If odds lengthen, bet at better value. `scheduler.py` already has time-based triggers.
+- **Scale bankroll**: +9.2% ROI without 1X2, 70% CLV beat rate. EUR 140/week → EUR 500-1,000.
+
+### Deprioritized (moved from previous roadmap)
+
+- **Live in-play predictions**: Real-time probability updates during matches (complex, unclear ROI)
+- **API endpoint**: REST API for predictions (not needed until multi-user)
+- **Transfer window impact**: Better modeling of window effects (feature already exists in `features/transfer_window.py`, low importance)
 
 ## Historical Documentation
 

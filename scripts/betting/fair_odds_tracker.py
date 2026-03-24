@@ -288,12 +288,18 @@ def _load_results() -> Dict:
         try:
             with open(journal_path) as f:
                 journal = json.load(f)
-            for entry in journal:
-                if entry.get("result") and entry.get("match"):
+            # Journal is {"metadata": ..., "bets": {id: {...}, ...}}
+            bets = journal.get("bets", journal)
+            if isinstance(bets, dict):
+                bets = list(bets.values())
+            for entry in bets:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("result_score") and entry.get("match"):
                     mk = entry["match"]
                     if mk not in results:
                         results[mk] = {}
-                    score = entry.get("actual_score") or entry.get("score")
+                    score = entry.get("result_score") or entry.get("actual_score")
                     if score:
                         results[mk]["score"] = score
         except (json.JSONDecodeError, IOError):

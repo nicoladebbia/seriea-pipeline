@@ -72,7 +72,14 @@ def importance_based_selection(
 ) -> Tuple[list[str], Dict[str, float]]:
     """Select features by training on all data and ranking by importance.
 
-    Uses walk-forward averaged importance to avoid lookahead bias.
+    Uses recency-weighted walk-forward importance to avoid both lookahead
+    bias AND the fold-0 bias that penalizes modern features (KB#37).
+
+    Modern features (Sofascore 2022+, FBref 2017+) are imputed to 0.0 in
+    early folds, making them appear uninformative. To fix this:
+    1. Exponential recency weighting: recent folds count much more
+    2. Supplementary recent-folds pass: catches features invisible to
+       early folds entirely
 
     Returns (selected_feature_names, importance_dict).
     """
@@ -85,9 +92,20 @@ def importance_based_selection(
     config = ValidationConfig()
     splitter = TimeSeriesSplitter(config)
     splits = splitter.generate_splits(X["_season"])
+    n_folds = len(splits)
 
     y_int = y.map(LABEL_MAP)
-    importance_accum: Dict[str, list[float]] = {f: [] for f in feature_names}
+
+    # Accumulate (importance, weight) pairs per feature
+    importance_accum: Dict[str, List[Tuple[float, float]]] = {f: [] for f in feature_names}
+
+    # Compute recency weights: weight = base ^ (n_folds - 1 - fold_idx)
+    # Last fold gets weight=1.0, earlier folds get exponentially less
+    recency_base = feat_cfg.recency_weight_base
+    fold_weights = [
+        recency_base ** (n_folds - 1 - i) if recency_base > 1.0 else 1.0
+        for i in range(n_folds)
+    ]
 
     for fold_idx, (train_seasons, _) in enumerate(splits):
         train_mask = X["_season"].isin(train_seasons)
@@ -95,9 +113,7 @@ def importance_based_selection(
         X_tr = X_tr[feature_names]
         y_tr = y_int[train_mask]
 
-        # Per-feature coverage in this fold's training data.
-        # Features with <10% non-NaN coverage are not meaningfully evaluated
-        # by the model (e.g., Sofascore features on pre-2022 folds).
+        # Per-feature coverage: fraction of non-NaN values in this fold
         coverage = X_tr.notna().mean()
 
         if params is None:
@@ -108,36 +124,111 @@ def importance_based_selection(
             p = params
 
         model = _build_model(model_type, p)
-        sw = _compute_sample_weights(y[train_mask])
+        train_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
+        sw = _compute_sample_weights(y[train_mask], seasons=train_seasons_s)
         _fit_with_early_stopping(model, X_tr, y_tr, model_type, sample_weight=sw)
 
+        w = fold_weights[fold_idx]
         imp = model.feature_importances_
         for feat, score in zip(feature_names, imp):
-            # Only count importance when the feature has real data in this
-            # fold. Without this guard, features available only in recent
-            # seasons (Sofascore from 2022, FBref from 2017) get zero
-            # importance on early folds, diluting their average and
-            # causing them to be pruned despite being informative.
             if coverage.get(feat, 0) > 0.10:
-                importance_accum[feat].append(score)
+                importance_accum[feat].append((score, w))
 
-    # Average importance across folds
-    avg_importance = {
-        feat: float(np.mean(scores)) for feat, scores in importance_accum.items()
-    }
+    # Weighted average importance across folds
+    avg_importance: Dict[str, float] = {}
+    for feat, pairs in importance_accum.items():
+        if not pairs:
+            avg_importance[feat] = float("nan")
+            continue
+        scores, weights = zip(*pairs)
+        total_w = sum(weights)
+        if total_w > 0:
+            avg_importance[feat] = float(sum(s * w for s, w in pairs) / total_w)
+        else:
+            avg_importance[feat] = float("nan")
 
-    # Sort by importance
-    sorted_feats = sorted(avg_importance.items(), key=lambda x: x[1], reverse=True)
+    # Sort by importance (NaN sorts to bottom)
+    sorted_feats = sorted(
+        avg_importance.items(),
+        key=lambda x: x[1] if not np.isnan(x[1]) else -1,
+        reverse=True,
+    )
 
     # Apply selection criteria
     if top_k is not None:
-        selected = [f for f, s in sorted_feats[:top_k]]
+        selected = [f for f, s in sorted_feats[:top_k] if not np.isnan(s)]
     else:
-        selected = [f for f, s in sorted_feats if s > threshold]
+        selected = [f for f, s in sorted_feats if not np.isnan(s) and s > threshold]
+
+    # --- Supplementary recent-folds pass (KB#37 fix) ---
+    # Run feature selection on only the last N folds where modern features
+    # have real data. Add any features that rank highly in this pass.
+    n_recent = feat_cfg.recent_folds_for_supplement
+    if n_recent > 0 and n_folds > n_recent:
+        recent_splits = splits[-n_recent:]
+        recent_importance: Dict[str, List[float]] = {f: [] for f in feature_names}
+
+        for train_seasons, _ in recent_splits:
+            train_mask = X["_season"].isin(train_seasons)
+            X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+            X_tr = X_tr[feature_names]
+            y_tr = y_int[train_mask]
+            coverage = X_tr.notna().mean()
+
+            if params is None:
+                from ml.config import ModelConfig
+                cfg = ModelConfig()
+                p = cfg.xgb_params if model_type == "xgboost" else cfg.lgb_params
+            else:
+                p = params
+
+            model = _build_model(model_type, p)
+            recent_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
+            sw = _compute_sample_weights(y[train_mask], seasons=recent_seasons_s)
+            _fit_with_early_stopping(model, X_tr, y_tr, model_type, sample_weight=sw)
+
+            imp = model.feature_importances_
+            for feat, score in zip(feature_names, imp):
+                if coverage.get(feat, 0) > 0.10:
+                    recent_importance[feat].append(score)
+
+        # Average recent-only importance
+        recent_avg = {
+            feat: float(np.mean(scores)) if scores else float("nan")
+            for feat, scores in recent_importance.items()
+        }
+        recent_sorted = sorted(
+            recent_avg.items(),
+            key=lambda x: x[1] if not np.isnan(x[1]) else -1,
+            reverse=True,
+        )
+
+        # Add top features from recent pass that aren't already selected
+        selected_set = set(selected)
+        n_supplement = max(0, feat_cfg.max_features - len(selected))
+        n_added = 0
+        for feat, score in recent_sorted:
+            if n_added >= n_supplement:
+                break
+            if feat not in selected_set and not np.isnan(score) and score > threshold:
+                selected.append(feat)
+                selected_set.add(feat)
+                n_added += 1
+                # Update avg_importance with the recent-only score so
+                # correlation pruning can rank it correctly
+                avg_importance[feat] = score
+
+        if n_added > 0:
+            log.info(
+                "Supplementary recent-folds pass added %d modern features "
+                "(from last %d folds)",
+                n_added, n_recent,
+            )
 
     log.info(
-        "Feature selection: %d -> %d features (top_k=%s, threshold=%s)",
-        len(feature_names), len(selected), top_k, threshold,
+        "Feature selection: %d -> %d features (top_k=%s, threshold=%s, "
+        "recency_base=%.1f)",
+        len(feature_names), len(selected), top_k, threshold, recency_base,
     )
     return selected, avg_importance
 

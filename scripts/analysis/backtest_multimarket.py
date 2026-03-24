@@ -417,10 +417,12 @@ class MultiMarketBacktest:
         seasons: List[str],
         edge_thresholds: List[float] = None,
         use_lineup_xg: bool = True,
+        walk_forward: bool = False,
     ):
         self.seasons = seasons
         self.thresholds = edge_thresholds or EDGE_THRESHOLDS
         self.use_lineup_xg = use_lineup_xg
+        self.walk_forward = walk_forward
         self.df: Optional[pd.DataFrame] = None
         self.lineup_db: Optional[pd.DataFrame] = None
         self.lineup_predictor = None
@@ -495,6 +497,16 @@ class MultiMarketBacktest:
 
         # Import 1X2 ensemble predictor
         from scripts.analysis.backtest_unified import predict_ensemble
+
+        # Enable walk-forward mode if requested (uses per-fold models, no leakage)
+        if self.walk_forward:
+            from scripts.analysis.backtest_unified import enable_walk_forward_backtest
+            if enable_walk_forward_backtest():
+                log.info("Walk-forward backtest: using per-fold models (leakage-free)")
+            else:
+                log.warning("Walk-forward requested but no fold models found. "
+                            "Run `from ml.ensemble import build_fold_models; build_fold_models()` first. "
+                            "Falling back to all-data model (in-sample).")
 
         # Collect all bets across all thresholds
         all_bets: Dict[float, List[BetRecord]] = {t: [] for t in self.thresholds}
@@ -573,10 +585,17 @@ class MultiMarketBacktest:
             "total_matches": n_total,
             "matches_with_lineup": n_with_lineup,
             "use_lineup_xg": self.use_lineup_xg,
+            "walk_forward": self.walk_forward,
+            "evaluation_type": "out-of-sample" if self.walk_forward else "in-sample",
             "thresholds": self.thresholds,
             "flat_stake": FLAT_STAKE,
             "run_date": datetime.now().isoformat(),
         }
+        if not self.walk_forward:
+            results["meta"]["leakage_warning"] = (
+                "ML predictions use all-data model (in-sample). "
+                "ROI may be overstated by 2-5pp. Use walk_forward=True for honest evaluation."
+            )
         return results
 
     # --- Production simulation ---
@@ -627,12 +646,12 @@ class MultiMarketBacktest:
         self,
         staking: str = "proportional",
         bankroll_start: float = 1000.0,
-        kelly_fraction: float = 0.15,
+        kelly_fraction: float = 0.10,
         proportional_pct: float = 2.0,
-        max_stake_pct: float = 5.0,
+        max_stake_pct: float = 2.5,
         draw_min_edge: float = 0.04,
         ou_min_edge: float = 0.06,
-        max_edge: float = 0.15,
+        max_edge: float = 0.08,
         enable_1x2_home: bool = False,
         enable_1x2_away: bool = True,
         home_min_edge: float = 0.07,
@@ -649,7 +668,7 @@ class MultiMarketBacktest:
 
         Staking modes:
         - "flat": fixed FLAT_STAKE per bet (legacy, for comparison)
-        - "kelly": fractional Kelly, sized by edge (kelly_fraction default 0.15)
+        - "kelly": fractional Kelly, sized by edge (kelly_fraction default 0.10)
         - "proportional": fixed % of current bankroll (default 2%)
         """
         if self.df is None or self.df.empty:
@@ -657,6 +676,14 @@ class MultiMarketBacktest:
 
         from scripts.analysis.backtest_unified import predict_ensemble
         from scripts.betting.betting_unified import calculate_kelly
+
+        # Enable walk-forward mode if requested
+        if self.walk_forward:
+            from scripts.analysis.backtest_unified import enable_walk_forward_backtest
+            if enable_walk_forward_backtest():
+                log.info("Walk-forward production backtest: per-fold models (leakage-free)")
+            else:
+                log.warning("Walk-forward requested but no fold models. Using all-data model.")
 
         # Production rules (parameterized, defaults from Phase 7 threshold sweep)
         DRAW_MIN_EDGE = draw_min_edge
@@ -1322,7 +1349,7 @@ def print_production_report(results: Dict):
         bankroll_start = staking.get("bankroll_start", 1000)
         bankroll_final = staking.get("bankroll_final", 0)
         if mode == "kelly":
-            print(f"Staking: Kelly {staking.get('kelly_fraction', 0.15):.0%} "
+            print(f"Staking: Kelly {staking.get('kelly_fraction', 0.10):.0%} "
                   f"| Bankroll: €{bankroll_start:.0f} → €{bankroll_final:.0f}")
         elif mode == "proportional":
             print(f"Staking: Proportional {staking.get('proportional_pct', 2.0):.1f}% "
@@ -1424,12 +1451,21 @@ def main():
         help="Starting bankroll (default: 1000)",
     )
     parser.add_argument(
-        "--kelly-fraction", type=float, default=0.15,
-        help="Kelly fraction for kelly staking (default: 0.15)",
+        "--kelly-fraction", type=float, default=0.10,
+        help="Kelly fraction for kelly staking (default: 0.10)",
     )
     parser.add_argument(
         "--prop-pct", type=float, default=2.0,
         help="Proportional stake %% for proportional staking (default: 2.0)",
+    )
+    parser.add_argument(
+        "--walk-forward", action="store_true",
+        help="Use per-fold models for leakage-free out-of-sample evaluation. "
+             "Requires fold models (run: python -c 'from ml.ensemble import build_fold_models; build_fold_models()')",
+    )
+    parser.add_argument(
+        "--build-fold-models", action="store_true",
+        help="Build per-fold models before running backtest (takes a few minutes)",
     )
 
     args = parser.parse_args()
@@ -1439,9 +1475,17 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
+    # Build fold models if requested
+    if args.build_fold_models:
+        log.info("Building per-fold models for walk-forward backtesting...")
+        from ml.ensemble import build_fold_models
+        build_fold_models()
+        log.info("Fold models built successfully.")
+
     bt = MultiMarketBacktest(
         seasons=args.seasons,
         use_lineup_xg=args.use_lineup_xg,
+        walk_forward=args.walk_forward or args.build_fold_models,
     )
 
     if not bt.load_data():

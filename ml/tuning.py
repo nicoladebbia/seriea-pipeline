@@ -26,18 +26,81 @@ log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-def _compute_sample_weights(y: pd.Series) -> np.ndarray:
-    """Compute inverse-frequency class weights with draw boost for balanced training."""
+def _compute_sample_weights(
+    y: pd.Series,
+    seasons: pd.Series | None = None,
+) -> np.ndarray:
+    """Compute sample weights: class balancing × draw correction × time decay.
+
+    Three multiplicative components:
+    1. Inverse-frequency class weights (sklearn standard)
+    2. Draw weight correction: adapts to actual draw rate in this fold
+       - "auto" mode: targets 1/3 effective draw weight (equal-class prior)
+       - fixed mode: uses draw_weight_multiplier (legacy, hardcoded 2.0)
+    3. Time decay: exponential decay per season gap from most recent training
+       season (Dixon-Coles 1997). Newer matches influence the model more.
+
+    Args:
+        y: Target labels (H/D/A strings or 0/1/2 ints)
+        seasons: Season strings aligned with y, for time-decay computation.
+                 If None, time-decay is skipped.
+    """
     from ml.config import ModelConfig
     mc = ModelConfig()
+
+    # --- 1. Inverse-frequency class weights ---
     counts = y.value_counts()
     total = len(y)
     n_classes = len(counts)
-    weights = {cls: total / (n_classes * cnt) for cls, cnt in counts.items()}
-    # Boost draw class weight to improve draw prediction
-    if "D" in weights:
-        weights["D"] *= mc.draw_weight_multiplier
-    return y.map(weights).values
+    class_weights = {cls: total / (n_classes * cnt) for cls, cnt in counts.items()}
+
+    # --- 2. Draw weight correction ---
+    draw_key = "D" if "D" in class_weights else (1 if 1 in class_weights else None)
+    if draw_key is not None:
+        if mc.draw_weight_mode == "auto":
+            # Target: draws should have effective weight = 1/3 of total.
+            # Current effective draw weight = class_weights[D] * draw_count / total_weighted.
+            # We compute the multiplier that achieves 1/3 target.
+            draw_count = counts.get(draw_key, 0)
+            if draw_count > 0:
+                draw_rate = draw_count / total
+                # Inverse-frequency already gives weight = total/(n_classes*count).
+                # For 3-class: base_weight = 1/(3*draw_rate).
+                # To target 1/3 effective share: multiplier = 1/(3 * draw_rate * base_weight)
+                # Simplifies to: multiplier = n_classes * draw_rate / draw_rate = ... = 1.0
+                # But that's only true if all classes have equal rate.
+                # The real formula: we want draw_share = 1/3 of total effective weight.
+                # total_effective = sum(class_weight[c] * count[c] for all c)
+                # draw_effective = class_weight[D] * count[D]
+                # Currently draw_effective/total_effective = 1/n_classes (by construction).
+                # So base inverse-freq already targets 1/3. The draw boost should
+                # account for the fact that draws are HARDER to predict — we want
+                # the model to pay MORE attention to draws than 1/3.
+                # Target: 38% effective draw weight (slightly over 1/3 = 33%).
+                target_draw_share = 0.38
+                current_draw_share = 1.0 / n_classes  # inverse-freq gives equal shares
+                draw_multiplier = target_draw_share / current_draw_share
+                class_weights[draw_key] *= draw_multiplier
+        else:
+            class_weights[draw_key] *= mc.draw_weight_multiplier
+
+    w = y.map(class_weights).values.astype(np.float64)
+
+    # --- 3. Time decay (Dixon-Coles) ---
+    decay = mc.time_decay_per_season
+    if seasons is not None and decay < 1.0:
+        season_vals = seasons.values if hasattr(seasons, 'values') else seasons
+        # Map seasons to integer order (most recent = 0)
+        unique_seasons = sorted(set(season_vals))
+        season_rank = {s: i for i, s in enumerate(unique_seasons)}
+        max_rank = len(unique_seasons) - 1
+
+        # Decay: weight = decay^(max_rank - rank). Most recent season = 1.0.
+        season_indices = np.array([season_rank.get(s, 0) for s in season_vals])
+        time_weights = np.power(decay, max_rank - season_indices)
+        w *= time_weights
+
+    return w
 
 
 def _suggest_from_space(
@@ -200,7 +263,8 @@ def _walk_forward_score(
 
         model = _build_model(model_type, params)
 
-        sw = _compute_sample_weights(y[train_mask]) if use_sample_weights else None
+        train_seasons = X[train_mask]["_season"] if "_season" in X.columns else None
+        sw = _compute_sample_weights(y[train_mask], seasons=train_seasons) if use_sample_weights else None
         _fit_with_early_stopping(model, X_tr, y_tr, model_type, sample_weight=sw)
 
         # Convert to numpy for XGBoost compatibility

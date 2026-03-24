@@ -634,6 +634,12 @@
           <button onclick="copyLogs('errors')" title="Copy unique errors only (deduplicated, newest first)" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.1);color:var(--red);border:1px solid rgba(248,113,113,0.3);transition:all 0.15s;">
             Copy Errors
           </button>
+          <button onclick="clearCurrentLog()" title="Clear this log file" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.08);color:var(--red);border:1px solid rgba(248,113,113,0.2);transition:all 0.15s;">
+            Clear Log
+          </button>
+          <button onclick="clearAllLogs()" title="Clear ALL log files" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:rgba(248,113,113,0.08);color:var(--red);border:1px solid rgba(248,113,113,0.2);transition:all 0.15s;">
+            Clear All
+          </button>
           <button onclick="copyLogs('all')" title="Copy everything visible" style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;background:var(--bg-tertiary);color:var(--text-tertiary);border:1px solid var(--border-subtle);transition:all 0.15s;">
             Copy All
           </button>
@@ -1012,7 +1018,7 @@ const DATA_REFRESH_MAP = {
   injuries:        { url: '/api/refresh',          method: 'POST', label: 'Fetch Injuries', staleH: 72, warnH: 48 },
   lineups:         { url: '/api/refresh',          method: 'POST', label: 'Fetch Lineups', staleH: 24, warnH: 12 },
   standings:       { url: '/api/refresh/smart',    method: 'POST', label: 'Refresh Standings', staleH: 24, warnH: 12 },
-  understat_ppda:  { url: '/api/refresh',          method: 'POST', label: 'Scrape PPDA', staleH: 168, warnH: 72 },
+  understat_ppda:  { url: '/api/understat/scrape',  method: 'POST', label: 'Scrape PPDA', staleH: 168, warnH: 72 },
   sofascore:       { url: '/api/sofascore/scrape',  method: 'POST', label: 'Scrape SofaScore', staleH: 48, warnH: 24 },
   live:            { url: '/api/live/trigger',     method: 'POST', label: 'Poll Live', staleH: 1, warnH: 0.5 },
   player_stats:    { url: '/api/refresh',          method: 'POST', label: 'Refresh Players', staleH: 48, warnH: 24 },
@@ -1543,25 +1549,59 @@ function debouncedLogSearch() {
 async function loadLogList() {
   try {
     const data = await fetch('/api/logs').then(r => r.json());
-    _logFiles = (data.logs || []).filter(l => l.exists && l.size > 0);
+    _logFiles = (data.logs || []).filter(l => l.exists);
+    const nonEmpty = _logFiles.filter(l => l.size > 0);
     const badge = document.getElementById('logs-badge');
-    badge.textContent = _logFiles.length + ' files';
+    badge.textContent = nonEmpty.length + ' active';
 
     const tabsEl = document.getElementById('log-tabs');
     tabsEl.innerHTML = _logFiles.map(l => {
       const active = l.key === _currentLog ? 'active' : '';
-      const hasErrors = l.key.includes('err') ? 'color:var(--red);' : '';
-      return `<div class="pipe-tab ${active}" data-log="${l.key}" onclick="switchLog('${l.key}')" title="${l.desc} (${l.size_human})" style="${hasErrors}">
-        ${l.label} <span style="font-size:9px;opacity:0.6;">${l.size_human}</span>
+      const isEmpty = l.size === 0;
+      // Extract time from last_entry (e.g. "2026-03-20 12:30:29,028...")
+      let timeHint = '';
+      if (l.last_entry) {
+        const m = l.last_entry.match(/(\d{2}:\d{2})/);
+        if (m) timeHint = m[1];
+      }
+      const sizeLabel = isEmpty ? 'empty' : l.size_human;
+      const dimStyle = isEmpty ? 'opacity:0.35;' : '';
+      return `<div class="pipe-tab ${active}" data-log="${l.key}" onclick="switchLog('${l.key}')" title="${l.desc}${l.last_entry ? '\nLatest: ' + l.last_entry : ''}" style="${dimStyle}">
+        ${l.label} <span style="font-size:9px;opacity:0.6;">${timeHint || sizeLabel}</span>
       </div>`;
     }).join('');
 
-    // Auto-load the first tab
-    if (_logFiles.length && !_logFiles.find(l => l.key === _currentLog)) {
-      _currentLog = _logFiles[0].key;
+    // Auto-load the first non-empty tab
+    if (_logFiles.length && !_logFiles.find(l => l.key === _currentLog && l.size > 0)) {
+      const firstActive = nonEmpty[0];
+      if (firstActive) _currentLog = firstActive.key;
     }
     loadLogContent();
   } catch (e) { console.error('Log list:', e); }
+}
+
+async function clearCurrentLog() {
+  if (!confirm('Clear ' + _currentLog + ' log?')) return;
+  try {
+    await fetch('/api/logs/clear', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({log: _currentLog}),
+    });
+    loadLogList();
+  } catch (e) { console.error('Clear log:', e); }
+}
+
+async function clearAllLogs() {
+  if (!confirm('Clear ALL log files? This cannot be undone.')) return;
+  try {
+    await fetch('/api/logs/clear', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({log: 'all'}),
+    });
+    loadLogList();
+  } catch (e) { console.error('Clear all:', e); }
 }
 
 function switchLog(key) {
@@ -1726,12 +1766,8 @@ if (logsSection) {
 
 
 // ── LIVE POLLING REFRESH ──────────────────────────────────
-async function pollLiveStatus() {
-  try {
-    const data = await fetch('/api/live').then(r => r.json());
-    // Could update a live status indicator if needed
-  } catch { /* silent */ }
-}
+// Removed: was polling /api/live every 10s and discarding the result.
+// The system page doesn't display live data. Dashboard handles its own polling.
 
 
 // ── MAIN LOAD ──────────────────────────────────────────────
@@ -2139,7 +2175,6 @@ setInterval(() => {
   loadCredits();
 }, 30000);
 
-// Live polling refresh every 10s
-setInterval(pollLiveStatus, 10000);
+// Live polling removed — system page doesn't need it
 </script>
 {% endblock %}

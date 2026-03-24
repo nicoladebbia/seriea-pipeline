@@ -169,7 +169,8 @@ class WeightedAverageEnsemble:
             X_te = X[test_mask].drop(columns=[c for c in META_COLS if c in X.columns])
             X_te = X_te[feature_names]
 
-            sw = _compute_sample_weights(y[train_mask]) if self.use_sample_weights else None
+            train_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
+            sw = _compute_sample_weights(y[train_mask], seasons=train_seasons_s) if self.use_sample_weights else None
 
             for mt, params in self.model_configs.items():
                 try:
@@ -231,7 +232,8 @@ class WeightedAverageEnsemble:
         # Retrain base models on all data
         X_all = X.drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
         y_all = y_int
-        sw_all = _compute_sample_weights(y) if self.use_sample_weights else None
+        all_seasons_s = X["_season"] if "_season" in X.columns else None
+        sw_all = _compute_sample_weights(y, seasons=all_seasons_s) if self.use_sample_weights else None
 
         for mt, params in self.model_configs.items():
             model = _build_model(mt, params)
@@ -444,6 +446,7 @@ def evaluate_ensemble_cv(
     model_configs: Dict[str, dict],
     use_sample_weights: bool = True,
     ensemble_config: EnsembleConfig | None = None,
+    save_fold_models: bool = True,
 ) -> pd.DataFrame:
     """Evaluate weighted average ensemble via walk-forward CV.
 
@@ -453,6 +456,9 @@ def evaluate_ensemble_cv(
       - Single calibrator fitted on blended OOF predictions
       - Models retrained on all training data, predict test
       - Test predictions blended and calibrated
+
+    If save_fold_models=True, persists each fold's CatBoost model and metadata
+    to data/models/universal/fold_models/ for leakage-free backtesting.
 
     Returns DataFrame of per-fold metrics.
     """
@@ -501,7 +507,8 @@ def evaluate_ensemble_cv(
                 columns=[c for c in META_COLS if c in X.columns]
             )[feature_names]
 
-            sw = _compute_sample_weights(y_train_full[inner_train_mask]) if use_sample_weights else None
+            inner_seasons = X_train_full[inner_train_mask]["_season"] if "_season" in X_train_full.columns else None
+            sw = _compute_sample_weights(y_train_full[inner_train_mask], seasons=inner_seasons) if use_sample_weights else None
 
             for mt, params in model_configs.items():
                 try:
@@ -551,7 +558,8 @@ def evaluate_ensemble_cv(
 
         # --- Retrain base models on ALL training data, predict test ---
         X_tr_all = X_train_full.drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
-        sw_all = _compute_sample_weights(y_train_full) if use_sample_weights else None
+        outer_seasons = X_train_full["_season"] if "_season" in X_train_full.columns else None
+        sw_all = _compute_sample_weights(y_train_full, seasons=outer_seasons) if use_sample_weights else None
         base_test_probas = {}
         for mt in active_models:
             params = model_configs[mt]
@@ -640,3 +648,124 @@ def evaluate_ensemble_cv(
     log.info("Saved ensemble CV results to %s", cv_path)
 
     return df
+
+
+def build_fold_models(
+    feature_names: list[str] | None = None,
+) -> Path:
+    """Train and save per-fold CatBoost models for leakage-free backtesting.
+
+    For each walk-forward fold, trains CatBoost on the training seasons and
+    saves the model keyed by its test season. This allows the backtest to load
+    the correct model that has NEVER seen the test data.
+
+    Returns the directory where fold models are saved.
+
+    Saves:
+        data/models/universal/fold_models/fold_{idx}_{test_season}.cbm
+        data/models/universal/fold_models/fold_index.json
+    """
+    from ml.data import DataLoader
+    from storage.paths import features_path
+
+    fold_dir = MODELS_DIR / "universal" / "fold_models"
+    fold_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load data
+    fp = str(features_path())
+    loader = DataLoader(fp)
+    X, y, all_feature_names = loader.get_universal_dataset()
+
+    # Use provided feature names or load from no-odds metadata
+    if feature_names is None:
+        meta_path = MODELS_DIR / "universal" / "catboost_no_odds_metadata.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            feature_names = meta["feature_names"]
+        else:
+            log.warning("No feature names provided and no metadata found; using all features")
+            feature_names = all_feature_names
+
+    y_int = y.map(LABEL_MAP)
+    config = ValidationConfig()
+    splitter = TimeSeriesSplitter(config)
+    splits = splitter.generate_splits(X["_season"])
+
+    fold_index = []
+
+    for fold_idx, (train_seasons, test_seasons) in enumerate(splits):
+        train_mask = X["_season"].isin(train_seasons)
+        X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+
+        # Filter to available features
+        available = [f for f in feature_names if f in X_tr.columns]
+        X_tr = X_tr[available]
+        y_tr = y_int[train_mask]
+
+        fold_seasons = X[train_mask]["_season"] if "_season" in X.columns else None
+        sw = _compute_sample_weights(y[train_mask], seasons=fold_seasons)
+
+        model = _build_model("catboost", {
+            "loss_function": "MultiClass",
+            "classes_count": N_CLASSES,
+            "depth": 6,
+            "learning_rate": 0.05,
+            "iterations": 1000,
+            "l2_leaf_reg": 3.0,
+            "auto_class_weights": "Balanced",
+            "random_seed": RANDOM_SEED,
+            "verbose": 0,
+        })
+        _fit_with_early_stopping(model, X_tr, y_tr, "catboost", sample_weight=sw)
+
+        test_season_str = test_seasons[0].replace("-", "_")
+        model_path = fold_dir / f"fold_{fold_idx}_{test_season_str}.cbm"
+        model.save_model(str(model_path))
+
+        fold_index.append({
+            "fold_idx": fold_idx,
+            "train_seasons": train_seasons,
+            "test_seasons": test_seasons,
+            "model_file": model_path.name,
+            "n_features": len(available),
+            "feature_names": available,
+            "n_train": int(train_mask.sum()),
+        })
+
+        log.info(
+            "Fold %d: trained on %s, saved for test=%s (%d features, %d samples)",
+            fold_idx, train_seasons[-1], test_seasons[0], len(available), train_mask.sum(),
+        )
+
+    # Save index
+    index_path = fold_dir / "fold_index.json"
+    index_path.write_text(json.dumps(fold_index, indent=2))
+    log.info("Saved %d fold models to %s", len(fold_index), fold_dir)
+
+    return fold_dir
+
+
+def load_fold_model(test_season: str):
+    """Load the CatBoost model trained WITHOUT seeing the given test season.
+
+    Returns (model, feature_names) or (None, None) if no fold model exists.
+    """
+    fold_dir = MODELS_DIR / "universal" / "fold_models"
+    index_path = fold_dir / "fold_index.json"
+
+    if not index_path.exists():
+        return None, None
+
+    index = json.loads(index_path.read_text())
+
+    # Find the fold whose test_seasons includes the requested season
+    for entry in index:
+        if test_season in entry["test_seasons"]:
+            model_path = fold_dir / entry["model_file"]
+            if model_path.exists():
+                from catboost import CatBoostClassifier
+                model = CatBoostClassifier()
+                model.load_model(str(model_path))
+                return model, entry["feature_names"]
+
+    return None, None

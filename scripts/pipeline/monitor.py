@@ -292,7 +292,7 @@ from scripts.pipeline.notify import notify as _unified_notify
 
 def send_macos_notification(title: str, message: str):
     """Send notification via all configured channels (macOS + Telegram)."""
-    _unified_notify(message, title=title, level="critical")
+    _unified_notify(message, title=title, level="critical", category="alert")
 
 
 # ─── Main monitor ───
@@ -380,13 +380,38 @@ def run_monitor() -> Dict:
     with open(STATUS_FILE, "w") as f:
         json.dump(result, f, indent=2, default=str)
 
-    # ─── macOS notification on CRITICAL ───
+    # ─── Notification on CRITICAL (deduped: max once per 6 hours) ───
     if result["overall_status"] == "CRITICAL":
-        critical_msgs = [msg for level, msg in result["issues"] if level == "CRITICAL"]
-        send_macos_notification(
-            "Serie A Pipeline CRITICAL",
-            "; ".join(critical_msgs[:3]),
-        )
+        _dedup_path = DATA_DIR / ".monitor_alert_dedup.json"
+        should_notify = True
+        try:
+            if _dedup_path.exists():
+                with open(_dedup_path) as _f:
+                    _dedup = json.load(_f)
+                last_alert = _dedup.get("last_critical_alert", "")
+                if last_alert:
+                    from datetime import datetime as _dt
+                    hours_since = (
+                        _dt.now() - _dt.fromisoformat(last_alert)
+                    ).total_seconds() / 3600
+                    if hours_since < 6:
+                        should_notify = False
+                        log.info("Critical alert suppressed (last sent %.1fh ago)", hours_since)
+        except Exception:
+            pass
+
+        if should_notify:
+            critical_msgs = [msg for level, msg in result["issues"] if level == "CRITICAL"]
+            send_macos_notification(
+                "Serie A Pipeline CRITICAL",
+                "; ".join(critical_msgs[:3]),
+            )
+            try:
+                _dedup_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(_dedup_path, "w") as _f:
+                    json.dump({"last_critical_alert": datetime.now().isoformat()}, _f)
+            except Exception:
+                pass
 
     log.info(f"Overall: {result['overall_status']} ({len(result['issues'])} issues)")
     log.info(f"Status written to {STATUS_FILE}")

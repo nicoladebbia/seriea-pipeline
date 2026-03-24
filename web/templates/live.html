@@ -210,8 +210,10 @@ function lpRenderStat(label, home, away) {
 }
 
 function lpFormatMinute(minute, status, addedTime) {
-  if (addedTime && addedTime > 0) {
-    const base = (status === 'second_half' || minute > 90) ? 90 : 45;
+  if (addedTime && addedTime > 0 && addedTime < 20) {
+    // Determine base from minute: >= 46 means second half (90+X), < 46 means first half (45+X)
+    // Filter out sentinel values (SofaScore sends 999 as placeholder)
+    const base = (minute >= 46 || status === 'second_half') ? 90 : 45;
     return `${base}+${addedTime}'`;
   }
   if (typeof minute === 'number') {
@@ -239,6 +241,25 @@ function lpRenderEvent(ev) {
   } else if (ev.type === 'var') {
     icon = '📺';
     text = ev.detail ? `VAR: ${ev.detail}` : 'VAR Review';
+  } else if (ev.type === 'injury_time') {
+    icon = '⏱️';
+    const half = ev.minute >= 46 ? '2nd half' : '1st half';
+    text = `<span class="font-semibold">+${ev.length} min</span> added time (${half})`;
+    const displayMin = ev.minute >= 46 ? "90'" : "45'";
+    return `<div class="live-event" style="opacity:0.7;font-style:italic;">
+      <span class="live-event__min">${displayMin}</span>
+      <span class="live-event__icon">${icon}</span>
+      <span class="live-event__text">${text}</span>
+    </div>`;
+  } else if (ev.type === 'period') {
+    icon = ev.period === 'ht' ? '⏸️' : '🏁';
+    text = ev.period === 'ht' ? '<b>Half Time</b>' : '<b>Full Time</b>';
+    const displayMin = ev.period === 'ht' ? "45'" : "90'";
+    return `<div class="live-event" style="opacity:0.6;text-align:center;">
+      <span class="live-event__min">${displayMin}</span>
+      <span class="live-event__icon">${icon}</span>
+      <span class="live-event__text">${text}</span>
+    </div>`;
   }
   const side = ev.is_home ? '' : ' style="text-align:right;direction:rtl"';
   const displayMin = lpFormatMinute(ev.minute, ev.status, ev.added_time);
@@ -401,7 +422,8 @@ async function lpLoad() {
       statusText.style.color = 'var(--text-tertiary)';
     }
 
-    document.getElementById('lp-meta').textContent = `Poll #${data.polls || 0} | ${data.api_calls || 0} API calls`;
+    const now = new Date().toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    document.getElementById('lp-meta').textContent = `Poll #${data.polls || 0} | ${data.api_calls || 0} API calls | Updated ${now}`;
 
     // Update auto-poll state
     _lpAutoActive = data.auto_poll_active || false;
@@ -534,8 +556,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       setTimeout(() => { target.style.boxShadow = ''; }, 3000);
     }
   }
-  // Auto-refresh every 30s
-  setInterval(lpLoad, 30000);
+  // Auto-refresh every 60s (matches backend poll cycle)
+  setInterval(lpLoad, 60000);
 });
 </script>
 {% endblock %}

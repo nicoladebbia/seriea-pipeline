@@ -68,7 +68,8 @@ def walk_forward_validate(
 
         fit_kwargs = {}
         if use_sample_weights:
-            fit_kwargs["sample_weight"] = _compute_sample_weights(y_train)
+            train_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
+            fit_kwargs["sample_weight"] = _compute_sample_weights(y_train, seasons=train_seasons_s)
 
         model.fit(X_train, y_train, **fit_kwargs)
         y_proba = model.predict_proba(X_test)
@@ -141,7 +142,8 @@ def train_universal(
         model = get_model(mt, mt_params)
         fit_kwargs = {}
         if use_sample_weights:
-            fit_kwargs["sample_weight"] = _compute_sample_weights(y)
+            all_seasons = X["_season"] if "_season" in X.columns else None
+            fit_kwargs["sample_weight"] = _compute_sample_weights(y, seasons=all_seasons)
         model.fit(_strip_meta(X), y, **fit_kwargs)
 
         # Evaluate on last season as quick sanity check
@@ -374,7 +376,8 @@ def train_optimized(
     log.info("=" * 60)
     for mt in MODEL_TYPES:
         model = get_model(mt, tuned_params[mt])
-        sw = _compute_sample_weights(y)
+        all_seasons = X_sel["_season"] if "_season" in X_sel.columns else None
+        sw = _compute_sample_weights(y, seasons=all_seasons)
         model.fit(_strip_meta(X_sel), y, sample_weight=sw)
 
         last_season = sorted(X_sel["_season"].unique())[-1]
@@ -453,6 +456,10 @@ def train_optimized(
     # --- Save full training report JSON ---
     report = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_type": "weighted_average_ensemble",
+        "note": "This report covers the 3-model ensemble (XGB+LGB+CB). "
+                "The no-odds CatBoost model has its own metadata at "
+                "catboost_no_odds_metadata.json.",
         "n_features_original": len(feature_names),
         "n_features_selected": len(selected_feats),
         "selected_features": selected_feats,

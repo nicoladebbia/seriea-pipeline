@@ -1388,9 +1388,41 @@ function renderLiveEvents(events, match) {
   // Sort by minute descending (most recent first)
   const sorted = [...events].sort((a, b) => (b.minute + (b.added_time||0)/100) - (a.minute + (a.added_time||0)/100));
 
+  // Format minute correctly: use base 45 or 90 for added time
+  function fmtMin(minute, addedTime) {
+    if (addedTime && addedTime > 0 && addedTime < 20) {
+      const base = minute >= 46 ? 90 : 45;
+      return `${base}+${addedTime}`;
+    }
+    return `${minute}`;
+  }
+
   let html = '<ul class="event-timeline">';
   for (const e of sorted) {
-    const min = e.added_time ? `${e.minute}+${e.added_time}` : `${e.minute}`;
+    // Skip injury_time and period markers that have no player
+    if (e.type === 'injury_time') {
+      const half = e.minute >= 46 ? '2nd half' : '1st half';
+      html += `<li class="event-timeline__item" style="opacity:0.6;font-style:italic;">
+        <span class="event-timeline__minute">${e.minute >= 46 ? '90' : '45'}'</span>
+        <span class="event-timeline__icon">⏱️</span>
+        <div class="event-timeline__detail"><strong>+${e.length} min</strong> added time (${half})</div>
+        <span class="event-timeline__side"></span>
+      </li>`;
+      continue;
+    }
+    if (e.type === 'period') {
+      const label = e.period === 'ht' ? 'Half Time' : 'Full Time';
+      const icon = e.period === 'ht' ? '⏸️' : '🏁';
+      html += `<li class="event-timeline__item" style="opacity:0.5;text-align:center;">
+        <span class="event-timeline__minute">${e.minute}'</span>
+        <span class="event-timeline__icon">${icon}</span>
+        <div class="event-timeline__detail"><strong>${label}</strong></div>
+        <span class="event-timeline__side"></span>
+      </li>`;
+      continue;
+    }
+
+    const min = fmtMin(e.minute, e.added_time);
     const side = e.is_home ? match.home_team : match.away_team;
     const sideCol = e.is_home ? 'text-green' : 'text-red';
     let icon = '', detail = '';

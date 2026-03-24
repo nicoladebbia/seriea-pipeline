@@ -13,10 +13,13 @@ All probabilities derived from the Poisson distribution using ensemble xG.
 """
 
 import json
+import logging
 import math
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Optional
 
@@ -764,7 +767,7 @@ def generate_extended_markets():
     """Load predictions.json and compute all extended markets for each match."""
     pred_path = DATA_DIR / "upcoming" / "predictions.json"
     if not pred_path.exists():
-        print("No predictions.json found")
+        log.warning("No predictions.json found")
         return {}
 
     with open(pred_path) as f:
@@ -911,7 +914,8 @@ def generate_extended_markets():
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
 
-    print(f"Extended markets generated for {len(matches)} matches ({len(output['markets_available'])} market types) -> {out_path}")
+    log.info("Extended markets generated for %d matches (%d market types) -> %s",
+             len(matches), len(output['markets_available']), out_path)
     return output
 
 

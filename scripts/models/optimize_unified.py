@@ -101,7 +101,7 @@ class OptimizeConfig:
     grid_step: float = 0.05
 
     # Walk-forward parameters
-    min_train_seasons: int = 8
+    min_train_seasons: int = 5  # Aligned with ml/config.py ValidationConfig
 
     # Sample size for quick evaluation (None = all)
     sample_size: Optional[int] = None

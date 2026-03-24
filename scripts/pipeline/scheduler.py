@@ -297,12 +297,14 @@ def _save_pre_kickoff_state(state: Dict):
 
 
 # Multi-stage match clock events — each fires once per match per day
+# (except lineup_fetch which retries if lineups weren't confirmed)
 MATCH_CLOCK_STAGES = [
     {
         "name": "lineup_fetch",
-        "minutes_before": 60,   # T-60: fetch confirmed lineups
-        "window": (46, 90),     # Trigger when kickoff is 46-90 min away
+        "minutes_before": 55,   # T-55: lineups drop at T-60, give 5 min buffer
+        "window": (20, 58),     # Only try 20-58 min before (never before T-60)
         "description": "Fetch confirmed lineups",
+        "retry_if_empty": True, # Re-trigger if lineups weren't found
     },
     {
         "name": "prediction_update",
@@ -319,7 +321,7 @@ MATCH_CLOCK_STAGES = [
 ]
 
 
-def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
+def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     """Multi-stage match clock — orchestrates all match-day events.
 
     Called every 30 minutes by launchd. For each match today (Italy date),
@@ -368,8 +370,14 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
 
         for stage in MATCH_CLOCK_STAGES:
             stage_name = stage["name"]
+
+            # Check if already done — but allow retry for stages that support it
             if stage_name in stages_done:
-                continue  # Already fired today
+                prev = stages_done[stage_name]
+                if stage.get("retry_if_empty") and prev.get("needs_retry"):
+                    pass  # Allow re-trigger
+                else:
+                    continue  # Already fired successfully
 
             win_lo, win_hi = stage["window"]
             if win_lo <= minutes_until <= win_hi:
@@ -398,7 +406,7 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
     # Execute actions
     success = True
 
-    # Stage 1: Lineup fetch
+    # Stage 1: Lineup fetch (retries if lineups not yet available)
     if actions_needed["lineup_fetch"]:
         matches_str = ", ".join(actions_needed["lineup_fetch"])
         log.info("Match clock: fetching lineups for %s", matches_str)
@@ -407,14 +415,49 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
                    "from scraper.lineup_fetcher import fetch_and_save_lineups; "
                    "fetch_and_save_lineups()"]
             subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=60)
-            send_notification(f"Lineups fetched for: {matches_str}", "Match Clock: Lineups")
 
-            # Coaching-style lineup notification
+            # Check which matches actually got confirmed lineups
             try:
-                from scripts.pipeline.notify import notify_lineups_confirmed
-                notify_lineups_confirmed(matches=matches_str)
-            except Exception:
-                pass
+                from config.settings import DATA_DIR
+                import json as _json
+                lineups_path = DATA_DIR / "upcoming" / "confirmed_lineups.json"
+                confirmed_matches = set()
+                if lineups_path.exists():
+                    with open(lineups_path) as _f:
+                        lineups_data = _json.load(_f)
+                    for mk, mdata in lineups_data.get("matches", {}).items():
+                        home_xi = mdata.get("home_lineup", [])
+                        away_xi = mdata.get("away_lineup", [])
+                        both_confirmed = (
+                            isinstance(home_xi, list) and len(home_xi) >= 7
+                            and isinstance(away_xi, list) and len(away_xi) >= 7
+                        )
+                        if both_confirmed:
+                            confirmed_matches.add(mk)
+
+                if confirmed_matches:
+                    from scripts.pipeline.notify import notify_lineups_confirmed
+                    notify_lineups_confirmed(matches=", ".join(confirmed_matches))
+
+                # Mark matches WITHOUT confirmed lineups for retry
+                for mk in actions_needed["lineup_fetch"]:
+                    match_state = processed.get(mk, {})
+                    stage_data = match_state.get("stages", {}).get("lineup_fetch", {})
+                    if mk not in confirmed_matches:
+                        stage_data["needs_retry"] = True
+                        log.info("Lineup NOT confirmed for %s — will retry next cycle", mk)
+                    else:
+                        stage_data.pop("needs_retry", None)
+                        log.info("Lineup CONFIRMED for %s", mk)
+                    match_state.setdefault("stages", {})["lineup_fetch"] = stage_data
+                    processed[mk] = match_state
+
+                # Save updated state with retry flags
+                state["processed"] = processed
+                _save_pre_kickoff_state(state)
+
+            except Exception as e:
+                log.warning("Lineup confirmation check failed: %s", e)
         except Exception as e:
             log.warning("Lineup fetch failed: %s", e)
 
@@ -424,15 +467,26 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
         log.info("Match clock: re-predicting for %s", matches_str)
         success = run_pre_kickoff(bankroll)
         if success:
-            send_notification(
-                f"Pre-kickoff predictions updated for: {matches_str}",
-                "Match Clock: Predictions"
-            )
-
-            # Coaching-style predictions ready notification
+            # Send ONE consolidated pre-kickoff notification (not 3-5 separate ones)
+            # Only the bet briefing if user has bets, otherwise just predictions ready
             try:
-                from scripts.pipeline.notify import notify_predictions_ready
-                notify_predictions_ready(n_matches=len(actions_needed["prediction_update"]))
+                from scripts.betting.live_bet_context import get_match_bet_context
+                from scripts.pipeline.notify import notify_pre_kickoff_bets
+                matches_with_bets = []
+                for match_key in actions_needed["prediction_update"]:
+                    ctx = get_match_bet_context(match_key)
+                    if ctx["has_bets"]:
+                        matches_with_bets.append((match_key, ctx))
+
+                if matches_with_bets:
+                    # Send bet briefing for the first match only (most imminent)
+                    # The briefing already includes all relevant info
+                    mk, ctx = matches_with_bets[0]
+                    notify_pre_kickoff_bets(mk, bet_context=ctx)
+                else:
+                    # No bets — just a brief predictions-ready note
+                    from scripts.pipeline.notify import notify_predictions_ready
+                    notify_predictions_ready(n_matches=len(actions_needed["prediction_update"]))
             except Exception:
                 pass
 
@@ -473,8 +527,16 @@ def run_pre_kickoff_monitor(bankroll: float = 100.0) -> bool:
 # PIPELINE EXECUTION
 # =============================================================================
 
-def run_pipeline(bankroll: float = 100.0, quick: bool = False) -> bool:
+def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
     """Execute the betting pipeline with health check + risk controls gates."""
+    if bankroll <= 0:
+        try:
+            from scripts.betting.bankroll_loader import get_effective_bankroll
+            bankroll = get_effective_bankroll()
+        except Exception as e:
+            log.warning("Failed to auto-load bankroll: %s — using 1000", e)
+            bankroll = 1000.0
+
     log.info("=" * 60)
     log.info("STARTING SCHEDULED PIPELINE RUN")
     log.info("=" * 60)
@@ -540,12 +602,28 @@ def run_pipeline(bankroll: float = 100.0, quick: bool = False) -> bool:
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10 minute timeout
+                timeout=1200  # 20 minute timeout (ensemble can take 15min on cold start)
             )
 
             if result.returncode == 0:
                 log.info("Pipeline completed successfully")
                 log.debug(f"Output: {result.stdout[-500:]}")
+                # Ensure pipeline_state is updated even if the subprocess
+                # didn't write it (belt-and-suspenders)
+                try:
+                    import json as _json
+                    from datetime import datetime as _dt
+                    state_path = PROJECT_ROOT / "data" / "pipeline_state.json"
+                    state = {}
+                    if state_path.exists():
+                        with open(state_path) as _f:
+                            state = _json.load(_f)
+                    state["last_run"] = _dt.now().isoformat()
+                    state["last_run_status"] = "success"
+                    with open(state_path, "w") as _f:
+                        _json.dump(state, _f, indent=2)
+                except Exception:
+                    pass
                 return True
             else:
                 log.error(f"Pipeline failed with return code {result.returncode}")
@@ -565,7 +643,7 @@ def run_pipeline(bankroll: float = 100.0, quick: bool = False) -> bool:
     return False
 
 
-def run_pre_kickoff(bankroll: float = 100.0) -> bool:
+def run_pre_kickoff(bankroll: float = 0) -> bool:
     """Execute the pre-kickoff pipeline (confirmed lineups + re-prediction + CLV capture).
 
     Lightweight ~25s flow:
@@ -581,6 +659,14 @@ def run_pre_kickoff(bankroll: float = 100.0) -> bool:
     if not is_match_day():
         log.info("Not a match day — skipping pre-kickoff run")
         return True
+
+    if bankroll <= 0:
+        try:
+            from scripts.betting.bankroll_loader import get_effective_bankroll
+            bankroll = get_effective_bankroll()
+        except Exception as e:
+            log.warning("Failed to auto-load bankroll: %s — using 1000", e)
+            bankroll = 1000.0
 
     log.info("=" * 60)
     log.info("STARTING PRE-KICKOFF PIPELINE (confirmed lineups)")
@@ -742,10 +828,23 @@ def run_settle() -> bool:
         alerts = result.get("alerts", [])
 
         if settled > 0:
-            send_notification(
-                f"Settled {settled} bets | P&L: {'+'if profit >= 0 else ''}${profit:.2f}",
-                title="Serie A Settlement"
-            )
+            # Use the coaching-style settlement notification instead of raw send
+            try:
+                from scripts.pipeline.notify import notify_settlement
+                won = result.get("settlement", {}).get("won", 0)
+                lost = result.get("settlement", {}).get("lost", 0)
+                push = result.get("settlement", {}).get("push", 0)
+                balance = result.get("settlement", {}).get("balance", 0)
+                notify_settlement(
+                    settled=settled, won=won, lost=lost, push=push,
+                    profit=profit, balance=balance,
+                )
+            except Exception:
+                # Fallback to simple notification
+                send_notification(
+                    f"Settled {settled} bets | P&L: {'+'if profit >= 0 else ''}\u20ac{profit:.2f}",
+                    title="Serie A Settlement"
+                )
 
         # Alert on critical drift
         critical = [a for a in alerts if a["level"] == "CRITICAL"]
@@ -754,6 +853,34 @@ def run_settle() -> bool:
                 "\n".join(a["message"] for a in critical),
                 title="CRITICAL: Betting Drift Alert"
             )
+
+        # Per-bet settlement notifications + loss streak check
+        if settled > 0:
+            try:
+                from scripts.pipeline.notify import notify_bet_settled, notify_loss_streak
+                from scripts.betting.bet_journal import get_journal_stats
+
+                # Send per-bet notifications for today's settlements
+                stats = get_journal_stats()
+                settled_today = stats.get("settled_today", [])
+                for bet in settled_today[-5:]:  # Cap at 5 to avoid spam
+                    try:
+                        notify_bet_settled(bet, result_score=bet.get("result_score", ""))
+                    except Exception:
+                        pass  # Per-bet notification failure shouldn't block
+
+                # Check for loss streak
+                streak = stats.get("current_streak", 0)
+                if streak < -2:  # 3+ consecutive losses
+                    streak_loss = stats.get("streak_loss", 0)
+                    recent = stats.get("recent_losses", [])
+                    try:
+                        notify_loss_streak(abs(streak), total_loss=abs(streak_loss),
+                                           recent_bets=recent)
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.debug("Post-settlement notification extras failed: %s", e)
 
         # Run post-settlement reconciliation
         if settled > 0:
@@ -873,6 +1000,20 @@ def run_weekly_monitoring() -> bool:
         if cal_status != "ok":
             log.warning("Calibration issue: %s", cal_status)
 
+        # CLV trend check
+        try:
+            from scripts.analysis.clv_analysis import analyze_trends
+            trends = analyze_trends(window_weeks=2)
+            if trends.get("periods") and len(trends["periods"]) >= 2:
+                latest_clv = trends["periods"][-1]["avg_clv"]
+                prev_clv = trends["periods"][-2]["avg_clv"]
+                if prev_clv - latest_clv > 1.5:
+                    from scripts.pipeline.notify import notify_clv_degradation
+                    notify_clv_degradation(latest_clv, prev_clv, period="2 weeks")
+                    log.warning("CLV degradation: %.2f%% -> %.2f%%", prev_clv, latest_clv)
+        except Exception as e:
+            log.debug("CLV trend check failed: %s", e)
+
         # Report retrain
         if retrain.get("retrained", False):
             log.info("Model retrained successfully")
@@ -948,7 +1089,7 @@ def run_model_retrain() -> bool:
 # SCHEDULER MODES
 # =============================================================================
 
-def run_daemon(bankroll: float = 100.0):
+def run_daemon(bankroll: float = 0):
     """Run as daemon with APScheduler."""
     if not HAS_APSCHEDULER:
         log.error("APScheduler not installed. Run: pip install apscheduler")
@@ -1015,7 +1156,7 @@ def run_daemon(bankroll: float = 100.0):
         log.info("Scheduler stopped")
 
 
-def run_once(bankroll: float = 100.0, quick: bool = False):
+def run_once(bankroll: float = 0, quick: bool = False):
     """Single pipeline run."""
     success = run_pipeline(bankroll, quick)
 
@@ -1184,8 +1325,8 @@ def main():
     parser.add_argument(
         "--bankroll",
         type=float,
-        default=100.0,
-        help="Bankroll amount (default: 100)"
+        default=0,
+        help="Bankroll amount (default: 0 = auto-load from journal)"
     )
     parser.add_argument(
         "--quick",

@@ -311,33 +311,13 @@ def save_matchday(data: Dict):
 
 
 def _load_active_bets() -> List[Dict]:
-    """Load bets we need to track from unified_report or placed_bets_log."""
-    bets = []
-
-    # Primary source: placed_bets_log.json (persistent)
-    log_path = DATA_DIR / "betting" / "placed_bets_log.json"
-    if log_path.exists():
-        try:
-            with open(log_path) as f:
-                logged = json.load(f)
-            pending = [b for b in logged if b.get("status") == "pending"]
-            if pending:
-                bets.extend(pending)
-                return bets
-        except Exception as e:
-            log.warning(f"Failed to load bet log for live monitoring: {e}")
-
-    # Fallback: unified_report.json
-    report_path = DATA_DIR / "betting" / "unified_report.json"
-    if report_path.exists():
-        try:
-            with open(report_path) as f:
-                report = json.load(f)
-            bets.extend(report.get("bets", []))
-        except Exception as e:
-            log.warning(f"Failed to load unified report for live monitoring: {e}")
-
-    return bets
+    """Load pending bets from the bet journal (single source of truth)."""
+    try:
+        from scripts.betting.bet_journal import get_pending_bets
+        return get_pending_bets()
+    except Exception as e:
+        log.warning("Failed to load pending bets from journal: %s", e)
+        return []
 
 
 def _load_pre_match_odds() -> Dict[str, Dict]:
@@ -555,6 +535,17 @@ def _make_event_key(event: Dict) -> str:
     return f"{etype}:{minute}:{player}"
 
 
+def _get_bet_context(match_key: str, home_score: int = 0, away_score: int = 0,
+                     minute: int = None) -> Optional[Dict]:
+    """Get bet context for a match, or None if unavailable."""
+    try:
+        from scripts.betting.live_bet_context import get_match_bet_context
+        return get_match_bet_context(match_key, home_score, away_score, minute)
+    except Exception as e:
+        log.debug("Failed to get bet context for %s: %s", match_key, e)
+        return None
+
+
 def _send_live_event_notifications(match_key: str, match_data: Dict,
                                     old_events: List, new_events: List):
     """Compare old vs new Sofascore events and send coaching-style notifications."""
@@ -569,42 +560,83 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
     home = match_data.get("home_team", match_key.split(" vs ")[0] if " vs " in match_key else match_key)
     away = match_data.get("away_team", match_key.split(" vs ")[1] if " vs " in match_key else "")
 
-    # Derive current score from latest snapshot
-    snapshots = match_data.get("snapshots", [])
-    h_score, a_score = 0, 0
-    if snapshots:
-        last_score = snapshots[-1].get("score", [0, 0])
-        h_score, a_score = last_score[0], last_score[1]
+    # Derive score from ALL goal events (not from snapshots, which lag behind).
+    # The Odds API score can be minutes behind SofaScore events.
+    all_events = new_events  # new_events is the full current event list
+    h_score = sum(1 for e in all_events if e.get("type") == "goal"
+                  and e.get("is_home") is True and e.get("goal_type") != "ownGoal")
+    h_score += sum(1 for e in all_events if e.get("type") == "goal"
+                   and e.get("is_home") is False and e.get("goal_type") == "ownGoal")
+    a_score = sum(1 for e in all_events if e.get("type") == "goal"
+                  and e.get("is_home") is False and e.get("goal_type") != "ownGoal")
+    a_score += sum(1 for e in all_events if e.get("type") == "goal"
+                   and e.get("is_home") is True and e.get("goal_type") == "ownGoal")
 
-    # Check if user has a bet on this match
-    bet_tracking = match_data.get("bet_tracking", [])
-    has_bet = bool(bet_tracking)
-    bet_selection = ""
-    if bet_tracking:
-        for bt in bet_tracking:
-            if bt.get("status") == "open":
-                bet_selection = bt.get("selection", "")
-                break
+    # Fallback to snapshot if no goal events (shouldn't happen, but safe)
+    if h_score == 0 and a_score == 0:
+        snapshots = match_data.get("snapshots", [])
+        if snapshots:
+            last_score = snapshots[-1].get("score", [0, 0])
+            h_score, a_score = last_score[0], last_score[1]
 
+    # Find new events (not seen before)
+    new_goal_events = []
+    new_other_events = []
     for event in new_events:
         key = _make_event_key(event)
         if key in seen_keys:
             continue
+        if event.get("type") == "goal":
+            new_goal_events.append(event)
+        else:
+            new_other_events.append(event)
 
-        etype = event.get("type", "")
-        minute = event.get("minute", 0)
-        player = event.get("player", "Unknown")
-        is_home = event.get("is_home", True)
-        team = home if is_home else away
+    # Get bet context once for all events in this match
+    latest_minute = None
+    if new_goal_events:
+        latest_minute = max(e.get("minute", 0) for e in new_goal_events)
+    elif new_other_events:
+        latest_minute = max(e.get("minute", 0) for e in new_other_events)
+    bet_ctx = _get_bet_context(match_key, h_score, a_score, latest_minute)
 
-        if etype == "goal":
+    # Send goal notifications (batch multiple into one if needed)
+    if len(new_goal_events) > 1 and bet_ctx and bet_ctx.get("has_bets"):
+        # Multi-goal batch: combine into single message
+        goal_lines = []
+        for event in new_goal_events:
+            minute = event.get("minute", 0)
+            player = event.get("player", "Unknown")
+            is_home = event.get("is_home", True)
+            team = home if is_home else away
             goal_type = event.get("goal_type", "regular")
             scorer = player
             if goal_type == "ownGoal":
                 scorer = f"{player} (OG)"
             elif goal_type == "penalty":
                 scorer = f"{player} (pen)"
-
+            goal_lines.append(f"{scorer} ({team}) {minute}'")
+        try:
+            msg = f"GOALS! {match_key.replace(' vs ', ' ')} {h_score}-{a_score}\n"
+            msg += "\n".join(f"  {gl}" for gl in goal_lines)
+            if bet_ctx and bet_ctx.get("has_bets"):
+                msg += "\n"
+                for b in bet_ctx["bets"]:
+                    msg += f"\n  \u00b7 {b['selection']}: {b['commentary']}"
+            notify(msg, title=f"GOALS {h_score}-{a_score}", level="info", category="live")
+        except Exception as e:
+            log.debug("Batch goal notification failed: %s", e)
+    else:
+        for event in new_goal_events:
+            minute = event.get("minute", 0)
+            player = event.get("player", "Unknown")
+            is_home = event.get("is_home", True)
+            team = home if is_home else away
+            goal_type = event.get("goal_type", "regular")
+            scorer = player
+            if goal_type == "ownGoal":
+                scorer = f"{player} (OG)"
+            elif goal_type == "penalty":
+                scorer = f"{player} (pen)"
             try:
                 notify_goal(
                     match_key=match_key,
@@ -614,23 +646,31 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
                     away_score=a_score,
                     minute=minute,
                     is_home=is_home,
-                    has_bet=has_bet,
-                    bet_selection=bet_selection,
+                    bet_context=bet_ctx,
                 )
             except Exception as e:
                 log.debug("Goal notification failed: %s", e)
 
-        elif etype == "card":
+    # Other events (red cards, etc.)
+    for event in new_other_events:
+        etype = event.get("type", "")
+        minute = event.get("minute", 0)
+        player = event.get("player", "Unknown")
+        is_home = event.get("is_home", True)
+        team = home if is_home else away
+
+        if etype == "card":
             card_type = event.get("card_type", "")
             if card_type in ("red", "yellowRed"):
-                card_label = "Red card" if card_type == "red" else "Second yellow"
-                msg = f"{card_label}: {player} ({team}) {minute}'"
-                if has_bet:
-                    msg += f"\nYou have a bet on this match — keep watching."
-                try:
-                    notify(msg, title=f"RED: {match_key}", level="warning", category="live")
-                except Exception as e:
-                    log.debug("Red card notification failed: %s", e)
+                # Only notify if user has bets on this match
+                if bet_ctx and bet_ctx.get("has_bets"):
+                    card_label = "Red card" if card_type == "red" else "Second yellow"
+                    msg = f"{card_label}: {player} ({team}) {minute}'"
+                    msg += f"\nYou have {len(bet_ctx['bets'])} bet(s) on this match \u2014 could shift the game."
+                    try:
+                        notify(msg, title=f"RED: {match_key}", level="warning", category="live")
+                    except Exception as e:
+                        log.debug("Red card notification failed: %s", e)
 
 
 # ─── Core Poll Logic ──────────────────────────────────────────────────────────
@@ -945,19 +985,21 @@ def poll_once() -> Dict:
         if status == "first_half" and prev_status in ("pre_match", None) and not match_entry.get("_kickoff_notified"):
             try:
                 from scripts.pipeline.notify import notify_kickoff
-                notify_kickoff(mk)
+                bet_ctx = _get_bet_context(mk, home_score, away_score, minute)
+                notify_kickoff(mk, bet_context=bet_ctx)
+                match_entry["_kickoff_notified"] = True
             except Exception:
-                pass
-            match_entry["_kickoff_notified"] = True
+                pass  # Don't mark as notified — retry next cycle
 
         # ── Half-time notification ──
         if status == "half_time" and prev_status != "half_time" and not match_entry.get("_ht_notified"):
             try:
                 from scripts.pipeline.notify import notify_halftime
-                notify_halftime(mk, home_score, away_score)
+                bet_ctx = _get_bet_context(mk, home_score, away_score, 45)
+                notify_halftime(mk, home_score, away_score, bet_context=bet_ctx)
+                match_entry["_ht_notified"] = True
             except Exception:
-                pass
-            match_entry["_ht_notified"] = True
+                pass  # Don't mark as notified — retry next cycle
 
         if completed:
             match_entry["final_score"] = [home_score, away_score]
@@ -1035,32 +1077,19 @@ def poll_once() -> Dict:
         if mdata.get("status") == "completed" and not mdata.get("_ft_notified"):
             fs = mdata.get("final_score") or (mdata["snapshots"][-1]["score"] if mdata.get("snapshots") else None)
             if fs:
-                home = mdata.get("home_team", mk.split(" vs ")[0] if " vs " in mk else mk)
-                away = mdata.get("away_team", mk.split(" vs ")[1] if " vs " in mk else "")
-                # Check if user had a bet on this match
-                bet_tracking = mdata.get("bet_tracking", [])
-                had_bet = bool(bet_tracking)
-                bet_won = None
-                bet_profit = 0
-                for bt in bet_tracking:
-                    if bt.get("status") in ("won", "virtually_won"):
-                        bet_won = True
-                        bet_profit = bt.get("profit", 0)
-                    elif bt.get("status") in ("lost", "virtually_lost"):
-                        bet_won = False
+                # Get full bet context with final score for P&L
+                bet_ctx = _get_bet_context(mk, fs[0], fs[1], 90)
                 try:
                     from scripts.pipeline.notify import notify_full_time
                     notify_full_time(
                         match_key=mk,
                         home_score=fs[0],
                         away_score=fs[1],
-                        had_bet=had_bet,
-                        bet_won=bet_won,
-                        bet_profit=bet_profit,
+                        bet_context=bet_ctx,
                     )
+                    mdata["_ft_notified"] = True
                 except Exception as e:
                     log.debug("FT notification failed: %s", e)
-                mdata["_ft_notified"] = True
 
     # ── Reconciliation: cross-check scores across sources ──
     reconciliation_discrepancies = 0

@@ -36,21 +36,33 @@ log = logging.getLogger(__name__)
 # CONFIGURATION
 # =============================================================================
 
+def _load_risk_defaults() -> dict:
+    """Load defaults from config/bankroll.yaml if available."""
+    try:
+        from scripts.betting.bankroll_loader import load_bankroll_config
+        return load_bankroll_config()
+    except Exception:
+        return {}
+
+_YAML_DEFAULTS = _load_risk_defaults()
+
+
 @dataclass
 class RiskConfig:
     """Risk control thresholds. Conservative defaults for early-stage system."""
 
     # Drawdown limits (% of starting bankroll)
-    max_drawdown_pct: float = 25.0       # Pause if down 25% from peak
-    warning_drawdown_pct: float = 15.0   # Warn at 15%
+    max_drawdown_pct: float = _YAML_DEFAULTS.get("max_drawdown_pct", 25.0)
+    warning_drawdown_pct: float = _YAML_DEFAULTS.get("warning_drawdown_pct", 15.0)
 
     # Consecutive losses
-    max_consecutive_losses: int = 8      # Pause after 8 straight losses
-    warning_consecutive_losses: int = 5  # Warn at 5
+    max_consecutive_losses: int = _YAML_DEFAULTS.get("max_consecutive_losses", 8)
+    warning_consecutive_losses: int = _YAML_DEFAULTS.get("warning_consecutive_losses", 5)
+    recovery_wins_to_reset: int = _YAML_DEFAULTS.get("recovery_wins_to_reset", 2)
 
     # Bankroll floor
-    min_bankroll_pct: float = 50.0       # Hard stop if bankroll < 50% of start
-    starting_bankroll: float = 1000.0    # Reference starting bankroll
+    min_bankroll_pct: float = _YAML_DEFAULTS.get("min_bankroll_pct", 50.0)
+    starting_bankroll: float = _YAML_DEFAULTS.get("initial_balance", 1000.0)
 
     # Market kill switches (live ROI thresholds to disable a market)
     # If live ROI is worse than threshold with >= min_bets, disable the market
@@ -59,7 +71,7 @@ class RiskConfig:
 
     # Stake reduction under stress
     # When drawdown > warning but < max, reduce stakes by this factor
-    stress_stake_multiplier: float = 0.5
+    stress_stake_multiplier: float = _YAML_DEFAULTS.get("stress_stake_multiplier", 0.5)
 
 
 # =============================================================================
@@ -139,7 +151,7 @@ def check_drawdown(settled: List[Dict], cfg: RiskConfig) -> Dict:
 
 
 def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
-    """Check for consecutive loss streaks."""
+    """Check for consecutive loss streaks, with recovery detection."""
     if not settled:
         return {"status": "ok", "streak": 0, "message": "no data"}
 
@@ -150,6 +162,15 @@ def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
             current_streak += 1
         else:
             break
+
+    # Count recent consecutive wins (for recovery detection)
+    recent_wins = 0
+    if current_streak == 0:
+        for bet in reversed(settled):
+            if bet.get("status") == "won":
+                recent_wins += 1
+            else:
+                break
 
     # Find max historical streak
     max_streak = 0
@@ -164,6 +185,7 @@ def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
     result = {
         "current_streak": current_streak,
         "max_streak": max_streak,
+        "recent_wins": recent_wins,
     }
 
     if current_streak >= cfg.max_consecutive_losses:
@@ -177,6 +199,11 @@ def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
         result["message"] = (
             f"{current_streak} consecutive losses — stakes reduced. "
             f"Expected variance for value betting, but monitoring."
+        )
+    elif current_streak == 0 and recent_wins >= cfg.recovery_wins_to_reset:
+        result["status"] = "ok"
+        result["message"] = (
+            f"Recovery: {recent_wins} consecutive wins. Stress mode cleared."
         )
     else:
         result["status"] = "ok"
@@ -404,9 +431,18 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Risk controls for betting system")
-    parser.add_argument("--bankroll", type=float, default=1000.0)
+    parser.add_argument("--bankroll", type=float, default=0,
+                        help="Bankroll amount (default: 0 = auto-load from journal)")
     args = parser.parse_args()
 
-    gates = check_risk_gates(bankroll=args.bankroll)
+    bankroll = args.bankroll
+    if bankroll <= 0:
+        try:
+            from scripts.betting.bankroll_loader import get_effective_bankroll
+            bankroll = get_effective_bankroll()
+        except Exception:
+            bankroll = 1000.0
+
+    gates = check_risk_gates(bankroll=bankroll)
     print_risk_report(gates)
     print(f"\n  Result: {'ALLOW' if gates['allow_betting'] else 'BLOCK'}")

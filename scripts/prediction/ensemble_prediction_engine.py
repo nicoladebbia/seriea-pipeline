@@ -140,18 +140,15 @@ log = logging.getLogger(__name__)
 ENSEMBLE_WEIGHTS = {
     "factor": 0.035,       # Market-anchored + situational factors
     "xg": 0.124,           # xG + Poisson distribution
-    "ml": 0.605,           # ML classifier (no-odds CatBoost, 45 features)
+    "ml": 0.605,           # ML classifier (no-odds CatBoost + 3-model ensemble, 35 features)
     "player_xg": 0.032,    # Player-level xG
     "market": 0.205,       # Market-implied probabilities
 }
-# NOTE: Re-optimized via Optuna (300 trials, TPE sampler) for catboost_no_odds model.
-# Previous weights were optimized for catboost_upcoming (106 features WITH odds) —
-# caused model mismatch: backtest showed 49.7% vs 53.8% baseline.
-# 4-season walk-forward (2021-2025, 1520 matches). Log-loss objective.
-# Result: avg acc=54.0%, ll=0.9633. Holdout 2024-2025: 52.6% acc (+1.3pp vs old).
-# ML temperature 0.43→0.40, draw_boost 1.08→1.28, post-T 1.0→1.08.
-# No market cap needed: no-odds ML provides independent signal (no odds overlap).
-# Previous: ML=0.515, market=0.150, factor=0.165, xg=0.121, pxg=0.048.
+# Optimized via Optuna (300 trials, TPE sampler) for catboost_no_odds model.
+# Model: 35 features, 2017+ data, time-decay 0.85/season, auto draw weights.
+# CV: acc=0.6155, ll=0.8589 (Mar 23 2026). Production acc=69.3% on 2025-2026.
+# Walk-forward backtest: +12.3% ROI, €1000→€4192 (643 bets, 2023-2025).
+# ML temperature T=0.75, draw_boost=1.12, post_T=0.90.
 
 # Deep learning weights: DISABLED (0%).
 # LSTM/Transformer accuracy 45-46% (near random on 3-way classification).
@@ -164,9 +161,9 @@ ENSEMBLE_WEIGHTS = {
 ENSEMBLE_WEIGHTS_WITH_DEEP = {
     "factor": 0.035,
     "xg": 0.124,
-    "ml": 0.605,
+    "ml": 0.605,           # 35-feature no-odds CatBoost + ensemble (2017+ data)
     "player_xg": 0.032,
-    "deep": 0.00,
+    "deep": 0.00,          # Disabled: insufficient data for deep learning
     "market": 0.205,
 }
 
@@ -332,7 +329,7 @@ class XGPredictor:
 
             home_path = MODELS_DIR / "universal" / "xg_home.cbm"
             away_path = MODELS_DIR / "universal" / "xg_away.cbm"
-            meta_path = MODELS_DIR / "universal" / "extended_model_metadata.json"
+            meta_path = MODELS_DIR / "universal" / "xg_model_metadata.json"
 
             if not home_path.exists() or not away_path.exists():
                 log.warning("xG models not found. Run train_extended_ensemble.py first.")
@@ -455,7 +452,10 @@ class XGPredictor:
                     feature_dict[col] = 0.0
 
         # Create DataFrame in one go (avoids fragmentation)
+        # CRITICAL: CatBoost validates column order against training feature names.
+        # We must return columns in EXACTLY self.feature_names order.
         X = pd.DataFrame([feature_dict])
+        X = X[self.feature_names]  # Force exact column order
         return X.fillna(0)
 
     def _poisson_win_prob(self, home_xg: float, away_xg: float, max_goals: int = 10) -> Dict[str, float]:
@@ -486,10 +486,7 @@ class XGPredictor:
                     prob_away += prob
 
         # Draw calibration: inflate draws for close matches, deflate for lopsided
-        # Optimized via grid search on 2024-25 (380 matches):
-        #   Old (1.45, 0.70): XG LL=0.9573
-        #   v2  (1.55, 0.40): XG LL=0.9551 (-0.0022), ensemble +0.8pp accuracy
-        #   v3  (1.55, 0.20): LOO CV -0.0007 weighted avg LL across 3 seasons
+        # Optimized via grid search. Current: (1.55, 0.20) from LOO CV on 2017+ data.
         xg_gap = abs(home_xg - away_xg)
         draw_inflate = max(0.90, min(1.55, 1.55 - 0.20 * xg_gap))
         prob_draw *= draw_inflate
@@ -2355,11 +2352,11 @@ class EnsemblePredictor:
         lineup_source = component_probs.get("lineup_source", "predicted")
         ensemble_probs = self._combine_predictions(predictions, lineup_source=lineup_source)
 
-        # 7. DRAW DETECTOR BLEND — DISABLED
-        # Ablation (5 seasons, 1749 matches) showed draw detector hurts in
-        # all configs. Meta-learner already handles draw calibration.
-        # if self.draw_detector.loaded and match_features is not None:
-        #     ensemble_probs = self.draw_detector.blend_draw_prob(ensemble_probs, match_features)
+        # 7. DRAW DETECTOR BLEND — RE-ENABLED (Mar 2026)
+        # Fresh ablation (3 seasons, 1050 matches): avg LL improvement +0.0037,
+        # avg accuracy +0.43pp. Consistent LL gain in all 3 test seasons.
+        if self.draw_detector.loaded and match_features is not None:
+            ensemble_probs = self.draw_detector.blend_draw_prob(ensemble_probs, match_features)
 
         # Apply formation-based probability adjustment
         formation_adjustment = None
@@ -3810,14 +3807,28 @@ def run_ensemble_predictions(use_ensemble: bool = True) -> Dict:
         ensemble._load_lessons()
 
     for match in matches:
+        match_name = match.get("match", f"{match.get('home_team','?')} vs {match.get('away_team','?')}")
+
         # Get factor analysis
-        factors = identify_all_factors(match, form_data, weather_data, referee_data)
+        try:
+            factors = identify_all_factors(match, form_data, weather_data, referee_data)
+        except Exception as e:
+            log.warning("Factor analysis failed for %s: %s — using defaults", match_name, e)
+            factors = {"n_home_factors": 0, "n_away_factors": 0, "home_factors": [], "away_factors": []}
 
         if use_ensemble:
-            # Use ensemble
-            pred = ensemble.predict(
-                match, factors, form_data, confirmed_lineups=confirmed_lineups
-            )
+            # Use ensemble — gracefully skip this match if it fails
+            try:
+                pred = ensemble.predict(
+                    match, factors, form_data, confirmed_lineups=confirmed_lineups
+                )
+            except Exception as e:
+                log.error("Ensemble prediction FAILED for %s: %s — skipping match", match_name, e)
+                continue  # Skip this match, don't crash the entire batch
+
+            if pred is None:
+                log.warning("Ensemble returned None for %s — skipping", match_name)
+                continue
 
             # Merge with standard format
             pred["date"] = match.get("date", "TBD")
@@ -3952,8 +3963,11 @@ def run_ensemble_predictions(use_ensemble: bool = True) -> Dict:
     }
 
     output_path = DATA_DIR / "upcoming" / "predictions.json"
-    with open(output_path, "w") as f:
+    # Atomic write: temp file + rename to prevent corruption on crash
+    tmp_path = output_path.with_suffix(".json.tmp")
+    with open(tmp_path, "w") as f:
         json.dump(output, f, indent=2, cls=_NumpySafeEncoder)
+    tmp_path.replace(output_path)
 
     log.info(f"\nSaved ensemble predictions to {output_path}")
     return output

@@ -1101,6 +1101,21 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             print(f"  Odds fetch warning: {e}")
             log.warning(f"Odds fetch error: {e}")
 
+        # CRITICAL: If no odds at all, abort — can't compute edges without market data
+        if not odds:
+            log.error("CRITICAL: No odds data available. Cannot compute betting edges.")
+            try:
+                from scripts.pipeline.notify import send_notification
+                send_notification(
+                    "Pipeline aborted: no odds data. Check Odds API key/quota.",
+                    title="CRITICAL: No Odds Data",
+                    level="critical",
+                )
+            except Exception:
+                pass
+            print("  ABORTING: No odds data — cannot generate bet recommendations")
+            return summary
+
         step(2, total_steps, "Syncing Matches from Odds API")
         try:
             from scripts.data.odds_fetcher import sync_matches_from_odds
@@ -1737,18 +1752,19 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     try:
         from scripts.betting.parlay_generator import generate_parlay_report
         parlay_report = generate_parlay_report(bankroll=bankroll)
-        print(f"  Generated {parlay_report['total_parlays']} parlays from {parlay_report['total_legs_available']} value legs")
+        regenerated = parlay_report.get("regenerated", True)
+        top_picks = parlay_report.get("top_picks", [])
+        if regenerated:
+            print(f"  Generated {parlay_report['total_parlays']} parlays from {parlay_report['total_legs_available']} value legs")
+            if top_picks:
+                print(f"  Top {len(top_picks)} picks selected")
+        else:
+            print(f"  Cached: {parlay_report['total_parlays']} parlays (inputs unchanged)")
 
-        # Notify parlays ready
+        # Notify parlays ready (skips if not regenerated)
         try:
             from scripts.pipeline.notify import notify_parlays_ready
-            n_parlays = parlay_report.get("total_parlays", 0)
-            best = parlay_report.get("parlays", [{}])[0] if parlay_report.get("parlays") else {}
-            notify_parlays_ready(
-                n_parlays=n_parlays,
-                best_odds=best.get("combined_odds", 0),
-                best_prob=best.get("win_probability", 0) * 100 if best.get("win_probability") else 0,
-            )
+            notify_parlays_ready(parlay_report=parlay_report)
         except Exception:
             pass
     except Exception as e:
@@ -2047,6 +2063,14 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     except Exception:
         pass
 
+    # Morning briefing — send if this is the morning run (before noon)
+    try:
+        if datetime.now().hour < 12:
+            from scripts.pipeline.notify import notify_morning_briefing
+            notify_morning_briefing()
+    except Exception:
+        pass
+
     if report:
         print("\n" + "=" * 70)
         print(" FINAL BETTING SUMMARY")
@@ -2157,8 +2181,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run Full Betting Pipeline")
     parser.add_argument("--quick", action="store_true",
                        help="Quick mode (use cached data)")
-    parser.add_argument("--bankroll", type=float, default=1000,
-                       help="Bankroll amount (default: 1000)")
+    parser.add_argument("--bankroll", type=float, default=0,
+                       help="Bankroll amount (default: 0 = auto-load from journal)")
     parser.add_argument("--snapshot-only", action="store_true",
                        help="Only run Steps 1-6 (fetch + snapshot + squads, ~6 credits)")
     parser.add_argument("--pre-kickoff", action="store_true",
@@ -2176,6 +2200,15 @@ def main():
     parser.add_argument("--incremental", action="store_true",
                        help="Incremental refresh: only new results, fresh odds if stale, new predictions (~4 credits)")
     args = parser.parse_args()
+
+    # Auto-load bankroll from journal if not explicitly set
+    if args.bankroll <= 0:
+        try:
+            from scripts.betting.bankroll_loader import get_effective_bankroll
+            args.bankroll = get_effective_bankroll()
+        except Exception as e:
+            log.warning("Failed to auto-load bankroll: %s — using 1000", e)
+            args.bankroll = 1000.0
 
     if args.live_monitor:
         from scripts.data.live_monitor import watch_loop

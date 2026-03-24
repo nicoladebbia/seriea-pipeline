@@ -722,7 +722,7 @@ class TestBettingPipeline:
 
         cfg = BettingConfig()
         assert cfg.bankroll == 1000.0
-        assert cfg.kelly_fraction == 0.15
+        assert cfg.kelly_fraction == 0.10
         assert cfg.min_edge_pct > 0
         assert cfg.max_edge_pct > cfg.min_edge_pct
         assert cfg.max_stake_pct > cfg.min_stake_pct
@@ -876,10 +876,10 @@ class TestBettingPipeline:
         assert engine.selected == []
 
         # Custom config
-        cfg = BettingConfig(bankroll=500, kelly_fraction=0.15, min_edge_pct=3.0)
+        cfg = BettingConfig(bankroll=500, kelly_fraction=0.10, min_edge_pct=3.0)
         engine2 = UnifiedBettingEngine(cfg)
         assert engine2.cfg.bankroll == 500
-        assert engine2.cfg.kelly_fraction == 0.15
+        assert engine2.cfg.kelly_fraction == 0.10
 
     def test_market_priority_ordering(self):
         """Market priorities are correctly defined for portfolio optimization."""
@@ -1362,8 +1362,8 @@ class TestCrossModuleConsistency:
         from scripts.betting.betting_unified import BettingConfig
 
         cfg = BettingConfig()
-        assert cfg.kelly_fraction == 0.15, (
-            "BettingConfig default Kelly should be 0.15 (conservative Kelly)"
+        assert cfg.kelly_fraction == 0.10, (
+            "BettingConfig default Kelly should be 0.10 (conservative Kelly)"
         )
 
     def test_data_dir_consistency(self):

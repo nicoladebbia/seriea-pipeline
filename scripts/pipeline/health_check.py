@@ -88,22 +88,27 @@ def check_data_freshness() -> Dict:
 
 
 def check_model_freshness() -> Dict:
-    """Check model files exist and aren't stale."""
+    """Check model files exist and aren't stale.
+
+    Only checks ACTIVE production models (not archived checkpoints or experiments).
+    Stale artifacts live in data/models/archive/ and are not monitored.
+    """
     checks = {}
 
-    models = {
-        "catboost_no_odds": MODELS_DIR / "universal" / "catboost_no_odds.cbm",
-        "ensemble_calibrator": MODELS_DIR / "universal" / "ensemble_calibrator.pkl",
+    universal_dir = MODELS_DIR / "universal"
+
+    # Active production models — these are the only ones that matter
+    active_models = {
+        "catboost_no_odds": universal_dir / "catboost_no_odds.cbm",
+        "catboost_latest": universal_dir / "catboost_latest.cbm",
+        "xg_home": universal_dir / "xg_home.cbm",
+        "xg_away": universal_dir / "xg_away.cbm",
+        "draw_detector": universal_dir / "draw_detector.cbm",
+        "lightgbm_latest": universal_dir / "lightgbm_latest.txt",
+        "xgboost_latest": universal_dir / "xgboost_latest.json",
     }
 
-    # Check for any .cbm/.xgb/.lgb files in models dir
-    universal_dir = MODELS_DIR / "universal"
-    if universal_dir.exists():
-        for ext in ["*.cbm", "*.xgb", "*.lgb"]:
-            for f in universal_dir.glob(ext):
-                models[f.stem] = f
-
-    for name, path in models.items():
+    for name, path in active_models.items():
         age_hours, age_str = _file_age(path)
         status = "OK"
 
@@ -219,6 +224,85 @@ def check_system_integrity() -> Dict:
     return {"imports_ok": imports_ok, "checks": checks}
 
 
+def check_model_metadata_consistency() -> Dict:
+    """Verify that deployed models match their metadata files.
+
+    Catches KB#19: deployment state uncertainty where model feature counts
+    disagree between the model, metadata, and training report.
+    """
+    result = {"status": "OK", "checks": []}
+    universal_dir = MODELS_DIR / "universal"
+
+    # Check catboost_no_odds consistency
+    no_odds_model = universal_dir / "catboost_no_odds.cbm"
+    no_odds_meta = universal_dir / "catboost_no_odds_metadata.json"
+    if no_odds_model.exists() and no_odds_meta.exists():
+        try:
+            import json
+            from catboost import CatBoostClassifier
+            model = CatBoostClassifier()
+            model.load_model(str(no_odds_model))
+            model_n_features = len(model.feature_names_)
+
+            with open(no_odds_meta) as f:
+                meta = json.load(f)
+            meta_n_features = meta.get("n_features", -1)
+
+            if model_n_features != meta_n_features:
+                result["status"] = "WARNING"
+                result["checks"].append({
+                    "model": "catboost_no_odds",
+                    "issue": f"Model has {model_n_features} features but metadata says {meta_n_features}",
+                })
+            else:
+                result["checks"].append({
+                    "model": "catboost_no_odds",
+                    "status": "OK",
+                    "n_features": model_n_features,
+                })
+        except Exception as e:
+            result["checks"].append({
+                "model": "catboost_no_odds",
+                "issue": f"Could not verify: {e}",
+            })
+
+    # Check ensemble consistency
+    ensemble_meta = universal_dir / "ensemble" / "ensemble_metadata.json"
+    if ensemble_meta.exists():
+        try:
+            import json
+            with open(ensemble_meta) as f:
+                meta = json.load(f)
+            ens_n_features = len(meta.get("feature_names", []))
+            result["checks"].append({
+                "model": "ensemble",
+                "status": "OK",
+                "n_features": ens_n_features,
+            })
+        except Exception as e:
+            result["checks"].append({
+                "model": "ensemble",
+                "issue": f"Could not verify: {e}",
+            })
+
+    # Check deployment_state.json exists and has active_ml_model
+    deploy_path = MODELS_DIR / "deployment_state.json"
+    if deploy_path.exists():
+        try:
+            import json
+            with open(deploy_path) as f:
+                state = json.load(f)
+            if "active_ml_model" not in state:
+                result["checks"].append({
+                    "model": "deployment_state",
+                    "issue": "No active_ml_model field — run retrain to populate",
+                })
+        except Exception:
+            pass
+
+    return result
+
+
 def run_health_check() -> Dict:
     """Run all health checks and return unified result."""
     result = {
@@ -226,6 +310,7 @@ def run_health_check() -> Dict:
         "overall_status": "HEALTHY",
         "data_freshness": check_data_freshness(),
         "model_freshness": check_model_freshness(),
+        "model_consistency": check_model_metadata_consistency(),
         "betting_health": check_betting_health(),
         "system_integrity": check_system_integrity(),
         "issues": [],
@@ -247,6 +332,13 @@ def run_health_check() -> Dict:
             issues.append(("CRITICAL", f"Model missing: {name}"))
         elif check["status"] == "STALE":
             issues.append(("WARNING", f"Model stale: {name} ({check['age']})"))
+
+    # Model consistency issues (KB#19)
+    consistency = result.get("model_consistency", {})
+    if consistency.get("status") == "WARNING":
+        for check in consistency.get("checks", []):
+            if "issue" in check:
+                issues.append(("WARNING", f"Model metadata mismatch: {check['issue']}"))
 
     # Betting issues
     betting_status = result["betting_health"].get("status", "OK")

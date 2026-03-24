@@ -3,36 +3,44 @@
 Read this before running backtests, validating models, or shipping changes.
 
 ## Current Baselines (NEVER regress beyond these)
-| Metric | 4-Season Backtest | 2024-2025 OOS | Reject If |
-|--------|-------------------|---------------|-----------|
-| Accuracy | 54.3% | 53.2% | < 50.0% |
-| Log-loss | 0.9576 | 0.9595 | > 0.99 |
-| Brier | 0.1899 | 0.1910 | > 0.20 |
-| RPS | 0.1255 | — | > 0.14 |
-| ECE | 0.0196 | — | > 0.05 |
-| Betting yield (1X2) | +10.5% | +10.7% | < +5% |
+| Metric | Walk-Forward CV (2017+) | Production 2025-2026 | Reject If |
+|--------|------------------------|---------------------|-----------|
+| Accuracy | 60.0% | 69.3% | < 55.0% |
+| Log-loss | 0.860 | 0.709 | > 0.92 |
+| Brier | 0.170 | — | > 0.18 |
+| ECE | 0.031 (production) | 0.031 | > 0.05 |
+| F1 Draw | 0.328 | — | < 0.20 |
+| Walk-fwd backtest ROI | +12.3% | — | < +5% |
 
-Note: Baselines updated Feb 17 2026 after fixing 3 critical bugs: (1) ENSEMBLE_WEIGHTS_WITH_DEEP synced to production weights, (2) FALLBACK_WEIGHTS recomputed proportionally, (3) raw_prob leak fixed (probs were saved AFTER draw boost 1.28x, inflating draw edges ~10-13%). Also fixed backtest parity: kelly_fraction 0.25→0.15, Poisson max_goals 8→10, added xG draw inflation to match production. 4-season backtest (2021-2025, 1520 matches): 1,038 bets, €3,940 profit, +6.8% flat ROI, +29.6% Kelly ROI. Season trend: +6.0% (2021-22) → +5.6% (2022-23) → +5.3% (2023-24) → +10.7% (2024-25). ECE improved 47% (0.0368→0.0196). Note: 2021-22 is an outlier (57.6% accuracy); conservative 3-season avg is 53.3%.
+Note: Baselines updated Mar 23 2026 after major model overhaul:
+- Training data: 2017+ only (3,340 matches) — drops low-signal pre-2017 data
+- NaN threshold: 0.45 (was 0.20) — unlocks xG, lineup, odds velocity, pressing features
+- Time-decay: 0.85/season (Dixon-Coles) — recent matches dominate
+- Auto draw weights: 38% target effective share (was hardcoded 2.0x multiplier)
+- 35 features selected (including xG diff, lineup rating, odds velocity, squad value)
+- Walk-forward backtest (2023-2025): 643 bets, €3,192 profit, +12.3% ROI, €1000→€4192
+- Betting rules: max_edge 8%, steam rejection, odds 1.5-2.0 dead zone (9% min), Kelly min 0.3%
 
-## Key Constants (updated Feb 22 2026)
+## Key Constants (updated Mar 23 2026)
 | Parameter | Value | Context |
 |-----------|-------|---------|
 | Ensemble weights | F=0.035, xG=0.124, ML=0.605, PxG=0.032, D=0.00, M=0.205 | `ensemble_prediction_engine.py` |
-| ML model | catboost_no_odds.cbm (45 features, retrained 2026-02-23) | Leakage-free selection, correlation-pruned |
-| ML temperature | T=0.75 | Pre-ensemble sharpening (was 0.40; raised to preserve draw signal) |
-| Post-ensemble T | T=0.90 | Sharpens underconfident predictions (was 1.04; ECE 0.0587→0.0329) |
-| Draw boost | 1.12 | Draw compensation (was 1.28; reduced because T=0.75 compresses draws less) |
+| ML model | catboost_no_odds.cbm + 3-model ensemble (35 features, 2017+ data) | Time-decay 0.85, auto draw weights |
+| ML temperature | T=0.75 | Pre-ensemble sharpening |
+| Post-ensemble T | T=0.90 | Sharpens underconfident predictions |
+| Draw boost | 1.12 | Draw compensation |
 | Staking mode | **kelly** | Kelly criterion with fractional sizing |
 | Kelly fraction | **0.10** | 10% Kelly — balances growth vs variance |
-| Max stake | **2.5% of bankroll** | Per bet (was 5%) |
-| Min bookmakers | **3** | O/U bets require 3+ bookmakers for reliable edge benchmark |
-| 1X2 | **DISABLED** | Live: 5W/13L -17.6% ROI, 20% CLV beat. Backtest unreliable (data leakage). |
-| 1X2_Draw | **DISABLED** | Same as 1X2 — model can't predict draws accurately (28% WR, need 31%) |
-| DC min edge | 5% | Double chance: live +10.6% ROI (7W/3L), 78% CLV beat |
-| O/U Over min edge | 5% | Lines 0.5, 1.5, 2.5, 3.5, 4.5 via alternate totals merge |
-| O/U Under | DISABLED | Multi-market backtest: -1% to -14% ROI at all thresholds |
-| AH | DISABLED | Multi-market backtest: -20% to -42% ROI |
-| Edge cap | 12% (all markets) | Max edge — anything higher is likely bookmaker error |
+| Kelly min reject | **0.30%** | Bets below 0.3% Kelly are rejected (edge too thin) |
+| Max stake | **2.5% of bankroll** | Per bet |
+| Max edge | **8%** (all markets) | Live data: >10% = 38% WR, -EUR133 (was 12%) |
+| Odds dead zone | **1.5-2.0: 9% min edge** | Live data: 40% WR, -EUR121 in this range |
+| Steam rejection | **Hard reject** | Steam moves against = bet killed entirely |
+| DC min edge | 5% | Double chance |
+| O/U Over min edge | 6% | Over/Under |
+| 1X2 | **DISABLED** | Live: negative ROI |
+| O/U Under | **DISABLED** | Backtest: negative ROI at all thresholds |
+| AH | **DISABLED** | Backtest: negative ROI |
 
 ## Live Performance (as of Feb 22 2026, 64 settled bets)
 | Market | Bets | W/L | ROI | CLV Beat% | Status |
@@ -46,19 +54,20 @@ Note: Baselines updated Feb 17 2026 after fixing 3 critical bugs: (1) ENSEMBLE_W
 
 **Key insight**: CLV beat rate is the strongest signal for long-term profitability. O/U at 95% and DC at 78% indicate genuine edge. 1X2 at 20% confirms no edge exists there.
 
-## Model Registry
+## Model Registry (updated Mar 23 2026)
 ```
-No-odds CatBoost (catboost_no_odds.cbm) → 35 features, leakage-free selection, ACTIVE ML component (Feb 17)
-CatBoost latest (catboost_latest.cbm) → 47 features, Feb 21 retrain, NOT DEPLOYED (51.55% WF acc, marginal vs 35-feat)
-LightGBM latest (lightgbm_latest.txt) → 47 features, Feb 20, DEAD END (43% accuracy)
-XGBoost latest (xgboost_latest.json) → 47 features, Feb 20, DEAD END (40% accuracy)
-Meta-learner (ml/meta_learner.py) → 27 meta-features, Feb 20, NOT DEPLOYED (53.3% vs 53.8% fixed weights)
-O/U 2.5 CatBoost (ou_2_5_catboost_latest.cbm) → 45 features, Optuna-tuned, ACTIVE (LL=0.6923, acc=52.2%)
-O/U 1.5 CatBoost (ou_1_5_catboost_latest.cbm) → 50 features, Optuna-tuned, ACTIVE (LL=0.5669, acc=74.6%)
-O/U 3.5 CatBoost (ou_3_5_catboost_latest.cbm) → 47 features, Optuna-tuned, ACTIVE (LL=0.5834, acc=73.1%)
-Market models (prod_*.cbm) → 367 or 456 features (hybrid strategy)
-Player models (player_*.cbm) → 153 features
-Draw specialist (draw_specialist.pkl) → Side model for draw detection
+ACTIVE PRODUCTION:
+  catboost_no_odds.cbm → 35 features, 2017+ data, time-decay 0.85, CV acc=61.6% (Mar 23)
+  Ensemble (XGB+LGB+CB) → 35 features, blend 30/36/34, CV acc=60.0% (Mar 23)
+  O/U CatBoost models → ou_{1.5,2.5,3.5}_catboost_latest.cbm, Optuna-tuned
+
+AUXILIARY (not in main ensemble):
+  xG regressors → xg_home.cbm, xg_away.cbm (for Poisson predictions)
+  Draw detector → draw_detector.cbm (auxiliary signal)
+
+ARCHIVED:
+  Old catboost_no_odds.cbm.bak → 45 features, Feb 23 (rollback if needed)
+  catboost_latest.cbm → from train_optimized, auto-updated on retrain
 ```
 
 ## Weight Re-optimization with Market Cap (Feb 16 2026)
@@ -194,21 +203,19 @@ Backfilled substitution data from `data/external/sofascore/match_incidents.parqu
 ### Results
 | Model | All-folds Acc | All-folds LL | Test 2025-26 Acc | Test 2025-26 LL |
 |-------|:---:|:---:|:---:|:---:|
-| CatBoost (new) | 50.91% | 0.9973 | 51.97% | 1.0005 |
-| CatBoost (old, production) | 50.75% | 1.0027 | 51.97% | 0.9950 |
-| XGBoost | 40.52% | 1.0660 | — | — |
-| LightGBM | 43.05% | 1.0682 | — | — |
+| CatBoost (Feb 21, all-data) | 50.91% | 0.9973 | 51.97% | 1.0005 |
+| **CatBoost (Mar 23, 2017+)** | **61.55%** | **0.8589** | **69.3%** | **0.709** |
+| XGBoost (Mar 23, 2017+) | 59.2% | 0.866 | — | — |
+| LightGBM (Mar 23, 2017+) | 59.1% | 0.866 | — | — |
 
-### Outcome: NOT DEPLOYED
+### Outcome: NOT DEPLOYED (Feb 21)
 - Substitution features: **0 of 6 selected** by feature importance pruning. They don't carry signal.
 - CatBoost improvement is within noise (+0.16pp all-folds accuracy, test fold slightly worse on LL).
-- XGBoost/LightGBM confirmed as dead ends (40-43% vs 51%).
+- XGBoost/LightGBM confirmed as dead ends (40-43% vs 51% on all-data training).
 - Post-hoc calibration (Platt) worsened ECE on all 5 calibration folds — identity passthrough used.
-- Production `catboost_no_odds.cbm` remains the Feb 17 version.
-- New models saved to `catboost_latest.cbm` / `lightgbm_latest.txt` / `xgboost_latest.json` for reference.
 
-### Conclusion
-The no-odds model ceiling is ~51-52% accuracy. Adding more team-level features doesn't move this. The constraint is not feature quantity — it's information content. Future improvements should focus on ensemble architecture, meta-learner design, or better use of market signal, not feature engineering.
+### Conclusion (UPDATED Mar 23)
+The old no-odds model ceiling of ~51-52% was broken by switching to **2017+ data only** (min_train_season=2017-2018, NaN threshold 0.45) + **time-decay 0.85/season** + **auto draw weights**. This unlocked xG, lineup, odds velocity, and squad value features. New model: **61.55% CV accuracy**, log-loss 0.8589, F1 Draw 0.328. Walk-forward backtest: +12.3% ROI. The constraint was not feature quantity — it was that pre-2017 data with zero xG coverage was drowning out the signal.
 
 ## Draw-Aware Optimization (Feb 2026)
 Added 8 draw-convergence features (`both_defenses_strong`, `both_attacks_weak`, `combined_draw_tendency`, `defense_similarity`, `low_scoring_signal`, `home/away_draw_tendency_5`, `draw_convergence_x_competitiveness`). Retrained ML blend with 30% draw F1 objective, re-optimized ensemble weights via 300-trial Optuna with draw-aware scoring. Result: draw predictions in 55-65% bucket went from 0/2 correct to 4/8 correct. 2-season log-loss improved (0.8987→0.8958). NOTE: Draw boost was subsequently removed (Fix 3) since no-odds ML handles draws without needing a boost; a mild 1.08x boost was re-introduced during weight re-optimization.

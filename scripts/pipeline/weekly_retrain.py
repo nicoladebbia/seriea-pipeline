@@ -267,6 +267,112 @@ def _append_metrics_history(entry: dict):
 
 
 # ---------------------------------------------------------------------------
+# Auxiliary model retraining (catboost_no_odds + xG regressors)
+# ---------------------------------------------------------------------------
+
+def retrain_no_odds(dry_run: bool = False) -> dict:
+    """Retrain catboost_no_odds.cbm using the existing feature set.
+
+    This is the PRIMARY production model (60.5% ensemble weight).
+    Uses the dedicated retrain script which validates against rejection thresholds.
+    """
+    result = {"model": "catboost_no_odds", "promoted": False}
+    log.info("Retraining catboost_no_odds...")
+
+    try:
+        cmd = [sys.executable, "-m", "scripts.models.retrain_no_odds_catboost"]
+        if dry_run:
+            cmd.append("--dry-run")
+
+        proc = subprocess.run(
+            cmd, cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=600,
+        )
+        result["returncode"] = proc.returncode
+        if proc.returncode == 0:
+            result["promoted"] = True
+            log.info("catboost_no_odds retrained successfully")
+        else:
+            log.warning("catboost_no_odds retrain failed: %s", proc.stderr[-500:] if proc.stderr else "unknown")
+            result["error"] = proc.stderr[-300:] if proc.stderr else "exit code non-zero"
+
+    except subprocess.TimeoutExpired:
+        log.error("catboost_no_odds retrain timed out (10 min)")
+        result["error"] = "timeout"
+    except Exception as e:
+        log.error("catboost_no_odds retrain error: %s", e)
+        result["error"] = str(e)
+
+    return result
+
+
+def retrain_draw_detector(dry_run: bool = False) -> dict:
+    """Retrain draw_detector.cbm + calibrator + ablation test."""
+    result = {"model": "draw_detector", "promoted": False}
+    log.info("Retraining draw detector...")
+
+    try:
+        cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "models" / "retrain_draw_detector.py")]
+        if dry_run:
+            cmd.append("--dry-run")
+
+        proc = subprocess.run(
+            cmd, cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=600,
+        )
+        result["returncode"] = proc.returncode
+        if proc.returncode == 0:
+            result["promoted"] = True
+            log.info("draw_detector retrained successfully")
+        else:
+            log.warning("draw_detector retrain issue: %s", proc.stderr[-500:] if proc.stderr else "unknown")
+            result["error"] = proc.stderr[-300:] if proc.stderr else "exit code non-zero"
+
+    except subprocess.TimeoutExpired:
+        log.error("draw_detector retrain timed out (10 min)")
+        result["error"] = "timeout"
+    except Exception as e:
+        log.error("draw_detector retrain error: %s", e)
+        result["error"] = str(e)
+
+    return result
+
+
+def retrain_xg_models(dry_run: bool = False) -> dict:
+    """Retrain xg_home.cbm and xg_away.cbm (xG regressors for Poisson predictions).
+
+    Uses train_unified.py in xg_only mode.
+    """
+    result = {"model": "xg_home/xg_away", "promoted": False}
+    log.info("Retraining xG models (xg_home + xg_away)...")
+
+    try:
+        cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "models" / "train_unified.py"),
+               "--mode", "xg_only"]
+
+        proc = subprocess.run(
+            cmd, cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=600,
+        )
+        result["returncode"] = proc.returncode
+        if proc.returncode == 0:
+            result["promoted"] = True
+            log.info("xG models retrained successfully")
+        else:
+            log.warning("xG retrain failed: %s", proc.stderr[-500:] if proc.stderr else "unknown")
+            result["error"] = proc.stderr[-300:] if proc.stderr else "exit code non-zero"
+
+    except subprocess.TimeoutExpired:
+        log.error("xG retrain timed out (10 min)")
+        result["error"] = "timeout"
+    except Exception as e:
+        log.error("xG retrain error: %s", e)
+        result["error"] = str(e)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Feature rebuild
 # ---------------------------------------------------------------------------
 
@@ -347,15 +453,8 @@ def quick_retrain(dry_run: bool = False) -> dict:
         from ml.ensemble import WeightedAverageEnsemble, evaluate_ensemble_cv
         from ml.training import train_universal
 
-        # Train individual models with tuned params + selected features
-        train_results = train_universal(
-            validate=True,
-            params=tuned_params,
-            feature_names_override=selected_features,
-        )
-
-        # Build ensemble
-        log.info("Building ensemble...")
+        # Load data (respects min_train_season=2017-2018 from ValidationConfig)
+        log.info("Loading data...")
         fp = str(features_path())
         loader = DataLoader(fp)
         X, y, _ = loader.get_universal_dataset()
@@ -364,12 +463,24 @@ def quick_retrain(dry_run: bool = False) -> dict:
         keep = [c for c in selected_features if c in X.columns]
         meta = [c for c in X.columns if c.startswith("_")]
         X = X[keep + [c for c in meta if c not in keep]]
+        log.info("Data: %d rows, %d features", len(X), len(keep))
 
+        # Train individual models with tuned params + selected features
+        train_results = train_universal(
+            validate=True,
+            params=tuned_params,
+            feature_names_override=keep,
+        )
+
+        # Build ensemble on the same filtered dataset
+        log.info("Building ensemble...")
         ens = WeightedAverageEnsemble(model_configs=tuned_params)
         ens.fit(X, y, feature_names=keep)
 
         # Evaluate ensemble
-        cv_results = evaluate_ensemble_cv(X, y, model_configs=tuned_params)
+        cv_results = evaluate_ensemble_cv(
+            X, y, keep, model_configs=tuned_params,
+        )
 
         elapsed = time.time() - t0
         log.info("Training completed in %.1f seconds", elapsed)
@@ -690,6 +801,19 @@ def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
         log.info("Normal matchweek — running QUICK retrain")
         result = quick_retrain(dry_run=dry_run)
 
+    # Also retrain auxiliary models (catboost_no_odds + xG regressors)
+    # These are not part of the ensemble but are critical production models.
+    aux_results = {}
+    log.info("Retraining auxiliary models (catboost_no_odds + xG)...")
+    aux_results["no_odds"] = retrain_no_odds(dry_run=dry_run)
+    aux_results["xg"] = retrain_xg_models(dry_run=dry_run)
+    aux_results["draw_detector"] = retrain_draw_detector(dry_run=dry_run)
+    result["auxiliary_models"] = aux_results
+
+    aux_ok = sum(1 for r in aux_results.values() if r.get("promoted"))
+    aux_fail = sum(1 for r in aux_results.values() if r.get("error"))
+    log.info("Auxiliary models: %d promoted, %d failed", aux_ok, aux_fail)
+
     # Record that we retrained for this matchweek
     if result.get("promoted") or dry_run:
         state = _load_retrain_state()
@@ -778,6 +902,13 @@ def main():
             result = full_retrain(dry_run=args.dry_run)
         else:
             result = quick_retrain(dry_run=args.dry_run)
+        # Also retrain auxiliary models
+        log.info("Retraining auxiliary models (catboost_no_odds + xG)...")
+        result["auxiliary_models"] = {
+            "no_odds": retrain_no_odds(dry_run=args.dry_run),
+            "xg": retrain_xg_models(dry_run=args.dry_run),
+            "draw_detector": retrain_draw_detector(dry_run=args.dry_run),
+        }
     else:
         # Auto mode: check matchweek completion, then quick or full based on calendar
         result = auto_retrain(dry_run=args.dry_run, force=args.force)

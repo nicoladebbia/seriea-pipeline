@@ -85,6 +85,12 @@ def load_historical_predictions():
 
     df = pd.read_parquet(cv_path)
 
+    # Derive predicted outcome from probabilities (argmax)
+    if "predicted" not in df.columns:
+        label_map = {0: "H", 1: "D", 2: "A"}
+        df["predicted"] = df[["prob_H", "prob_D", "prob_A"]].values.argmax(axis=1)
+        df["predicted"] = df["predicted"].map(label_map)
+
     # Add confidence column (max probability)
     df["confidence"] = df[["prob_H", "prob_D", "prob_A"]].max(axis=1)
 

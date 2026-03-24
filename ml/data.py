@@ -298,6 +298,21 @@ class DataLoader:
             self.load()
 
         mask = self.df[RESULT_COL].isin(CLASS_LABELS)
+
+        # Apply min_train_season filter: drop pre-2017 data to unlock advanced
+        # features (xG, pressing, odds velocity, lineup) that have zero coverage
+        # in early seasons. With time-decay=0.85, these old matches contribute <4%
+        # weight anyway.
+        from ml.config import ValidationConfig
+        val_cfg = ValidationConfig()
+        if val_cfg.min_train_season:
+            season_mask = self.df[SEASON_COL] >= val_cfg.min_train_season
+            mask = mask & season_mask
+            n_dropped = (~season_mask).sum()
+            if n_dropped > 0:
+                log.info("min_train_season=%s: dropped %d matches before cutoff, %d remaining",
+                         val_cfg.min_train_season, n_dropped, mask.sum())
+
         X = self.df.loc[mask, self.universal_features].copy().reset_index(drop=True)
         y = self.df.loc[mask, RESULT_COL].copy().reset_index(drop=True)
         seasons = self.df.loc[mask, SEASON_COL].copy().reset_index(drop=True)

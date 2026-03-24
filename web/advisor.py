@@ -144,19 +144,63 @@ def _tool_get_match_prediction(args: dict) -> str:
     home = args.get("home_team", "")
     away = args.get("away_team", "")
 
+    # Fallback: if Claude passed a single "match" string, parse it
+    if not home and not away:
+        match_str = args.get("match", "")
+        if " vs " in match_str:
+            parts = match_str.split(" vs ", 1)
+            home, away = parts[0].strip(), parts[1].strip()
+        elif " - " in match_str:
+            parts = match_str.split(" - ", 1)
+            home, away = parts[0].strip(), parts[1].strip()
+
     preds_data = _load_json(UPCOMING_DIR / "predictions.json")
     predictions = preds_data.get("predictions", [])
     match = _find_match(home, away, predictions)
+
+    # If not found, try reversed (user might say "Pisa vs Como" when it's "Como vs Pisa")
+    if not match and home and away:
+        match = _find_match(away, home, predictions)
+
     if not match:
-        return json.dumps({"error": f"No prediction found for {home} vs {away}. Check team names."})
+        # List available matches to help Claude self-correct
+        available = [p.get("match", "") for p in predictions[:10]]
+        return json.dumps({
+            "error": f"No prediction found for {home} vs {away}.",
+            "available_matches": available,
+            "hint": "Try using the exact match name from the available list. Format is 'Home vs Away'."
+        })
+
+    # Compute clear ensemble-average probabilities for Claude
+    comp = match.get("component_predictions", {})
+    ens_probs = []
+    for method_data in comp.values():
+        if isinstance(method_data, dict) and "prob_H" in method_data:
+            h, d, a = method_data["prob_H"], method_data["prob_D"], method_data["prob_A"]
+            if h > 0 and d > 0:
+                ens_probs.append((h, d, a))
+    if ens_probs:
+        avg_h = round(sum(p[0] for p in ens_probs) / len(ens_probs), 3)
+        avg_d = round(sum(p[1] for p in ens_probs) / len(ens_probs), 3)
+        avg_a = round(sum(p[2] for p in ens_probs) / len(ens_probs), 3)
+    else:
+        avg_h = avg_d = avg_a = 0
 
     result = {
         "match": match.get("match"),
         "home_team": match.get("home_team"),
         "away_team": match.get("away_team"),
         "predicted_outcome": match.get("predicted_outcome"),
+        # Clear, unambiguous probabilities — Claude MUST use these exact numbers
+        "home_win_probability": avg_h,
+        "draw_probability": avg_d,
+        "away_win_probability": avg_a,
+        "_note": f"Probabilities: {match.get('home_team')} {avg_h*100:.1f}%, Draw {avg_d*100:.1f}%, {match.get('away_team')} {avg_a*100:.1f}%. Quote these EXACT numbers.",
         "probabilities": match.get("probabilities"),
-        "confidence": match.get("confidence"),
+        "confidence_level": match.get("confidence_level"),
+        "home_xg": match.get("home_xg"),
+        "away_xg": match.get("away_xg"),
+        "component_methods": comp,
         "strategy": match.get("strategy"),
     }
 
@@ -800,36 +844,57 @@ def _tool_get_h2h(args: dict) -> str:
 
 
 def _tool_get_value_bets(args: dict) -> str:
+    from datetime import datetime as _dt
+
     slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
     bets = slip.get("selected_bets", [])
     summary = slip.get("summary", {})
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    # Separate today's bets from future bets
+    today_bets = []
+    future_bets = []
+    for b in bets:
+        bet_date = b.get("date", "")
+        entry = {
+            "match": b.get("match"),
+            "date": bet_date,
+            "market": b.get("market"),
+            "selection": b.get("selection"),
+            "odds": b.get("best_odds"),
+            "edge_pct": b.get("edge_pct"),
+            "bookmaker": b.get("best_bookmaker"),
+            "kelly_stake": b.get("kelly_stake_pct", b.get("stake_pct")),
+            "model_prob": b.get("model_prob"),
+        }
+        if bet_date == today:
+            today_bets.append(entry)
+        else:
+            future_bets.append(entry)
 
     result = {
         "generated_at": slip.get("generated_at"),
+        "today": today,
+        "today_bets": today_bets,
+        "today_count": len(today_bets),
+        "future_bets": future_bets[:5],
+        "future_count": len(future_bets),
         "total_bets": len(bets),
         "summary": summary,
-        "bets": [
-            {
-                "match": b.get("match"),
-                "market": b.get("market"),
-                "selection": b.get("selection"),
-                "odds": b.get("best_odds"),
-                "edge_pct": b.get("edge_pct"),
-                "bookmaker": b.get("best_bookmaker"),
-                "kelly_stake": b.get("kelly_stake_pct", b.get("stake_pct")),
-                "model_prob": b.get("model_prob"),
-            }
-            for b in bets
-        ],
+        # Keep "bets" for backward compat but add _note
+        "bets": today_bets if today_bets else [entry for entry in (today_bets + future_bets)[:8]],
+        "_note": f"Today is {today}. Only recommend bets from today_bets for immediate action. future_bets are for upcoming matchdays.",
     }
 
-    # Add handicap bets
+    # Add handicap bets — mark which are today
     hcap = _load_json(UPCOMING_DIR / "handicap_bets.json")
     hcap_bets = hcap.get("recommended", [])
     if hcap_bets:
         result["handicap_bets"] = [
             {
                 "match": b.get("match"),
+                "date": b.get("date", ""),
+                "is_today": b.get("date", "") == today,
                 "bet": b.get("bet"),
                 "italian_format": b.get("italian_format"),
                 "odds": b.get("odds"),
@@ -840,13 +905,15 @@ def _tool_get_value_bets(args: dict) -> str:
             for b in hcap_bets[:10]
         ]
 
-    # Add over/under bets
+    # Add over/under bets — mark which are today
     ou = _load_json(UPCOMING_DIR / "over_under_bets.json")
     ou_bets = ou.get("recommended", [])
     if ou_bets:
         result["over_under_bets"] = [
             {
                 "match": b.get("match"),
+                "date": b.get("date", ""),
+                "is_today": b.get("date", "") == today,
                 "bet": b.get("bet"),
                 "italian_format": b.get("italian_format"),
                 "odds": b.get("odds"),
@@ -2726,18 +2793,36 @@ def _build_system_prompt() -> str:
     parts = [
         """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. NEVER guess, speculate, or say "I don't have access". If you don't know, call a tool.
 
+## ABSOLUTE RULES — NEVER VIOLATE THESE
+
+### Rule 1: NEVER fabricate numbers
+Every probability, PPG, edge%, form stat, or xG number you quote MUST come directly from a tool call in this conversation. If a tool didn't return it, you CANNOT state it. If you're unsure of a number, call the tool again. DO NOT round up probabilities to make a pick sound better. Quote the exact number from the tool.
+
+### Rule 2: NEVER encourage chasing losses
+If the user just lost money and asks "what should I bet to recover", your job is to PROTECT them, not enable tilt. Say "The worst thing you can do is size up after a loss. Stick to normal stakes." NEVER use the words "recovery", "recover", "win back", "make up for" when recommending bets. NEVER suggest increasing bet size after losses. NEVER say "which one hits your gut" — betting is math, not feelings. This is the #1 way bettors go broke.
+
+### Rule 2b: Only recommend TODAY's matches
+When the user asks "what should I bet today", only show bets from `today_bets` in the tool output. Do NOT mix in future dates. If a match plays tomorrow, say "that's tomorrow, not today." The tool output now includes `is_today` flags and a `_note` field — read them.
+
+### Rule 3: ALWAYS verify home/away
+When discussing handicaps or team probabilities, ALWAYS check which team is home and which is away. The match key format is "Home vs Away". If the user says "Pisa +1 against Como" but the match is "Como vs Pisa", Pisa is AWAY. The home probability belongs to Como, NOT Pisa. Getting this wrong gives the user a completely wrong recommendation.
+
+### Rule 4: Quote TOOL numbers, not your own
+When you say "Roma has a 78% chance", that number must be exactly what get_match_prediction returned. Do NOT adjust, round, or "feel" probabilities. The model's numbers are the ground truth. If you disagree with the model, say "The model gives 62%, but I think context pushes it higher because [specific reason]" — never silently inflate.
+
 ## PERSONALITY — BETTING MENTAL COACH
 You are NOT a chatbot summarizing data. You are a mental coach who:
-1. **Builds confidence** — remind the user of their good calls, reinforce patterns they've already spotted
+1. **Protects the bankroll first** — your #1 job is keeping the user from making bad bets, not finding action
 2. **Finds what others miss** — cross-reference data to surface hidden insights the model alone doesn't catch
 3. **Coaches decisions** — tell the user when to trust the pick and when to hold back, with the WHY behind it
 
 ### Voice & Tone
-- Talk like a sharp coach briefing someone before a decision — direct, warm, confident.
-- Give a clear VERDICT on every match/bet question. Never sit on the fence.
+- Talk like a sharp coach briefing someone before a decision — direct, warm, honest.
+- Give a clear VERDICT on every match/bet question. It's OK to say "skip this one."
 - Say "I'd back this" or "I'd stay away" — not "it depends on your risk tolerance."
 - The user understands betting, odds, xG, Kelly — don't over-explain basics.
 - When explaining a player or team, give the WHY — don't just say "he's in form", say what changed tactically, physically, or situationally that's driving the numbers.
+- If the user is on a losing streak, be HONEST: "You're running cold. The model edge is still there long-term, but tonight is not the night to size up."
 
 ### Hidden Insights Mandate — YOUR CORE JOB
 After calling tools, do NOT just summarize the data. Your job is to THINK DEEPER:

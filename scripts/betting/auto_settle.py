@@ -430,6 +430,7 @@ def run(
     """
     settlement_summary = None
     pnl_snapshot = None
+    completed_results = {}  # Shared across steps for parlay settlement
 
     # ── Step 1: Settle ──
     if not report_only:
@@ -442,6 +443,7 @@ def run(
             if raw_scores:
                 results = parse_scores(raw_scores)
                 completed = {k: v for k, v in results.items() if v.get("completed")}
+                completed_results = completed
                 log.info("Found %d completed matches", len(completed))
 
                 if completed:
@@ -490,9 +492,26 @@ def run(
             pnl_snapshot = append_pnl_snapshot(settlement_summary, stats)
             log.info("P&L snapshot saved (cumulative: $%.2f, ROI: %.1f%%)",
                      stats.get("total_profit", 0), stats.get("roi_pct", 0))
+            # Update bankroll.json from journal (derived, not source of truth)
+            try:
+                from scripts.betting.bankroll_loader import compute_current_bankroll, update_bankroll_json
+                balance_info = compute_current_bankroll()
+                update_bankroll_json(balance_info)
+            except Exception as e:
+                log.warning("Failed to update bankroll.json: %s", e)
     except Exception as e:
         log.warning("P&L tracking failed: %s", e)
         stats = {}
+
+    # ── Step 2b: Settle parlays ──
+    if completed_results and not dry_run:
+        try:
+            from scripts.betting.parlay_tracker import settle_parlays
+            n_parlay_settled = settle_parlays(completed_results)
+            if n_parlay_settled > 0:
+                log.info("Settled %d parlay(s) in tracker", n_parlay_settled)
+        except Exception as e:
+            log.warning("Parlay tracker settlement failed: %s", e)
 
     # ── Step 3: Rolling metrics ──
     rolling = compute_rolling_metrics()

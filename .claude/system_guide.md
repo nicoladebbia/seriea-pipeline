@@ -128,7 +128,7 @@ Scrapers → features.parquet → ML model → Ensemble blend → Betting system
 ### Production (ACTIVE)
 | Model | File | Features | Accuracy | Purpose |
 |-------|------|----------|----------|---------|
-| CatBoost no-odds | `catboost_no_odds.cbm` | 35 | 51.97% | **THE** ML component in ensemble |
+| CatBoost no-odds + Ensemble | `catboost_no_odds.cbm` + `ensemble/` | 35 | 61.55% CV / 69.3% prod | **THE** ML component (2017+ data, time-decay 0.85) |
 
 ### Non-production (reference only)
 | Model | File | Status |
@@ -254,7 +254,7 @@ PYTHONPATH=. python3 web/app.py
 | Post-hoc calibration (Platt/isotonic) | Worsens ECE on every WF fold | 5/5 folds: identity passthrough was better |
 | O/U Under bets | -1% to -14% ROI at all thresholds | Multi-market backtest Feb 17 |
 | Asian Handicap bets | -20% to -42% ROI | Multi-market backtest Feb 17 |
-| Adding more team-level features | Model ceiling is ~51-52%. More features ≠ better. | 47 features vs 35 features → same accuracy |
+| Adding more team-level features | Old ceiling was ~51-52% with all-data training. New ceiling ~61%+ with 2017+ data + time-decay. | 2017+ data unlocked xG, lineup, odds velocity features |
 
 ### Known Bugs / Gotchas
 | Issue | Status | Details |
@@ -271,7 +271,7 @@ PYTHONPATH=. python3 web/app.py
 ## 7. ENSEMBLE DEEP DIVE
 
 ### How the 5 Predictors Work
-1. **ML Classifier** (60.5%): CatBoost trained on 35 features (Elo, form, H2H, injuries). No odds. Temperature T=0.40 sharpens soft probabilities.
+1. **ML Classifier** (60.5%): CatBoost no-odds model (35 features, 2017+ data, time-decay 0.85). CV acc=0.6155, ll=0.8589. Key features: xG diff, lineup rating, odds velocity, squad value, Elo, form, H2H. Temperature T=0.75.
 2. **Market Odds** (20.5%): Pinnacle implied probabilities with margin removed. Most accurate single predictor, but using too much copies the market.
 3. **xG Poisson** (12.4%): Expected goals → Poisson distribution → P(home goals), P(away goals) → 1X2. Uses team-level xG.
 4. **Factor Model** (3.5%): Home advantage + team strength ratings. Simplest predictor.
@@ -451,3 +451,140 @@ Post-fix backtest (760 matches, 2023-2025) confirmed no regressions:
 - OU Over blended_40 at 5%: **+25.2% ROI** (51 bets)
 - All 9 situational tags show positive ROI (derby draws +54%, mgr_change draws +108%, rest_advantage draws +53%)
 - Pipeline completes 33 steps in ~10 min without hanging
+
+---
+
+## 13. RESEARCH FRONTIER — OPEN PROBLEMS (Read this BEFORE deciding what to work on)
+
+> **Philosophy:** Sections 6 and 10 document what failed *within the current paradigm*.
+> This section documents what hasn't been tried yet — paths that require **changing the
+> problem formulation**, not tuning harder within it. The old 51% accuracy ceiling was
+> broken by switching to 2017+ data + time-decay (now 61.55% CV). The new ceiling
+> may be pushed further with multi-league data, deeper player models, or live odds timing.
+
+---
+
+### 13.1 KNOWN BUGS ACTIVELY HURTING PERFORMANCE (Fix these first)
+
+These are not research — they are documented issues that are degrading current results.
+
+#### A. Feature Selection Fold-0 Bias (KB #37 — UNRESOLVED)
+- **Bug:** `ml/feature_selection.py` runs importance ranking on fold-0 only (train 2005-2010, test 2010-2011)
+- **Impact:** Features from Sofascore (2022+, 271 cols at 98% recent coverage) and FBref advanced (2017+, 99 cols) get zero importance because they don't exist in fold-0's training window. They are then pruned before any recent fold sees them.
+- **Fix:** Average importance across the last 4-6 folds (2020+), or use a union of top-K features from each fold. This could recover 50-100 modern features that are currently invisible to the model.
+- **Expected impact:** Moderate. Modern features may not all survive correlation pruning, but some likely carry signal the 2005-era features can't.
+
+#### B. Walk-Forward Backtest Leakage
+- **Bug:** Production CatBoost is trained on ALL data (2005-2026), but the multi-market backtest (Feb 17, 760 matches) reports ROI as if it used walk-forward retraining per fold.
+- **Impact:** Reported ROI numbers (+25.2% O/U Over, +18% 1X2 Draw) are overstated by an unknown amount (estimated 2-5pp).
+- **Fix:** Implement proper per-fold retraining in `backtest_multimarket.py`. Each test fold should use only a model trained on data up to that fold's cutoff.
+- **Priority:** HIGH — without this, all ROI claims are suspect.
+
+#### C. Deployment State Uncertainty
+- **RESOLVED (KB#19):** Two separate model pipelines exist: (1) catboost_no_odds.cbm with its own metadata (catboost_no_odds_metadata.json), and (2) the ensemble (training_report.json). Feature counts differ by design. `deployment_state.json` now tracks the active production model. `check_model_metadata_consistency()` in health_check.py validates alignment at runtime.
+- **Fix:** Verify which model `ensemble_prediction_engine.py` actually loads. Check if `deployment_state.json` weights match `ENSEMBLE_WEIGHTS` constant (KB #19 flagged this, still unresolved).
+
+---
+
+### 13.2 CHANGE THE OBJECTIVE FUNCTION
+
+The system optimizes for **1X2 classification accuracy**. But money is made through calibrated probability estimates in specific market contexts. Accuracy is the wrong target.
+
+#### A. Train for Calibration, Not Accuracy
+- **Idea:** Custom CatBoost loss function (or post-training objective) that minimizes ECE or Brier score instead of log-loss/accuracy.
+- **Why:** A model at 50% accuracy with perfect calibration makes more money than one at 54% accuracy with poor calibration. Kelly criterion sizing depends entirely on probability quality.
+- **What to try:** Train with `Logloss` (current) vs `MultiClass` with custom eval metric = Brier score. Compare betting ROI on walk-forward folds, not accuracy.
+
+#### B. Train for Closing Line Value (CLV)
+- **Idea:** Instead of predicting H/D/A outcomes, predict where the market misprices. Target = `(model_fair_odds / closing_odds) - 1`. Positive = model was right to bet, negative = model was wrong.
+- **Why:** CLV is the single best predictor of long-term profitability. A model that consistently beats the closing line prints money regardless of individual match accuracy.
+- **Data available:** `fair_odds_ledger.json` has 1,261 predictions with fair odds + outcomes. `clv_history.json` has per-bet CLV data. Growing daily.
+- **Prerequisite:** Need 500+ settled CLV observations per market type. May already have enough for O/U.
+
+#### C. Situation-Weighted Loss
+- **Idea:** Weight training samples by how often they appear in profitable betting situations. Derby matches, promoted teams, manager changes — these are where ROI lives. The model should get these right even at the cost of getting "normal" matches slightly wrong.
+- **Implementation:** In `train_optimized()`, pass sample weights to CatBoost's `Pool()` based on situational tag membership. Tags with positive backtest ROI get weight > 1.0.
+
+---
+
+### 13.3 SITUATION-SPECIFIC MODELS
+
+The current system uses one universal model + post-hoc situational adjustments. But subpopulations behave fundamentally differently.
+
+#### A. Ensemble of Specialist Models
+- **Idea:** Train separate CatBoost models for identified subpopulations: derbies, promoted teams, post-international break, manager change matches. Use the specialist when the situation matches, universal otherwise.
+- **Why:** Your situational tags already prove these subpopulations have different base rates (derby draws +96% ROI = market systematically misprices them). A model trained *only* on derbies could learn patterns invisible to the universal model.
+- **Risk:** Small sample sizes per situation (derbies: ~7 per season, ~150 across 21 seasons). May need to pool across leagues.
+- **Minimum viable test:** Derby specialist — pool all derbies from 21 seasons, train CatBoost, compare calibration vs universal model on derby subset.
+
+#### B. Regime-Aware Predictions
+- **Idea:** Detect "market regime" (volatile day, stable day, end-of-season, opening matchweek) and adjust ensemble weights dynamically rather than using fixed weights.
+- **Why:** The meta-learner failed because it tried to learn this from data with too few samples. But a **rule-based regime detector** with manually tuned weight tables could work — similar to how situational edge adjustments work but applied to ensemble blending, not just edge thresholds.
+- **Implementation:** Add `_get_market_regime()` to ensemble engine. Map regime → weight overrides (e.g., early season → boost factor model weight, late season → boost ML weight).
+
+---
+
+### 13.4 UNLOCK UNDERUTILIZED MARKET SIGNALS
+
+The system collects rich market microstructure data but uses it only for multiplicative confidence adjustments (0.3x-1.15x on Kelly stake). These signals could be much more powerful.
+
+#### A. Promote Odds Velocity Features to ODDS_META_KEEP
+- **Current state:** 14 `line_vel_*` features are in `ODDS_COLUMN_PATTERNS` (excluded) but NOT in `ODDS_META_KEEP` (included). They capture opening→closing movement magnitude and direction.
+- **Fix:** Add `line_vel_pin_home`, `line_vel_pin_draw`, `line_vel_pin_away`, `steam_move_flag` to `ODDS_META_KEEP` in `ml/config.py`.
+- **Expected impact:** These features tell the model WHERE sharps are moving money. CatBoost can learn non-linear interactions (e.g., "steam move toward home + large Elo gap = value on away draw") that the current linear confidence adjustments can't express.
+- **Effort:** 15 minutes to add to config, then retrain.
+
+#### B. Market Microstructure as Edge Modifier
+- **Idea:** Replace the flat multiplicative adjustments (0.70x-1.15x) with a learned function of market state. Input: (raw_edge, steam_direction, sharp_soft_divergence, odds_consistency, overround, bookmaker_count). Output: adjusted edge or confidence interval.
+- **Why:** A 6% edge in a market with 20 bookmakers, low overround, and sharps agreeing with you is much more reliable than a 6% edge in a thin market with 3 bookmakers and sharps moving against you. Currently both get similar treatment.
+- **Implementation:** Could be as simple as a decision tree fitted on CLV outcomes, or as complex as a small calibration model.
+
+#### C. Bookmaker-Specific CLV Analysis
+- **Data available:** `clv_history.json` records which bookmaker gave the best price for each bet.
+- **Question:** Do certain bookmakers (SNAI, Lottomatica, bet365) systematically offer better CLV for certain market types? If yes, route bets to those books.
+- **Effort:** Pure analysis — no model changes needed. Run a groupby on clv_history by bookmaker × market_type.
+
+---
+
+### 13.5 SCALE THE DATA, NOT THE MODEL
+
+The meta-learner failed because 3K matches wasn't enough. Several ideas from earlier sections become viable with more data.
+
+#### A. Multi-League Expansion (Documented in ROADMAP — Not Started)
+- **Infrastructure exists:** `config/settings.py` has LEAGUES dict ready for Premier League, La Liga, Bundesliga, Ligue 1, Eredivisie.
+- **Impact:** 5 leagues × 380 matches/season × 21 seasons = ~40K matches vs current 7.8K. Meta-learner becomes viable. Situation-specific models become viable. Feature selection fold-0 bias disappears (enough data in every fold).
+- **Risk:** League-specific dynamics (Serie A home advantage ≠ EPL). Need league indicator features or separate per-league models.
+- **Effort:** 3-4 week build. Scrapers need adaptation. Feature plugins should generalize.
+- **Starting point:** Premier League has the most available data. FBref + Sofascore coverage is excellent.
+
+#### B. Synthetic Data Augmentation
+- **Idea:** Use the xG Poisson model to simulate 10-100 possible match outcomes for each historical match. Train on simulated outcomes weighted by their probability.
+- **Why:** Converts 7.8K matches into 78K-780K training samples. Addresses the fundamental sample size constraint.
+- **Risk:** Simulated outcomes carry the biases of the xG model. Could amplify systematic errors.
+
+---
+
+### 13.6 POST-PREDICTION EDGE (Live & Settlement)
+
+Current system makes predictions pre-match and holds. There are opportunities after prediction.
+
+#### A. Live Odds Monitoring for Entry Timing
+- **Idea:** Don't bet immediately when the pipeline runs. Instead, set target odds and wait for market movement. If odds drift in your favor (lengthening), bet at better value. If odds shorten past your target, skip.
+- **Why:** CLV data shows some bets placed early get worse value than waiting. Entry timing matters.
+- **Implementation:** `scheduler.py` already has time-based triggers. Add an odds alert trigger: "bet X if odds reach Y before kickoff."
+
+#### B. Activate the StaticCorrector
+- **Current state:** `correction_layer.py` has a working logistic regression corrector. It's NOT deployed because it was waiting for 30+ settled predictions in `fair_odds_ledger.json`. The ledger now has 1,261 entries.
+- **Action:** Check if the activation condition is met and deploy. Even small ECE improvements compound across hundreds of bets.
+
+---
+
+### 13.7 HOW TO DOCUMENT NEW EXPERIMENTS
+
+When exploring any frontier path above:
+
+1. **Before starting:** State the hypothesis, metric to evaluate, and success threshold
+2. **After completing:** Add results to `docs/knowledge_base.jsonl` with severity and status
+3. **If positive:** Update this section to move the path from "frontier" to "proven"
+4. **If negative:** Add to Section 6 ("Don't Retry") with evidence and the specific conditions under which it failed — but note what *variant* might still work
+5. **Key principle:** A negative result that narrows the search space is still progress. Document why it failed, not just that it failed

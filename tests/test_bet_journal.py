@@ -41,7 +41,7 @@ def sample_bet():
         "selection": "Draw",
         "model_prob": 0.35,
         "sharp_implied_prob": 0.30,
-        "edge_pct": 16.7,
+        "edge_pct": 8.5,
         "odds": 3.40,
         "bookmaker": "Bet365",
         "avg_odds": 3.30,
@@ -143,17 +143,17 @@ class TestAddBet:
         journal = _load_journal()
         assert len(journal["bets"]) == 1
 
-    def test_update_pending_preserves_odds_stake(self, clean_journal, sample_bet):
-        """odds/stake should NOT be overwritten on re-add (user may have adjusted)."""
+    def test_update_pending_updates_odds_stake(self, clean_journal, sample_bet):
+        """odds/stake SHOULD be updated on re-add (pipeline re-runs propagate config changes)."""
         add_bet(sample_bet)
         updated = {**sample_bet, "odds": 3.50, "stake": 30.0, "model_prob": 0.45}
         add_bet(updated)
         journal = _load_journal()
         bet = list(journal["bets"].values())[0]
-        # odds and stake preserved from original
-        assert bet["odds"] == 3.40
-        assert bet["stake"] == 25.0
-        # model_prob updated (non-protected field)
+        # odds and stake updated from latest pipeline run
+        assert bet["odds"] == 3.50
+        assert bet["stake"] == 30.0
+        # model_prob also updated
         assert bet["model_prob"] == 0.45
 
     def test_no_overwrite_settled_bet(self, clean_journal, sample_bet):

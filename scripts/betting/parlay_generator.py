@@ -16,6 +16,7 @@ Usage:
     python3 scripts/parlay_generator.py --bankroll 2000 # Custom bankroll
 """
 
+import hashlib
 import json
 import math
 import sys
@@ -50,6 +51,22 @@ TOP_N_PER_CATEGORY = 8
 MAX_TOTAL_PARLAYS = 50
 SCORE_MATRIX_SIZE = 8  # 0-7 goals per team
 
+# Realistic value cap: any single leg claiming >80% value is almost certainly
+# a model error, not a real edge. Sharp markets don't leave 80%+ on the table.
+MAX_LEG_VALUE_PCT = 80.0
+
+# Minimum odds for parlay legs: legs below this add vig without selectivity.
+# Over 0.5 goals @1.06 adds 6% vig for a 95% prob event — pure filler.
+MIN_PARLAY_LEG_ODDS = 1.15
+
+# Maximum single-leg concentration: no leg should appear in >40% of parlays.
+# Prevents a single "value" leg from dominating the entire output.
+MAX_LEG_CONCENTRATION = 0.40
+
+# Maximum combined odds for "realistic" parlays in top picks.
+# 20x+ parlays are lottery tickets, not recommendations.
+MAX_TOP_PICK_ODDS = 15.0
+
 CONFIDENCE_MAP = {
     "VERY HIGH": 100, "Very High": 100,
     "HIGH": 75, "High": 75,
@@ -73,18 +90,41 @@ SCORE_MATRIX_MARKETS = {
 }
 
 # Conflicting leg pairs (same match)
+# Includes logical implication chains: if leg A winning guarantees leg B wins,
+# they should never appear together (the parlay is just paying extra vig for
+# a correlated outcome, not adding real diversification).
 CONFLICTING_PAIRS = [
-    (("totals", "UNDER"), ("btts", "YES")),
-    (("totals", "UNDER 1.5"), ("btts", "YES")),
-    (("totals", "UNDER 2.5"), ("btts", "YES")),
+    # --- 1X2 mutual exclusion ---
     (("h2h", "HOME"), ("h2h", "AWAY")),
     (("h2h", "HOME"), ("h2h", "DRAW")),
     (("h2h", "AWAY"), ("h2h", "DRAW")),
-    (("h2h", "HOME"), ("double_chance", "X2")),
-    (("h2h", "AWAY"), ("double_chance", "1X")),
+    # --- 1X2 ↔ DC implication ---
+    (("h2h", "HOME"), ("double_chance", "X2")),   # H win → X2 loses
+    (("h2h", "AWAY"), ("double_chance", "1X")),   # A win → 1X loses
+    (("h2h", "HOME"), ("double_chance", "1X")),   # H win IMPLIES 1X wins (redundant)
+    (("h2h", "AWAY"), ("double_chance", "X2")),   # A win IMPLIES X2 wins (redundant)
+    # --- DNB mutual exclusion + implication ---
     (("draw_no_bet", "HOME"), ("draw_no_bet", "AWAY")),
     (("draw_no_bet", "HOME"), ("h2h", "AWAY")),
     (("draw_no_bet", "AWAY"), ("h2h", "HOME")),
+    (("draw_no_bet", "HOME"), ("h2h", "HOME")),   # H win IMPLIES DNB H (redundant)
+    (("draw_no_bet", "AWAY"), ("h2h", "AWAY")),   # A win IMPLIES DNB A (redundant)
+    # --- DC ↔ DNB implication chains ---
+    (("double_chance", "1X"), ("draw_no_bet", "HOME")),  # DNB H ⊂ DC 1X (redundant)
+    (("double_chance", "X2"), ("draw_no_bet", "AWAY")),  # DNB A ⊂ DC X2 (redundant)
+    (("double_chance", "1X"), ("draw_no_bet", "AWAY")),  # Contradictory only on A win
+    (("double_chance", "X2"), ("draw_no_bet", "HOME")),  # Contradictory only on H win
+    # --- DC ↔ DC on same match (redundant overlap) ---
+    (("double_chance", "1X"), ("double_chance", "X2")),  # Overlap on draw
+    (("double_chance", "1X"), ("double_chance", "12")),  # Overlap on home
+    (("double_chance", "X2"), ("double_chance", "12")),  # Overlap on away
+    # --- Spreads ↔ result implication ---
+    # Note: handled dynamically in _legs_conflict() because the direction
+    # of the spread line matters (negative = implies win, positive = doesn't).
+    # --- Totals ↔ BTTS ---
+    (("totals", "UNDER"), ("btts", "YES")),
+    (("totals", "UNDER 1.5"), ("btts", "YES")),
+    (("totals", "UNDER 2.5"), ("btts", "YES")),
 ]
 
 # ---------------------------------------------------------------------------
@@ -269,6 +309,135 @@ def _normalize_match(m):
 
 
 # ---------------------------------------------------------------------------
+# Historical Combo Analysis (Step 1)
+# ---------------------------------------------------------------------------
+
+# Market normalization: bet_journal uses display names, parlay engine uses internal names
+_MARKET_NORMALIZE = {
+    "1X2": "h2h", "DC": "double_chance", "DNB": "draw_no_bet",
+    "BTTS": "btts", "PARLAY": "parlay",
+}
+
+
+def _normalize_market_name(market: str) -> str:
+    """Normalize market name from bet journal to parlay engine format."""
+    if market in _MARKET_NORMALIZE:
+        return _MARKET_NORMALIZE[market]
+    if market.startswith("O/U") or market.startswith("OVER") or market.startswith("UNDER"):
+        return "totals"
+    if market.startswith("AH"):
+        return "spreads"
+    return market.lower()
+
+
+def _analyze_historical_combos() -> dict:
+    """Analyze bet journal to compute win rate multipliers per market-pair combo.
+
+    Returns dict of combo-type (e.g. "double_chance+totals") -> multiplier.
+    Multiplier > 1.0 means the combo historically outperforms, < 1.0 underperforms.
+    """
+    journal = _load_json(BETTING_DIR / "bet_journal.json")
+    bets = journal.get("bets", {})
+    if isinstance(bets, dict):
+        bets = list(bets.values())
+
+    # Only settled bets
+    settled = [b for b in bets if b.get("status") in ("won", "lost", "push")]
+    if len(settled) < 20:
+        return {}
+
+    # Overall win rate as baseline
+    total_won = sum(1 for b in settled if b.get("status") == "won")
+    baseline_wr = total_won / len(settled) if settled else 0.5
+
+    # Group by normalized market
+    market_stats = defaultdict(lambda: {"won": 0, "total": 0, "profit": 0})
+    for b in settled:
+        mkt = _normalize_market_name(b.get("market", ""))
+        market_stats[mkt]["total"] += 1
+        if b.get("status") == "won":
+            market_stats[mkt]["won"] += 1
+        market_stats[mkt]["profit"] += b.get("profit", 0)
+
+    # Compute per-market win rate
+    market_wr = {}
+    for mkt, stats in market_stats.items():
+        if stats["total"] >= 5:
+            market_wr[mkt] = stats["won"] / stats["total"]
+
+    # Generate pair combo multipliers from market win rates
+    # Combo multiplier = geometric mean of both market WRs / baseline WR
+    combo_multipliers = {}
+    markets = sorted(market_wr.keys())
+    for i, m1 in enumerate(markets):
+        for m2 in markets[i:]:
+            combo_key = f"{m1}+{m2}" if m1 <= m2 else f"{m2}+{m1}"
+            geo_mean = math.sqrt(market_wr[m1] * market_wr[m2])
+            multiplier = geo_mean / baseline_wr if baseline_wr > 0 else 1.0
+            # Clamp to [0.5, 2.0]
+            multiplier = max(0.5, min(2.0, multiplier))
+            combo_multipliers[combo_key] = round(multiplier, 3)
+
+    return combo_multipliers
+
+
+# ---------------------------------------------------------------------------
+# Staleness Detection (Step 4)
+# ---------------------------------------------------------------------------
+
+_INPUT_FILES_FOR_HASH = [
+    "upcoming/predictions.json",
+    "upcoming/odds_full.json",
+    "upcoming/extended_markets.json",
+    "upcoming/bookmaker_analysis.json",
+    "upcoming/sentiment_analysis.json",
+]
+
+
+def _compute_input_hash() -> str:
+    """Hash the content of all parlay input files for staleness detection."""
+    h = hashlib.md5()
+    for rel_path in _INPUT_FILES_FOR_HASH:
+        fpath = DATA_DIR / rel_path
+        if fpath.exists():
+            h.update(fpath.read_bytes())
+    return h.hexdigest()
+
+
+def _check_staleness() -> tuple:
+    """Check if inputs changed since last generation.
+
+    Returns (is_stale, cached_report_or_None).
+    is_stale=True means we should regenerate.
+    """
+    hash_path = BETTING_DIR / ".parlay_input_hash.json"
+    report_path = BETTING_DIR / "parlay_report.json"
+    current_hash = _compute_input_hash()
+
+    if hash_path.exists() and report_path.exists():
+        try:
+            stored = json.loads(hash_path.read_text())
+            if stored.get("hash") == current_hash:
+                cached = json.loads(report_path.read_text())
+                cached["regenerated"] = False
+                return False, cached
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return True, None
+
+
+def _save_input_hash():
+    """Store current input hash after successful generation."""
+    hash_path = BETTING_DIR / ".parlay_input_hash.json"
+    hash_path.parent.mkdir(parents=True, exist_ok=True)
+    hash_path.write_text(json.dumps({
+        "hash": _compute_input_hash(),
+        "generated_at": datetime.now().isoformat(),
+    }))
+
+
+# ---------------------------------------------------------------------------
 # Engine 1: Universal Leg Collector
 # ---------------------------------------------------------------------------
 
@@ -385,6 +554,119 @@ def _enrich_leg(leg, predictions, bookmaker, market_intel, odds_movement):
         leg["momentum"] = "neutral"
 
     return leg
+
+
+def _get_ensemble_1x2(pred: dict) -> tuple:
+    """Extract average 1X2 probabilities from ensemble component predictions.
+
+    Returns (prob_H, prob_D, prob_A) or (0, 0, 0) if no components available.
+    """
+    comp = pred.get("component_predictions", {})
+    probs = []
+    for method_data in comp.values():
+        if isinstance(method_data, dict):
+            h = method_data.get("prob_H", 0)
+            d = method_data.get("prob_D", 0)
+            a = method_data.get("prob_A", 0)
+            if h > 0 and d > 0 and a > 0 and abs(h + d + a - 1.0) < 0.05:
+                probs.append((h, d, a))
+    if not probs:
+        return 0, 0, 0
+    avg_h = sum(p[0] for p in probs) / len(probs)
+    avg_d = sum(p[1] for p in probs) / len(probs)
+    avg_a = sum(p[2] for p in probs) / len(probs)
+    total = avg_h + avg_d + avg_a
+    return avg_h / total, avg_d / total, avg_a / total
+
+
+def _xg_is_placeholder(home_xg: float, away_xg: float) -> bool:
+    """Detect if xG values are placeholders (equal xG = likely no real data)."""
+    return (home_xg == away_xg) or (home_xg <= 0) or (away_xg <= 0)
+
+
+def _reverse_xg_from_ensemble(pred: dict) -> tuple:
+    """Reverse-engineer plausible xG from ensemble 1X2 probabilities.
+
+    When raw xG is a placeholder (e.g. 1.3 vs 1.3 for Milan-Torino),
+    the score matrix produces garbage. Instead, find xG that produce
+    Poisson 1X2 probs close to the ensemble's view.
+
+    Uses binary search on home_xg (keeping total xG fixed) to match
+    the ensemble's home win probability.
+    """
+    ens_h, ens_d, ens_a = _get_ensemble_1x2(pred)
+    if ens_h <= 0:
+        return None, None
+
+    # Total xG from predictions (or reasonable default of 2.5 for Serie A)
+    raw_home = pred.get("home_xg", 0)
+    raw_away = pred.get("away_xg", 0)
+    total_xg = raw_home + raw_away if (raw_home > 0 and raw_away > 0) else 2.5
+
+    # Binary search: find home_xg such that Poisson P(H) ≈ ensemble P(H)
+    lo, hi = 0.3, total_xg - 0.3
+    for _ in range(20):
+        mid = (lo + hi) / 2
+        h_xg, a_xg = mid, total_xg - mid
+        p_h = sum(
+            poisson.pmf(h, h_xg) * sum(poisson.pmf(a, a_xg) for a in range(h))
+            for h in range(8)
+        )
+        if p_h < ens_h:
+            lo = mid
+        else:
+            hi = mid
+
+    home_xg = round((lo + hi) / 2, 2)
+    away_xg = round(total_xg - home_xg, 2)
+    return home_xg, away_xg
+
+
+def _get_blended_1x2_probs(pred: dict) -> tuple:
+    """Get 1X2 probabilities by blending ensemble components with Poisson.
+
+    Raw Poisson from xG alone can produce wildly wrong results (e.g. 50/50
+    for Milan-Torino when xG happens to be equal). The ensemble's component
+    predictions incorporate form, home advantage, market data, and ML — they
+    are far more reliable for directional probability.
+
+    Blend: 70% ensemble average, 30% Poisson from xG.
+    Falls back to Poisson-only if no ensemble components available.
+    """
+    ens_h, ens_d, ens_a = _get_ensemble_1x2(pred)
+
+    # Poisson from xG — use reverse-engineered xG if raw is a placeholder
+    home_xg = pred.get("home_xg", 0)
+    away_xg = pred.get("away_xg", 0)
+
+    if _xg_is_placeholder(home_xg, away_xg) and ens_h > 0:
+        rev_h, rev_a = _reverse_xg_from_ensemble(pred)
+        if rev_h is not None:
+            home_xg, away_xg = rev_h, rev_a
+
+    if home_xg > 0 and away_xg > 0:
+        poi_h = sum(poisson.pmf(h, home_xg) * sum(poisson.pmf(a, away_xg) for a in range(h)) for h in range(8))
+        poi_d = sum(poisson.pmf(g, home_xg) * poisson.pmf(g, away_xg) for g in range(8))
+        poi_a = max(0, 1.0 - poi_h - poi_d)
+    else:
+        poi_h, poi_d, poi_a = 0, 0, 0
+
+    if ens_h > 0:
+        if poi_h > 0:
+            # Blend: 70% ensemble, 30% Poisson
+            p_h = ens_h * 0.7 + poi_h * 0.3
+            p_d = ens_d * 0.7 + poi_d * 0.3
+            p_a = ens_a * 0.7 + poi_a * 0.3
+        else:
+            p_h, p_d, p_a = ens_h, ens_d, ens_a
+        total = p_h + p_d + p_a
+        if total > 0:
+            p_h, p_d, p_a = p_h / total, p_d / total, p_a / total
+        return p_h, p_d, p_a
+    elif poi_h > 0:
+        return poi_h, poi_d, poi_a
+    else:
+        return 0, 0, 0
 
 
 def _load_extra_market_odds():
@@ -822,14 +1104,14 @@ def load_all_value_legs():
         pred = predictions.get(mk, {})
         if not ext_dc or not pred:
             continue
-        home_xg = pred.get("home_xg", 0)
-        away_xg = pred.get("away_xg", 0)
-        if not (home_xg > 0 and away_xg > 0):
+
+        # Get 1X2 probs: prefer ensemble component average over raw Poisson.
+        # Raw Poisson from xG alone ignores home advantage, form, and all non-xG
+        # signals, producing garbage like 50/50 for Milan-Torino when ensemble says 70-30.
+        p_h, p_d, p_a = _get_blended_1x2_probs(pred)
+        if p_h <= 0:
             continue
-        # Compute 1X2 probs from Poisson for DC probs
-        p_h = sum(poisson.pmf(h, home_xg) * sum(poisson.pmf(a, away_xg) for a in range(h)) for h in range(8))
-        p_d = sum(poisson.pmf(g, home_xg) * poisson.pmf(g, away_xg) for g in range(8))
-        p_a = 1.0 - p_h - p_d
+
         dc_probs = {
             "1X": p_h + p_d,
             "X2": p_d + p_a,
@@ -873,14 +1155,12 @@ def load_all_value_legs():
         pred = predictions.get(mk, {})
         if not dnb or not pred:
             continue
-        home_xg = pred.get("home_xg", 0)
-        away_xg = pred.get("away_xg", 0)
-        if not (home_xg > 0 and away_xg > 0):
+
+        # Use blended ensemble probs instead of raw Poisson
+        p_h, p_d, p_a = _get_blended_1x2_probs(pred)
+        if p_h <= 0:
             continue
-        # Compute win probs from Poisson (DNB removes draw)
-        p_h = sum(poisson.pmf(h, home_xg) * sum(poisson.pmf(a, away_xg) for a in range(h)) for h in range(8))
-        p_d = sum(poisson.pmf(g, home_xg) * poisson.pmf(g, away_xg) for g in range(8))
-        p_a = max(0, 1.0 - p_h - p_d)
+
         # DNB returns stake on draw, so effective prob = win_prob / (1 - draw_prob)
         dnb_p_h = p_h / (1 - p_d) if p_d < 1 else 0
         dnb_p_a = p_a / (1 - p_d) if p_d < 1 else 0
@@ -916,11 +1196,46 @@ def load_all_value_legs():
             seen.add(key)
             unique.append(leg)
 
-    # Enrich each leg with quality signals
+    # --- Reality filters ---
+    # Remove legs that no sharp bettor would include in a parlay
+    filtered = []
     for leg in unique:
+        # Odds floor: legs below MIN_PARLAY_LEG_ODDS add vig without selectivity
+        if leg.get("odds", 0) < MIN_PARLAY_LEG_ODDS:
+            continue
+        # Value cap: >80% claimed value on a single leg is a model error
+        if leg.get("value_pct", 0) > MAX_LEG_VALUE_PCT:
+            continue
+
+        # Market-model divergence shrinkage: when our model probability is
+        # >2x the implied market probability, shrink toward the market.
+        # Sharp bookmakers (especially Pinnacle) have seen more data than us.
+        # If we think 28% and the market says 14%, truth is likely in between.
+        odds = leg.get("odds", 0)
+        prob = leg.get("probability", 0)
+        if odds > 1 and prob > 0:
+            implied = 1.0 / odds
+            ratio = prob / implied if implied > 0 else 1.0
+            if ratio > 1.5:
+                # Shrink: new_prob = 60% model + 40% market (with vig removed)
+                # Approximate vig removal: implied * 0.95 (typical ~5% overround per leg)
+                fair_implied = implied * 0.95
+                shrunk_prob = prob * 0.60 + fair_implied * 0.40
+                new_val = ((shrunk_prob * odds) - 1) * 100
+                leg["probability"] = round(shrunk_prob, 4)
+                leg["value_pct"] = round(new_val, 1)
+                leg["_shrinkage_applied"] = True
+                # Re-check value after shrinkage
+                if new_val < MIN_LEG_VALUE_PCT:
+                    continue
+
+        filtered.append(leg)
+
+    # Enrich each leg with quality signals
+    for leg in filtered:
         _enrich_leg(leg, predictions, bookmaker, market_intel, odds_movement)
 
-    return unique
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1458,7 @@ def _copula_joint_probability(legs):
 # Engine 4: Multi-Signal Leg Quality Scoring
 # ---------------------------------------------------------------------------
 
-def _compute_leg_quality(leg):
+def _compute_leg_quality(leg, sentiment_data=None):
     """Compute quality score (0-100) for a leg."""
     scores = {}
 
@@ -1195,6 +1510,40 @@ def _compute_leg_quality(leg):
     else:
         scores["prob_bonus"] = 0
 
+    # 9. Sentiment & injury adjustment (Step 7)
+    sentiment_adj = 0
+    if sentiment_data:
+        mk = _normalize_match(leg.get("match", ""))
+        sent = sentiment_data.get(mk, {})
+        if sent:
+            sel_upper = leg.get("selection", "").upper()
+            # Determine which side we're betting on
+            betting_home = any(x in sel_upper for x in ("HOME", "1X", "OVER"))
+            betting_away = any(x in sel_upper for x in ("AWAY", "X2"))
+
+            # Injury impact: negative = team hurt by injuries
+            if betting_home:
+                injury = sent.get("home_injury_impact", 0)
+                composite = sent.get("home_composite", 0)
+            elif betting_away:
+                injury = sent.get("away_injury_impact", 0)
+                composite = sent.get("away_composite", 0)
+            else:
+                injury = 0
+                composite = 0
+
+            # Strong injuries against our pick: penalty
+            if injury < -40:
+                sentiment_adj -= 10
+            elif injury < -20:
+                sentiment_adj -= 5
+
+            # Strong positive sentiment for our pick: bonus
+            if composite > 30:
+                sentiment_adj += 5
+            elif composite > 15:
+                sentiment_adj += 3
+
     # Weighted composite (prob_bonus gets 15%, taken from value_edge 25%→15% and confidence 20%→15%)
     quality = (
         scores["value_edge"] * 0.15 +
@@ -1206,8 +1555,10 @@ def _compute_leg_quality(leg):
         scores["prob_bonus"] * 0.15 +
         scores["momentum"] * 0.05
     )
+    quality = max(0, min(100, quality + sentiment_adj))
 
     leg["quality_score"] = round(quality, 1)
+    leg["sentiment_adj"] = sentiment_adj
     leg["quality_breakdown"] = {k: round(v, 1) for k, v in scores.items()}
     return quality
 
@@ -1244,6 +1595,39 @@ def _legs_conflict(leg_a, leg_b):
         line = _extract_line(sel_b)
         if line is not None and line <= 2.5:
             return True
+
+    # --- Dynamic spreads conflict detection ---
+    # Negative spread (e.g. "AWAY -1.5") implies the team wins by 2+.
+    # This IMPLIES: h2h win, DNB win, DC for that side.
+    # This CONTRADICTS: h2h/DNB/DC for the opposite side.
+    spread_leg = spread_other = None
+    if mkt_a == "spreads":
+        spread_leg, spread_other = leg_a, leg_b
+    elif mkt_b == "spreads":
+        spread_leg, spread_other = leg_b, leg_a
+
+    if spread_leg:
+        spread_sel = spread_leg["selection"].upper()
+        spread_line = _extract_line(spread_sel)
+        other_mkt = spread_other["market"]
+        other_sel = spread_other["selection"].upper()
+
+        if spread_line is not None and spread_line < 0:
+            # Negative spread: team must win by margin > |line|
+            spread_is_home = "HOME" in spread_sel
+            # This side is implied to win → redundant with same-side result bets
+            same_side = (
+                (spread_is_home and ("HOME" in other_sel or "1X" in other_sel or "1" == other_sel)) or
+                (not spread_is_home and ("AWAY" in other_sel or "X2" in other_sel or "2" == other_sel))
+            )
+            # Opposite side contradicts
+            opp_side = (
+                (spread_is_home and ("AWAY" in other_sel or "X2" in other_sel)) or
+                (not spread_is_home and ("HOME" in other_sel or "1X" in other_sel))
+            )
+            if other_mkt in ("h2h", "draw_no_bet", "double_chance"):
+                if same_side or opp_side:
+                    return True
 
     return False
 
@@ -1342,12 +1726,16 @@ def generate_combinations(legs, max_legs=4):
             elif n == 4 and t1_count + high_prob_count < 2:
                 continue
 
+            # DC Anchor tagging (Step 2)
+            has_dc_anchor = any(l.get("market") == "double_chance" for l in combo)
+
             combo_id += 1
             n_combos += 1
             combos.append({
                 "id": f"PRL-{combo_id:03d}",
                 "legs": combo,
                 "n_legs": n,
+                "dc_anchored": has_dc_anchor,
             })
 
     # Also generate SGP combos (same match, different markets)
@@ -1383,6 +1771,32 @@ def generate_combinations(legs, max_legs=4):
                         "_is_sgp": True,
                     })
 
+    # --- Leg concentration limiter ---
+    # Count how often each leg appears. If a single leg dominates >40% of
+    # combos, randomly drop excess combos containing it. This prevents the
+    # entire output from being "42 variations of the same Milan DC bet."
+    if combos:
+        leg_counts = defaultdict(int)
+        for c in combos:
+            for leg in c["legs"]:
+                lk = (_normalize_match(leg["match"]), leg["market"], leg["selection"])
+                leg_counts[lk] += 1
+
+        max_appearances = int(len(combos) * MAX_LEG_CONCENTRATION)
+        over_represented = {lk for lk, cnt in leg_counts.items() if cnt > max_appearances}
+
+        if over_represented:
+            import random as _rng
+            _rng.seed(42)  # Deterministic for reproducibility
+            # For each over-represented leg, keep only max_appearances combos
+            for lk in over_represented:
+                containing = [i for i, c in enumerate(combos)
+                              if any((_normalize_match(l["match"]), l["market"], l["selection"]) == lk
+                                     for l in c["legs"])]
+                if len(containing) > max_appearances:
+                    to_drop = set(_rng.sample(containing, len(containing) - max_appearances))
+                    combos = [c for i, c in enumerate(combos) if i not in to_drop]
+
     return combos
 
 
@@ -1410,11 +1824,21 @@ def _compute_hit_probability(combo, predictions_data):
         away_xg = xg_details.get("away_xg", 0)
 
         if home_xg <= 0 or away_xg <= 0:
-            # Fallback: try from extended markets
+            home_xg = pred.get("home_xg", 0)
+            away_xg = pred.get("away_xg", 0)
+
+        if home_xg <= 0 or away_xg <= 0:
             ext = _load_json(UPCOMING_DIR / "extended_markets.json")
             ext_match = ext.get("matches", {}).get(match_key, {})
             home_xg = ext_match.get("home_xg", 1.3)
             away_xg = ext_match.get("away_xg", 1.0)
+
+        # If xG is a placeholder (equal values), reverse-engineer from ensemble
+        # to prevent the score matrix from producing garbage SGP probabilities
+        if _xg_is_placeholder(home_xg, away_xg) and pred:
+            rev_h, rev_a = _reverse_xg_from_ensemble(pred)
+            if rev_h is not None:
+                home_xg, away_xg = rev_h, rev_a
 
         # Store xG for MC engine
         combo["_home_xg"] = home_xg
@@ -1709,7 +2133,18 @@ def _monte_carlo_bands(combo):
 
 
 def _kelly_parlay_stake(combo, bankroll):
-    """Compute Kelly-based stake for a parlay."""
+    """Compute Kelly-based stake for a parlay.
+
+    Parlay Kelly uses much smaller fractions than singles because:
+    1. Each leg's probability estimate has error; errors MULTIPLY in parlays
+    2. Variance is much higher (you lose the full stake most of the time)
+    3. The edge estimate is less reliable (compounded model uncertainty)
+
+    Uses fractional Kelly with aggressive variance discounting:
+    - Base fraction: 3% (vs 10% for singles) — standard for props/parlays
+    - Probability uncertainty penalty: each leg adds model error
+    - Quality-weighted confidence factor
+    """
     adj_prob = combo["hit_probability"].get("copula_adjusted", 0)
     combined_odds = float(np.prod([l["odds"] for l in combo["legs"]]))
 
@@ -1721,16 +2156,38 @@ def _kelly_parlay_stake(combo, bankroll):
     if full_kelly <= 0:
         return 0, combined_odds
 
-    # Quality-weighted confidence
+    n_legs = combo["n_legs"]
+
+    # --- Parlay-specific Kelly adjustments ---
+
+    # 1. Base fraction: 5% Kelly for parlays (vs 10% for singles).
+    # Industry standard for multi-leg bets where edge estimation is noisier.
+    parlay_kelly_fraction = 0.05
+
+    # 2. Quality-weighted confidence
     avg_quality = np.mean([l.get("quality_score", 50) for l in combo["legs"]])
     confidence_factor = avg_quality / 100.0
 
-    # Variance penalty for multi-leg
-    n_legs = combo["n_legs"]
+    # 3. Probability uncertainty compounding penalty.
+    # Each leg introduces ~5% relative error in probability estimate.
+    # For N legs, the joint probability error grows geometrically.
+    prob_uncertainty = 0.95 ** n_legs
+
+    # 4. Variance penalty: parlays lose more often, so Kelly must be smaller.
+    # 1/sqrt(n) is gentler than 1/n but still meaningful for 3-4 leg parlays.
     variance_penalty = 1.0 / math.sqrt(n_legs)
 
-    stake = bankroll * full_kelly * KELLY_FRACTION * confidence_factor * variance_penalty
-    max_stake = bankroll * MAX_STAKE_PCT
+    stake = (bankroll * full_kelly * parlay_kelly_fraction
+             * confidence_factor * prob_uncertainty * variance_penalty)
+
+    # Cap: 2% bankroll for 2-legs, 1% for 3+, 0.5% for 4+
+    if n_legs >= 4:
+        max_pct = 0.005
+    elif n_legs >= 3:
+        max_pct = 0.01
+    else:
+        max_pct = MAX_STAKE_PCT
+    max_stake = bankroll * max_pct
     stake = min(stake, max_stake)
     stake = max(stake, 0)
 
@@ -1791,12 +2248,181 @@ def _parlay_quality_score(combo):
         sharp_pct * 0.10
     )
 
-    return round(quality, 1)
+    # DC Anchor boost (Step 2): +10 for parlays with a Double Chance leg
+    if combo.get("dc_anchored"):
+        quality += 10
+
+    return round(min(quality, 100), 1)
+
+
+def _is_draw_leg(leg: dict) -> bool:
+    """Check if a leg is draw-related (1X2 Draw, DC 1X/X2, DNB)."""
+    sel = leg.get("selection", "").upper()
+    market = leg.get("market", "").lower()
+    if market == "h2h" and sel in ("DRAW", "X"):
+        return True
+    if market == "double_chance" and "X" in sel:
+        return True
+    return False
+
+
+def _draw_quality_boost(leg: dict, predictions_data: dict = None) -> float:
+    """Compute quality boost for draw-related legs based on draw indicators.
+
+    Returns bonus points (0-25) to add to the leg's quality score.
+    """
+    match_key = _normalize_match(leg.get("match", ""))
+    bonus = 0
+
+    # Check draw probability from predictions
+    if predictions_data and match_key in predictions_data:
+        pred = predictions_data[match_key]
+        probs = pred.get("probabilities", pred.get("betting_probabilities", {}))
+        draw_prob = probs.get("draw", 0) if isinstance(probs, dict) else 0
+
+        # High draw probability bonus
+        if draw_prob >= 0.30:
+            bonus += 10
+        elif draw_prob >= 0.25:
+            bonus += 5
+
+        # Draw analysis from ensemble
+        da = pred.get("draw_analysis", {})
+        if da.get("is_draw_candidate"):
+            bonus += 8
+
+        # Evenly matched teams (close Elo)
+        comp = pred.get("component_predictions", {})
+        # Check if multiple methods agree on draw
+        draw_agreement = 0
+        for method_name, method_pred in comp.items():
+            if isinstance(method_pred, dict):
+                mp_d = method_pred.get("prob_D", 0)
+                if mp_d >= 0.28:
+                    draw_agreement += 1
+        if draw_agreement >= 3:
+            bonus += 7  # 3+ methods agree on draw
+
+    # Market-specific bonus
+    sel = leg.get("selection", "").upper()
+    if sel in ("DRAW", "X"):
+        # Pure draw picks get extra bonus if odds are in sweet spot (2.8-3.8)
+        odds = leg.get("odds", 0)
+        if 2.8 <= odds <= 3.8:
+            bonus += 5  # Sweet spot for draw parlays
+
+    return min(bonus, 25)  # Cap at 25
+
+
+def generate_draw_parlays(legs: list, predictions_data: dict = None,
+                          bankroll: float = 1000) -> list:
+    """Generate draw-focused parlay combinations.
+
+    Strategy: Combine 2-3 high-confidence draw picks into parlays.
+    Draw at 3.0-3.5 odds × 2-3 legs = 9-42x combined odds.
+    Model F1 Draw = 0.328 means draws are now detectable — exploit this.
+
+    Returns list of parlay combo dicts ready for categorization.
+    """
+    # Filter to draw-related legs
+    draw_legs = [l for l in legs if _is_draw_leg(l)]
+    if len(draw_legs) < 2:
+        return []
+
+    # Apply draw quality boost
+    for leg in draw_legs:
+        boost = _draw_quality_boost(leg, predictions_data)
+        leg["_draw_quality_boost"] = boost
+        # Temporarily boost quality for draw combo selection
+        leg["_orig_quality"] = leg.get("quality_score", 50)
+        leg["quality_score"] = leg.get("quality_score", 50) + boost
+
+    # Sort by boosted quality
+    draw_legs.sort(key=lambda l: l.get("quality_score", 0), reverse=True)
+
+    # Take top 6 draw legs (enough for interesting combos)
+    top_draw = draw_legs[:6]
+
+    combos = []
+
+    # Generate 2-leg and 3-leg draw parlays
+    for n_legs in [2, 3]:
+        if len(top_draw) < n_legs:
+            continue
+        for leg_combo in combinations(top_draw, n_legs):
+            # Check no same-match conflicts
+            matches = [_normalize_match(l["match"]) for l in leg_combo]
+            if len(set(matches)) < n_legs:
+                continue  # Same match twice — skip
+
+            combined_odds = float(np.prod([l["odds"] for l in leg_combo]))
+            combined_prob = float(np.prod([l["probability"] for l in leg_combo]))
+
+            # Draw-specific correlation: draws are slightly positively correlated
+            # within the same league round (if one match is 0-0 at HT, nervous
+            # play spreads to other matches). Apply small boost: 1.05x per leg pair.
+            n_pairs = n_legs * (n_legs - 1) // 2
+            corr_adj = 1.0 + 0.02 * n_pairs
+            adj_prob = combined_prob * corr_adj
+
+            ev = adj_prob * combined_odds - 1
+            if ev < 0.03:  # Need 3% EV minimum
+                continue
+
+            avg_quality = np.mean([l.get("quality_score", 50) for l in leg_combo])
+            avg_draw_boost = np.mean([l.get("_draw_quality_boost", 0) for l in leg_combo])
+
+            # Generate unique ID
+            leg_ids = "_".join(sorted(
+                f"{_normalize_match(l['match'])}_{l['selection']}" for l in leg_combo
+            ))
+            combo_id = hashlib.md5(f"draw_{leg_ids}".encode()).hexdigest()[:12]
+
+            combo = {
+                "id": f"draw_{combo_id}",
+                "legs": [dict(l) for l in leg_combo],  # Copy to avoid mutation
+                "n_legs": n_legs,
+                "combined_odds": round(combined_odds, 2),
+                "hit_probability": {
+                    "naive": round(combined_prob, 4),
+                    "copula_adjusted": round(adj_prob, 4),
+                    "median": round(adj_prob, 4),
+                },
+                "value_pct": round(ev * 100, 1),
+                "expected_roi": round(ev, 4),
+                "is_same_game": False,
+                "is_draw_parlay": True,
+                "avg_draw_quality_boost": round(avg_draw_boost, 1),
+                "parlay_quality": round(min(avg_quality, 100), 1),
+                "sharp_alignment_pct": 50,
+                "correlation_warning": None,
+                "diversification": 1.0,
+            }
+
+            # Kelly sizing (more conservative for draw parlays: 3% Kelly)
+            kelly_frac = 0.03
+            full_kelly = (adj_prob * combined_odds - 1) / (combined_odds - 1)
+            if full_kelly > 0:
+                stake = bankroll * full_kelly * kelly_frac
+                stake = max(2.0, min(stake, bankroll * 0.015))  # 0.2% - 1.5% of bankroll
+            else:
+                stake = 0
+            combo["stake"] = round(stake, 2)
+
+            if stake > 0:
+                combos.append(combo)
+
+    # Restore original quality scores
+    for leg in draw_legs:
+        leg["quality_score"] = leg.pop("_orig_quality", leg.get("quality_score", 50))
+
+    return combos
 
 
 def categorize_parlays(combos):
-    """Sort parlays into 6 categories."""
+    """Sort parlays into 7 categories (6 standard + draw_specials)."""
     categories = {
+        "draw_specials": [],
         "safe_doubles": [],
         "value_trebles": [],
         "long_shots": [],
@@ -1819,8 +2445,14 @@ def categorize_parlays(combos):
 
         assigned = False
 
+        # Draw specials — parlays where all legs are draw-related
+        if p.get("is_draw_parlay"):
+            categories["draw_specials"].append(p)
+            p["category"] = "draw_specials"
+            assigned = True
+
         # Same-game parlays
-        if is_sgp:
+        if not assigned and is_sgp:
             categories["same_game"].append(p)
             p["category"] = "same_game"
             assigned = True
@@ -1873,6 +2505,7 @@ def categorize_parlays(combos):
 
     # Sort and trim each category
     sort_keys = {
+        "draw_specials": lambda x: x.get("parlay_quality", 0),
         "safe_doubles": lambda x: x.get("hit_probability", {}).get("median", 0),
         "value_trebles": lambda x: x.get("expected_roi", 0),
         "long_shots": lambda x: x.get("expected_roi", 0),
@@ -1910,6 +2543,178 @@ def categorize_parlays(combos):
             del items[TOP_N_PER_CATEGORY:]
 
     return categories
+
+
+# ---------------------------------------------------------------------------
+# Exposure Coordination (Step 6)
+# ---------------------------------------------------------------------------
+
+def _load_todays_singles() -> set:
+    """Load today's placed singles as (match, market, selection) tuples."""
+    placed = _load_json(BETTING_DIR / "placed_bets.json")
+    bets = placed.get("bets", [])
+    if isinstance(bets, dict):
+        bets = list(bets.values())
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    tuples = set()
+    for b in bets:
+        if b.get("date", "") >= today:
+            match = _normalize_match(b.get("match", ""))
+            market = b.get("market", "").lower()
+            selection = b.get("selection", "").upper()
+            tuples.add((match, market, selection))
+    return tuples
+
+
+def _apply_exposure_penalties(combos, active_singles):
+    """Apply quality penalty and stake reduction for overlapping exposure."""
+    if not active_singles:
+        return
+
+    for combo in combos:
+        overlap_count = 0
+        for leg in combo["legs"]:
+            mk = _normalize_match(leg.get("match", ""))
+            mkt = leg.get("market", "").lower()
+            sel = leg.get("selection", "").upper()
+            if (mk, mkt, sel) in active_singles:
+                overlap_count += 1
+
+        if overlap_count > 0:
+            # Penalize quality and halve stake
+            combo["parlay_quality"] = max(0, combo.get("parlay_quality", 0) - 15 * overlap_count)
+            combo["stake"] = round(combo.get("stake", 0) * 0.5, 2)
+            combo["exposure_overlap"] = overlap_count
+
+
+# ---------------------------------------------------------------------------
+# Top Parlay Selection (Step 3)
+# ---------------------------------------------------------------------------
+
+def select_top_parlays(categories, combo_multipliers=None, n=3):
+    """Select the top N parlays across all categories with diversity constraint.
+
+    Returns list of dicts with full parlay data + human-readable explanation.
+    """
+    if combo_multipliers is None:
+        combo_multipliers = {}
+
+    # Collect all parlays, filtering out lottery tickets from top picks
+    all_parlays = []
+    for cat_key, items in categories.items():
+        for p in items:
+            # No lottery tickets in top picks — max 15x combined odds
+            if p.get("combined_odds", 0) > MAX_TOP_PICK_ODDS:
+                continue
+            all_parlays.append((cat_key, p))
+
+    if not all_parlays:
+        return []
+
+    # Score each parlay
+    scored = []
+    for cat_key, p in all_parlays:
+        base_quality = p.get("parlay_quality", 0)
+
+        # Combo multiplier from historical analysis
+        markets = sorted(set(l.get("market", "") for l in p.get("legs", [])))
+        combo_key = "+".join(markets)
+        combo_mult = combo_multipliers.get(combo_key, 1.0)
+        # Also check pair-level multipliers
+        if len(markets) >= 2:
+            pair_mults = []
+            for i, m1 in enumerate(markets):
+                for m2 in markets[i + 1:]:
+                    pk = f"{m1}+{m2}" if m1 <= m2 else f"{m2}+{m1}"
+                    pair_mults.append(combo_multipliers.get(pk, 1.0))
+            if pair_mults:
+                combo_mult = max(combo_mult, sum(pair_mults) / len(pair_mults))
+
+        # DC anchor boost already in parlay_quality, don't double-count
+        anchor_boost = 1.0
+
+        rec_score = base_quality * combo_mult * anchor_boost
+        scored.append((rec_score, cat_key, p))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Select top N with diversity: max 1 per category in top N
+    selected = []
+    used_categories = set()
+    for rec_score, cat_key, p in scored:
+        if len(selected) >= n:
+            break
+        if cat_key in used_categories:
+            continue
+        used_categories.add(cat_key)
+
+        # Generate "why" explanation
+        why_parts = []
+        legs = p.get("legs", [])
+
+        # Signal alignment
+        sharp_count = sum(1 for l in legs if l.get("sharp_aligned") is True)
+        if sharp_count > 0:
+            why_parts.append(f"{sharp_count}/{len(legs)} legs sharp-aligned")
+
+        # DC anchor
+        if any(l.get("market") == "double_chance" for l in legs):
+            why_parts.append("DC anchor (83% hist WR)")
+
+        # High-prob legs
+        high_prob = [l for l in legs if l.get("probability", 0) >= 0.70]
+        if high_prob:
+            why_parts.append(f"{len(high_prob)} high-prob legs (>70%)")
+
+        # Form/momentum
+        hot_legs = [l for l in legs if l.get("momentum") == "hot"]
+        if hot_legs:
+            why_parts.append(f"{len(hot_legs)} legs on hot form")
+
+        # Historical combo performance
+        if combo_mult > 1.1:
+            why_parts.append(f"combo type historically strong ({combo_mult:.2f}x)")
+        elif combo_mult < 0.9:
+            why_parts.append(f"combo type historically weak ({combo_mult:.2f}x)")
+
+        # Risk factors
+        risks = []
+        if p.get("exposure_overlap"):
+            risks.append(f"overlaps {p['exposure_overlap']} active single(s)")
+        cold_legs = [l for l in legs if l.get("momentum") == "cold"]
+        if cold_legs:
+            risks.append(f"{len(cold_legs)} legs on cold form")
+        low_q = [l for l in legs if l.get("quality_score", 100) < 40]
+        if low_q:
+            risks.append(f"{len(low_q)} low-quality legs")
+
+        selected.append({
+            "rank": len(selected) + 1,
+            "recommendation_score": round(rec_score, 1),
+            "category": cat_key,
+            "parlay": p,
+            "why": why_parts or ["solid overall quality score"],
+            "risks": risks or ["no significant risks identified"],
+        })
+
+    # If we didn't fill N due to diversity constraint, relax it
+    if len(selected) < n:
+        for rec_score, cat_key, p in scored:
+            if len(selected) >= n:
+                break
+            if any(s["parlay"]["id"] == p["id"] for s in selected):
+                continue
+            selected.append({
+                "rank": len(selected) + 1,
+                "recommendation_score": round(rec_score, 1),
+                "category": cat_key,
+                "parlay": p,
+                "why": ["additional high-quality pick"],
+                "risks": [],
+            })
+
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -1956,8 +2761,10 @@ def _format_parlay_output(combo):
         "diversification": combo.get("diversification", {}),
         "correlation_warning": combo.get("correlation_warning"),
         "is_same_game": combo.get("is_same_game", False),
+        "dc_anchored": combo.get("dc_anchored", False),
         "sharp_alignment_pct": sharp_pct,
         "category": combo.get("category", ""),
+        "exposure_overlap": combo.get("exposure_overlap", 0),
     }
 
 
@@ -1966,32 +2773,60 @@ def generate_parlay_report(bankroll=None):
     if bankroll is None:
         bankroll = _get_bankroll()
 
+    # Step 4: Staleness detection
+    is_stale, cached = _check_staleness()
+    if not is_stale and cached:
+        print("  [Staleness] Input data unchanged — returning cached report")
+        return cached
+
+    # Step 1: Historical combo analysis
+    print("  [Historical] Analyzing bet journal for combo multipliers...")
+    combo_multipliers = _analyze_historical_combos()
+    if combo_multipliers:
+        top_combos = sorted(combo_multipliers.items(), key=lambda x: x[1], reverse=True)[:3]
+        print(f"  Found {len(combo_multipliers)} combo types, strongest: {', '.join(f'{k}={v}' for k,v in top_combos)}")
+
     print("  [Engine 1] Loading value legs from all markets...")
     legs = load_all_value_legs()
     markets_found = set(l["market"] for l in legs)
     print(f"  Found {len(legs)} legs across {len(markets_found)} markets: {', '.join(sorted(markets_found))}")
 
+    empty_cats = {k: [] for k in [
+        "draw_specials", "safe_doubles", "value_trebles", "long_shots",
+        "same_game", "sharp_specials", "banker_combos"
+    ]}
+
     if len(legs) < 2:
         print("  Not enough value legs to generate parlays")
         report = {
             "generated_at": datetime.now().isoformat(),
+            "regenerated": True,
             "total_parlays": 0,
             "total_legs_available": len(legs),
             "legs_by_market": {},
             "bankroll": bankroll,
             "model_info": _model_info(),
-            "categories": {k: [] for k in [
-                "safe_doubles", "value_trebles", "long_shots",
-                "same_game", "sharp_specials", "banker_combos"
-            ]},
+            "categories": empty_cats,
+            "top_picks": [],
         }
         _save_report(report)
+        _save_input_hash()
         return report
 
-    # Engine 4: Score all legs
-    print("  [Engine 4] Computing leg quality scores...")
+    # Step 7: Load sentiment data for quality scoring
+    sentiment_data = {}
+    sent_raw = _load_json(UPCOMING_DIR / "sentiment_analysis.json")
+    sent_matches = sent_raw.get("matches", [])
+    if isinstance(sent_matches, list):
+        for s in sent_matches:
+            mk = _normalize_match(s.get("match", ""))
+            if mk:
+                sentiment_data[mk] = s
+
+    # Engine 4: Score all legs (with sentiment integration)
+    print("  [Engine 4] Computing leg quality scores (with sentiment)...")
     for leg in legs:
-        _compute_leg_quality(leg)
+        _compute_leg_quality(leg, sentiment_data=sentiment_data)
     qualified = [l for l in legs if l.get("quality_score", 0) >= MIN_LEG_QUALITY]
     print(f"  {len(qualified)}/{len(legs)} legs passed quality threshold (>={MIN_LEG_QUALITY})")
 
@@ -2008,17 +2843,17 @@ def generate_parlay_report(bankroll=None):
     if not combos:
         report = {
             "generated_at": datetime.now().isoformat(),
+            "regenerated": True,
             "total_parlays": 0,
             "total_legs_available": len(legs),
             "legs_by_market": dict(legs_by_market),
             "bankroll": bankroll,
             "model_info": _model_info(),
-            "categories": {k: [] for k in [
-                "safe_doubles", "value_trebles", "long_shots",
-                "same_game", "sharp_specials", "banker_combos"
-            ]},
+            "categories": empty_cats,
+            "top_picks": [],
         }
         _save_report(report)
+        _save_input_hash()
         return report
 
     # Engine 2 & 3: Compute hit probabilities
@@ -2030,6 +2865,16 @@ def generate_parlay_report(bankroll=None):
 
     for combo in combos:
         _compute_hit_probability(combo, predictions_data)
+
+    # Engine 5b: Draw-focused parlays (leverages F1_D=0.328 model capability)
+    print("  [Engine 5b] Generating draw-focused parlays...")
+    draw_combos = generate_draw_parlays(legs, predictions_data, bankroll)
+    if draw_combos:
+        combos.extend(draw_combos)
+        valued_draw = [c for c in draw_combos if c.get("stake", 0) > 0]
+        print(f"  Added {len(valued_draw)} draw-focused parlays ({len(draw_combos)} candidates)")
+    else:
+        print("  No draw-focused parlays generated (need 2+ draw legs)")
 
     # Engine 6: Monte Carlo + Kelly sizing
     print(f"  [Engine 6] Running Monte Carlo ({MONTE_CARLO_SIMS} sims) + Kelly sizing...")
@@ -2043,6 +2888,15 @@ def generate_parlay_report(bankroll=None):
         combo["value_pct"] = round(value, 1)
         if value < 3.0:
             continue
+
+        # Parlay EV reality gate: compound model error makes extreme values
+        # unreliable. Cap per-parlay value based on number of legs.
+        # 2-leg: max 150% value, 3-leg: max 200%, 4-leg: max 300%
+        # Anything beyond this is almost certainly model overconfidence.
+        max_parlay_value = {2: 150, 3: 200, 4: 300}.get(combo["n_legs"], 400)
+        if value > max_parlay_value:
+            combo["value_pct"] = max_parlay_value
+            combo["_value_capped"] = True
 
         _monte_carlo_bands(combo)
 
@@ -2078,6 +2932,14 @@ def generate_parlay_report(bankroll=None):
 
     print(f"  {len(valued_combos)} parlays with positive value and stake")
 
+    # Step 6: Exposure coordination
+    print("  [Exposure] Checking overlap with active singles...")
+    active_singles = _load_todays_singles()
+    if active_singles:
+        _apply_exposure_penalties(valued_combos, active_singles)
+        overlap_count = sum(1 for c in valued_combos if c.get("exposure_overlap", 0) > 0)
+        print(f"  {overlap_count} parlays penalized for exposure overlap")
+
     # Engine 7: Categorize
     print("  [Engine 7] Categorizing and ranking...")
     categories = categorize_parlays(valued_combos)
@@ -2094,17 +2956,39 @@ def generate_parlay_report(bankroll=None):
         if items:
             print(f"    {cat_key}: {len(items)}")
 
+    # Step 3: Select top 3 picks
+    print("  [Top Picks] Selecting best parlays across categories...")
+    top_picks = select_top_parlays(formatted_categories, combo_multipliers, n=3)
+    if top_picks:
+        for pick in top_picks:
+            p = pick["parlay"]
+            cat_label = pick["category"].replace("_", " ").title()
+            print(f"    #{pick['rank']} {cat_label} (score={pick['recommendation_score']}) "
+                  f"— {p.get('combined_odds', 0):.2f}x, {len(p.get('legs', []))} legs")
+
     report = {
         "generated_at": datetime.now().isoformat(),
+        "regenerated": True,
         "total_parlays": total,
         "total_legs_available": len(legs),
         "legs_by_market": dict(legs_by_market),
         "bankroll": bankroll,
         "model_info": _model_info(),
         "categories": formatted_categories,
+        "top_picks": top_picks,
+        "combo_multipliers": combo_multipliers,
     }
 
     _save_report(report)
+    _save_input_hash()
+
+    # Step 8: Save to parlay history for tracking
+    try:
+        from scripts.betting.parlay_tracker import record_parlays
+        record_parlays(top_picks)
+    except Exception:
+        pass
+
     return report
 
 

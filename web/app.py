@@ -1491,6 +1491,77 @@ def api_analytics_export():
 # API: System Health - pipeline status, prediction tracking, feature drift
 # ---------------------------------------------------------------------------
 
+def _live_data_freshness(cached: dict) -> dict:
+    """Override cached data_freshness with live file stats.
+
+    The performance_dashboard.json is only regenerated during full pipeline runs.
+    Between runs, the cached freshness values go stale even if the underlying
+    data was refreshed (e.g., Understat scrape via dashboard button).
+    Read actual file mtimes for sources that can be refreshed independently.
+    """
+    result = dict(cached)
+
+    # Understat PPDA — check actual file mtime
+    try:
+        understat_dir = DATA_DIR / "external" / "understat"
+        json_files = sorted(understat_dir.glob("understat_*.json"))
+        if json_files:
+            latest = json_files[-1]
+            mtime = datetime.fromtimestamp(latest.stat().st_mtime)
+            result["understat_ppda"] = {
+                "seasons": len(json_files),
+                "latest_file": latest.name,
+                "last_updated": mtime.isoformat(),
+                "fresh": (datetime.now() - mtime).days <= 7,
+            }
+    except Exception:
+        pass
+
+    # SofaScore — check actual parquet mtime
+    try:
+        ss_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+        if ss_path.exists():
+            mtime = datetime.fromtimestamp(ss_path.stat().st_mtime)
+            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            result["sofascore"] = {
+                **(result.get("sofascore") or {}),
+                "last_updated": mtime.isoformat(),
+                "fresh": age_h <= 48,
+            }
+    except Exception:
+        pass
+
+    # Predictions — check predictions.json mtime
+    try:
+        pred_path = UPCOMING_DIR / "predictions.json"
+        if pred_path.exists():
+            mtime = datetime.fromtimestamp(pred_path.stat().st_mtime)
+            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            result["predictions"] = {
+                **(result.get("predictions") or {}),
+                "last_updated": mtime.isoformat(),
+                "fresh": age_h <= 24,
+            }
+    except Exception:
+        pass
+
+    # Odds — check odds_full.json mtime
+    try:
+        odds_path = UPCOMING_DIR / "odds_full.json"
+        if odds_path.exists():
+            mtime = datetime.fromtimestamp(odds_path.stat().st_mtime)
+            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            result["odds"] = {
+                **(result.get("odds") or {}),
+                "last_updated": mtime.isoformat(),
+                "fresh": age_h <= 4,
+            }
+    except Exception:
+        pass
+
+    return result
+
+
 @app.route("/api/system")
 def api_system():
     dashboard = _load_json(DATA_DIR / "performance_dashboard.json")
@@ -1624,7 +1695,7 @@ def api_system():
         "prediction_accuracy": dashboard.get("prediction_accuracy", {}),
         "betting_performance": dashboard.get("betting_performance", {}),
         "bankroll_health": bankroll_health,
-        "data_freshness": dashboard.get("data_freshness", quality.get("data_freshness", {})),
+        "data_freshness": _live_data_freshness(dashboard.get("data_freshness", quality.get("data_freshness", {}))),
         "feature_drift": dashboard.get("feature_drift", {}),
         "confidence_calibration": dashboard.get("confidence_calibration", {}),
         "season_coverage": quality.get("season_coverage", {}),
@@ -1685,24 +1756,24 @@ _LOG_DIR = _BASE / "logs"
 
 # Available log files with display names and descriptions
 _LOG_FILES = {
-    "pipeline":      {"file": "pipeline.log",                        "label": "Pipeline",         "desc": "Main pipeline execution"},
-    "errors":        {"file": "errors.log",                          "label": "Errors",           "desc": "Error tracebacks"},
-    "scheduler":     {"file": "scheduler.log",                       "label": "Scheduler",        "desc": "Scheduler events"},
-    "monitor":       {"file": "monitor.log",                         "label": "Health Monitor",   "desc": "Health check results"},
-    "retrain":       {"file": "retrain.log",                         "label": "Retrain",          "desc": "Model retraining"},
-    "settlement":    {"file": "launchd-settlement.log",              "label": "Settlement",       "desc": "Bet settlement"},
-    "settlement-err":{"file": "launchd-settlement-err.log",          "label": "Settlement Err",   "desc": "Settlement errors"},
-    "pre-kickoff":   {"file": "launchd-pre-kickoff-monitor.log",     "label": "Pre-Kickoff",      "desc": "Lineup & prediction updates"},
-    "pre-kickoff-err":{"file": "launchd-pre-kickoff-monitor-err.log","label": "Pre-Kickoff Err",  "desc": "Pre-kickoff errors"},
-    "morning":       {"file": "launchd-morning.log",                 "label": "Morning Run",      "desc": "Morning pipeline"},
-    "morning-err":   {"file": "launchd-morning-err.log",             "label": "Morning Err",      "desc": "Morning errors"},
-    "evening":       {"file": "launchd-evening.log",                 "label": "Evening Run",      "desc": "Evening pipeline"},
-    "evening-err":   {"file": "launchd-evening-err.log",             "label": "Evening Err",      "desc": "Evening errors"},
-    "health-monitor":{"file": "launchd-health-monitor.log",          "label": "Health (launchd)", "desc": "Launchd health checks"},
-    "health-mon-err":{"file": "launchd-health-monitor-err.log",      "label": "Health Err",       "desc": "Health check errors"},
-    "weekly-mon-err":{"file": "launchd-weekly-monitor-err.log",      "label": "Weekly Mon Err",   "desc": "Weekly monitor errors"},
-    "telegram-bot":  {"file": "telegram-bot.log",                    "label": "Telegram Bot",     "desc": "Telegram bot activity"},
-    "performance":   {"file": "performance.log",                     "label": "Performance",      "desc": "Model performance tracking"},
+    # Primary logs — the ones you actually need
+    "pipeline":     {"file": "pipeline.log",                        "label": "Pipeline",      "desc": "Main pipeline execution"},
+    "errors":       {"file": "errors.log",                          "label": "Errors",        "desc": "Error tracebacks across all modules"},
+    "scheduler":    {"file": "scheduler.log",                       "label": "Scheduler",     "desc": "Scheduled jobs (pre-kickoff, settlement, retrain)"},
+    "monitor":      {"file": "monitor.log",                         "label": "Health",        "desc": "Health check results"},
+    "retrain":      {"file": "retrain.log",                         "label": "Retrain",       "desc": "Model retraining logs"},
+    "telegram-bot": {"file": "telegram-bot.log",                    "label": "Telegram",      "desc": "Telegram bot messages & AI calls"},
+    # Launchd job logs — combined stdout+stderr per job
+    "settlement":   {"file": "launchd-settlement-err.log",          "label": "Settlement",    "desc": "Auto-settlement job output",
+                     "also": "launchd-settlement.log"},
+    "pre-kickoff":  {"file": "launchd-pre-kickoff-monitor-err.log", "label": "Pre-Kickoff",   "desc": "Lineup fetch & pre-match updates",
+                     "also": "launchd-pre-kickoff-monitor.log"},
+    "morning":      {"file": "launchd-morning-err.log",             "label": "Morning",       "desc": "Morning pipeline job",
+                     "also": "launchd-morning.log"},
+    "evening":      {"file": "launchd-evening-err.log",             "label": "Evening",       "desc": "Evening pipeline job",
+                     "also": "launchd-evening.log"},
+    "health-launchd": {"file": "launchd-health-monitor-err.log",    "label": "Health Job",    "desc": "Launchd health monitor output",
+                       "also": "launchd-health-monitor.log"},
 }
 
 
@@ -1722,13 +1793,34 @@ def api_logs():
         for key, info in _LOG_FILES.items():
             path = _LOG_DIR / info["file"]
             seen_files.add(info["file"])
+            also_file = info.get("also", "")
+            if also_file:
+                seen_files.add(also_file)
+            # Combine sizes from primary + also file
             size = 0
             modified = ""
             exists = False
-            if path.exists():
-                exists = True
-                size = path.stat().st_size
-                modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+            latest_ts = 0
+            for fname in [info["file"]] + ([also_file] if also_file else []):
+                fp = _LOG_DIR / fname
+                if fp.exists():
+                    exists = True
+                    size += fp.stat().st_size
+                    mt = fp.stat().st_mtime
+                    if mt > latest_ts:
+                        latest_ts = mt
+                        modified = datetime.fromtimestamp(mt).isoformat()
+            # Read last line to show latest timestamp in the tab
+            last_entry = ""
+            if exists and size > 0:
+                try:
+                    with open(_LOG_DIR / info["file"], "rb") as _f:
+                        _f.seek(max(0, _f.seek(0, 2) - 500))
+                        tail = _f.read().decode("utf-8", errors="replace").strip()
+                        if tail:
+                            last_entry = tail.splitlines()[-1][:80]
+                except Exception:
+                    pass
             result.append({
                 "key": key,
                 "label": info["label"],
@@ -1738,6 +1830,7 @@ def api_logs():
                 "size": size,
                 "size_human": f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB",
                 "modified": modified,
+                "last_entry": last_entry,
             })
 
         # Auto-discover any .log files not in the known list
@@ -1776,24 +1869,40 @@ def api_logs():
         else:
             return jsonify({"error": f"Unknown log: {log_key}"}), 404
 
-    path = _LOG_DIR / info["file"]
-    if not path.exists():
+    # Read from primary file + "also" file (merged, sorted by timestamp)
+    files_to_read = [_LOG_DIR / info["file"]]
+    also_file = info.get("also", "")
+    if also_file:
+        also_path = _LOG_DIR / also_file
+        if also_path.exists():
+            files_to_read.append(also_path)
+
+    if not any(f.exists() for f in files_to_read):
         return jsonify({"lines": [], "total": 0, "file": info["file"]})
 
     try:
-        # Read last N lines efficiently (read from end)
-        with open(path, "rb") as f:
-            # Seek to approximate position for last N lines
-            f.seek(0, 2)
-            fsize = f.tell()
-            # Read last ~200KB max
-            # Read enough bytes to cover the requested lines
-            # ~150 bytes per line average, with generous buffer
-            max_bytes = min(fsize, max(500_000, lines * 200))
-            f.seek(max(0, fsize - max_bytes))
-            raw = f.read().decode("utf-8", errors="replace")
+        all_raw_lines = []
+        fsize = 0
+        for fpath in files_to_read:
+            if not fpath.exists():
+                continue
+            with open(fpath, "rb") as f:
+                f.seek(0, 2)
+                sz = f.tell()
+                fsize += sz
+                max_bytes = min(sz, max(500_000, lines * 200))
+                f.seek(max(0, sz - max_bytes))
+                raw = f.read().decode("utf-8", errors="replace")
+                all_raw_lines.extend(raw.splitlines())
 
-        all_lines = raw.splitlines()
+        # Sort merged lines by timestamp if they have one (YYYY-MM-DD HH:MM:SS)
+        import re as _re
+        _ts_re = _re.compile(r'^(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})')
+        def _sort_key(line):
+            m = _ts_re.match(line)
+            return m.group(1) if m else "9999"
+        all_raw_lines.sort(key=_sort_key)
+        all_lines = all_raw_lines
 
         # Apply search filter
         if search:
@@ -1820,6 +1929,36 @@ def api_logs():
         return jsonify({"error": str(e), "lines": [], "total": 0})
 
 
+@app.route("/api/logs/clear", methods=["POST"])
+def api_logs_clear():
+    """Clear one or all log files."""
+    target = flask_request.json.get("log", "all") if flask_request.is_json else "all"
+
+    cleared = []
+    if target == "all":
+        # Clear all known log files
+        for key, info in _LOG_FILES.items():
+            for fname in [info["file"]] + ([info["also"]] if info.get("also") else []):
+                fpath = _LOG_DIR / fname
+                if fpath.exists():
+                    fpath.write_text("")
+                    cleared.append(fname)
+        # Also clear rotated files
+        for rotated in _LOG_DIR.glob("*.log.1"):
+            rotated.write_text("")
+            cleared.append(rotated.name)
+    else:
+        info = _LOG_FILES.get(target)
+        if info:
+            for fname in [info["file"]] + ([info["also"]] if info.get("also") else []):
+                fpath = _LOG_DIR / fname
+                if fpath.exists():
+                    fpath.write_text("")
+                    cleared.append(fname)
+
+    return jsonify({"ok": True, "cleared": cleared})
+
+
 # ---------------------------------------------------------------------------
 # API: Live monitoring data
 # ---------------------------------------------------------------------------
@@ -1834,6 +1973,19 @@ def api_live():
     today = _today_utc()
     path = LIVE_DIR / f"{today}.json"
     data = _load_json(path, default=None)
+
+    # If auto-poll isn't running but it's a match day, start it
+    if not _auto_poll_active:
+        try:
+            from scripts.pipeline.scheduler import is_match_day
+            if is_match_day():
+                _ensure_auto_poll()
+                log.info("Live poll auto-started from /api/live request")
+        except Exception:
+            pass
+    # Re-read file in case a poll just completed
+    if data is None:
+        data = _load_json(path, default=None)
 
     if data is None:
         return jsonify({
@@ -2346,12 +2498,24 @@ def _extract_line(market_str: str, default: float = 0.5) -> float:
     return default
 
 
+def _ensure_auto_poll():
+    """Restart auto-poll if it's not running and there are live matches."""
+    global _auto_poll_active, _auto_poll_thread
+    if _auto_poll_active and _auto_poll_thread and _auto_poll_thread.is_alive():
+        return  # Already running
+    _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
+    _auto_poll_thread.start()
+
+
 @app.route("/api/live/trigger", methods=["POST"])
 def api_live_trigger():
     """Trigger a single live poll on demand (2 API calls)."""
     try:
         from scripts.data.live_monitor import poll_once
         result = poll_once()
+        # If we found live matches, make sure auto-poll is running
+        if result.get("has_live_matches"):
+            _ensure_auto_poll()
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         log.error(f"Live poll trigger failed: {e}")
@@ -2882,6 +3046,81 @@ def api_sofascore_status():
     return jsonify({
         "running": _sofascore_running,
         "status": _sofascore_status,
+        "data": stats,
+    })
+
+
+# ---------------------------------------------------------------------------
+# API: Understat PPDA scrape
+# ---------------------------------------------------------------------------
+
+_understat_running = False
+_understat_status = {"message": "", "started_at": ""}
+
+
+@app.route("/api/understat/scrape", methods=["POST"])
+def api_understat_scrape():
+    """Start Understat PPDA scrape in background."""
+    global _understat_running, _understat_status
+    if _understat_running:
+        return jsonify({"ok": False, "message": "Understat scrape already running"})
+
+    def _run():
+        global _understat_running, _understat_status
+        _understat_running = True
+        _understat_status = {"message": "Running...", "started_at": datetime.now().isoformat()}
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["python3", "-c",
+                 "from scraper.understat_scraper import scrape_understat_xg; "
+                 "from config.settings import DATA_DIR; "
+                 "scrape_understat_xg(seasons=['2025-2026'], "
+                 "output_path=DATA_DIR / 'external' / 'understat' / 'matches_xg.parquet')"],
+                capture_output=True, text=True, timeout=300,
+                cwd=str(Path(__file__).parent.parent),
+            )
+            if result.returncode == 0:
+                _understat_status["message"] = "Complete"
+                log.info("Understat scrape complete: %s", result.stdout[-200:] if result.stdout else "ok")
+            else:
+                err = result.stderr[-300:] if result.stderr else "Unknown error"
+                _understat_status["message"] = f"Error: {err}"
+                log.warning("Understat scrape failed: %s", err)
+        except subprocess.TimeoutExpired:
+            _understat_status["message"] = "Timeout (5 min)"
+        except Exception as e:
+            _understat_status["message"] = f"Failed: {e}"
+        finally:
+            _understat_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "message": "Understat PPDA scrape started"})
+
+
+@app.route("/api/understat/status")
+def api_understat_status():
+    """Get Understat scrape status."""
+    understat_dir = DATA_DIR / "external" / "understat"
+    stats = {}
+    json_files = sorted(understat_dir.glob("understat_*.json")) if understat_dir.exists() else []
+    if json_files:
+        latest = json_files[-1]
+        mtime = datetime.fromtimestamp(latest.stat().st_mtime)
+        age_h = (datetime.now() - mtime).total_seconds() / 3600
+        stats = {
+            "exists": True,
+            "last_modified": mtime.isoformat(),
+            "age_hours": round(age_h, 1),
+            "seasons": len(json_files),
+            "latest_file": latest.name,
+        }
+    else:
+        stats = {"exists": False}
+
+    return jsonify({
+        "running": _understat_running,
+        "status": _understat_status,
         "data": stats,
     })
 
@@ -3892,6 +4131,25 @@ def api_alerts_check():
 # Start auto-settle on app startup (outside of debug reloader)
 if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
     start_auto_settle()
+
+    # Auto-start live poll if there are matches today
+    def _maybe_start_live_poll():
+        """Start live polling if matches are happening today."""
+        import time as _t
+        _t.sleep(10)  # Let app fully initialize
+        try:
+            # Check if there are matches today
+            from scripts.pipeline.scheduler import is_match_day
+            if is_match_day():
+                global _auto_poll_active, _auto_poll_thread
+                if not _auto_poll_active:
+                    log.info("Match day detected — auto-starting live poll")
+                    _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
+                    _auto_poll_thread.start()
+        except Exception as e:
+            log.debug("Auto-start live poll check failed: %s", e)
+
+    threading.Thread(target=_maybe_start_live_poll, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

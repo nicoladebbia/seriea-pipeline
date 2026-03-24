@@ -281,13 +281,21 @@ def predict_margin(
         home_team, away_team, factors, home_form, away_form
     )
 
-    # If ensemble provides xG, derive margin from xG difference and blend
-    if ensemble_home_xg is not None and ensemble_away_xg is not None:
+    # If ensemble provides xG, derive margin from xG difference and blend.
+    # SKIP if xG is a placeholder (equal values = no real xG data available).
+    # Placeholder xG produces margin=0 which drowns out the strength-based estimate.
+    xg_is_placeholder = (
+        ensemble_home_xg is not None and ensemble_away_xg is not None
+        and ensemble_home_xg == ensemble_away_xg
+    )
+    if ensemble_home_xg is not None and ensemble_away_xg is not None and not xg_is_placeholder:
         xg_margin = ensemble_home_xg - ensemble_away_xg
         expected_margin = 0.7 * xg_margin + 0.3 * own_margin
         log.info(f"  {home_team} vs {away_team}: Blended margin (xG={xg_margin:+.2f}, own={own_margin:+.2f}) -> {expected_margin:+.2f}")
     else:
         expected_margin = own_margin
+        if xg_is_placeholder:
+            log.info(f"  {home_team} vs {away_team}: xG placeholder ({ensemble_home_xg}={ensemble_away_xg}), using own margin={own_margin:+.2f}")
 
     # Get team ratings
     home_rating = get_team_rating(home_team)

@@ -7,10 +7,13 @@ goal probabilities.
 """
 
 import json
+import logging
 import math
 import sys
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
@@ -317,7 +320,7 @@ def generate_player_props() -> dict:
     """Main entry point: load data and generate player props."""
     pred_path = DATA_DIR / "upcoming" / "predictions.json"
     if not pred_path.exists():
-        print("No predictions.json found")
+        log.warning("No predictions.json found")
         return {}
 
     with open(pred_path) as f:
@@ -325,7 +328,7 @@ def generate_player_props() -> dict:
 
     profiles = _load_profiles()
     if not profiles:
-        print("No player_xg_profiles.json found")
+        log.warning("No player_xg_profiles.json found")
         return {}
 
     predictions = pred_data.get("predictions", [])
@@ -343,7 +346,8 @@ def generate_player_props() -> dict:
         json.dump(output, f, indent=2)
 
     total_players = sum(len(m["players"]) for m in props.values())
-    print(f"Generated player props for {len(props)} matches ({total_players} players) -> {out_path}")
+    log.info("Generated player props for %d matches (%d players) -> %s",
+             len(props), total_players, out_path)
     return output
 
 

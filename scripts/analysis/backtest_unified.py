@@ -64,11 +64,20 @@ from storage.paths import features_path
 _ml_classifier = None
 _ml_is_ensemble = False
 
+# Walk-forward fold models: keyed by season string
+_fold_models: Dict[str, Any] = {}
+_fold_feature_names: Dict[str, list] = {}
+_walk_forward_mode = False
+
 # Lazy-loaded isotonic calibrator for ensemble post-processing.
 # WARNING: The calibrator is fitted on 2023-2025 OOF predictions. Using it
 # in backtests on the SAME seasons produces in-sample results (data leakage).
 # For fair backtesting, set USE_ISOTONIC_CALIBRATION = False.
 # For production predictions on FUTURE matches, set it to True.
+#
+# For fully leakage-free backtesting, use walk-forward mode:
+#   enable_walk_forward_backtest()  # loads per-fold models
+# This uses models that have NEVER seen the test season data.
 USE_ISOTONIC_CALIBRATION = False  # Safe default for backtesting
 
 _isotonic_calibrator = None
@@ -103,6 +112,49 @@ def _get_isotonic_calibrator():
     except Exception as e:
         log.warning("Failed to load isotonic calibrator: %s", e)
         return None
+
+def enable_walk_forward_backtest():
+    """Enable walk-forward mode: use per-fold models instead of all-data model.
+
+    Requires fold models to be built first via:
+        from ml.ensemble import build_fold_models
+        build_fold_models()
+
+    Returns True if fold models were found and loaded, False otherwise.
+    """
+    global _walk_forward_mode, _fold_models, _fold_feature_names
+    try:
+        from ml.ensemble import load_fold_model
+        fold_dir = MODELS_DIR / "universal" / "fold_models"
+        index_path = fold_dir / "fold_index.json"
+        if not index_path.exists():
+            log.warning("No fold models found at %s — run build_fold_models() first", fold_dir)
+            return False
+
+        index = json.loads(index_path.read_text())
+        count = 0
+        for entry in index:
+            for season in entry["test_seasons"]:
+                model, features = load_fold_model(season)
+                if model is not None:
+                    _fold_models[season] = model
+                    _fold_feature_names[season] = features
+                    count += 1
+
+        if count > 0:
+            _walk_forward_mode = True
+            log.info("Walk-forward mode enabled: %d fold models loaded", count)
+            return True
+        return False
+    except Exception as e:
+        log.warning("Failed to enable walk-forward mode: %s", e)
+        return False
+
+
+def _get_fold_classifier(season: str):
+    """Get the fold-specific model for a given season (walk-forward mode)."""
+    return _fold_models.get(season), _fold_feature_names.get(season)
+
 
 def _get_ml_classifier():
     """Load ML model for backtest.
@@ -220,13 +272,15 @@ class BacktestConfig:
 
 
 # =============================================================================
-# ENSEMBLE WEIGHTS (from backtest.py)
+# ENSEMBLE WEIGHTS — synced with ensemble_prediction_engine.py ENSEMBLE_WEIGHTS.
+# ML component: 35-feature no-odds CatBoost + 3-model ensemble (2017+ data,
+# time-decay 0.85, auto draw weights). CV: acc=0.6155, ll=0.8589.
 # =============================================================================
 
 BACKTEST_WEIGHTS = {
     "factor": 0.035,
     "xg": 0.124,
-    "ml": 0.605,
+    "ml": 0.605,           # 35-feature model (2017+ data)
     "player_xg": 0.032,
     "market": 0.205,
     "formation": 0.0,
@@ -439,14 +493,28 @@ def predict_ensemble(
     if market_probs:
         predictions["market"] = market_probs
 
-    # ML classifier (multi-model ensemble or single CatBoost)
-    ml_model = _get_ml_classifier()
-    if ml_model is not None:
+    # ML classifier — walk-forward mode uses fold-specific model (no leakage),
+    # standard mode uses the all-data model (in-sample for backtests)
+    ml_model = None
+    feature_names_ml = None
+    is_ensemble = False
+
+    if _walk_forward_mode:
+        season = row.get("season", "")
+        fold_model, fold_features = _get_fold_classifier(season)
+        if fold_model is not None:
+            ml_model = fold_model
+            feature_names_ml = fold_features
+    if ml_model is None:
+        ml_model = _get_ml_classifier()
+        if ml_model is not None:
+            is_ensemble = _ml_is_ensemble
+            feature_names_ml = (ml_model.feature_names if is_ensemble
+                                else list(ml_model.feature_names_))
+
+    if ml_model is not None and feature_names_ml is not None:
         try:
-            if _ml_is_ensemble:
-                feature_names = ml_model.feature_names
-            else:
-                feature_names = list(ml_model.feature_names_)
+            feature_names = feature_names_ml
             available = [f for f in feature_names if f in row.index]
             if len(available) >= len(feature_names) * 0.5:
                 X = pd.DataFrame([row[available].values], columns=available)

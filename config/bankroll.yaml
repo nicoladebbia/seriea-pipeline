@@ -1,0 +1,31 @@
+# Bankroll Management Configuration
+# Single source of truth for all staking parameters.
+# Balance is computed from bet_journal.json — NOT stored here.
+
+# Starting capital
+initial_balance: 1000.0
+
+# Fractional Kelly sizing
+kelly_fraction: 0.10        # 10% Kelly (conservative)
+
+# Stake limits (% of bankroll)
+min_stake_pct: 0.5
+max_stake_pct: 2.5           # Pro standard: 2-3%
+max_match_exposure_pct: 8.0
+max_daily_exposure_pct: 35.0
+max_portfolio_exposure_pct: 50.0
+
+# Drawdown thresholds
+max_drawdown_pct: 25.0       # Pause betting
+warning_drawdown_pct: 15.0   # Reduce stakes
+
+# Consecutive loss controls
+max_consecutive_losses: 8
+warning_consecutive_losses: 5
+recovery_wins_to_reset: 2    # Wins needed to clear stress mode
+
+# Bankroll floor
+min_bankroll_pct: 50.0       # Hard stop below 50% of initial
+
+# Stress mode
+stress_stake_multiplier: 0.5

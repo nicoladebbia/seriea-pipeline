@@ -312,8 +312,25 @@ def scrape_understat_xg(
 
     if output_path and not df.empty:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(output_path, index=False)
+        # Flatten nested dicts — Parquet can't handle struct columns with
+        # empty child fields (e.g. 'numbers.format' is an empty dict in some rows)
+        save_df = df.copy()
+        for col in save_df.columns:
+            if save_df[col].apply(type).eq(dict).any():
+                save_df[col] = save_df[col].apply(
+                    lambda x: json.dumps(x) if isinstance(x, dict) else x
+                )
+        save_df.to_parquet(output_path, index=False)
         log.info(f"Saved {len(df)} matches to {output_path}")
+
+        # Also save raw JSON for the pressing feature module
+        json_dir = output_path.parent
+        for season in df["season"].unique() if "season" in df.columns else []:
+            season_file = json_dir / f"understat_{season.replace('-', '_')}.json"
+            season_data = df[df["season"] == season].to_dict(orient="records")
+            with open(season_file, "w") as f:
+                json.dump(season_data, f, indent=2, default=str)
+            log.info(f"Saved {len(season_data)} matches to {season_file}")
 
     return df
 

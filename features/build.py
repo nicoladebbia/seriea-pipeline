@@ -57,6 +57,12 @@ except ImportError:
     HAS_PLAYER_DEPTH = False
 
 try:
+    from features.lineup_xg import add_lineup_xg_features
+    HAS_LINEUP_XG = True
+except ImportError:
+    HAS_LINEUP_XG = False
+
+try:
     from features.match_patterns import add_match_pattern_features
     HAS_MATCH_PATTERNS = True
 except ImportError:
@@ -741,6 +747,24 @@ class Step19cPlayerDepth(FeaturePlugin):
         return state
 
 
+class Step19c2LineupXg(FeaturePlugin):
+    """Step 19c2: Historical lineup xG reconstruction (Sofascore + Understat)."""
+    name = "lineup_xg"
+    version = "1.0"
+    dependencies = ["player_depth"]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_LINEUP_XG:
+            log.info("Skipping lineup xG features (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_lineup_xg_features(state.feature_df)
+        log.info("  Lineup xG added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
 class Step19dMatchPatterns(FeaturePlugin):
     """Step 19d: Tier 7-9 match pattern features (H2H, comeback, late goals, set pieces)."""
     name = "match_patterns"
@@ -1146,6 +1170,7 @@ def _create_pipeline() -> FeaturePipeline:
     pipeline.register(Step19bSofascore())
     pipeline.register(Step19b2SofascoreIndices())
     pipeline.register(Step19cPlayerDepth())
+    pipeline.register(Step19c2LineupXg())
     pipeline.register(Step19dMatchPatterns())
     pipeline.register(Step19eCreativeFactors())
     pipeline.register(Step19fCaptain())

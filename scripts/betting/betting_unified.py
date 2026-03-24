@@ -88,7 +88,7 @@ class BettingConfig:
     # "kelly": fractional Kelly criterion (RECOMMENDED with proper edge filters).
     #   Sizes proportional to edge: bigger bets on better opportunities, smaller on
     #   thin edges. Safe because overconfident edges are blocked upstream:
-    #   - max_edge_pct=12% caps model overconfidence
+    #   - max_edge_pct=8% caps model overconfidence (live: >10% = 38% WR, -EUR133)
     #   - Intelligence filter kills bets opposed by sharp money
     #   - Per-market min_edge thresholds ensure genuine value
     # "proportional": flat % per bet (simple fallback)
@@ -106,8 +106,8 @@ class BettingConfig:
     # Live audit (42 bets): edges 3-8% hit 69% vs expected 55% (REAL edge).
     # Edges 12%+ hit only 27% vs expected 67% (model overconfidence).
     min_edge_pct: float = 4.0        # Global fallback min edge (market_rules override per market)
-    max_edge_pct: float = 12.0       # Max edge cap — edges >12% are overconfidence (was 15)
-    max_edge_draw_pct: float = 10.0  # Draw-specific max edge — tightened from 12 to 10 (model overconfidence)
+    max_edge_pct: float = 8.0        # Max edge cap — live data: >10% edges are 38% WR / -EUR133 (was 12)
+    max_edge_draw_pct: float = 8.0   # Draw-specific max edge — aligned with global cap (was 10)
     strong_edge_pct: float = 6.0     # "Strong" value threshold (%) — raised from 4.0 (was too easy to qualify)
     elite_edge_pct: float = 8.0      # "Elite" value threshold (%) — raised from 5.5 (every 1X2 bet was ELITE)
 
@@ -187,22 +187,25 @@ class BettingConfig:
     #   AH:         +103.5% ROI live (8 bets, 75% WR) — but 8 bets is noise. Backtest: -20% to -37% ROI → DISABLED
     #   DC:         +39.1% ROI live (7 bets, 85.7% WR) — KEEP
     #   O/U:        +39.1% ROI live (10 bets, 70% WR) — KEEP
-    #   1X2:        +34.3% ROI live but 38.5% WR — tighten max_edge to 12%
+    #   1X2:        +34.3% ROI live but 38.5% WR — max_edge now 8% (was 12%)
     #   DNB:        -37.3% ROI live (0% WR, 0 of 2 won) — DISABLE
     #   BTTS:       -7.6% ROI live (no edge visible) — DISABLE
     market_rules: Dict = field(default_factory=lambda: {
-        "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 12.0},  # DISABLED: 5W/13L -17.6% ROI, only 20% beat closing line
-        "1X2_Draw":   {"enabled": False, "min_edge_pct": 10.0, "max_edge_pct": 10.0},  # DISABLED with 1X2
-        "O/U_Over":   {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 12.0},
-        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 12.0},
-        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 12.0},
-        "DC":         {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 10.0},
-        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 12.0},
-        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 12.0},
-        "Alt_OU":     {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 12.0},
-        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 12.0},
-        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 12.0},
-        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 12.0},
+        "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0},   # Home DISABLED: insufficient data
+        "1X2_Away":   {"enabled": True,  "min_edge_pct": 7.0,  "max_edge_pct": 10.0},  # ENABLED: backtest +19% ROI (33 bets, 57.6% WR)
+        "1X2_Draw":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 12.0},  # Draw gets wider edge cap: market systematically underprices draws.
+                                                                                         # 8% cap killed +€3692 profit. Backtest: 496 bets +17.3% at max=15%
+        "O/U_Over":   {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 8.0,    # RE-ENABLED: CLV analysis shows O/U 1.5 (+19.7% ROI, 100% CLV+)
+                       "allowed_lines": [1.5, 2.5]},                                   # and O/U 2.5 (+4.3% ROI, 96% CLV+). O/U 3.5 excluded (-100% ROI)
+        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0},
+        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 8.0},
+        "DC":         {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
+        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
+        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
+        "Alt_OU":     {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 8.0},
+        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 8.0},
+        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
+        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
     })
 
     # -- Situational edge adjustments (multi-market backtest-derived, 760 matches) --
@@ -223,6 +226,36 @@ class BettingConfig:
         "derby__O/U_Over__Over":         +3.0,   # Derby overs: -56% ROI → effectively block
         "midweek__O/U_Over__Over":       +2.0,   # Midweek overs: -25% ROI
     })
+
+    @classmethod
+    def from_config(cls, bankroll_override: float = None) -> "BettingConfig":
+        """Create BettingConfig with bankroll auto-loaded from journal.
+
+        Args:
+            bankroll_override: If > 0, use this value instead of auto-loading.
+                               None or 0 means auto-load from journal.
+        """
+        cfg = cls()
+        if bankroll_override and bankroll_override > 0:
+            cfg.bankroll = bankroll_override
+        else:
+            try:
+                from scripts.betting.bankroll_loader import get_effective_bankroll
+                cfg.bankroll = get_effective_bankroll()
+            except Exception as e:
+                log.error("CRITICAL: Failed to load bankroll from journal: %s", e)
+                log.error("Using fallback bankroll=%.0f — VERIFY this is correct before betting", cfg.bankroll)
+                try:
+                    from scripts.pipeline.notify import send_notification
+                    send_notification(
+                        f"Bankroll load failed: {e}. Using fallback EUR {cfg.bankroll:.0f}. "
+                        "Verify before placing any bets!",
+                        title="CRITICAL: Bankroll Error",
+                        level="critical",
+                    )
+                except Exception:
+                    pass  # Don't crash if notification also fails
+        return cfg
 
 
 # -- Market priorities (from advanced_betting_engine) --
@@ -314,6 +347,9 @@ class ValueBet:
     # Portfolio
     match_group: str = ""        # For correlation tracking
     is_selected: bool = False    # Final portfolio selection
+
+    # Entry timing (populated by EntryTimingAnalyzer)
+    entry_timing: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -595,9 +631,14 @@ def calculate_kelly(model_prob: float, odds: float, fraction: float = 0.25) -> f
 
     We multiply by fraction (0.25 = quarter Kelly) for safety.
     Returns fraction of bankroll to stake (e.g. 0.03 = 3%).
-
-    (Preserved exactly from ultimate_betting_system.calculate_kelly)
+    Returns 0 for any invalid input (NaN, inf, out of range).
     """
+    # Reject NaN/inf/invalid inputs
+    if (not isinstance(model_prob, (int, float)) or not isinstance(odds, (int, float))
+            or math.isnan(model_prob) or math.isnan(odds)
+            or math.isinf(model_prob) or math.isinf(odds)):
+        return 0
+
     if odds <= 1 or model_prob <= 0 or model_prob >= 1:
         return 0
 
@@ -606,7 +647,7 @@ def calculate_kelly(model_prob: float, odds: float, fraction: float = 0.25) -> f
     q = 1 - p
 
     kelly = (b * p - q) / b
-    if kelly <= 0:
+    if kelly <= 0 or math.isnan(kelly):
         return 0
 
     # Apply fraction and floor at 0.001 (0.1%)
@@ -680,8 +721,11 @@ class UnifiedBettingEngine:
         """
         m = market_str.upper()
         if m.startswith("1X2"):
-            if "DRAW" in selection.upper():
+            sel_up = selection.upper()
+            if "DRAW" in sel_up:
                 return "1X2_Draw"
+            if "AWAY" in sel_up:
+                return "1X2_Away"
             return "1X2"
         elif m.startswith("O/U") or m.startswith("OVER") or m.startswith("UNDER"):
             sel = selection.upper()
@@ -842,15 +886,26 @@ class UnifiedBettingEngine:
                     min_edge, market_cat, selection, tags
                 )
 
+        # Validate inputs — reject NaN/inf before any calculation
+        if (any(math.isnan(v) or math.isinf(v) for v in [model_p, sharp_p, best_o] if isinstance(v, float))
+                or model_p <= 0 or model_p >= 1 or sharp_p <= 0):
+            return None
+
         raw_edge = model_p - sharp_p
         edge_pct = (raw_edge / sharp_p * 100) if sharp_p > 0 else 0
+
+        # Odds-range gating: 1.5-2.0 is a dead zone (live: 15 bets, 40% WR, -EUR121).
+        # These odds are trap territory — too short to pay well, not short enough to
+        # be safe. Require significantly higher edge to compensate.
+        if 1.5 <= best_o < 2.0:
+            min_edge = max(min_edge, 9.0)
 
         if edge_pct < min_edge:
             return None
         # Market-specific edge cap (backtest-calibrated)
         effective_max = max_edge_override if max_edge_override is not None else max_edge
         if edge_pct > effective_max:
-            return None  # Backtest-proven: edges above cap are model overconfidence
+            return None  # Live-proven: edges above cap are model overconfidence
         if raw_edge < 0.02:
             return None  # Minimum 2% absolute edge
         if best_o < cfg.min_odds or best_o > cfg.max_odds:
@@ -870,8 +925,8 @@ class UnifiedBettingEngine:
             # Kelly fractional — sizes proportional to perceived edge.
             # Safe because overconfident edges are blocked upstream by edge caps.
             stake_pct = min(kelly_adj * 100, cfg.max_stake_pct)
-            if stake_pct < 0.15:
-                return None  # Edge too small for Kelly
+            if stake_pct < 0.30:
+                return None  # Kelly < 0.3% = edge too thin to justify variance (was 0.15)
 
         if stake_pct < cfg.min_stake_pct:
             stake_pct = cfg.min_stake_pct  # Floor at minimum (bet is still +EV)
@@ -959,6 +1014,12 @@ class UnifiedBettingEngine:
             if not totals:
                 continue
 
+            # Get allowed lines from market rules (if specified)
+            ou_over_rules = self.cfg.market_rules.get("O/U_Over", {})
+            ou_under_rules = self.cfg.market_rules.get("O/U_Under", {})
+            allowed_lines_over = ou_over_rules.get("allowed_lines")  # None = all lines
+            allowed_lines_under = ou_under_rules.get("allowed_lines")
+
             for total in totals:
                 line = total.get("line", 0)
                 bookmakers = total.get("all_bookmakers", [])
@@ -1000,10 +1061,13 @@ class UnifiedBettingEngine:
                 true_probs = remove_overround([pin_over, pin_under])
 
                 match_pred = pred_by_match.get(match)
-                for side_idx, (sel_name, sel_key, model_p) in enumerate([
-                    (f"Over {line}", "over", model_over),
-                    (f"Under {line}", "under", model_under),
+                for side_idx, (sel_name, sel_key, model_p, allowed_lines) in enumerate([
+                    (f"Over {line}", "over", model_over, allowed_lines_over),
+                    (f"Under {line}", "under", model_under, allowed_lines_under),
                 ]):
+                    # Skip lines not in allowed list (CLV-driven line filtering)
+                    if allowed_lines is not None and line not in allowed_lines:
+                        continue
                     best_o, best_bk, avg_o, count = find_best_odds(bookmakers, sel_key)
                     # Use real bookmaker count from totals entry when available
                     # (synthetic alt-totals entries have 1 in all_bookmakers but
@@ -1492,10 +1556,13 @@ class UnifiedBettingEngine:
 
                     if move_against:
                         if is_steam:
-                            penalty *= 0.3
-                            intel_notes.append("STEAM_AGAINST")
+                            # Hard reject: steam moves against = sharp money
+                            # says we're wrong. Live data: -EUR217 in 2-day
+                            # steam crash. Don't fade sharp money.
+                            intel_notes.append("STEAM_AGAINST_REJECTED")
+                            penalty = 0  # Will be caught by penalty <= 0.2 check below
                         else:
-                            penalty *= 0.6
+                            penalty *= 0.5
                             intel_notes.append("LINE_MOVE_AGAINST")
                     elif not move_against and is_steam:
                         penalty *= 1.15
@@ -2313,6 +2380,35 @@ class UnifiedBettingEngine:
         slip._accumulators = accumulators  # type: ignore
         self.slip = slip
 
+        # -- Enrich with entry timing recommendations --
+        try:
+            from scripts.betting.entry_timer import EntryTimingAnalyzer
+            analyzer = EntryTimingAnalyzer()
+            if analyzer.load_snapshots() > 0:
+                for bet in selected:
+                    # Map selection to outcome
+                    sel = bet.selection.lower()
+                    if "home" in sel or "1x" in sel:
+                        outcome = "home"
+                    elif "draw" in sel:
+                        outcome = "draw"
+                    elif "away" in sel or "x2" in sel:
+                        outcome = "away"
+                    else:
+                        continue
+                    rec = analyzer.recommend_entry(
+                        bet.match, outcome, model_prob=bet.model_prob,
+                    )
+                    bet.entry_timing = rec  # Attach to bet object
+                    if rec.get("action") == "AVOID":
+                        log.info("  TIMING: %s %s — AVOID (%s)",
+                                 bet.match, bet.selection, rec.get("reason", ""))
+                    elif rec.get("action") == "WAIT":
+                        log.info("  TIMING: %s %s — WAIT (%s)",
+                                 bet.match, bet.selection, rec.get("reason", ""))
+        except Exception as e:
+            log.debug("Entry timing enrichment skipped: %s", e)
+
         return slip, all_bets
 
 
@@ -2596,6 +2692,14 @@ def print_bet_slip(engine: UnifiedBettingEngine, slip: BetSlip,
                 adj_str = f" (stake x{penalty})" if penalty != 1.0 else ""
                 print(f"     Intel: {notes_str}{adj_str}")
 
+            # Entry timing recommendation
+            timing = getattr(bet, 'entry_timing', {})
+            if timing and timing.get("action"):
+                action = timing["action"]
+                emoji = {"ENTER_NOW": "\u2705", "WAIT": "\u26a0\ufe0f", "AVOID": "\u274c"}.get(action, "")
+                conf = timing.get("confidence", 0)
+                print(f"     Timing: {emoji} {action} ({conf:.0%}) — {timing.get('reason', '')[:80]}")
+
     # Accumulators
     accumulators = getattr(slip, '_accumulators', [])
     if accumulators:
@@ -2762,10 +2866,10 @@ def generate_unified_report(bankroll: float = None) -> Dict:
 
     Creates a UnifiedBettingEngine, runs the full scan, and returns a report
     dict with 'summary', 'bets', and 'accumulators' keys.
+
+    If bankroll is None or 0, auto-loads from bet journal (journal-derived balance).
     """
-    cfg = BettingConfig()
-    if bankroll is not None:
-        cfg.bankroll = bankroll
+    cfg = BettingConfig.from_config(bankroll_override=bankroll)
     engine = UnifiedBettingEngine(cfg)
     slip, all_bets = engine.run()
     bets_data = []
@@ -2899,8 +3003,8 @@ Examples:
   python scripts/betting_unified.py --dry-run          # No file writes
         """)
 
-    parser.add_argument("--bankroll", type=float, default=1000.0,
-                        help="Bankroll amount (default: 1000)")
+    parser.add_argument("--bankroll", type=float, default=0,
+                        help="Bankroll amount (default: 0 = auto-load from journal)")
     parser.add_argument("--min-edge", type=float, default=2.0,
                         help="Minimum edge %% (default: 2.0)")
     parser.add_argument("--max-edge", type=float, default=12.0,
@@ -2946,18 +3050,18 @@ Examples:
         _check_drawdown(history)
         return 0
 
-    # -- Build config from args --
-    cfg = BettingConfig(
-        bankroll=args.bankroll,
-        kelly_fraction=args.kelly,
-        staking_mode=args.staking,
-        proportional_stake_pct=args.prop_pct,
-        min_edge_pct=args.min_edge,
-        max_edge_pct=args.max_edge,
-        max_stake_pct=args.max_stake,
-        max_total_bets=args.max_bets,
-        dry_run=args.dry_run,
+    # -- Build config from args (auto-load bankroll if not specified) --
+    cfg = BettingConfig.from_config(
+        bankroll_override=args.bankroll if args.bankroll > 0 else None,
     )
+    cfg.kelly_fraction = args.kelly
+    cfg.staking_mode = args.staking
+    cfg.proportional_stake_pct = args.prop_pct
+    cfg.min_edge_pct = args.min_edge
+    cfg.max_edge_pct = args.max_edge
+    cfg.max_stake_pct = args.max_stake
+    cfg.max_total_bets = args.max_bets
+    cfg.dry_run = args.dry_run
 
     # -- Run engine --
     engine = UnifiedBettingEngine(cfg)

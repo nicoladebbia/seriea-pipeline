@@ -58,7 +58,7 @@ class UnifiedPredictor:
         self,
         strategy: str = "default",
         bankroll: float = 1000.0,
-        kelly_fraction: float = 0.15,
+        kelly_fraction: float = 0.10,
     ):
         self.strategy = strategy
         self.initial_bankroll = bankroll
@@ -380,8 +380,8 @@ def main():
                         help="Betting strategy (default: selective)")
     parser.add_argument("--bankroll", type=float, default=1000.0,
                         help="Initial bankroll (default: 1000)")
-    parser.add_argument("--kelly", type=float, default=0.15,
-                        help="Kelly fraction (default: 0.15)")
+    parser.add_argument("--kelly", type=float, default=0.10,
+                        help="Kelly fraction (default: 0.10)")
     parser.add_argument("--format", choices=["text", "json"], default="text",
                         help="Output format (default: text)")
     parser.add_argument("--verbose", "-v", action="store_true",

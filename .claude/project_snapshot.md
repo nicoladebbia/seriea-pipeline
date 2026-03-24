@@ -1,24 +1,29 @@
-# Project Snapshot (2026-03-16 10:11)
+# Project Snapshot (2026-03-23 — Post-Tier-2 Deployment)
 
 ## Model & Metrics
-Model: catboost_no_odds.cbm | accuracy=0.543 | log_loss=0.9576 | brier=0.1899
+Model: catboost_no_odds.cbm + 3-model ensemble (XGB+LGB+CB) | 35 features
+Training: 2017+ data only (3,340 matches), time-decay 0.85/season, auto draw weights
+CV: accuracy=0.6155 | log_loss=0.8589 | brier=0.1695 | F1_Draw=0.328
+Production (2025-2026): accuracy=0.693 | ECE=0.031 | log_loss=0.709
+Walk-forward backtest: +12.3% ROI | €1000→€4192 | 643 bets
 
 ## Betting
-Bets: 144 total (9 pending, 71W-54L) | P&L: $+87.41
+Engine: max_edge 8%, steam-move rejection, odds 1.5-2.0 dead zone gating (9% min edge), Kelly min 0.3%
+Active markets: DC, O/U Over, Alt_OU (1X2 Draw in backtest only)
 
-## Data Freshness
-  Odds: 1h ago
-  Predictions: 1h ago
-  Features: 31m ago
-  Bet journal: 49m ago
-  Unified report: 49m ago
-  Deploy state: 13d ago
+## Key Features (35 selected)
+xG: us_xg_diff, us_team_xa_per_90, us_xg_rolling_std
+Lineup: lineup_rating_mean
+Odds velocity: line_vel_ou_over
+Squad: squad_value_ratio, squad_total_value, median_player_value
+Plus: Elo, form, H2H, injury, weather, contextual
 
-## Recent Git Activity
-  7b235dd Initial commit: Serie A prediction pipeline
+## Architecture
+- min_train_season=2017-2018 (drops pre-2017 low-signal data)
+- universal_nan_threshold=0.45 (unlocks xG, pressing, lineup, odds velocity)
+- Recency-weighted feature selection (base=1.5) + supplementary recent-folds pass
+- Time-decay sample weights (0.85/season, Dixon-Coles)
+- Auto draw weights (target 38% effective share)
 
 ## Knowledge Base
-KB: 13 learnings — top: scraping(3), calibration(2), ensemble(2)
-
-## Experiments
-Last experiment: Optuna weight optimization (100 trials) + new feat → SHIP
+KB: 42 learnings — old 51-52% accuracy ceiling broken by 2017+ data + time-decay
