@@ -2,7 +2,7 @@
 from pathlib import Path
 import re
 
-features_dir = Path('/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/features')
+features_dir = Path(str(Path(__file__).parent.parent.parent) + '/features')
 build_py = features_dir / 'build.py'
 
 # Get all feature modules

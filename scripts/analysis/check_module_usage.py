@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-build_py = Path('/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/features/build.py')
+build_py = Path(str(Path(__file__).parent.parent.parent) + '/features/build.py')
 content = build_py.read_text()
 
 # Extract imports

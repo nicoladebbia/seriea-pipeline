@@ -418,7 +418,7 @@ def blended_backtest(
 
 def main():
     """Main training and validation workflow."""
-    feature_path = '/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/features/features.parquet'
+    feature_path = str(Path(__file__).parent.parent.parent) + '/data/features/features.parquet'
 
     # Load data
     df = load_data(feature_path)

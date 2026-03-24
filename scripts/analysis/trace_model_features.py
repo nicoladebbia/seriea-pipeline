@@ -4,7 +4,7 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 
 # Load model
-model_path = Path('/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/models/universal/no_odds/catboost_latest.cbm')
+model_path = Path(str(Path(__file__).parent.parent.parent) + '/data/models/universal/no_odds/catboost_latest.cbm')
 model = CatBoostClassifier()
 model.load_model(str(model_path))
 
@@ -15,7 +15,7 @@ print("=" * 80)
 print(f"Total features used by CatBoost: {len(features)}\n")
 
 # Load features.parquet
-features_path = Path('/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/features/features.parquet')
+features_path = Path(str(Path(__file__).parent.parent.parent) + '/data/features/features.parquet')
 df = pd.read_parquet(features_path)
 
 # Filter recent seasons

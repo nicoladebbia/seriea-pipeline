@@ -35,7 +35,7 @@ def main():
     log.info("=" * 60)
 
     # Load full dataset
-    feature_path = '/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/features/features.parquet'
+    feature_path = str(Path(__file__).parent.parent.parent) + '/data/features/features.parquet'
     df = pd.read_parquet(feature_path)
 
     # Filter to matches with results
@@ -71,7 +71,7 @@ def main():
     specialist.fit(df, df['result'], feature_cols)
 
     # Save model
-    output_path = '/Users/nicoladebbia/Code_Ideas/Scripts/AI_PREDICTIONS/seriea_pipeline/data/models/universal/draw_specialist.pkl'
+    output_path = str(Path(__file__).parent.parent.parent) + '/data/models/universal/draw_specialist.pkl'
     with open(output_path, 'wb') as f:
         pickle.dump(specialist, f)
 
