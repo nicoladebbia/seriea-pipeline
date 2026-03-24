@@ -376,6 +376,42 @@ def _button(text: str, callback_data: str) -> dict:
     return {"text": text, "callback_data": callback_data}
 
 
+def _register_commands(token: str):
+    """Register slash commands with Telegram — shows them in the / menu."""
+    commands = [
+        {"command": "bets", "description": "Value bets with edge + stake"},
+        {"command": "today", "description": "Today's matches and predictions"},
+        {"command": "match", "description": "Tap a match for deep analysis"},
+        {"command": "live", "description": "Live scores and active bets"},
+        {"command": "parlays", "description": "Top parlay combinations"},
+        {"command": "bankroll", "description": "Balance, ROI, and streak"},
+        {"command": "digest", "description": "Full daily summary report"},
+        {"command": "settings", "description": "Notification preferences"},
+        {"command": "help", "description": "All commands and tips"},
+        {"command": "clear", "description": "Reset conversation memory"},
+    ]
+    result = _tg_request(token, "setMyCommands", {"commands": commands}, timeout=10)
+    if result is not None:
+        log.info("Registered %d bot commands with Telegram", len(commands))
+    else:
+        log.warning("Failed to register bot commands")
+
+
+def _edit_message(token: str, chat_id: str, message_id: int, text: str,
+                  reply_markup: dict = None) -> bool:
+    """Edit an existing message (keeps chat clean after button presses)."""
+    params = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    result = _tg_request(token, "editMessageText", params, timeout=10)
+    return result is not None
+
+
 # ---------------------------------------------------------------------------
 # Reuse advisor tools and system prompt from web app
 # ---------------------------------------------------------------------------
@@ -1155,12 +1191,18 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     """
     query_id = callback_query.get("id", "")
     data = callback_query.get("data", "")
+    message_id = callback_query.get("message", {}).get("message_id", 0)
 
-    # Always answer the callback to remove the loading spinner
-    _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id}, timeout=5)
+    # Default: silent answer to remove loading spinner
+    answer_text = ""
+    show_alert = False
 
     if data.startswith("analyze:"):
         match_name = data[len("analyze:"):]
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id,
+            "text": f"Loading {match_name}...",
+        }, timeout=5)
         return f"Analyze {match_name} — full prediction, value assessment, should I bet?"
 
     if data.startswith("place:"):
@@ -1176,22 +1218,47 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
                     "odds": float(odds),
                     "market": "1X2" if selection in ("Home", "Draw", "Away") else "O/U",
                     "date": "",
-                    "stake": 0,  # Will be filled by pipeline
+                    "stake": 0,
                     "placed_at": __import__("datetime").datetime.now().isoformat(),
                 }
                 add_bet(bet_data)
-                return f"\u2705 Bet recorded: {match} {selection} @{odds}. Confirm stake on dashboard."
+                # Show confirmation popup (user must dismiss)
+                _tg_request(token, "answerCallbackQuery", {
+                    "callback_query_id": query_id,
+                    "text": f"\u2705 Bet recorded: {selection} @{odds}",
+                    "show_alert": True,
+                }, timeout=5)
+                # Edit the original message to mark this bet as placed
+                if message_id:
+                    _edit_message(token, chat_id, message_id,
+                                  f"\u2705 <b>Bet placed:</b> {match}\n"
+                                  f"{selection} @{odds}\n\n"
+                                  f"<i>Recorded in journal. Confirm stake on dashboard.</i>")
+                return None  # Already handled
             except Exception as e:
-                return f"\u274c Failed to record bet: {e}"
+                _tg_request(token, "answerCallbackQuery", {
+                    "callback_query_id": query_id,
+                    "text": f"\u274c Failed: {str(e)[:50]}",
+                    "show_alert": True,
+                }, timeout=5)
+                return None
+        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id}, timeout=5)
         return "\u274c Invalid bet data"
 
     if data.startswith("skip:"):
         parts = data[len("skip:"):].split("|")
         match = parts[0] if parts else "?"
         selection = parts[1] if len(parts) > 1 else "?"
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id,
+            "text": f"Skipped {selection}",
+        }, timeout=5)
         return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
 
     if data == "view:all_bets":
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id, "text": "Loading bets..."
+        }, timeout=5)
         # Respond directly with merged bet list from ALL sources (instant)
         try:
             import json as _json
@@ -1249,6 +1316,8 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         except Exception as e:
             return f"Failed to load bets: {e}"
 
+    # Default: answer the callback to remove loading spinner (unrecognized action)
+    _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id}, timeout=5)
     return None
 
 
@@ -1571,6 +1640,9 @@ def run_bot():
 
     # Set ANTHROPIC_API_KEY in environment for the anthropic SDK
     os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    # Register slash commands with Telegram (appears in / menu)
+    _register_commands(token)
 
     # Conversation manager (single user, single session)
     conversation = ConversationManager()
