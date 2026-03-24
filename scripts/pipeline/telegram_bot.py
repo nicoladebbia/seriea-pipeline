@@ -1191,6 +1191,9 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         selection = parts[1] if len(parts) > 1 else "?"
         return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
 
+    if data == "view:all_bets":
+        return "Show me today's best bets — full list with odds, edges, and stakes."
+
     return None
 
 

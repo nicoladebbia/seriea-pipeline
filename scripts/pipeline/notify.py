@@ -1062,9 +1062,9 @@ def notify_value_bets(bets: list[dict]) -> dict:
             {"text": f"\u2705 Place {sel} @{odds:.2f}", "callback_data": cb_place},
             {"text": "\u274c Skip", "callback_data": cb_skip},
         ])
-    # Add a "View All" button
+    # Add a "View All" button (callback, not URL — Telegram rejects localhost URLs)
     keyboard_rows.append([
-        {"text": "\U0001f4ca View Dashboard", "url": "http://localhost:5001/betting"},
+        {"text": "\U0001f4ca View All Bets", "callback_data": "view:all_bets"},
     ])
     reply_markup = {"inline_keyboard": keyboard_rows}
 
