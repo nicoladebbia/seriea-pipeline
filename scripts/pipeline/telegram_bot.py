@@ -1192,7 +1192,38 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
 
     if data == "view:all_bets":
-        return "Show me today's best bets — full list with odds, edges, and stakes."
+        # Respond directly with bet list (instant, no Claude needed)
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _data = _Path(__file__).parent.parent.parent / "data"
+            scan = {}
+            scan_path = _data / "betting" / "edge_scan_latest.json"
+            if scan_path.exists():
+                scan = _json.load(open(scan_path))
+            vb = scan.get("value_bets", [])
+
+            if not vb:
+                # Fallback to unified report
+                report_path = _data / "betting" / "unified_report.json"
+                if report_path.exists():
+                    report = _json.load(open(report_path))
+                    vb = report.get("bets", [])
+
+            if not vb:
+                return "\U0001f4ad No value bets right now — market is efficient today."
+
+            lines = [f"\U0001f3af <b>All Value Bets ({len(vb)})</b>\n"]
+            for i, b in enumerate(vb[:8], 1):
+                match = b.get("match", "?")
+                sel = b.get("selection", "?")
+                odds = b.get("best_odds", b.get("odds", 0))
+                edge = b.get("edge_pct", 0)
+                lines.append(f"{i}. <b>{match}</b>")
+                lines.append(f"   {sel} @{odds:.2f} | edge {edge:+.1f}%\n")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Failed to load bets: {e}"
 
     return None
 
