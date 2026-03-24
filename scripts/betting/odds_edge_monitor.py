@@ -375,6 +375,109 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
     return live_value
 
 
+def scan_arbitrage(odds_data: Dict) -> List[Dict]:
+    """Detect cross-bookmaker arbitrage opportunities.
+
+    Arb exists when sum of best implied probs across all outcomes < 1.0.
+    E.g., Home @2.10 (Pinnacle) + Draw @3.80 (Betfair) + Away @4.50 (1xBet)
+    = 47.6% + 26.3% + 22.2% = 96.1% → 3.9% guaranteed profit.
+    """
+    arbs = []
+    matches = odds_data.get("matches", odds_data)
+    if not isinstance(matches, dict):
+        return []
+
+    for match_key, match_odds in matches.items():
+        h2h = match_odds.get("h2h", {})
+        if not isinstance(h2h, dict):
+            continue
+
+        best_h = h2h.get("best_home", h2h.get("home", 0))
+        best_d = h2h.get("best_draw", h2h.get("draw", 0))
+        best_a = h2h.get("best_away", h2h.get("away", 0))
+
+        if best_h <= 1.0 or best_d <= 1.0 or best_a <= 1.0:
+            continue
+
+        implied_sum = 1.0/best_h + 1.0/best_d + 1.0/best_a
+        if implied_sum < 1.0:
+            profit_pct = (1.0 - implied_sum) * 100
+
+            # Find which bookmaker offers the best for each
+            bm_list = h2h.get("all_bookmakers", [])
+            best_h_bm = best_d_bm = best_a_bm = ""
+            for bm in bm_list:
+                if bm.get("home", 0) == best_h:
+                    best_h_bm = bm.get("bookmaker", "")
+                if bm.get("draw", 0) == best_d:
+                    best_d_bm = bm.get("bookmaker", "")
+                if bm.get("away", 0) == best_a:
+                    best_a_bm = bm.get("bookmaker", "")
+
+            arbs.append({
+                "match": match_key,
+                "profit_pct": round(profit_pct, 2),
+                "implied_sum": round(implied_sum, 4),
+                "home": {"odds": best_h, "bookmaker": best_h_bm},
+                "draw": {"odds": best_d, "bookmaker": best_d_bm},
+                "away": {"odds": best_a, "bookmaker": best_a_bm},
+            })
+
+    return sorted(arbs, key=lambda x: x["profit_pct"], reverse=True)
+
+
+def scan_sharp_consensus(odds_data: Dict) -> List[Dict]:
+    """Detect when sharp bookmakers disagree with each other.
+
+    Tracks Pinnacle vs Betfair vs Matchbook. When they diverge significantly,
+    it may signal an information asymmetry or a pricing error at one sharp book.
+    """
+    SHARP_BOOKS = {"Pinnacle", "Betfair Sportsbook", "Matchbook", "LowVig.ag"}
+    alerts = []
+    matches = odds_data.get("matches", odds_data)
+    if not isinstance(matches, dict):
+        return []
+
+    for match_key, match_odds in matches.items():
+        h2h = match_odds.get("h2h", {})
+        bm_list = h2h.get("all_bookmakers", []) if isinstance(h2h, dict) else h2h if isinstance(h2h, list) else []
+
+        sharp_odds = {}
+        for bm in bm_list:
+            name = bm.get("bookmaker", "")
+            if name in SHARP_BOOKS:
+                sharp_odds[name] = {
+                    "home": bm.get("home", 0),
+                    "draw": bm.get("draw", 0),
+                    "away": bm.get("away", 0),
+                }
+
+        if len(sharp_odds) < 2:
+            continue
+
+        # Check each outcome for divergence between sharps
+        for outcome in ["home", "draw", "away"]:
+            values = [(name, data[outcome]) for name, data in sharp_odds.items() if data[outcome] > 1.0]
+            if len(values) < 2:
+                continue
+
+            odds_vals = [v for _, v in values]
+            spread = max(odds_vals) - min(odds_vals)
+            if spread > 0.20:  # >0.20 odds difference between sharp books
+                highest = max(values, key=lambda x: x[1])
+                lowest = min(values, key=lambda x: x[1])
+                alerts.append({
+                    "match": match_key,
+                    "outcome": outcome,
+                    "spread": round(spread, 3),
+                    "highest": {"bookmaker": highest[0], "odds": highest[1]},
+                    "lowest": {"bookmaker": lowest[0], "odds": lowest[1]},
+                    "all_sharps": {name: data[outcome] for name, data in sharp_odds.items()},
+                })
+
+    return sorted(alerts, key=lambda x: x["spread"], reverse=True)
+
+
 def run_scan(fetch_fresh: bool = True) -> Dict:
     """Run a single edge scan cycle.
 
@@ -411,6 +514,17 @@ def run_scan(fetch_fresh: bool = True) -> Dict:
     live_value = scan_live_value(predictions)
     if live_value:
         scan_result["live_value"] = live_value
+
+    # Scan for arbitrage opportunities
+    arbs = scan_arbitrage(odds_data)
+    if arbs:
+        scan_result["arbitrage"] = arbs
+        log.info("Found %d arbitrage opportunities", len(arbs))
+
+    # Scan for sharp book disagreements
+    sharp_alerts = scan_sharp_consensus(odds_data)
+    if sharp_alerts:
+        scan_result["sharp_divergence"] = sharp_alerts
 
     # Load state and check for NEW alerts
     state = _load_state()
