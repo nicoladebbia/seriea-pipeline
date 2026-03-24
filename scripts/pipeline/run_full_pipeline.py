@@ -253,8 +253,21 @@ def banner(text: str):
     print("=" * width)
 
 
+import time as _time
+_step_times = {}
+
 def step(num: int, total: int, name: str):
-    """Print step indicator."""
+    """Print step indicator with timing of previous step."""
+    # Log duration of previous step
+    if _step_times:
+        prev_name, prev_start = _step_times.get("_last", ("", 0))
+        if prev_start > 0:
+            elapsed = _time.time() - prev_start
+            if elapsed > 30:
+                log.info("Step '%s' took %.1fs (SLOW)", prev_name, elapsed)
+            elif elapsed > 5:
+                log.info("Step '%s' took %.1fs", prev_name, elapsed)
+    _step_times["_last"] = (name, _time.time())
     print(f"\n[{num}/{total}] {name}...")
     log.info(f"Starting step {num}/{total}: {name}")
 

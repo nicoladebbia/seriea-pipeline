@@ -9,3 +9,6 @@ build/
 config/api_keys.json
 *.log
 .DS_Store
+
+# CatBoost training artifacts
+catboost_info/
