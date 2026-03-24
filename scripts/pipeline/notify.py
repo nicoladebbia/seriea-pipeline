@@ -568,7 +568,8 @@ def _telegram_configured() -> bool:
 
 def _notify_telegram(message: str, title: str, level: str = "info",
                      priority: str = PRIORITY_NORMAL,
-                     html: bool = False) -> bool:
+                     html: bool = False,
+                     reply_markup: dict = None) -> bool:
     """Send a Telegram notification. Returns True on success, False otherwise.
 
     Args:
@@ -578,6 +579,7 @@ def _notify_telegram(message: str, title: str, level: str = "info",
         priority: urgent/normal/low — controls silent delivery.
         html: If True, message is already HTML-formatted (from TgMsg builder).
               If False, wraps in HTML with escaped content.
+        reply_markup: Optional inline keyboard dict for quick-action buttons.
 
     Silently skips if TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID are not set.
     """
@@ -606,6 +608,10 @@ def _notify_telegram(message: str, title: str, level: str = "info",
     # Low-priority notifications are sent silently (no sound/vibration)
     if priority == PRIORITY_LOW:
         payload_dict["disable_notification"] = True
+
+    # Inline keyboard buttons (quick-action buttons)
+    if reply_markup:
+        payload_dict["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else reply_markup
 
     payload = json.dumps(payload_dict).encode("utf-8")
 
@@ -654,7 +660,7 @@ def _notify_telegram(message: str, title: str, level: str = "info",
 
 def notify(message: str, title: str = "SerieAI", level: str = "info",
            category: str = "system", priority: str = "",
-           tg_html: str = "") -> dict:
+           tg_html: str = "", tg_reply_markup: dict = None) -> dict:
     """Send notification via configured channels, respecting category preferences.
 
     Args:
@@ -665,6 +671,8 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
         priority: "urgent", "normal", or "low". Auto-derived if empty.
         tg_html: If provided, sends this as rich HTML to Telegram instead of
                  plain-text message. Allows different formatting per channel.
+        tg_reply_markup: Optional Telegram inline keyboard markup dict for
+                         quick-action buttons (e.g., "Place Bet" / "Skip").
 
     Returns:
         Dict with channel results, e.g. {"macos": True, "telegram": True}.
@@ -686,10 +694,12 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
     if _should_send("telegram", category):
         if tg_html:
             results["telegram"] = _notify_telegram(
-                tg_html, title, level, priority=priority, html=True)
+                tg_html, title, level, priority=priority, html=True,
+                reply_markup=tg_reply_markup)
         else:
             results["telegram"] = _notify_telegram(
-                message, title, level, priority=priority)
+                message, title, level, priority=priority,
+                reply_markup=tg_reply_markup)
     else:
         results["telegram"] = False
 
@@ -1037,7 +1047,26 @@ def notify_value_bets(bets: list[dict]) -> dict:
 
     # CTA
     tg.blank()
-    tg.raw("<i>Review on dashboard \u2192 Betting tab</i>")
+    tg.raw("<i>Tap below to act:</i>")
+
+    # Build inline keyboard with quick-action buttons per bet
+    keyboard_rows = []
+    for b in sorted_bets[:3]:
+        match_short = b.get("match", "?")[:30]
+        sel = b.get("selection", "?")[:10]
+        odds = b.get("best_odds", 0)
+        # Callback data: 64-byte limit
+        cb_place = f"place:{match_short}|{sel}|{odds}"[:64]
+        cb_skip = f"skip:{match_short}|{sel}"[:64]
+        keyboard_rows.append([
+            {"text": f"\u2705 Place {sel} @{odds:.2f}", "callback_data": cb_place},
+            {"text": "\u274c Skip", "callback_data": cb_skip},
+        ])
+    # Add a "View All" button
+    keyboard_rows.append([
+        {"text": "\U0001f4ca View Dashboard", "url": "http://localhost:5001/betting"},
+    ])
+    reply_markup = {"inline_keyboard": keyboard_rows}
 
     result = notify(
         message=mac_msg,
@@ -1045,6 +1074,7 @@ def notify_value_bets(bets: list[dict]) -> dict:
         level="info",
         category="betting",
         tg_html=tg.build(),
+        tg_reply_markup=reply_markup,
     )
 
     # Save dedup marker

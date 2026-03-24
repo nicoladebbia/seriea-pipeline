@@ -1161,8 +1161,35 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
 
     if data.startswith("analyze:"):
         match_name = data[len("analyze:"):]
-        # Feed it to Claude as if the user asked
         return f"Analyze {match_name} — full prediction, value assessment, should I bet?"
+
+    if data.startswith("place:"):
+        # Quick-place bet from notification button
+        parts = data[len("place:"):].split("|")
+        if len(parts) >= 3:
+            match, selection, odds = parts[0], parts[1], parts[2]
+            try:
+                from scripts.betting.bet_journal import add_bet
+                bet_data = {
+                    "match": match,
+                    "selection": selection,
+                    "odds": float(odds),
+                    "market": "1X2" if selection in ("Home", "Draw", "Away") else "O/U",
+                    "date": "",
+                    "stake": 0,  # Will be filled by pipeline
+                    "placed_at": __import__("datetime").datetime.now().isoformat(),
+                }
+                add_bet(bet_data)
+                return f"\u2705 Bet recorded: {match} {selection} @{odds}. Confirm stake on dashboard."
+            except Exception as e:
+                return f"\u274c Failed to record bet: {e}"
+        return "\u274c Invalid bet data"
+
+    if data.startswith("skip:"):
+        parts = data[len("skip:"):].split("|")
+        match = parts[0] if parts else "?"
+        selection = parts[1] if len(parts) > 1 else "?"
+        return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
 
     return None
 

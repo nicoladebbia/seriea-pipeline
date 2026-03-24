@@ -6424,6 +6424,94 @@ def api_notifications_digest():
 # Medium-Impact Betting APIs (Mar 24 2026)
 # ---------------------------------------------------------------------------
 
+@app.route("/api/best-bets")
+def api_best_bets():
+    """Top bets right now — the 5-second answer to 'what should I bet?'
+
+    Returns the best value bets ranked by confidence × edge, with
+    clear action: match, selection, odds, bookmaker, stake, edge.
+    Designed for a quick-glance widget on the dashboard.
+    """
+    try:
+        # Load latest bets from unified report
+        report = _load_json(BETTING_DIR / "unified_report.json")
+        bets = report.get("bets", [])
+
+        # Also check edge scan for newer discoveries
+        scan = _load_json(BETTING_DIR / "edge_scan_latest.json")
+        scan_bets = scan.get("value_bets", []) if scan else []
+
+        # Build a unified best-bets list
+        best = []
+        seen = set()
+
+        # Score each bet: confidence (0-100) × edge (%)
+        for b in bets:
+            match = b.get("match", "")
+            sel = b.get("selection", "")
+            key = f"{match}_{sel}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            edge = b.get("edge_pct", 0)
+            odds = b.get("best_odds", b.get("odds", 0))
+            conf = b.get("confidence_tier", "")
+            conf_score = {"ELITE": 90, "STRONG": 70, "STANDARD": 50}.get(conf, 40)
+            score = conf_score * (1 + edge / 100)
+
+            best.append({
+                "match": match,
+                "date": b.get("date", ""),
+                "selection": sel,
+                "market": b.get("market", ""),
+                "odds": round(odds, 2),
+                "bookmaker": b.get("best_bookmaker", b.get("bookmaker", "")),
+                "edge_pct": round(edge, 1),
+                "model_prob": round(b.get("model_prob", 0) * 100, 1),
+                "stake": round(b.get("stake_amount", b.get("stake", 0)), 2),
+                "confidence": conf,
+                "score": round(score, 1),
+                "source": "pipeline",
+            })
+
+        # Add edge scan discoveries not already in pipeline bets
+        for b in scan_bets:
+            match = b.get("match", "")
+            sel = b.get("selection", "")
+            key = f"{match}_{sel}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            best.append({
+                "match": match,
+                "selection": sel,
+                "market": b.get("market", ""),
+                "odds": round(b.get("best_odds", 0), 2),
+                "bookmaker": b.get("best_bookmaker", ""),
+                "edge_pct": round(b.get("edge_pct", 0), 1),
+                "model_prob": round(b.get("model_prob", 0) * 100, 1),
+                "stake": 0,  # Not sized yet
+                "confidence": "",
+                "score": round(b.get("edge_pct", 0) * 10, 1),
+                "source": "edge_scan",
+            })
+
+        # Sort by score (best first) and return top 5
+        best.sort(key=lambda x: x["score"], reverse=True)
+
+        return jsonify({
+            "best_bets": best[:5],
+            "total_value_bets": len(best),
+            "last_scan": scan.get("scan_time") if scan else None,
+            "summary": f"{len(best)} value bet{'s' if len(best) != 1 else ''} available"
+                       if best else "No value bets right now — market is efficient",
+        })
+    except Exception as e:
+        return jsonify({"best_bets": [], "error": str(e)}), 200
+
+
 @app.route("/api/odds-timeline/<match_key>")
 def api_odds_timeline(match_key):
     """Odds movement timeline for a specific match.
