@@ -860,48 +860,62 @@ def _handle_start() -> str:
 
 
 def _handle_bets() -> str:
-    """Handle /bets — value bets with structured formatting."""
-    from scripts.pipeline.notify import TgMsg, _html_escape, _edge_label
+    """Handle /bets — value bets with clear formatting."""
+    from scripts.pipeline.notify import TgMsg, _html_escape
+
+    MKT_NAMES = {
+        "h2h": "Match Result", "1X2": "Match Result",
+        "totals": "Goals", "O/U": "Goals",
+        "double_chance": "Double Chance", "DC": "Double Chance",
+        "spreads": "Handicap", "AH": "Handicap",
+        "btts": "Both Teams Score", "draw_no_bet": "Draw No Bet",
+    }
 
     try:
         result = json.loads(_tool_get_value_bets({}))
         bets = result.get("bets", [])
         if not bets:
-            return "No value bets in the current slip."
+            return "\U0001f4ad No value bets right now. Market is efficient today."
 
         tg = TgMsg()
-        tg.raw(f"<b>Value Bets</b> ({len(bets)} picks)")
+        tg.raw(f"\U0001f4b0 <b>Value Bets</b> ({len(bets)} picks)")
         tg.blank()
 
         for b in bets:
             edge = b.get("edge_pct", 0)
-            tg.raw(f"<b>{_html_escape(b.get('match', '?'))}</b>")
-            tg.raw(f"  {_html_escape(b.get('market', '?'))}: "
-                   f"{_html_escape(b.get('selection', '?'))} "
-                   f"@ <b>{b.get('odds', '?')}</b>  "
-                   f"{_html_escape(_edge_label(edge))} ({edge:.1f}%)")
+            market_raw = b.get("market", "?")
+            market = MKT_NAMES.get(market_raw, market_raw)
+            stake = b.get("stake", b.get("stake_amount", 0))
+            odds = b.get("odds", b.get("best_odds", 0))
+            bm = b.get("bookmaker", b.get("best_bookmaker", ""))
+
+            tg.raw(f"\u26bd <b>{_html_escape(b.get('match', '?'))}</b>")
+            tg.raw(f"   {_html_escape(market)}: <b>{_html_escape(b.get('selection', '?'))}</b>")
+            tg.raw(f"   Odds: <b>{odds}</b>"
+                   + (f" ({_html_escape(bm)})" if bm else "")
+                   + f"  |  Edge: <b>{edge:+.1f}%</b>")
+            if stake:
+                tg.raw(f"   Stake: \u20ac{stake:.2f}")
+            tg.blank()
 
         # Handicap bets
         hcap = result.get("handicap_bets", [])
         if hcap:
-            tg.blank()
-            tg.raw(f"<b>Handicap</b> ({len(hcap)})")
+            tg.raw(f"<b>Handicap Bets</b> ({len(hcap)})")
             for b in hcap[:4]:
-                tg.raw(f"  {_html_escape(b.get('match', '?'))}: "
-                       f"{_html_escape(b.get('bet', '?'))} "
-                       f"@ {b.get('odds', '?')}")
+                tg.raw(f"   {_html_escape(b.get('match', '?'))}: "
+                       f"{_html_escape(b.get('bet', '?'))} @{b.get('odds', '?')}")
+            tg.blank()
 
         # O/U bets
         ou = result.get("over_under_bets", [])
         if ou:
-            tg.blank()
-            tg.raw(f"<b>Over/Under</b> ({len(ou)})")
+            tg.raw(f"<b>Goals Bets</b> ({len(ou)})")
             for b in ou[:4]:
-                tg.raw(f"  {_html_escape(b.get('match', '?'))}: "
-                       f"{_html_escape(b.get('bet', '?'))} "
-                       f"@ {b.get('odds', '?')}")
+                tg.raw(f"   {_html_escape(b.get('match', '?'))}: "
+                       f"{_html_escape(b.get('bet', '?'))} @{b.get('odds', '?')}")
+            tg.blank()
 
-        tg.blank()
         tg.italic("Ask me about any match for deeper analysis.")
         return tg.build()
     except Exception as e:
@@ -910,7 +924,7 @@ def _handle_bets() -> str:
 
 
 def _handle_bankroll() -> str:
-    """Handle /bankroll — visual bankroll status."""
+    """Handle /bankroll — clear bankroll status."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
     try:
@@ -922,37 +936,41 @@ def _handle_bankroll() -> str:
         streak = result.get("current_streak", 0)
 
         tg = TgMsg()
-        tg.raw("<b>Bankroll Status</b>")
+        tg.raw("\U0001f4b3 <b>Bankroll</b>")
         tg.blank()
 
-        tg.raw(f"Balance: <b>\u20ac{current:,.2f}</b>" if isinstance(current, (int, float)) else f"Balance: {current}")
-        tg.stat_row(
-            ("ROI", f"{roi:+.1f}%"),
-            ("Peak", f"\u20ac{peak:,.0f}" if isinstance(peak, (int, float)) else str(peak)),
-        )
+        tg.raw(f"   Balance: <b>\u20ac{current:,.2f}</b>" if isinstance(current, (int, float)) else f"   Balance: {current}")
+        tg.raw(f"   Started: \u20ac{initial:,.0f}" if isinstance(initial, (int, float)) else "")
+        tg.raw(f"   Return: <b>{roi:+.1f}%</b>" if roi else "")
+        tg.raw(f"   Peak: \u20ac{peak:,.0f}" if isinstance(peak, (int, float)) else "")
+        tg.blank()
 
         if streak:
             if streak > 0:
-                tg.raw(f"\U0001f525 {streak}-bet winning streak")
+                tg.raw(f"   \U0001f525 {streak}-bet winning streak")
             else:
-                tg.raw(f"\u2744\ufe0f {abs(streak)}-bet losing streak")
+                tg.raw(f"   \u2744\ufe0f {abs(streak)}-bet losing streak")
 
         # Drawdown
         if isinstance(current, (int, float)) and isinstance(peak, (int, float)) and peak > 0:
             dd = (peak - current) / peak * 100
             if dd > 2:
-                tg.raw(f"\u26a0\ufe0f {dd:.0f}% off peak")
+                tg.raw(f"   \u26a0\ufe0f {dd:.0f}% below peak balance")
 
         # Market breakdown
         mkt = result.get("market_breakdown", {})
         if mkt:
             tg.blank()
-            tg.raw("<b>By Market:</b>")
+            tg.raw("<b>Performance by Market:</b>")
             for name, stats in mkt.items():
                 wr = stats.get("win_rate", 0)
+                n = stats.get("total", stats.get("n_bets", 0))
                 profit = stats.get("profit", 0)
                 sign = "+" if profit >= 0 else ""
-                tg.raw(f"  {_html_escape(name)}: {wr:.0f}% WR, {sign}\u20ac{profit:.2f}")
+                emoji = "\u2705" if profit >= 0 else "\u274c"
+                tg.raw(f"   {emoji} {_html_escape(name)}: "
+                       f"{wr:.0f}% win rate ({n} bets), "
+                       f"{sign}\u20ac{profit:.2f}")
 
         return tg.build()
     except Exception as e:
@@ -964,29 +982,53 @@ def _handle_live() -> str:
     """Handle /live — live scores with bet status."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
+    STATUS_NAMES = {
+        "first_half": "1st Half",
+        "second_half": "2nd Half",
+        "half_time": "Half Time",
+        "completed": "Full Time",
+        "not_started": "Not Started",
+        "pre_match": "Pre-Match",
+        "in_play": "In Play",
+    }
+
     try:
         result = json.loads(_tool_get_live_matches({}))
         matches = result.get("matches", [])
         if not matches:
-            return result.get("status", "No live matches right now.")
+            return "\u26bd No live matches right now. Check /today for upcoming."
 
         tg = TgMsg()
-        tg.raw(f"<b>Live Matches</b>  {_html_escape(result.get('date', 'today'))}")
+        tg.raw(f"\U0001f534 <b>Live Matches</b>")
         tg.blank()
 
         for m in matches:
-            status = m.get("status", "?")
+            status_raw = m.get("status", "?")
+            status = STATUS_NAMES.get(status_raw, status_raw)
             score = m.get("score", "?")
             minute = m.get("minute", "")
-            min_str = f"  {minute}'" if minute else ""
-            tg.raw(f"<b>{_html_escape(m.get('match', '?'))}</b>  "
-                   f"<code>{_html_escape(str(score))}</code>"
-                   f"  [{_html_escape(status)}{min_str}]")
+            min_str = f" ({minute}')" if minute else ""
 
-            for b in m.get("bets", []):
-                icon = "\u2705" if b.get("status") == "winning" else "\u274c" if b.get("status") == "losing" else "\u23f3"
-                tg.raw(f"  {icon} {_html_escape(b.get('selection', '?'))} "
-                       f"@ {b.get('odds', '?')}")
+            tg.raw(f"\u26bd <b>{_html_escape(m.get('match', '?'))}</b>")
+            tg.raw(f"   Score: <b>{_html_escape(str(score))}</b>  |  "
+                   f"{_html_escape(status)}{min_str}")
+
+            bets = m.get("bets", [])
+            if bets:
+                tg.raw("   <b>Your bets:</b>")
+                for b in bets:
+                    if b.get("status") == "winning":
+                        icon = "\u2705"
+                        label = "Winning"
+                    elif b.get("status") == "losing":
+                        icon = "\u274c"
+                        label = "Losing"
+                    else:
+                        icon = "\u23f3"
+                        label = "Pending"
+                    tg.raw(f"   {icon} {_html_escape(b.get('selection', '?'))} "
+                           f"@{b.get('odds', '?')} — {label}")
+            tg.blank()
 
         return tg.build()
     except Exception as e:
@@ -1101,13 +1143,20 @@ def _handle_today() -> str:
     """Handle /today — today's matches with predictions."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
+    CONF_EMOJI = {
+        "VERY HIGH": "\U0001f7e2",  # green circle
+        "HIGH": "\U0001f7e1",       # yellow circle
+        "MEDIUM-HIGH": "\U0001f7e0", # orange circle
+        "MEDIUM": "\u26aa",          # white circle
+    }
+
     try:
         from config.settings import DATA_DIR
         today = datetime.now().strftime("%Y-%m-%d")
 
         preds_path = DATA_DIR / "upcoming" / "predictions.json"
         if not preds_path.exists():
-            return "No predictions available."
+            return "No predictions available. Run the pipeline first."
 
         with open(preds_path) as f:
             preds = json.load(f)
@@ -1116,31 +1165,46 @@ def _handle_today() -> str:
         today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
 
         if not today_matches:
-            # Show next matchday
             future = sorted([p for p in pred_list if p.get("date", "") > today],
                            key=lambda p: p.get("date", ""))
             if future:
                 next_date = future[0].get("date", "?")
                 next_matches = [p for p in pred_list if p.get("date", "").startswith(next_date)]
                 tg = TgMsg()
-                tg.raw(f"No matches today. Next card: <b>{_html_escape(next_date)}</b>")
+                tg.raw(f"\U0001f4c5 No matches today.")
+                tg.raw(f"Next matchday: <b>{_html_escape(next_date)}</b> ({len(next_matches)} matches)")
                 tg.blank()
-                for m in next_matches[:6]:
-                    tg.raw(f"  {_html_escape(m.get('match', '?'))}")
+                for m in next_matches[:8]:
+                    tg.raw(f"   \u26bd {_html_escape(m.get('match', '?'))}")
                 return tg.build()
-            return "No upcoming matches found."
+            return "\U0001f4c5 No upcoming matches found."
 
         tg = TgMsg()
-        tg.raw(f"<b>Today's Matches</b>  ({len(today_matches)})")
+        tg.raw(f"\U0001f4c5 <b>Today's Matches</b> ({len(today_matches)})")
         tg.blank()
 
         for m in today_matches:
             conf = m.get("confidence_level", "")
             prediction = m.get("predicted_result", "")
-            pred_tag = f"  \u2192 {_html_escape(prediction)}" if prediction else ""
-            conf_tag = f"  [{_html_escape(conf)}]" if conf else ""
-            tg.raw(f"<b>{_html_escape(m.get('match', '?'))}</b>{conf_tag}{pred_tag}")
+            kickoff = m.get("time", "")
 
+            conf_dot = CONF_EMOJI.get(conf, "\u26aa")
+            time_str = f"  {_html_escape(kickoff)}" if kickoff else ""
+
+            tg.raw(f"{conf_dot} <b>{_html_escape(m.get('match', '?'))}</b>{time_str}")
+
+            # Show prediction + probabilities
+            probs = m.get("probabilities", m.get("betting_probabilities", {}))
+            if isinstance(probs, dict) and probs:
+                h = probs.get("home", 0)
+                d = probs.get("draw", 0)
+                a = probs.get("away", 0)
+                tg.raw(f"   Home {h:.0%} | Draw {d:.0%} | Away {a:.0%}")
+                if prediction:
+                    tg.raw(f"   Prediction: <b>{_html_escape(prediction)}</b>")
+            tg.blank()
+
+        tg.italic("Tap /match to analyze any match in detail.")
         return tg.build()
     except Exception as e:
         log.warning("/today failed: %s", e)
