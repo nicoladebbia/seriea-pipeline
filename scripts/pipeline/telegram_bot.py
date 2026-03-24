@@ -386,6 +386,7 @@ def _register_commands(token: str):
         {"command": "parlays", "description": "Top parlay combinations"},
         {"command": "bankroll", "description": "Balance, ROI, and streak"},
         {"command": "digest", "description": "Full daily summary report"},
+        {"command": "summary", "description": "Weekly bet history by week"},
         {"command": "settings", "description": "Notification preferences"},
         {"command": "help", "description": "All commands and tips"},
         {"command": "clear", "description": "Reset conversation memory"},
@@ -1139,6 +1140,158 @@ def _handle_parlays() -> str:
         return f"Failed to load parlays: {e}"
 
 
+def _get_weekly_bets() -> dict:
+    """Load settled bets grouped by week."""
+    from collections import defaultdict
+    from config.settings import DATA_DIR
+
+    journal_path = DATA_DIR / "betting" / "bet_journal.json"
+    if not journal_path.exists():
+        return {}
+
+    with open(journal_path) as f:
+        journal = json.load(f)
+
+    by_week = defaultdict(list)
+    for bet_id, bet in journal.get("bets", {}).items():
+        if bet.get("status") not in ("won", "lost", "push"):
+            continue
+        d = bet.get("date", "")
+        if d:
+            try:
+                dt = datetime.strptime(d, "%Y-%m-%d")
+                week_key = f"{dt.year}-W{dt.isocalendar()[1]:02d}"
+                by_week[week_key].append(bet)
+            except ValueError:
+                pass
+    return dict(by_week)
+
+
+def _handle_summary_menu(token: str, chat_id: str) -> str | None:
+    """Show week selector with inline keyboard buttons."""
+    from scripts.pipeline.notify import TgMsg, _html_escape
+
+    by_week = _get_weekly_bets()
+    if not by_week:
+        return "No settled bets yet."
+
+    tg = TgMsg()
+    tg.raw("\U0001f4c5 <b>Weekly History</b>")
+    tg.raw("Tap a week to see all bets:")
+    tg.blank()
+
+    # Build summary + buttons
+    rows = []
+    for week_key in sorted(by_week.keys(), reverse=True):
+        bets = by_week[week_key]
+        won = sum(1 for b in bets if b["status"] == "won")
+        lost = sum(1 for b in bets if b["status"] == "lost")
+        profit = sum(
+            b.get("profit", 0) if b["status"] == "won" else -(b.get("stake", 0))
+            for b in bets
+        )
+        sign = "+" if profit >= 0 else ""
+        emoji = "\u2705" if profit >= 0 else "\u274c"
+
+        # Week label: "W12 (Mar 16-22)"
+        dates = sorted(b.get("date", "") for b in bets if b.get("date"))
+        if dates:
+            first = datetime.strptime(dates[0], "%Y-%m-%d")
+            last = datetime.strptime(dates[-1], "%Y-%m-%d")
+            date_range = f"{first.strftime('%b %d')}-{last.strftime('%d')}"
+        else:
+            date_range = ""
+
+        week_num = week_key.split("-W")[1]
+        label = f"{emoji} Week {week_num} ({date_range}): {won}W-{lost}L {sign}\u20ac{profit:.0f}"
+
+        rows.append([_button(label, f"week:{week_key}")])
+
+    keyboard = _inline_keyboard(rows)
+    _tg_send_message(token, chat_id, tg.build(), reply_markup=keyboard)
+    return None  # Already sent
+
+
+def _handle_week_detail(week_key: str) -> str:
+    """Show all bets for a specific week."""
+    from scripts.pipeline.notify import TgMsg, _html_escape
+
+    MKT_NAMES = {
+        "h2h": "Match Result", "1X2": "Match Result",
+        "totals": "Goals", "O/U": "Goals",
+        "double_chance": "Double Chance", "DC": "Double Chance",
+    }
+
+    by_week = _get_weekly_bets()
+    bets = by_week.get(week_key, [])
+    if not bets:
+        return f"No bets found for {week_key}."
+
+    # Sort by date
+    bets.sort(key=lambda b: b.get("date", ""))
+
+    won = sum(1 for b in bets if b["status"] == "won")
+    lost = sum(1 for b in bets if b["status"] == "lost")
+    push = sum(1 for b in bets if b["status"] == "push")
+    total_staked = sum(b.get("stake", 0) for b in bets)
+    total_profit = sum(
+        b.get("profit", 0) if b["status"] == "won" else -(b.get("stake", 0))
+        for b in bets
+    )
+    roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+
+    week_num = week_key.split("-W")[1]
+    dates = sorted(b.get("date", "") for b in bets if b.get("date"))
+    date_range = ""
+    if dates:
+        first = datetime.strptime(dates[0], "%Y-%m-%d")
+        last = datetime.strptime(dates[-1], "%Y-%m-%d")
+        date_range = f" ({first.strftime('%b %d')} - {last.strftime('%b %d')})"
+
+    tg = TgMsg()
+    tg.raw(f"\U0001f4ca <b>Week {week_num}{date_range}</b>")
+    tg.raw(f"   {won}W - {lost}L" + (f" - {push}P" if push else ""))
+    tg.blank()
+
+    for b in bets:
+        match = b.get("match", "?")
+        sel = b.get("selection", "?")
+        market_raw = b.get("market", "")
+        market = MKT_NAMES.get(market_raw, market_raw)
+        odds = b.get("odds", 0)
+        stake = b.get("stake", 0)
+        status = b.get("status", "")
+        score = b.get("result_score", "")
+        bet_date = b.get("date", "")
+
+        if status == "won":
+            profit = b.get("profit", 0)
+            icon = "\u2705"
+            result_str = f"<b>+\u20ac{profit:.2f}</b>"
+        elif status == "lost":
+            icon = "\u274c"
+            result_str = f"-\u20ac{stake:.2f}"
+        else:
+            icon = "\u2796"
+            result_str = "Push"
+
+        score_str = f"  ({_html_escape(score)})" if score else ""
+        tg.raw(f"{icon} <b>{_html_escape(match)}</b>{score_str}")
+        tg.raw(f"   {_html_escape(bet_date)}")
+        tg.raw(f"   {_html_escape(market)}: {_html_escape(sel)} @{odds:.2f}")
+        tg.raw(f"   {result_str}")
+        tg.blank()
+
+    tg.raw("\u2500" * 20)
+    sign = "+" if total_profit >= 0 else ""
+    emoji = "\U0001f4b0" if total_profit >= 0 else "\U0001f4b8"
+    tg.raw(f"{emoji} <b>Week P&amp;L: {sign}\u20ac{total_profit:.2f}</b> "
+           f"(ROI: {roi:+.1f}%)")
+    tg.raw(f"   Staked: \u20ac{total_staked:.2f} across {len(bets)} bets")
+
+    return tg.build()
+
+
 def _handle_today() -> str:
     """Handle /today — today's matches with predictions."""
     from scripts.pipeline.notify import TgMsg, _html_escape
@@ -1364,6 +1517,14 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             "text": f"Skipped {selection}",
         }, timeout=5)
         return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
+
+    if data.startswith("week:"):
+        week_key = data[len("week:"):]
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id,
+            "text": f"Loading week {week_key.split('-W')[1]}...",
+        }, timeout=5)
+        return _handle_week_detail(week_key)
 
     if data == "view:all_bets":
         _tg_request(token, "answerCallbackQuery", {
@@ -1870,12 +2031,9 @@ def run_bot():
                     response_text = _handle_digest()
                 elif cmd == "/summary":
                     _tg_send_typing(token, chat_id)
-                    try:
-                        from scripts.pipeline.notify import notify_matchweek_summary
-                        result = notify_matchweek_summary()
-                        response_text = "Matchweek summary sent." if result else "No bets to summarize this week."
-                    except Exception as e:
-                        response_text = f"Failed: {e}"
+                    response_text = _handle_summary_menu(token, chat_id)
+                    if response_text is None:
+                        continue  # Already sent via inline keyboard
                 elif cmd == "/help":
                     response_text = _handle_help()
                 elif cmd == "/clear":
