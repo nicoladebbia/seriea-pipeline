@@ -998,6 +998,38 @@ def _handle_parlays() -> str:
     """Handle /parlays — today's top parlay picks."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
+    # Human-readable category names
+    CAT_NAMES = {
+        "banker_combos": "\U0001f3e6 Safe Combo",
+        "draw_specials": "\U0001f3af Draw Parlay",
+        "safe_doubles": "\U0001f91d Safe Double",
+        "value_trebles": "\U0001f4b0 Value Treble",
+        "sharp_specials": "\U0001f9e0 Sharp Pick",
+        "long_shots": "\U0001f680 Long Shot",
+        "same_game": "\u26bd Same Game",
+    }
+
+    # Human-readable market names
+    MKT_NAMES = {
+        "double_chance": "Double Chance",
+        "btts": "Both Teams Score",
+        "draw_no_bet": "Draw No Bet",
+        "h2h": "Match Result",
+        "totals": "Goals",
+        "spreads": "Handicap",
+    }
+
+    # Translate internal "why" reasons to clear language
+    def _humanize_why(reasons: list) -> str:
+        result = []
+        for r in reasons[:2]:
+            r = r.replace("DC anchor", "Double Chance anchor")
+            r = r.replace("hist WR", "historical win rate")
+            r = r.replace("high-prob legs", "high-probability legs")
+            r = r.replace(">70%", "over 70% each")
+            result.append(r)
+        return " | ".join(result)
+
     try:
         from config.settings import DATA_DIR
         report_path = DATA_DIR / "betting" / "parlay_report.json"
@@ -1012,36 +1044,50 @@ def _handle_parlays() -> str:
             return "No top picks selected. Check the dashboard for all parlays."
 
         tg = TgMsg()
-        tg.raw(f"<b>Top Parlay Picks</b>  ({report.get('total_parlays', 0)} total)")
+        tg.raw(f"\U0001f3af <b>Top Parlay Picks</b>")
         tg.blank()
 
-        for pick in top_picks[:3]:
+        rank_emojis = ["\U0001f947", "\U0001f948", "\U0001f949"]
+        for idx, pick in enumerate(top_picks[:3]):
             p = pick.get("parlay", {})
-            cat = pick.get("category", "").replace("_", " ").title()
-            quality = p.get("parlay_quality", 0)
+            cat_raw = pick.get("category", "")
+            cat_name = CAT_NAMES.get(cat_raw, cat_raw.replace("_", " ").title())
             combined = p.get("combined_odds", 0)
             hp = p.get("hit_probability", {})
             hit_pct = hp.get("median", hp.get("copula_adjusted", 0))
             if hit_pct <= 1:
                 hit_pct *= 100
             stake = p.get("stake", 0)
+            n_legs = p.get("n_legs", len(p.get("legs", [])))
 
-            rank_emoji = ["\U0001f947", "\U0001f948", "\U0001f949"][pick.get("rank", 1) - 1] if pick.get("rank", 1) <= 3 else ""
-            tg.raw(f"{rank_emoji} <b>{_html_escape(cat)}</b>  <i>q={quality:.0f}</i>")
+            rank_emoji = rank_emojis[idx] if idx < 3 else ""
+            tg.raw(f"{rank_emoji} <b>{_html_escape(cat_name)}</b>")
+            tg.raw(f"   Combined odds: <b>{combined:.2f}</b>  |  {n_legs} legs")
+            tg.blank()
 
             for leg in p.get("legs", []):
                 mkt = leg.get("market", "")
-                mkt_tag = {"double_chance": "DC", "btts": "BTTS", "draw_no_bet": "DNB"}.get(mkt, "")
-                match = leg.get("match", "?").replace(" vs ", " \u2013 ")
-                tg.raw(f"  \u2022 {_html_escape(match)} {_html_escape(mkt_tag)} "
-                       f"<b>{_html_escape(leg.get('selection', '?'))}</b> "
-                       f"@{leg.get('odds', 0):.2f}")
+                mkt_name = MKT_NAMES.get(mkt, mkt.replace("_", " ").title())
+                match = leg.get("match", "?")
+                sel = leg.get("selection", "?")
+                odds = leg.get("odds", 0)
+                tg.raw(f"   \u2022 {_html_escape(match)}")
+                tg.raw(f"     {_html_escape(mkt_name)}: <b>{_html_escape(sel)}</b> @{odds:.2f}")
 
-            tg.raw(f"  {combined:.2f}x  |  {hit_pct:.0f}% hit  |  \u20ac{stake:.0f}")
+            tg.blank()
+            tg.raw(f"   \U0001f4b5 Stake: <b>\u20ac{stake:.2f}</b>  |  "
+                   f"\U0001f3b2 Hit chance: <b>{hit_pct:.0f}%</b>")
+
+            if stake > 0 and combined > 1:
+                potential_win = stake * combined - stake
+                tg.raw(f"   \U0001f4b0 Win: <b>\u20ac{potential_win:.2f}</b>  |  "
+                       f"Lose: \u20ac{stake:.2f}")
 
             why = pick.get("why", [])
             if why:
-                tg.raw(f"  <i>{_html_escape(why[0])}</i>")
+                tg.raw(f"   <i>\U0001f4a1 {_html_escape(_humanize_why(why))}</i>")
+            tg.blank()
+            tg.raw("\u2500" * 20)
             tg.blank()
 
         tg.italic("Ask me about any pick for deeper analysis.")
