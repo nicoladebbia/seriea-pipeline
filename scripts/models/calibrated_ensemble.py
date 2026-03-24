@@ -173,7 +173,7 @@ def calibrated_ensemble(df, features, test_season):
                 # Also compute log loss for calibration quality
                 try:
                     ll = log_loss(pd.Series(y_val).map(label_map).values, adj, labels=[0, 1, 2])
-                except:
+                except (ValueError, TypeError):
                     ll = 1.5
 
                 # Optimize for accuracy first, break ties with log loss

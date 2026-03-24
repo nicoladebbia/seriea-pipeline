@@ -1508,7 +1508,8 @@ class FeatureBuilder:
         try:
             from features.venue import get_altitude_difference
             features.setdefault("altitude_diff", get_altitude_difference(home_team, away_team))
-        except Exception:
+        except Exception as e:
+            log.debug("Altitude diff unavailable: %s", e)
             features.setdefault("altitude_diff", 0.0)
 
         # rolling_gd_diff: goal difference differential (home GD - away GD)
@@ -3082,8 +3083,8 @@ class EnsemblePredictor:
                     if "league_home_win_rate" in _latest.columns:
                         _val = _latest["league_home_win_rate"].dropna().iloc[-1] if len(_latest) > 0 else 0.43
                         _league_home_win_rate = round(float(_val), 3)
-                except Exception:
-                    pass  # use fallbacks
+                except Exception as e:
+                    log.debug("League defaults from features failed: %s", e)
             _LEAGUE_DEFAULTS = {
                 "league_home_win_rate": _league_home_win_rate,
                 "league_draw_rate": _league_draw_rate,
@@ -3133,7 +3134,8 @@ class EnsemblePredictor:
                     )
                     new_cols["formation_matchup_home_rate"] = fm.get("matchup_home_win_rate", 0.45)
                     new_cols["formation_matchup_draw_rate"] = fm.get("matchup_draw_rate", 0.27)
-                except Exception:
+                except Exception as e:
+                    log.debug("Formation matchup lookup failed: %s", e)
                     new_cols["formation_matchup_home_rate"] = 0.45
                     new_cols["formation_matchup_draw_rate"] = 0.27
 

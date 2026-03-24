@@ -56,7 +56,7 @@ def check_data_freshness() -> Dict:
 
     files = {
         "features.parquet": DATA_DIR / "features" / "features.parquet",
-        "odds_data": DATA_DIR / "upcoming" / "odds_data.json",
+        "odds_data": DATA_DIR / "upcoming" / "odds.json",
         "predictions": DATA_DIR / "upcoming" / "predictions.json",
         "results": DATA_DIR / "upcoming" / "results.json",
         "unified_report": DATA_DIR / "betting" / "unified_report.json",

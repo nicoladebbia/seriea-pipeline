@@ -247,9 +247,15 @@ def check_odds_fetch_staleness() -> Dict:
 
 
 def check_pending_bets() -> Dict:
-    """Check for placed bets whose matches should have finished (>3h past kickoff)."""
-    placed = _load_json(DATA_DIR / "betting" / "placed_bets.json")
-    bets = placed.get("bets", [])
+    """Check for placed bets whose matches should have finished (>3h past kickoff).
+
+    Uses bet_journal.json (source of truth for bet status) instead of
+    placed_bets.json (which is a CLV tracking log that persists after settlement).
+    """
+    # Use journal for actual pending status
+    journal = _load_json(DATA_DIR / "betting" / "bet_journal.json")
+    journal_bets = journal.get("bets", {})
+    bets = [v for v in journal_bets.values() if v.get("status") == "pending"]
 
     if not bets:
         return {"status": "OK", "detail": "No placed bets to check", "stale_count": 0}

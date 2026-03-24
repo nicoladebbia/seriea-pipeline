@@ -121,7 +121,10 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
     log.info("Generating unified match report from %s", data_dir)
 
     # ── Load all source files ──────────────────────────────────────
-    predictions = _load_json(data_dir / "predictions_unified.json")
+    # Try current pipeline output first, fall back to legacy name
+    predictions = _load_json(data_dir / "predictions.json")
+    if not predictions:
+        predictions = _load_json(data_dir / "predictions_unified.json")
     bet_slip = _load_json(data_dir / "unified_bet_slip.json")
     player_analysis = _load_json(data_dir / "player_analysis.json")
     current_form = _load_json(data_dir / "current_form.json")

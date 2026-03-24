@@ -78,11 +78,11 @@ def fetch_fixtures_from_football_data() -> pd.DataFrame:
             for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d/%m/%y"]:
                 try:
                     return pd.to_datetime(d, format=fmt)
-                except:
+                except (ValueError, TypeError):
                     continue
             try:
                 return pd.to_datetime(d)
-            except:
+            except (ValueError, TypeError):
                 return None
 
         df["match_date"] = df["match_date"].apply(parse_date)

@@ -723,7 +723,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
         m_ag = CatBoostRegressor(); m_ag.load_model(str(model_dir / "prod_away_goals.cbm"))
         home_xg = max(0.3, min(4.0, float(m_hg.predict(_align_X(m_hg))[0])))
         away_xg = max(0.3, min(4.0, float(m_ag.predict(_align_X(m_ag))[0])))
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         home_xg, away_xg = 1.4, 1.15
 
     preds["home_xg"] = round(home_xg, 3)
@@ -748,7 +749,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
         m_cls = CatBoostClassifier(); m_cls.load_model(str(model_dir / "prod_1x2.cbm"))
         cls_probs_arr = m_cls.predict_proba(_align_X(m_cls))[0]
         cls_probs = {"H": cls_probs_arr[0], "D": cls_probs_arr[1], "A": cls_probs_arr[2]}
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         cls_probs = poisson_probs
 
     # Calibrated ensemble — validated on 2024-25 + 2025-26 OOS (609 matches)
@@ -849,7 +851,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
             "draw": _market(ht_probs[1]),
             "away_win": _market(ht_probs[2]),
         }
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         # Fallback: Poisson with halved xG
         fh_hxg, fh_axg = home_xg * 0.45, away_xg * 0.45
         fh_sm = {}
@@ -872,7 +875,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
         m_fha = CatBoostRegressor(); m_fha.load_model(str(model_dir / "prod_fh_away_goals.cbm"))
         fh_hxg = max(0.1, min(2.5, float(m_fhh.predict(_align_X(m_fhh))[0])))
         fh_axg = max(0.1, min(2.5, float(m_fha.predict(_align_X(m_fha))[0])))
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         fh_hxg, fh_axg = home_xg * 0.45, away_xg * 0.45
 
     fh_total = fh_hxg + fh_axg
@@ -904,7 +908,7 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
             htft[f"{ht_label}/{ft_label}"] = joint
 
     # Normalize
-    htft_total = sum(htft.values())
+    htft_total = max(sum(htft.values()), 1e-10)
     preds["htft"] = {k: _market(v / htft_total) for k, v in htft.items()}
 
     # 8. Cards predictions
@@ -913,7 +917,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
         m_acr_cards = CatBoostRegressor(); m_acr_cards.load_model(str(model_dir / "prod_away_cards.cbm"))
         exp_home_cards = max(0.5, min(5.0, float(m_hcr.predict(_align_X(m_hcr))[0])))
         exp_away_cards = max(0.5, min(5.0, float(m_acr_cards.predict(_align_X(m_acr_cards))[0])))
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         exp_home_cards, exp_away_cards = 2.1, 2.4
 
     exp_total_cards = exp_home_cards + exp_away_cards
@@ -946,7 +951,8 @@ def predict_all_markets(X_row: pd.DataFrame, features: List[str]) -> Dict:
         m_acr = CatBoostRegressor(); m_acr.load_model(str(model_dir / "prod_away_corners.cbm"))
         exp_home_corn = max(1.0, min(10.0, float(m_hcr.predict(_align_X(m_hcr))[0])))
         exp_away_corn = max(1.0, min(10.0, float(m_acr.predict(_align_X(m_acr))[0])))
-    except:
+    except Exception as _e:
+        log.debug("Model fallback triggered: %s", _e)
         exp_home_corn, exp_away_corn = 5.4, 4.5
 
     exp_total_corn = exp_home_corn + exp_away_corn
