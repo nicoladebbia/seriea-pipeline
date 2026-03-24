@@ -241,25 +241,61 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 continue
 
             # Get model O/U probability from predictions
-            over_key = f"over_{str(line).replace('.', '_')}"
-            model_over = pred.get(over_key, 0)
+            # Try multiple key formats (different parts of pipeline use different names)
+            model_over = 0
+            for key_attempt in [
+                f"over_{str(line).replace('.', '_')}",   # over_2_5
+                f"over_{str(line).replace('.', '')}",     # over_25
+                f"over_{line}",                           # over_2.5
+            ]:
+                model_over = pred.get(key_attempt, 0)
+                if model_over > 0:
+                    break
+
+            # Try goal predictions sub-dict
             if model_over <= 0:
-                # Try goal predictions
                 gp = pred.get("goal_predictions", {})
-                if line == 2.5:
-                    model_over = gp.get("over_2_5", 0)
-                elif line == 1.5:
-                    model_over = gp.get("over_1_5", 0)
+                for key_attempt in [f"over_{line}", f"over_{str(line).replace('.', '_')}"]:
+                    model_over = gp.get(key_attempt, 0)
+                    if model_over > 0:
+                        break
+
+            # Fallback: compute from xG using Poisson
+            if model_over <= 0:
+                home_xg = pred.get("home_xg", 0)
+                away_xg = pred.get("away_xg", 0)
+                if home_xg > 0 and away_xg > 0:
+                    try:
+                        from scipy.stats import poisson
+                        total_xg = home_xg + away_xg
+                        # P(total goals > line) = 1 - P(total goals <= floor(line))
+                        prob_under = 0
+                        for h in range(8):
+                            for a in range(8):
+                                if h + a <= int(line):
+                                    prob_under += poisson.pmf(h, home_xg) * poisson.pmf(a, away_xg)
+                        model_over = max(0, 1.0 - prob_under)
+                    except Exception:
+                        pass
 
             if model_over <= 0:
                 continue
 
-            under_odds = total.get("under", 0)
-            if under_odds <= 1.0:
-                under_odds = 1.0 / (1.0 - 1.0 / over_odds) if over_odds > 1 else 2.0
+            # Use Pinnacle for sharp benchmark if available
+            pin_over = pin_under = 0
+            for bm in total.get("all_bookmakers", []):
+                if "pinnacle" in bm.get("bookmaker", "").lower():
+                    pin_over = bm.get("over", 0)
+                    pin_under = bm.get("under", 0)
+                    break
 
-            true_probs = _remove_overround([over_odds, under_odds])
-            sharp_implied = true_probs[0] if true_probs else 1.0 / over_odds
+            ref_over = pin_over if pin_over > 1.0 else over_odds
+            ref_under = total.get("under", 0)
+            if ref_under <= 1.0:
+                ref_under = pin_under if pin_under > 1.0 else 2.0
+
+            true_probs = _remove_overround([ref_over, ref_under])
+            sharp_implied = true_probs[0] if true_probs else 1.0 / ref_over
             edge_pct = ((model_over - sharp_implied) / sharp_implied * 100) if sharp_implied > 0 else 0
 
             thresholds = EDGE_THRESHOLDS.get("O/U_Over", {"min": 6.0, "max": 8.0})
@@ -272,7 +308,9 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 "sharp_implied": round(sharp_implied, 4),
                 "edge_pct": round(edge_pct, 2),
                 "best_odds": round(over_odds, 3),
-                "best_bookmaker": "",
+                "best_bookmaker": next(
+                    (bm.get("bookmaker", "") for bm in total.get("all_bookmakers", [])
+                     if bm.get("over", 0) == over_odds), ""),
                 "market_category": "O/U_Over",
                 "timestamp": datetime.now().isoformat(),
             }

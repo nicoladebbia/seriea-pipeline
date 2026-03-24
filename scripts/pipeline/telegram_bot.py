@@ -1192,35 +1192,59 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
 
     if data == "view:all_bets":
-        # Respond directly with bet list (instant, no Claude needed)
+        # Respond directly with merged bet list from ALL sources (instant)
         try:
             import json as _json
             from pathlib import Path as _Path
             _data = _Path(__file__).parent.parent.parent / "data"
-            scan = {}
+
+            all_bets = []
+            seen = set()
+
+            # Source 1: Pipeline unified report (has O/U, DC, 1X2)
+            report_path = _data / "betting" / "unified_report.json"
+            if report_path.exists():
+                report = _json.load(open(report_path))
+                for b in report.get("bets", []):
+                    key = f"{b.get('match','')}_{b.get('selection','')}"
+                    if key not in seen:
+                        seen.add(key)
+                        all_bets.append({
+                            "match": b.get("match", "?"),
+                            "sel": b.get("selection", "?"),
+                            "market": b.get("market", "?"),
+                            "odds": b.get("best_odds", b.get("odds", 0)),
+                            "edge": b.get("edge_pct", 0),
+                            "source": "pipeline",
+                        })
+
+            # Source 2: Edge monitor (may find newer draws)
             scan_path = _data / "betting" / "edge_scan_latest.json"
             if scan_path.exists():
                 scan = _json.load(open(scan_path))
-            vb = scan.get("value_bets", [])
+                for b in scan.get("value_bets", []):
+                    key = f"{b.get('match','')}_{b.get('selection','')}"
+                    if key not in seen:
+                        seen.add(key)
+                        all_bets.append({
+                            "match": b.get("match", "?"),
+                            "sel": b.get("selection", "?"),
+                            "market": b.get("market", "?"),
+                            "odds": b.get("best_odds", 0),
+                            "edge": b.get("edge_pct", 0),
+                            "source": "scan",
+                        })
 
-            if not vb:
-                # Fallback to unified report
-                report_path = _data / "betting" / "unified_report.json"
-                if report_path.exists():
-                    report = _json.load(open(report_path))
-                    vb = report.get("bets", [])
-
-            if not vb:
+            if not all_bets:
                 return "\U0001f4ad No value bets right now — market is efficient today."
 
-            lines = [f"\U0001f3af <b>All Value Bets ({len(vb)})</b>\n"]
-            for i, b in enumerate(vb[:8], 1):
-                match = b.get("match", "?")
-                sel = b.get("selection", "?")
-                odds = b.get("best_odds", b.get("odds", 0))
-                edge = b.get("edge_pct", 0)
-                lines.append(f"{i}. <b>{match}</b>")
-                lines.append(f"   {sel} @{odds:.2f} | edge {edge:+.1f}%\n")
+            all_bets.sort(key=lambda x: x["edge"], reverse=True)
+
+            lines = [f"\U0001f3af <b>All Value Bets ({len(all_bets)})</b>\n"]
+            for i, b in enumerate(all_bets[:10], 1):
+                emoji = "\U0001f534" if "Draw" in b["sel"] else "\u26bd" if "Over" in b["sel"] else "\U0001f7e2"
+                lines.append(f"{i}. {emoji} <b>{b['match']}</b>")
+                lines.append(f"   {b['market']} {b['sel']} @{b['odds']:.2f} | edge {b['edge']:+.1f}%\n")
             return "\n".join(lines)
         except Exception as e:
             return f"Failed to load bets: {e}"
