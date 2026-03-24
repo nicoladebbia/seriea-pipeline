@@ -6421,6 +6421,179 @@ def api_notifications_digest():
 
 
 # ---------------------------------------------------------------------------
+# Medium-Impact Betting APIs (Mar 24 2026)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/odds-timeline/<match_key>")
+def api_odds_timeline(match_key):
+    """Odds movement timeline for a specific match.
+
+    Returns historical odds snapshots showing how odds moved from
+    opening to current. Enables visual charting on the frontend.
+    """
+    try:
+        from scripts.betting.entry_timer import EntryTimingAnalyzer
+        analyzer = EntryTimingAnalyzer()
+        analyzer.load_snapshots()
+
+        tl = analyzer.timelines.get(match_key)
+        if not tl:
+            # Try fuzzy match
+            for mk in analyzer.timelines:
+                if match_key.replace("-", " ").lower() in mk.lower():
+                    tl = analyzer.timelines[mk]
+                    break
+
+        if not tl or tl.n_snapshots < 2:
+            return jsonify({"error": f"No timeline for {match_key}", "match": match_key})
+
+        # Build timeline for all outcomes
+        timeline = {"match": match_key, "snapshots": tl.n_snapshots, "outcomes": {}}
+        for outcome in ["home", "draw", "away"]:
+            velocity_data = tl.compute_velocity(outcome)
+            timeline["outcomes"][outcome] = [{
+                "ts": v["ts"],
+                "sharp_prob": v["sharp_prob"],
+                "market_prob": v["market_prob"],
+                "best_odds": v["best_odds"],
+                "best_bookmaker": v["best_bookmaker"],
+                "divergence": v["divergence"],
+                "velocity": v["velocity"],
+                "hours_to_kick": v["hours_to_kick"],
+            } for v in velocity_data]
+
+        # Add summary
+        summary = analyzer.get_match_summary(match_key)
+        timeline["summary"] = summary.get("outcomes", {})
+
+        return jsonify(timeline)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/edge-scan")
+def api_edge_scan():
+    """Run lightweight edge scan — returns current value bets, watchlist, live value.
+
+    Uses cached odds (no API cost). For fresh odds, run the full pipeline.
+    """
+    try:
+        from scripts.betting.odds_edge_monitor import run_scan
+        result = run_scan(fetch_fresh=False)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bet/place", methods=["POST"])
+def api_place_bet():
+    """Mark a bet as placed — records execution details in journal.
+
+    Expects JSON body:
+    {
+        "bet_id": "2026-03-30_Milan_vs_Roma_h2h_DRAW",
+        "bookmaker": "Pinnacle",
+        "execution_odds": 3.45,
+        "stake": 25.00
+    }
+    """
+    try:
+        data = flask_request.get_json()
+        if not data:
+            return jsonify({"ok": False, "error": "No JSON body"}), 400
+
+        bet_id = data.get("bet_id", "")
+        bookmaker = data.get("bookmaker", "")
+        exec_odds = data.get("execution_odds", 0)
+        stake = data.get("stake", 0)
+
+        if not bet_id:
+            return jsonify({"ok": False, "error": "bet_id required"}), 400
+
+        # Record in journal
+        from scripts.betting.bet_journal import add_bet
+        bet_data = {
+            "bet_id": bet_id,
+            "match": data.get("match", bet_id.rsplit("_", 2)[0] if "_" in bet_id else bet_id),
+            "date": data.get("date", ""),
+            "market": data.get("market", ""),
+            "selection": data.get("selection", ""),
+            "bookmaker": bookmaker,
+            "odds": exec_odds,
+            "stake": stake,
+            "model_prob": data.get("model_prob", 0),
+            "edge_pct": data.get("edge_pct", 0),
+            "placed_at": datetime.now().isoformat(),
+        }
+        result = add_bet(bet_data)
+
+        # Notify
+        try:
+            from scripts.pipeline.notify import notify
+            notify(
+                message=f"Bet placed: {bet_id} @{exec_odds:.2f} ({bookmaker}) EUR {stake:.2f}",
+                title="Bet Placed",
+                level="info",
+                category="betting",
+            )
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "bet_id": bet_id, "result": result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/odds-improved")
+def api_odds_improved():
+    """Check which recommended bets now have better odds than when first discovered.
+
+    Compares current odds vs last scan's odds from edge_monitor_state.json.
+    """
+    try:
+        state_path = BETTING_DIR / "edge_monitor_state.json"
+        if not state_path.exists():
+            return jsonify({"improved": [], "message": "No edge monitor state yet"})
+
+        state = _load_json(state_path)
+        alerted = state.get("alerted", {})
+
+        # Load current odds
+        odds_data = _load_json(UPCOMING_DIR / "odds_full.json")
+        matches = odds_data.get("matches", {})
+
+        improved = []
+        for key, prev_bet in alerted.items():
+            match = prev_bet.get("match", "")
+            selection = prev_bet.get("selection", "").lower()
+            prev_odds = prev_bet.get("best_odds", 0)
+
+            mo = matches.get(match, {})
+            h2h = mo.get("h2h", {})
+            current_odds = 0
+            if isinstance(h2h, dict):
+                current_odds = h2h.get(f"best_{selection}", h2h.get(selection, 0))
+
+            if current_odds > prev_odds + 0.05:
+                improved.append({
+                    "match": match,
+                    "selection": prev_bet.get("selection"),
+                    "prev_odds": round(prev_odds, 3),
+                    "current_odds": round(current_odds, 3),
+                    "improvement": round(current_odds - prev_odds, 3),
+                    "edge_pct": prev_bet.get("edge_pct", 0),
+                })
+
+        return jsonify({
+            "improved": sorted(improved, key=lambda x: x["improvement"], reverse=True),
+            "total_tracked": len(alerted),
+            "last_scan": state.get("last_poll"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
