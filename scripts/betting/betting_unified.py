@@ -121,7 +121,9 @@ class BettingConfig:
     # -- Portfolio limits --
     max_bets_per_match: int = 2      # Max correlated bets on same match (was 3; 3 creates contradictory positions)
     max_total_bets: int = 20         # Max total bets per round
-    max_draw_family_bets: int = 3    # Max draw-sensitive bets (1X2 Draw + DC) — was 5, tightened after Feb 21-22 -251 loss
+    max_draw_family_bets: int = 2    # Max draw bets per round — was 3, reduced to manage variance
+                                     # (31.7% WR means 6-bet avg losing streaks; cap at 2 to diversify)
+    draw_stake_multiplier: float = 0.80  # Reduce draw stakes by 20% vs Kelly recommendation (variance protection)
 
     # -- Odds limits --
     min_odds: float = 1.25           # Don't bet below this (too low value)
@@ -930,6 +932,12 @@ class UnifiedBettingEngine:
 
         if stake_pct < cfg.min_stake_pct:
             stake_pct = cfg.min_stake_pct  # Floor at minimum (bet is still +EV)
+
+        # Apply draw stake reduction for variance management
+        # Draws have high edge but low win rate (31.7%) → brutal losing streaks.
+        # Reduce stake by draw_stake_multiplier to protect bankroll psychology.
+        if market_cat == "1X2_Draw" and hasattr(cfg, "draw_stake_multiplier"):
+            stake_pct *= cfg.draw_stake_multiplier
 
         tier = ("ELITE" if edge_pct >= cfg.elite_edge_pct else
                 "STRONG" if edge_pct >= cfg.strong_edge_pct else "STANDARD")
