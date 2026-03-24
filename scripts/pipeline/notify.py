@@ -2470,6 +2470,129 @@ def notify_clv_degradation(current_clv: float, previous_clv: float,
     )
 
 
+def notify_matchweek_summary(matchweek: int = 0) -> dict:
+    """End-of-matchweek summary — all bets placed, results, P&L.
+
+    Fires after the last match of a matchweek settles.
+    Shows every bet from that matchweek with result and profit.
+    """
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        journal_path = _Path(__file__).parent.parent.parent / "data" / "betting" / "bet_journal.json"
+        if not journal_path.exists():
+            return {}
+
+        journal = _json.load(open(journal_path))
+        bets = journal.get("bets", {})
+
+        # Get bets from the last 7 days (approximate matchweek window)
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        week_bets = []
+        for bet_id, bet in bets.items():
+            if bet.get("status") not in ("won", "lost", "push"):
+                continue
+            bet_date = bet.get("date", "")
+            if bet_date >= cutoff:
+                week_bets.append(bet)
+
+        if not week_bets:
+            return {}
+
+        # Sort by date
+        week_bets.sort(key=lambda b: b.get("date", ""))
+
+        # Compute totals
+        total_won = sum(1 for b in week_bets if b["status"] == "won")
+        total_lost = sum(1 for b in week_bets if b["status"] == "lost")
+        total_push = sum(1 for b in week_bets if b["status"] == "push")
+        total_staked = sum(b.get("stake", 0) for b in week_bets)
+        total_profit = 0
+        for b in week_bets:
+            if b["status"] == "won":
+                total_profit += b.get("profit", 0)
+            elif b["status"] == "lost":
+                total_profit -= b.get("stake", 0)
+
+        roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+
+        # Market name mapping
+        MKT_NAMES = {
+            "h2h": "Match Result", "1X2": "Match Result",
+            "totals": "Goals", "O/U": "Goals",
+            "double_chance": "Double Chance", "DC": "Double Chance",
+        }
+
+        # Build message
+        mw_label = f"Matchweek {matchweek}" if matchweek else "This Week"
+        tg = TgMsg()
+        tg.raw(f"\U0001f4ca <b>{mw_label} Summary</b>")
+        tg.raw(f"   {total_won}W - {total_lost}L" +
+               (f" - {total_push}P" if total_push else ""))
+        tg.blank()
+
+        # Each bet as a card
+        for b in week_bets:
+            match = b.get("match", "?")
+            sel = b.get("selection", "?")
+            market_raw = b.get("market", "")
+            market = MKT_NAMES.get(market_raw, market_raw)
+            odds = b.get("odds", 0)
+            stake = b.get("stake", 0)
+            status = b.get("status", "")
+            score = b.get("result_score", "")
+
+            if status == "won":
+                profit = b.get("profit", 0)
+                icon = "\u2705"
+                result_str = f"<b>+\u20ac{profit:.2f}</b>"
+            elif status == "lost":
+                icon = "\u274c"
+                result_str = f"-\u20ac{stake:.2f}"
+            else:
+                icon = "\u2796"
+                result_str = "Push (stake returned)"
+
+            tg.raw(f"{icon} <b>{_html_escape(match)}</b>"
+                   + (f"  ({_html_escape(score)})" if score else ""))
+            tg.raw(f"   {_html_escape(market)}: {_html_escape(sel)} @{odds:.2f}")
+            tg.raw(f"   {result_str}")
+            tg.blank()
+
+        # Summary footer
+        tg.raw("\u2500" * 20)
+        sign = "+" if total_profit >= 0 else ""
+        emoji = "\U0001f4b0" if total_profit >= 0 else "\U0001f4b8"
+        tg.raw(f"{emoji} <b>Week P&amp;L: {sign}\u20ac{total_profit:.2f}</b> "
+               f"(ROI: {roi:+.1f}%)")
+        tg.raw(f"   Staked: \u20ac{total_staked:.2f} across {len(week_bets)} bets")
+
+        # Closing thought
+        if total_profit > 0:
+            tg.blank()
+            tg.italic("Good week. Stay disciplined.")
+        elif total_profit < -20:
+            tg.blank()
+            tg.italic("Tough week. The edge is still there long-term.")
+        else:
+            tg.blank()
+            tg.italic("Break-even. Consistency is key.")
+
+        return notify(
+            message=f"Matchweek: {total_won}W-{total_lost}L, {sign}\u20ac{total_profit:.2f}",
+            title=f"{mw_label}: {sign}\u20ac{total_profit:.2f}",
+            level="success" if total_profit >= 0 else "warning",
+            category="betting",
+            tg_html=tg.build(),
+        )
+    except Exception as e:
+        log.warning("Matchweek summary failed: %s", e)
+        return {}
+
+
 def notify_entry_timing(match: str, selection: str, action: str,
                         odds: float = 0, bookmaker: str = "",
                         reason: str = "", confidence: float = 0) -> dict:

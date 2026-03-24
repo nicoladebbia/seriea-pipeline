@@ -1868,6 +1868,14 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
+                elif cmd == "/summary":
+                    _tg_send_typing(token, chat_id)
+                    try:
+                        from scripts.pipeline.notify import notify_matchweek_summary
+                        result = notify_matchweek_summary()
+                        response_text = "Matchweek summary sent." if result else "No bets to summarize this week."
+                    except Exception as e:
+                        response_text = f"Failed: {e}"
                 elif cmd == "/help":
                     response_text = _handle_help()
                 elif cmd == "/clear":

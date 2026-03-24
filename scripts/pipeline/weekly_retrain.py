@@ -788,6 +788,15 @@ def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
 
     mw = status["current_matchweek"]
     log.info("Matchweek %d complete — triggering retrain", mw)
+
+    # Send matchweek summary (all bets + results + P&L)
+    try:
+        from scripts.pipeline.notify import notify_matchweek_summary
+        notify_matchweek_summary(matchweek=mw)
+        log.info("Matchweek %d summary sent", mw)
+    except Exception as e:
+        log.debug("Matchweek summary failed: %s", e)
+
     _notify(f"MW {mw} complete. Starting retrain...", "Retrain Triggered")
 
     # Archive current models before retraining
