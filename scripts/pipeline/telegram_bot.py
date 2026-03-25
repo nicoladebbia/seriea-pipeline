@@ -1140,6 +1140,55 @@ def _handle_parlays() -> str:
         return f"Failed to load parlays: {e}"
 
 
+def _handle_player_lookup(query: str) -> str:
+    """Look up a player's team history."""
+    from scripts.pipeline.notify import TgMsg, _html_escape
+
+    try:
+        from scripts.analysis.player_history import build_player_history
+        history = build_player_history()
+
+        # Fuzzy match: find players whose name contains the query
+        query_lower = query.lower()
+        matches = [(name, teams) for name, teams in history.items()
+                   if query_lower in name.lower()]
+
+        if not matches:
+            return f"No player found matching \"{query}\". Try a last name like <code>/player Dzeko</code>"
+
+        # Sort by closest match (exact > starts with > contains)
+        matches.sort(key=lambda x: (
+            0 if x[0].lower() == query_lower else
+            1 if x[0].lower().startswith(query_lower) else
+            2 if query_lower in x[0].split()[-1].lower() else 3
+        ))
+
+        tg = TgMsg()
+        for player_name, teams in matches[:3]:
+            tg.raw(f"\U0001f464 <b>{_html_escape(player_name)}</b>")
+            tg.blank()
+
+            for i, t in enumerate(reversed(teams)):
+                if i == 0:
+                    marker = "\u25b6\ufe0f"  # Current team
+                else:
+                    marker = "\u25aa\ufe0f"  # Past team
+                seasons = ", ".join(t["seasons"][-3:])  # Show last 3 seasons
+                if len(t["seasons"]) > 3:
+                    seasons = f"{t['seasons'][0]}...{t['seasons'][-1]}"
+                tg.raw(f"   {marker} <b>{_html_escape(t['team'])}</b>")
+                tg.raw(f"      {seasons} ({t['total_matches']} matches)")
+
+            tg.blank()
+
+        if len(matches) > 3:
+            tg.italic(f"Showing 3 of {len(matches)} matches. Be more specific.")
+
+        return tg.build()
+    except Exception as e:
+        return f"Failed: {e}"
+
+
 def _get_weekly_bets() -> dict:
     """Load settled bets grouped by week."""
     from collections import defaultdict
@@ -1466,7 +1515,25 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             "callback_query_id": query_id,
             "text": f"Loading {match_name}...",
         }, timeout=5)
-        return f"Analyze {match_name} — full prediction, value assessment, should I bet?"
+
+        # Add ex-player context to the analysis prompt
+        ex_context = ""
+        try:
+            from scripts.analysis.player_history import get_match_context
+            ctx = get_match_context(match_name)
+            ex_home = ctx.get("home_vs_former", [])
+            ex_away = ctx.get("away_vs_former", [])
+            if ex_home or ex_away:
+                parts = []
+                for p in ex_home:
+                    parts.append(f"{p['player']} (now {p['current_team']}, ex-{p['former_team']})")
+                for p in ex_away:
+                    parts.append(f"{p['player']} (now {p['current_team']}, ex-{p['former_team']})")
+                ex_context = f"\n\nPlayers facing former team: {', '.join(parts)}. Mention this in your analysis."
+        except Exception:
+            pass
+
+        return f"Analyze {match_name} — full prediction, value assessment, should I bet?{ex_context}"
 
     if data.startswith("place:"):
         # Quick-place bet from notification button
@@ -2029,6 +2096,13 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
+                elif cmd.startswith("/player"):
+                    _tg_send_typing(token, chat_id)
+                    player_name = cmd.replace("/player", "").strip()
+                    if not player_name:
+                        response_text = "Usage: <code>/player Dzeko</code> — shows all teams a player has played for."
+                    else:
+                        response_text = _handle_player_lookup(player_name)
                 elif cmd == "/summary":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_summary_menu(token, chat_id)

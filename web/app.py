@@ -6512,6 +6512,24 @@ def api_best_bets():
         return jsonify({"best_bets": [], "error": str(e)}), 200
 
 
+@app.route("/api/player-history/<match_key>")
+def api_player_history(match_key):
+    """Player team history for a match — who's facing their former team."""
+    try:
+        from scripts.analysis.player_history import get_match_context, build_player_history, find_ex_players
+
+        # Try confirmed lineups first
+        context = get_match_context(match_key)
+        if "error" not in context:
+            return jsonify(context)
+
+        # Fallback: check predictions for team names and try Sofascore lineups
+        return jsonify({"match": match_key, "home_vs_former": [], "away_vs_former": [],
+                       "note": "No confirmed lineups yet — check closer to kickoff"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/odds-timeline/<match_key>")
 def api_odds_timeline(match_key):
     """Odds movement timeline for a specific match.
