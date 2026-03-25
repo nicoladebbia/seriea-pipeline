@@ -6268,6 +6268,7 @@ def api_player_detail(team_name, player_name):
         profile = get_player_profile(pname, history)
         if profile:
             result["career_history"] = profile.get("career", [])
+            result["career_gaps"] = profile.get("career_gaps", [])
             if profile.get("nationality") and not result["player"].get("nationality"):
                 result["player"]["nationality"] = profile["nationality"]
             if profile.get("market_value_eur"):

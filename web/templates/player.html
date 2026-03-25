@@ -132,6 +132,7 @@ function renderPlayer(data) {
   const career = data.career || {};
   const mvh = data.market_value_history || [];
   const careerHistory = data.career_history || [];
+  const careerGaps = data.career_gaps || [];
 
   const initials = (p.name || '??').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
@@ -212,7 +213,7 @@ function renderPlayer(data) {
   html += `<div id="ptab-matches" class="player-tab-content">${renderMatchLog(ml, p)}</div>`;
 
   // Career tab
-  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career, careerHistory)}</div>`;
+  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career, careerHistory, careerGaps)}</div>`;
 
   // Market value tab
   if (mvh.length) {
@@ -304,33 +305,69 @@ function renderMatchLog(ml, p) {
   </div>`;
 }
 
-function renderCareer(career, careerHistory) {
+function renderCareer(career, careerHistory, careerGaps) {
   let html = '';
   careerHistory = careerHistory || [];
+  careerGaps = careerGaps || [];
 
-  // Team history (career path)
+  // Build a chronological timeline: teams + gaps interleaved
   if (careerHistory.length > 0) {
     html += `<div class="section">
       <div class="section__title">Career Path</div>
       <div class="team-history">`;
-    // Show most recent first (natural reading order)
-    careerHistory.forEach((t, i) => {
-      const isCurrent = i === 0;
-      const cls = isCurrent ? 'team-entry team-entry--current' : 'team-entry';
-      const icon = isCurrent ? '⚽' : '•';
-      const seasons = t.seasons && t.seasons.length > 3
-        ? t.seasons[0] + ' → ' + t.seasons[t.seasons.length - 1]
-        : (t.seasons || []).join(', ');
-      const matchCount = t.total_matches > 0 ? t.total_matches + ' apps' : '';
-      html += `<div class="${cls}">
-        <div class="team-entry__icon">${icon}</div>
-        <div class="team-entry__info">
-          <div class="team-entry__name">${t.team}</div>
-          <div class="team-entry__meta">${seasons}</div>
-        </div>
-        ${matchCount ? `<div class="team-entry__matches">${matchCount}</div>` : ''}
-      </div>`;
+
+    // Build timeline entries sorted by first season (chronological, oldest first)
+    const timeline = [];
+
+    // Add team entries
+    [...careerHistory].reverse().forEach(t => {
+      const firstSeason = t.seasons && t.seasons.length ? t.seasons[0] : '';
+      timeline.push({ type: 'team', data: t, sort: firstSeason });
     });
+
+    // Add gap entries
+    careerGaps.forEach(g => {
+      timeline.push({ type: 'gap', data: g, sort: g.first_season || '' });
+    });
+
+    // Sort chronologically
+    timeline.sort((a, b) => a.sort.localeCompare(b.sort));
+
+    // Render (reverse for most recent first)
+    timeline.reverse().forEach((entry, i) => {
+      if (entry.type === 'team') {
+        const t = entry.data;
+        const isCurrent = i === 0;
+        const cls = isCurrent ? 'team-entry team-entry--current' : 'team-entry';
+        const icon = isCurrent ? '⚽' : '•';
+        const seasons = t.seasons && t.seasons.length > 3
+          ? t.seasons[0] + ' → ' + t.seasons[t.seasons.length - 1]
+          : (t.seasons || []).join(', ');
+        const matchCount = t.total_matches > 0 ? t.total_matches + ' apps' : '';
+        html += `<div class="${cls}">
+          <div class="team-entry__icon">${icon}</div>
+          <div class="team-entry__info">
+            <div class="team-entry__name">${t.team}</div>
+            <div class="team-entry__meta">${seasons}</div>
+          </div>
+          ${matchCount ? `<div class="team-entry__matches">${matchCount}</div>` : ''}
+        </div>`;
+      } else if (entry.type === 'gap') {
+        const g = entry.data;
+        const seasonRange = g.n_seasons === 1
+          ? g.first_season
+          : g.first_season + ' → ' + g.last_season;
+        html += `<div class="team-entry" style="border-left-color: var(--amber); background: rgba(251,191,36,0.06); opacity: 0.8;">
+          <div class="team-entry__icon">✈️</div>
+          <div class="team-entry__info">
+            <div class="team-entry__name" style="color: var(--amber);">Abroad</div>
+            <div class="team-entry__meta">${seasonRange} · Not in Serie A</div>
+          </div>
+          <div class="team-entry__matches" style="color: var(--amber);">${g.n_seasons} ${g.n_seasons === 1 ? 'season' : 'seasons'}</div>
+        </div>`;
+      }
+    });
+
     html += `</div></div>`;
   }
 

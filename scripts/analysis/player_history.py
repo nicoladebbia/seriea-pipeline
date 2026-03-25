@@ -90,6 +90,69 @@ def build_player_history() -> Dict[str, List[Dict]]:
     return result
 
 
+ALL_SERIE_A_SEASONS = [
+    "2014-2015", "2015-2016", "2016-2017", "2017-2018", "2018-2019",
+    "2019-2020", "2020-2021", "2021-2022", "2022-2023", "2023-2024",
+    "2024-2025", "2025-2026",
+]
+
+
+def detect_career_gaps(career: List[Dict]) -> List[Dict]:
+    """Detect seasons where the player was NOT in Serie A (likely abroad).
+
+    Returns list of gap entries like:
+      {"type": "gap", "seasons": ["2022-2023", "2023-2024"], "label": "Away from Serie A (2 seasons)"}
+    """
+    if not career:
+        return []
+
+    # Collect all seasons in Serie A
+    all_seasons = set()
+    for t in career:
+        all_seasons.update(t.get("seasons", []))
+
+    if not all_seasons:
+        return []
+
+    sorted_present = sorted(all_seasons)
+    first = sorted_present[0]
+    last = sorted_present[-1]
+
+    first_idx = ALL_SERIE_A_SEASONS.index(first) if first in ALL_SERIE_A_SEASONS else -1
+    last_idx = ALL_SERIE_A_SEASONS.index(last) if last in ALL_SERIE_A_SEASONS else -1
+
+    if first_idx < 0 or last_idx < 0:
+        return []
+
+    expected = set(ALL_SERIE_A_SEASONS[first_idx:last_idx + 1])
+    missing = sorted(expected - all_seasons)
+
+    if not missing:
+        return []
+
+    # Group consecutive missing seasons into gap blocks
+    gaps = []
+    current_gap = [missing[0]]
+    for i in range(1, len(missing)):
+        prev_idx = ALL_SERIE_A_SEASONS.index(missing[i - 1])
+        curr_idx = ALL_SERIE_A_SEASONS.index(missing[i])
+        if curr_idx == prev_idx + 1:
+            current_gap.append(missing[i])
+        else:
+            gaps.append(current_gap)
+            current_gap = [missing[i]]
+    gaps.append(current_gap)
+
+    return [{
+        "type": "gap",
+        "seasons": gap,
+        "n_seasons": len(gap),
+        "first_season": gap[0],
+        "last_season": gap[-1],
+        "label": f"Abroad ({len(gap)} {'season' if len(gap) == 1 else 'seasons'})"
+    } for gap in gaps]
+
+
 def get_player_profile(player_name: str, history: Dict = None) -> Dict | None:
     """Get full profile for a player: career path + nationality + market value."""
     if history is None:
@@ -145,12 +208,16 @@ def get_player_profile(player_name: str, history: Dict = None) -> Dict | None:
     if not career and not nationality:
         return None
 
+    # Detect gaps (seasons abroad)
+    gaps = detect_career_gaps(career) if career else []
+
     return {
         "name": player_name,
         "nationality": nationality,
         "market_value_eur": int(market_value) if market_value and not pd.isna(market_value) else None,
         "transfer_fee_eur": int(transfer_fee) if transfer_fee else None,
         "career": career or [],
+        "career_gaps": gaps,
     }
 
 
