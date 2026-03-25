@@ -222,11 +222,20 @@ function renderPlayer(data) {
   document.getElementById('player-content').innerHTML = html;
 }
 
+// Store chart data globally so we can redraw on tab switch
+let _mvChartData = null;
+
 function switchPlayerTab(tab) {
   document.querySelectorAll('.player-tab').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.player-tab-content').forEach(c => c.classList.remove('active'));
   event.target.classList.add('active');
   document.getElementById('ptab-' + tab).classList.add('active');
+
+  // Redraw market value chart when its tab becomes visible
+  // (canvas has zero dimensions when display:none)
+  if (tab === 'value' && _mvChartData) {
+    setTimeout(() => drawMvChart(_mvChartData.canvasId, _mvChartData.mvh, _mvChartData.peak), 50);
+  }
 }
 
 function renderFormChart(ml) {
@@ -423,8 +432,11 @@ function renderMarketValue(mvh) {
     </div>
   </div>`;
 
-  // Draw the area chart after DOM is ready
-  setTimeout(() => drawMvChart(canvasId, mvh, peak), 50);
+  // Store data for redraw on tab switch, then draw
+  _mvChartData = { canvasId, mvh, peak };
+  // Don't draw immediately — tab may be hidden. Draw on first tab switch to "value".
+  // But also try drawing now in case it's visible:
+  setTimeout(() => drawMvChart(canvasId, mvh, peak), 100);
 
   return html;
 }
