@@ -84,7 +84,7 @@ def build_player_history() -> Dict[str, List[Dict]]:
             })
         # Sort by most recent first
         team_list.sort(key=lambda x: x["last_season"], reverse=True)
-        if len(team_list) > 1:  # Only include players with 2+ teams
+        if team_list:  # Include ALL players, even single-team ones
             result[player] = team_list
 
     return result
