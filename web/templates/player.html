@@ -201,7 +201,7 @@ function renderPlayer(data) {
   html += `<div id="ptab-matches" class="player-tab-content">${renderMatchLog(ml, p)}</div>`;
 
   // Career tab
-  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career)}</div>`;
+  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career, careerHistory)}</div>`;
 
   // Market value tab
   if (mvh.length) {
@@ -284,11 +284,12 @@ function renderMatchLog(ml, p) {
   </div>`;
 }
 
-function renderCareer(career) {
+function renderCareer(career, careerHistory) {
   let html = '';
+  careerHistory = careerHistory || [];
 
   // Team history (career path)
-  if (careerHistory && careerHistory.length > 0) {
+  if (careerHistory.length > 0) {
     html += `<div class="section">
       <div class="section__title">Teams Played For</div>
       <div style="display: flex; flex-direction: column; gap: 6px;">`;
