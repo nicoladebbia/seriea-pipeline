@@ -1141,48 +1141,116 @@ def _handle_parlays() -> str:
 
 
 def _handle_player_lookup(query: str) -> str:
-    """Look up a player's team history."""
+    """Look up a player's team history, nationality, and market value."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
     try:
-        from scripts.analysis.player_history import build_player_history
+        from scripts.analysis.player_history import build_player_history, get_player_profile
         history = build_player_history()
 
         # Fuzzy match: find players whose name contains the query
         query_lower = query.lower()
+
+        # Search in history (multi-team players)
         matches = [(name, teams) for name, teams in history.items()
                    if query_lower in name.lower()]
 
+        # Also search in market values for single-team players
         if not matches:
-            return f"No player found matching \"{query}\". Try a last name like <code>/player Dzeko</code>"
+            import pandas as pd
+            from pathlib import Path as _P
+            for season in ["2025_2026", "2024_2025"]:
+                mv_path = _P("data/external/transfermarkt") / f"market_values_{season}.parquet"
+                if mv_path.exists():
+                    mv = pd.read_parquet(mv_path)
+                    found = mv[mv["player_name"].str.lower().str.contains(query_lower, na=False)]
+                    for _, row in found.iterrows():
+                        pname = row["player_name"]
+                        if not any(m[0] == pname for m in matches):
+                            matches.append((pname, [{"team": row["team"], "seasons": [season.replace("_","-")],
+                                                     "total_matches": 0, "first_season": "", "last_season": ""}]))
+                    if matches:
+                        break
 
-        # Sort by closest match (exact > starts with > contains)
+        if not matches:
+            return f"No player found matching \"{query}\". Try a last name like <code>/player Belotti</code>"
+
+        # Sort by closest match
         matches.sort(key=lambda x: (
             0 if x[0].lower() == query_lower else
             1 if x[0].lower().startswith(query_lower) else
             2 if query_lower in x[0].split()[-1].lower() else 3
         ))
 
+        FLAG_MAP = {
+            "Italy": "\U0001f1ee\U0001f1f9", "Argentina": "\U0001f1e6\U0001f1f7",
+            "Brazil": "\U0001f1e7\U0001f1f7", "France": "\U0001f1eb\U0001f1f7",
+            "Spain": "\U0001f1ea\U0001f1f8", "Portugal": "\U0001f1f5\U0001f1f9",
+            "Germany": "\U0001f1e9\U0001f1ea", "Netherlands": "\U0001f1f3\U0001f1f1",
+            "Belgium": "\U0001f1e7\U0001f1ea", "Croatia": "\U0001f1ed\U0001f1f7",
+            "Serbia": "\U0001f1f7\U0001f1f8", "Nigeria": "\U0001f1f3\U0001f1ec",
+            "Ghana": "\U0001f1ec\U0001f1ed", "Colombia": "\U0001f1e8\U0001f1f4",
+            "Uruguay": "\U0001f1fa\U0001f1fe", "Turkey": "\U0001f1f9\U0001f1f7",
+            "Poland": "\U0001f1f5\U0001f1f1", "Scotland": "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+            "Norway": "\U0001f1f3\U0001f1f4", "Sweden": "\U0001f1f8\U0001f1ea",
+            "Denmark": "\U0001f1e9\U0001f1f0", "Switzerland": "\U0001f1e8\U0001f1ed",
+            "Cameroon": "\U0001f1e8\U0001f1f2", "Ivory Coast": "\U0001f1e8\U0001f1ee",
+            "Senegal": "\U0001f1f8\U0001f1f3", "Japan": "\U0001f1ef\U0001f1f5",
+            "South Korea": "\U0001f1f0\U0001f1f7", "Mexico": "\U0001f1f2\U0001f1fd",
+            "United States": "\U0001f1fa\U0001f1f8", "Canada": "\U0001f1e8\U0001f1e6",
+            "Austria": "\U0001f1e6\U0001f1f9", "Czech Republic": "\U0001f1e8\U0001f1ff",
+            "Albania": "\U0001f1e6\U0001f1f1", "Romania": "\U0001f1f7\U0001f1f4",
+            "Greece": "\U0001f1ec\U0001f1f7", "Morocco": "\U0001f1f2\U0001f1e6",
+            "Tunisia": "\U0001f1f9\U0001f1f3", "Algeria": "\U0001f1e9\U0001f1ff",
+            "England": "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f",
+        }
+
         tg = TgMsg()
         for player_name, teams in matches[:3]:
+            profile = get_player_profile(player_name, history)
+
             tg.raw(f"\U0001f464 <b>{_html_escape(player_name)}</b>")
+
+            # Nationality + market value
+            if profile:
+                nat = profile.get("nationality")
+                mv = profile.get("market_value_eur")
+                fee = profile.get("transfer_fee_eur")
+
+                info_parts = []
+                if nat:
+                    flag = FLAG_MAP.get(nat, "\U0001f30d")
+                    info_parts.append(f"{flag} {nat}")
+                if mv:
+                    if mv >= 1_000_000:
+                        info_parts.append(f"Value: \u20ac{mv/1_000_000:.1f}M")
+                    else:
+                        info_parts.append(f"Value: \u20ac{mv/1_000:.0f}K")
+                if fee:
+                    if fee >= 1_000_000:
+                        info_parts.append(f"Fee: \u20ac{fee/1_000_000:.1f}M")
+
+                if info_parts:
+                    tg.raw(f"   {' | '.join(info_parts)}")
+
             tg.blank()
+            tg.raw("   <b>Career:</b>")
 
             for i, t in enumerate(reversed(teams)):
                 if i == 0:
                     marker = "\u25b6\ufe0f"  # Current team
                 else:
                     marker = "\u25aa\ufe0f"  # Past team
-                seasons = ", ".join(t["seasons"][-3:])  # Show last 3 seasons
+                seasons = ", ".join(t["seasons"][-3:])
                 if len(t["seasons"]) > 3:
                     seasons = f"{t['seasons'][0]}...{t['seasons'][-1]}"
-                tg.raw(f"   {marker} <b>{_html_escape(t['team'])}</b>")
-                tg.raw(f"      {seasons} ({t['total_matches']} matches)")
+                matches_str = f" ({t['total_matches']} matches)" if t['total_matches'] > 0 else ""
+                tg.raw(f"   {marker} <b>{_html_escape(t['team'])}</b>  {seasons}{matches_str}")
 
             tg.blank()
 
         if len(matches) > 3:
-            tg.italic(f"Showing 3 of {len(matches)} matches. Be more specific.")
+            tg.italic(f"Showing 3 of {len(matches)} results. Be more specific.")
 
         return tg.build()
     except Exception as e:

@@ -90,6 +90,70 @@ def build_player_history() -> Dict[str, List[Dict]]:
     return result
 
 
+def get_player_profile(player_name: str, history: Dict = None) -> Dict | None:
+    """Get full profile for a player: career path + nationality + market value."""
+    if history is None:
+        history = build_player_history()
+
+    # Get career path
+    career = history.get(player_name)
+
+    # Get nationality + market value from transfermarkt
+    nationality = None
+    market_value = None
+    transfer_fee = None
+
+    for season in ["2025_2026", "2024_2025", "2023_2024"]:
+        mv_path = DATA_DIR / "external" / "transfermarkt" / f"market_values_{season}.parquet"
+        if mv_path.exists():
+            try:
+                mv = pd.read_parquet(mv_path)
+                match = mv[mv["player_name"].str.lower() == player_name.lower()]
+                if match.empty:
+                    # Fuzzy: last name match
+                    last_name = player_name.split()[-1].lower()
+                    match = mv[mv["player_name"].str.lower().str.contains(last_name, na=False)]
+                if not match.empty:
+                    row = match.iloc[0]
+                    nationality = row.get("nationality")
+                    market_value = row.get("market_value_eur")
+                    break
+            except Exception:
+                pass
+
+    # Get transfer fee (most recent arrival)
+    for season in ["2025_2026", "2024_2025", "2023_2024"]:
+        tf_path = DATA_DIR / "external" / "transfermarkt" / f"transfers_{season}.parquet"
+        if tf_path.exists():
+            try:
+                tf = pd.read_parquet(tf_path)
+                arrivals = tf[(tf["transfer_type"] == "in") &
+                             (tf["player_name"].str.lower() == player_name.lower())]
+                if arrivals.empty:
+                    last_name = player_name.split()[-1].lower()
+                    arrivals = tf[(tf["transfer_type"] == "in") &
+                                 (tf["player_name"].str.lower().str.contains(last_name, na=False))]
+                if not arrivals.empty:
+                    row = arrivals.iloc[0]
+                    transfer_fee = row.get("fee_eur")
+                    if pd.isna(transfer_fee):
+                        transfer_fee = None
+                    break
+            except Exception:
+                pass
+
+    if not career and not nationality:
+        return None
+
+    return {
+        "name": player_name,
+        "nationality": nationality,
+        "market_value_eur": int(market_value) if market_value and not pd.isna(market_value) else None,
+        "transfer_fee_eur": int(transfer_fee) if transfer_fee else None,
+        "career": career or [],
+    }
+
+
 def find_ex_players(match_key: str, home_lineup: list, away_lineup: list,
                     history: Dict = None) -> Dict:
     """Find players in a match who are facing their former team.
