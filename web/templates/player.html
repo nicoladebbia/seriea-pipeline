@@ -120,6 +120,7 @@ function renderPlayer(data) {
   const ml = data.match_log || [];
   const career = data.career || {};
   const mvh = data.market_value_history || [];
+  const careerHistory = data.career_history || [];
 
   const initials = (p.name || '??').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
@@ -130,13 +131,15 @@ function renderPlayer(data) {
   if (p.age) metaParts.push(`<span>Age ${p.age}</span>`);
   if (p.nationality) metaParts.push(`<span>${p.nationality}</span>`);
   if (p.height) metaParts.push(`<span>${p.height} cm</span>`);
-  if (p.market_value) {
-    const fmtMv = p.market_value >= 1000000 ? (p.market_value / 1000000).toFixed(1) + 'M' : (p.market_value / 1000).toFixed(0) + 'K';
-    metaParts.push(`<span>Value: €${fmtMv}</span>`);
+  // Market value — try new field first, then legacy
+  const mvVal = p.market_value_eur || p.market_value;
+  if (mvVal) {
+    const fmtMv = mvVal >= 1000000 ? '€' + (mvVal / 1000000).toFixed(1) + 'M' : '€' + (mvVal / 1000).toFixed(0) + 'K';
+    metaParts.push(`<span>Value: ${fmtMv}</span>`);
   } else if (mvh.length) {
     const latest = mvh[mvh.length - 1];
-    const fmtMv = latest.value >= 1000000 ? (latest.value / 1000000).toFixed(1) + 'M' : (latest.value / 1000).toFixed(0) + 'K';
-    metaParts.push(`<span>Value: €${fmtMv}</span>`);
+    const fmtMv = latest.value >= 1000000 ? '€' + (latest.value / 1000000).toFixed(1) + 'M' : '€' + (latest.value / 1000).toFixed(0) + 'K';
+    metaParts.push(`<span>Value: ${fmtMv}</span>`);
   }
 
   let html = `<div class="profile-header">
@@ -282,24 +285,56 @@ function renderMatchLog(ml, p) {
 }
 
 function renderCareer(career) {
-  if (!career || !Object.keys(career).length) return '<div class="text-sm text-tertiary text-center py-8">No career data available.</div>';
+  let html = '';
 
-  return `<div class="section">
-    <div class="section__title">Career Statistics (All Seasons)</div>
-    <div class="career-grid">
-      <div class="career-item"><div class="career-item__label">Matches</div><div class="career-item__value">${career.total_matches || 0}</div></div>
-      <div class="career-item"><div class="career-item__label">Minutes</div><div class="career-item__value">${(career.total_minutes || 0).toLocaleString()}</div></div>
-      <div class="career-item"><div class="career-item__label">Goals</div><div class="career-item__value">${career.total_goals || 0}</div></div>
-      <div class="career-item"><div class="career-item__label">Assists</div><div class="career-item__value">${career.total_assists || 0}</div></div>
-      <div class="career-item"><div class="career-item__label">Total xG</div><div class="career-item__value">${(career.total_xg || 0).toFixed(1)}</div></div>
-      <div class="career-item"><div class="career-item__label">Total xA</div><div class="career-item__value">${(career.total_xa || 0).toFixed(1)}</div></div>
-      <div class="career-item"><div class="career-item__label">xG/90</div><div class="career-item__value">${(career.xg_per_90 || 0).toFixed(2)}</div></div>
-      <div class="career-item"><div class="career-item__label">xA/90</div><div class="career-item__value">${(career.xa_per_90 || 0).toFixed(2)}</div></div>
-      ${career.position ? `<div class="career-item"><div class="career-item__label">Position</div><div class="career-item__value">${career.position}</div></div>` : ''}
-      ${career.recent_form_xg ? `<div class="career-item"><div class="career-item__label">Recent xG/90</div><div class="career-item__value">${career.recent_form_xg.toFixed(2)}</div></div>` : ''}
-      ${career.recent_form_xa ? `<div class="career-item"><div class="career-item__label">Recent xA/90</div><div class="career-item__value">${career.recent_form_xa.toFixed(2)}</div></div>` : ''}
-    </div>
-  </div>`;
+  // Team history (career path)
+  if (careerHistory && careerHistory.length > 0) {
+    html += `<div class="section">
+      <div class="section__title">Teams Played For</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">`;
+    // Reverse to show chronological order (oldest first)
+    const ordered = [...careerHistory].reverse();
+    ordered.forEach((t, i) => {
+      const isCurrent = i === ordered.length - 1;
+      const icon = isCurrent ? '▶️' : '▪️';
+      const seasons = t.seasons && t.seasons.length > 3
+        ? t.seasons[0] + ' ... ' + t.seasons[t.seasons.length - 1]
+        : (t.seasons || []).join(', ');
+      const matches = t.total_matches > 0 ? ` · ${t.total_matches} matches` : '';
+      const style = isCurrent
+        ? 'font-weight: 700; color: var(--text-primary);'
+        : 'color: var(--text-secondary);';
+      html += `<div style="padding: 6px 10px; background: var(--bg-tertiary); border-radius: var(--radius-md); ${style}">
+        ${icon} <strong>${t.team}</strong>
+        <span style="font-size: 11px; opacity: 0.7; margin-left: 8px;">${seasons}${matches}</span>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // xG career stats
+  if (career && Object.keys(career).length > 0) {
+    html += `<div class="section">
+      <div class="section__title">Career Statistics</div>
+      <div class="career-grid">
+        <div class="career-item"><div class="career-item__label">Matches</div><div class="career-item__value">${career.total_matches || 0}</div></div>
+        <div class="career-item"><div class="career-item__label">Minutes</div><div class="career-item__value">${(career.total_minutes || 0).toLocaleString()}</div></div>
+        <div class="career-item"><div class="career-item__label">Goals</div><div class="career-item__value">${career.total_goals || 0}</div></div>
+        <div class="career-item"><div class="career-item__label">Assists</div><div class="career-item__value">${career.total_assists || 0}</div></div>
+        <div class="career-item"><div class="career-item__label">Total xG</div><div class="career-item__value">${(career.total_xg || 0).toFixed(1)}</div></div>
+        <div class="career-item"><div class="career-item__label">Total xA</div><div class="career-item__value">${(career.total_xa || 0).toFixed(1)}</div></div>
+        <div class="career-item"><div class="career-item__label">xG/90</div><div class="career-item__value">${(career.xg_per_90 || 0).toFixed(2)}</div></div>
+        <div class="career-item"><div class="career-item__label">xA/90</div><div class="career-item__value">${(career.xa_per_90 || 0).toFixed(2)}</div></div>
+        ${career.position ? `<div class="career-item"><div class="career-item__label">Position</div><div class="career-item__value">${career.position}</div></div>` : ''}
+        ${career.recent_form_xg ? `<div class="career-item"><div class="career-item__label">Recent xG/90</div><div class="career-item__value">${career.recent_form_xg.toFixed(2)}</div></div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (!html) {
+    return '<div class="text-sm text-tertiary text-center py-8">No career data available.</div>';
+  }
+  return html;
 }
 
 function fmtValue(v) {
@@ -350,7 +385,11 @@ function renderMarketValue(mvh) {
       <canvas id="${canvasId}" class="mv-canvas"></canvas>
     </div>
     <div class="mv-timeline">
-      ${mvh.map(v => `<span class="mv-timeline__label">${v.season.slice(2, 4)}/${v.season.slice(-2)}</span>`).join('')}
+      ${mvh.map(v => {
+        const s = v.season.slice(2, 4) + '/' + v.season.slice(-2);
+        const t = v.team ? '<br><span style="font-size:8px;opacity:0.6;">' + v.team + '</span>' : '';
+        return '<span class="mv-timeline__label">' + s + t + '</span>';
+      }).join('')}
     </div>
     <div class="mv-stats">
       <div class="mv-stat">

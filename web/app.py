@@ -6261,7 +6261,36 @@ def api_player_detail(team_name, player_name):
             "position": profile.get("position"),
         }
 
-    # --- Market value history ---
+    # --- Full career history (all teams played for) ---
+    try:
+        from scripts.analysis.player_history import build_player_history, get_player_profile
+        history = build_player_history()
+        profile = get_player_profile(pname, history)
+        if profile:
+            result["career_history"] = profile.get("career", [])
+            if profile.get("nationality") and not result["player"].get("nationality"):
+                result["player"]["nationality"] = profile["nationality"]
+            if profile.get("market_value_eur"):
+                result["player"]["market_value_eur"] = profile["market_value_eur"]
+            if profile.get("transfer_fee_eur"):
+                result["player"]["transfer_fee_eur"] = profile["transfer_fee_eur"]
+        else:
+            # Try fuzzy match by last name
+            query = pname.split()[-1].lower() if pname else ""
+            for name, teams in history.items():
+                if query in name.lower():
+                    prof = get_player_profile(name, history)
+                    if prof:
+                        result["career_history"] = prof.get("career", [])
+                        if prof.get("nationality") and not result["player"].get("nationality"):
+                            result["player"]["nationality"] = prof["nationality"]
+                        if prof.get("market_value_eur"):
+                            result["player"]["market_value_eur"] = prof["market_value_eur"]
+                        break
+    except Exception as e:
+        log.debug("Career history lookup failed: %s", e)
+
+    # --- Market value history (across all teams, all seasons) ---
     try:
         mv_dir = DATA_DIR / "external" / "transfermarkt"
         if mv_dir.exists():
@@ -6270,16 +6299,24 @@ def api_player_detail(team_name, player_name):
                     continue
                 season = mv_file.stem.replace("market_values_", "").replace("_", "-")
                 mvdf = pd.read_parquet(mv_file)
-                team_mv = mvdf[mvdf["team"].apply(lambda t: normalize_team(str(t)) == team)]
-                pmv = team_mv[team_mv["player_name"].apply(
+                # Search across ALL teams (not just current) for this player
+                pmv = mvdf[mvdf["player_name"].apply(
                     lambda n: normalize_player_name(str(n)) == pnorm
                 )]
+                if pmv.empty:
+                    # Fuzzy by surname
+                    surname = pnorm.split()[-1] if pnorm else ""
+                    pmv = mvdf[mvdf["player_name"].apply(
+                        lambda n: surname in normalize_player_name(str(n))
+                    )]
                 if not pmv.empty:
-                    val = pmv.iloc[0].get("market_value_eur")
+                    row = pmv.iloc[0]
+                    val = row.get("market_value_eur")
                     if pd.notna(val):
                         result["market_value_history"].append({
                             "season": season,
                             "value": int(val),
+                            "team": str(row.get("team", "")),
                         })
     except Exception:
         pass
