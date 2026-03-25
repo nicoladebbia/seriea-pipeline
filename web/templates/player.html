@@ -70,9 +70,20 @@
 
   /* Career summary */
   .career-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
-  .career-item { padding: 8px; background: var(--bg-tertiary); border-radius: var(--radius-md); }
-  .career-item__label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; }
-  .career-item__value { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+  .career-item { padding: 10px 12px; background: var(--bg-tertiary); border-radius: var(--radius-md); }
+  .career-item__label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+  .career-item__value { font-size: 18px; font-weight: 800; font-family: var(--font-mono); color: var(--text-primary); margin-top: 2px; }
+
+  /* Team history timeline */
+  .team-history { display: flex; flex-direction: column; gap: 4px; }
+  .team-entry { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg-tertiary); border-radius: var(--radius-md); border-left: 3px solid var(--border-subtle); transition: border-color 0.15s; }
+  .team-entry:hover { border-left-color: var(--accent); }
+  .team-entry--current { border-left-color: var(--green); background: rgba(74,222,128,0.06); }
+  .team-entry__icon { font-size: 14px; flex-shrink: 0; }
+  .team-entry__info { flex: 1; }
+  .team-entry__name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .team-entry__meta { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
+  .team-entry__matches { font-size: 11px; font-weight: 600; font-family: var(--font-mono); color: var(--text-secondary); flex-shrink: 0; }
 
   /* Tabs */
   .player-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 16px; }
@@ -291,23 +302,24 @@ function renderCareer(career, careerHistory) {
   // Team history (career path)
   if (careerHistory.length > 0) {
     html += `<div class="section">
-      <div class="section__title">Teams Played For</div>
-      <div style="display: flex; flex-direction: column; gap: 6px;">`;
-    // Reverse to show chronological order (oldest first)
-    const ordered = [...careerHistory].reverse();
-    ordered.forEach((t, i) => {
-      const isCurrent = i === ordered.length - 1;
-      const icon = isCurrent ? '▶️' : '▪️';
+      <div class="section__title">Career Path</div>
+      <div class="team-history">`;
+    // Show most recent first (natural reading order)
+    careerHistory.forEach((t, i) => {
+      const isCurrent = i === 0;
+      const cls = isCurrent ? 'team-entry team-entry--current' : 'team-entry';
+      const icon = isCurrent ? '⚽' : '•';
       const seasons = t.seasons && t.seasons.length > 3
-        ? t.seasons[0] + ' ... ' + t.seasons[t.seasons.length - 1]
+        ? t.seasons[0] + ' → ' + t.seasons[t.seasons.length - 1]
         : (t.seasons || []).join(', ');
-      const matches = t.total_matches > 0 ? ` · ${t.total_matches} matches` : '';
-      const style = isCurrent
-        ? 'font-weight: 700; color: var(--text-primary);'
-        : 'color: var(--text-secondary);';
-      html += `<div style="padding: 6px 10px; background: var(--bg-tertiary); border-radius: var(--radius-md); ${style}">
-        ${icon} <strong>${t.team}</strong>
-        <span style="font-size: 11px; opacity: 0.7; margin-left: 8px;">${seasons}${matches}</span>
+      const matchCount = t.total_matches > 0 ? t.total_matches + ' apps' : '';
+      html += `<div class="${cls}">
+        <div class="team-entry__icon">${icon}</div>
+        <div class="team-entry__info">
+          <div class="team-entry__name">${t.team}</div>
+          <div class="team-entry__meta">${seasons}</div>
+        </div>
+        ${matchCount ? `<div class="team-entry__matches">${matchCount}</div>` : ''}
       </div>`;
     });
     html += `</div></div>`;
