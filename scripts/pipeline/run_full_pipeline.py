@@ -1307,8 +1307,8 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             _ss_age = max(((datetime.now().timestamp() - f.stat().st_mtime) / 3600 for f in _ss_files), default=999)
             if _ss_age > 72:  # >3 days
                 print(f"  Sofascore data stale ({_ss_age:.0f}h) — refreshing...")
-                from scraper.sofascore_scraper import scrape_current_season
-                scrape_current_season()
+                from scripts.data.scrape_sofascore import main as _sofascore_scrape
+                _sofascore_scrape()
                 print(f"  Sofascore refreshed")
         except Exception as e:
             print(f"  Sofascore refresh skipped: {e}")
