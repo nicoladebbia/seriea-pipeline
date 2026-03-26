@@ -1320,8 +1320,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             if _us_age > 120:  # >5 days
                 print(f"  Understat data stale ({_us_age:.0f}h) — refreshing...")
                 from scraper.understat_scraper import scrape_understat_xg
-                scrape_understat_xg()
-                print(f"  Understat refreshed")
+                _us_df = scrape_understat_xg()
+                # Force write — scraper returns data but may not persist it
+                if _us_df is not None and len(_us_df) > 0:
+                    _us_df.to_parquet(str(_us_path), index=False)
+                    print(f"  Understat refreshed ({len(_us_df)} rows)")
+                else:
+                    print(f"  Understat scraper returned no data")
         except Exception as e:
             print(f"  Understat refresh skipped: {e}")
 
