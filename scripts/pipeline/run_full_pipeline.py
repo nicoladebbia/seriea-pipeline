@@ -2220,7 +2220,7 @@ def main():
             from scripts.betting.bankroll_loader import get_effective_bankroll
             args.bankroll = get_effective_bankroll()
         except Exception as e:
-            log.warning("Failed to auto-load bankroll: %s — using 1000", e)
+            log.warning(f"Failed to auto-load bankroll: {e} — using 1000")
             args.bankroll = 1000.0
 
     if args.live_monitor:

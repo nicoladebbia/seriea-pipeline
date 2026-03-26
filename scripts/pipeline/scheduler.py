@@ -630,7 +630,7 @@ def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
                 log.error(f"Error output: {result.stderr[-500:]}")
 
         except subprocess.TimeoutExpired:
-            log.error("Pipeline timed out after 10 minutes")
+            log.error("Pipeline timed out after 20 minutes")
         except Exception as e:
             log.error(f"Pipeline execution error: {e}")
 
@@ -640,6 +640,16 @@ def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
             time.sleep(RETRY_DELAY_MINUTES * 60)
 
     log.error("All retry attempts failed")
+
+    # Send critical alert — pipeline has been failing for all retries
+    try:
+        send_notification(
+            f"Pipeline failed {MAX_RETRIES} times. Last error: {result.stderr[-200:] if 'result' in dir() else 'unknown'}",
+            title="CRITICAL: Pipeline Down"
+        )
+    except Exception:
+        pass
+
     return False
 
 

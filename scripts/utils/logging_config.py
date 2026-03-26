@@ -250,20 +250,20 @@ class PipelineLogger:
         self.api_logger = APICallLogger()
         self.perf_logger = PerformanceLogger()
 
-    def info(self, message: str):
-        self.logger.info(message)
+    def info(self, message, *args, **kwargs):
+        self.logger.info(message, *args, **kwargs)
 
-    def debug(self, message: str):
-        self.logger.debug(message)
+    def debug(self, message, *args, **kwargs):
+        self.logger.debug(message, *args, **kwargs)
 
-    def warning(self, message: str):
-        self.logger.warning(message)
+    def warning(self, message, *args, **kwargs):
+        self.logger.warning(message, *args, **kwargs)
 
-    def error(self, message: str, exc_info: bool = False):
-        self.logger.error(message, exc_info=exc_info)
+    def error(self, message, *args, **kwargs):
+        self.logger.error(message, *args, **kwargs)
 
-    def critical(self, message: str, exc_info: bool = True):
-        self.logger.critical(message, exc_info=exc_info)
+    def critical(self, message, *args, **kwargs):
+        self.logger.critical(message, *args, **kwargs)
 
     def log_api_call(self, api_name: str, endpoint: str, status_code: int,
                      response_time_ms: float, credits_used: int = 0, error: str = None):

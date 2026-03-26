@@ -375,6 +375,52 @@ def run_monitor() -> Dict:
         result["issues"].append((pending["status"], f"[pending_bets] {pending['detail']}"))
     log.info(f"  Pending bets: {pending['status']} — {pending['detail']}")
 
+    # ─── Auto-recovery: if pipeline stale >12h, try to run it ───
+    if pipeline.get("status") == "CRITICAL":
+        age = pipeline.get("age_hours", 0)
+        if age > 12:
+            _recovery_dedup = DATA_DIR / ".pipeline_recovery_dedup.json"
+            should_recover = True
+            try:
+                if _recovery_dedup.exists():
+                    rd = _load_json(_recovery_dedup)
+                    last_attempt = rd.get("last_attempt", "")
+                    if last_attempt:
+                        hours_since = _iso_age_hours(last_attempt)
+                        if hours_since < 6:  # Don't retry more than once per 6 hours
+                            should_recover = False
+            except Exception:
+                pass
+
+            if should_recover:
+                log.info("AUTO-RECOVERY: Pipeline stale >12h — triggering emergency run")
+                try:
+                    import subprocess
+                    _recovery_dedup.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_recovery_dedup, "w") as _f:
+                        json.dump({"last_attempt": datetime.now().isoformat()}, _f)
+
+                    cmd = [
+                        sys.executable,
+                        str(PROJECT_ROOT / "scripts" / "pipeline" / "run_full_pipeline.py"),
+                        "--quick",
+                    ]
+                    proc = subprocess.Popen(
+                        cmd, cwd=str(PROJECT_ROOT),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    log.info(f"Emergency pipeline started (PID {proc.pid})")
+                    result["auto_recovery"] = {"triggered": True, "pid": proc.pid}
+
+                    _unified_notify(
+                        f"Pipeline was stale ({age:.0f}h). Auto-recovery triggered.",
+                        title="Auto-Recovery: Pipeline Restart",
+                        level="warning", category="alert",
+                    )
+                except Exception as e:
+                    log.error(f"Auto-recovery failed: {e}")
+                    result["auto_recovery"] = {"triggered": False, "error": str(e)}
+
     # ─── Determine overall status ───
     if any(level == "CRITICAL" for level, _ in result["issues"]):
         result["overall_status"] = "CRITICAL"
