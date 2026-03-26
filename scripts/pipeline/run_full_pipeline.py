@@ -1300,16 +1300,20 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             print(f"  Injury data warning: {e}")
             log.warning(f"Injury data error: {e}")
 
-        # Auto-refresh Sofascore if >3 days stale
+        # Auto-refresh Sofascore if >3 days stale (runs as subprocess — takes 10-20 min)
         try:
             _ss_dir = DATA_DIR / "external" / "sofascore"
             _ss_files = list(_ss_dir.glob("*.parquet")) if _ss_dir.exists() else []
             _ss_age = max(((datetime.now().timestamp() - f.stat().st_mtime) / 3600 for f in _ss_files), default=999)
             if _ss_age > 72:  # >3 days
-                print(f"  Sofascore data stale ({_ss_age:.0f}h) — refreshing...")
-                from scripts.data.scrape_sofascore import main as _sofascore_scrape
-                _sofascore_scrape()
-                print(f"  Sofascore refreshed")
+                print(f"  Sofascore data stale ({_ss_age:.0f}h) — starting background refresh...")
+                import subprocess as _sp
+                _sp.Popen(
+                    [sys.executable, "-m", "scripts.data.scrape_sofascore", "--season", "2025-2026"],
+                    cwd=str(PROJECT_ROOT),
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                )
+                print(f"  Sofascore refresh started in background")
         except Exception as e:
             print(f"  Sofascore refresh skipped: {e}")
 
@@ -1321,8 +1325,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 print(f"  Understat data stale ({_us_age:.0f}h) — refreshing...")
                 from scraper.understat_scraper import scrape_understat_xg
                 _us_df = scrape_understat_xg()
-                # Force write — scraper returns data but may not persist it
                 if _us_df is not None and len(_us_df) > 0:
+                    # Drop columns that can't serialize to Parquet (empty struct types)
+                    for _col in _us_df.columns:
+                        try:
+                            _us_df[[_col]].to_parquet("/dev/null")
+                        except Exception:
+                            _us_df = _us_df.drop(columns=[_col])
                     _us_df.to_parquet(str(_us_path), index=False)
                     print(f"  Understat refreshed ({len(_us_df)} rows)")
                 else:
