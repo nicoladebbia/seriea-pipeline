@@ -1501,33 +1501,63 @@ def _live_data_freshness(cached: dict) -> dict:
     """
     result = dict(cached)
 
-    # Understat PPDA — check actual file mtime
+    # Understat PPDA — check parsed parquet (most reliable) then JSON files
     try:
-        understat_dir = DATA_DIR / "external" / "understat"
-        json_files = sorted(understat_dir.glob("understat_*.json"))
+        us_parquet = DATA_DIR / "parsed" / "understat_players.parquet"
+        us_dir = DATA_DIR / "external" / "understat"
+        # Use the newest of: parsed parquet OR JSON files
+        candidates = []
+        if us_parquet.exists():
+            candidates.append(us_parquet.stat().st_mtime)
+        json_files = sorted(us_dir.glob("understat_*.json")) if us_dir.exists() else []
         if json_files:
-            latest = json_files[-1]
-            mtime = datetime.fromtimestamp(latest.stat().st_mtime)
+            candidates.append(max(f.stat().st_mtime for f in json_files))
+        if candidates:
+            newest = max(candidates)
+            mtime = datetime.fromtimestamp(newest)
+            age_h = (datetime.now() - mtime).total_seconds() / 3600
             result["understat_ppda"] = {
-                "seasons": len(json_files),
-                "latest_file": latest.name,
+                "seasons": len(json_files) if json_files else 0,
                 "last_updated": mtime.isoformat(),
-                "fresh": (datetime.now() - mtime).days <= 7,
+                "age_hours": round(age_h, 1),
+                "fresh": age_h <= 168,  # 7 days
             }
     except Exception:
         pass
 
-    # SofaScore — check actual parquet mtime
+    # SofaScore — check newest file across all parquets
     try:
-        ss_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-        if ss_path.exists():
-            mtime = datetime.fromtimestamp(ss_path.stat().st_mtime)
-            age_h = (datetime.now() - mtime).total_seconds() / 3600
-            result["sofascore"] = {
-                **(result.get("sofascore") or {}),
-                "last_updated": mtime.isoformat(),
-                "fresh": age_h <= 48,
-            }
+        ss_dir = DATA_DIR / "external" / "sofascore"
+        if ss_dir.exists():
+            ss_files = [f for f in ss_dir.glob("*.parquet") if f.is_file()]
+            if ss_files:
+                newest = max(f.stat().st_mtime for f in ss_files)
+                mtime = datetime.fromtimestamp(newest)
+                age_h = (datetime.now() - mtime).total_seconds() / 3600
+                result["sofascore"] = {
+                    **(result.get("sofascore") or {}),
+                    "last_updated": mtime.isoformat(),
+                    "age_hours": round(age_h, 1),
+                    "fresh": age_h <= 72,  # 3 days
+                }
+    except Exception:
+        pass
+
+    # Injuries — check newest file in injuries directory
+    try:
+        inj_dir = DATA_DIR / "external" / "injuries"
+        if inj_dir.exists():
+            inj_files = [f for f in inj_dir.glob("*.parquet") if f.is_file()]
+            if inj_files:
+                newest = max(f.stat().st_mtime for f in inj_files)
+                mtime = datetime.fromtimestamp(newest)
+                age_h = (datetime.now() - mtime).total_seconds() / 3600
+                result["injuries"] = {
+                    **(result.get("injuries") or {}),
+                    "last_updated": mtime.isoformat(),
+                    "age_hours": round(age_h, 1),
+                    "fresh": age_h <= 72,  # 3 days
+                }
     except Exception:
         pass
 
