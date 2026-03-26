@@ -264,9 +264,9 @@ def step(num: int, total: int, name: str):
         if prev_start > 0:
             elapsed = _time.time() - prev_start
             if elapsed > 30:
-                log.info("Step '%s' took %.1fs (SLOW)", prev_name, elapsed)
+                log.info(f"Step '{prev_name}' took {elapsed:.1f}s (SLOW)")
             elif elapsed > 5:
-                log.info("Step '%s' took %.1fs", prev_name, elapsed)
+                log.info(f"Step '{prev_name}' took {elapsed:.1f}s")
     _step_times["_last"] = (name, _time.time())
     print(f"\n[{num}/{total}] {name}...")
     log.info(f"Starting step {num}/{total}: {name}")
