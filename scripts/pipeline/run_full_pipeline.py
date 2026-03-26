@@ -273,11 +273,21 @@ def step(num: int, total: int, name: str):
 
 
 def _is_data_stale(filepath: Path, max_age_hours: float) -> bool:
-    """Check if a file is older than max_age_hours or doesn't exist."""
+    """Check if a file/directory is older than max_age_hours.
+
+    For directories, checks the newest file inside.
+    """
     if not filepath.exists():
         return True
     try:
-        mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
+        if filepath.is_dir():
+            files = list(filepath.glob("*"))
+            if not files:
+                return True
+            newest = max(f.stat().st_mtime for f in files if f.is_file())
+            mtime = datetime.fromtimestamp(newest)
+        else:
+            mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
         age = datetime.now() - mtime
         return age > timedelta(hours=max_age_hours)
     except Exception:
@@ -1278,15 +1288,42 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         step(10, total_steps, "Fetching Injury Data")
         try:
             from scraper.injuries import get_current_injuries
-            injuries_df = get_current_injuries(auto_scrape=not quick)
+            # Always try to scrape if data is >48h old
+            _inj_stale = _is_data_stale(DATA_DIR / "external" / "injuries", 48)
+            injuries_df = get_current_injuries(auto_scrape=_inj_stale or not quick)
             if not injuries_df.empty:
                 n_teams = injuries_df["team"].nunique() if "team" in injuries_df.columns else 0
                 print(f"  Loaded {len(injuries_df)} injuries across {n_teams} teams")
             else:
-                print(f"  No injury data available (run with --full to scrape)")
+                print(f"  No injury data available")
         except Exception as e:
             print(f"  Injury data warning: {e}")
             log.warning(f"Injury data error: {e}")
+
+        # Auto-refresh Sofascore if >3 days stale
+        try:
+            _ss_dir = DATA_DIR / "external" / "sofascore"
+            _ss_files = list(_ss_dir.glob("*.parquet")) if _ss_dir.exists() else []
+            _ss_age = max(((datetime.now().timestamp() - f.stat().st_mtime) / 3600 for f in _ss_files), default=999)
+            if _ss_age > 72:  # >3 days
+                print(f"  Sofascore data stale ({_ss_age:.0f}h) — refreshing...")
+                from scraper.sofascore_scraper import scrape_current_season
+                scrape_current_season()
+                print(f"  Sofascore refreshed")
+        except Exception as e:
+            print(f"  Sofascore refresh skipped: {e}")
+
+        # Auto-refresh Understat if >5 days stale
+        try:
+            _us_path = DATA_DIR / "parsed" / "understat_players.parquet"
+            _us_age = (datetime.now().timestamp() - _us_path.stat().st_mtime) / 3600 if _us_path.exists() else 999
+            if _us_age > 120:  # >5 days
+                print(f"  Understat data stale ({_us_age:.0f}h) — refreshing...")
+                from scraper.understat_scraper import scrape_understat_xg
+                scrape_understat_xg()
+                print(f"  Understat refreshed")
+        except Exception as e:
+            print(f"  Understat refresh skipped: {e}")
 
     # =========================================================================
     # Step 10a: Fetch Weather Data for Upcoming Matches
