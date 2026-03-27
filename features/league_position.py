@@ -45,9 +45,19 @@ def add_league_position_features(matches: pd.DataFrame) -> pd.DataFrame:
         df[f"{prefix}_league_draws"] = None
         df[f"{prefix}_league_losses"] = None
 
-    for season in df["season"].unique():
-        season_mask = df["season"] == season
-        season_df = df[season_mask].copy()
+    # When a "league" column is present, standings must be computed per
+    # (season, league) so that teams from different competitions are not
+    # mixed into a single table.  Without the column the grouping falls
+    # back to season-only (backward compatible).
+    has_league = "league" in df.columns
+    if has_league:
+        group_iter = df.groupby(["season", "league"])
+    else:
+        group_iter = df.groupby("season")
+
+    for _group_key, season_df_raw in group_iter:
+        season_mask = season_df_raw.index
+        season_df = df.loc[season_mask].copy()
 
         # Track team stats incrementally
         team_stats: dict[str, dict] = {}

@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.team_names import normalize_team
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -28,19 +30,13 @@ FBREF_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats.parquet"
 MATCHES_PATH = PROJECT_ROOT / "data" / "parsed" / "matches.parquet"
 PREDICTIONS_PATH = PROJECT_ROOT / "data" / "upcoming" / "predictions.json"
 
-TEAM_NAME_MAP = {
-    "Hellas Verona": "Verona",
-    "ChievoVerona": "Chievo",
-}
-
 LOOKBACK = 5
 
 
 def _normalize(name: str) -> str:
     if pd.isna(name):
         return ""
-    n = name.strip()
-    return TEAM_NAME_MAP.get(n, n)
+    return normalize_team(name)
 
 
 def _build_team_rolling_stats() -> pd.DataFrame:

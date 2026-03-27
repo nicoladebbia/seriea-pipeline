@@ -45,22 +45,13 @@ POSITION_TO_FORMATION = {
     (3, 3, 3): "3-3-3-1",  # approximate
 }
 
-# Team name normalization
-TEAM_NAME_MAP = {
-    "ac milan": "Milan",
-    "parma calcio 1913": "Parma",
-    "hellas verona": "Verona",
-    "internazionale": "Inter",
-    "chievoverona": "Chievo",
-}
+from config.team_names import normalize_team
 
 
 def _normalize(name: str) -> str:
     if pd.isna(name):
         return ""
-    n = name.strip()
-    mapped = TEAM_NAME_MAP.get(n.lower(), n)
-    return mapped
+    return normalize_team(name)
 
 
 def _infer_formation_from_positions(d_count: int, m_count: int, f_count: int) -> str:

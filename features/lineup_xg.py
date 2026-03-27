@@ -21,6 +21,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.team_names import normalize_team
+
 log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -169,15 +171,8 @@ def _compute_understat_lineup_proxy(
 
     us_df = pd.DataFrame(team_season_xg)
 
-    # Team name normalization (Understat uses different names)
-    # Map Understat team names to the feature pipeline's canonical names.
-    # Only mismatches need mapping; most names already match.
-    NAME_MAP = {
-        "AC Milan": "Milan",
-        "Parma Calcio 1913": "Parma",
-        "SPAL 2013": "SPAL",
-    }
-    us_df["team_norm"] = us_df["team"].map(NAME_MAP).fillna(us_df["team"])
+    # Normalize Understat team names to pipeline canonical form
+    us_df["team_norm"] = us_df["team"].apply(normalize_team)
 
     for side, team_col in [("home", "home_team"), ("away", "away_team")]:
         if team_col not in df.columns or "season" not in df.columns:

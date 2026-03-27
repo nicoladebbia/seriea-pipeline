@@ -16,6 +16,24 @@ from storage.paths import fixtures_csv_path
 
 log = logging.getLogger(__name__)
 
+# FBref competition ID mapping
+FBREF_COMP_IDS: dict[str, int] = {
+    "serie_a": 11,
+    "premier_league": 9,
+    "la_liga": 12,
+    "bundesliga": 20,
+    "ligue_1": 13,
+}
+
+# FBref URL-friendly league names for the schedule path
+FBREF_LEAGUE_NAMES: dict[str, str] = {
+    "serie_a": "Serie-A",
+    "premier_league": "Premier-League",
+    "la_liga": "La-Liga",
+    "bundesliga": "Bundesliga",
+    "ligue_1": "Ligue-1",
+}
+
 # Column order for the output CSV / DataFrame
 FIXTURE_COLUMNS = [
     "match_id",
@@ -37,11 +55,23 @@ FIXTURE_COLUMNS = [
 ]
 
 
-def _fixture_url(season: str) -> str:
-    """Build the FBref fixtures URL for a Serie A season."""
+def _fixture_url(season: str, league: str = "serie_a") -> str:
+    """Build the FBref fixtures URL for a league season.
+
+    Args:
+        season: Season string (e.g., "2024-2025")
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
+    """
+    comp_id = FBREF_COMP_IDS.get(league)
+    league_name = FBREF_LEAGUE_NAMES.get(league)
+    if comp_id is None or league_name is None:
+        raise ValueError(
+            f"Unknown league '{league}'. Valid: {', '.join(FBREF_COMP_IDS)}"
+        )
     return (
-        f"{FBREF_BASE_URL}/en/comps/{SERIE_A_COMP_ID}"
-        f"/{season}/schedule/{season}-Serie-A-Scores-and-Fixtures"
+        f"{FBREF_BASE_URL}/en/comps/{comp_id}"
+        f"/{season}/schedule/{season}-{league_name}-Scores-and-Fixtures"
     )
 
 
@@ -94,15 +124,21 @@ def _make_match_id(match_date: date | None, home: str, away: str) -> str:
     return f"{date_str}_{home}_{away}".replace(" ", "-")
 
 
-def scrape_season_fixtures(season: str, client: FBrefClient | None = None) -> pd.DataFrame:
+def scrape_season_fixtures(season: str, client: FBrefClient | None = None, league: str = "serie_a") -> pd.DataFrame:
     """Scrape the fixture page for *season* and return a DataFrame.
 
     Also saves the raw CSV to data/raw/fixtures/{season}.csv.
+
+    Args:
+        season: Season string (e.g., "2024-2025")
+        client: Optional FBrefClient instance
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
     """
     if client is None:
         client = FBrefClient()
 
-    url = _fixture_url(season)
+    url = _fixture_url(season, league=league)
     log.info("Fetching fixtures from %s", url)
     resp = client.get(url)
     soup = BeautifulSoup(resp.text, "lxml")

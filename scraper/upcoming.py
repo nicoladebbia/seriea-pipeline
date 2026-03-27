@@ -28,6 +28,25 @@ UPCOMING_FIXTURES_PATH = PARSED_DIR / "upcoming_fixtures.parquet"
 # Football-data.co.uk fixture URL
 FOOTBALL_DATA_FIXTURES_URL = "https://www.football-data.co.uk/new/ITA.csv"
 
+# Football-data.co.uk country code mapping
+FOOTBALL_DATA_CODES: dict[str, str] = {
+    "serie_a": "ITA",
+    "premier_league": "ENG",
+    "la_liga": "ESP",
+    "bundesliga": "DEU",
+    "ligue_1": "FRA",
+}
+
+
+def _football_data_url(league: str = "serie_a") -> str:
+    """Build the football-data.co.uk CSV URL for a league."""
+    code = FOOTBALL_DATA_CODES.get(league)
+    if not code:
+        raise ValueError(
+            f"Unknown league '{league}'. Valid: {', '.join(FOOTBALL_DATA_CODES)}"
+        )
+    return f"https://www.football-data.co.uk/new/{code}.csv"
+
 
 @dataclass
 class UpcomingMatch:
@@ -48,11 +67,17 @@ def _make_match_id(match_date: date, home: str, away: str) -> str:
     return f"{date_str}_{home}_{away}".replace(" ", "-")
 
 
-def fetch_fixtures_from_football_data() -> pd.DataFrame:
-    """Fetch latest fixtures from football-data.co.uk."""
+def fetch_fixtures_from_football_data(league: str = "serie_a") -> pd.DataFrame:
+    """Fetch latest fixtures from football-data.co.uk.
+
+    Args:
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
+    """
     try:
-        log.info("Fetching fixtures from football-data.co.uk")
-        df = pd.read_csv(FOOTBALL_DATA_FIXTURES_URL)
+        url = _football_data_url(league)
+        log.info("Fetching fixtures from %s", url)
+        df = pd.read_csv(url)
 
         # Filter to Serie A only (the file contains Italian football)
         # The file has: Date, Time, HomeTeam, AwayTeam, FTHG, FTAG, etc.
@@ -110,12 +135,15 @@ def fetch_fixtures_from_football_data() -> pd.DataFrame:
 def get_upcoming_fixtures(
     days_ahead: int = 14,
     refresh: bool = False,
+    league: str = "serie_a",
 ) -> list[UpcomingMatch]:
     """Get list of upcoming fixtures for the next N days.
 
     Args:
         days_ahead: Number of days to look ahead
         refresh: Force refresh from source
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
 
     Returns:
         List of UpcomingMatch objects
@@ -146,7 +174,7 @@ def get_upcoming_fixtures(
             return _df_to_matches(upcoming, season)
 
     # Fetch fresh data
-    df = fetch_fixtures_from_football_data()
+    df = fetch_fixtures_from_football_data(league=league)
 
     if df.empty:
         # Return manually curated upcoming fixtures

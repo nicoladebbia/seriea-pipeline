@@ -38,18 +38,48 @@ WF_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# worldfootball.net season IDs for Serie A (co111)
-WF_SEASON_IDS: dict[str, str] = {
-    "2017-2018": "se23947",
-    "2018-2019": "se28594",
-    "2019-2020": "se31821",
-    "2020-2021": "se36220",
-    "2021-2022": "se39347",
-    "2022-2023": "se45806",
-    "2023-2024": "se52577",
-    "2024-2025": "se74735",
-    "2025-2026": "se95481",
+# Worldfootball.net league slug mapping
+WF_LEAGUE_SLUGS: dict[str, str] = {
+    "serie_a": "ita-serie-a",
+    "premier_league": "eng-premier-league",
+    "la_liga": "esp-primera-division",
+    "bundesliga": "bundesliga",
+    "ligue_1": "fra-ligue-1",
 }
+
+# worldfootball.net season IDs per league
+# Key: (league, season) -> season_id
+WF_SEASON_IDS_BY_LEAGUE: dict[str, dict[str, str]] = {
+    "serie_a": {
+        "2017-2018": "se23947",
+        "2018-2019": "se28594",
+        "2019-2020": "se31821",
+        "2020-2021": "se36220",
+        "2021-2022": "se39347",
+        "2022-2023": "se45806",
+        "2023-2024": "se52577",
+        "2024-2025": "se74735",
+        "2025-2026": "se95481",
+    },
+}
+
+# Backward-compatible alias for Serie A season IDs
+WF_SEASON_IDS: dict[str, str] = WF_SEASON_IDS_BY_LEAGUE["serie_a"]
+
+
+def _resolve_wf_league(league: str) -> tuple[str, dict[str, str]]:
+    """Resolve league to WF slug and season ID mapping.
+
+    Returns:
+        Tuple of (league_slug, season_ids_dict)
+    """
+    slug = WF_LEAGUE_SLUGS.get(league)
+    if not slug:
+        raise ValueError(
+            f"Unknown league '{league}'. Valid: {', '.join(WF_LEAGUE_SLUGS)}"
+        )
+    season_ids = WF_SEASON_IDS_BY_LEAGUE.get(league, {})
+    return slug, season_ids
 
 # Team name mapping: worldfootball.net name -> our internal name
 # This handles the most common variations
@@ -162,19 +192,23 @@ def _fetch(url: str) -> requests.Response | None:
     return None
 
 
-def get_season_referees(season: str) -> list[tuple[str, str, str]]:
-    """Get list of referees for a Serie A season.
+def get_season_referees(season: str, league: str = "serie_a") -> list[tuple[str, str, str]]:
+    """Get list of referees for a league season.
+
+    Args:
+        season: Season string (e.g., "2024-2025")
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
 
     Returns list of (referee_name, person_id, slug).
     """
-    season_id = WF_SEASON_IDS.get(season)
+    league_slug, season_ids = _resolve_wf_league(league)
+    season_id = season_ids.get(season)
     if not season_id:
-        log.warning("No season ID for %s", season)
+        log.warning("No season ID for %s (%s)", season, league)
         return []
 
-    # URL format: /referees/ita-serie-a-{season_formatted}/
-    season_fmt = season.replace("-", "-")  # already correct format
-    url = f"{WF_BASE}/referees/ita-serie-a-{season_fmt}/"
+    url = f"{WF_BASE}/referees/{league_slug}-{season}/"
     log.info("Fetching referee list for %s: %s", season, url)
 
     resp = _fetch(url)
@@ -210,19 +244,32 @@ def scrape_referee_matches(
     person_id: str,
     slug: str,
     season: str,
+    league: str = "serie_a",
 ) -> list[dict]:
     """Scrape all matches officiated by a referee in a season.
+
+    Args:
+        referee_name: Name of the referee
+        person_id: Worldfootball.net person ID (e.g., "pe228195")
+        slug: URL slug for the referee
+        season: Season string (e.g., "2024-2025")
+        league: League identifier (default: "serie_a")
 
     Returns list of dicts with: match_date, home_team, away_team, referee,
     yellows, second_yellows, reds, matchweek.
     """
-    season_id = WF_SEASON_IDS.get(season)
+    league_slug, season_ids = _resolve_wf_league(league)
+    season_id = season_ids.get(season)
     if not season_id:
         return []
 
+    # Derive the competition path segment from the league slug
+    # e.g., "ita-serie-a" -> "serie-a", "eng-premier-league" -> "premier-league"
+    comp_name = league_slug.split("-", 1)[1] if "-" in league_slug else league_slug
+
     url = (
         f"{WF_BASE}/person/{person_id}/{slug}"
-        f"/co111/serie-a/{season_id}/{season}/matches-as-referee/"
+        f"/co111/{comp_name}/{season_id}/{season}/matches-as-referee/"
     )
 
     resp = _fetch(url)
@@ -316,8 +363,14 @@ def _parse_card_count(text: str) -> int:
 
 def scrape_all_referee_assignments(
     seasons: list[str] | None = None,
+    league: str = "serie_a",
 ) -> pd.DataFrame:
     """Scrape referee assignments for all specified seasons.
+
+    Args:
+        seasons: List of seasons to scrape (default: all available for the league)
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
 
     Returns DataFrame with columns:
         match_date, home_team, away_team, referee, matchweek,
@@ -328,19 +381,20 @@ def scrape_all_referee_assignments(
         log.info("Loading cached referee assignments from %s", cache_path)
         return pd.read_parquet(cache_path)
 
+    _, season_ids = _resolve_wf_league(league)
     if seasons is None:
-        seasons = list(WF_SEASON_IDS.keys())
+        seasons = list(season_ids.keys())
 
     all_rows: list[dict] = []
 
     for season in seasons:
-        log.info("=== Scraping referees for season %s ===", season)
-        refs = get_season_referees(season)
+        log.info("=== Scraping referees for season %s (%s) ===", season, league)
+        refs = get_season_referees(season, league=league)
         time.sleep(3)
 
         for ref_name, person_id, slug in refs:
             log.info("  Fetching matches for %s (%s)", ref_name, season)
-            matches = scrape_referee_matches(ref_name, person_id, slug, season)
+            matches = scrape_referee_matches(ref_name, person_id, slug, season, league=league)
             all_rows.extend(matches)
             log.info("    %d matches found", len(matches))
             time.sleep(3)  # Respectful delay

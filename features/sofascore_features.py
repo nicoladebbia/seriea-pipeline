@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.team_names import normalize_team
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -43,52 +45,17 @@ SOFASCORE_PATH = PROJECT_ROOT / "data" / "external" / "sofascore" / "player_matc
 
 ROLLING_WINDOW = 5
 
-# Team name normalization (Sofascore -> pipeline)
-TEAM_NAME_MAP = {
-    "ac milan": "milan",
-    "parma calcio 1913": "parma",
-    "spal 2013": "spal",
-    "spal": "spal",
-    "hellas verona": "verona",
-    "inter": "inter",
-    "internazionale": "inter",
-    "napoli": "napoli",
-    "juventus": "juventus",
-    "roma": "roma",
-    "lazio": "lazio",
-    "atalanta": "atalanta",
-    "fiorentina": "fiorentina",
-    "torino": "torino",
-    "sampdoria": "sampdoria",
-    "sassuolo": "sassuolo",
-    "udinese": "udinese",
-    "bologna": "bologna",
-    "genoa": "genoa",
-    "cagliari": "cagliari",
-    "empoli": "empoli",
-    "lecce": "lecce",
-    "monza": "monza",
-    "como": "como",
-    "venezia": "venezia",
-    "spezia": "spezia",
-    "salernitana": "salernitana",
-    "verona": "verona",
-    "frosinone": "frosinone",
-    "cremonese": "cremonese",
-    "benevento": "benevento",
-    "crotone": "crotone",
-    "parma": "parma",
-    "brescia": "brescia",
-    "chievo": "chievo",
-    "chievoverona": "chievo",
-    "pisa": "pisa",
-}
-
 
 def _normalize(name: str) -> str:
+    """Normalize Sofascore team names to pipeline canonical form.
+
+    Uses the central normalize_team() which handles case-insensitive matching,
+    so Sofascore's varied casing (e.g., "ac milan", "Inter") is resolved
+    to canonical title-case names ("Milan", "Inter").
+    """
     if pd.isna(name):
         return ""
-    return TEAM_NAME_MAP.get(name.lower().strip(), name.lower().strip())
+    return normalize_team(name)
 
 
 def _load_sofascore() -> pd.DataFrame | None:

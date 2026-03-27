@@ -27,6 +27,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.team_names import normalize_team
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -34,17 +36,11 @@ PLAYER_STATS_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats.parquet"
 
 ROLLING_WINDOW = 5
 
-# FBref team name -> pipeline standard name
-TEAM_NAME_MAP = {
-    "Hellas Verona": "Verona",
-    "SPAL": "SPAL",
-}
-
 
 def _normalize_team(name: str) -> str:
     if pd.isna(name):
         return ""
-    return TEAM_NAME_MAP.get(name.strip(), name.strip())
+    return normalize_team(name)
 
 
 def _load_player_stats() -> pd.DataFrame | None:

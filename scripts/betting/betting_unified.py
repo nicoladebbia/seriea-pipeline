@@ -230,6 +230,38 @@ class BettingConfig:
     })
 
     @classmethod
+    def for_league(cls, league: str = "serie_a") -> "BettingConfig":
+        """Return a BettingConfig tuned for the given league.
+
+        Serie A is the default and fully calibrated. Other leagues get
+        conservative defaults until we have enough data to calibrate.
+
+        Args:
+            league: League identifier (e.g., "serie_a", "epl", "la_liga",
+                    "bundesliga", "ligue_1").
+        """
+        cfg = cls()
+        league_lower = league.lower().replace(" ", "_")
+
+        # Draw stake multiplier: varies by league draw rate
+        # Serie A ~28% draw rate, EPL ~22%, others ~25%
+        draw_multipliers = {
+            "serie_a": 0.80,
+            "epl": 0.65,
+            "premier_league": 0.65,
+            "la_liga": 0.70,
+            "bundesliga": 0.70,
+            "ligue_1": 0.70,
+        }
+        cfg.draw_stake_multiplier = draw_multipliers.get(league_lower, 0.70)
+
+        # Situational adjustments: only apply for Serie A (calibrated data)
+        if league_lower != "serie_a":
+            cfg.situational_edge_adjustments = {}
+
+        return cfg
+
+    @classmethod
     def from_config(cls, bankroll_override: float = None) -> "BettingConfig":
         """Create BettingConfig with bankroll auto-loaded from journal.
 

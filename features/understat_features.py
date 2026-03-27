@@ -17,59 +17,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.team_names import normalize_team
+
 log = logging.getLogger(__name__)
 
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 UNDERSTAT_PLAYERS_PATH = PROJECT_ROOT / "data" / "parsed" / "understat_players.parquet"
 
-# Team name normalization map (Understat -> our pipeline)
-TEAM_NAME_MAP = {
-    "ac milan": "milan",
-    "parma calcio 1913": "parma",
-    "spal 2013": "spal",
-    "spal": "spal",
-    "hellas verona": "verona",
-    "inter": "inter",
-    "internazionale": "inter",
-    "napoli": "napoli",
-    "juventus": "juventus",
-    "roma": "roma",
-    "lazio": "lazio",
-    "atalanta": "atalanta",
-    "fiorentina": "fiorentina",
-    "torino": "torino",
-    "sampdoria": "sampdoria",
-    "sassuolo": "sassuolo",
-    "udinese": "udinese",
-    "bologna": "bologna",
-    "genoa": "genoa",
-    "cagliari": "cagliari",
-    "empoli": "empoli",
-    "lecce": "lecce",
-    "monza": "monza",
-    "como": "como",
-    "venezia": "venezia",
-    "spezia": "spezia",
-    "salernitana": "salernitana",
-    "verona": "verona",
-    "frosinone": "frosinone",
-    "cremonese": "cremonese",
-    "benevento": "benevento",
-    "crotone": "crotone",
-    "parma": "parma",
-    "brescia": "brescia",
-    "chievo": "chievo",
-    "chievo verona": "chievo",
-}
-
 
 def _normalize_team_name(name: str) -> str:
-    """Normalize team name to match our pipeline."""
+    """Normalize team name to match our pipeline.
+
+    Understat uses varied casing; normalize_team handles all known variants
+    and returns the canonical title-case name.
+    """
     if pd.isna(name):
         return ""
-    normalized = name.lower().strip()
-    return TEAM_NAME_MAP.get(normalized, normalized)
+    return normalize_team(name)
 
 
 def _load_understat_players() -> pd.DataFrame | None:

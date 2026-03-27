@@ -83,6 +83,7 @@ def analyze_slippage() -> Dict:
         settled.append({
             "bet_id": bet_id,
             "match": bet.get("match", ""),
+            "league": bet.get("league", "serie_a"),
             "market": market,
             "selection": bet.get("selection", ""),
             "bookmaker": bookmaker,
@@ -147,6 +148,32 @@ def analyze_slippage() -> Dict:
             "win_rate": round(sum(1 for b in mkt_bets if b["status"] == "won") / len(mkt_bets) * 100, 1),
         }
 
+    # Aggregate by league
+    by_league = defaultdict(list)
+    for b in settled:
+        by_league[b.get("league", "serie_a")].append(b)
+
+    league_slippage = {}
+    for lg, lg_bets in by_league.items():
+        clvs = [b["clv_pct"] for b in lg_bets if b["clv_pct"] is not None]
+        edges = [b["edge_pct"] for b in lg_bets if b["edge_pct"]]
+        profits = [b["profit"] for b in lg_bets]
+        stakes = [b["stake"] for b in lg_bets]
+
+        avg_edge = np.mean(edges) if edges else 0
+        actual_roi = sum(profits) / max(1, sum(stakes)) * 100
+        edge_conversion = (actual_roi / avg_edge * 100) if avg_edge > 0 else 0
+
+        league_slippage[lg] = {
+            "n_bets": len(lg_bets),
+            "avg_edge": round(avg_edge, 2),
+            "actual_roi": round(actual_roi, 1),
+            "edge_conversion_pct": round(edge_conversion, 1),
+            "avg_clv": round(np.mean(clvs), 2) if clvs else None,
+            "won": sum(1 for b in lg_bets if b["status"] == "won"),
+            "win_rate": round(sum(1 for b in lg_bets if b["status"] == "won") / len(lg_bets) * 100, 1),
+        }
+
     # Overall slippage
     all_clvs = [b["clv_pct"] for b in settled if b["clv_pct"] is not None]
     all_edges = [b["edge_pct"] for b in settled if b["edge_pct"]]
@@ -169,6 +196,8 @@ def analyze_slippage() -> Dict:
         "by_bookmaker": dict(sorted(bookmaker_stats.items(),
                                      key=lambda x: x[1]["n_bets"], reverse=True)),
         "by_market": dict(sorted(market_slippage.items(),
+                                  key=lambda x: x[1]["n_bets"], reverse=True)),
+        "by_league": dict(sorted(league_slippage.items(),
                                   key=lambda x: x[1]["n_bets"], reverse=True)),
     }
 

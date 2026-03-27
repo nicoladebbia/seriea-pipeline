@@ -49,6 +49,7 @@ from features.team_aggregates import add_team_aggregate_features
 from features.xg_trends import add_xg_trends
 from features.advanced_player import add_advanced_player_features
 from features.advanced_shots import add_advanced_shot_features
+from config.leagues import get_derbies, get_matchweeks
 
 try:
     from features.player_depth import add_player_depth_features
@@ -142,23 +143,9 @@ from storage.paths import features_path, parsed_path
 
 log = logging.getLogger(__name__)
 
-# Serie A derby/rivalry definitions
-# Intensity: 3 = city derby, 2 = regional rivalry, 1 = historical rivalry
-SERIE_A_DERBIES = {
-    frozenset({"Inter", "Milan"}): 3,               # Derby della Madonnina
-    frozenset({"Roma", "Lazio"}): 3,                 # Derby della Capitale
-    frozenset({"Torino", "Juventus"}): 3,            # Derby della Mole
-    frozenset({"Genoa", "Sampdoria"}): 3,            # Derby della Lanterna
-    frozenset({"Napoli", "Roma"}): 2,                # Derby del Sole
-    frozenset({"Inter", "Juventus"}): 2,             # Derby d'Italia
-    frozenset({"Fiorentina", "Juventus"}): 2,        # Historical rivalry
-    frozenset({"Napoli", "Juventus"}): 2,            # North-South rivalry
-    frozenset({"Milan", "Juventus"}): 1,             # Top-table clash
-    frozenset({"Lazio", "Napoli"}): 1,               # Central-South rivalry
-    frozenset({"Fiorentina", "Roma"}): 1,            # Historical rivalry
-    frozenset({"Verona", "Venezia"}): 2,             # Veneto derby
-    frozenset({"Parma", "Bologna"}): 2,              # Emilia derby
-}
+# Derby/rivalry definitions sourced from the central league registry.
+# Default to Serie A; will be parameterized per-league in future phases.
+SERIE_A_DERBIES = get_derbies("serie_a")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1508,11 +1495,22 @@ def _add_contextual_features(df: pd.DataFrame) -> pd.DataFrame:
     # 3. Season phase features
     if "matchweek" in df.columns:
         mw = pd.to_numeric(df["matchweek"], errors="coerce").fillna(19)
-        df["is_early_season"] = (mw <= 5).astype(int)
-        df["is_mid_season"] = ((mw >= 15) & (mw <= 25)).astype(int)
-        df["is_late_season"] = (mw >= 33).astype(int)
-        df["is_run_in"] = (mw >= 30).astype(int)
-        df["season_phase"] = pd.cut(mw, bins=[0, 5, 15, 25, 33, 38], labels=[1, 2, 3, 4, 5]).astype(float)
+        _league = df["league"].iloc[0] if "league" in df.columns else None
+        _max_mw = get_matchweeks(_league)
+        # Dynamic thresholds scaled to the league's matchweek count
+        _early = round(_max_mw * 0.13)    # ~5 for 38-mw leagues
+        _mid_lo = round(_max_mw * 0.39)   # ~15
+        _mid_hi = round(_max_mw * 0.66)   # ~25
+        _late = round(_max_mw * 0.87)     # ~33
+        _run_in = round(_max_mw * 0.79)   # ~30
+        df["is_early_season"] = (mw <= _early).astype(int)
+        df["is_mid_season"] = ((mw >= _mid_lo) & (mw <= _mid_hi)).astype(int)
+        df["is_late_season"] = (mw >= _late).astype(int)
+        df["is_run_in"] = (mw >= _run_in).astype(int)
+        df["season_phase"] = pd.cut(
+            mw, bins=[0, _early, _mid_lo, _mid_hi, _late, _max_mw],
+            labels=[1, 2, 3, 4, 5],
+        ).astype(float)
         added += 5
 
     # 4. Month features

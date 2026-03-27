@@ -2552,8 +2552,34 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
                (f" - {total_push}P" if total_push else ""))
         tg.blank()
 
-        # Each bet as a card
+        # Group bets by league for multi-league display
+        leagues_in_bets = set(b.get("league", "serie_a") for b in week_bets)
+        show_league_headers = len(leagues_in_bets) > 1
+
+        LEAGUE_NAMES = {
+            "serie_a": "Serie A",
+            "epl": "Premier League",
+            "premier_league": "Premier League",
+            "la_liga": "La Liga",
+            "bundesliga": "Bundesliga",
+            "ligue_1": "Ligue 1",
+        }
+
+        if show_league_headers:
+            # Sort bets by league then date
+            week_bets.sort(key=lambda b: (b.get("league", "serie_a"), b.get("date", "")))
+
+        current_league = None
         for b in week_bets:
+            bet_league = b.get("league", "serie_a")
+
+            # Show league header when switching leagues
+            if show_league_headers and bet_league != current_league:
+                current_league = bet_league
+                league_display = LEAGUE_NAMES.get(bet_league, bet_league.replace("_", " ").title())
+                tg.raw(f"\U0001f3c6 <b>{_html_escape(league_display)}</b>")
+                tg.blank()
+
             match = b.get("match", "?")
             sel = b.get("selection", "?")
             market_raw = b.get("market", "")

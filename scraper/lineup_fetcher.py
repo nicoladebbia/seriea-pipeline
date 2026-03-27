@@ -39,38 +39,8 @@ API_BASE = "https://v3.football.api-sports.io"
 SERIE_A_LEAGUE_ID = 135
 SERIE_A_SEASON = 2025  # 2025-26 season
 
-# API-Football team names → our internal names
-TEAM_NAME_MAP = {
-    "AC Milan": "Milan",
-    "Inter": "Inter",
-    "Juventus": "Juventus",
-    "AS Roma": "Roma",
-    "SS Lazio": "Lazio",
-    "Lazio": "Lazio",
-    "SSC Napoli": "Napoli",
-    "Napoli": "Napoli",
-    "ACF Fiorentina": "Fiorentina",
-    "Fiorentina": "Fiorentina",
-    "Atalanta": "Atalanta",
-    "Bologna": "Bologna",
-    "Torino": "Torino",
-    "Genoa": "Genoa",
-    "Hellas Verona": "Verona",
-    "Udinese": "Udinese",
-    "Empoli": "Empoli",
-    "Cagliari": "Cagliari",
-    "Lecce": "Lecce",
-    "Monza": "Monza",
-    "Parma": "Parma",
-    "Como": "Como",
-    "Venezia": "Venezia",
-    "Sassuolo": "Sassuolo",
-    "US Cremonese": "Cremonese",
-    "Frosinone": "Frosinone",
-    "US Salernitana 1919": "Salernitana",
-    "Spezia": "Spezia",
-    "Pisa": "Pisa",
-}
+# Team name normalization is handled by config/team_names.py via
+# _canonical_normalize (imported above).
 
 # Player name match threshold for fuzzy matching
 NAME_MATCH_THRESHOLD = 0.75
@@ -99,22 +69,12 @@ def normalize_player_name(name: str) -> str:
 
 
 def standardize_api_team_name(api_name: str) -> str:
-    """Convert API-Football team name to our internal format.
+    """Convert API-Football team name to our internal canonical format.
 
-    First tries the local TEAM_NAME_MAP (API-Football specific variants),
-    then falls back to the canonical normalize_team() from config/team_names.py.
+    Uses the central normalize_team() from config/team_names.py which covers
+    all known name variants across every data source.
     """
-    if api_name in TEAM_NAME_MAP:
-        return TEAM_NAME_MAP[api_name]
-    # Try canonical normalization
-    canonical = _canonical_normalize(api_name)
-    if canonical != api_name:
-        return canonical
-    # Fuzzy fallback
-    for api_key, our_name in TEAM_NAME_MAP.items():
-        if api_key.lower() in api_name.lower() or api_name.lower() in api_key.lower():
-            return our_name
-    return api_name
+    return _canonical_normalize(api_name)
 
 
 class LineupFetcher:

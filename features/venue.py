@@ -20,6 +20,10 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
+# Multi-league stadium database.
+# The canonical lookup is ALL_STADIUMS (union of every league dict).
+# Individual league dicts are kept for clarity.
+
 # Serie A stadium data (2024-25 season)
 SERIE_A_STADIUMS = {
     "Inter": {
@@ -254,6 +258,281 @@ SERIE_A_STADIUMS = {
     },
 }
 
+# Premier League stadiums (10 major venues)
+EPL_STADIUMS = {
+    "Manchester Utd": {
+        "name": "Old Trafford",
+        "city": "Manchester",
+        "capacity": 74310,
+        "altitude_m": 44,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 53.463,
+        "lon": -2.291,
+    },
+    "Liverpool": {
+        "name": "Anfield",
+        "city": "Liverpool",
+        "capacity": 61276,
+        "altitude_m": 30,
+        "pitch_width": 68,
+        "pitch_length": 101,
+        "lat": 53.431,
+        "lon": -2.961,
+    },
+    "Arsenal": {
+        "name": "Emirates Stadium",
+        "city": "London",
+        "capacity": 60704,
+        "altitude_m": 41,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.555,
+        "lon": -0.109,
+    },
+    "Manchester City": {
+        "name": "Etihad Stadium",
+        "city": "Manchester",
+        "capacity": 53400,
+        "altitude_m": 44,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 53.483,
+        "lon": -2.200,
+    },
+    "Chelsea": {
+        "name": "Stamford Bridge",
+        "city": "London",
+        "capacity": 40343,
+        "altitude_m": 9,
+        "pitch_width": 67,
+        "pitch_length": 103,
+        "lat": 51.482,
+        "lon": -0.191,
+    },
+    "Tottenham": {
+        "name": "Tottenham Hotspur Stadium",
+        "city": "London",
+        "capacity": 62850,
+        "altitude_m": 36,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.604,
+        "lon": -0.066,
+    },
+    "West Ham": {
+        "name": "London Stadium",
+        "city": "London",
+        "capacity": 62500,
+        "altitude_m": 5,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.539,
+        "lon": -0.017,
+    },
+    "Newcastle": {
+        "name": "St James' Park",
+        "city": "Newcastle",
+        "capacity": 52305,
+        "altitude_m": 56,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 54.976,
+        "lon": -1.622,
+    },
+    "Everton": {
+        "name": "Goodison Park",
+        "city": "Liverpool",
+        "capacity": 39414,
+        "altitude_m": 21,
+        "pitch_width": 68,
+        "pitch_length": 101,
+        "lat": 53.439,
+        "lon": -2.966,
+    },
+    "Aston Villa": {
+        "name": "Villa Park",
+        "city": "Birmingham",
+        "capacity": 42657,
+        "altitude_m": 143,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 52.509,
+        "lon": -1.885,
+    },
+}
+
+# La Liga stadiums (5 major venues)
+LA_LIGA_STADIUMS = {
+    "Real Madrid": {
+        "name": "Santiago Bernabeu",
+        "city": "Madrid",
+        "capacity": 81044,
+        "altitude_m": 667,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 40.453,
+        "lon": -3.688,
+    },
+    "Barcelona": {
+        "name": "Estadi Olimpic Lluis Companys",
+        "city": "Barcelona",
+        "capacity": 55926,
+        "altitude_m": 173,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 41.365,
+        "lon": 2.156,
+    },
+    "Atletico Madrid": {
+        "name": "Civitas Metropolitano",
+        "city": "Madrid",
+        "capacity": 70460,
+        "altitude_m": 603,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 40.436,
+        "lon": -3.600,
+    },
+    "Sevilla": {
+        "name": "Ramon Sanchez-Pizjuan",
+        "city": "Seville",
+        "capacity": 43883,
+        "altitude_m": 12,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 37.384,
+        "lon": -5.970,
+    },
+    "Real Betis": {
+        "name": "Benito Villamarin",
+        "city": "Seville",
+        "capacity": 60720,
+        "altitude_m": 12,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 37.357,
+        "lon": -5.982,
+    },
+}
+
+# Bundesliga stadiums (5 major venues)
+BUNDESLIGA_STADIUMS = {
+    "Bayern Munich": {
+        "name": "Allianz Arena",
+        "city": "Munich",
+        "capacity": 75024,
+        "altitude_m": 519,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 48.219,
+        "lon": 11.625,
+    },
+    "Dortmund": {
+        "name": "Signal Iduna Park",
+        "city": "Dortmund",
+        "capacity": 81365,
+        "altitude_m": 86,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.493,
+        "lon": 7.452,
+    },
+    "Schalke 04": {
+        "name": "Veltins-Arena",
+        "city": "Gelsenkirchen",
+        "capacity": 62271,
+        "altitude_m": 58,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.554,
+        "lon": 7.068,
+    },
+    "RB Leipzig": {
+        "name": "Red Bull Arena",
+        "city": "Leipzig",
+        "capacity": 47069,
+        "altitude_m": 113,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 51.346,
+        "lon": 12.348,
+    },
+    "Eintracht Frankfurt": {
+        "name": "Deutsche Bank Park",
+        "city": "Frankfurt",
+        "capacity": 51500,
+        "altitude_m": 96,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 50.069,
+        "lon": 8.645,
+    },
+}
+
+# Ligue 1 stadiums (5 major venues)
+LIGUE_1_STADIUMS = {
+    "Paris S-G": {
+        "name": "Parc des Princes",
+        "city": "Paris",
+        "capacity": 47929,
+        "altitude_m": 34,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 48.842,
+        "lon": 2.253,
+    },
+    "Marseille": {
+        "name": "Stade Velodrome",
+        "city": "Marseille",
+        "capacity": 67394,
+        "altitude_m": 16,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 43.270,
+        "lon": 5.396,
+    },
+    "Lyon": {
+        "name": "Groupama Stadium",
+        "city": "Lyon",
+        "capacity": 59186,
+        "altitude_m": 198,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 45.765,
+        "lon": 4.982,
+    },
+    "Monaco": {
+        "name": "Stade Louis II",
+        "city": "Monaco",
+        "capacity": 18523,
+        "altitude_m": 1,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 43.727,
+        "lon": 7.415,
+    },
+    "Lille": {
+        "name": "Stade Pierre-Mauroy",
+        "city": "Lille",
+        "capacity": 50157,
+        "altitude_m": 22,
+        "pitch_width": 68,
+        "pitch_length": 105,
+        "lat": 50.612,
+        "lon": 3.131,
+    },
+}
+
+# Union of all league stadium dicts — used as the canonical lookup.
+ALL_STADIUMS: dict[str, dict] = {
+    **SERIE_A_STADIUMS,
+    **EPL_STADIUMS,
+    **LA_LIGA_STADIUMS,
+    **BUNDESLIGA_STADIUMS,
+    **LIGUE_1_STADIUMS,
+}
+
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate the great circle distance between two points in km."""
@@ -272,8 +551,8 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 
 def get_travel_distance(home_team: str, away_team: str) -> float:
     """Calculate travel distance for away team in km."""
-    home_info = SERIE_A_STADIUMS.get(home_team)
-    away_info = SERIE_A_STADIUMS.get(away_team)
+    home_info = ALL_STADIUMS.get(home_team)
+    away_info = ALL_STADIUMS.get(away_team)
 
     if not home_info or not away_info:
         return 0.0
@@ -286,8 +565,8 @@ def get_travel_distance(home_team: str, away_team: str) -> float:
 
 def get_altitude_difference(home_team: str, away_team: str) -> float:
     """Calculate altitude difference (home - away) in meters."""
-    home_info = SERIE_A_STADIUMS.get(home_team)
-    away_info = SERIE_A_STADIUMS.get(away_team)
+    home_info = ALL_STADIUMS.get(home_team)
+    away_info = ALL_STADIUMS.get(away_team)
 
     if not home_info or not away_info:
         return 0.0
@@ -297,7 +576,7 @@ def get_altitude_difference(home_team: str, away_team: str) -> float:
 
 def get_stadium_capacity(team: str) -> int:
     """Get stadium capacity for a team."""
-    info = SERIE_A_STADIUMS.get(team)
+    info = ALL_STADIUMS.get(team)
     return info["capacity"] if info else None
 
 
@@ -354,8 +633,8 @@ def add_venue_features(df: pd.DataFrame) -> pd.DataFrame:
             if pd.notna(attendance_val) and attendance_val > 0:
                 df.at[idx, "capacity_ratio"] = round(min(1.0, attendance_val / capacity), 2)
 
-    # Normalize travel distance (0-1 scale, max ~1000km in Italy)
-    df["travel_distance_norm"] = df["travel_distance_km"] / 1000
+    # Normalize travel distance (0-1 scale, max ~1500km across top-5 leagues)
+    df["travel_distance_norm"] = df["travel_distance_km"] / 1500
 
     n_long_travel = (df["long_travel"] > 0).sum()
     n_altitude = (df["altitude_advantage"] > 0).sum()
@@ -387,6 +666,6 @@ if __name__ == "__main__":
 
     # Stadium capacities
     print("\nStadium Capacities (Top 10):")
-    capacities = [(team, info["capacity"]) for team, info in SERIE_A_STADIUMS.items()]
+    capacities = [(team, info["capacity"]) for team, info in ALL_STADIUMS.items()]
     for team, cap in sorted(capacities, key=lambda x: -x[1])[:10]:
         print(f"  {team}: {cap:,}")

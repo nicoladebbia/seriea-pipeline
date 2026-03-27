@@ -114,6 +114,7 @@ def record_bet_placement(slip_path: Path = None) -> int:
         entry = {
             "match": bet.get("match", ""),
             "date": bet.get("date", ""),
+            "league": bet.get("league", "serie_a"),
             "market": bet.get("market", ""),
             "selection": bet.get("selection", ""),
             "best_odds": bet.get("best_odds", 0),
@@ -516,6 +517,7 @@ def track_clv_for_settled_bets(settled_bets: List[Dict]) -> Dict:
 
         clv_entry = {
             "match": match_key,
+            "league": bet.get("league", "serie_a"),
             "market": market,
             "selection": selection,
             "bet_odds": bet_odds,
@@ -593,6 +595,7 @@ def track_clv_from_slip(slip_path: Path = None) -> Dict:
     for b in bets:
         settled.append({
             "match": b.get("match", ""),
+            "league": b.get("league", "serie_a"),
             "market": b.get("market", "1X2"),
             "selection": b.get("selection", ""),
             "odds": b.get("best_odds", 0),

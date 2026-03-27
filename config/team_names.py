@@ -442,6 +442,11 @@ TEAM_NAME_MAP.update(PREMIER_LEAGUE_NAMES)
 TEAM_NAME_MAP.update(LA_LIGA_NAMES)
 TEAM_NAME_MAP.update(BUNDESLIGA_NAMES)
 TEAM_NAME_MAP.update(LIGUE_1_NAMES)
+# Ensure every canonical name (map value) is also a key mapping to itself.
+# This lets normalize_team("Inter") work even though "Inter" is only a value
+# in the per-league dicts (keyed under "Internazionale", "Inter Milan", etc.).
+for _canon in set(TEAM_NAME_MAP.values()):
+    TEAM_NAME_MAP.setdefault(_canon, _canon)
 
 # ---------------------------------------------------------------------------
 # Current season canonical team lists (update each season)
@@ -476,9 +481,27 @@ SERIE_A_2025_26: list[str] = [
 ]
 
 
+# Pre-built case-insensitive lookup: lowered variant -> canonical name.
+# Covers sources that send lowercase names (Understat, Sofascore).
+_TEAM_NAME_MAP_LOWER: dict[str, str] = {k.lower(): v for k, v in TEAM_NAME_MAP.items()}
+
+
 def normalize_team(name) -> str:
-    """Return the canonical team name for any known variant."""
+    """Return the canonical team name for any known variant.
+
+    Performs a case-sensitive lookup first (fast path), then falls back to a
+    case-insensitive match.  This handles data sources that send lowercase
+    names (e.g., Understat "inter" -> "Inter", Sofascore "ac milan" -> "Milan").
+    """
     if not isinstance(name, str):
         return str(name) if name is not None and name == name else ""
     stripped = name.strip()
-    return TEAM_NAME_MAP.get(stripped, stripped)
+    # Fast path: exact match
+    result = TEAM_NAME_MAP.get(stripped)
+    if result is not None:
+        return result
+    # Fallback: case-insensitive
+    result = _TEAM_NAME_MAP_LOWER.get(stripped.lower())
+    if result is not None:
+        return result
+    return stripped

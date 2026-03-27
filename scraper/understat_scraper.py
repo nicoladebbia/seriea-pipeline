@@ -27,6 +27,15 @@ log = logging.getLogger(__name__)
 UNDERSTAT_BASE = "https://understat.com"
 RATE_LIMIT_SECONDS = 3  # Be nice to the server
 
+# League slug mapping for Understat URLs
+UNDERSTAT_LEAGUE_SLUGS: dict[str, str] = {
+    "serie_a": "Serie_A",
+    "premier_league": "EPL",
+    "la_liga": "La_liga",
+    "bundesliga": "Bundesliga",
+    "ligue_1": "Ligue_1",
+}
+
 # Try to import Selenium for headless browser support
 try:
     from selenium import webdriver
@@ -147,11 +156,13 @@ class UnderstatScraper:
 
         return None
 
-    def get_season_data(self, season: str) -> dict:
-        """Get all xG data for a Serie A season.
+    def get_season_data(self, season: str, league: str = "serie_a") -> dict:
+        """Get all xG data for a league season.
 
         Args:
             season: Season in our format (e.g., "2023-2024")
+            league: League identifier (default: "serie_a").
+                    Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
 
         Returns:
             Dict with 'teams', 'players', and 'matches' data
@@ -161,7 +172,13 @@ class UnderstatScraper:
             log.warning(f"Season {season} not available on Understat")
             return {}
 
-        url = f"{UNDERSTAT_BASE}/league/Serie_A/{understat_season}"
+        league_slug = UNDERSTAT_LEAGUE_SLUGS.get(league)
+        if not league_slug:
+            raise ValueError(
+                f"Unknown league '{league}'. Valid: {', '.join(UNDERSTAT_LEAGUE_SLUGS)}"
+            )
+
+        url = f"{UNDERSTAT_BASE}/league/{league_slug}/{understat_season}"
         log.info(f"Fetching Understat data for {season} from {url}")
 
         try:
@@ -226,12 +243,14 @@ class UnderstatScraper:
         self,
         seasons: list[str] | None = None,
         output_dir: Path | None = None,
+        league: str = "serie_a",
     ) -> pd.DataFrame:
         """Scrape xG data for multiple seasons.
 
         Args:
             seasons: List of seasons to scrape (default: all available)
             output_dir: Directory to save data (optional)
+            league: League identifier (default: "serie_a")
 
         Returns:
             DataFrame with all match xG data
@@ -243,7 +262,7 @@ class UnderstatScraper:
 
         try:
             for season in seasons:
-                data = self.get_season_data(season)
+                data = self.get_season_data(season, league=league)
 
                 # Process dates/matches data
                 dates = data.get("dates")
@@ -284,12 +303,15 @@ class UnderstatScraper:
 def scrape_understat_xg(
     seasons: list[str] | None = None,
     output_path: Path | None = None,
+    league: str = "serie_a",
 ) -> pd.DataFrame:
     """Main function to scrape Understat xG data.
 
     Args:
         seasons: Seasons to scrape (default: 2017-2024)
         output_path: Path to save parquet file
+        league: League identifier (default: "serie_a").
+                Valid values: serie_a, premier_league, la_liga, bundesliga, ligue_1
 
     Returns:
         DataFrame with match xG data
@@ -308,7 +330,7 @@ def scrape_understat_xg(
         ]
 
     scraper = UnderstatScraper()
-    df = scraper.scrape_all_seasons(seasons)
+    df = scraper.scrape_all_seasons(seasons, league=league)
 
     if output_path and not df.empty:
         output_path.parent.mkdir(parents=True, exist_ok=True)

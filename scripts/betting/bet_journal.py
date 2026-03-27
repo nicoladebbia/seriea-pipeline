@@ -152,7 +152,7 @@ def add_bet(bet_data: Dict) -> str:
         for key in ("model_prob", "edge_pct", "avg_odds",
                      "pinnacle_odds", "bookmaker", "confidence", "factors",
                      "sharp_implied_prob", "pipeline_status",
-                     "odds", "stake"):
+                     "league", "odds", "stake"):
             if key in bet_data and bet_data[key] is not None:
                 existing[key] = bet_data[key]
         existing["updated_at"] = datetime.now().isoformat()
@@ -163,6 +163,7 @@ def add_bet(bet_data: Dict) -> str:
             "bet_id": bet_id,
             "match": bet_data.get("match", ""),
             "date": bet_data.get("date", ""),
+            "league": bet_data.get("league", "serie_a"),
             "market": bet_data.get("market", ""),
             "selection": bet_data.get("selection", ""),
             "model_prob": bet_data.get("model_prob"),

@@ -37,20 +37,13 @@ import logging
 import numpy as np
 import pandas as pd
 
+from config.leagues import get_matchweeks, PROMOTED_TEAMS
+
 log = logging.getLogger(__name__)
 
-# Teams promoted each season (Serie B -> Serie A)
-_PROMOTED_TEAMS: dict[str, set[str]] = {
-    "2017-2018": {"Benevento", "Spal", "Verona"},
-    "2018-2019": {"Parma", "Empoli", "Frosinone"},
-    "2019-2020": {"Brescia", "Lecce", "Verona"},
-    "2020-2021": {"Benevento", "Crotone", "Spezia"},
-    "2021-2022": {"Empoli", "Salernitana", "Venezia"},
-    "2022-2023": {"Cremonese", "Lecce", "Monza"},
-    "2023-2024": {"Cagliari", "Frosinone", "Genoa"},
-    "2024-2025": {"Como", "Parma", "Venezia"},
-    "2025-2026": {"Sassuolo", "Pisa", "Cremonese"},
-}
+# Promoted teams sourced from the central league registry.
+# Default to Serie A; will be parameterized per-league in future phases.
+_PROMOTED_TEAMS: dict[str, set[str]] = PROMOTED_TEAMS.get("serie_a", {})
 
 # International break matchweeks (approximate: after MW 3,7,10,13 in Serie A)
 _INTL_BREAK_GAP_DAYS = 12  # If gap > 12 days, likely international break
@@ -89,11 +82,16 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
     df["is_midweek"] = df["day_of_week"].isin([1, 2, 3]).astype(int)
     added += 3
 
-    # Season phase
+    # Season phase (dynamic bins based on league's matchweeks per season)
     if "matchweek" in df.columns:
         mw = pd.to_numeric(df["matchweek"], errors="coerce")
+        _league = df["league"].iloc[0] if "league" in df.columns else None
+        _max_mw = get_matchweeks(_league)
+        # Three equal-ish phases: early / mid / late
+        _b1 = round(_max_mw * 0.26)   # ~10 for 38-mw leagues
+        _b2 = round(_max_mw * 0.63)   # ~24 for 38-mw leagues
         df["season_phase"] = pd.cut(
-            mw, bins=[0, 10, 24, 38], labels=[1, 2, 3],
+            mw, bins=[0, _b1, _b2, _max_mw], labels=[1, 2, 3],
         ).astype(float)
         added += 1
 

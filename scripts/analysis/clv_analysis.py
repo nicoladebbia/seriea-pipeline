@@ -72,6 +72,7 @@ def load_clv_with_pnl() -> List[Dict]:
             "bet_id": bet_id,
             "match": match,
             "date": date,
+            "league": bet.get("league", "serie_a"),
             "market": market,
             "selection": selection,
             "odds": odds,
@@ -197,12 +198,119 @@ def analyze_by_market(min_sample: int = 5) -> Dict:
             "stake_adjustment": round(stake_adj, 2),
         }
 
+    # Group by (league, market) for multi-league dimension
+    by_league_market = defaultdict(list)
+    for b in bets:
+        key = (b.get("league", "serie_a"), b["market"])
+        by_league_market[key].append(b)
+
+    league_market_results = {}
+    for (league, market), lm_bets in sorted(by_league_market.items()):
+        n = len(lm_bets)
+        won = sum(1 for b in lm_bets if b["status"] == "won")
+        total_stake = sum(b["stake"] for b in lm_bets)
+        total_profit = sum(b["profit"] for b in lm_bets)
+        roi = (total_profit / total_stake * 100) if total_stake > 0 else 0
+
+        with_clv = [b for b in lm_bets if b["has_clv"]]
+        n_clv = len(with_clv)
+        avg_clv = np.mean([b["clv_pct"] for b in with_clv]) if n_clv > 0 else 0
+        positive_rate = (sum(1 for b in with_clv if b["clv_pct"] > 0) / n_clv) if n_clv > 0 else 0
+
+        league_market_results[f"{league}:{market}"] = {
+            "league": league,
+            "market": market,
+            "n_bets": n,
+            "n_won": won,
+            "win_rate": round(won / n * 100, 1) if n > 0 else 0,
+            "total_staked": round(total_stake, 2),
+            "total_profit": round(total_profit, 2),
+            "roi_pct": round(roi, 1),
+            "n_with_clv": n_clv,
+            "avg_clv_pct": round(avg_clv, 2),
+            "positive_clv_rate": round(positive_rate * 100, 1) if n_clv > 0 else 0,
+        }
+
     return {
         "by_market": results,
+        "by_league_market": league_market_results,
         "total_bets": len(bets),
         "total_with_clv": sum(1 for b in bets if b["has_clv"]),
         "overall_roi": round(sum(b["profit"] for b in bets) / max(1, sum(b["stake"] for b in bets)) * 100, 1),
         "overall_clv": round(np.mean([b["clv_pct"] for b in bets if b["has_clv"]]), 2) if any(b["has_clv"] for b in bets) else 0,
+    }
+
+
+def analyze_by_league(min_sample: int = 3) -> Dict:
+    """Per-league CLV + P&L summary.
+
+    Groups all settled bets by league to compare edge quality
+    across competitions. Returns per-league CLV, ROI, win rate,
+    and staking recommendations.
+    """
+    bets = load_clv_with_pnl()
+    if not bets:
+        return {"error": "No data available"}
+
+    by_league = defaultdict(list)
+    for b in bets:
+        by_league[b.get("league", "serie_a")].append(b)
+
+    results = {}
+    for league, league_bets in sorted(by_league.items()):
+        n = len(league_bets)
+        if n < min_sample:
+            continue
+
+        won = sum(1 for b in league_bets if b["status"] == "won")
+        total_stake = sum(b["stake"] for b in league_bets)
+        total_profit = sum(b["profit"] for b in league_bets)
+        roi = (total_profit / total_stake * 100) if total_stake > 0 else 0
+
+        with_clv = [b for b in league_bets if b["has_clv"]]
+        n_clv = len(with_clv)
+        avg_clv = np.mean([b["clv_pct"] for b in with_clv]) if n_clv > 0 else 0
+        positive_clv = sum(1 for b in with_clv if b["clv_pct"] > 0) if n_clv > 0 else 0
+        positive_rate = (positive_clv / n_clv) if n_clv > 0 else 0
+
+        # Per-market breakdown within this league
+        market_breakdown = defaultdict(list)
+        for b in league_bets:
+            market_breakdown[b["market"]].append(b)
+
+        markets = {}
+        for mkt, mkt_bets in sorted(market_breakdown.items()):
+            mn = len(mkt_bets)
+            mwon = sum(1 for b in mkt_bets if b["status"] == "won")
+            mstake = sum(b["stake"] for b in mkt_bets)
+            mprofit = sum(b["profit"] for b in mkt_bets)
+            mroi = (mprofit / mstake * 100) if mstake > 0 else 0
+            mclv_bets = [b for b in mkt_bets if b["has_clv"]]
+            mavg_clv = np.mean([b["clv_pct"] for b in mclv_bets]) if mclv_bets else 0
+            markets[mkt] = {
+                "n_bets": mn,
+                "win_rate": round(mwon / mn * 100, 1) if mn > 0 else 0,
+                "roi_pct": round(mroi, 1),
+                "avg_clv_pct": round(mavg_clv, 2),
+            }
+
+        results[league] = {
+            "n_bets": n,
+            "n_won": won,
+            "win_rate": round(won / n * 100, 1) if n > 0 else 0,
+            "total_staked": round(total_stake, 2),
+            "total_profit": round(total_profit, 2),
+            "roi_pct": round(roi, 1),
+            "n_with_clv": n_clv,
+            "avg_clv_pct": round(avg_clv, 2),
+            "positive_clv_rate": round(positive_rate * 100, 1) if n_clv > 0 else 0,
+            "markets": markets,
+        }
+
+    return {
+        "by_league": results,
+        "total_bets": len(bets),
+        "n_leagues": len(results),
     }
 
 
@@ -334,6 +442,7 @@ def generate_full_report() -> Dict:
     report = {
         "generated_at": datetime.now().isoformat(),
         "market_analysis": analyze_by_market(),
+        "league_analysis": analyze_by_league(),
         "selection_analysis": analyze_by_selection(),
         "edge_analysis": analyze_by_edge_bucket(),
         "trend_analysis": analyze_trends(),
