@@ -42,8 +42,37 @@ from config.leagues import get_matchweeks, PROMOTED_TEAMS
 log = logging.getLogger(__name__)
 
 # Promoted teams sourced from the central league registry.
-# Default to Serie A; will be parameterized per-league in future phases.
-_PROMOTED_TEAMS: dict[str, set[str]] = PROMOTED_TEAMS.get("serie_a", {})
+# Build a unified lookup keyed by (league_key, season) for multi-league support.
+# Also keep a flat season->set fallback for backward compat.
+_PROMOTED_BY_LEAGUE: dict[str, dict[str, set[str]]] = PROMOTED_TEAMS
+
+# Map league display names / column values to registry keys
+_LEAGUE_KEY_MAP: dict[str, str] = {
+    "serie_a": "serie_a",
+    "Serie A": "serie_a",
+    "premier_league": "premier_league",
+    "Premier League": "premier_league",
+    "la_liga": "la_liga",
+    "La Liga": "la_liga",
+    "bundesliga": "bundesliga",
+    "Bundesliga": "bundesliga",
+    "ligue_1": "ligue_1",
+    "Ligue 1": "ligue_1",
+}
+
+
+def _get_promoted(league: str | None, season: str) -> set[str]:
+    """Return set of promoted teams for a league+season combo."""
+    if league:
+        key = _LEAGUE_KEY_MAP.get(league, league)
+        result = _PROMOTED_BY_LEAGUE.get(key, {}).get(season, set())
+        if result:
+            return result
+    # Fallback: search all leagues (backward compat for single-league runs)
+    for lg_data in _PROMOTED_BY_LEAGUE.values():
+        if season in lg_data:
+            return lg_data[season]
+    return set()
 
 # International break matchweeks (approximate: after MW 3,7,10,13 in Serie A)
 _INTL_BREAK_GAP_DAYS = 12  # If gap > 12 days, likely international break
@@ -163,9 +192,11 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
     if "season" in df.columns:
         home_promoted = []
         away_promoted = []
+        _league_col = df["league"].iloc[0] if "league" in df.columns else None
         for _, row in df.iterrows():
             season = row.get("season", "")
-            promoted = _PROMOTED_TEAMS.get(season, set())
+            league_val = row.get("league", _league_col)
+            promoted = _get_promoted(league_val, season)
             ht = row.get("home_team", "")
             at = row.get("away_team", "")
             home_promoted.append(1 if ht in promoted else 0)

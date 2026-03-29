@@ -337,6 +337,66 @@ def get_players_at_risk(
     return at_risk
 
 
+def _compute_match_level_yellows(matches_df: pd.DataFrame) -> pd.DataFrame:
+    """Fallback: compute total_yellows from match-level yellow card columns.
+
+    When player_stats is unavailable for a league (e.g. EPL), we can still
+    compute cumulative season yellow totals per team from the match-level
+    home_yellow_cards / away_yellow_cards columns.
+
+    suspended_count and at_risk_count require player-level data and are left
+    as 0 when only match-level data is available.
+    """
+    df = matches_df.copy()
+    df["_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+    df = df.sort_values("_date").reset_index(drop=True)
+
+    has_yellows = (
+        "home_yellow_cards" in df.columns and "away_yellow_cards" in df.columns
+    )
+    if not has_yellows:
+        return matches_df
+
+    # Accumulate yellows per team per season
+    # Each match contributes yellows when the team plays home or away
+    team_season_yellows: dict[tuple[str, str], int] = {}
+    home_totals = []
+    away_totals = []
+
+    for _, row in df.iterrows():
+        season = row.get("season", "")
+        ht = row.get("home_team", "")
+        at = row.get("away_team", "")
+        h_yc = pd.to_numeric(row.get("home_yellow_cards", 0), errors="coerce")
+        a_yc = pd.to_numeric(row.get("away_yellow_cards", 0), errors="coerce")
+        if pd.isna(h_yc):
+            h_yc = 0
+        if pd.isna(a_yc):
+            a_yc = 0
+
+        # Record cumulative BEFORE this match
+        home_totals.append(team_season_yellows.get((ht, season), 0))
+        away_totals.append(team_season_yellows.get((at, season), 0))
+
+        # Update cumulative after this match
+        team_season_yellows[(ht, season)] = (
+            team_season_yellows.get((ht, season), 0) + int(h_yc)
+        )
+        team_season_yellows[(at, season)] = (
+            team_season_yellows.get((at, season), 0) + int(a_yc)
+        )
+
+    df["home_total_yellows"] = home_totals
+    df["away_total_yellows"] = away_totals
+    df["home_suspended_count"] = 0
+    df["away_suspended_count"] = 0
+    df["home_at_risk_count"] = 0
+    df["away_at_risk_count"] = 0
+
+    df.drop(columns=["_date"], inplace=True)
+    return df
+
+
 def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
     """Add suspension-related features to a matches DataFrame.
 
@@ -348,6 +408,11 @@ def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
     - home_total_yellows: Team's total yellow card count
     - away_total_yellows: Team's total yellow card count
 
+    When player-level stats are available (e.g. Serie A via FBref), all 6
+    features are computed accurately. When only match-level yellow card
+    columns exist (e.g. EPL via football-data.co.uk), total_yellows is
+    computed as a cumulative season sum; suspended/at_risk default to 0.
+
     Args:
         matches_df: DataFrame with match_id, home_team, away_team, match_date, season
 
@@ -357,30 +422,51 @@ def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
     log.info("Computing suspension features for %d matches", len(matches_df))
 
     player_stats = load_player_stats()
+    susp_cols = [
+        "home_suspended_count", "away_suspended_count",
+        "home_at_risk_count", "away_at_risk_count",
+        "home_total_yellows", "away_total_yellows",
+    ]
 
     if player_stats.empty:
-        log.warning("No player stats available for suspension features")
-        for col in ["home_suspended_count", "away_suspended_count",
-                    "home_at_risk_count", "away_at_risk_count",
-                    "home_total_yellows", "away_total_yellows"]:
-            matches_df[col] = 0
-        return matches_df
+        log.warning("No player stats available — using match-level yellow fallback")
+        return _compute_match_level_yellows(matches_df)
 
-    # Pre-compute season yellow totals per team
+    # Determine which teams have player-level data
     player_stats["match_date"] = pd.to_datetime(player_stats["match_date"])
+    teams_with_player_data = set(player_stats["team"].unique())
 
+    # Split matches into those with player data and those without
+    all_teams = set(matches_df["home_team"].unique()) | set(matches_df["away_team"].unique())
+    teams_without_data = all_teams - teams_with_player_data
+
+    if teams_without_data:
+        log.info(
+            "Player stats missing for %d teams — using match-level fallback for those",
+            len(teams_without_data),
+        )
+
+    # Identify rows where BOTH teams have player data (full computation)
+    # vs rows where at least one team lacks it (fallback)
+    has_player_data = (
+        matches_df["home_team"].isin(teams_with_player_data)
+        & matches_df["away_team"].isin(teams_with_player_data)
+    )
+
+    df_player = matches_df[has_player_data].copy()
+    df_fallback = matches_df[~has_player_data].copy()
+
+    # --- Full player-level computation for teams with data ---
     results = []
-
-    for _, match in matches_df.iterrows():
+    for _, match in df_player.iterrows():
         match_date = pd.to_datetime(match["match_date"]).date()
         season = match["season"]
         home_team = match["home_team"]
         away_team = match["away_team"]
 
-        # Filter player stats before this match
         before_match = player_stats[
-            (player_stats["season"] == season) &
-            (player_stats["match_date"].dt.date < match_date)
+            (player_stats["season"] == season)
+            & (player_stats["match_date"].dt.date < match_date)
         ]
 
         # Home team stats
@@ -388,7 +474,9 @@ def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
         home_player_yellows = home_stats.groupby("player")["cards_yellow"].sum()
 
         home_suspended = sum(1 for y in home_player_yellows if y in YELLOW_THRESHOLDS)
-        home_at_risk = sum(1 for y in home_player_yellows if any(y == t - 1 for t in YELLOW_THRESHOLDS))
+        home_at_risk = sum(
+            1 for y in home_player_yellows if any(y == t - 1 for t in YELLOW_THRESHOLDS)
+        )
         home_total_yellows = home_player_yellows.sum()
 
         # Away team stats
@@ -396,7 +484,9 @@ def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
         away_player_yellows = away_stats.groupby("player")["cards_yellow"].sum()
 
         away_suspended = sum(1 for y in away_player_yellows if y in YELLOW_THRESHOLDS)
-        away_at_risk = sum(1 for y in away_player_yellows if any(y == t - 1 for t in YELLOW_THRESHOLDS))
+        away_at_risk = sum(
+            1 for y in away_player_yellows if any(y == t - 1 for t in YELLOW_THRESHOLDS)
+        )
         away_total_yellows = away_player_yellows.sum()
 
         results.append({
@@ -409,14 +499,26 @@ def compute_suspension_features(matches_df: pd.DataFrame) -> pd.DataFrame:
             "away_total_yellows": away_total_yellows,
         })
 
-    results_df = pd.DataFrame(results)
-    matches_df = matches_df.merge(results_df, on="match_id", how="left")
+    if results:
+        results_df = pd.DataFrame(results)
+        df_player = df_player.merge(results_df, on="match_id", how="left")
+    else:
+        for col in susp_cols:
+            df_player[col] = 0
+
+    # --- Match-level fallback for teams without player data ---
+    if not df_fallback.empty:
+        df_fallback = _compute_match_level_yellows(df_fallback)
+
+    # Recombine
+    matches_df = pd.concat([df_player, df_fallback], ignore_index=True)
 
     # Fill NaN with 0
-    for col in ["home_suspended_count", "away_suspended_count",
-                "home_at_risk_count", "away_at_risk_count",
-                "home_total_yellows", "away_total_yellows"]:
+    for col in susp_cols:
         matches_df[col] = matches_df[col].fillna(0).astype(int)
+
+    # Restore original sort order
+    matches_df = matches_df.sort_values("match_date").reset_index(drop=True)
 
     log.info("Added suspension features to matches")
     return matches_df

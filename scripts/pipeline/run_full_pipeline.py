@@ -403,7 +403,7 @@ def _run_supplementary_analysis(summary: dict):
         log.debug(f"Incremental sentiment: {e}")
 
 
-def run_incremental(bankroll: float = 1000.0) -> Dict:
+def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     """Run an incremental pipeline refresh.
 
     Refreshes everything needed for accurate predictions:
@@ -569,6 +569,23 @@ def run_incremental(bankroll: float = 1000.0) -> Dict:
             except Exception:
                 pass
 
+    # Fetch odds for extra leagues (if specified)
+    extra_leagues = [l for l in (leagues or []) if l != "serie_a"]
+    if extra_leagues and odds_were_refreshed:
+        try:
+            from scripts.prediction.predict_league import fetch_league_odds, LEAGUE_DISPLAY_NAMES
+            for league in extra_leagues:
+                display = LEAGUE_DISPLAY_NAMES.get(league, league)
+                try:
+                    league_odds = fetch_league_odds(league, use_cache=False)
+                    summary["credits_used"] += 2
+                    print(f"  {display}: fetched odds for {len(league_odds)} matches")
+                except Exception as e:
+                    print(f"  {display}: odds fetch error: {e}")
+                    log.warning(f"Incremental {league} odds error: {e}")
+        except ImportError:
+            pass
+
     # ── Step 3: Market analysis chain (if odds refreshed or analysis stale) ──
     market_intel_path = DATA_DIR / "upcoming" / "market_intelligence.json"
     market_stale = _is_data_stale(market_intel_path, max_age_hours=6.0)
@@ -656,6 +673,26 @@ def run_incremental(bankroll: float = 1000.0) -> Dict:
         print(f"  Prediction error: {e}")
         summary["errors"].append(f"Predictions: {e}")
         log.warning(f"Incremental prediction error: {e}")
+
+    # Run predictions for extra leagues
+    if extra_leagues:
+        print(f"\n[5b/6] Multi-league predictions ({', '.join(extra_leagues)})...")
+        try:
+            from scripts.prediction.predict_league import run_predictions_for_league, LEAGUE_DISPLAY_NAMES
+            for league in extra_leagues:
+                display = LEAGUE_DISPLAY_NAMES.get(league, league)
+                try:
+                    result = run_predictions_for_league(league)
+                    count = result.get("count", 0)
+                    if count:
+                        print(f"  {display}: {count} predictions")
+                    else:
+                        print(f"  {display}: skipped (no model or no matches)")
+                except Exception as e:
+                    print(f"  {display}: prediction error: {e}")
+                    log.warning(f"Incremental {league} prediction error: {e}")
+        except ImportError:
+            pass
 
     # ── Step 6: Update state and generate dashboard ──
     print(f"\n[6/6] Updating state & dashboard...")
@@ -1055,7 +1092,8 @@ def _run_parallel_data_collection(quick: bool = False, total_steps: int = 32):
 
 
 def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: bool = False,
-                 no_parallel: bool = False, run_challenger: bool = False):
+                 no_parallel: bool = False, run_challenger: bool = False,
+                 leagues: list = None):
     """Run the complete betting pipeline."""
 
     start_time = time.time()
@@ -1379,6 +1417,25 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         log.warning(f"Referee fetch error: {e}")
 
     # =========================================================================
+    # Step 10c: Fetch Odds for Extra Leagues
+    # =========================================================================
+    extra_leagues = [l for l in (leagues or []) if l != "serie_a"]
+    if extra_leagues:
+        print(f"\n  Fetching odds for extra leagues: {', '.join(extra_leagues)}")
+        try:
+            from scripts.prediction.predict_league import fetch_league_odds, LEAGUE_DISPLAY_NAMES
+            for league in extra_leagues:
+                display = LEAGUE_DISPLAY_NAMES.get(league, league)
+                try:
+                    league_odds = fetch_league_odds(league, use_cache=quick)
+                    print(f"    {display}: {len(league_odds)} matches")
+                except Exception as e:
+                    print(f"    {display}: odds error: {e}")
+                    log.warning(f"{league} odds fetch error: {e}")
+        except ImportError:
+            pass
+
+    # =========================================================================
     # Step 11: Generate Ensemble Predictions (Enhanced with injury adjustments)
     # =========================================================================
     step(11, total_steps, "Generating Ensemble Predictions")
@@ -1449,6 +1506,27 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         with open(preds_path, "w") as f:
             json.dump(wrapper, f, indent=2, cls=_get_json_encoder())
         print(f"  Saved enriched predictions ({len(predictions)} matches)")
+
+    # =========================================================================
+    # Step 11d: Multi-League Predictions (non-Serie-A leagues)
+    # =========================================================================
+    extra_leagues = [l for l in (leagues or []) if l != "serie_a"]
+    if extra_leagues:
+        step(11, total_steps, f"Multi-League Predictions ({', '.join(extra_leagues)})")
+        try:
+            from scripts.prediction.predict_league import run_predictions_for_league, LEAGUE_DISPLAY_NAMES
+            for league in extra_leagues:
+                display = LEAGUE_DISPLAY_NAMES.get(league, league)
+                result = run_predictions_for_league(league)
+                if result.get("count", 0) > 0:
+                    print(f"  {display}: {result['count']} predictions")
+                elif result.get("error"):
+                    print(f"  {display}: ERROR - {result['error']}")
+                else:
+                    print(f"  {display}: skipped (no model or no matches)")
+        except Exception as e:
+            print(f"  Multi-league prediction warning: {e}")
+            log.warning(f"Multi-league prediction error: {e}")
 
     # =========================================================================
     # Step 12: Generate Current Standings
@@ -2263,6 +2341,9 @@ def main():
                        help="Run model challenger after pipeline (retrain + validate + swap)")
     parser.add_argument("--incremental", action="store_true",
                        help="Incremental refresh: only new results, fresh odds if stale, new predictions (~4 credits)")
+    parser.add_argument("--leagues", type=str, default="serie_a",
+                       help="Comma-separated leagues to run (default: serie_a). "
+                            "E.g. --leagues serie_a,premier_league")
     args = parser.parse_args()
 
     # Auto-load bankroll from journal if not explicitly set
@@ -2273,6 +2354,11 @@ def main():
         except Exception as e:
             log.warning(f"Failed to auto-load bankroll: {e} — using 1000")
             args.bankroll = 1000.0
+
+    # Parse leagues list
+    leagues = [l.strip() for l in args.leagues.split(",") if l.strip()]
+    if not leagues:
+        leagues = ["serie_a"]
 
     if args.live_monitor:
         from scripts.data.live_monitor import watch_loop
@@ -2286,13 +2372,14 @@ def main():
     elif args.pre_kickoff:
         run_pre_kickoff(bankroll=args.bankroll)
     elif args.incremental:
-        run_incremental(bankroll=args.bankroll)
+        run_incremental(bankroll=args.bankroll, leagues=leagues)
     else:
         run_pipeline(
             quick=args.quick, bankroll=args.bankroll,
             snapshot_only=args.snapshot_only,
             no_parallel=args.no_parallel,
             run_challenger=args.challenger,
+            leagues=leagues,
         )
 
 

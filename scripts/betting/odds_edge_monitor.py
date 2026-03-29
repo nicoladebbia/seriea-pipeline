@@ -43,6 +43,9 @@ UPCOMING_DIR = DATA_DIR / "upcoming"
 BETTING_DIR = DATA_DIR / "betting"
 SNAPSHOTS_DIR = DATA_DIR / "odds_snapshots"
 
+# Active leagues for edge scanning (add leagues as models become available)
+ACTIVE_LEAGUES = ["serie_a"]
+
 # Edge thresholds (must match betting_unified.py BettingConfig)
 EDGE_THRESHOLDS = {
     "1X2_Draw": {"min": 5.0, "max": 12.0},
@@ -61,17 +64,41 @@ MIN_ODDS_MOVE = 0.05
 STATE_PATH = BETTING_DIR / "edge_monitor_state.json"
 
 
-def _load_predictions() -> Dict[str, Dict]:
-    """Load current model predictions keyed by match."""
-    pred_path = UPCOMING_DIR / "predictions.json"
+def _load_predictions(league: str = "serie_a") -> Dict[str, Dict]:
+    """Load current model predictions keyed by match.
+
+    Args:
+        league: League identifier. Serie A uses predictions.json (default),
+                other leagues use predictions_{league}.json.
+    """
+    if league == "serie_a":
+        pred_path = UPCOMING_DIR / "predictions.json"
+    else:
+        pred_path = UPCOMING_DIR / f"predictions_{league}.json"
+
     if not pred_path.exists():
         return {}
 
     data = json.load(open(pred_path))
     preds = data.get("predictions", data) if isinstance(data, dict) else data
     if isinstance(preds, list):
-        return {p.get("match", ""): p for p in preds if p.get("match")}
+        result = {}
+        for p in preds:
+            if p.get("match"):
+                p.setdefault("league", league)
+                result[p["match"]] = p
+        return result
     return {}
+
+
+def _load_all_predictions(leagues: List[str] = None) -> Dict[str, Dict]:
+    """Load predictions from all active leagues, merged into one dict."""
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+    merged = {}
+    for league in leagues:
+        merged.update(_load_predictions(league))
+    return merged
 
 
 def _load_state() -> Dict:
@@ -516,34 +543,48 @@ def scan_sharp_consensus(odds_data: Dict) -> List[Dict]:
     return sorted(alerts, key=lambda x: x["spread"], reverse=True)
 
 
-def run_scan(fetch_fresh: bool = True) -> Dict:
-    """Run a single edge scan cycle.
+def run_scan(fetch_fresh: bool = True, leagues: List[str] = None) -> Dict:
+    """Run a single edge scan cycle across all active leagues.
 
     Args:
-        fetch_fresh: If True, fetch fresh odds from API (costs 3 credits).
+        fetch_fresh: If True, fetch fresh odds from API (costs ~3 credits per league).
                      If False, use cached/existing odds data (free).
+        leagues: List of leagues to scan. Defaults to ACTIVE_LEAGUES.
     """
-    # Load predictions (always from disk, free)
-    predictions = _load_predictions()
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+
+    # Load predictions from all active leagues
+    predictions = _load_all_predictions(leagues)
     if not predictions:
         log.warning("No predictions available — skip scan")
         return {"error": "no_predictions"}
 
-    # Fetch or load odds
-    if fetch_fresh:
-        try:
-            from scripts.data.odds_fetcher import fetch_snapshot
-            odds_data = fetch_snapshot()
-            log.info("Fresh odds snapshot fetched (3 credits)")
-        except Exception as e:
-            log.warning("Fresh fetch failed: %s — using cached odds", e)
-            odds_data = _load_cached_odds()
-    else:
-        odds_data = _load_cached_odds()
+    # Aggregate odds from all leagues
+    all_odds = {}
+    for league in leagues:
+        if fetch_fresh:
+            try:
+                from scripts.data.odds_fetcher import fetch_snapshot
+                league_odds = fetch_snapshot(league=league)
+                log.info("Fresh %s odds snapshot fetched", league)
+            except Exception as e:
+                log.warning("Fresh fetch failed for %s: %s — using cached", league, e)
+                league_odds = _load_cached_odds(league)
+        else:
+            league_odds = _load_cached_odds(league)
 
-    if not odds_data:
+        if league_odds:
+            # Merge matches from this league's odds
+            matches = league_odds.get("matches", league_odds)
+            if isinstance(matches, dict):
+                all_odds.update(matches)
+
+    if not all_odds:
         log.warning("No odds data available")
         return {"error": "no_odds"}
+
+    odds_data = {"matches": all_odds}
 
     # Scan for pre-match edges
     scan_result = scan_for_edges(predictions, odds_data)
@@ -609,21 +650,32 @@ def run_scan(fetch_fresh: bool = True) -> Dict:
     return scan_result
 
 
-def _load_cached_odds() -> Dict:
-    """Load most recent odds from cache (no API cost)."""
-    odds_path = UPCOMING_DIR / "odds_full.json"
+def _load_cached_odds(league: str = "serie_a") -> Dict:
+    """Load most recent odds from cache (no API cost).
+
+    Args:
+        league: League identifier. Serie A uses odds_full.json (default),
+                other leagues use odds_full_{league}.json.
+    """
+    if league == "serie_a":
+        odds_path = UPCOMING_DIR / "odds_full.json"
+    else:
+        odds_path = UPCOMING_DIR / f"odds_full_{league}.json"
+
     if odds_path.exists():
         try:
             return json.load(open(odds_path))
         except Exception:
             pass
-    # Try bookmakers snapshot
-    bm_path = UPCOMING_DIR / "odds_bookmakers.json"
-    if bm_path.exists():
-        try:
-            return json.load(open(bm_path))
-        except Exception:
-            pass
+
+    # Fallback: try bookmakers snapshot (Serie A only)
+    if league == "serie_a":
+        bm_path = UPCOMING_DIR / "odds_bookmakers.json"
+        if bm_path.exists():
+            try:
+                return json.load(open(bm_path))
+            except Exception:
+                pass
     return {}
 
 

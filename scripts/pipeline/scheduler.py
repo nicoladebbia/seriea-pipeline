@@ -36,7 +36,11 @@ except ImportError:
 # CONFIGURATION
 # =============================================================================
 
-# Schedule configuration (24h format, Italian timezone)
+# Active leagues (add leagues here as models become available)
+# Default: Serie A only. Add "premier_league" etc. when EPL model is trained.
+ACTIVE_LEAGUES = ["serie_a"]
+
+# Schedule configuration (24h format, Italian timezone for Serie A)
 SCHEDULE_CONFIG = {
     # Daily runs (regardless of match day)
     "daily_runs": [
@@ -50,12 +54,22 @@ SCHEDULE_CONFIG = {
         {"hours_before_match": 1, "description": "Final pre-match update"},
     ],
 
-    # Typical Serie A match times (for match day detection)
+    # Typical match times by league (for match day detection fallback)
+    # Times in local timezone: Italy (CET/CEST) for Serie A, UK (GMT/BST) for EPL
     "typical_match_times": [
+        # Serie A
         {"hour": 12, "minute": 30},  # Early kickoff
         {"hour": 15, "minute": 0},   # Afternoon
         {"hour": 18, "minute": 0},   # Early evening
         {"hour": 20, "minute": 45},  # Prime time
+    ],
+
+    # EPL-specific typical kickoff times (GMT — Saturday + some midweek)
+    "epl_match_times": [
+        {"hour": 12, "minute": 30},  # Early kickoff (BT Sport)
+        {"hour": 15, "minute": 0},   # 3pm blackout traditional slots
+        {"hour": 17, "minute": 30},  # Late afternoon (Sky)
+        {"hour": 20, "minute": 0},   # Evening (midweek / Monday night)
     ],
 
     # Post-match settlement (runs after last match of the day finishes)
@@ -121,28 +135,50 @@ def rotate_launchd_logs():
 # MATCH DAY DETECTION
 # =============================================================================
 
-def get_upcoming_matches() -> List[Dict]:
-    """Load upcoming matches from predictions file."""
-    predictions_path = DATA_DIR / "upcoming" / "predictions.json"
+def get_upcoming_matches(leagues: List[str] = None) -> List[Dict]:
+    """Load upcoming matches from predictions files for all active leagues.
 
-    if not predictions_path.exists():
-        return []
+    Args:
+        leagues: List of leagues to load. Defaults to ACTIVE_LEAGUES.
+    """
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
 
-    try:
-        with open(predictions_path) as f:
-            data = json.load(f)
-        return data.get("predictions", [])
-    except Exception as e:
-        log.warning(f"Could not load predictions: {e}")
-        return []
+    all_matches = []
+
+    for league in leagues:
+        if league == "serie_a":
+            pred_path = DATA_DIR / "upcoming" / "predictions.json"
+        else:
+            pred_path = DATA_DIR / "upcoming" / f"predictions_{league}.json"
+
+        if not pred_path.exists():
+            continue
+
+        try:
+            with open(pred_path) as f:
+                data = json.load(f)
+            preds = data.get("predictions", [])
+            for p in preds:
+                p.setdefault("league", league)
+            all_matches.extend(preds)
+        except Exception as e:
+            log.warning(f"Could not load {league} predictions: {e}")
+
+    return all_matches
 
 
-def is_match_day(date: datetime = None) -> bool:
-    """Check if today has Serie A matches scheduled."""
+def is_match_day(date: datetime = None, leagues: List[str] = None) -> bool:
+    """Check if today has matches scheduled for any active league.
+
+    Args:
+        date: Date to check (default: now).
+        leagues: Leagues to check (default: ACTIVE_LEAGUES).
+    """
     if date is None:
         date = datetime.now()
 
-    matches = get_upcoming_matches()
+    matches = get_upcoming_matches(leagues)
     today_str = date.strftime("%Y-%m-%d")
 
     for match in matches:
@@ -153,10 +189,10 @@ def is_match_day(date: datetime = None) -> bool:
     return False
 
 
-def get_today_matches() -> List[Dict]:
-    """Get matches scheduled for today."""
+def get_today_matches(leagues: List[str] = None) -> List[Dict]:
+    """Get matches scheduled for today across all active leagues."""
     today_str = datetime.now().strftime("%Y-%m-%d")
-    matches = get_upcoming_matches()
+    matches = get_upcoming_matches(leagues)
     return [m for m in matches if m.get("date", "") == today_str]
 
 
@@ -527,8 +563,17 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
 # PIPELINE EXECUTION
 # =============================================================================
 
-def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
-    """Execute the betting pipeline with health check + risk controls gates."""
+def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None) -> bool:
+    """Execute the betting pipeline with health check + risk controls gates.
+
+    Args:
+        bankroll: Bankroll amount (0 = auto-load from journal).
+        quick: If True, use cached data.
+        leagues: List of leagues to run. Defaults to ACTIVE_LEAGUES.
+    """
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+
     if bankroll <= 0:
         try:
             from scripts.betting.bankroll_loader import get_effective_bankroll
@@ -538,7 +583,7 @@ def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
             bankroll = 1000.0
 
     log.info("=" * 60)
-    log.info("STARTING SCHEDULED PIPELINE RUN")
+    log.info("STARTING SCHEDULED PIPELINE RUN (leagues: %s)", ", ".join(leagues))
     log.info("=" * 60)
 
     # Health check gate — abort on critical system issues
@@ -587,7 +632,8 @@ def run_pipeline(bankroll: float = 0, quick: bool = False) -> bool:
     cmd = [
         sys.executable,
         str(PROJECT_ROOT / "scripts" / "pipeline" / "run_full_pipeline.py"),
-        "--bankroll", str(bankroll)
+        "--bankroll", str(bankroll),
+        "--leagues", ",".join(leagues),
     ]
 
     if quick:
@@ -1099,18 +1145,26 @@ def run_model_retrain() -> bool:
 # SCHEDULER MODES
 # =============================================================================
 
-def run_daemon(bankroll: float = 0):
-    """Run as daemon with APScheduler."""
+def run_daemon(bankroll: float = 0, leagues: list = None):
+    """Run as daemon with APScheduler.
+
+    Args:
+        bankroll: Bankroll amount.
+        leagues: Active leagues to run. Defaults to ACTIVE_LEAGUES.
+    """
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+
     if not HAS_APSCHEDULER:
         log.error("APScheduler not installed. Run: pip install apscheduler")
         sys.exit(1)
 
     scheduler = BlockingScheduler()
 
-    # Add daily runs (full pipeline)
+    # Add daily runs (full pipeline for all active leagues)
     for run in SCHEDULE_CONFIG["daily_runs"]:
         scheduler.add_job(
-            lambda: run_pipeline(bankroll),
+            lambda: run_pipeline(bankroll, leagues=leagues),
             CronTrigger(hour=run["hour"], minute=run["minute"]),
             id=f"daily_{run['hour']}_{run['minute']}",
             name=run["description"]
@@ -1133,6 +1187,25 @@ def run_daemon(bankroll: float = 0):
         )
         log.info(f"Scheduled: Pre-kickoff at {pre_h:02d}:{pre_m:02d} "
                  f"(for {mt['hour']:02d}:{mt['minute']:02d} kickoff)")
+
+    # Add EPL pre-kickoff runs (if premier_league is active)
+    if "premier_league" in leagues:
+        for mt in SCHEDULE_CONFIG.get("epl_match_times", []):
+            pre_h = mt["hour"] - 1
+            pre_m = mt["minute"]
+            if pre_h < 0:
+                pre_h = 23
+            job_id = f"epl_pre_kickoff_{mt['hour']}_{mt['minute']}"
+            # Avoid duplicate job IDs if Serie A and EPL share a time slot
+            if scheduler.get_job(job_id) is None:
+                scheduler.add_job(
+                    lambda: run_pre_kickoff(bankroll),
+                    CronTrigger(hour=pre_h, minute=pre_m),
+                    id=job_id,
+                    name=f"EPL Pre-kickoff for {mt['hour']:02d}:{mt['minute']:02d} matches"
+                )
+                log.info(f"Scheduled: EPL Pre-kickoff at {pre_h:02d}:{pre_m:02d} "
+                         f"(for {mt['hour']:02d}:{mt['minute']:02d} kickoff)")
 
     # Add post-match settlement runs
     for run in SCHEDULE_CONFIG.get("settlement_runs", []):
@@ -1157,7 +1230,8 @@ def run_daemon(bankroll: float = 0):
     log.info("SCHEDULER STARTED")
     log.info("=" * 60)
     log.info(f"Bankroll: ${bankroll}")
-    log.info(f"Match day: {'Yes' if is_match_day() else 'No'}")
+    log.info(f"Active leagues: {', '.join(leagues)}")
+    log.info(f"Match day: {'Yes' if is_match_day(leagues=leagues) else 'No'}")
     log.info("Press Ctrl+C to stop")
 
     try:
@@ -1166,14 +1240,24 @@ def run_daemon(bankroll: float = 0):
         log.info("Scheduler stopped")
 
 
-def run_once(bankroll: float = 0, quick: bool = False):
-    """Single pipeline run."""
-    success = run_pipeline(bankroll, quick)
+def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
+    """Single pipeline run.
 
+    Args:
+        bankroll: Bankroll amount.
+        quick: Use cached data.
+        leagues: Active leagues. Defaults to ACTIVE_LEAGUES.
+    """
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+
+    success = run_pipeline(bankroll, quick, leagues=leagues)
+
+    league_label = " + ".join(l.replace("_", " ").title() for l in leagues)
     if success:
-        send_notification("Pipeline completed successfully", "Serie A Betting")
+        send_notification("Pipeline completed successfully", f"{league_label} Betting")
     else:
-        send_notification("Pipeline failed after retries", "Serie A Betting ERROR")
+        send_notification("Pipeline failed after retries", f"{league_label} Betting ERROR")
 
     sys.exit(0 if success else 1)
 
@@ -1343,16 +1427,29 @@ def main():
         action="store_true",
         help="Quick mode (skip heavy computations)"
     )
+    parser.add_argument(
+        "--leagues",
+        type=str,
+        default=None,
+        help="Comma-separated leagues to run (default: ACTIVE_LEAGUES config). "
+             "E.g. --leagues serie_a,premier_league"
+    )
 
     args = parser.parse_args()
+
+    # Resolve leagues
+    if args.leagues:
+        active_leagues = [l.strip() for l in args.leagues.split(",") if l.strip()]
+    else:
+        active_leagues = ACTIVE_LEAGUES
 
     # Rotate launchd logs on every invocation (keeps them under 500KB)
     rotate_launchd_logs()
 
     if args.mode == "daemon":
-        run_daemon(args.bankroll)
+        run_daemon(args.bankroll, leagues=active_leagues)
     elif args.mode == "once":
-        run_once(args.bankroll, args.quick)
+        run_once(args.bankroll, args.quick, leagues=active_leagues)
     elif args.mode == "pre-kickoff":
         success = run_pre_kickoff(args.bankroll)
         sys.exit(0 if success else 1)

@@ -23,6 +23,7 @@ except ImportError:
 
 from flask import Flask, render_template, jsonify, request as flask_request
 from config.settings import DATA_DIR, get_current_season
+from config.leagues import LEAGUE_REGISTRY, get_league_config
 
 _BASE = Path(__file__).parent.parent  # project root
 BETTING_DIR = DATA_DIR / "betting"
@@ -33,6 +34,129 @@ FEEDBACK_DIR = DATA_DIR / "feedback"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Multi-league helpers
+# ---------------------------------------------------------------------------
+
+# Leagues that currently have pipeline data (add keys here as pipelines go live)
+ACTIVE_LEAGUES = ["serie_a", "premier_league"]
+
+# League key aliases for flexible query params
+_LEAGUE_ALIASES: dict[str, str] = {
+    "epl": "premier_league",
+    "pl": "premier_league",
+    "eng": "premier_league",
+    "serie_a": "serie_a",
+    "seriea": "serie_a",
+    "ita": "serie_a",
+    "la_liga": "la_liga",
+    "laliga": "la_liga",
+    "bundesliga": "bundesliga",
+    "ligue_1": "ligue_1",
+    "ligue1": "ligue_1",
+}
+# Add all registry keys as self-aliases
+for _k in LEAGUE_REGISTRY:
+    _LEAGUE_ALIASES.setdefault(_k, _k)
+
+
+def _resolve_league(raw: str | None) -> str | None:
+    """Resolve a league query param to a canonical LEAGUE_REGISTRY key.
+
+    Returns None if raw is None/empty (meaning 'all leagues').
+    Raises ValueError if the value is non-empty but unrecognized.
+    """
+    if not raw:
+        return None
+    key = raw.strip().lower().replace("-", "_")
+    resolved = _LEAGUE_ALIASES.get(key)
+    if resolved is None:
+        raise ValueError(f"Unknown league '{raw}'. Valid: {', '.join(sorted(LEAGUE_REGISTRY))}")
+    return resolved
+
+
+def _get_league_filter() -> str | None:
+    """Extract and resolve the 'league' query param from the current request.
+
+    Returns a canonical league key or None (all leagues).
+    """
+    raw = flask_request.args.get("league", "").strip()
+    if not raw:
+        return None
+    return _resolve_league(raw)
+
+
+def _team_belongs_to_league(team_name: str, league_key: str) -> bool:
+    """Check if a team name belongs to a specific league.
+
+    Uses the canonical team name maps from config.team_names.
+    """
+    from config.team_names import normalize_team, SERIE_A_NAMES, PREMIER_LEAGUE_NAMES
+
+    # Map league key -> set of canonical names for that league
+    _LEAGUE_TEAMS: dict[str, dict] = {
+        "serie_a": SERIE_A_NAMES,
+        "premier_league": PREMIER_LEAGUE_NAMES,
+    }
+    league_names = _LEAGUE_TEAMS.get(league_key)
+    if league_names is None:
+        return True  # Unknown league config -> don't filter
+    canonical = normalize_team(team_name)
+    # canonical name is one of the *values* in the mapping dict
+    return canonical in league_names.values() or canonical in league_names
+
+
+def _match_belongs_to_league(match_dict: dict, league_key: str) -> bool:
+    """Check if a match/bet/prediction dict belongs to a league.
+
+    1. If the dict has an explicit 'league' field, use it directly.
+    2. Otherwise, resolve by checking the home_team against known league teams.
+    """
+    explicit = match_dict.get("league", "")
+    if explicit:
+        return _resolve_league(explicit) == league_key
+    home = match_dict.get("home_team", "")
+    if not home:
+        # Try to extract from 'match' key: "Home vs Away"
+        mk = match_dict.get("match", "")
+        if " vs " in mk:
+            home = mk.split(" vs ", 1)[0].strip()
+    if not home:
+        return True  # Can't determine -> include
+    return _team_belongs_to_league(home, league_key)
+
+
+def _filter_by_league(items: list, league_key: str | None) -> list:
+    """Filter a list of match/bet dicts by league. Returns all if league_key is None."""
+    if league_key is None:
+        return items
+    return [item for item in items if _match_belongs_to_league(item, league_key)]
+
+
+def _filter_dict_by_league(items: dict, league_key: str | None) -> dict:
+    """Filter a match-keyed dict by league. Returns all if league_key is None."""
+    if league_key is None:
+        return items
+    return {
+        k: v for k, v in items.items()
+        if _match_belongs_to_league({"match": k, **(v if isinstance(v, dict) else {})}, league_key)
+    }
+
+
+def _active_leagues_info() -> list[dict]:
+    """Return info dicts for all active leagues."""
+    result = []
+    for key in ACTIVE_LEAGUES:
+        cfg = LEAGUE_REGISTRY.get(key)
+        if cfg:
+            result.append({
+                "key": key,
+                "name": cfg.name,
+                "country": cfg.country,
+                "timezone": cfg.timezone,
+            })
+    return result
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -426,6 +550,8 @@ def _api_matches_features(season: str):
 
 @app.route("/api/dashboard")
 def api_dashboard():
+    league_filter = _get_league_filter()
+
     # Load all data sources
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
@@ -589,12 +715,16 @@ def api_dashboard():
         return ct or d or "9999"
     matches.sort(key=sort_key)
 
+    # Apply league filter
+    matches = _filter_by_league(matches, league_filter)
+
     # Split: upcoming for dashboard display, all for detail page lookups
     upcoming = [m for m in matches if m.get("status") != "completed"]
 
     # Alerts
     alerts_raw = _load_json(BETTING_DIR / "alerts.json", default=[])
     alerts = [a.get("bet", {}) | {"alert_type": a.get("type", "")} for a in alerts_raw if isinstance(a, dict)]
+    alerts = _filter_by_league(alerts, league_filter)
 
     # Steam moves summary
     steam_moves = [
@@ -629,6 +759,8 @@ def api_dashboard():
         "predictions_generated_at": predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "",
         "extended_markets_at": extended_raw.get("generated_at", "") if isinstance(extended_raw, dict) else "",
         "market_intelligence_at": market_intel_at,
+        "league_filter": league_filter,
+        "active_leagues": _active_leagues_info(),
     })
 
 
@@ -782,6 +914,8 @@ def _is_upcoming(entry: dict, pred_lookup: dict = None) -> bool:
 
 @app.route("/api/betting")
 def api_betting():
+    league_filter = _get_league_filter()
+
     # ---- Load all data sources ----
     # Primary: unified_bet_slip.json (written by current pipeline)
     # Fallback: unified_report.json (legacy)
@@ -888,6 +1022,7 @@ def api_betting():
         if not bet.get("date"):
             bet["date"] = pred.get("date", "")
     main_bets = [b for b in raw_bets if _is_upcoming(b)]
+    main_bets = _filter_by_league(main_bets, league_filter)
 
     # Specialty market bets
     ou_raw = _load_json(UPCOMING_DIR / "over_under_bets.json")
@@ -957,8 +1092,10 @@ def api_betting():
     # ---- Step 3: Build unified match-centric response ----
     ct_map = _get_commence_times()
     odds_full_matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
+    # Apply league filter to predictions before building match objects
+    filtered_pred_by_match = _filter_dict_by_league(pred_by_match, league_filter)
     matches = {}
-    for match_key, pred in pred_by_match.items():
+    for match_key, pred in filtered_pred_by_match.items():
         # Inject commence_time from odds_full for accurate status check
         if not pred.get("commence_time"):
             pred["commence_time"] = ct_map.get(match_key, "")
@@ -1235,6 +1372,9 @@ def api_betting():
         "player_prop_value_bets": player_prop_vb.get("bets", []) if isinstance(player_prop_vb, dict) else [],
         # Rejected bets (with reasons)
         "rejected_bets": ultimate_slip.get("rejected_bets", []) if isinstance(ultimate_slip, dict) else [],
+        # League filter metadata
+        "league_filter": league_filter,
+        "active_leagues": _active_leagues_info(),
     })
 
 
@@ -1744,6 +1884,7 @@ def api_system():
             "last_result": _auto_settle_last_result,
             "interval_seconds": SETTLE_CHECK_INTERVAL,
         },
+        "active_leagues": _active_leagues_info(),
     })
 
 
@@ -6499,15 +6640,20 @@ def api_best_bets():
     Returns the best value bets ranked by confidence × edge, with
     clear action: match, selection, odds, bookmaker, stake, edge.
     Designed for a quick-glance widget on the dashboard.
+
+    Query params:
+        league: optional league filter (e.g. 'premier_league', 'epl', 'serie_a')
     """
+    league_filter = _get_league_filter()
+
     try:
         # Load latest bets from unified report
         report = _load_json(BETTING_DIR / "unified_report.json")
-        bets = report.get("bets", [])
+        bets = _filter_by_league(report.get("bets", []), league_filter)
 
         # Also check edge scan for newer discoveries
         scan = _load_json(BETTING_DIR / "edge_scan_latest.json")
-        scan_bets = scan.get("value_bets", []) if scan else []
+        scan_bets = _filter_by_league(scan.get("value_bets", []) if scan else [], league_filter)
 
         # Build a unified best-bets list
         best = []

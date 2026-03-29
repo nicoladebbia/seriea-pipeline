@@ -38,7 +38,12 @@ PARSED_DIR = DATA_DIR / "parsed"
 
 # FBref URLs
 FBREF_BASE = "https://fbref.com"
-SERIE_A_COMP_ID = 11
+
+# League configurations
+LEAGUE_CONFIG = {
+    "seriea": {"comp_id": 11, "url_slug": "Serie-A", "display_name": "Serie A"},
+    "epl": {"comp_id": 9, "url_slug": "Premier-League", "display_name": "Premier League"},
+}
 
 # Rate limiting
 DELAY_SECONDS = max(REQUEST_DELAY_SECONDS, 8)  # At least 8 seconds for safety during backfill
@@ -47,11 +52,12 @@ DELAY_SECONDS = max(REQUEST_DELAY_SECONDS, 8)  # At least 8 seconds for safety d
 class FBrefFastScraper:
     """Fast FBref scraper with browser reuse."""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, league: str = "seriea"):
         """Initialize the scraper.
 
         Args:
             headless: Run browser in headless mode (faster, no UI)
+            league: League key from LEAGUE_CONFIG (e.g., "seriea", "epl")
 
         Raises:
             ImportError: If botasaurus is not installed
@@ -61,7 +67,11 @@ class FBrefFastScraper:
                 "botasaurus is required for FBrefFastScraper. "
                 "Install with: pip install botasaurus"
             )
+        if league not in LEAGUE_CONFIG:
+            raise ValueError(f"Unknown league '{league}'. Available: {list(LEAGUE_CONFIG.keys())}")
         self.headless = headless
+        self.league = league
+        self._cfg = LEAGUE_CONFIG[league]
         self._driver = None
         self._urls_scraped = 0
 
@@ -74,7 +84,9 @@ class FBrefFastScraper:
         Returns:
             DataFrame with match info including match URLs
         """
-        url = f"{FBREF_BASE}/en/comps/{SERIE_A_COMP_ID}/{season}/schedule/{season}-Serie-A-Scores-and-Fixtures"
+        slug = self._cfg["url_slug"]
+        comp_id = self._cfg["comp_id"]
+        url = f"{FBREF_BASE}/en/comps/{comp_id}/{season}/schedule/{season}-{slug}-Scores-and-Fixtures"
         log.info(f"Scraping fixtures from {url}")
 
         soup = self._get_soup(url)
@@ -208,7 +220,9 @@ class FBrefFastScraper:
         }
 
         url_part = stat_url_map.get(stat_type, "stats")
-        url = f"{FBREF_BASE}/en/comps/{SERIE_A_COMP_ID}/{season}/{url_part}/{season}-Serie-A-Stats"
+        slug = self._cfg["url_slug"]
+        comp_id = self._cfg["comp_id"]
+        url = f"{FBREF_BASE}/en/comps/{comp_id}/{season}/{url_part}/{season}-{slug}-Stats"
 
         log.info(f"Scraping {stat_type} stats from {url}")
         soup = self._get_soup(url)
@@ -463,6 +477,7 @@ class FBrefFastScraper:
 def scrape_all_seasons(
     seasons: list[str],
     output_dir: Path | None = None,
+    league: str = "seriea",
     headless: bool = True,
 ) -> None:
     """Scrape all data for multiple seasons and save to files.
@@ -470,12 +485,13 @@ def scrape_all_seasons(
     Args:
         seasons: List of seasons to scrape
         output_dir: Directory to save scraped data (default: DATA_DIR)
+        league: League key (e.g., "seriea", "epl")
         headless: Run browser in headless mode
     """
     if output_dir is None:
         output_dir = DATA_DIR
 
-    scraper = FBrefFastScraper(headless=headless)
+    scraper = FBrefFastScraper(headless=headless, league=league)
 
     for season in seasons:
         log.info(f"\n{'='*60}")
@@ -568,22 +584,25 @@ def scrape_all_seasons(
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse as _ap
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    # Default seasons to scrape
-    seasons = [
-        "2017-2018",
-        "2018-2019",
-        "2019-2020",
-        "2020-2021",
-        "2021-2022",
-        "2022-2023",
-        "2023-2024",
-    ]
+    parser = _ap.ArgumentParser(description="Fast FBref scraper with browser reuse")
+    parser.add_argument(
+        "--league",
+        choices=list(LEAGUE_CONFIG.keys()),
+        default="seriea",
+        help="League to scrape (default: seriea)",
+    )
+    parser.add_argument(
+        "seasons",
+        nargs="*",
+        default=[
+            "2017-2018", "2018-2019", "2019-2020", "2020-2021",
+            "2021-2022", "2022-2023", "2023-2024",
+        ],
+        help="Seasons to scrape",
+    )
+    args = parser.parse_args()
 
-    # Allow specifying seasons via command line
-    if len(sys.argv) > 1:
-        seasons = sys.argv[1:]
-
-    scrape_all_seasons(seasons, headless=True)
+    scrape_all_seasons(args.seasons, league=args.league, headless=True)

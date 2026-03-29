@@ -985,6 +985,44 @@ def _bankroll_in_context(br_ctx: dict) -> str:
     return " ".join([parts[0], f"({', '.join(parts[1:])})"]) if len(parts) > 1 else parts[0]
 
 
+def _detect_league_name(match_dict: dict) -> str:
+    """Detect the league display name for a match/bet dict.
+
+    Returns a display name like 'Serie A' or 'Premier League',
+    or empty string if undetermined.
+    """
+    explicit = match_dict.get("league", "")
+    if explicit:
+        try:
+            from config.leagues import LEAGUE_REGISTRY
+            for key, cfg in LEAGUE_REGISTRY.items():
+                if key == explicit or cfg.name.lower() == explicit.lower():
+                    return cfg.name
+        except Exception:
+            pass
+        return explicit
+
+    # Try to detect from team name
+    home = match_dict.get("home_team", "")
+    if not home:
+        mk = match_dict.get("match", "")
+        if " vs " in mk:
+            home = mk.split(" vs ", 1)[0].strip()
+    if not home:
+        return ""
+
+    try:
+        from config.team_names import normalize_team, SERIE_A_NAMES, PREMIER_LEAGUE_NAMES
+        canonical = normalize_team(home)
+        if canonical in SERIE_A_NAMES.values() or canonical in SERIE_A_NAMES:
+            return "Serie A"
+        if canonical in PREMIER_LEAGUE_NAMES.values() or canonical in PREMIER_LEAGUE_NAMES:
+            return "Premier League"
+    except Exception:
+        pass
+    return ""
+
+
 def notify_value_bets(bets: list[dict]) -> dict:
     """Send a rich notification about new value bets found."""
     if not bets:
@@ -1022,14 +1060,28 @@ def notify_value_bets(bets: list[dict]) -> dict:
     tg.line(opener)
     tg.blank()
 
+    # Detect unique leagues for header
+    league_names = set()
+    for b in sorted_bets[:3]:
+        ln = _detect_league_name(b)
+        if ln:
+            league_names.add(ln)
+    if len(league_names) > 1:
+        tg.raw(f"<i>Across {_html_escape(', '.join(sorted(league_names)))}</i>")
+        tg.blank()
+
     for b in sorted_bets[:3]:
         edge = b.get("edge_pct", 0)
         conf = b.get("confidence_tier", "")
         conf_tag = f"  [{_html_escape(conf)}]" if conf else ""
         date_ctx = _time_until_kickoff(b.get("date", ""))
         time_tag = f"  \u23f0 {date_ctx}" if date_ctx else ""
+        league_tag = ""
+        ln = _detect_league_name(b)
+        if ln and len(league_names) > 1:
+            league_tag = f"  [{_html_escape(ln)}]"
 
-        tg.raw(f"<b>{_html_escape(b.get('match', '?'))}</b>{conf_tag}{time_tag}")
+        tg.raw(f"<b>{_html_escape(b.get('match', '?'))}</b>{conf_tag}{time_tag}{league_tag}")
         tg.raw(f"  {_html_escape(b.get('selection', '?'))} ({_html_escape(b.get('market', '?'))}) "
                f"@ <b>{b.get('best_odds', '?')}</b>  \u2014  {_html_escape(_edge_label(edge))}")
         tg.raw(f"  Model {b.get('model_prob', 0)*100:.0f}% vs market {100/b.get('best_odds',100):.0f}%"
@@ -1089,8 +1141,14 @@ def notify_value_bets(bets: list[dict]) -> dict:
 
 def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
                       profit: float = 0, balance: float = 0,
-                      best_win: dict | None = None, worst_loss: dict | None = None) -> dict:
-    """Send a rich settlement notification with story and context."""
+                      best_win: dict | None = None, worst_loss: dict | None = None,
+                      settled_bets: list[dict] | None = None) -> dict:
+    """Send a rich settlement notification with story and context.
+
+    Args:
+        settled_bets: Optional list of individual settled bet dicts. When provided,
+                      results are grouped by league in the Telegram message.
+    """
     if settled == 0:
         return {}
 
@@ -1111,6 +1169,21 @@ def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
     tg = TgMsg()
     tg.line(opener)
     tg.blank()
+
+    # Group by league when multiple leagues have settled bets
+    if settled_bets:
+        by_league: dict[str, list[dict]] = {}
+        for sb in settled_bets:
+            ln = _detect_league_name(sb) or "Other"
+            by_league.setdefault(ln, []).append(sb)
+        if len(by_league) > 1:
+            for league_name, league_bets in sorted(by_league.items()):
+                lw = sum(1 for b in league_bets if b.get("status") == "won")
+                ll = sum(1 for b in league_bets if b.get("status") == "lost")
+                lp = sum(b.get("profit", 0) for b in league_bets)
+                ls = "+" if lp >= 0 else ""
+                tg.raw(f"<b>{_html_escape(league_name)}:</b> {lw}W-{ll}L ({ls}\u20ac{lp:.2f})")
+            tg.blank()
 
     total = won + lost + push
     tg.raw(f"<b>{_html_escape(record)}</b>")
@@ -1672,9 +1745,20 @@ def notify_morning_briefing() -> dict:
     tg.raw(f"<b>{_html_escape(opener)}</b>")
     tg.blank()
 
+    # Per-league breakdown of today's matches
+    matches_by_league: dict[str, int] = {}
+    for m in today_matches:
+        ln = _detect_league_name(m) or "Other"
+        matches_by_league[ln] = matches_by_league.get(ln, 0) + 1
+
     # One-line summary
-    tg.raw(f"{n_matches} match{'es' if n_matches != 1 else ''} today  |  "
-           f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
+    if len(matches_by_league) > 1:
+        league_parts = [f"{cnt} {_html_escape(name)}" for name, cnt in sorted(matches_by_league.items())]
+        tg.raw(f"{n_matches} matches today ({', '.join(league_parts)})  |  "
+               f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
+    else:
+        tg.raw(f"{n_matches} match{'es' if n_matches != 1 else ''} today  |  "
+               f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
 
     # Active bets - compact, max 3
     if pending:

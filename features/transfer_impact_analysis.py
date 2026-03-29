@@ -321,22 +321,33 @@ def compute_january_window_features(
     }
 
 
-def _build_squad_value_lookup(tm_dir: Path) -> dict[tuple[str, str], dict]:
+def _build_squad_value_lookup(
+    tm_dir: Path, file_prefix: str = ""
+) -> dict[tuple[str, str], dict]:
     """Build a lookup of squad market value features per (team, season).
 
     Uses market_values_YYYY_YYYY.parquet files from Transfermarkt.
     Each file has: team, player_name, position, age, market_value_eur, nationality.
+
+    Args:
+        tm_dir: Directory containing Transfermarkt parquet files
+        file_prefix: League prefix for files (e.g. "premier_league_"). Empty for Serie A.
 
     Returns dict mapping (team_lower, season) -> {squad_value, squad_avg_value,
     squad_avg_age, squad_depth}.
     """
     lookup: dict[tuple[str, str], dict] = {}
 
-    for path in sorted(tm_dir.glob("market_values_*.parquet")):
+    glob_pattern = f"{file_prefix}market_values_*.parquet"
+    for path in sorted(tm_dir.glob(glob_pattern)):
         if "backup" in path.name:
             continue
         # Extract season from filename: market_values_2024_2025.parquet -> 2024-2025
-        parts = path.stem.replace("market_values_", "").split("_")
+        # or premier_league_market_values_2024_2025.parquet -> 2024-2025
+        stem = path.stem
+        if file_prefix:
+            stem = stem.replace(file_prefix, "", 1)
+        parts = stem.replace("market_values_", "").split("_")
         if len(parts) != 2:
             continue
         season = f"{parts[0]}-{parts[1]}"
@@ -403,8 +414,16 @@ def add_transfer_impact_features(feature_df: pd.DataFrame) -> pd.DataFrame:
         log.info("No Transfermarkt data available — transfer features set to defaults")
         return df
 
+    # Determine league prefix for file lookup (Serie A = no prefix for backward compat)
+    league_key = ""
+    if "league" in df.columns:
+        leagues = df["league"].dropna().unique()
+        if len(leagues) == 1:
+            league_key = str(leagues[0])
+    file_prefix = "" if league_key in ("serie_a", "") else f"{league_key}_"
+
     # ── Squad market value features ──────────────────────────────────
-    squad_lookup = _build_squad_value_lookup(tm_dir)
+    squad_lookup = _build_squad_value_lookup(tm_dir, file_prefix=file_prefix)
     if squad_lookup:
         for idx, row in df.iterrows():
             season = row.get("season", "")
@@ -435,7 +454,7 @@ def add_transfer_impact_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     transfer_cache: dict[tuple[str, str], dict] = {}
 
     for season in seasons:
-        tr_path = tm_dir / f"transfers_{season.replace('-', '_')}.parquet"
+        tr_path = tm_dir / f"{file_prefix}transfers_{season.replace('-', '_')}.parquet"
         if not tr_path.exists():
             continue
 

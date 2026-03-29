@@ -244,6 +244,9 @@ MAX_CONVERSATION_MESSAGES = 20  # Keep last 10 user+assistant pairs
 _CONVERSATION_FILE = PROJECT_ROOT / "data" / ".telegram_conversation.json"
 
 
+_LEAGUE_PREFS_FILE = PROJECT_ROOT / "data" / ".telegram_league_pref.json"
+
+
 class ConversationManager:
     """Manages conversation history with disk persistence.
 
@@ -253,7 +256,19 @@ class ConversationManager:
 
     def __init__(self):
         self._history: list[dict] = []
+        self._league_filter: str | None = None  # e.g. "premier_league" or None for all
         self._load()
+        self._load_league_pref()
+
+    @property
+    def league_filter(self) -> str | None:
+        """Current league filter preference (None = all leagues)."""
+        return self._league_filter
+
+    def set_league_filter(self, league_key: str | None):
+        """Set league filter preference. None means all leagues."""
+        self._league_filter = league_key
+        self._save_league_pref()
 
     def add_user_message(self, text: str):
         self._history.append({"role": "user", "content": text})
@@ -277,6 +292,7 @@ class ConversationManager:
 
     def clear(self):
         self._history.clear()
+        # Preserve league_filter across clear
         self._save()
 
     def _trim(self):
@@ -290,6 +306,23 @@ class ConversationManager:
                 json.dump(self._history, f)
         except Exception as e:
             log.debug("Failed to save conversation: %s", e)
+
+    def _save_league_pref(self):
+        try:
+            _LEAGUE_PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(_LEAGUE_PREFS_FILE, "w") as f:
+                json.dump({"league_filter": self._league_filter}, f)
+        except Exception as e:
+            log.debug("Failed to save league pref: %s", e)
+
+    def _load_league_pref(self):
+        try:
+            if _LEAGUE_PREFS_FILE.exists():
+                with open(_LEAGUE_PREFS_FILE) as f:
+                    data = json.load(f)
+                self._league_filter = data.get("league_filter")
+        except Exception as e:
+            log.debug("Failed to load league pref: %s", e)
 
     def _load(self):
         try:
@@ -385,6 +418,7 @@ def _register_commands(token: str):
         {"command": "live", "description": "Live scores and active bets"},
         {"command": "parlays", "description": "Top parlay combinations"},
         {"command": "bankroll", "description": "Balance, ROI, and streak"},
+        {"command": "league", "description": "Filter by league (EPL, Serie A)"},
         {"command": "digest", "description": "Full daily summary report"},
         {"command": "summary", "description": "Weekly bet history by week"},
         {"command": "settings", "description": "Notification preferences"},
@@ -853,15 +887,16 @@ def _handle_start() -> str:
     tg.raw("  /bankroll \u2014 balance, ROI, streak")
     tg.raw("  /today \u2014 today's matches")
     tg.raw("  /live \u2014 live scores + your bets")
+    tg.raw("  /league \u2014 filter by league")
     tg.raw("  /digest \u2014 daily summary")
     tg.raw("  /help \u2014 all commands")
     tg.blank()
-    tg.italic("Or just ask me anything about Serie A.")
+    tg.italic("Or just ask me anything about football.")
     return tg.build()
 
 
 def _handle_bets() -> str:
-    """Handle /bets — value bets with clear formatting."""
+    """Handle /bets — value bets with clear formatting, grouped by league."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
     MKT_NAMES = {
@@ -872,32 +907,45 @@ def _handle_bets() -> str:
         "btts": "Both Teams Score", "draw_no_bet": "Draw No Bet",
     }
 
+    LEAGUE_HEADERS = {
+        "serie_a": "Serie A",
+        "premier_league": "Premier League",
+        "la_liga": "La Liga",
+        "bundesliga": "Bundesliga",
+        "ligue_1": "Ligue 1",
+    }
+
     try:
         result = json.loads(_tool_get_value_bets({}))
         bets = result.get("bets", [])
         if not bets:
             return "\U0001f4ad No value bets right now. Market is efficient today."
 
+        # Check if multiple leagues are present
+        leagues_in_bets = set(b.get("league", "serie_a") for b in bets)
+        multi_league = len(leagues_in_bets) > 1
+
         tg = TgMsg()
         tg.raw(f"\U0001f4b0 <b>Value Bets</b> ({len(bets)} picks)")
         tg.blank()
 
-        for b in bets:
-            edge = b.get("edge_pct", 0)
-            market_raw = b.get("market", "?")
-            market = MKT_NAMES.get(market_raw, market_raw)
-            stake = b.get("stake", b.get("stake_amount", 0))
-            odds = b.get("odds", b.get("best_odds", 0))
-            bm = b.get("bookmaker", b.get("best_bookmaker", ""))
+        if multi_league:
+            # Group bets by league
+            bets_by_league = {}
+            for b in bets:
+                league = b.get("league", "serie_a")
+                bets_by_league.setdefault(league, []).append(b)
 
-            tg.raw(f"\u26bd <b>{_html_escape(b.get('match', '?'))}</b>")
-            tg.raw(f"   {_html_escape(market)}: <b>{_html_escape(b.get('selection', '?'))}</b>")
-            tg.raw(f"   Odds: <b>{odds}</b>"
-                   + (f" ({_html_escape(bm)})" if bm else "")
-                   + f"  |  Edge: <b>{edge:+.1f}%</b>")
-            if stake:
-                tg.raw(f"   Stake: \u20ac{stake:.2f}")
-            tg.blank()
+            for league, league_bets in bets_by_league.items():
+                header = LEAGUE_HEADERS.get(league, league.replace("_", " ").title())
+                tg.raw(f"\U0001f3c6 <b>{_html_escape(header)}</b>")
+                tg.blank()
+
+                for b in league_bets:
+                    _format_bet_line(tg, b, MKT_NAMES, _html_escape)
+        else:
+            for b in bets:
+                _format_bet_line(tg, b, MKT_NAMES, _html_escape)
 
         # Handicap bets
         hcap = result.get("handicap_bets", [])
@@ -922,6 +970,25 @@ def _handle_bets() -> str:
     except Exception as e:
         log.warning("/bets failed: %s", e)
         return f"Failed to load bets: {e}"
+
+
+def _format_bet_line(tg, b: dict, mkt_names: dict, escape_fn):
+    """Format a single bet line for Telegram output."""
+    edge = b.get("edge_pct", 0)
+    market_raw = b.get("market", "?")
+    market = mkt_names.get(market_raw, market_raw)
+    stake = b.get("stake", b.get("stake_amount", 0))
+    odds = b.get("odds", b.get("best_odds", 0))
+    bm = b.get("bookmaker", b.get("best_bookmaker", ""))
+
+    tg.raw(f"\u26bd <b>{escape_fn(b.get('match', '?'))}</b>")
+    tg.raw(f"   {escape_fn(market)}: <b>{escape_fn(b.get('selection', '?'))}</b>")
+    tg.raw(f"   Odds: <b>{odds}</b>"
+           + (f" ({escape_fn(bm)})" if bm else "")
+           + f"  |  Edge: <b>{edge:+.1f}%</b>")
+    if stake:
+        tg.raw(f"   Stake: \u20ac{stake:.2f}")
+    tg.blank()
 
 
 def _handle_bankroll() -> str:
@@ -1410,7 +1477,7 @@ def _handle_week_detail(week_key: str) -> str:
 
 
 def _handle_today() -> str:
-    """Handle /today — today's matches with predictions."""
+    """Handle /today — today's matches with predictions, grouped by league."""
     from scripts.pipeline.notify import TgMsg, _html_escape
 
     CONF_EMOJI = {
@@ -1420,26 +1487,51 @@ def _handle_today() -> str:
         "MEDIUM": "\u26aa",          # white circle
     }
 
+    LEAGUE_HEADERS = {
+        "serie_a": "Serie A",
+        "premier_league": "Premier League",
+        "la_liga": "La Liga",
+        "bundesliga": "Bundesliga",
+        "ligue_1": "Ligue 1",
+    }
+
     try:
         from config.settings import DATA_DIR
         today = datetime.now().strftime("%Y-%m-%d")
 
+        # Load predictions from all league files
+        all_preds = []
         preds_path = DATA_DIR / "upcoming" / "predictions.json"
-        if not preds_path.exists():
-            return "No predictions available. Run the pipeline first."
+        if preds_path.exists():
+            with open(preds_path) as f:
+                preds = json.load(f)
+            for p in preds.get("predictions", []):
+                p.setdefault("league", "serie_a")
+                all_preds.append(p)
 
-        with open(preds_path) as f:
-            preds = json.load(f)
+        # Load extra league predictions
+        for league_key in LEAGUE_HEADERS:
+            if league_key == "serie_a":
+                continue
+            extra_path = DATA_DIR / "upcoming" / f"predictions_{league_key}.json"
+            if extra_path.exists():
+                try:
+                    with open(extra_path) as f:
+                        extra = json.load(f)
+                    for p in extra.get("predictions", []):
+                        p.setdefault("league", league_key)
+                        all_preds.append(p)
+                except Exception:
+                    pass
 
-        pred_list = preds.get("predictions", [])
-        today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
+        today_matches = [p for p in all_preds if p.get("date", "").startswith(today)]
 
         if not today_matches:
-            future = sorted([p for p in pred_list if p.get("date", "") > today],
+            future = sorted([p for p in all_preds if p.get("date", "") > today],
                            key=lambda p: p.get("date", ""))
             if future:
                 next_date = future[0].get("date", "?")
-                next_matches = [p for p in pred_list if p.get("date", "").startswith(next_date)]
+                next_matches = [p for p in all_preds if p.get("date", "").startswith(next_date)]
                 tg = TgMsg()
                 tg.raw(f"\U0001f4c5 No matches today.")
                 tg.raw(f"Next matchday: <b>{_html_escape(next_date)}</b> ({len(next_matches)} matches)")
@@ -1449,30 +1541,50 @@ def _handle_today() -> str:
                 return tg.build()
             return "\U0001f4c5 No upcoming matches found."
 
+        # Group by league
+        leagues_present = []
+        matches_by_league = {}
+        for m in today_matches:
+            league = m.get("league", "serie_a")
+            matches_by_league.setdefault(league, []).append(m)
+            if league not in leagues_present:
+                leagues_present.append(league)
+
+        multi_league = len(leagues_present) > 1
+
         tg = TgMsg()
         tg.raw(f"\U0001f4c5 <b>Today's Matches</b> ({len(today_matches)})")
         tg.blank()
 
-        for m in today_matches:
-            conf = m.get("confidence_level", "")
-            prediction = m.get("predicted_result", "")
-            kickoff = m.get("time", "")
+        for league in leagues_present:
+            league_matches = matches_by_league[league]
 
-            conf_dot = CONF_EMOJI.get(conf, "\u26aa")
-            time_str = f"  {_html_escape(kickoff)}" if kickoff else ""
+            # Show league header when multiple leagues are active
+            if multi_league:
+                header = LEAGUE_HEADERS.get(league, league.replace("_", " ").title())
+                tg.raw(f"\U0001f3c6 <b>{_html_escape(header)}</b> ({len(league_matches)})")
+                tg.blank()
 
-            tg.raw(f"{conf_dot} <b>{_html_escape(m.get('match', '?'))}</b>{time_str}")
+            for m in league_matches:
+                conf = m.get("confidence_level", "")
+                prediction = m.get("predicted_result", "")
+                kickoff = m.get("time", "")
 
-            # Show prediction + probabilities
-            probs = m.get("probabilities", m.get("betting_probabilities", {}))
-            if isinstance(probs, dict) and probs:
-                h = probs.get("home", 0)
-                d = probs.get("draw", 0)
-                a = probs.get("away", 0)
-                tg.raw(f"   Home {h:.0%} | Draw {d:.0%} | Away {a:.0%}")
-                if prediction:
-                    tg.raw(f"   Prediction: <b>{_html_escape(prediction)}</b>")
-            tg.blank()
+                conf_dot = CONF_EMOJI.get(conf, "\u26aa")
+                time_str = f"  {_html_escape(kickoff)}" if kickoff else ""
+
+                tg.raw(f"{conf_dot} <b>{_html_escape(m.get('match', '?'))}</b>{time_str}")
+
+                # Show prediction + probabilities
+                probs = m.get("probabilities", m.get("betting_probabilities", {}))
+                if isinstance(probs, dict) and probs:
+                    h = probs.get("home", 0)
+                    d = probs.get("draw", 0)
+                    a = probs.get("away", 0)
+                    tg.raw(f"   Home {h:.0%} | Draw {d:.0%} | Away {a:.0%}")
+                    if prediction:
+                        tg.raw(f"   Prediction: <b>{_html_escape(prediction)}</b>")
+                tg.blank()
 
         tg.italic("Tap /match to analyze any match in detail.")
         return tg.build()
@@ -1494,6 +1606,107 @@ def _handle_digest() -> str:
         return f"Failed to generate digest: {e}"
 
 
+def _handle_league(args: str, conversation: ConversationManager) -> str:
+    """Handle /league — show, set, or clear league filter.
+
+    /league         -> show available leagues with match counts + current filter
+    /league epl     -> set filter to Premier League
+    /league all     -> remove filter (show all leagues)
+    """
+    from scripts.pipeline.notify import TgMsg, _html_escape
+    from config.leagues import LEAGUE_REGISTRY
+
+    # League aliases for user-friendly input
+    _ALIASES: dict[str, str] = {
+        "epl": "premier_league", "pl": "premier_league", "eng": "premier_league",
+        "premier_league": "premier_league", "premierleague": "premier_league",
+        "serie_a": "serie_a", "seriea": "serie_a", "ita": "serie_a",
+        "la_liga": "la_liga", "laliga": "la_liga", "esp": "la_liga",
+        "bundesliga": "bundesliga", "ger": "bundesliga",
+        "ligue_1": "ligue_1", "ligue1": "ligue_1", "fra": "ligue_1",
+    }
+
+    # Active leagues with pipeline data
+    ACTIVE_KEYS = ["serie_a", "premier_league"]
+
+    arg = args.strip().lower().replace("-", "_").replace(" ", "_")
+
+    if arg == "all" or arg == "reset" or arg == "clear":
+        conversation.set_league_filter(None)
+        return "\U0001f30d League filter removed. Showing <b>all leagues</b>."
+
+    if arg:
+        resolved = _ALIASES.get(arg)
+        if not resolved:
+            return (f"Unknown league '<b>{_html_escape(arg)}</b>'. "
+                    f"Try: epl, serie_a, la_liga, bundesliga, ligue_1")
+        cfg = LEAGUE_REGISTRY.get(resolved)
+        if not cfg:
+            return f"League config not found for '{arg}'."
+        conversation.set_league_filter(resolved)
+        return (f"\U0001f3c6 League filter set to <b>{_html_escape(cfg.name)}</b>.\n"
+                f"Commands like /bets, /today will show {_html_escape(cfg.name)} only.\n"
+                f"Use /league all to show all leagues again.")
+
+    # No args: show available leagues + current filter + match counts
+    tg = TgMsg()
+    tg.raw("<b>League Filter</b>")
+    tg.blank()
+
+    current = conversation.league_filter
+    if current:
+        cfg = LEAGUE_REGISTRY.get(current)
+        name = cfg.name if cfg else current
+        tg.raw(f"Currently showing: <b>{_html_escape(name)}</b>")
+    else:
+        tg.raw("Currently showing: <b>All leagues</b>")
+    tg.blank()
+
+    # Load match counts per league
+    try:
+        from config.settings import DATA_DIR
+        preds_path = DATA_DIR / "upcoming" / "predictions.json"
+        if preds_path.exists():
+            with open(preds_path) as f:
+                preds = json.load(f)
+            pred_list = preds.get("predictions", [])
+            today = datetime.now().strftime("%Y-%m-%d")
+            today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
+            all_upcoming = pred_list
+        else:
+            today_matches = []
+            all_upcoming = []
+    except Exception:
+        today_matches = []
+        all_upcoming = []
+
+    tg.raw("<b>Available leagues:</b>")
+    for key in ACTIVE_KEYS:
+        cfg = LEAGUE_REGISTRY.get(key)
+        if not cfg:
+            continue
+        # Count matches in this league
+        from scripts.pipeline.notify import _detect_league_name
+        league_today = sum(1 for m in today_matches if _detect_league_name(m) == cfg.name)
+        league_total = sum(1 for m in all_upcoming if _detect_league_name(m) == cfg.name)
+        active_marker = " \u2705" if current == key else ""
+        counts = []
+        if league_today:
+            counts.append(f"{league_today} today")
+        if league_total:
+            counts.append(f"{league_total} upcoming")
+        count_str = f" ({', '.join(counts)})" if counts else ""
+        tg.raw(f"  {_html_escape(cfg.name)}{count_str}{active_marker}")
+
+    tg.blank()
+    tg.raw("<b>Set filter:</b>")
+    tg.raw("  /league epl \u2014 Premier League only")
+    tg.raw("  /league serie_a \u2014 Serie A only")
+    tg.raw("  /league all \u2014 show all leagues")
+
+    return tg.build()
+
+
 def _handle_help() -> str:
     """Handle /help — all available commands."""
     from scripts.pipeline.notify import TgMsg
@@ -1508,6 +1721,7 @@ def _handle_help() -> str:
     tg.raw("  /today \u2014 today's matches + predictions")
     tg.raw("  /match \u2014 tap a match for full analysis")
     tg.raw("  /live \u2014 live scores + your bets")
+    tg.raw("  /league \u2014 filter by league (EPL, Serie A)")
     tg.blank()
     tg.raw("<b>Reports:</b>")
     tg.raw("  /digest \u2014 daily summary")
@@ -2176,6 +2390,9 @@ def run_bot():
                     response_text = _handle_summary_menu(token, chat_id)
                     if response_text is None:
                         continue  # Already sent via inline keyboard
+                elif cmd == "/league":
+                    league_args = text[len("/league"):].strip()
+                    response_text = _handle_league(league_args, conversation)
                 elif cmd == "/help":
                     response_text = _handle_help()
                 elif cmd == "/clear":

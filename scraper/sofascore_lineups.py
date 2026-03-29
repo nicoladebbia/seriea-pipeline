@@ -22,6 +22,7 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from config.settings import DATA_DIR
 from config.team_names import normalize_team
+from config.leagues import get_league_config, LEAGUE_REGISTRY
 
 # Reuse HTTP infra from sofascore_events (session, retry, Cloudflare bypass)
 from scraper.sofascore_events import _get_json, _jitter_delay, _BASE_URL
@@ -31,9 +32,15 @@ log = logging.getLogger(__name__)
 SOFASCORE_DIR = _PROJECT_ROOT / "data" / "external" / "sofascore"
 UPCOMING_DIR = DATA_DIR / "upcoming"
 
+# Set of Sofascore tournament IDs we support (for filtering scheduled events)
+_SUPPORTED_TOURNAMENT_IDS = {
+    cfg.sofascore_tournament_id for cfg in LEAGUE_REGISTRY.values()
+}
+
 # Sofascore team name → our canonical name (handled by normalize_team, but
 # a few edge cases need explicit mapping)
 _SOFASCORE_NAME_MAP = {
+    # Serie A
     "Hellas Verona": "Verona",
     "AC Milan": "Milan",
     "SSC Napoli": "Napoli",
@@ -41,6 +48,16 @@ _SOFASCORE_NAME_MAP = {
     "ACF Fiorentina": "Fiorentina",
     "US Cremonese": "Cremonese",
     "AS Roma": "Roma",
+    # Premier League
+    "Brighton & Hove Albion": "Brighton",
+    "Manchester United": "Man United",
+    "Manchester City": "Man City",
+    "Wolverhampton": "Wolves",
+    "Newcastle United": "Newcastle",
+    "Tottenham Hotspur": "Tottenham",
+    "West Ham United": "West Ham",
+    "Leicester City": "Leicester",
+    "Ipswich Town": "Ipswich",
 }
 
 
@@ -130,8 +147,9 @@ def get_sofascore_match_ids(odds_data: Optional[Dict] = None) -> Dict[str, int]:
 
             for event in data.get("events", []):
                 tournament = event.get("tournament", {})
-                # Filter to Serie A (uniqueTournament.id == 23 for Serie A)
-                if tournament.get("uniqueTournament", {}).get("id") != 23:
+                # Filter to supported leagues
+                tourn_id = tournament.get("uniqueTournament", {}).get("id")
+                if tourn_id not in _SUPPORTED_TOURNAMENT_IDS:
                     continue
 
                 h = _normalize_sofascore_team(event.get("homeTeam", {}).get("name", ""))

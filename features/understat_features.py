@@ -6,7 +6,7 @@ Integrates data from Understat.com:
   - xG chain and buildup metrics
 
 Data source: data/parsed/understat_players.parquet
-Coverage: 2014-2015 to 2024-2025 (11 seasons)
+Coverage: ITA-Serie A 2014-2025, ENG-Premier League 2017-2025 (multi-league)
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def _normalize_team_name(name: str) -> str:
 
 
 def _load_understat_players() -> pd.DataFrame | None:
-    """Load understat player data."""
+    """Load understat player data (supports multiple leagues)."""
     if not UNDERSTAT_PLAYERS_PATH.exists():
         log.warning(f"Understat player data not found at {UNDERSTAT_PLAYERS_PATH}")
         return None
@@ -46,6 +46,14 @@ def _load_understat_players() -> pd.DataFrame | None:
     df = pd.read_parquet(UNDERSTAT_PLAYERS_PATH)
     # Normalize team names
     df["team_normalized"] = df["team"].apply(_normalize_team_name)
+
+    # Log league breakdown
+    if "league" in df.columns:
+        league_counts = df["league"].value_counts().to_dict()
+        log.info(f"Loaded Understat players: {len(df)} rows across {len(league_counts)} league(s): {league_counts}")
+    else:
+        log.info(f"Loaded Understat players: {len(df)} rows (no league column)")
+
     return df
 
 

@@ -205,7 +205,9 @@ def importance_based_selection(
 
         # Add top features from recent pass that aren't already selected
         selected_set = set(selected)
-        n_supplement = max(0, feat_cfg.max_features - len(selected))
+        # Always guarantee at least 15 slots for modern features that only
+        # appear in recent folds (e.g., Sofascore stats added from 2017+)
+        n_supplement = max(15, feat_cfg.max_features - len(selected))
         n_added = 0
         for feat, score in recent_sorted:
             if n_added >= n_supplement:

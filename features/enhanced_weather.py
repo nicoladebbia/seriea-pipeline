@@ -55,6 +55,7 @@ log = logging.getLogger(__name__)
 
 # Stadium altitudes (meters above sea level)
 STADIUM_ALTITUDES = {
+    # ── Serie A (Italy) ──────────────────────────────────────────────
     "Inter": 120,
     "Milan": 120,
     "Juventus": 239,
@@ -80,18 +81,64 @@ STADIUM_ALTITUDES = {
     "Spezia": 10,
     "Cremonese": 45,
     "Frosinone": 291,
+    "Pisa": 4,
+    # ── Premier League (England) ─────────────────────────────────────
+    # English stadiums are mostly at low altitude (10-100m)
+    "Arsenal": 25,
+    "Aston Villa": 100,
+    "Bournemouth": 10,
+    "Brentford": 15,
+    "Brighton": 50,
+    "Burnley": 190,
+    "Chelsea": 10,
+    "Crystal Palace": 55,
+    "Everton": 10,
+    "Fulham": 10,
+    "Ipswich": 20,
+    "Leeds": 50,
+    "Leicester": 65,
+    "Liverpool": 30,
+    "Man City": 55,
+    "Man United": 40,
+    "Newcastle": 65,
+    "Nottingham Forest": 30,
+    "Sheffield United": 75,
+    "Southampton": 15,
+    "Tottenham": 30,
+    "West Ham": 10,
+    "Wolves": 160,
+    "Luton": 130,
+    "Sunderland": 25,
+    "Watford": 70,
+    "Norwich": 10,
+    "West Brom": 170,
+    "Huddersfield": 110,
+    "Swansea": 10,
+    "Stoke": 120,
+    "Middlesbrough": 10,
 }
 
-# City classification for weather estimation
+# City classification for weather estimation.
+# Italian cities use North/Central/South temperature profiles.
+# English cities use a separate UK profile (see estimate_weather_from_month_location).
 NORTHERN_CITIES = {
     "Milan", "Turin", "Bergamo", "Udine", "Venice", "Verona",
     "Genoa", "Como", "Monza", "Reggio Emilia",
 }
 CENTRAL_CITIES = {"Rome", "Florence", "Bologna", "Empoli"}
 SOUTHERN_CITIES = {"Naples", "Lecce", "Cagliari"}
+UK_CITIES = {
+    "London", "Manchester", "Liverpool", "Birmingham", "Leeds",
+    "Newcastle", "Brighton", "Southampton", "Wolverhampton",
+    "Leicester", "Nottingham", "Bournemouth", "Burnley", "Sheffield",
+    "Luton", "Brentford", "Ipswich", "Sunderland", "Fulham",
+    "West Ham", "Stoke", "Watford", "Huddersfield", "Norwich",
+    "Swansea", "West Bromwich", "Middlesbrough",
+}
 
 # Team-to-city mapping for weather estimation
 TEAM_CITIES = {
+    # ── Serie A (Italy) ──────────────────────────────────────────────
     "Inter": "Milan", "Milan": "Milan", "Monza": "Monza",
     "Juventus": "Turin", "Torino": "Turin",
     "Roma": "Rome", "Lazio": "Rome",
@@ -112,6 +159,32 @@ TEAM_CITIES = {
     "Spezia": "Spezia",
     "Cremonese": "Cremona",
     "Frosinone": "Frosinone",
+    "Pisa": "Pisa",
+    # ── Premier League (England) ─────────────────────────────────────
+    "Arsenal": "London", "Chelsea": "London", "Tottenham": "London",
+    "West Ham": "London", "Crystal Palace": "London", "Fulham": "London",
+    "Brentford": "Brentford",
+    "Man United": "Manchester", "Man City": "Manchester",
+    "Liverpool": "Liverpool", "Everton": "Liverpool",
+    "Aston Villa": "Birmingham",
+    "Leeds": "Leeds",
+    "Newcastle": "Newcastle", "Sunderland": "Sunderland",
+    "Brighton": "Brighton",
+    "Southampton": "Southampton",
+    "Wolves": "Wolverhampton", "West Brom": "West Bromwich",
+    "Leicester": "Leicester",
+    "Nottingham Forest": "Nottingham",
+    "Bournemouth": "Bournemouth",
+    "Burnley": "Burnley",
+    "Sheffield United": "Sheffield",
+    "Luton": "Luton",
+    "Ipswich": "Ipswich",
+    "Watford": "Watford",
+    "Norwich": "Norwich",
+    "Stoke": "Stoke",
+    "Huddersfield": "Huddersfield",
+    "Swansea": "Swansea",
+    "Middlesbrough": "Middlesbrough",
 }
 
 
@@ -209,30 +282,47 @@ def estimate_weather_from_month_location(
     """Estimate typical weather conditions based on month and location.
 
     This is a fallback when real weather data isn't available.
-    Uses historical averages for Italian cities.
+    Uses historical averages for Italian and English cities.
     """
     # Monthly temperature averages (simplified)
     temp_north = {1: 2, 2: 4, 3: 9, 4: 14, 5: 18, 6: 23, 7: 25, 8: 24, 9: 20, 10: 14, 11: 8, 12: 3}
     temp_central = {1: 7, 2: 8, 3: 11, 4: 14, 5: 19, 6: 23, 7: 26, 8: 26, 9: 22, 10: 17, 11: 12, 12: 8}
     temp_south = {1: 10, 2: 11, 3: 13, 4: 16, 5: 20, 6: 25, 7: 28, 8: 28, 9: 25, 10: 20, 11: 15, 12: 11}
+    # UK: mild but wet; narrower temperature range than Italy
+    temp_uk = {1: 5, 2: 5, 3: 7, 4: 10, 5: 13, 6: 16, 7: 18, 8: 18, 9: 15, 10: 11, 11: 8, 12: 5}
 
     # Monthly rain probability
-    rain_prob = {1: 0.3, 2: 0.3, 3: 0.3, 4: 0.4, 5: 0.35, 6: 0.2, 7: 0.15, 8: 0.2, 9: 0.3, 10: 0.4, 11: 0.5, 12: 0.35}
+    rain_prob_it = {1: 0.3, 2: 0.3, 3: 0.3, 4: 0.4, 5: 0.35, 6: 0.2, 7: 0.15, 8: 0.2, 9: 0.3, 10: 0.4, 11: 0.5, 12: 0.35}
+    # UK gets more frequent rain year-round
+    rain_prob_uk = {1: 0.5, 2: 0.45, 3: 0.45, 4: 0.45, 5: 0.4, 6: 0.35, 7: 0.35, 8: 0.4, 9: 0.4, 10: 0.5, 11: 0.55, 12: 0.5}
 
     # Determine region
-    if city in NORTHERN_CITIES:
+    is_uk = city in UK_CITIES
+    if is_uk:
+        temp = temp_uk.get(month, 10)
+        rain_prob = rain_prob_uk
+    elif city in NORTHERN_CITIES:
         temp = temp_north.get(month, 15)
+        rain_prob = rain_prob_it
     elif city in CENTRAL_CITIES:
         temp = temp_central.get(month, 15)
+        rain_prob = rain_prob_it
     elif city in SOUTHERN_CITIES:
         temp = temp_south.get(month, 18)
+        rain_prob = rain_prob_it
     else:
         temp = 15  # Default
+        rain_prob = rain_prob_it
 
     # Estimated values
     precipitation = 2 if rain_prob.get(month, 0.3) > 0.35 else 0
-    wind = 15 if month in [1, 2, 3, 11, 12] else 10
-    humidity = 70 if month in [10, 11, 12, 1, 2] else 55
+    # UK is generally windier than Italy
+    if is_uk:
+        wind = 20 if month in [1, 2, 3, 10, 11, 12] else 15
+        humidity = 80 if month in [10, 11, 12, 1, 2] else 70
+    else:
+        wind = 15 if month in [1, 2, 3, 11, 12] else 10
+        humidity = 70 if month in [10, 11, 12, 1, 2] else 55
 
     return {
         "estimated_temp_c": temp,

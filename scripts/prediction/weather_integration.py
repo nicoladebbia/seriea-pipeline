@@ -21,35 +21,69 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# Stadium coordinates for Serie A teams
+# Stadium coordinates for all supported leagues
 STADIUM_COORDS = {
-    "Inter": {"lat": 45.4781, "lon": 9.1240, "city": "Milan"},
-    "Milan": {"lat": 45.4781, "lon": 9.1240, "city": "Milan"},
-    "Juventus": {"lat": 45.1096, "lon": 7.6413, "city": "Turin"},
-    "Torino": {"lat": 45.0413, "lon": 7.6497, "city": "Turin"},
-    "Roma": {"lat": 41.9341, "lon": 12.4547, "city": "Rome"},
-    "Lazio": {"lat": 41.9341, "lon": 12.4547, "city": "Rome"},
-    "Napoli": {"lat": 40.8280, "lon": 14.1930, "city": "Naples"},
-    "Fiorentina": {"lat": 43.7806, "lon": 11.2821, "city": "Florence"},
-    "Atalanta": {"lat": 45.7089, "lon": 9.6808, "city": "Bergamo"},
-    "Bologna": {"lat": 44.4924, "lon": 11.3096, "city": "Bologna"},
-    "Genoa": {"lat": 44.4163, "lon": 8.9527, "city": "Genoa"},
-    "Sampdoria": {"lat": 44.4163, "lon": 8.9527, "city": "Genoa"},
-    "Verona": {"lat": 45.4353, "lon": 10.9686, "city": "Verona"},
-    "Udinese": {"lat": 46.0819, "lon": 13.2003, "city": "Udine"},
-    "Sassuolo": {"lat": 44.7147, "lon": 10.6513, "city": "Reggio Emilia"},
-    "Empoli": {"lat": 43.7261, "lon": 10.9486, "city": "Empoli"},
-    "Cagliari": {"lat": 39.2001, "lon": 9.1375, "city": "Cagliari"},
-    "Lecce": {"lat": 40.3586, "lon": 18.1901, "city": "Lecce"},
-    "Monza": {"lat": 45.5845, "lon": 9.2767, "city": "Monza"},
-    "Parma": {"lat": 44.7953, "lon": 10.3381, "city": "Parma"},
-    "Como": {"lat": 45.8167, "lon": 9.0833, "city": "Como"},
-    "Venezia": {"lat": 45.4375, "lon": 12.3333, "city": "Venice"},
-    "Spezia": {"lat": 44.1024, "lon": 9.8200, "city": "La Spezia"},
-    "Salernitana": {"lat": 40.6806, "lon": 14.7681, "city": "Salerno"},
-    "Cremonese": {"lat": 45.1403, "lon": 10.0206, "city": "Cremona"},
-    "Pisa": {"lat": 43.7228, "lon": 10.3966, "city": "Pisa"},
-    "Frosinone": {"lat": 41.6406, "lon": 13.3403, "city": "Frosinone"},
+    # ── Serie A (Italy) ──────────────────────────────────────────────
+    "Inter": {"lat": 45.4781, "lon": 9.1240, "city": "Milan", "tz": "Europe/Rome"},
+    "Milan": {"lat": 45.4781, "lon": 9.1240, "city": "Milan", "tz": "Europe/Rome"},
+    "Juventus": {"lat": 45.1096, "lon": 7.6413, "city": "Turin", "tz": "Europe/Rome"},
+    "Torino": {"lat": 45.0413, "lon": 7.6497, "city": "Turin", "tz": "Europe/Rome"},
+    "Roma": {"lat": 41.9341, "lon": 12.4547, "city": "Rome", "tz": "Europe/Rome"},
+    "Lazio": {"lat": 41.9341, "lon": 12.4547, "city": "Rome", "tz": "Europe/Rome"},
+    "Napoli": {"lat": 40.8280, "lon": 14.1930, "city": "Naples", "tz": "Europe/Rome"},
+    "Fiorentina": {"lat": 43.7806, "lon": 11.2821, "city": "Florence", "tz": "Europe/Rome"},
+    "Atalanta": {"lat": 45.7089, "lon": 9.6808, "city": "Bergamo", "tz": "Europe/Rome"},
+    "Bologna": {"lat": 44.4924, "lon": 11.3096, "city": "Bologna", "tz": "Europe/Rome"},
+    "Genoa": {"lat": 44.4163, "lon": 8.9527, "city": "Genoa", "tz": "Europe/Rome"},
+    "Sampdoria": {"lat": 44.4163, "lon": 8.9527, "city": "Genoa", "tz": "Europe/Rome"},
+    "Verona": {"lat": 45.4353, "lon": 10.9686, "city": "Verona", "tz": "Europe/Rome"},
+    "Udinese": {"lat": 46.0819, "lon": 13.2003, "city": "Udine", "tz": "Europe/Rome"},
+    "Sassuolo": {"lat": 44.7147, "lon": 10.6513, "city": "Reggio Emilia", "tz": "Europe/Rome"},
+    "Empoli": {"lat": 43.7261, "lon": 10.9486, "city": "Empoli", "tz": "Europe/Rome"},
+    "Cagliari": {"lat": 39.2001, "lon": 9.1375, "city": "Cagliari", "tz": "Europe/Rome"},
+    "Lecce": {"lat": 40.3586, "lon": 18.1901, "city": "Lecce", "tz": "Europe/Rome"},
+    "Monza": {"lat": 45.5845, "lon": 9.2767, "city": "Monza", "tz": "Europe/Rome"},
+    "Parma": {"lat": 44.7953, "lon": 10.3381, "city": "Parma", "tz": "Europe/Rome"},
+    "Como": {"lat": 45.8167, "lon": 9.0833, "city": "Como", "tz": "Europe/Rome"},
+    "Venezia": {"lat": 45.4375, "lon": 12.3333, "city": "Venice", "tz": "Europe/Rome"},
+    "Spezia": {"lat": 44.1024, "lon": 9.8200, "city": "La Spezia", "tz": "Europe/Rome"},
+    "Salernitana": {"lat": 40.6806, "lon": 14.7681, "city": "Salerno", "tz": "Europe/Rome"},
+    "Cremonese": {"lat": 45.1403, "lon": 10.0206, "city": "Cremona", "tz": "Europe/Rome"},
+    "Pisa": {"lat": 43.7228, "lon": 10.3966, "city": "Pisa", "tz": "Europe/Rome"},
+    "Frosinone": {"lat": 41.6406, "lon": 13.3403, "city": "Frosinone", "tz": "Europe/Rome"},
+    # ── Premier League (England) ─────────────────────────────────────
+    "Arsenal": {"lat": 51.5549, "lon": -0.1084, "city": "London", "tz": "Europe/London"},
+    "Aston Villa": {"lat": 52.5092, "lon": -1.8847, "city": "Birmingham", "tz": "Europe/London"},
+    "Bournemouth": {"lat": 50.7352, "lon": -1.8388, "city": "Bournemouth", "tz": "Europe/London"},
+    "Brentford": {"lat": 51.4907, "lon": -0.2888, "city": "Brentford", "tz": "Europe/London"},
+    "Brighton": {"lat": 50.8615, "lon": -0.0833, "city": "Brighton", "tz": "Europe/London"},
+    "Burnley": {"lat": 53.7890, "lon": -2.2301, "city": "Burnley", "tz": "Europe/London"},
+    "Chelsea": {"lat": 51.4817, "lon": -0.1910, "city": "London", "tz": "Europe/London"},
+    "Crystal Palace": {"lat": 51.3983, "lon": -0.0856, "city": "London", "tz": "Europe/London"},
+    "Everton": {"lat": 53.4389, "lon": -2.9664, "city": "Liverpool", "tz": "Europe/London"},
+    "Fulham": {"lat": 51.4749, "lon": -0.2217, "city": "London", "tz": "Europe/London"},
+    "Ipswich": {"lat": 52.0547, "lon": 1.1448, "city": "Ipswich", "tz": "Europe/London"},
+    "Leeds": {"lat": 53.7774, "lon": -1.5721, "city": "Leeds", "tz": "Europe/London"},
+    "Leicester": {"lat": 52.6204, "lon": -1.1420, "city": "Leicester", "tz": "Europe/London"},
+    "Liverpool": {"lat": 53.4308, "lon": -2.9608, "city": "Liverpool", "tz": "Europe/London"},
+    "Luton": {"lat": 51.8843, "lon": -0.4316, "city": "Luton", "tz": "Europe/London"},
+    "Man City": {"lat": 53.4831, "lon": -2.2004, "city": "Manchester", "tz": "Europe/London"},
+    "Man United": {"lat": 53.4631, "lon": -2.2913, "city": "Manchester", "tz": "Europe/London"},
+    "Newcastle": {"lat": 54.9756, "lon": -1.6217, "city": "Newcastle", "tz": "Europe/London"},
+    "Nottingham Forest": {"lat": 52.9400, "lon": -1.1329, "city": "Nottingham", "tz": "Europe/London"},
+    "Sheffield United": {"lat": 53.3703, "lon": -1.4726, "city": "Sheffield", "tz": "Europe/London"},
+    "Southampton": {"lat": 50.9058, "lon": -1.3911, "city": "Southampton", "tz": "Europe/London"},
+    "Sunderland": {"lat": 54.9146, "lon": -1.3882, "city": "Sunderland", "tz": "Europe/London"},
+    "Tottenham": {"lat": 51.6043, "lon": -0.0665, "city": "London", "tz": "Europe/London"},
+    "Watford": {"lat": 51.6500, "lon": -0.4014, "city": "Watford", "tz": "Europe/London"},
+    "West Brom": {"lat": 52.5090, "lon": -1.9640, "city": "West Bromwich", "tz": "Europe/London"},
+    "West Ham": {"lat": 51.5387, "lon": 0.0166, "city": "London", "tz": "Europe/London"},
+    "Wolves": {"lat": 52.5903, "lon": -2.1306, "city": "Wolverhampton", "tz": "Europe/London"},
+    "Norwich": {"lat": 52.6222, "lon": 1.3090, "city": "Norwich", "tz": "Europe/London"},
+    "Stoke": {"lat": 52.9884, "lon": -2.1756, "city": "Stoke", "tz": "Europe/London"},
+    "Swansea": {"lat": 51.6427, "lon": -3.9353, "city": "Swansea", "tz": "Europe/London"},
+    "Huddersfield": {"lat": 53.6544, "lon": -1.7684, "city": "Huddersfield", "tz": "Europe/London"},
+    "Middlesbrough": {"lat": 54.5782, "lon": -1.2169, "city": "Middlesbrough", "tz": "Europe/London"},
 }
 
 
@@ -71,11 +105,12 @@ def get_weather_forecast(team: str, date: str, time: str = "15:00") -> Optional[
 
     try:
         # Open-Meteo API (free, no key required)
+        tz = coords.get("tz", "Europe/Rome")
         url = (
             f"https://api.open-meteo.com/v1/forecast?"
             f"latitude={coords['lat']}&longitude={coords['lon']}"
             f"&hourly=temperature_2m,precipitation,windspeed_10m,weathercode"
-            f"&timezone=Europe/Rome"
+            f"&timezone={tz}"
         )
 
         response = requests.get(url, timeout=10)

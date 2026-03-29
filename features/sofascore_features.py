@@ -41,7 +41,8 @@ from config.team_names import normalize_team
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
-SOFASCORE_PATH = PROJECT_ROOT / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+SOFASCORE_DIR = PROJECT_ROOT / "data" / "external" / "sofascore"
+SOFASCORE_PATH = SOFASCORE_DIR / "player_match_stats.parquet"
 
 ROLLING_WINDOW = 5
 
@@ -58,12 +59,21 @@ def _normalize(name: str) -> str:
     return normalize_team(name)
 
 
-def _load_sofascore() -> pd.DataFrame | None:
-    if not SOFASCORE_PATH.exists():
-        log.warning("Sofascore data not found at %s", SOFASCORE_PATH)
+def _load_sofascore(league: str | None = None) -> pd.DataFrame | None:
+    """Load Sofascore player match stats, merging league-specific files if available."""
+    dfs = []
+    # Load Serie A (default path)
+    if SOFASCORE_PATH.exists():
+        dfs.append(pd.read_parquet(SOFASCORE_PATH))
+    # Load league-specific files (e.g., player_match_stats_premier_league.parquet)
+    for f in SOFASCORE_DIR.glob("player_match_stats_*.parquet"):
+        if f.name != "player_match_stats.parquet":
+            dfs.append(pd.read_parquet(f))
+    if not dfs:
+        log.warning("Sofascore data not found at %s", SOFASCORE_DIR)
         return None
-    df = pd.read_parquet(SOFASCORE_PATH)
-    log.info("Loaded Sofascore: %d rows, %d columns", len(df), len(df.columns))
+    df = pd.concat(dfs, ignore_index=True)
+    log.info("Loaded Sofascore: %d rows from %d file(s), %d columns", len(df), len(dfs), len(df.columns))
     return df
 
 
@@ -651,12 +661,18 @@ def _build_match_level_team_stats() -> pd.DataFrame | None:
     Only uses the 'ALL' period (full match). Returns DataFrame with
     (match_id, team_norm, possession, corners, ...).
     """
-    path = PROJECT_ROOT / "data" / "external" / "sofascore" / "match_team_stats.parquet"
-    if not path.exists():
-        log.warning("match_team_stats.parquet not found at %s", path)
+    # Load all match_team_stats files (Serie A + league-specific)
+    dfs = []
+    base = SOFASCORE_DIR / "match_team_stats.parquet"
+    if base.exists():
+        dfs.append(pd.read_parquet(base))
+    for f in SOFASCORE_DIR.glob("match_team_stats_*.parquet"):
+        dfs.append(pd.read_parquet(f))
+    if not dfs:
+        log.warning("match_team_stats not found in %s", SOFASCORE_DIR)
         return None
 
-    df = pd.read_parquet(path)
+    df = pd.concat(dfs, ignore_index=True)
     if df.empty:
         return None
 
@@ -698,12 +714,18 @@ def _build_shotmap_aggregate_stats() -> pd.DataFrame | None:
 
     Returns DataFrame with (match_id, team_norm, shots_inside_box_sm, ...).
     """
-    path = PROJECT_ROOT / "data" / "external" / "sofascore" / "shotmap_stats.parquet"
-    if not path.exists():
-        log.warning("shotmap_stats.parquet not found at %s", path)
+    # Load all shotmap_stats files (Serie A + league-specific)
+    dfs = []
+    base = SOFASCORE_DIR / "shotmap_stats.parquet"
+    if base.exists():
+        dfs.append(pd.read_parquet(base))
+    for f in SOFASCORE_DIR.glob("shotmap_stats_*.parquet"):
+        dfs.append(pd.read_parquet(f))
+    if not dfs:
+        log.warning("shotmap_stats not found in %s", SOFASCORE_DIR)
         return None
 
-    df = pd.read_parquet(path)
+    df = pd.concat(dfs, ignore_index=True)
     if df.empty:
         return None
 

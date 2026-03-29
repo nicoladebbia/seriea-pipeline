@@ -104,6 +104,9 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """
     X = df.copy()
 
+    # Filter to numeric columns only — object columns (team names, etc.) can't be imputed
+    cols = [c for c in cols if X[c].dtype.kind in ('f', 'i', 'u', 'b')]
+
     # Pre-compute per-season medians for features that need them
     season_col = SEASON_COL if SEASON_COL in X.columns else None
     if season_col:
@@ -292,12 +295,36 @@ class DataLoader:
         )
         return self.df
 
-    def get_universal_dataset(self) -> Tuple[pd.DataFrame, pd.Series, list[str]]:
-        """Return (X, y, feature_names) using universal features only."""
+    def get_universal_dataset(
+        self, league: str | None = None,
+    ) -> Tuple[pd.DataFrame, pd.Series, list[str]]:
+        """Return (X, y, feature_names) using universal features only.
+
+        Args:
+            league: If specified, filter rows to this league only (e.g.
+                "serie_a", "premier_league"). None = all leagues (backward
+                compatible -- existing Serie A behavior unchanged since
+                min_train_season already filters).
+        """
         if self.df is None:
             self.load()
 
         mask = self.df[RESULT_COL].isin(CLASS_LABELS)
+
+        # League filter: restrict to a single league when requested
+        if league is not None:
+            if "league" not in self.df.columns:
+                log.warning("League filter requested (%s) but no 'league' column in data", league)
+            else:
+                league_mask = self.df["league"] == league
+                n_league = league_mask.sum()
+                if n_league == 0:
+                    raise ValueError(
+                        f"No rows found for league='{league}'. "
+                        f"Available leagues: {sorted(self.df['league'].unique())}"
+                    )
+                mask = mask & league_mask
+                log.info("League filter=%s: %d matches selected", league, n_league)
 
         # Apply min_train_season filter: drop pre-2017 data to unlock advanced
         # features (xG, pressing, odds velocity, lineup) that have zero coverage
@@ -313,12 +340,30 @@ class DataLoader:
                 log.info("min_train_season=%s: dropped %d matches before cutoff, %d remaining",
                          val_cfg.min_train_season, n_dropped, mask.sum())
 
-        X = self.df.loc[mask, self.universal_features].copy().reset_index(drop=True)
+        # Recompute universal features on the FILTERED dataset (league + season)
+        # This is critical: features that are 70% NaN on all-data (2005-2026, all leagues)
+        # may be only 5% NaN on the filtered training set (e.g., EPL 2017+).
+        from ml.config import FeatureConfig
+        feat_cfg = FeatureConfig()
+        filtered_df = self.df.loc[mask]
+        filtered_nan = filtered_df[self.all_ml_features].isna().mean()
+        filtered_universal = sorted(
+            filtered_nan[filtered_nan < feat_cfg.universal_nan_threshold].index.tolist()
+        )
+        n_extra = len(filtered_universal) - len(self.universal_features)
+        if n_extra > 0:
+            log.info(
+                "Recomputed NaN threshold on filtered data: %d features (was %d, +%d rescued)",
+                len(filtered_universal), len(self.universal_features), n_extra,
+            )
+        features_to_use = filtered_universal if filtered_universal else self.universal_features
+
+        X = self.df.loc[mask, features_to_use].copy().reset_index(drop=True)
         y = self.df.loc[mask, RESULT_COL].copy().reset_index(drop=True)
         seasons = self.df.loc[mask, SEASON_COL].copy().reset_index(drop=True)
 
         # Fill any remaining NaN (e.g., odds left un-imputed) with 0.0
-        for col in self.universal_features:
+        for col in features_to_use:
             if X[col].isna().any():
                 if col in _H2H_DEFAULTS:
                     X[col] = X[col].fillna(_H2H_DEFAULTS[col])
@@ -335,8 +380,8 @@ class DataLoader:
         else:
             X["_league"] = "serie_a"
 
-        log.info("NaN remaining after imputation: %d", X[self.universal_features].isna().sum().sum())
-        return X, y, self.universal_features
+        log.info("NaN remaining after imputation: %d", X[features_to_use].isna().sum().sum())
+        return X, y, features_to_use
 
     def get_rich_dataset(
         self, season: str | None = None,

@@ -116,6 +116,10 @@ def _perspective(df: pd.DataFrame, is_home: bool) -> pd.DataFrame:
     if form_col in df.columns:
         rows["formation"] = df[form_col]
 
+    # Propagate league column for multi-league scoping in downstream features
+    if "league" in df.columns:
+        rows["league"] = df["league"]
+
     return rows
 
 

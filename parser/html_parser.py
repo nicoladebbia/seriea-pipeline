@@ -9,6 +9,7 @@ the existing feature pipeline.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 from pathlib import Path
@@ -251,12 +252,14 @@ def parse_match_report(html_path: Path) -> dict:
 def parse_season_html(
     season_dir: Path,
     season: str,
+    league: str = "seriea",
 ) -> dict[str, pd.DataFrame]:
     """Parse all HTML files for a season.
 
     Args:
         season_dir: Directory containing HTML files for the season
         season: Season string (e.g., "2023-2024")
+        league: League identifier (e.g., "seriea", "epl")
 
     Returns:
         Dict with DataFrames for each data type
@@ -271,6 +274,7 @@ def parse_season_html(
     if fixtures_path.exists():
         result["fixtures"] = parse_fixtures_page(fixtures_path)
         result["fixtures"]["season"] = season
+        result["fixtures"]["league"] = league
 
     # Parse player stats
     stat_types = [
@@ -292,6 +296,7 @@ def parse_season_html(
             df = parse_player_stats_page(html_path, stat_type)
             if not df.empty:
                 df["season"] = season
+                df["league"] = league
                 result["player_stats"].append(df)
 
     # Keep player stats as list of DataFrames (one per stat type)
@@ -303,6 +308,7 @@ def parse_all_seasons(
     html_dir: Path,
     output_dir: Path,
     seasons: list[str] | None = None,
+    league: str = "seriea",
 ) -> None:
     """Parse all downloaded HTML files and save to parquet.
 
@@ -310,27 +316,37 @@ def parse_all_seasons(
         html_dir: Directory containing season subdirectories with HTML files
         output_dir: Directory to save parsed parquet files
         seasons: List of seasons to parse (default: all found)
+        league: League identifier (e.g., "seriea", "epl"). Controls which
+                directories to look for and adds a league column to output.
     """
+    # Determine directory suffix for non-seriea leagues
+    dir_suffix = "" if league == "seriea" else f"_{league}"
+
     if seasons is None:
-        # Find all season directories
-        seasons = [
-            d.name.replace("_", "-")
-            for d in html_dir.iterdir()
-            if d.is_dir() and re.match(r"\d{4}_\d{4}", d.name)
-        ]
+        # Find all season directories matching the league pattern
+        pattern = re.compile(r"\d{4}_\d{4}" + re.escape(dir_suffix) + r"$")
+        seasons = []
+        for d in html_dir.iterdir():
+            if d.is_dir() and pattern.match(d.name):
+                # Strip the league suffix to get the season
+                season_part = d.name.replace(dir_suffix, "").replace("_", "-")
+                seasons.append(season_part)
         seasons.sort()
 
     all_fixtures = []
     stats_by_type = {}  # Group stats by type for separate files
 
     for season in seasons:
-        season_dir = html_dir / season.replace("-", "_")
+        if league == "seriea":
+            season_dir = html_dir / season.replace("-", "_")
+        else:
+            season_dir = html_dir / f"{season.replace('-', '_')}_{league}"
         if not season_dir.exists():
             log.warning(f"Season directory not found: {season_dir}")
             continue
 
-        log.info(f"Parsing season {season}...")
-        data = parse_season_html(season_dir, season)
+        log.info(f"Parsing season {season} ({league})...")
+        data = parse_season_html(season_dir, season, league=league)
 
         if not data["fixtures"].empty:
             all_fixtures.append(data["fixtures"])
@@ -347,16 +363,19 @@ def parse_all_seasons(
     # Save combined data
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Use league suffix in filenames for non-seriea leagues
+    file_suffix = "" if league == "seriea" else f"_{league}"
+
     if all_fixtures:
         fixtures_df = pd.concat(all_fixtures, ignore_index=True)
-        fixtures_path = output_dir / "fbref_fixtures.parquet"
+        fixtures_path = output_dir / f"fbref_fixtures{file_suffix}.parquet"
         fixtures_df.to_parquet(fixtures_path, index=False)
         log.info(f"Saved {len(fixtures_df)} fixtures to {fixtures_path}")
 
     # Save each stat type separately
     for stat_type, dfs in stats_by_type.items():
         combined = pd.concat(dfs, ignore_index=True)
-        stat_path = output_dir / f"fbref_{stat_type}.parquet"
+        stat_path = output_dir / f"fbref_{stat_type}{file_suffix}.parquet"
         combined.to_parquet(stat_path, index=False)
         log.info(f"Saved {len(combined)} rows to {stat_path}")
 
@@ -365,8 +384,22 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
 
+    parser = argparse.ArgumentParser(description="Parse FBref HTML files to parquet")
+    parser.add_argument(
+        "--league",
+        choices=["seriea", "epl"],
+        default="seriea",
+        help="League to parse (default: seriea)",
+    )
+    parser.add_argument(
+        "seasons",
+        nargs="*",
+        default=None,
+        help="Seasons to parse (default: all found)",
+    )
+    args = parser.parse_args()
+
     html_dir = Path("data/raw/html")
     output_dir = Path("data/parsed")
 
-    seasons = sys.argv[1:] if len(sys.argv) > 1 else None
-    parse_all_seasons(html_dir, output_dir, seasons)
+    parse_all_seasons(html_dir, output_dir, args.seasons or None, league=args.league)

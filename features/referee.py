@@ -33,7 +33,11 @@ def _normalize_ws(s: str) -> str:
 
 # Top clubs historically — used for big-match detection
 _BIG_MATCH_TEAMS = {
+    # Serie A
     "Inter", "Milan", "Juventus", "Napoli", "Roma", "Lazio", "Atalanta",
+    # EPL (Big 6 + Newcastle)
+    "Arsenal", "Chelsea", "Liverpool", "Man City", "Man United", "Tottenham",
+    "Newcastle",
 }
 
 

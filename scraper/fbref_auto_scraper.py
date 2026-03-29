@@ -8,8 +8,14 @@ This scraper:
 4. Saves HTML files automatically
 5. Respects rate limits (4+ seconds between requests)
 
+Supports multiple leagues via the --league flag:
+    - seriea (default): Serie A (comp ID 11)
+    - epl: Premier League (comp ID 9)
+
 Usage:
     python scraper/fbref_auto_scraper.py --seasons 2023-2024 2022-2023
+    python scraper/fbref_auto_scraper.py --league epl --all-seasons
+    python scraper/fbref_auto_scraper.py --league seriea --seasons 2024-2025
 """
 
 import argparse
@@ -21,23 +27,47 @@ log = logging.getLogger(__name__)
 
 # FBref configuration
 FBREF_BASE = "https://fbref.com"
-SERIE_A_COMP_ID = 11
-RATE_LIMIT_SECONDS = 4  # FBref requires max 20 requests/minute
 
-# Pages to scrape per season
-PAGES_TO_SCRAPE = [
-    ("fixtures", "/en/comps/{comp_id}/{season}/schedule/{season}-Serie-A-Scores-and-Fixtures"),
-    ("stats_standard", "/en/comps/{comp_id}/{season}/stats/{season}-Serie-A-Stats"),
-    ("stats_shooting", "/en/comps/{comp_id}/{season}/shooting/{season}-Serie-A-Stats"),
-    ("stats_passing", "/en/comps/{comp_id}/{season}/passing/{season}-Serie-A-Stats"),
-    ("stats_passing_types", "/en/comps/{comp_id}/{season}/passing_types/{season}-Serie-A-Stats"),
-    ("stats_gca", "/en/comps/{comp_id}/{season}/gca/{season}-Serie-A-Stats"),
-    ("stats_defense", "/en/comps/{comp_id}/{season}/defense/{season}-Serie-A-Stats"),
-    ("stats_possession", "/en/comps/{comp_id}/{season}/possession/{season}-Serie-A-Stats"),
-    ("stats_misc", "/en/comps/{comp_id}/{season}/misc/{season}-Serie-A-Stats"),
-    ("stats_keepers", "/en/comps/{comp_id}/{season}/keepers/{season}-Serie-A-Stats"),
-    ("stats_keepers_adv", "/en/comps/{comp_id}/{season}/keepersadv/{season}-Serie-A-Stats"),
-]
+# League configurations: comp_id, URL slug, display name
+LEAGUE_CONFIG = {
+    "seriea": {
+        "comp_id": 11,
+        "url_slug": "Serie-A",
+        "display_name": "Serie A",
+    },
+    "epl": {
+        "comp_id": 9,
+        "url_slug": "Premier-League",
+        "display_name": "Premier League",
+    },
+}
+
+RATE_LIMIT_SECONDS = 4  # FBref requires max 20 requests/minute
+# EPL scraping uses longer delays to reduce risk of blocking
+EPL_RATE_LIMIT_SECONDS = 8
+
+
+def _build_pages_to_scrape(league: str) -> list[tuple[str, str]]:
+    """Build the list of (page_name, url_template) for a given league."""
+    cfg = LEAGUE_CONFIG[league]
+    comp_id_ph = "{comp_id}"
+    season_ph = "{season}"
+    slug = cfg["url_slug"]
+
+    return [
+        ("fixtures", f"/en/comps/{comp_id_ph}/{season_ph}/schedule/{season_ph}-{slug}-Scores-and-Fixtures"),
+        ("stats_standard", f"/en/comps/{comp_id_ph}/{season_ph}/stats/{season_ph}-{slug}-Stats"),
+        ("stats_shooting", f"/en/comps/{comp_id_ph}/{season_ph}/shooting/{season_ph}-{slug}-Stats"),
+        ("stats_passing", f"/en/comps/{comp_id_ph}/{season_ph}/passing/{season_ph}-{slug}-Stats"),
+        ("stats_passing_types", f"/en/comps/{comp_id_ph}/{season_ph}/passing_types/{season_ph}-{slug}-Stats"),
+        ("stats_gca", f"/en/comps/{comp_id_ph}/{season_ph}/gca/{season_ph}-{slug}-Stats"),
+        ("stats_defense", f"/en/comps/{comp_id_ph}/{season_ph}/defense/{season_ph}-{slug}-Stats"),
+        ("stats_possession", f"/en/comps/{comp_id_ph}/{season_ph}/possession/{season_ph}-{slug}-Stats"),
+        ("stats_misc", f"/en/comps/{comp_id_ph}/{season_ph}/misc/{season_ph}-{slug}-Stats"),
+        ("stats_keepers", f"/en/comps/{comp_id_ph}/{season_ph}/keepers/{season_ph}-{slug}-Stats"),
+        ("stats_keepers_adv", f"/en/comps/{comp_id_ph}/{season_ph}/keepersadv/{season_ph}-{slug}-Stats"),
+    ]
+
 
 AVAILABLE_SEASONS = [
     "2017-2018",
@@ -55,6 +85,7 @@ AVAILABLE_SEASONS = [
 def scrape_fbref_seasons(
     seasons: list[str],
     output_dir: Path,
+    league: str = "seriea",
     headless: bool = False,
     skip_existing: bool = True,
 ):
@@ -63,18 +94,33 @@ def scrape_fbref_seasons(
     Args:
         seasons: List of seasons to scrape
         output_dir: Directory to save HTML files
+        league: League key from LEAGUE_CONFIG (e.g., "seriea", "epl")
         headless: Run browser invisibly (may trigger Cloudflare more)
         skip_existing: Skip files that already exist
     """
     from botasaurus.browser import browser, Driver
 
+    if league not in LEAGUE_CONFIG:
+        raise ValueError(f"Unknown league '{league}'. Available: {list(LEAGUE_CONFIG.keys())}")
+
+    cfg = LEAGUE_CONFIG[league]
+    pages_to_scrape = _build_pages_to_scrape(league)
+    rate_limit = EPL_RATE_LIMIT_SECONDS if league == "epl" else RATE_LIMIT_SECONDS
+
+    log.info(f"League: {cfg['display_name']} (comp_id={cfg['comp_id']})")
+    log.info(f"Rate limit: {rate_limit}s between requests")
+
     # Build list of all URLs to scrape
     tasks = []
     for season in seasons:
-        season_dir = output_dir / season.replace("-", "_")
+        # Use league suffix in directory name for non-seriea leagues
+        if league == "seriea":
+            season_dir = output_dir / season.replace("-", "_")
+        else:
+            season_dir = output_dir / f"{season.replace('-', '_')}_{league}"
         season_dir.mkdir(parents=True, exist_ok=True)
 
-        for page_name, url_template in PAGES_TO_SCRAPE:
+        for page_name, url_template in pages_to_scrape:
             filepath = season_dir / f"{page_name}.html"
 
             if skip_existing and filepath.exists() and filepath.stat().st_size > 10000:
@@ -82,7 +128,7 @@ def scrape_fbref_seasons(
                 continue
 
             url = FBREF_BASE + url_template.format(
-                comp_id=SERIE_A_COMP_ID,
+                comp_id=cfg["comp_id"],
                 season=season
             )
             tasks.append({
@@ -159,8 +205,8 @@ def scrape_fbref_seasons(
         log.info(f"  ✓ Saved {len(html):,} bytes to {filepath.name}")
 
         # Rate limiting
-        log.info(f"  Waiting {RATE_LIMIT_SECONDS}s (rate limit)...")
-        time.sleep(RATE_LIMIT_SECONDS)
+        log.info(f"  Waiting {rate_limit}s (rate limit)...")
+        time.sleep(rate_limit)
 
         return {"success": True, "size": len(html)}
 
@@ -196,6 +242,12 @@ def main():
 
     parser = argparse.ArgumentParser(description="Automated FBref scraper")
     parser.add_argument(
+        "--league",
+        choices=list(LEAGUE_CONFIG.keys()),
+        default="seriea",
+        help="League to scrape (default: seriea). Options: seriea, epl",
+    )
+    parser.add_argument(
         "--seasons",
         nargs="+",
         default=["2023-2024"],
@@ -220,13 +272,15 @@ def main():
     parser.add_argument(
         "--all-seasons",
         action="store_true",
-        help="Scrape all available seasons (2017-2024)",
+        help="Scrape all available seasons (2017-2026)",
     )
     args = parser.parse_args()
 
     seasons = AVAILABLE_SEASONS if args.all_seasons else args.seasons
+    league_name = LEAGUE_CONFIG[args.league]["display_name"]
 
     log.info(f"FBref Auto Scraper")
+    log.info(f"League: {league_name}")
     log.info(f"Seasons: {seasons}")
     log.info(f"Output: {args.output_dir}")
     log.info(f"Headless: {args.headless}")
@@ -236,6 +290,7 @@ def main():
     scrape_fbref_seasons(
         seasons=seasons,
         output_dir=args.output_dir,
+        league=args.league,
         headless=args.headless,
         skip_existing=not args.force,
     )

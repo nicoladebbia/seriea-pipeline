@@ -1,10 +1,12 @@
-"""Fetch historical weather data for Serie A match venues using Open-Meteo.
+"""Fetch historical weather data for match venues using Open-Meteo.
 
 Open-Meteo provides free historical weather data (1940–present) with no API key.
 Endpoint: https://archive-api.open-meteo.com/v1/archive
 
 We map each stadium venue to its city's latitude/longitude, then fetch
 temperature, precipitation, wind, and humidity for the match date.
+
+Supports: Serie A (Italy), Premier League (England).
 """
 
 from __future__ import annotations
@@ -22,9 +24,11 @@ log = logging.getLogger(__name__)
 
 WEATHER_CACHE_PATH = DATA_DIR / "external" / "weather.parquet"
 
-# Italian city coordinates (lat, lon) for Serie A venues
-# Extracted from venue names in matches.parquet
+# City coordinates (lat, lon) for match venues.
+# Keyed by city name as it appears after the comma in venue strings
+# (e.g. "Stadio Olimpico, Roma" → "Roma").
 VENUE_COORDS: dict[str, tuple[float, float]] = {
+    # ── Serie A (Italy) ──────────────────────────────────────────────
     "Roma": (41.8967, 12.4822),
     "Milano": (45.4781, 9.1240),
     "Bergamo": (45.7094, 9.6808),
@@ -42,7 +46,7 @@ VENUE_COORDS: dict[str, tuple[float, float]] = {
     "Como": (45.8111, 9.0847),
     "Cagliari": (39.2111, 9.1092),
     "Venezia": (45.4387, 12.3254),
-    # Historical venues (promoted/relegated teams)
+    # Historical Serie A venues (promoted/relegated teams)
     "Sassuolo": (44.5349, 10.7924),
     "Salerno": (40.6831, 14.7997),
     "Benevento": (41.1297, 14.7826),
@@ -52,10 +56,53 @@ VENUE_COORDS: dict[str, tuple[float, float]] = {
     "La Spezia": (44.1025, 9.8241),
     "Ferrara": (44.8381, 11.6198),
     "Brescia": (45.5416, 10.2118),
+    "Pisa": (43.7228, 10.3966),
+    # ── Premier League (England) ─────────────────────────────────────
+    "London": (51.5074, -0.1278),
+    "Manchester": (53.4631, -2.2913),
+    "Liverpool": (53.4308, -2.9608),
+    "Birmingham": (52.5090, -1.8846),
+    "Leeds": (53.7774, -1.5721),
+    "Newcastle": (54.9756, -1.6143),
+    "Brighton": (50.8615, -0.0833),
+    "Southampton": (50.9058, -1.3911),
+    "Wolverhampton": (52.5903, -2.1306),
+    "Leicester": (52.6204, -1.1254),
+    "Nottingham": (52.9400, -1.1329),
+    "Bournemouth": (50.7352, -1.8388),
+    "Burnley": (53.7890, -2.2301),
+    "Sheffield": (53.3703, -1.4726),
+    "Luton": (51.8843, -0.4316),
+    "Brentford": (51.4907, -0.2888),
+    "Ipswich": (52.0547, 1.1448),
+    "Sunderland": (54.9146, -1.3882),
+    "Fulham": (51.4749, -0.2217),
+    "West Ham": (51.5387, 0.0166),
+    "Stoke": (52.9884, -2.1756),
+    "Watford": (51.6500, -0.4014),
+    "Huddersfield": (53.6544, -1.7684),
+    "Norwich": (52.6222, 1.3090),
+    "Swansea": (51.6427, -3.9353),
+    "West Bromwich": (52.5090, -1.9640),
+    "Middlesbrough": (54.5782, -1.2169),
 }
 
 # Open-Meteo archive endpoint
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+
+# City → timezone mapping.  Default is Europe/Rome (Serie A).
+# English cities get Europe/London.
+_CITY_TIMEZONE: dict[str, str] = {}
+_UK_CITIES = {
+    "London", "Manchester", "Liverpool", "Birmingham", "Leeds",
+    "Newcastle", "Brighton", "Southampton", "Wolverhampton", "Leicester",
+    "Nottingham", "Bournemouth", "Burnley", "Sheffield", "Luton",
+    "Brentford", "Ipswich", "Sunderland", "Fulham", "West Ham",
+    "Stoke", "Watford", "Huddersfield", "Norwich", "Swansea",
+    "West Bromwich", "Middlesbrough",
+}
+for _c in _UK_CITIES:
+    _CITY_TIMEZONE[_c] = "Europe/London"
 
 # Weather variables to fetch (daily aggregates)
 DAILY_VARS = [
@@ -136,7 +183,8 @@ def fetch_weather_for_matches(matches: pd.DataFrame) -> pd.DataFrame:
         if key in weather_cache:
             continue
 
-        weather = _fetch_single_day(coords[0], coords[1], match_date)
+        tz = _CITY_TIMEZONE.get(city, "Europe/Rome")
+        weather = _fetch_single_day(coords[0], coords[1], match_date, timezone=tz)
         if weather:
             weather_cache[key] = weather
         time.sleep(0.3)  # Be respectful
@@ -170,7 +218,13 @@ def fetch_weather_for_matches(matches: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _fetch_single_day(lat: float, lon: float, d: date, retries: int = 3) -> dict | None:
+def _fetch_single_day(
+    lat: float,
+    lon: float,
+    d: date,
+    retries: int = 3,
+    timezone: str = "Europe/Rome",
+) -> dict | None:
     """Fetch daily weather for a single location and date from Open-Meteo."""
     params = {
         "latitude": lat,
@@ -178,7 +232,7 @@ def _fetch_single_day(lat: float, lon: float, d: date, retries: int = 3) -> dict
         "start_date": d.isoformat(),
         "end_date": d.isoformat(),
         "daily": ",".join(DAILY_VARS),
-        "timezone": "Europe/Rome",
+        "timezone": timezone,
     }
 
     for attempt in range(1, retries + 1):

@@ -33,6 +33,9 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 PLAYER_STATS_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats.parquet"
+# EPL player stats are stored separately; merged file will be created by
+# scraper/fbref_scrape_epl.py pipeline and share the same schema.
+PLAYER_STATS_EPL_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats_epl.parquet"
 
 ROLLING_WINDOW = 5
 
@@ -43,13 +46,43 @@ def _normalize_team(name: str) -> str:
     return normalize_team(name)
 
 
-def _load_player_stats() -> pd.DataFrame | None:
-    if not PLAYER_STATS_PATH.exists():
-        log.warning("FBref player_stats.parquet not found at %s", PLAYER_STATS_PATH)
+def _load_player_stats(league: str | None = None) -> pd.DataFrame | None:
+    """Load FBref player stats, optionally filtered by league.
+
+    Args:
+        league: If "epl", load EPL data. If "seriea" or None, load Serie A.
+                If "all", load both and concatenate.
+    """
+    paths_to_load = []
+
+    if league in (None, "seriea"):
+        if PLAYER_STATS_PATH.exists():
+            paths_to_load.append(("seriea", PLAYER_STATS_PATH))
+        else:
+            log.warning("FBref player_stats.parquet not found at %s", PLAYER_STATS_PATH)
+    elif league == "epl":
+        if PLAYER_STATS_EPL_PATH.exists():
+            paths_to_load.append(("epl", PLAYER_STATS_EPL_PATH))
+        else:
+            log.warning("FBref player_stats_epl.parquet not found at %s", PLAYER_STATS_EPL_PATH)
+    elif league == "all":
+        if PLAYER_STATS_PATH.exists():
+            paths_to_load.append(("seriea", PLAYER_STATS_PATH))
+        if PLAYER_STATS_EPL_PATH.exists():
+            paths_to_load.append(("epl", PLAYER_STATS_EPL_PATH))
+
+    if not paths_to_load:
         return None
-    df = pd.read_parquet(PLAYER_STATS_PATH)
-    log.info("Loaded FBref player stats: %d rows, %d columns", len(df), len(df.columns))
-    return df
+
+    dfs = []
+    for lg, path in paths_to_load:
+        df = pd.read_parquet(path)
+        if "league" not in df.columns:
+            df["league"] = lg
+        dfs.append(df)
+        log.info("Loaded FBref player stats (%s): %d rows, %d columns", lg, len(df), len(df.columns))
+
+    return pd.concat(dfs, ignore_index=True) if dfs else None
 
 
 def _build_team_match_stats(player_df: pd.DataFrame) -> pd.DataFrame:
@@ -200,13 +233,37 @@ def _compute_rolling(team_match: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rolling_dfs, ignore_index=True)
 
 
-def add_fbref_features(df: pd.DataFrame, parsed_dir: Path = None) -> pd.DataFrame:
+def add_fbref_features(
+    df: pd.DataFrame,
+    parsed_dir: Path = None,
+    league: str | None = None,
+) -> pd.DataFrame:
     """Add FBref per-match rolling features to match DataFrame.
 
     Uses merge_asof for temporal matching — for each match, finds the
     team's most recent rolling stats computed BEFORE the match date.
+
+    Args:
+        df: Match DataFrame to enrich with FBref features.
+        parsed_dir: Unused legacy parameter.
+        league: Which league's player stats to load. None/"seriea" for
+                Serie A, "epl" for EPL, "all" for both (auto-detects
+                from the match DataFrame's league column if present).
     """
-    raw = _load_player_stats()
+    # Auto-detect league from DataFrame if not specified
+    if league is None and "league" in df.columns:
+        leagues_in_df = set(df["league"].dropna().unique())
+        if leagues_in_df & {"epl", "premier_league"}:
+            if leagues_in_df & {"seriea", "serie_a"}:
+                league = "all"
+            else:
+                league = "epl"
+        elif leagues_in_df & {"seriea", "serie_a"}:
+            league = "seriea"
+        elif len(leagues_in_df) > 1:
+            league = "all"
+
+    raw = _load_player_stats(league=league)
     if raw is None:
         log.warning("Skipping FBref features — no data")
         return df
@@ -292,9 +349,11 @@ def add_fbref_features(df: pd.DataFrame, parsed_dir: Path = None) -> pd.DataFram
 
 
 if __name__ == "__main__":
+    import sys
     logging.basicConfig(level=logging.INFO)
 
-    raw = _load_player_stats()
+    league_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    raw = _load_player_stats(league=league_arg)
     if raw is not None:
         team_match = _build_team_match_stats(raw)
         team_match = _compute_rolling(team_match)

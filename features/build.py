@@ -1411,6 +1411,13 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
         "home_xg", "away_xg",
         "home_ht_score", "away_ht_score",
         "result",
+        # Same-match shot totals (leakage)
+        "home_shots_total", "away_shots_total",
+        # Half-time stats (leakage — known after the match)
+        "home_ht_goals", "away_ht_goals", "ht_result",
+        # Post-match lineup ratings (leakage — computed from match performance)
+        "home_lineup_rating_mean", "away_lineup_rating_mean",
+        "lineup_rating_mean_diff",
     }
 
     # Raw match-day stat columns that leak current-match info
@@ -1431,9 +1438,16 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
 
     exclude = EXCLUDE_EXACT | EXCLUDE_PREFIXED_STATS
 
+    # Detect merge-artifact columns: any column ending in _x or _y from
+    # pandas merge collisions.  No legitimate engineered feature uses these
+    # suffixes — they only appear when pd.merge creates duplicates from
+    # overlapping column names.  Drop all of them unconditionally.
+    _merge_artifacts = {c for c in df.columns if c.endswith("_x") or c.endswith("_y")}
+
     ml_cols = [
         c for c in df.columns
         if c not in exclude
+        and c not in _merge_artifacts
         and "Unnamed" not in c
         and "level_0" not in c
     ]
@@ -1638,18 +1652,36 @@ def _validate_features(df: pd.DataFrame) -> pd.DataFrame:
 def _add_derby_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add derby/rivalry features based on team matchup.
 
+    League-aware: when a ``league`` column is present, derby definitions are
+    looked up from the correct league's registry. Without the column, falls
+    back to Serie A derbies (backward compatible).
+
     Columns added:
       is_derby         - 1 if the match is a derby/rivalry, 0 otherwise
       derby_intensity  - 0-3 scale (0=none, 1=historical, 2=regional, 3=city derby)
       derby_home_advantage_boost - city derbies reduce home advantage (negative value)
     """
+    has_league = "league" in df.columns
+
+    # Pre-load derby dicts per league to avoid repeated lookups
+    _derby_cache: dict[str, dict[frozenset[str], int]] = {}
+
+    def _get_derbies_for_league(league_key: str) -> dict[frozenset[str], int]:
+        if league_key not in _derby_cache:
+            _derby_cache[league_key] = get_derbies(league_key)
+        return _derby_cache[league_key]
+
     is_derby = []
     intensity = []
     home_boost = []
 
     for _, row in df.iterrows():
         pair = frozenset({row.get("home_team", ""), row.get("away_team", "")})
-        level = SERIE_A_DERBIES.get(pair, 0)
+        if has_league and pd.notna(row.get("league")):
+            derbies = _get_derbies_for_league(row["league"])
+        else:
+            derbies = SERIE_A_DERBIES
+        level = derbies.get(pair, 0)
         is_derby.append(1 if level > 0 else 0)
         intensity.append(level)
         # City derbies (level 3) reduce home advantage; fans split evenly
@@ -1731,7 +1763,7 @@ def _pivot_to_match_level(matches: pd.DataFrame, team_log: pd.DataFrame) -> pd.D
     base_cols = {
         "match_id", "match_date", "season", "matchweek", "team", "opponent",
         "is_home", "goals_scored", "goals_conceded", "result", "points",
-        "clean_sheet", "xg_for", "xg_against", "formation",
+        "clean_sheet", "xg_for", "xg_against", "formation", "league",
     }
     # Exclude raw team stats that are already in matches as home_*/away_*
     base_cols.update(STAT_COLUMNS)
@@ -2156,6 +2188,28 @@ def _add_odds(feature_df: pd.DataFrame, season: str | None) -> pd.DataFrame:
         return feature_df
 
     feature_df = merge_odds_with_matches(feature_df, odds)
+
+    # Clean up merge artifacts: when matches.parquet already has odds columns
+    # and merge_odds_with_matches adds overlapping ones, pandas creates _x/_y
+    # suffixes. Keep _x (from matches.parquet, higher coverage) and drop _y.
+    x_cols = [c for c in feature_df.columns if c.endswith('_x')]
+    y_cols = [c for c in feature_df.columns if c.endswith('_y')]
+    rename_map = {}
+    drop_cols = []
+    for xc in x_cols:
+        base = xc[:-2]  # strip _x
+        yc = base + '_y'
+        if yc in feature_df.columns:
+            # Merge: fill _x NaN from _y, then keep as clean name
+            feature_df[xc] = feature_df[xc].fillna(feature_df[yc])
+            drop_cols.append(yc)
+        rename_map[xc] = base
+    if drop_cols:
+        feature_df = feature_df.drop(columns=drop_cols, errors='ignore')
+    if rename_map:
+        feature_df = feature_df.rename(columns=rename_map)
+        log.info("Cleaned %d odds merge artifacts (_x/_y -> clean names)", len(rename_map))
+
     feature_df = compute_implied_probabilities(feature_df)
     return feature_df
 
@@ -2165,6 +2219,10 @@ def _add_market_data(feature_df: pd.DataFrame, season: str | None) -> pd.DataFra
 
     IMPORTANT: Market values and transfers are season-specific. We only apply
     them to matches from the corresponding season to prevent cross-season leakage.
+
+    Supports multi-league: looks for league-prefixed files (e.g.
+    premier_league_market_values_2024_2025.parquet) and falls back to
+    unprefixed files for Serie A (backward compatible).
     """
     from config.settings import DATA_DIR, SEASONS
     tm_dir = DATA_DIR / "external" / "transfermarkt"
@@ -2174,11 +2232,21 @@ def _add_market_data(feature_df: pd.DataFrame, season: str | None) -> pd.DataFra
 
     from scraper.transfermarkt import compute_squad_value_features, compute_transfer_features
 
+    # Determine league prefix for file lookup
+    league_key = ""
+    if "league" in feature_df.columns:
+        leagues = feature_df["league"].dropna().unique()
+        if len(leagues) == 1:
+            league_key = str(leagues[0])
+
+    # Serie A uses no prefix (backward compatible), others use league key prefix
+    file_prefix = "" if league_key in ("serie_a", "") else f"{league_key}_"
+
     # Apply market data per-season to avoid cross-season contamination
     seasons_to_check = [season] if season else SEASONS
     for s in seasons_to_check:
-        mv_path = tm_dir / f"market_values_{s.replace('-', '_')}.parquet"
-        tr_path = tm_dir / f"transfers_{s.replace('-', '_')}.parquet"
+        mv_path = tm_dir / f"{file_prefix}market_values_{s.replace('-', '_')}.parquet"
+        tr_path = tm_dir / f"{file_prefix}transfers_{s.replace('-', '_')}.parquet"
 
         season_mask = feature_df["season"] == s
         if not season_mask.any():
@@ -2203,13 +2271,13 @@ def _add_market_data(feature_df: pd.DataFrame, season: str | None) -> pd.DataFra
             mv = pd.read_parquet(mv_path)
             season_rows = compute_squad_value_features(season_rows, mv)
         else:
-            log.info("No market value data for %s", s)
+            log.info("No market value data for %s (looked for %s)", s, mv_path.name)
 
         if tr_path.exists():
             tr = pd.read_parquet(tr_path)
             season_rows = compute_transfer_features(season_rows, tr)
         else:
-            log.info("No transfer data for %s", s)
+            log.info("No transfer data for %s (looked for %s)", s, tr_path.name)
 
         # Reassemble: put enriched season rows back
         feature_df = pd.concat([other_rows, season_rows], ignore_index=True)

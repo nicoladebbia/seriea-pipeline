@@ -194,7 +194,7 @@ class FeatureConfig:
     importance_threshold: float = 0.0
 
     # Max features to keep after importance ranking (None = no cap)
-    max_features: int = 60
+    max_features: int = 100
 
     # Minimum samples required to train a rich (single-season) model
     min_rich_samples: int = 50

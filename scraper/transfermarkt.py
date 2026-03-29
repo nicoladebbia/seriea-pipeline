@@ -42,6 +42,59 @@ SERIE_A_TM_ID = "IT1"  # Transfermarkt competition code for Serie A
 # Transfermarkt base
 TM_BASE = "https://www.transfermarkt.com"
 
+# Per-league Transfermarkt team IDs: canonical_name -> (slug, verein_id)
+# Team names MUST match the canonical names from config/team_names.py
+
+# All Premier League team IDs on Transfermarkt (canonical_name -> (slug, verein_id))
+# Includes all teams from 2017-2026 seasons
+EPL_TEAMS_TM: dict[str, tuple[str, int]] = {
+    "Arsenal": ("arsenal-fc", 11),
+    "Aston Villa": ("aston-villa", 405),
+    "Bournemouth": ("afc-bournemouth", 989),
+    "Brentford": ("brentford-fc", 1148),
+    "Brighton": ("brighton-amp-hove-albion", 1237),
+    "Burnley": ("burnley-fc", 1132),
+    "Cardiff": ("cardiff-city", 2687),
+    "Chelsea": ("fc-chelsea", 631),
+    "Crystal Palace": ("crystal-palace", 873),
+    "Everton": ("fc-everton", 29),
+    "Fulham": ("fc-fulham", 931),
+    "Huddersfield": ("huddersfield-town", 1110),
+    "Hull": ("hull-city", 3008),
+    "Ipswich": ("ipswich-town", 677),
+    "Leeds": ("leeds-united", 399),
+    "Leicester": ("leicester-city", 1003),
+    "Liverpool": ("fc-liverpool", 31),
+    "Luton": ("luton-town", 1031),
+    "Man City": ("manchester-city", 281),
+    "Man United": ("manchester-united", 985),
+    "Middlesbrough": ("middlesbrough-fc", 432),
+    "Newcastle": ("newcastle-united", 762),
+    "Norwich": ("norwich-city", 1123),
+    "Nottingham Forest": ("nottingham-forest", 703),
+    "QPR": ("queens-park-rangers", 1039),
+    "Sheffield United": ("sheffield-united", 350),
+    "Southampton": ("fc-southampton", 180),
+    "Stoke": ("stoke-city", 512),
+    "Sunderland": ("afc-sunderland", 289),
+    "Swansea": ("swansea-city", 2288),
+    "Tottenham": ("tottenham-hotspur", 148),
+    "Watford": ("fc-watford", 1010),
+    "West Brom": ("west-bromwich-albion", 984),
+    "West Ham": ("west-ham-united", 379),
+    "Wigan": ("wigan-athletic", 1071),
+    "Wolves": ("wolverhampton-wanderers", 543),
+    # Historical EPL teams (pre-2017, in match data from 2005+)
+    "Birmingham": ("birmingham-city", 337),
+    "Blackburn": ("blackburn-rovers", 164),
+    "Blackpool": ("fc-blackpool", 1181),
+    "Bolton": ("bolton-wanderers", 355),
+    "Charlton": ("charlton-athletic", 358),
+    "Derby": ("derby-county", 22),
+    "Portsmouth": ("fc-portsmouth", 1020),
+    "Reading": ("fc-reading", 1032),
+}
+
 # All Serie A team IDs on Transfermarkt (team_name -> (slug, verein_id))
 # Includes historical teams from 2017-2025
 SERIE_A_TEAMS_TM: dict[str, tuple[str, int]] = {
@@ -89,30 +142,67 @@ TM_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# League -> team dict lookup
+LEAGUE_TEAMS_TM: dict[str, dict[str, tuple[str, int]]] = {
+    "serie_a": SERIE_A_TEAMS_TM,
+    "premier_league": EPL_TEAMS_TM,
+}
 
-def scrape_squad_market_values(season: str = "2024-2025") -> pd.DataFrame:
-    """Scrape market values for all Serie A squads from Transfermarkt.
+
+def _get_league_teams(league: str) -> dict[str, tuple[str, int]]:
+    """Return the team dict for a league key. Defaults to Serie A."""
+    teams = LEAGUE_TEAMS_TM.get(league)
+    if teams is None:
+        raise ValueError(
+            f"No Transfermarkt team mapping for league '{league}'. "
+            f"Available: {sorted(LEAGUE_TEAMS_TM)}"
+        )
+    return teams
+
+
+def _league_cache_prefix(league: str) -> str:
+    """Return file prefix for league-specific cache files.
+
+    Serie A uses no prefix (backward compatible), other leagues use league key.
+    """
+    if league == "serie_a":
+        return ""
+    return f"{league}_"
+
+
+def scrape_squad_market_values(
+    season: str = "2024-2025",
+    league: str = "serie_a",
+) -> pd.DataFrame:
+    """Scrape market values for all squads in a league from Transfermarkt.
+
+    Args:
+        season: Season string, e.g. "2024-2025"
+        league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
 
     Returns DataFrame with columns:
         team, player_name, position, market_value_eur, age, nationality
     """
-    cache_path = TM_DIR / f"market_values_{season.replace('-', '_')}.parquet"
+    league_teams = _get_league_teams(league)
+    prefix = _league_cache_prefix(league)
+    cache_path = TM_DIR / f"{prefix}market_values_{season.replace('-', '_')}.parquet"
     cached_df = None
-    teams_to_scrape = dict(SERIE_A_TEAMS_TM)  # copy
+    teams_to_scrape = dict(league_teams)  # copy
 
     if cache_path.exists():
         cached_df = pd.read_parquet(cache_path)
         cached_teams = set(cached_df["team"].unique()) if "team" in cached_df.columns else set()
-        all_teams = set(SERIE_A_TEAMS_TM.keys())
+        all_teams = set(league_teams.keys())
         missing = all_teams - cached_teams
         if not missing:
             log.info("Loading cached market values from %s (%d teams)", cache_path, len(cached_teams))
             return cached_df
         # Only scrape the missing teams
         log.info("Cache exists but missing %d teams: %s — scraping those", len(missing), missing)
-        teams_to_scrape = {k: v for k, v in SERIE_A_TEAMS_TM.items() if k in missing}
+        teams_to_scrape = {k: v for k, v in league_teams.items() if k in missing}
 
-    log.info("Scraping market values for %d Serie A teams (%s)", len(teams_to_scrape), season)
+    league_name = league.replace("_", " ").title()
+    log.info("Scraping market values for %d %s teams (%s)", len(teams_to_scrape), league_name, season)
     all_rows = []
 
     # Convert season to TM format: "2024-2025" -> "2024"
@@ -201,31 +291,41 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
     return rows
 
 
-def scrape_transfers(season: str = "2024-2025") -> pd.DataFrame:
-    """Scrape all Serie A transfers for a season.
+def scrape_transfers(
+    season: str = "2024-2025",
+    league: str = "serie_a",
+) -> pd.DataFrame:
+    """Scrape all transfers for a league/season.
 
     Fetches each team's transfer page once and parses both the Arrivals
     and Departures tables separately (they appear as table[0] and table[1]).
+
+    Args:
+        season: Season string, e.g. "2024-2025"
+        league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
 
     Returns DataFrame with columns:
         team, player_name, age, transfer_type (in/out),
         from_club, to_club, fee_eur, fee_text, is_loan
     """
-    cache_path = TM_DIR / f"transfers_{season.replace('-', '_')}.parquet"
+    league_teams = _get_league_teams(league)
+    prefix = _league_cache_prefix(league)
+    cache_path = TM_DIR / f"{prefix}transfers_{season.replace('-', '_')}.parquet"
     cached_df = None
-    teams_to_scrape = dict(SERIE_A_TEAMS_TM)
+    teams_to_scrape = dict(league_teams)
 
     if cache_path.exists():
         cached_df = pd.read_parquet(cache_path)
         cached_teams = set(cached_df["team"].unique()) if "team" in cached_df.columns else set()
-        missing = set(SERIE_A_TEAMS_TM.keys()) - cached_teams
+        missing = set(league_teams.keys()) - cached_teams
         if not missing:
             log.info("Loading cached transfers from %s (%d teams)", cache_path, len(cached_teams))
             return cached_df
         log.info("Cache exists but missing %d teams: %s — scraping those", len(missing), missing)
-        teams_to_scrape = {k: v for k, v in SERIE_A_TEAMS_TM.items() if k in missing}
+        teams_to_scrape = {k: v for k, v in league_teams.items() if k in missing}
 
-    log.info("Scraping transfers for %d Serie A teams (%s)", len(teams_to_scrape), season)
+    league_name = league.replace("_", " ").title()
+    log.info("Scraping transfers for %d %s teams (%s)", len(teams_to_scrape), league_name, season)
     all_rows = []
     tm_season = season.split("-")[0]
 
