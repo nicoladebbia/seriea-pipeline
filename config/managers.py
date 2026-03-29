@@ -1,6 +1,6 @@
 """
 Module: config/managers.py
-Purpose: Historical Serie A manager tenure data for manager-change features and form discontinuity detection
+Purpose: Historical manager tenure data (Serie A + EPL) for manager-change features and form discontinuity detection
 Inputs:  None (static data from Wikipedia and Transfermarkt)
 Outputs: MANAGER_TENURES list of tuples (team, manager, start_date, end_date)
 Called by: features/manager_changes.py (manager change detection), features/build.py (feature engineering)
@@ -256,6 +256,222 @@ MANAGER_TENURES: list[tuple[str, str, str, str | None]] = [
     ("Verona", "Marco Baroni", "2023-06-01", "2024-06-30"),
     ("Verona", "Paolo Zanetti", "2024-06-01", "2026-02-02"),
     ("Verona", "Paolo Sammarco", "2026-02-03", None),  # Caretaker
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PREMIER LEAGUE (England) — 2017-present
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── Arsenal ──
+    ("Arsenal", "Arsene Wenger", "2017-06-01", "2018-05-13"),
+    ("Arsenal", "Unai Emery", "2018-05-23", "2019-11-29"),
+    ("Arsenal", "Freddie Ljungberg", "2019-11-29", "2019-12-20"),
+    ("Arsenal", "Mikel Arteta", "2019-12-20", None),
+
+    # ── Aston Villa ──
+    ("Aston Villa", "Steve Bruce", "2017-06-01", "2018-10-03"),
+    ("Aston Villa", "Dean Smith", "2018-10-10", "2021-11-07"),
+    ("Aston Villa", "Steven Gerrard", "2021-11-11", "2022-10-20"),
+    ("Aston Villa", "Unai Emery", "2022-10-24", None),
+
+    # ── Bournemouth ──
+    ("Bournemouth", "Eddie Howe", "2017-06-01", "2020-08-01"),
+    ("Bournemouth", "Jason Tindall", "2020-08-01", "2021-02-03"),
+    ("Bournemouth", "Jonathan Woodgate", "2021-02-03", "2021-06-30"),
+    ("Bournemouth", "Scott Parker", "2021-06-29", "2022-08-30"),
+    ("Bournemouth", "Gary O'Neil", "2022-08-30", "2023-06-30"),
+    ("Bournemouth", "Andoni Iraola", "2023-06-29", None),
+
+    # ── Brentford ──
+    ("Brentford", "Thomas Frank", "2018-10-16", None),
+
+    # ── Brighton ──
+    ("Brighton", "Chris Hughton", "2017-06-01", "2019-05-13"),
+    ("Brighton", "Graham Potter", "2019-05-20", "2022-09-08"),
+    ("Brighton", "Roberto De Zerbi", "2022-09-18", "2023-06-30"),
+    ("Brighton", "Fabian Hurzeler", "2024-06-08", None),
+
+    # ── Burnley ──
+    ("Burnley", "Sean Dyche", "2017-06-01", "2022-04-15"),
+    ("Burnley", "Mike Jackson", "2022-04-15", "2022-05-22"),
+    ("Burnley", "Vincent Kompany", "2022-06-14", "2024-05-29"),
+    ("Burnley", "Scott Parker", "2024-06-01", "2025-02-20"),
+    ("Burnley", "Craig Bellamy", "2025-02-24", None),
+
+    # ── Chelsea ──
+    ("Chelsea", "Antonio Conte", "2017-06-01", "2018-07-13"),
+    ("Chelsea", "Maurizio Sarri", "2018-07-14", "2019-06-16"),
+    ("Chelsea", "Frank Lampard", "2019-07-04", "2021-01-25"),
+    ("Chelsea", "Thomas Tuchel", "2021-01-26", "2022-09-07"),
+    ("Chelsea", "Graham Potter", "2022-09-08", "2023-04-02"),
+    ("Chelsea", "Frank Lampard", "2023-04-06", "2023-06-30"),
+    ("Chelsea", "Mauricio Pochettino", "2023-07-01", "2024-05-21"),
+    ("Chelsea", "Enzo Maresca", "2024-06-03", None),
+
+    # ── Crystal Palace ──
+    ("Crystal Palace", "Roy Hodgson", "2017-09-12", "2021-05-23"),
+    ("Crystal Palace", "Patrick Vieira", "2021-07-04", "2023-03-17"),
+    ("Crystal Palace", "Roy Hodgson", "2023-03-21", "2024-03-19"),
+    ("Crystal Palace", "Oliver Glasner", "2024-03-20", None),
+
+    # ── Everton ──
+    ("Everton", "Sam Allardyce", "2017-11-30", "2018-05-16"),
+    ("Everton", "Marco Silva", "2018-05-31", "2019-12-05"),
+    ("Everton", "Duncan Ferguson", "2019-12-05", "2019-12-21"),
+    ("Everton", "Carlo Ancelotti", "2019-12-21", "2021-06-01"),
+    ("Everton", "Rafael Benitez", "2021-06-30", "2022-01-16"),
+    ("Everton", "Frank Lampard", "2022-01-31", "2023-01-23"),
+    ("Everton", "Sean Dyche", "2023-01-30", "2025-01-09"),
+    ("Everton", "David Moyes", "2025-01-12", None),
+
+    # ── Fulham ──
+    ("Fulham", "Slavisa Jokanovic", "2017-06-01", "2018-11-14"),
+    ("Fulham", "Claudio Ranieri", "2018-11-14", "2019-02-28"),
+    ("Fulham", "Scott Parker", "2019-02-28", "2021-06-28"),
+    ("Fulham", "Marco Silva", "2021-07-01", None),
+
+    # ── Ipswich ──
+    ("Ipswich", "Kieran McKenna", "2021-12-16", None),
+
+    # ── Leeds ──
+    ("Leeds", "Thomas Christiansen", "2017-06-14", "2018-02-04"),
+    ("Leeds", "Paul Heckingbottom", "2018-02-05", "2018-06-01"),
+    ("Leeds", "Marcelo Bielsa", "2018-06-15", "2022-02-27"),
+    ("Leeds", "Jesse Marsch", "2022-02-28", "2023-02-06"),
+    ("Leeds", "Javi Gracia", "2023-02-13", "2023-05-04"),
+    ("Leeds", "Sam Allardyce", "2023-05-05", "2023-05-28"),
+    ("Leeds", "Daniel Farke", "2023-07-04", None),
+
+    # ── Leicester ──
+    ("Leicester", "Craig Shakespeare", "2017-06-01", "2017-10-17"),
+    ("Leicester", "Claude Puel", "2017-10-25", "2019-02-24"),
+    ("Leicester", "Brendan Rodgers", "2019-02-26", "2023-04-02"),
+    ("Leicester", "Dean Smith", "2023-04-03", "2023-05-28"),
+    ("Leicester", "Enzo Maresca", "2023-06-20", "2024-06-01"),
+    ("Leicester", "Steve Cooper", "2024-06-19", "2025-04-06"),
+    ("Leicester", "Ruud van Nistelrooy", "2025-04-07", None),
+
+    # ── Liverpool ──
+    ("Liverpool", "Jurgen Klopp", "2017-06-01", "2024-05-19"),
+    ("Liverpool", "Arne Slot", "2024-06-01", None),
+
+    # ── Luton ──
+    ("Luton", "Nathan Jones", "2017-06-01", "2019-01-09"),
+    ("Luton", "Mick Harford", "2019-01-09", "2019-05-04"),
+    ("Luton", "Graeme Jones", "2019-05-14", "2020-04-24"),
+    ("Luton", "Nathan Jones", "2020-05-01", "2023-06-30"),
+    ("Luton", "Rob Edwards", "2023-06-21", None),
+
+    # ── Man City ──
+    ("Man City", "Pep Guardiola", "2017-06-01", None),
+
+    # ── Man United ──
+    ("Man United", "Jose Mourinho", "2017-06-01", "2018-12-18"),
+    ("Man United", "Ole Gunnar Solskjaer", "2018-12-19", "2021-11-21"),
+    ("Man United", "Michael Carrick", "2021-11-21", "2021-11-29"),
+    ("Man United", "Ralf Rangnick", "2021-11-29", "2022-05-22"),
+    ("Man United", "Erik ten Hag", "2022-05-23", "2024-10-28"),
+    ("Man United", "Ruud van Nistelrooy", "2024-10-28", "2024-11-10"),
+    ("Man United", "Ruben Amorim", "2024-11-11", None),
+
+    # ── Newcastle ──
+    ("Newcastle", "Rafael Benitez", "2017-06-01", "2019-06-30"),
+    ("Newcastle", "Steve Bruce", "2019-07-17", "2021-10-20"),
+    ("Newcastle", "Eddie Howe", "2021-11-08", None),
+
+    # ── Norwich ──
+    ("Norwich", "Daniel Farke", "2017-05-25", "2021-11-06"),
+    ("Norwich", "Dean Smith", "2021-11-15", "2023-05-28"),
+
+    # ── Nottingham Forest ──
+    ("Nottingham Forest", "Mark Warburton", "2017-03-14", "2017-12-31"),
+    ("Nottingham Forest", "Aitor Karanka", "2018-01-15", "2019-01-11"),
+    ("Nottingham Forest", "Martin O'Neill", "2019-01-15", "2019-06-28"),
+    ("Nottingham Forest", "Sabri Lamouchi", "2019-06-28", "2020-10-06"),
+    ("Nottingham Forest", "Chris Hughton", "2020-10-06", "2021-09-16"),
+    ("Nottingham Forest", "Steve Cooper", "2021-09-21", "2023-12-20"),
+    ("Nottingham Forest", "Nuno Espirito Santo", "2023-12-20", None),
+
+    # ── Sheffield United ──
+    ("Sheffield United", "Chris Wilder", "2017-05-12", "2021-03-13"),
+    ("Sheffield United", "Paul Heckingbottom", "2021-03-22", "2023-12-14"),
+    ("Sheffield United", "Chris Wilder", "2023-12-14", "2024-05-19"),
+    ("Sheffield United", "Chris Wilder", "2025-07-01", None),
+
+    # ── Southampton ──
+    ("Southampton", "Mauricio Pellegrino", "2017-06-14", "2018-03-12"),
+    ("Southampton", "Mark Hughes", "2018-03-12", "2018-12-03"),
+    ("Southampton", "Ralph Hasenhuttl", "2018-12-05", "2022-11-07"),
+    ("Southampton", "Nathan Jones", "2023-02-08", "2023-02-12"),
+    ("Southampton", "Ruben Selles", "2023-02-12", "2023-06-22"),
+    ("Southampton", "Russell Martin", "2023-06-22", "2024-11-11"),
+    ("Southampton", "Ivan Juric", "2025-01-06", None),
+
+    # ── Tottenham ──
+    ("Tottenham", "Mauricio Pochettino", "2017-06-01", "2019-11-19"),
+    ("Tottenham", "Jose Mourinho", "2019-11-20", "2021-04-19"),
+    ("Tottenham", "Ryan Mason", "2021-04-20", "2021-06-30"),
+    ("Tottenham", "Nuno Espirito Santo", "2021-06-30", "2021-11-01"),
+    ("Tottenham", "Antonio Conte", "2021-11-02", "2023-03-26"),
+    ("Tottenham", "Cristian Stellini", "2023-03-27", "2023-04-23"),
+    ("Tottenham", "Ryan Mason", "2023-04-24", "2023-06-11"),
+    ("Tottenham", "Ange Postecoglou", "2023-06-12", None),
+
+    # ── Watford ──
+    ("Watford", "Marco Silva", "2017-05-27", "2018-01-21"),
+    ("Watford", "Javi Gracia", "2018-01-21", "2019-09-07"),
+    ("Watford", "Quique Sanchez Flores", "2019-09-07", "2019-12-01"),
+    ("Watford", "Nigel Pearson", "2019-12-06", "2020-07-19"),
+    ("Watford", "Hayden Mullins", "2020-07-19", "2020-08-02"),
+    ("Watford", "Vladimir Ivic", "2020-08-12", "2020-12-19"),
+    ("Watford", "Xisco Munoz", "2020-12-20", "2021-10-03"),
+    ("Watford", "Claudio Ranieri", "2021-10-04", "2022-01-24"),
+    ("Watford", "Roy Hodgson", "2022-01-25", "2022-05-22"),
+
+    # ── West Brom ──
+    ("West Brom", "Tony Pulis", "2017-06-01", "2017-11-20"),
+    ("West Brom", "Alan Pardew", "2017-11-29", "2018-04-02"),
+    ("West Brom", "Darren Moore", "2018-04-02", "2019-03-09"),
+    ("West Brom", "Slaven Bilic", "2019-06-24", "2020-12-16"),
+    ("West Brom", "Sam Allardyce", "2020-12-16", "2021-05-23"),
+
+    # ── West Ham ──
+    ("West Ham", "Slaven Bilic", "2017-06-01", "2017-11-06"),
+    ("West Ham", "David Moyes", "2017-11-07", "2018-05-13"),
+    ("West Ham", "Manuel Pellegrini", "2018-05-22", "2019-12-28"),
+    ("West Ham", "David Moyes", "2019-12-29", "2024-05-19"),
+    ("West Ham", "Julen Lopetegui", "2024-06-17", "2025-01-08"),
+    ("West Ham", "Graham Potter", "2025-01-09", None),
+
+    # ── Wolves ──
+    ("Wolves", "Nuno Espirito Santo", "2017-05-31", "2021-05-23"),
+    ("Wolves", "Bruno Lage", "2021-06-09", "2022-10-02"),
+    ("Wolves", "Julen Lopetegui", "2022-11-05", "2023-08-08"),
+    ("Wolves", "Gary O'Neil", "2023-08-09", "2024-12-15"),
+    ("Wolves", "Vitor Pereira", "2024-12-16", None),
+
+    # ── Huddersfield ──
+    ("Huddersfield", "David Wagner", "2017-06-01", "2019-01-14"),
+    ("Huddersfield", "Jan Siewert", "2019-01-21", "2019-08-12"),
+
+    # ── Cardiff ──
+    ("Cardiff", "Neil Warnock", "2017-06-01", "2019-11-06"),
+
+    # ── Swansea ──
+    ("Swansea", "Paul Clement", "2017-06-01", "2017-12-20"),
+    ("Swansea", "Carlos Carvalhal", "2017-12-28", "2018-05-13"),
+
+    # ── Stoke ──
+    ("Stoke", "Mark Hughes", "2017-06-01", "2018-01-06"),
+    ("Stoke", "Paul Lambert", "2018-01-15", "2018-05-13"),
+
+    # ── Middlesbrough ── (relegated 2017)
+    ("Middlesbrough", "Aitor Karanka", "2017-06-01", "2017-03-16"),
+
+    # ── Hull ── (relegated 2017)
+    ("Hull", "Marco Silva", "2017-01-05", "2017-05-21"),
+
+    # ── Sunderland ── (relegated 2017)
+    ("Sunderland", "David Moyes", "2017-06-01", "2017-05-28"),
 ]
 
 
