@@ -55,6 +55,31 @@
   .dash-badge--ft { background:rgba(148,163,184,0.15); color:var(--text-tertiary); }
   @keyframes pulse-live { 0%,100%{opacity:1} 50%{opacity:0.7} }
 
+  /* League filter tabs */
+  .league-filter {
+    display:flex; align-items:center; gap:6px; padding:var(--space-2) 0;
+    flex-wrap:wrap;
+  }
+  .league-filter__btn {
+    padding:4px 12px; font-size:11px; font-weight:600; border-radius:16px;
+    border:1px solid var(--border-subtle); background:var(--bg-tertiary);
+    color:var(--text-secondary); cursor:pointer; transition:all 0.15s;
+    white-space:nowrap;
+  }
+  .league-filter__btn:hover { border-color:var(--accent); color:var(--accent); }
+  .league-filter__btn--active {
+    background:rgba(129,140,248,0.15); border-color:var(--accent);
+    color:var(--accent);
+  }
+
+  /* League badge in match rows */
+  .dash-badge--league {
+    font-size:8px; padding:1px 5px; border-radius:3px; font-weight:700;
+    letter-spacing:0.3px; text-transform:uppercase;
+  }
+  .dash-badge--serie-a { background:rgba(0,146,70,0.15); color:#00c853; }
+  .dash-badge--epl { background:rgba(55,0,128,0.15); color:#a78bfa; }
+
   /* Matchday group header */
   .dash-day-header {
     display:flex; align-items:center; gap:var(--space-3);
@@ -81,6 +106,16 @@
   {{ stat_card("stat-winrate", "Win Rate") }}
   {{ stat_card("stat-roi", "ROI") }}
   {{ stat_card("stat-nextmatch", "Next Match") }}
+</div>
+
+<!-- League Filter -->
+<div class="section" style="padding:var(--space-2) 0;">
+  <div class="league-filter" id="league-filter">
+    <span style="font-size:11px;color:var(--text-tertiary);margin-right:4px;">League:</span>
+    <button class="league-filter__btn league-filter__btn--active" data-league="" onclick="setLeagueFilter(this)">All Leagues</button>
+    <button class="league-filter__btn" data-league="serie_a" onclick="setLeagueFilter(this)">Serie A</button>
+    <button class="league-filter__btn" data-league="premier_league" onclick="setLeagueFilter(this)">Premier League</button>
+  </div>
 </div>
 
 <!-- Data Freshness Bar (conditional — shown via JS if stale) -->
@@ -135,6 +170,11 @@
 // COMPACT MATCH ROW — One line per match
 // ═══════════════════════════════════════════════════════════════════════
 
+const LEAGUE_BADGE_MAP = {
+  'serie_a': '<span class="dash-badge dash-badge--league dash-badge--serie-a">Serie A</span>',
+  'premier_league': '<span class="dash-badge dash-badge--league dash-badge--epl">EPL</span>',
+};
+
 function renderMatchRow(m) {
   const probs = m.probabilities || {};
   const h2h = m.odds?.h2h || {};
@@ -150,8 +190,12 @@ function renderMatchRow(m) {
   const pD = Math.round((probs.draw || 0) * 100);
   const pA = Math.round((probs.away || 0) * 100);
 
+  // League badge
+  const leagueBadge = LEAGUE_BADGE_MAP[m.league || 'serie_a'] || '';
+
   // Badges
   let badges = '';
+  badges += leagueBadge + ' ';
   if (m.lineup_source === 'confirmed') badges += '<span class="dash-badge dash-badge--confirmed">XI</span> ';
   if (m._lineup_impact_badge) badges += m._lineup_impact_badge + ' ';
   if (hasValue) badges += `<span class="dash-badge dash-badge--value">+${Math.abs(edgeVal).toFixed(1)}%</span> `;
@@ -250,7 +294,7 @@ function startLiveBarRefresh() {
 // ═══════════════════════════════════════════════════════════════════════
 // QUICK STATS (compact summary — details on dedicated pages)
 // ═══════════════════════════════════════════════════════════════════════
-async function loadQuickStats(){try{const data=await apiFetch('/api/betting');const bets=data.bets||[];const b=data.bankroll||{};
+async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _leagueQueryParam());const bets=data.bets||[];const b=data.bankroll||{};
   const el=id=>document.getElementById(id);
   // Value bets count
   const vbCount = bets.length;
@@ -295,7 +339,7 @@ function formatDayHeader(dateStr) {
 
 async function loadDashboard() {
   try {
-    const data = await apiFetch('/api/dashboard');
+    const data = await apiFetch('/api/dashboard' + _leagueQueryParam());
     document.getElementById('loading').classList.add('hidden');
     if (!data.matches || !data.matches.length) { document.getElementById('empty').classList.remove('hidden'); return; }
 
@@ -420,6 +464,28 @@ async function loadDashboard() {
       }, 30000);
     }
   } catch (err) { document.getElementById('loading').innerHTML = `<span class="text-red">Failed to load data: ${err.message}</span>`; }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// LEAGUE FILTER
+// ═══════════════════════════════════════════════════════════════════════
+let _currentLeagueFilter = '';
+
+function setLeagueFilter(btn) {
+  _currentLeagueFilter = btn.dataset.league || '';
+  // Update active state on buttons
+  document.querySelectorAll('.league-filter__btn').forEach(b => b.classList.remove('league-filter__btn--active'));
+  btn.classList.add('league-filter__btn--active');
+  // Re-fetch dashboard with filter
+  const container = document.getElementById('matches-container');
+  if (container) container.innerHTML = '';
+  loadDashboard();
+  loadQuickStats();
+}
+
+function _leagueQueryParam() {
+  return _currentLeagueFilter ? `?league=${_currentLeagueFilter}` : '';
 }
 
 

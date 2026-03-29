@@ -38,7 +38,7 @@ except ImportError:
 
 # Active leagues (add leagues here as models become available)
 # Default: Serie A only. Add "premier_league" etc. when EPL model is trained.
-ACTIVE_LEAGUES = ["serie_a"]
+ACTIVE_LEAGUES = ["serie_a", "premier_league"]
 
 # Schedule configuration (24h format, Italian timezone for Serie A)
 SCHEDULE_CONFIG = {

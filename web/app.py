@@ -567,7 +567,22 @@ def api_dashboard():
     lineup_preds_raw = _load_json(UPCOMING_DIR / "lineup_predictions.json")
 
     # Normalize into match-keyed dicts
+    # Merge Serie A predictions (default) with extra league prediction files
     predictions_list = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else predictions_raw
+    # Tag Serie A predictions with league field
+    for p in predictions_list:
+        p.setdefault("league", "serie_a")
+    # Load extra league predictions (e.g. predictions_premier_league.json)
+    for league_key in ACTIVE_LEAGUES:
+        if league_key == "serie_a":
+            continue
+        extra_path = UPCOMING_DIR / f"predictions_{league_key}.json"
+        extra_raw = _load_json(extra_path)
+        if extra_raw:
+            extra_list = extra_raw.get("predictions", []) if isinstance(extra_raw, dict) else extra_raw
+            for p in extra_list:
+                p.setdefault("league", league_key)
+            predictions_list.extend(extra_list)
     predictions_by_match = _index_list_by_match(predictions_list)
 
     odds_matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
@@ -616,6 +631,7 @@ def api_dashboard():
             "match": match_key,
             "home_team": home,
             "away_team": away,
+            "league": pred.get("league", "serie_a"),
             "status": match_status,
             "date": pred.get("date", pred.get("match_date", "")),
             "venue": pred.get("venue", ""),
