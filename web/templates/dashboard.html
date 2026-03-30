@@ -398,8 +398,16 @@ async function loadDashboard() {
         statNextMatch.style.fontSize = '14px';
         window._nextMatchCT = next.commence_time;
         const trend = document.getElementById('stat-nextmatch-trend');
-        if (trend) {
-          trend.textContent = timeUntil(next.commence_time);
+        if (trend && next.commence_time) {
+          // Show actual date + time, e.g. "Sun 4 Apr, 11:00"
+          try {
+            const d = new Date(next.commence_time);
+            const dayName = d.toLocaleDateString('en-GB', {weekday:'short'});
+            const day = d.getDate();
+            const month = d.toLocaleDateString('en-GB', {month:'short'});
+            const time = d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
+            trend.textContent = `${dayName} ${day} ${month}, ${time}`;
+          } catch { trend.textContent = timeUntil(next.commence_time); }
           trend.className = 'stat-card__trend stat-card__trend--neutral';
         }
       } else statNextMatch.textContent = 'No upcoming';
@@ -426,7 +434,7 @@ async function loadDashboard() {
         <div class="dash-day-header">
           <span class="dash-day-header__date">${formatDayHeader(dateKey)}</span>
           <span class="dash-day-header__meta">${matches.length} match${matches.length !== 1 ? 'es' : ''}</span>
-          ${firstCT ? `<span id="${gdId}" class="dash-day-header__meta" style="color:var(--accent)">${timeUntil(firstCT)}</span>` : ''}
+          ${firstCT ? `<span id="${gdId}" class="dash-day-header__meta" style="color:var(--accent)">${(() => { try { const d=new Date(firstCT); return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+' kickoff'; } catch { return timeUntil(firstCT); } })()}</span>` : ''}
         </div>
         <div class="dash-table-wrap">
           <table class="dash-table">
@@ -468,18 +476,36 @@ async function loadDashboard() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// LEAGUE FILTER
+// LEAGUE FILTER — persist in URL so refresh/bookmarks work
 // ═══════════════════════════════════════════════════════════════════════
-let _currentLeagueFilter = '';
+
+// Read league from URL query param on load
+function _getLeagueFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('league') || '';
+}
+
+let _currentLeagueFilter = _getLeagueFromURL();
 
 function setLeagueFilter(btn) {
   _currentLeagueFilter = btn.dataset.league || '';
   // Update active state on buttons
   document.querySelectorAll('.league-filter__btn').forEach(b => b.classList.remove('league-filter__btn--active'));
   btn.classList.add('league-filter__btn--active');
+  // Update URL without reload (so refresh preserves filter)
+  const url = new URL(window.location);
+  if (_currentLeagueFilter) url.searchParams.set('league', _currentLeagueFilter);
+  else url.searchParams.delete('league');
+  history.pushState({}, '', url);
   // Re-fetch dashboard with filter
   const container = document.getElementById('matches-container');
-  if (container) container.innerHTML = '';
+  if (container) {
+    container.querySelectorAll('.matchday-group').forEach(el => el.remove());
+    const loading = container.querySelector('.loading-state');
+    if (loading) loading.classList.remove('hidden');
+    const empty = container.querySelector('.empty-state');
+    if (empty) empty.classList.add('hidden');
+  }
   loadDashboard();
   loadQuickStats();
 }
@@ -487,6 +513,15 @@ function setLeagueFilter(btn) {
 function _leagueQueryParam() {
   return _currentLeagueFilter ? `?league=${_currentLeagueFilter}` : '';
 }
+
+// On page load, highlight the correct filter button
+(function initLeagueFilter() {
+  const active = _currentLeagueFilter;
+  document.querySelectorAll('.league-filter__btn').forEach(b => {
+    const isMatch = (b.dataset.league || '') === active;
+    b.classList.toggle('league-filter__btn--active', isMatch);
+  });
+})();
 
 
 // ═══════════════════════════════════════════════════════════════════════
