@@ -3,6 +3,14 @@
 {% block title %}Value Bets — SerieAI{% endblock %}
 {% block page_title %}Value Bets{% endblock %}
 
+{% block page_subtitle %}
+<div id="vb-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
+  <button class="tab-pill active" onclick="vbLeagueFilter('all',this)" style="font-size:11px;padding:3px 10px;">All</button>
+  <button class="tab-pill" onclick="vbLeagueFilter('serie_a',this)" style="font-size:11px;padding:3px 10px;">Serie A</button>
+  <button class="tab-pill" onclick="vbLeagueFilter('premier_league',this)" style="font-size:11px;padding:3px 10px;">EPL</button>
+</div>
+{% endblock %}
+
 {% block head %}
 <style>
   /* ── Value Bets Page ──────────────────────────────── */
@@ -333,6 +341,11 @@
 const SHARP_BOOKMAKERS = ['Pinnacle', 'BetCRIS', 'Matchbook', 'Betfair Exchange', 'Smarkets', 'Betfair'];
 const CONF_COLORS = { HIGH: '#4ade80', MEDIUM: '#fbbf24', LOW: '#f87171', 'Very High': '#4ade80', High: '#4ade80', 'Medium-High': '#a3e635', Medium: '#fbbf24', Low: '#f87171' };
 const MARKET_LABELS = { h2h: '1X2', totals: 'Over/Under', spreads: 'Handicap', cards: 'Cards', btts: 'BTTS', corners: 'Corners', over_under: 'O/U', handicap: 'HC', btts_corners: 'BTTS/Corners' };
+const LEAGUE_BADGE_MAP = {
+  'serie_a': '<span style="font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(0,146,70,0.15);color:#00c853;">Serie A</span>',
+  'premier_league': '<span style="font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(55,0,128,0.15);color:#a78bfa;">EPL</span>',
+};
+function leagueBadge(m) { return LEAGUE_BADGE_MAP[m.league || 'serie_a'] || ''; }
 
 let allMatches = {};
 let bestBets = [];
@@ -341,8 +354,26 @@ let expandedMatch = null;
 let activeTab = {};
 let refreshPollInterval = null;
 let sortedMatchKeys = [];
+let _allSortedMatchKeys = [];
 let placedBets = [];
 let currentView = 'all';
+let _vbLeagueFilter = 'all';
+
+function vbLeagueFilter(league, btn) {
+  _vbLeagueFilter = league;
+  document.querySelectorAll('#vb-league-tabs .tab-pill').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  // Re-filter sortedMatchKeys and re-render
+  if (_vbLeagueFilter === 'all') {
+    sortedMatchKeys = [..._allSortedMatchKeys];
+  } else {
+    sortedMatchKeys = _allSortedMatchKeys.filter(mk => {
+      const m = allMatches[mk] || {};
+      return (m.league || 'serie_a') === _vbLeagueFilter;
+    });
+  }
+  renderMatchesGrid();
+}
 let playerPropVBets = [];
 let livePropCache = {};
 let propPerformance = null;
@@ -566,7 +597,7 @@ function renderBestBets(bets) {
     const m = allMatches[mk] || {};
     const vp = bet.value_pct || 0;
     html += `<div class="vb-inner-card" style="cursor:pointer;" onclick="expandMatch('${esc(mk)}')">
-      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:4px;">${formatMatchDate(m.date)} ${formatKickoff(m.commence_time, m.date)}</div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:4px;">${leagueBadge(m)} ${formatMatchDate(m.date)} ${formatKickoff(m.commence_time, m.date)}</div>
       <div style="font-size:12px;font-weight:500;color:var(--text-primary);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${mk}</div>
       <div style="font-size:13px;font-weight:700;color:var(--green);margin-bottom:8px;">${bet.selection||bet.bet||'\u2014'}</div>
       <div class="vb-grid-2" style="font-size:10px;">
@@ -588,9 +619,10 @@ function renderBestBets(bets) {
 // ============================================================
 function renderMatchesGrid() {
   const el = document.getElementById('matches-grid');
+  const leagueTitle = _vbLeagueFilter === 'all' ? 'All Matches' : _vbLeagueFilter === 'premier_league' ? 'Premier League' : 'Serie A';
   let html = `<div class="vb-flex-between" style="margin-bottom:var(--space-3);">
     <div class="vb-flex" style="gap:var(--space-2);">
-      <span style="font-size:16px;font-weight:700;color:var(--text-primary);">All Matches</span>
+      <span style="font-size:16px;font-weight:700;color:var(--text-primary);">${leagueTitle}</span>
       <span style="font-size:12px;color:var(--text-tertiary);">${sortedMatchKeys.length} upcoming</span>
     </div>
   </div>`;
@@ -623,6 +655,7 @@ function renderMatchesGrid() {
         <!-- Teams -->
         <div style="flex:1;min-width:0;">
           <div class="vb-flex" style="gap:var(--space-2);margin-bottom:2px;">
+            ${leagueBadge(m)}
             ${m.home_position ? `<span style="font-size:10px;font-weight:700;color:var(--accent);background:var(--accent-muted);padding:1px 6px;border-radius:3px;">#${m.home_position}</span>` : ''}
             <a href="/team/${encodeURIComponent(m.home_team)}" style="font-size:13px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" onclick="event.stopPropagation()">${m.home_team}</a>
             <span class="vb-flex" style="gap:2px;">${formDots(m.home_form_last5)}</span>
@@ -2105,12 +2138,13 @@ async function loadBetting() {
     cornersPredictions = data.corners_predictions || [];
     marketRules = data.market_rules || {};
 
-    sortedMatchKeys = Object.keys(allMatches).sort((a, b) => {
+    _allSortedMatchKeys = Object.keys(allMatches).sort((a, b) => {
       const ma = allMatches[a], mb = allMatches[b];
       const da = (ma.date||'9999') + (ma.time||'99:99');
       const db = (mb.date||'9999') + (mb.time||'99:99');
       return da.localeCompare(db);
     });
+    sortedMatchKeys = [..._allSortedMatchKeys];
 
     const hasMatches = sortedMatchKeys.length > 0;
     const hasParlays = parlayData && parlayData.total_parlays > 0;

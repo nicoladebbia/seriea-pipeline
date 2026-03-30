@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}Standings — SerieAI{% endblock %}
-{% block page_title %}Standings{% endblock %}
+{% set league_param = request.args.get('league', 'serie_a') %}
+{% set league_name = 'Premier League' if league_param == 'premier_league' else 'Serie A' %}
+{% block title %}{{ league_name }} Standings — SerieAI{% endblock %}
+{% block page_title %}{{ league_name }} Standings{% endblock %}
 
 {% block header_actions %}
 <div style="display:flex;align-items:center;gap:12px;">
@@ -144,6 +146,12 @@
   }
 </style>
 
+<!-- League Filter Tabs -->
+<div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);">
+  <a href="/teams?league=serie_a" class="zone-pill {{ 'zone-pill--active' if league_param == 'serie_a' else '' }}" style="text-decoration:none;">Serie A</a>
+  <a href="/teams?league=premier_league" class="zone-pill {{ 'zone-pill--active' if league_param == 'premier_league' else '' }}" style="text-decoration:none;">Premier League</a>
+</div>
+
 <!-- Compare Banner (hidden until 2 teams selected) -->
 <div id="compare-banner" class="hidden" style="background:var(--accent-muted);border:1px solid rgba(99,102,241,0.3);border-radius:var(--radius-lg);padding:var(--space-3) var(--space-5);margin-bottom:var(--space-6);display:flex;align-items:center;justify-content:space-between;">
   <div style="display:flex;align-items:center;gap:var(--space-3);">
@@ -162,7 +170,7 @@
 <div id="view-table" class="section">
   <div class="section__header">
     <div>
-      <h2 class="section__title" id="table-season-title">Serie A</h2>
+      <h2 class="section__title" id="table-season-title">{{ league_name }}</h2>
       <p class="section__subtitle" id="table-subtitle">Full league standings with advanced metrics</p>
     </div>
     <div style="display:flex;gap:var(--space-2);">
@@ -285,9 +293,12 @@ let _teamsData = [];
 let _currentSort = 'position';
 let _currentView = 'table';
 let _compareSlots = [null, null]; // [team_a, team_b]
+const _leagueParam = new URLSearchParams(window.location.search).get('league') || 'serie_a';
+const _leagueName = _leagueParam === 'premier_league' ? 'Premier League' : 'Serie A';
 
 // --- Team abbreviations & colors ---
 const TEAM_ABBR = {
+  // Serie A
   'Inter': 'INT', 'Milan': 'MIL', 'Napoli': 'NAP', 'Juventus': 'JUV',
   'Roma': 'ROM', 'Atalanta': 'ATA', 'Lazio': 'LAZ', 'Fiorentina': 'FIO',
   'Bologna': 'BOL', 'Torino': 'TOR', 'Udinese': 'UDI', 'Genoa': 'GEN',
@@ -295,15 +306,38 @@ const TEAM_ABBR = {
   'Parma': 'PAR', 'Lecce': 'LEC', 'Monza': 'MON', 'Venezia': 'VEN',
   'Cremonese': 'CRE', 'Sassuolo': 'SAS', 'Salernitana': 'SAL', 'Frosinone': 'FRO',
   'Sampdoria': 'SAM', 'Spezia': 'SPE', 'Benevento': 'BEN', 'Pisa': 'PIS',
+  // Premier League
+  'Arsenal': 'ARS', 'Aston Villa': 'AVL', 'Bournemouth': 'BOU', 'Brentford': 'BRE',
+  'Brighton': 'BHA', 'Chelsea': 'CHE', 'Crystal Palace': 'CRY', 'Everton': 'EVE',
+  'Fulham': 'FUL', 'Ipswich': 'IPS', 'Leicester': 'LEI', 'Liverpool': 'LIV',
+  'Manchester City': 'MCI', 'Manchester United': 'MUN', 'Newcastle': 'NEW',
+  'Nottingham Forest': 'NFO', 'Southampton': 'SOU', 'Tottenham': 'TOT',
+  'West Ham': 'WHU', 'Wolverhampton': 'WOL', 'Wolves': 'WOL',
+  'Brighton and Hove Albion': 'BHA', 'Wolverhampton Wanderers': 'WOL',
+  'Ipswich Town': 'IPS', 'Leicester City': 'LEI', 'Newcastle United': 'NEW',
+  'Nottingham': 'NFO', 'West Ham United': 'WHU', 'Tottenham Hotspur': 'TOT',
+  'Man City': 'MCI', 'Man United': 'MUN',
 };
 
 const TEAM_COLORS = {
+  // Serie A
   'Inter': '#0068A8', 'Milan': '#FB090B', 'Napoli': '#12A0D7', 'Juventus': '#000000',
   'Roma': '#8E1F2F', 'Atalanta': '#1E71B8', 'Lazio': '#87D8F7', 'Fiorentina': '#5B2C86',
   'Bologna': '#1A2F48', 'Torino': '#8B0000', 'Udinese': '#000000', 'Genoa': '#A41E22',
   'Cagliari': '#A62132', 'Verona': '#FFED00', 'Empoli': '#005BA6', 'Como': '#003DA5',
   'Parma': '#FFDD00', 'Lecce': '#F8E71C', 'Monza': '#C4161C', 'Venezia': '#FC6600',
   'Cremonese': '#C8102E', 'Sassuolo': '#00A651', 'Pisa': '#003366',
+  // Premier League
+  'Arsenal': '#EF0107', 'Aston Villa': '#670E36', 'Bournemouth': '#DA291C', 'Brentford': '#E30613',
+  'Brighton': '#0057B8', 'Chelsea': '#034694', 'Crystal Palace': '#1B458F', 'Everton': '#003399',
+  'Fulham': '#000000', 'Ipswich': '#3A64A3', 'Leicester': '#003090', 'Liverpool': '#C8102E',
+  'Manchester City': '#6CABDD', 'Manchester United': '#DA291C', 'Newcastle': '#241F20',
+  'Nottingham Forest': '#DD0000', 'Southampton': '#D71920', 'Tottenham': '#132257',
+  'West Ham': '#7A263A', 'Wolverhampton': '#FDB913', 'Wolves': '#FDB913',
+  'Brighton and Hove Albion': '#0057B8', 'Wolverhampton Wanderers': '#FDB913',
+  'Ipswich Town': '#3A64A3', 'Leicester City': '#003090', 'Newcastle United': '#241F20',
+  'West Ham United': '#7A263A', 'Tottenham Hotspur': '#132257',
+  'Man City': '#6CABDD', 'Man United': '#DA291C', 'Nottingham': '#DD0000',
 };
 
 // --- Zone helpers ---
@@ -340,7 +374,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   // Restore persisted sort from localStorage
   try {
-    const savedSort = localStorage.getItem('seriea_sort');
+    const savedSort = localStorage.getItem(`standings_sort_${_leagueParam}`);
     if (savedSort && ['position','xpts','elo','xg_diff'].includes(savedSort)) {
       _currentSort = savedSort;
     }
@@ -353,15 +387,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 // --- Load Data ---
 async function loadTeams() {
   try {
-    const data = await apiFetch('/api/teams/overview');
+    const data = await apiFetch(`/api/teams/overview?league=${_leagueParam}`);
     _teamsData = data.teams || [];
     document.getElementById('teams-loading').classList.add('hidden');
     // Set season in title from API
     if (data.season) {
-      document.getElementById('table-season-title').textContent = `Serie A ${data.season}`;
+      document.getElementById('table-season-title').textContent = `${_leagueName} ${data.season}`;
+    } else {
+      document.getElementById('table-season-title').textContent = _leagueName;
     }
-    renderTable();
-    renderGrid();
+    if (_teamsData.length === 0) {
+      document.getElementById('league-table-body').innerHTML = `<tr><td colspan="20" style="text-align:center;padding:var(--space-12) 0;color:var(--text-tertiary);">
+        <div style="font-size:15px;font-weight:600;margin-bottom:var(--space-2);">${_leagueName} standings not yet available</div>
+        <div style="font-size:12px;">Run the pipeline for this league to generate standings data.</div>
+      </td></tr>`;
+    } else {
+      renderTable();
+      renderGrid();
+    }
   } catch(err) {
     document.getElementById('teams-loading').innerHTML = `<span class="text-small text-red">Failed to load teams: ${err.message}</span>`;
   }
@@ -580,7 +623,7 @@ function setView(view) {
 // --- Sort (with localStorage persistence) ---
 function sortTable(field) {
   _currentSort = field;
-  try { localStorage.setItem('seriea_sort', field); } catch(e) {}
+  try { localStorage.setItem(`standings_sort_${_leagueParam}`, field); } catch(e) {}
   document.querySelectorAll('.sort-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.sort === field);
     b.style.background = b.dataset.sort === field ? 'var(--accent-muted)' : '';

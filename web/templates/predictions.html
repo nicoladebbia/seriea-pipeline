@@ -4,6 +4,14 @@
 {% block title %}Predictions — SerieAI{% endblock %}
 {% block page_title %}Predictions{% endblock %}
 
+{% block page_subtitle %}
+<div id="pred-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
+  <button class="pred-toggle__btn active" onclick="predLeagueFilter('all',this)" style="font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--border-default);background:var(--accent);color:white;cursor:pointer;">All</button>
+  <button class="pred-toggle__btn" onclick="predLeagueFilter('serie_a',this)" style="font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--border-default);background:var(--bg-tertiary);color:var(--text-tertiary);cursor:pointer;">Serie A</button>
+  <button class="pred-toggle__btn" onclick="predLeagueFilter('premier_league',this)" style="font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid var(--border-default);background:var(--bg-tertiary);color:var(--text-tertiary);cursor:pointer;">EPL</button>
+</div>
+{% endblock %}
+
 {% block head %}
 <style>
   /* ── Summary Bar ──────────────────────────────────────── */
@@ -178,7 +186,22 @@
 // ═══════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════
-let _allMatches = [], _ctx = {}, _filter = 'all';
+let _allMatches = [], _ctx = {}, _filter = 'all', _leagueFilter = 'all';
+
+const LEAGUE_BADGE_MAP = {
+  'serie_a': '<span style="font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(0,146,70,0.15);color:#00c853;">Serie A</span>',
+  'premier_league': '<span style="font-size:8px;padding:1px 5px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(55,0,128,0.15);color:#a78bfa;">EPL</span>',
+};
+
+function predLeagueFilter(league, btn) {
+  _leagueFilter = league;
+  document.querySelectorAll('#pred-league-tabs .pred-toggle__btn').forEach(b => {
+    b.style.background = 'var(--bg-tertiary)';
+    b.style.color = 'var(--text-tertiary)';
+  });
+  if (btn) { btn.style.background = 'var(--accent)'; btn.style.color = 'white'; }
+  predRender();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -273,7 +296,7 @@ function renderHeatmap(matches) {
     const slug = matchSlug(m);
     return `<tr onclick="window.location.href='/prediction/${slug}'" style="cursor:pointer">
       <td class="text-mono text-tertiary">${formatKickoffTime(m.commence_time) || '-'}</td>
-      <td><span class="text-secondary font-medium">${m.home_team}</span> <span class="text-tertiary">vs</span> <span class="text-secondary font-medium">${m.away_team}</span></td>
+      <td>${LEAGUE_BADGE_MAP[m.league || 'serie_a'] || ''} <span class="text-secondary font-medium">${m.home_team}</span> <span class="text-tertiary">vs</span> <span class="text-secondary font-medium">${m.away_team}</span></td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.home)}">${edgeFmt(edges.home)}</span></td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.draw)}">${edgeFmt(edges.draw)}</span></td>
       <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.away)}">${edgeFmt(edges.away)}</span></td>
@@ -321,6 +344,7 @@ function renderCompactRow(m) {
 
   // Badges for special signals
   let badges = '';
+  badges += (LEAGUE_BADGE_MAP[m.league || 'serie_a'] || '') + ' ';
   if (m.lineup_source === 'confirmed') badges += '<span class="badge badge--outline-green" style="font-size:8px;padding:1px 4px">XI</span> ';
   if (hasSteam) badges += '<span class="badge badge--red" style="font-size:8px;padding:1px 4px">STEAM</span> ';
   if (hasValue) badges += `<span class="badge badge--green" style="font-size:8px;padding:1px 4px">+${bestEdge.toFixed(0)}%</span> `;
@@ -425,6 +449,9 @@ function predFilter(filter, btn) {
 
 function predRender() {
   let matches = [..._allMatches];
+
+  // League filter
+  if (_leagueFilter !== 'all') matches = matches.filter(m => (m.league || 'serie_a') === _leagueFilter);
 
   // Filter
   if (_filter === 'value') matches = matches.filter(m => { const e = getMatchEdges(m); return Math.max(e.home||0,e.draw||0,e.away||0) > 3; });

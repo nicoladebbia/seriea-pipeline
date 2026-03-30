@@ -998,6 +998,20 @@ def api_betting():
 
     # ---- Build predictions lookup ----
     predictions_list = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else []
+    # Tag Serie A predictions with league field
+    for p in predictions_list:
+        p.setdefault("league", "serie_a")
+    # Load extra league predictions
+    for league_key in ACTIVE_LEAGUES:
+        if league_key == "serie_a":
+            continue
+        extra_path = UPCOMING_DIR / f"predictions_{league_key}.json"
+        extra_raw = _load_json(extra_path)
+        if extra_raw:
+            extra_list = extra_raw.get("predictions", []) if isinstance(extra_raw, dict) else extra_raw
+            for p in extra_list:
+                p.setdefault("league", league_key)
+            predictions_list.extend(extra_list)
     pred_by_match = _index_list_by_match(predictions_list)
 
     # ---- Load AI reasoning cache ----
@@ -1245,6 +1259,9 @@ def api_betting():
 
             # Predicted lineups
             "lineup_prediction": lineup_pred_matches2.get(match_key, {}),
+
+            # League
+            "league": pred.get("league", "serie_a"),
         }
 
     # ---- Best bets: top 10 by composite score ----
@@ -4409,11 +4426,22 @@ def api_teams_overview():
 
     Returns all 20 teams with: standings, form, xG, Elo, home/away splits,
     over/underperformance (xPts vs actual), upcoming match, and squad strength.
+
+    Query params:
+        league: "serie_a" (default), "premier_league", etc.
     """
     import pandas as pd
 
-    # 1. Standings
-    standings_raw = _load_json(UPCOMING_DIR / "standings.json", {})
+    league_filter = _get_league_filter() or "serie_a"
+
+    # 1. Standings — try league-specific file first, fall back to default only for serie_a
+    league_standings_path = UPCOMING_DIR / f"standings_{league_filter}.json"
+    if league_standings_path.exists():
+        standings_raw = _load_json(league_standings_path, {})
+    elif league_filter == "serie_a":
+        standings_raw = _load_json(UPCOMING_DIR / "standings.json", {})
+    else:
+        standings_raw = {}
     standings_map = {}
     standings_list = []
     if isinstance(standings_raw, dict):
@@ -4538,9 +4566,18 @@ def api_teams_overview():
     except Exception as e:
         log.warning("teams/overview stats error: %s", e)
 
-    # 3. Upcoming matches per team
+    # 3. Upcoming matches per team — load from all league prediction files
     preds = _load_json(UPCOMING_DIR / "predictions.json", [])
     pred_list = preds if isinstance(preds, list) else preds.get("predictions", [])
+    # Also load league-specific prediction files
+    for lk in ACTIVE_LEAGUES:
+        if lk == "serie_a":
+            continue
+        extra_path = UPCOMING_DIR / f"predictions_{lk}.json"
+        extra_raw = _load_json(extra_path)
+        if extra_raw:
+            extra_list = extra_raw.get("predictions", []) if isinstance(extra_raw, dict) else extra_raw
+            pred_list.extend(extra_list)
     ct_map = _get_commence_times()
     upcoming_by_team = {}
     for pred in pred_list:

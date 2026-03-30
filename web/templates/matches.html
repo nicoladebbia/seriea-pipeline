@@ -2,6 +2,14 @@
 {% block title %}Results — SerieAI{% endblock %}
 {% block page_title %}Results{% endblock %}
 
+{% block page_subtitle %}
+<div id="matches-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
+  <button class="matches-filter__btn active" onclick="matchesLeagueFilter('all',this)" style="font-size:11px;padding:3px 10px;">All Leagues</button>
+  <button class="matches-filter__btn" onclick="matchesLeagueFilter('serie_a',this)" style="font-size:11px;padding:3px 10px;">Serie A</button>
+  <button class="matches-filter__btn" onclick="matchesLeagueFilter('premier_league',this)" style="font-size:11px;padding:3px 10px;">EPL</button>
+</div>
+{% endblock %}
+
 {% block head %}
 <style>
   /* Summary bar */
@@ -134,6 +142,28 @@ let _currentFilter = 'all';
 let _searchQuery = '';
 let _currentSeason = '2025-2026';
 let _currentSort = 'default';
+let _leagueFilter = 'all';
+
+// League detection based on team names (lightweight client-side check)
+const _EPL_TEAMS = new Set(['Arsenal','Aston Villa','Bournemouth','Brentford','Brighton','Chelsea','Crystal Palace','Everton','Fulham','Ipswich','Leicester','Liverpool','Manchester City','Manchester United','Newcastle','Nottingham Forest','Southampton','Tottenham','West Ham','Wolverhampton','Wolves','Man City','Man United','Newcastle United','Nottingham','West Ham United','Brighton and Hove Albion','Wolverhampton Wanderers','Ipswich Town','Leicester City','Southampton FC','Tottenham Hotspur']);
+
+function detectMatchLeague(m) {
+  if (_EPL_TEAMS.has(m.home_team) || _EPL_TEAMS.has(m.away_team)) return 'premier_league';
+  return 'serie_a';
+}
+
+function matchesLeagueFilter(league, btn) {
+  _leagueFilter = league;
+  document.querySelectorAll('#matches-league-tabs .matches-filter__btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (_matchesData) renderMatchweeks(_matchesData.matchweeks);
+  if (_currentSort === 'default') {
+    const first = document.querySelector('.mw-matches');
+    const firstChev = document.querySelector('.mw-chevron');
+    if (first) first.classList.add('open');
+    if (firstChev) firstChev.classList.add('open');
+  }
+}
 
 async function loadSeasons() {
   try {
@@ -204,6 +234,11 @@ function renderSummary(data) {
 }
 
 function matchFilter(m) {
+  // League filter
+  if (_leagueFilter !== 'all') {
+    const ml = detectMatchLeague(m);
+    if (ml !== _leagueFilter) return false;
+  }
   // Search filter
   if (_searchQuery) {
     const q = _searchQuery;
@@ -287,10 +322,14 @@ function renderMatchCard(m, showMW) {
   const formationHtml = m.home_formation && m.away_formation
     ? `<div class="match-card__formation">${m.home_formation} vs ${m.away_formation}</div>` : '';
   const mwLabel = showMW ? `<span class="match-card__mw-label">MW${m.matchweek}</span>` : '';
+  const mLeague = detectMatchLeague(m);
+  const leagueBadgeHtml = mLeague === 'premier_league'
+    ? '<span style="font-size:7px;padding:1px 4px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(55,0,128,0.15);color:#a78bfa;margin-right:4px;">EPL</span>'
+    : '<span style="font-size:7px;padding:1px 4px;border-radius:3px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;background:rgba(0,146,70,0.15);color:#00c853;margin-right:4px;">SA</span>';
 
   return `<div class="match-card">
     <a class="match-card__main" href="${matchUrl}">
-      <div class="match-card__date">${m.date.slice(5)}${mwLabel ? '<br>' + mwLabel : ''}</div>
+      <div class="match-card__date">${leagueBadgeHtml}${m.date.slice(5)}${mwLabel ? '<br>' + mwLabel : ''}</div>
       <div class="match-card__teams">
         <div class="match-card__row">
           <span class="match-card__team ${hTeamCls}">${m.home_team}</span>

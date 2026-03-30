@@ -140,6 +140,16 @@ const WINDOW_BADGE_CLASS = {
   completed: 'badge--neutral'
 };
 
+// --- League Helpers ---
+const LEAGUE_NAMES = {
+  'serie_a': 'Serie A',
+  'premier_league': 'Premier League',
+};
+
+function leagueName(key) {
+  return LEAGUE_NAMES[key] || key;
+}
+
 // --- Badge Builders ---
 function confBadge(level) {
   if (!level) return '<span class="badge badge--neutral">N/A</span>';
