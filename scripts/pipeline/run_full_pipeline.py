@@ -1670,6 +1670,19 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         log.warning(f"Intelligence integration error: {e}")
 
     # =========================================================================
+    # Step 18b: EPL Supplementary Data (bookmaker, cross-market, sentiment,
+    #           weather, referees — mirrors Serie A supplementary data)
+    # =========================================================================
+    if extra_leagues and "premier_league" in extra_leagues:
+        print(f"\n  Generating EPL supplementary data (bookmaker, cross-market, sentiment, weather, referees)...")
+        try:
+            from scripts.prediction.generate_epl_supplementary import generate_all_epl_supplementary
+            generate_all_epl_supplementary()
+        except Exception as e:
+            print(f"  EPL supplementary data warning: {e}")
+            log.warning(f"EPL supplementary data error: {e}")
+
+    # =========================================================================
     # Step 19: Over/Under model
     # =========================================================================
     step(19, total_steps, "Running Over/Under Model")
