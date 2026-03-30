@@ -321,11 +321,24 @@ def api_predictions_context():
                 standings_by_team[entry["team"]] = entry
 
     # Load EPL standings if available
+    # Full Odds API name → short Sofascore name mapping for team lookups
+    _epl_full_to_short = {
+        "Brighton and Hove Albion": "Brighton", "Manchester City": "Man City",
+        "Manchester United": "Man United", "Newcastle United": "Newcastle",
+        "Wolverhampton Wanderers": "Wolves", "West Ham United": "West Ham",
+        "Tottenham Hotspur": "Tottenham", "Leeds United": "Leeds",
+    }
     epl_standings = _load_json(UPCOMING_DIR / "standings_premier_league.json")
     if epl_standings:
         epl_list = epl_standings.get("standings", {})
         if isinstance(epl_list, dict):
             standings_by_team.update(epl_list)
+            # Also add entries keyed by full Odds API names so JS lookups work
+            _short_to_full = {v: k for k, v in _epl_full_to_short.items()}
+            for short_name, entry in epl_list.items():
+                full_name = _short_to_full.get(short_name)
+                if full_name and full_name not in standings_by_team:
+                    standings_by_team[full_name] = entry
         elif isinstance(epl_list, list):
             for entry in epl_list:
                 if isinstance(entry, dict) and entry.get("team"):
@@ -651,6 +664,7 @@ def api_dashboard():
     referees_raw = _load_json(UPCOMING_DIR / "referees.json")
     lineups_raw = _load_json(UPCOMING_DIR / "confirmed_lineups.json")
     lineup_preds_raw = _load_json(UPCOMING_DIR / "lineup_predictions.json")
+    epl_injuries_raw = _load_json(UPCOMING_DIR / "injuries_premier_league.json")
 
     # Normalize into match-keyed dicts
     # Merge Serie A predictions (default) with extra league prediction files
@@ -679,6 +693,7 @@ def api_dashboard():
     weather_matches = weather_raw.get("matches", {}) if isinstance(weather_raw, dict) else {}
     lineup_matches = lineups_raw.get("matches", {}) if isinstance(lineups_raw, dict) else {}
     lineup_pred_matches = lineup_preds_raw.get("matches", {}) if isinstance(lineup_preds_raw, dict) else {}
+    epl_injury_matches = epl_injuries_raw.get("matches", {}) if isinstance(epl_injuries_raw, dict) else {}
 
     sentiment_list = sentiment_raw.get("matches", []) if isinstance(sentiment_raw, dict) else sentiment_raw if isinstance(sentiment_raw, list) else []
     sentiment_by_match = _index_list_by_match(sentiment_list)
@@ -758,8 +773,8 @@ def api_dashboard():
             # Ensemble weights
             "weights_applied": pred.get("weights_applied", {}),
 
-            # Injuries
-            "injury_adjustments": pred.get("injury_adjustments", {}),
+            # Injuries — use prediction-embedded data, or EPL injury file as fallback
+            "injury_adjustments": pred.get("injury_adjustments") or epl_injury_matches.get(match_key, {}),
 
             # Sentiment (prediction engine)
             "sentiment_analysis": pred.get("sentiment_analysis", {}),
@@ -1054,6 +1069,7 @@ def api_betting():
     odds_bk_raw = _load_json(UPCOMING_DIR / "odds_bookmakers.json")
 
     lineup_preds_raw2 = _load_json(UPCOMING_DIR / "lineup_predictions.json")
+    epl_injuries_raw2 = _load_json(UPCOMING_DIR / "injuries_premier_league.json")
     risk_state = _load_json(BETTING_DIR / "risk_state.json")
     player_prop_vb = _load_json(UPCOMING_DIR / "player_prop_value_bets.json")
     ultimate_slip = _load_json(UPCOMING_DIR / "ultimate_bet_slip.json")
@@ -1061,6 +1077,7 @@ def api_betting():
 
     # ---- Normalize into match-keyed dicts ----
     lineup_pred_matches2 = lineup_preds_raw2.get("matches", {}) if isinstance(lineup_preds_raw2, dict) else {}
+    epl_injury_matches2 = epl_injuries_raw2.get("matches", {}) if isinstance(epl_injuries_raw2, dict) else {}
     standings = standings_raw.get("standings", {}) if isinstance(standings_raw, dict) else {}
     h2h_map = h2h_raw.get("h2h", {}) if isinstance(h2h_raw, dict) else {}
     ext_matches = extended_raw.get("matches", {}) if isinstance(extended_raw, dict) else {}
@@ -1288,8 +1305,8 @@ def api_betting():
             "away_formation_confidence": pred.get("away_formation_confidence", 0),
             "predicted_stats": pred.get("predicted_stats", {}),
 
-            # Injuries
-            "injury_adjustments": pred.get("injury_adjustments", {}),
+            # Injuries — use prediction-embedded data, or EPL injury file as fallback
+            "injury_adjustments": pred.get("injury_adjustments") or epl_injury_matches2.get(match_key, {}),
 
             # Factors
             "home_factors": pred.get("home_factors", []),
