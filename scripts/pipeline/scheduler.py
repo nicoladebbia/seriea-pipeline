@@ -197,15 +197,32 @@ def get_today_matches(leagues: List[str] = None) -> List[Dict]:
 
 
 def get_next_match_time() -> Optional[datetime]:
-    """Get the time of the next match (if today)."""
+    """Get the time of the next match (if today).
+
+    Checks both Serie A and EPL typical match times from schedule config.
+    """
     today_matches = get_today_matches()
     if not today_matches:
         return None
 
     now = datetime.now()
 
-    # Check typical match times
-    for match_time in SCHEDULE_CONFIG["typical_match_times"]:
+    # Collect all typical match times (Serie A + EPL)
+    all_match_times = list(SCHEDULE_CONFIG["typical_match_times"])
+    all_match_times.extend(SCHEDULE_CONFIG.get("epl_match_times", []))
+
+    # Deduplicate and sort by time
+    seen = set()
+    unique_times = []
+    for mt in all_match_times:
+        key = (mt["hour"], mt["minute"])
+        if key not in seen:
+            seen.add(key)
+            unique_times.append(mt)
+    unique_times.sort(key=lambda t: (t["hour"], t["minute"]))
+
+    # Find next upcoming match time
+    for match_time in unique_times:
         match_dt = now.replace(
             hour=match_time["hour"],
             minute=match_time["minute"],
@@ -751,7 +768,7 @@ def run_pre_kickoff(bankroll: float = 0) -> bool:
                 log.info("CONFIRMED LINEUPS FETCHED — predictions updated with 40% lineup xG weight")
                 send_notification(
                     "Confirmed lineups fetched! Predictions updated with player-level xG.",
-                    "Serie A Pre-Kickoff"
+                    "Betting Pipeline Pre-Kickoff"
                 )
             else:
                 log.info("No confirmed lineups available yet (may be too early)")
@@ -785,7 +802,7 @@ def run_pre_kickoff(bankroll: float = 0) -> bool:
 # NOTIFICATION (Optional)
 # =============================================================================
 
-def send_notification(message: str, title: str = "Serie A Betting Pipeline"):
+def send_notification(message: str, title: str = "Betting Pipeline"):
     """Send notification via all configured channels."""
     try:
         from scripts.pipeline.notify import notify
@@ -839,14 +856,14 @@ def run_post_matchday_ingest() -> dict:
             log.info("Ingested %d/%d new matches", fetched, new_matches)
             send_notification(
                 f"Ingested {fetched} new matches | Features rebuilt",
-                title="Serie A Data Update"
+                title="Betting Pipeline Data Update"
             )
 
         return result
 
     except Exception as e:
         log.error("Post-matchday ingest failed: %s", e)
-        send_notification(f"Data ingest failed: {e}", title="Serie A Data Update ERROR")
+        send_notification(f"Data ingest failed: {e}", title="Betting Pipeline Data Update ERROR")
         return {"error": str(e)}
 
 
@@ -899,7 +916,7 @@ def run_settle() -> bool:
                 # Fallback to simple notification
                 send_notification(
                     f"Settled {settled} bets | P&L: {'+'if profit >= 0 else ''}\u20ac{profit:.2f}",
-                    title="Serie A Settlement"
+                    title="Betting Pipeline Settlement"
                 )
 
         # Alert on critical drift
@@ -962,7 +979,7 @@ def run_settle() -> bool:
 
     except Exception as e:
         log.error("Settlement failed: %s", e)
-        send_notification(f"Settlement failed: {e}", title="Serie A Settlement ERROR")
+        send_notification(f"Settlement failed: {e}", title="Betting Pipeline Settlement ERROR")
         return False
 
     # --- Update rolling correction layer with settled results ---
@@ -1075,12 +1092,12 @@ def run_weekly_monitoring() -> bool:
             log.info("Model retrained successfully")
             send_notification(
                 f"Weekly monitoring: {n_drifted} features drifted | Model retrained",
-                title="Serie A Weekly Monitoring"
+                title="Betting Pipeline Weekly Monitoring"
             )
         elif n_drifted > 5:
             send_notification(
                 f"Weekly monitoring: {n_drifted} features drifted — consider retraining",
-                title="Serie A Drift Warning"
+                title="Betting Pipeline Drift Warning"
             )
         else:
             log.info("Weekly monitoring: system healthy, no retrain needed")
@@ -1089,7 +1106,7 @@ def run_weekly_monitoring() -> bool:
 
     except Exception as e:
         log.error("Weekly monitoring failed: %s", e)
-        send_notification(f"Monitoring failed: {e}", title="Serie A Monitoring ERROR")
+        send_notification(f"Monitoring failed: {e}", title="Betting Pipeline Monitoring ERROR")
         return False
 
 
@@ -1122,14 +1139,14 @@ def run_model_retrain() -> bool:
             log.info("Model retraining completed successfully")
             send_notification(
                 "Models retrained successfully with latest data",
-                title="Serie A Model Retrain"
+                title="Betting Pipeline Model Retrain"
             )
             return True
         else:
             log.error("Model retraining failed: %s", result.stderr[-500:])
             send_notification(
                 f"Model retrain failed: {result.stderr[-200:]}",
-                title="Serie A Retrain ERROR"
+                title="Betting Pipeline Retrain ERROR"
             )
             return False
 
@@ -1270,7 +1287,7 @@ def show_cron_setup(bankroll: float = 100.0):
     log_path = PROJECT_ROOT / "logs" / "cron.log"
 
     print("=" * 60)
-    print("CRON SETUP FOR SERIE A BETTING PIPELINE")
+    print("CRON SETUP FOR BETTING PIPELINE")
     print("=" * 60)
     print()
     print("Add these lines to your crontab (crontab -e):")
@@ -1284,7 +1301,7 @@ def show_cron_setup(bankroll: float = 100.0):
         print()
 
     print("# --- Pre-kickoff runs (confirmed lineups + re-prediction) ---")
-    print("# Runs 1h before each typical Serie A kickoff. Fetches confirmed lineups")
+    print("# Runs 1h before each typical kickoff. Fetches confirmed lineups")
     print("# from API-Football and re-runs predictions with 40% lineup xG weight.")
     print("# Backtest: O/U Over ROI jumps from +4.6% to +25.2% with confirmed lineups.")
     print("# Requires: APIFOOTBALL_KEY env variable set.")
@@ -1326,7 +1343,7 @@ def show_cron_setup(bankroll: float = 100.0):
 def show_status():
     """Show scheduler and pipeline status."""
     print("=" * 60)
-    print("SERIE A BETTING PIPELINE STATUS")
+    print("BETTING PIPELINE STATUS")
     print("=" * 60)
     print()
 
@@ -1405,7 +1422,7 @@ def show_status():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Serie A Betting Pipeline Scheduler",
+        description="Betting Pipeline Scheduler",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

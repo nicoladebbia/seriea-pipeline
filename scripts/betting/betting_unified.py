@@ -430,14 +430,29 @@ class AccumulatorBet:
 # 3. DATA LAYER -- Load all live files
 # =============================================================================
 def load_predictions() -> List[Dict]:
-    """Load ensemble predictions."""
-    p = UPCOMING / "predictions.json"
-    if not p.exists():
-        log.error("No predictions.json found")
-        return []
-    with open(p) as f:
-        data = json.load(f)
-    return data.get("predictions", [])
+    """Load ensemble predictions from all league files."""
+    all_preds = []
+    prediction_files = [
+        "predictions.json",                  # Serie A (default)
+        "predictions_premier_league.json",   # EPL
+    ]
+    found_any = False
+    for fname in prediction_files:
+        p = UPCOMING / fname
+        if not p.exists():
+            continue
+        found_any = True
+        try:
+            with open(p) as f:
+                data = json.load(f)
+            preds = data.get("predictions", [])
+            all_preds.extend(preds)
+            log.info("Loaded %d predictions from %s", len(preds), fname)
+        except Exception as e:
+            log.warning("Failed to load %s: %s", fname, e)
+    if not found_any:
+        log.error("No prediction files found")
+    return all_preds
 
 
 def load_odds_full() -> Dict:

@@ -1683,8 +1683,14 @@ def notify_morning_briefing() -> dict:
             pass
         return default if default is not None else {}
 
-    # Load data
-    predictions = _load(DATA_DIR / "upcoming" / "predictions.json")
+    # Load data — predictions from ALL league files
+    all_predictions = []
+    for league_file in ["predictions.json", "predictions_premier_league.json"]:
+        path = DATA_DIR / "upcoming" / league_file
+        if path.exists():
+            data = _load(path)
+            preds = data.get("predictions", []) if isinstance(data, dict) else []
+            all_predictions.extend(preds)
     bet_slip = _load(DATA_DIR / "upcoming" / "unified_bet_slip.json")
     journal = _load(DATA_DIR / "betting" / "bet_journal.json")
     bankroll_state = _load(DATA_DIR / "bankroll" / "state.json")
@@ -1692,7 +1698,7 @@ def notify_morning_briefing() -> dict:
     sentiment = _load(DATA_DIR / "upcoming" / "sentiment_analysis.json")
 
     # Today's matches
-    pred_list = predictions.get("predictions", [])
+    pred_list = all_predictions
     today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
 
     # Active bets (pending from journal)

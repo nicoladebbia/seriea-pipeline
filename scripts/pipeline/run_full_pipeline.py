@@ -2341,8 +2341,8 @@ def main():
                        help="Run model challenger after pipeline (retrain + validate + swap)")
     parser.add_argument("--incremental", action="store_true",
                        help="Incremental refresh: only new results, fresh odds if stale, new predictions (~4 credits)")
-    parser.add_argument("--leagues", type=str, default="serie_a",
-                       help="Comma-separated leagues to run (default: serie_a). "
+    parser.add_argument("--leagues", type=str, default="serie_a,premier_league",
+                       help="Comma-separated leagues to run (default: serie_a,premier_league). "
                             "E.g. --leagues serie_a,premier_league")
     args = parser.parse_args()
 
