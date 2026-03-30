@@ -830,20 +830,37 @@ class MLClassifier:
             > single CatBoost (catboost_upcoming.cbm)
     """
 
-    def __init__(self):
+    def __init__(self, league: str = "serie_a"):
         self.model = None
         self.ensemble = None
         self.use_ensemble = False
         self.feature_names = None
         self.loaded = False
+        self.league = league
+
+    def _league_model_dir(self) -> Path:
+        """Return the model directory for the configured league."""
+        if self.league == "serie_a":
+            return MODELS_DIR
+        return MODELS_DIR / self.league
 
     def load_model(self) -> bool:
         """Load trained ML models.
 
-        Priority: no-odds CatBoost (independent signal, no market overlap)
-                > multi-model ensemble (XGB + LGB + CB)
-                > single CatBoost (catboost_upcoming.cbm)
+        For Serie A:
+          Priority: no-odds CatBoost (independent signal, no market overlap)
+                  > multi-model ensemble (XGB + LGB + CB)
+                  > single CatBoost (catboost_upcoming.cbm)
+
+        For other leagues:
+          Priority: league-specific ensemble (XGB + LGB + CB)
+                  > league-specific CatBoost (catboost_latest.cbm)
         """
+        # --- Non-Serie A: load from league-specific model directory ---
+        if self.league != "serie_a":
+            return self._load_league_model()
+
+        # --- Serie A: original priority chain ---
         # Priority 1: No-odds CatBoost — provides independent signal that
         # doesn't overlap with the market predictor. Backtested at +2.6pp
         # accuracy improvement over the odds-based ensemble.
@@ -919,6 +936,67 @@ class MLClassifier:
 
         except Exception as e:
             log.error(f"Failed to load ML classifier: {e}")
+            return False
+
+    def _load_league_model(self) -> bool:
+        """Load models from a league-specific directory (non-Serie A).
+
+        Priority: multi-model ensemble > single CatBoost (catboost_latest.cbm)
+        """
+        model_dir = self._league_model_dir()
+        if not model_dir.exists():
+            log.warning("Model directory not found for %s: %s", self.league, model_dir)
+            return False
+
+        # Priority 1: Multi-model ensemble
+        try:
+            from ml.ensemble import WeightedAverageEnsemble
+            ens = WeightedAverageEnsemble.load(self.league)
+            ens.blend_calibrator = None
+            self.ensemble = ens
+            self.use_ensemble = True
+            self.feature_names = ens.feature_names
+            self.loaded = True
+            log.info("Loaded %s multi-model ensemble (%d features)",
+                     self.league, len(self.feature_names))
+            return True
+        except Exception as e:
+            log.info("%s ensemble not available (%s), trying CatBoost", self.league, e)
+
+        # Priority 2: CatBoost (catboost_latest.cbm or any .cbm in the dir)
+        try:
+            from catboost import CatBoostClassifier
+
+            latest_path = model_dir / "catboost_latest.cbm"
+            meta_path = model_dir / "catboost_metadata.json"
+
+            if not latest_path.exists():
+                # Find any .cbm file
+                cbm_files = sorted(model_dir.glob("catboost_*.cbm"), reverse=True)
+                if not cbm_files:
+                    log.warning("No CatBoost model found in %s", model_dir)
+                    return False
+                latest_path = cbm_files[0]
+                meta_path = latest_path.with_name(
+                    latest_path.name.replace(".cbm", "_metadata.json")
+                )
+
+            self.model = CatBoostClassifier()
+            self.model.load_model(str(latest_path))
+            self.feature_names = list(self.model.feature_names_)
+
+            if not self.feature_names and meta_path.exists():
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                    self.feature_names = meta.get("feature_names", [])
+
+            self.loaded = True
+            log.info("Loaded %s CatBoost from %s (%d features)",
+                     self.league, latest_path.name, len(self.feature_names))
+            return True
+
+        except Exception as e:
+            log.error("Failed to load %s ML classifier: %s", self.league, e)
             return False
 
     def predict(self, features: pd.DataFrame) -> Dict[str, float]:
@@ -1139,12 +1217,13 @@ class PlayerXGPredictor:
 class FeatureBuilder:
     """Build features for upcoming matches from historical data."""
 
-    def __init__(self):
+    def __init__(self, league: str = "serie_a"):
         self.df = None
         self.team_features = {}
+        self.league = league
 
     def load_historical(self) -> bool:
-        """Load historical features data."""
+        """Load historical features data, filtered by league."""
         try:
             features_path = DATA_DIR / "features" / "features.parquet"
             if not features_path.exists():
@@ -1152,6 +1231,17 @@ class FeatureBuilder:
                 return False
 
             self.df = pd.read_parquet(features_path)
+
+            # Filter by league if the column exists and we're not Serie A
+            # (Serie A was the only league historically, so some rows may lack the column)
+            if "league" in self.df.columns and self.league:
+                league_mask = self.df["league"] == self.league
+                if league_mask.any():
+                    self.df = self.df[league_mask]
+                    log.info(f"Filtered features to {self.league}: {len(self.df)} rows")
+                else:
+                    log.warning(f"No rows found for league={self.league}, using all data")
+
             self.df = self.df.sort_values("match_date", ascending=False)
 
             # Build team feature cache from most recent matches
@@ -1983,8 +2073,9 @@ class EnsemblePredictor:
     """Combines Factor, xG, ML, and Player-level predictions."""
 
     def __init__(self, weights: Dict[str, float] = None, strategy: str = "default",
-                 live_mode: bool = True):
+                 live_mode: bool = True, league: str = "serie_a"):
         self.strategy = strategy
+        self.league = league
         # live_mode=True logs predictions to the ledger for rolling corrections.
         # Set to False for backtests / analysis to avoid polluting the ledger.
         self.live_mode = live_mode
@@ -2003,12 +2094,12 @@ class EnsemblePredictor:
                 self.weights = ENSEMBLE_WEIGHTS
 
         self.xg_predictor = XGPredictor()
-        self.ml_classifier = MLClassifier()
+        self.ml_classifier = MLClassifier(league=league)
         self.draw_detector = DrawDetector()
         self.meta_learner = MetaLearnerCombiner()
         self.xcomp_loader = XCompLoader()
         self.player_xg_predictor = PlayerXGPredictor()
-        self.feature_builder = FeatureBuilder()
+        self.feature_builder = FeatureBuilder(league=league)
         self.formation_db = None
 
         # Lessons system (loaded lazily via _load_lessons)
@@ -2599,7 +2690,10 @@ class EnsemblePredictor:
         # Detect market anomalies (cup matches, corrupted data)
         try:
             from scripts.data.odds_fetcher import detect_market_anomaly
-            odds_path = DATA_DIR / "upcoming" / "odds_full.json"
+            if self.league == "serie_a":
+                odds_path = DATA_DIR / "upcoming" / "odds_full.json"
+            else:
+                odds_path = DATA_DIR / "upcoming" / f"odds_full_{self.league}.json"
             if odds_path.exists():
                 with open(odds_path) as f:
                     odds_full = json.load(f)
@@ -2766,9 +2860,12 @@ class EnsemblePredictor:
             except Exception as e:
                 log.warning(f"Failed to load bookmaker odds for {match_key}: {e}")
 
-        # Fallback: try odds_full.json
+        # Fallback: try odds_full.json (league-aware)
         if not bookmaker_odds:
-            full_path = DATA_DIR / "upcoming" / "odds_full.json"
+            if self.league == "serie_a":
+                full_path = DATA_DIR / "upcoming" / "odds_full.json"
+            else:
+                full_path = DATA_DIR / "upcoming" / f"odds_full_{self.league}.json"
             if full_path.exists():
                 try:
                     with open(full_path) as f:
@@ -3149,13 +3246,19 @@ class EnsemblePredictor:
     def _load_market_odds(self) -> Dict[str, Dict]:
         """Load bookmaker odds and convert to vig-free implied probabilities.
 
-        Prefers sharp consensus from bookmaker_analysis.json when available,
+        For Serie A: prefers sharp consensus from bookmaker_analysis.json,
         falls back to odds.json averages.
+        For other leagues: reads odds_full_{league}.json.
 
         Returns dict mapping "Home vs Away" to {prob_H, prob_D, prob_A}.
         """
         market_probs = {}
 
+        # --- Non-Serie A: read from odds_full_{league}.json ---
+        if self.league != "serie_a":
+            return self._load_league_market_odds()
+
+        # --- Serie A path (unchanged) ---
         # First try sharp consensus from bookmaker analysis
         ba_path = DATA_DIR / "upcoming" / "bookmaker_analysis.json"
         sharp_loaded = 0
@@ -3223,6 +3326,67 @@ class EnsemblePredictor:
         if fallback_count:
             log.info(f"Loaded average odds fallback for {fallback_count} matches")
 
+        return market_probs
+
+    def _load_league_market_odds(self) -> Dict[str, Dict]:
+        """Load market odds from odds_full_{league}.json for non-Serie A leagues.
+
+        The file format is: {matches: {match_key: {h2h: {best_home, best_draw, best_away, ...}}}}
+        """
+        market_probs = {}
+        odds_path = DATA_DIR / "upcoming" / f"odds_full_{self.league}.json"
+        if not odds_path.exists():
+            log.warning("No odds file for %s at %s", self.league, odds_path)
+            return market_probs
+
+        try:
+            with open(odds_path) as f:
+                odds_data = json.load(f)
+        except Exception as e:
+            log.warning("Could not load %s odds: %s", self.league, e)
+            return market_probs
+
+        matches = odds_data.get("matches", odds_data)
+        if isinstance(matches, list):
+            matches = {
+                m.get("match", f"{m.get('home_team', '?')} vs {m.get('away_team', '?')}"): m
+                for m in matches
+            }
+
+        for match_key, match_data in matches.items():
+            h2h = match_data.get("h2h", {})
+            if isinstance(h2h, dict):
+                best_h = h2h.get("best_home", h2h.get("home", 0))
+                best_d = h2h.get("best_draw", h2h.get("draw", 0))
+                best_a = h2h.get("best_away", h2h.get("away", 0))
+            elif isinstance(h2h, list):
+                best_h = max((bm.get("home", 0) for bm in h2h), default=0)
+                best_d = max((bm.get("draw", 0) for bm in h2h), default=0)
+                best_a = max((bm.get("away", 0) for bm in h2h), default=0)
+            else:
+                continue
+
+            if best_h <= 1.0 or best_d <= 1.0 or best_a <= 1.0:
+                continue
+
+            raw_h = 1.0 / best_h
+            raw_d = 1.0 / best_d
+            raw_a = 1.0 / best_a
+            total = raw_h + raw_d + raw_a
+            if total <= 0:
+                continue
+
+            market_probs[match_key] = {
+                "prob_H": raw_h / total,
+                "prob_D": raw_d / total,
+                "prob_A": raw_a / total,
+                "overround": round((total - 1.0) * 100, 1),
+                "source": "odds_full_best",
+                "best_odds": {"home": best_h, "draw": best_d, "away": best_a},
+            }
+
+        if market_probs:
+            log.info("Loaded market odds for %d %s matches", len(market_probs), self.league)
         return market_probs
 
     def _get_market_probs(self, home: str, away: str) -> Optional[Dict]:
@@ -3739,37 +3903,106 @@ class EnsemblePredictor:
 # MAIN PREDICTION PIPELINE
 # =============================================================================
 
-def run_ensemble_predictions(use_ensemble: bool = True) -> Dict:
-    """Run the full ensemble prediction pipeline."""
+def _load_league_matches(league: str) -> List[Dict]:
+    """Load upcoming matches for a given league.
+
+    Serie A: delegates to existing load_upcoming_matches() (manual + scraped).
+    Other leagues: reads from odds_full_{league}.json (the odds fetch already
+    stores match metadata including home_team, away_team, commence_time).
+    """
+    if league == "serie_a":
+        return load_upcoming_matches()
+
+    odds_path = DATA_DIR / "upcoming" / f"odds_full_{league}.json"
+    if not odds_path.exists():
+        log.warning("No match data for %s at %s", league, odds_path)
+        return []
+
+    try:
+        with open(odds_path) as f:
+            odds_data = json.load(f)
+    except Exception as e:
+        log.error("Failed to load %s matches: %s", league, e)
+        return []
+
+    raw = odds_data.get("matches", odds_data)
+    if isinstance(raw, list):
+        items = [(m.get("match", f"{m.get('home_team','?')} vs {m.get('away_team','?')}"), m)
+                 for m in raw]
+    else:
+        items = list(raw.items())
+
+    matches = []
+    for match_key, match_data in items:
+        home = match_data.get("home_team", match_key.split(" vs ")[0] if " vs " in match_key else "?")
+        away = match_data.get("away_team", match_key.split(" vs ")[1] if " vs " in match_key else "?")
+        ct = match_data.get("commence_time", "")
+        date_str = ct[:10] if ct else ""
+        time_str = ct[11:16] if len(ct) >= 16 else ""
+
+        matches.append({
+            "match": f"{home} vs {away}",
+            "home_team": home,
+            "away_team": away,
+            "date": date_str,
+            "time": time_str,
+            "commence_time": ct,
+            "league": league,
+        })
+
+    return matches
+
+
+def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a") -> Dict:
+    """Run the full ensemble prediction pipeline.
+
+    Args:
+        use_ensemble: Whether to use the full ensemble (True) or factor-only (False).
+        league: League identifier ("serie_a", "premier_league", etc.).
+                Default "serie_a" preserves backward compatibility.
+    """
+    league_display = {"serie_a": "Serie A", "premier_league": "Premier League"}.get(league, league)
     log.info("=" * 70)
-    log.info("ENSEMBLE PREDICTION ENGINE")
+    log.info("ENSEMBLE PREDICTION ENGINE — %s", league_display)
     log.info("=" * 70)
 
-    # Initialize ensemble
-    ensemble = EnsemblePredictor()
+    # Initialize ensemble with league context
+    ensemble = EnsemblePredictor(league=league)
     if use_ensemble and not ensemble.initialize():
         log.warning("Failed to initialize ensemble - falling back to factor-only")
         use_ensemble = False
 
     # Step 1: Load upcoming matches
-    log.info("\n[1/4] Loading upcoming matches...")
-    matches = load_upcoming_matches()
+    log.info("\n[1/4] Loading upcoming %s matches...", league_display)
+    matches = _load_league_matches(league)
     if not matches:
-        log.error("No upcoming matches found!")
+        log.error("No upcoming %s matches found!", league_display)
         return {}
-    log.info(f"Found {len(matches)} upcoming matches")
+    log.info(f"Found {len(matches)} upcoming {league_display} matches")
 
-    # Step 2: Calculate current form
+    # Step 2: Calculate current form (graceful for non-Serie A)
     log.info("\n[2/4] Calculating current team form...")
-    form_data = calculate_all_forms()
+    try:
+        form_data = calculate_all_forms()
+    except Exception as e:
+        log.warning("Form calculation failed for %s: %s — using empty form data", league_display, e)
+        form_data = {}
 
-    # Step 3: Fetch weather
+    # Step 3: Fetch weather (graceful for non-Serie A)
     log.info("\n[3/4] Fetching weather forecasts...")
-    weather_data = fetch_all_match_weather()
+    try:
+        weather_data = fetch_all_match_weather()
+    except Exception as e:
+        log.warning("Weather fetch failed for %s: %s", league_display, e)
+        weather_data = {}
 
-    # Step 4: Analyze referees
+    # Step 4: Analyze referees (graceful for non-Serie A)
     log.info("\n[4/4] Analyzing referee assignments...")
-    referee_data = analyze_referee_impact(matches)
+    try:
+        referee_data = analyze_referee_impact(matches)
+    except Exception as e:
+        log.warning("Referee analysis failed for %s: %s", league_display, e)
+        referee_data = {}
 
     # Load confirmed lineups if available
     confirmed_lineups = None
@@ -3952,6 +4185,7 @@ def run_ensemble_predictions(use_ensemble: bool = True) -> Dict:
     # Save predictions
     output = {
         "generated_at": datetime.now().isoformat(),
+        "league": league,
         "model_version": "v4.0-deep-learning" if use_ensemble else "v2.0-21seasons",
         "ensemble_enabled": use_ensemble,
         "methods_available": ensemble.available_methods if use_ensemble else ["factor"],
@@ -3964,14 +4198,19 @@ def run_ensemble_predictions(use_ensemble: bool = True) -> Dict:
         }
     }
 
-    output_path = DATA_DIR / "upcoming" / "predictions.json"
+    # League-aware output path: Serie A -> predictions.json, others -> predictions_{league}.json
+    if league == "serie_a":
+        output_path = DATA_DIR / "upcoming" / "predictions.json"
+    else:
+        output_path = DATA_DIR / "upcoming" / f"predictions_{league}.json"
+
     # Atomic write: temp file + rename to prevent corruption on crash
     tmp_path = output_path.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
         json.dump(output, f, indent=2, cls=_NumpySafeEncoder)
     tmp_path.replace(output_path)
 
-    log.info(f"\nSaved ensemble predictions to {output_path}")
+    log.info(f"\nSaved {league_display} ensemble predictions to {output_path}")
     return output
 
 
@@ -4001,8 +4240,10 @@ def _get_betting_recommendation(outcome: str, h_prob: float, d_prob: float, a_pr
 
 def print_ensemble_predictions(output: Dict):
     """Print ensemble predictions in a readable format."""
+    league = output.get("league", "serie_a")
+    league_display = {"serie_a": "Serie A", "premier_league": "Premier League"}.get(league, league.upper())
     print("\n" + "=" * 80)
-    print("SERIE A PREDICTIONS - ENSEMBLE MODEL")
+    print(f"{league_display} PREDICTIONS - ENSEMBLE MODEL")
     print("=" * 80)
     print(f"Generated: {output.get('generated_at', 'Unknown')}")
     print(f"Model: {output.get('model_version', 'Unknown')}")

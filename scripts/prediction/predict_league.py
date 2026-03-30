@@ -138,78 +138,14 @@ def run_predictions_for_league(league: str = "serie_a") -> Dict:
                      display, _league_model_dir(league))
         return {}
 
-    # --- For Serie A, delegate to the existing engine (full backward compat) ---
-    if league == "serie_a":
-        from scripts.prediction.ensemble_prediction_engine import run_ensemble_predictions
-        result = run_ensemble_predictions(use_ensemble=True)
-        return {
-            "predictions": result.get("predictions", []),
-            "league": league,
-            "count": len(result.get("predictions", [])),
-            "path": str(_league_predictions_path(league)),
-        }
-
-    # --- Non-Serie A leagues ---
-    # Load odds from league-specific file
-    odds_path = _league_odds_path(league)
-    if not odds_path.exists():
-        log.warning("No odds data for %s at %s — fetch odds first", display, odds_path)
-        return {}
-
-    try:
-        with open(odds_path) as f:
-            odds_data = json.load(f)
-        matches = odds_data.get("matches", odds_data)
-        if isinstance(matches, list):
-            matches = {m.get("match", f"{m.get('home_team', '?')} vs {m.get('away_team', '?')}"): m
-                       for m in matches}
-    except Exception as e:
-        log.error("Failed to load odds for %s: %s", display, e)
-        return {}
-
-    if not matches:
-        log.info("No upcoming matches for %s", display)
-        return {}
-
-    log.info("Found %d upcoming %s matches", len(matches), display)
-
-    # Load the league-specific model
-    model_dir = _league_model_dir(league)
-    model = _load_league_model(model_dir)
-    if model is None:
-        log.error("Failed to load model from %s", model_dir)
-        return {}
-
-    # Generate predictions for each match
-    predictions = []
-    for match_key, match_data in matches.items():
-        try:
-            pred = _predict_match(model, match_key, match_data, league)
-            if pred:
-                predictions.append(pred)
-        except Exception as e:
-            log.warning("Prediction failed for %s: %s", match_key, e)
-
-    # Save predictions
-    out_path = _league_predictions_path(league)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    output = {
-        "league": league,
-        "league_display": display,
-        "generated_at": datetime.now().isoformat(),
-        "model_dir": str(model_dir),
-        "predictions": predictions,
-    }
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
-
-    log.info("Saved %d %s predictions to %s", len(predictions), display, out_path.name)
-
+    # --- Route all leagues through the ensemble engine ---
+    from scripts.prediction.ensemble_prediction_engine import run_ensemble_predictions
+    result = run_ensemble_predictions(use_ensemble=True, league=league)
     return {
-        "predictions": predictions,
+        "predictions": result.get("predictions", []),
         "league": league,
-        "count": len(predictions),
-        "path": str(out_path),
+        "count": len(result.get("predictions", [])),
+        "path": str(_league_predictions_path(league)),
     }
 
 
