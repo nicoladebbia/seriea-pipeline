@@ -370,23 +370,65 @@ def _predict_match(model, match_key: str, match_data: Dict, league: str) -> Opti
         predicted = "D"
         conf = "MEDIUM"
 
+    # Compute market edge (model prob vs market prob)
+    market_probs = [1.0 / best_h if best_h > 1 else 0.33,
+                    1.0 / best_d if best_d > 1 else 0.33,
+                    1.0 / best_a if best_a > 1 else 0.33]
+    market_total = sum(market_probs)
+    market_h, market_d, market_a = [p / market_total for p in market_probs]
+    if predicted == "H":
+        edge = (prob_h - market_h) / market_h if market_h > 0 else 0
+    elif predicted == "A":
+        edge = (prob_a - market_a) / market_a if market_a > 0 else 0
+    else:
+        edge = (prob_d - market_d) / market_d if market_d > 0 else 0
+
+    # Confidence score (0-100)
+    max_prob = max(prob_h, prob_d, prob_a)
+    confidence_score = round(max_prob * 100)
+
+    # Key factors
+    home_factors = []
+    away_factors = []
+    if prob_h > 0.55:
+        home_factors.append(f"Strong favourite ({prob_h:.0%} win probability)")
+    if best_h < 1.5:
+        home_factors.append(f"Heavy market favourite (odds {best_h:.2f})")
+    if prob_a > 0.40:
+        away_factors.append(f"Competitive away side ({prob_a:.0%} win probability)")
+    if best_a < 2.5:
+        away_factors.append(f"Short away price (odds {best_a:.2f})")
+
     return {
         "match": match_key,
         "home_team": home_team,
         "away_team": away_team,
         "date": date_str,
         "time": commence_time[11:16] if len(commence_time) > 15 else "",
+        "commence_time": commence_time,
         "league": league,
         "predicted_outcome": predicted,
         "predicted_result": {"H": "Home Win", "D": "Draw", "A": "Away Win"}.get(predicted, predicted),
+        "confidence": confidence_score,
         "confidence_level": conf,
         "probabilities": probs,
         "betting_probabilities": probs,
+        "market_edge": round(edge, 4),
         "odds": {
             "home": round(best_h, 3),
             "draw": round(best_d, 3),
             "away": round(best_a, 3),
         },
+        "home_xg": 0,
+        "away_xg": 0,
+        "home_factors": home_factors,
+        "away_factors": away_factors,
+        "neutral_factors": [],
+        "draw_analysis": {
+            "probability": round(prob_d, 4),
+            "market_probability": round(market_d, 4),
+        },
+        "betting_recommendation": f"{'Back ' + home_team if predicted == 'H' else 'Back ' + away_team if predicted == 'A' else 'Draw'} ({conf.lower()} confidence)" if abs(edge) > 0.03 else "",
         "model_source": "league_model",
         "generated_at": datetime.now().isoformat(),
     }
