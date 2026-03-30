@@ -176,6 +176,10 @@ const LEAGUE_BADGE_MAP = {
 };
 
 function renderMatchRow(m) {
+  // Ensure commence_time is populated from date+time if missing
+  if (!m.commence_time && m.date && m.time) {
+    m.commence_time = m.date + 'T' + m.time + ':00Z';
+  }
   const probs = m.probabilities || {};
   const h2h = m.odds?.h2h || {};
   const outcomeColor = OUTCOME_COLORS[m.predicted_outcome] || 'var(--text-tertiary)';
@@ -388,10 +392,17 @@ async function loadDashboard() {
       }
     }
 
+    // Enrich commence_time from date+time for matches missing it
+    for (const m of data.matches) {
+      if (!m.commence_time && m.date && m.time) {
+        m.commence_time = m.date + 'T' + m.time + ':00Z';
+      }
+    }
+
     // Next match stat card
     const statNextMatch = document.getElementById('stat-nextmatch');
     if (statNextMatch) {
-      const upcoming = data.matches.filter(m => m.status !== 'completed' && m.commence_time);
+      const upcoming = data.matches.filter(m => m.status !== 'completed' && (m.commence_time || m.date));
       if (upcoming.length) {
         const next = upcoming[0];
         statNextMatch.textContent = `${next.home_team} vs ${next.away_team}`;

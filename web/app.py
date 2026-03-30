@@ -618,6 +618,9 @@ def api_dashboard():
 
         odds_data = odds_matches.get(match_key, {})
         ct = odds_data.get("commence_time", "")
+        # Fall back to prediction date+time if odds don't have commence_time
+        if not ct and pred.get("date") and pred.get("time"):
+            ct = f"{pred['date']}T{pred['time']}:00Z"
 
         # Check if match has been settled (result exists in results.json)
         result_entry = settled_results.get(match_key, {})
