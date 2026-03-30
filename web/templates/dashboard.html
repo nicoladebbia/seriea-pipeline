@@ -399,14 +399,14 @@ async function loadDashboard() {
         window._nextMatchCT = next.commence_time;
         const trend = document.getElementById('stat-nextmatch-trend');
         if (trend && next.commence_time) {
-          // Show actual date + time, e.g. "Sun 4 Apr, 11:00"
+          // Show date + time + countdown, e.g. "Sun 4 Apr, 11:00 · in 5 days"
           try {
             const d = new Date(next.commence_time);
             const dayName = d.toLocaleDateString('en-GB', {weekday:'short'});
             const day = d.getDate();
             const month = d.toLocaleDateString('en-GB', {month:'short'});
             const time = d.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'});
-            trend.textContent = `${dayName} ${day} ${month}, ${time}`;
+            trend.textContent = `${dayName} ${day} ${month}, ${time} · ${timeUntil(next.commence_time)}`;
           } catch { trend.textContent = timeUntil(next.commence_time); }
           trend.className = 'stat-card__trend stat-card__trend--neutral';
         }
@@ -434,7 +434,7 @@ async function loadDashboard() {
         <div class="dash-day-header">
           <span class="dash-day-header__date">${formatDayHeader(dateKey)}</span>
           <span class="dash-day-header__meta">${matches.length} match${matches.length !== 1 ? 'es' : ''}</span>
-          ${firstCT ? `<span id="${gdId}" class="dash-day-header__meta" style="color:var(--accent)">${(() => { try { const d=new Date(firstCT); return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+' kickoff'; } catch { return timeUntil(firstCT); } })()}</span>` : ''}
+          ${firstCT ? `<span class="dash-day-header__meta" style="color:var(--text-tertiary)">${(() => { try { return new Date(firstCT).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+' kickoff'; } catch { return ''; } })()}</span><span id="${gdId}" class="dash-day-header__meta" style="color:var(--accent)">${timeUntil(firstCT)}</span>` : ''}
         </div>
         <div class="dash-table-wrap">
           <table class="dash-table">
