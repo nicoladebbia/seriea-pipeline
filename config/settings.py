@@ -124,6 +124,14 @@ def atomic_write_json(path: Path, data, indent: int = 2):
 
 def atomic_write_parquet(path: Path, df, **kwargs):
     """Write parquet atomically: write to temp file, then rename."""
+    import pandas as _pd
+
+    # Safety net: normalize match_date to datetime before every write
+    if hasattr(df, "columns") and "match_date" in df.columns:
+        df["match_date"] = _pd.to_datetime(df["match_date"], errors="coerce")
+    if hasattr(df, "columns") and "matchweek" in df.columns:
+        df["matchweek"] = _pd.to_numeric(df["matchweek"], errors="coerce")
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".parquet.tmp")

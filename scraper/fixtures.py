@@ -245,7 +245,7 @@ def scrape_season_fixtures(season: str, client: FBrefClient | None = None, leagu
                 "season": season,
                 "matchweek": current_week,
                 "day_of_week": day_of_week,
-                "match_date": str(match_date) if match_date else "",
+                "match_date": pd.Timestamp(match_date) if match_date else pd.NaT,
                 "kickoff_time": kickoff_time,
                 "home_team": home_team,
                 "away_team": away_team,

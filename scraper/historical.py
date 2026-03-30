@@ -184,7 +184,7 @@ def import_historical_season(
     matches["season"] = season
     matches["league"] = league
     matches["league_name"] = league_name
-    matches["match_date"] = raw["match_date"].dt.strftime("%Y-%m-%d")
+    matches["match_date"] = pd.to_datetime(raw["match_date"])
     matches["kickoff_time"] = raw.get("Time", "")
     matches["matchweek"] = raw["matchweek"]
     matches["home_team"] = raw["home_team"]

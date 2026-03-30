@@ -479,7 +479,7 @@ def add_upcoming_fixture(
         "match_id": match.match_id,
         "season": match.season,
         "matchweek": match.matchweek,
-        "match_date": match.match_date,
+        "match_date": pd.Timestamp(match.match_date),
         "kickoff_time": match.kickoff_time,
         "home_team": match.home_team,
         "away_team": match.away_team,

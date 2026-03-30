@@ -181,6 +181,12 @@ def _append_or_create(df: pd.DataFrame, table_name: str) -> None:
     # Coerce mixed-type columns to avoid ArrowInvalid on parquet write
     df = _coerce_numeric_columns(df)
 
+    # Normalize dtypes that cause parquet write failures from mixed types
+    if "match_date" in df.columns:
+        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+    if "matchweek" in df.columns:
+        df["matchweek"] = pd.to_numeric(df["matchweek"], errors="coerce")
+
     # Fill any NaN matchweeks before saving (matches table only)
     if table_name == "matches" and "matchweek" in df.columns:
         df = _fill_missing_matchweeks(df)
@@ -197,7 +203,7 @@ def _save_matches(matches: list[MatchData]) -> None:
         row = {
             "match_id": m.metadata.match_id,
             "season": m.metadata.season,
-            "match_date": str(m.metadata.match_date),
+            "match_date": pd.Timestamp(m.metadata.match_date),
             "kickoff_time": m.metadata.kickoff_time,
             "matchweek": m.metadata.matchweek,
             "home_team": m.metadata.home_team,
@@ -247,7 +253,7 @@ def _save_player_stats(matches: list[MatchData]) -> None:
     if "match_id" in df.columns:
         df["season"] = df["match_id"].map(lambda mid: meta_map.get(mid, None) and meta_map[mid].season)
         df["match_date"] = df["match_id"].map(
-            lambda mid: str(meta_map[mid].match_date) if mid in meta_map else ""
+            lambda mid: pd.Timestamp(meta_map[mid].match_date) if mid in meta_map else pd.NaT
         )
 
     _append_or_create(df, "player_stats")
