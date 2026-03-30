@@ -320,6 +320,25 @@ def api_predictions_context():
             if isinstance(entry, dict) and entry.get("team"):
                 standings_by_team[entry["team"]] = entry
 
+    # Load EPL standings if available
+    epl_standings = _load_json(UPCOMING_DIR / "standings_premier_league.json")
+    if epl_standings:
+        epl_list = epl_standings.get("standings", {})
+        if isinstance(epl_list, dict):
+            standings_by_team.update(epl_list)
+        elif isinstance(epl_list, list):
+            for entry in epl_list:
+                if isinstance(entry, dict) and entry.get("team"):
+                    standings_by_team[entry["team"]] = entry
+
+    # Compute H2H for EPL from matches.parquet if not in static file
+    all_h2h = h2h_raw.get("h2h", {})
+    try:
+        epl_h2h = _compute_epl_h2h()
+        all_h2h.update(epl_h2h)
+    except Exception:
+        pass
+
     # Calibration: by-confidence accuracy + method rankings
     overall = analysis.get("overall", {})
     calibration = {
@@ -329,10 +348,77 @@ def api_predictions_context():
     }
 
     return jsonify({
-        "h2h": h2h_raw.get("h2h", {}),
+        "h2h": all_h2h,
         "standings": standings_by_team,
         "calibration": calibration,
     })
+
+
+def _compute_epl_h2h() -> dict:
+    """Compute H2H stats for upcoming EPL matches from matches.parquet."""
+    import pandas as pd
+    from config.team_names import normalize_team
+
+    preds_path = UPCOMING_DIR / "predictions_premier_league.json"
+    if not preds_path.exists():
+        return {}
+
+    with open(preds_path) as f:
+        preds = json.load(f).get("predictions", [])
+
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if not matches_path.exists():
+        return {}
+
+    df = pd.read_parquet(matches_path)
+    epl = df[df["league"] == "premier_league"]
+
+    h2h = {}
+    for pred in preds:
+        home = normalize_team(pred.get("home_team", ""))
+        away = normalize_team(pred.get("away_team", ""))
+        match_key = f"{pred.get('home_team', '')} vs {pred.get('away_team', '')}"
+
+        past = epl[
+            ((epl["home_team"] == home) & (epl["away_team"] == away)) |
+            ((epl["home_team"] == away) & (epl["away_team"] == home))
+        ].sort_values("match_date", ascending=False)
+
+        if len(past) == 0:
+            continue
+
+        home_wins = ((past["home_team"] == home) & (past["result"] == "H")).sum() + \
+                    ((past["away_team"] == home) & (past["result"] == "A")).sum()
+        away_wins = ((past["home_team"] == away) & (past["result"] == "H")).sum() + \
+                    ((past["away_team"] == away) & (past["result"] == "A")).sum()
+        draws = (past["result"] == "D").sum()
+        total = len(past)
+
+        last = past.iloc[0]
+        last_score = f"{int(last['home_score'])}-{int(last['away_score'])}"
+        last_result = "draw" if last["result"] == "D" else (
+            "home" if (last["home_team"] == home and last["result"] == "H") or
+                      (last["away_team"] == home and last["result"] == "A")
+            else "away"
+        )
+
+        home_goals = past[past["home_team"] == home]["home_score"].sum() + \
+                     past[past["away_team"] == home]["away_score"].sum()
+        away_goals = past[past["home_team"] == away]["home_score"].sum() + \
+                     past[past["away_team"] == away]["away_score"].sum()
+
+        h2h[match_key] = {
+            "total_meetings": int(total),
+            "home_wins": int(home_wins),
+            "away_wins": int(away_wins),
+            "draws": int(draws),
+            "home_goals_avg": round(float(home_goals / total), 1),
+            "away_goals_avg": round(float(away_goals / total), 1),
+            "last_result": last_result,
+            "last_score": last_score,
+        }
+
+    return h2h
 
 
 # ---------------------------------------------------------------------------
