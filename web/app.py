@@ -4553,7 +4553,12 @@ def api_teams_overview():
     if isinstance(standings_raw, dict):
         inner = standings_raw.get("standings", standings_raw.get("table", {}))
         if isinstance(inner, dict):
-            standings_list = list(inner.values())
+            # Dict keyed by team name — inject "team" field into each entry
+            standings_list = []
+            for team_name, entry in inner.items():
+                if isinstance(entry, dict):
+                    entry["team"] = team_name
+                    standings_list.append(entry)
         elif isinstance(inner, list):
             standings_list = inner
     elif isinstance(standings_raw, list):
