@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 
-def load_recent_matches(n_matchweeks: int = 10) -> pd.DataFrame:
+def load_recent_matches(n_matchweeks: int = 10, league: str = None) -> pd.DataFrame:
     """Load most recent matches from features data."""
     features_path = DATA_DIR / "features" / "features.parquet"
 
@@ -35,17 +35,21 @@ def load_recent_matches(n_matchweeks: int = 10) -> pd.DataFrame:
 
     df = pd.read_parquet(features_path)
 
+    # Filter by league if specified
+    if league and "league" in df.columns:
+        df = df[df["league"] == league]
+
     # Get current season and most recent matchweeks
     df = df.sort_values("match_date", ascending=False)
 
     # Filter to completed matches only
     df = df[df["home_score"].notna()]
 
-    # Get last n matchweeks
+    # Get last n matchweeks (per-league to avoid cross-league contamination)
     max_mw = df["matchweek"].max()
     recent = df[df["matchweek"] > max_mw - n_matchweeks]
 
-    log.info(f"Loaded {len(recent)} recent matches (matchweeks {max_mw - n_matchweeks + 1}-{max_mw})")
+    log.info(f"Loaded {len(recent)} recent matches (matchweeks {max_mw - n_matchweeks + 1}-{max_mw}){' [' + league + ']' if league else ''})")
     return recent
 
 
@@ -55,9 +59,13 @@ def calculate_team_form(df: pd.DataFrame, team: str, last_n: int = 5) -> Dict:
     Returns:
         Dict with points, goals, form_status, etc.
     """
-    # Get team's matches (home or away)
-    home_matches = df[df["home_team"] == team].copy()
-    away_matches = df[df["away_team"] == team].copy()
+    # Normalize team name to match features.parquet naming
+    from config.team_names import normalize_team
+    team_norm = normalize_team(team)
+
+    # Get team's matches (home or away) — try both original and normalized name
+    home_matches = df[(df["home_team"] == team) | (df["home_team"] == team_norm)].copy()
+    away_matches = df[(df["away_team"] == team) | (df["away_team"] == team_norm)].copy()
 
     # Calculate results for each
     home_matches["team_goals"] = home_matches["home_score"]
@@ -222,29 +230,33 @@ def get_elo_ratings(df: pd.DataFrame) -> Dict[str, float]:
     return elo
 
 
-def calculate_all_forms(matches_file: str = None) -> Dict:
+def calculate_all_forms(matches_file: str = None, league: str = None) -> Dict:
     """Calculate current form for all teams in upcoming matches.
 
     Args:
         matches_file: Path to upcoming matches JSON
+        league: League to filter data for (e.g. "premier_league")
 
     Returns:
         Dict with form data for each team
     """
     if matches_file is None:
-        # Try predictions.json first (auto-generated), fall back to manual
-        preds_path = DATA_DIR / "upcoming" / "predictions.json"
+        # Choose prediction file based on league
+        if league and league != "serie_a":
+            preds_path = DATA_DIR / "upcoming" / f"predictions_{league}.json"
+        else:
+            preds_path = DATA_DIR / "upcoming" / "predictions.json"
         manual_path = DATA_DIR / "upcoming" / "manual_matches.json"
         if preds_path.exists():
             matches_file = preds_path
         elif manual_path.exists():
             matches_file = manual_path
         else:
-            log.warning("No matches file found (predictions.json or manual_matches.json)")
+            log.warning("No matches file found for %s", league or "serie_a")
             return {}
 
-    # Load recent match data
-    df = load_recent_matches(n_matchweeks=10)
+    # Load recent match data (filtered by league)
+    df = load_recent_matches(n_matchweeks=10, league=league)
     if len(df) == 0:
         log.error("No recent match data available")
         return {}

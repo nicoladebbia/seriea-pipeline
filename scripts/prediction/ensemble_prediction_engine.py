@@ -3983,7 +3983,7 @@ def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a")
     # Step 2: Calculate current form (graceful for non-Serie A)
     log.info("\n[2/4] Calculating current team form...")
     try:
-        form_data = calculate_all_forms()
+        form_data = calculate_all_forms(league=league)
     except Exception as e:
         log.warning("Form calculation failed for %s: %s — using empty form data", league_display, e)
         form_data = {}
