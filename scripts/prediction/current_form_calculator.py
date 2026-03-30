@@ -45,11 +45,25 @@ def load_recent_matches(n_matchweeks: int = 10, league: str = None) -> pd.DataFr
     # Filter to completed matches only
     df = df[df["home_score"].notna()]
 
-    # Get last n matchweeks (per-league to avoid cross-league contamination)
+    # Get the current season's matches first, then fill from previous if needed
+    if "season" in df.columns:
+        seasons = sorted(df["season"].unique(), reverse=True)
+        current_season = seasons[0] if seasons else None
+        if current_season:
+            current = df[df["season"] == current_season]
+            max_mw_current = current["matchweek"].max() if len(current) > 0 else 0
+            if max_mw_current > n_matchweeks:
+                recent = current[current["matchweek"] > max_mw_current - n_matchweeks]
+            else:
+                # Current season has fewer matchweeks than requested — use all of it
+                recent = current
+            log.info(f"Loaded {len(recent)} recent matches (season {current_season}, MW up to {max_mw_current}){' [' + league + ']' if league else ''}")
+            return recent
+
+    # Fallback: use global matchweek (original logic)
     max_mw = df["matchweek"].max()
     recent = df[df["matchweek"] > max_mw - n_matchweeks]
-
-    log.info(f"Loaded {len(recent)} recent matches (matchweeks {max_mw - n_matchweeks + 1}-{max_mw}){' [' + league + ']' if league else ''})")
+    log.info(f"Loaded {len(recent)} recent matches (matchweeks {max_mw - n_matchweeks + 1}-{max_mw}){' [' + league + ']' if league else ''}")
     return recent
 
 
