@@ -378,17 +378,26 @@ async function loadDashboard() {
         <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:6px;height:6px;border-radius:50%;background:${dotColor(data.market_intelligence_at)}"></span><span style="color:#9ca3af">Market:</span><span style="color:#e5e7eb;font-family:monospace">${fmtAge(data.market_intelligence_at)}</span></span>
       `;
 
-      // Show prominent stale-data banner if odds are > 30 min old
+      // Show prominent stale-data banner only when data is meaningfully stale
       const staleBanner = document.getElementById('stale-banner');
-      if (staleBanner && data.odds_fetched_at) {
-        const oddsAge = Math.round((Date.now() - new Date(data.odds_fetched_at).getTime()) / 60000);
-        if (oddsAge > 30) {
-          const predsAge = data.predictions_generated_at ? Math.round((Date.now() - new Date(data.predictions_generated_at).getTime()) / 60000) : null;
-          const fmtMins = (m) => { const h = Math.floor(m/60), r = m%60; return h > 0 ? (r > 0 ? `${h}h ${r}m` : `${h}h`) : `${m}min`; };
-          let msg = `Odds data is ${fmtMins(oddsAge)} old`;
-          if (predsAge && predsAge > 60) msg += ` \u2022 Predictions ${fmtMins(predsAge)} old`;
-          document.getElementById('stale-msg').textContent = msg;
+      if (staleBanner) {
+        const fmtMins = (m) => { const h = Math.floor(m/60), r = m%60; return h > 0 ? (r > 0 ? `${h}h ${r}m` : `${h}h`) : `${m}min`; };
+        const oddsAge = data.odds_fetched_at ? Math.round((Date.now() - new Date(data.odds_fetched_at).getTime()) / 60000) : null;
+        const predsAge = data.predictions_generated_at ? Math.round((Date.now() - new Date(data.predictions_generated_at).getTime()) / 60000) : null;
+        const marketAge = data.market_intelligence_at ? Math.round((Date.now() - new Date(data.market_intelligence_at).getTime()) / 60000) : null;
+
+        // Only show banner if any source is > 3 hours old
+        const staleThreshold = 180;
+        const staleParts = [];
+        if (oddsAge && oddsAge > staleThreshold) staleParts.push(`Odds ${fmtMins(oddsAge)} old`);
+        if (predsAge && predsAge > staleThreshold) staleParts.push(`Predictions ${fmtMins(predsAge)} old`);
+        if (marketAge && marketAge > staleThreshold) staleParts.push(`Market intel ${fmtMins(marketAge)} old`);
+
+        if (staleParts.length > 0) {
+          document.getElementById('stale-msg').textContent = staleParts.join(' \u2022 ');
           staleBanner.style.display = 'flex';
+        } else {
+          staleBanner.style.display = 'none';
         }
       }
     }

@@ -993,6 +993,34 @@ def api_dashboard():
     # Split: upcoming for dashboard display, all for detail page lookups
     upcoming = [m for m in matches if m.get("status") != "completed"]
 
+    # Overlay actual live status from live monitoring data (replaces wall-clock guessing)
+    try:
+        live_path = LIVE_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json"
+        live_data = _load_json(live_path, default=None)
+        if live_data and isinstance(live_data.get("matches"), dict):
+            _LIVE_STATUS_MAP = {
+                "pre_match": "upcoming",
+                "first_half": "live",
+                "half_time": "live",
+                "second_half": "live",
+                "extra_time": "live",
+                "penalties": "live",
+                "completed": "completed",
+                "finished": "completed",
+            }
+            for m in matches:
+                mk = m.get("match", "")
+                live_match = live_data["matches"].get(mk)
+                if live_match and isinstance(live_match, dict):
+                    raw_status = live_match.get("status", "")
+                    mapped = _LIVE_STATUS_MAP.get(raw_status)
+                    if mapped:
+                        m["status"] = mapped
+            # Re-filter upcoming after status overlay (completed matches may have shifted)
+            upcoming = [m for m in matches if m.get("status") != "completed"]
+    except Exception:
+        pass  # Non-critical — fall back to wall-clock status
+
     # Alerts
     alerts_raw = _load_json(BETTING_DIR / "alerts.json", default=[])
     alerts = [a.get("bet", {}) | {"alert_type": a.get("type", "")} for a in alerts_raw if isinstance(a, dict)]

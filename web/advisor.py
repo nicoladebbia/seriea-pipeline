@@ -156,6 +156,19 @@ def _tool_get_match_prediction(args: dict) -> str:
 
     preds_data = _load_json(UPCOMING_DIR / "predictions.json")
     predictions = preds_data.get("predictions", [])
+    for p in predictions:
+        p.setdefault("league", "serie_a")
+
+    # Merge predictions from all active leagues (e.g. EPL)
+    for extra_league in ["premier_league"]:
+        extra_path = UPCOMING_DIR / f"predictions_{extra_league}.json"
+        extra_raw = _load_json(extra_path)
+        if extra_raw:
+            extra_list = extra_raw.get("predictions", []) if isinstance(extra_raw, dict) else extra_raw
+            for p in extra_list:
+                p.setdefault("league", extra_league)
+            predictions.extend(extra_list)
+
     match = _find_match(home, away, predictions)
 
     # If not found, try reversed (user might say "Pisa vs Como" when it's "Como vs Pisa")
