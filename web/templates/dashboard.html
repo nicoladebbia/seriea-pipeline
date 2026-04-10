@@ -157,6 +157,12 @@
   </div>
 </div>
 
+<!-- Stale Data Warning Banner -->
+<div id="stale-banner" style="display:none;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.25);padding:8px 16px;border-radius:8px;margin-bottom:12px;font-size:12px;color:var(--amber);display:none;align-items:center;gap:8px;">
+  <span id="stale-msg"></span>
+  <button onclick="smartRefresh()" class="btn btn--sm" style="margin-left:auto;font-size:11px;">Refresh Now</button>
+</div>
+
 <!-- Matches by Date — Compact Table View -->
 <div id="matches-container" class="section">
   {{ loading_state() }}
@@ -253,9 +259,10 @@ async function updateLiveBar() {
     const keys = Object.keys(matches);
     const bar = document.getElementById('live-bar');
     const text = document.getElementById('live-bar-text');
+    if (!bar || !text) return;
 
     const liveStatuses = ['first_half','half_time','second_half'];
-    const liveKeys = keys.filter(k => liveStatuses.includes(matches[k].status));
+    const liveKeys = keys.filter(k => liveStatuses.includes(matches[k]?.status));
     const trackedCount = keys.length;
 
     if (liveKeys.length > 0) {
@@ -355,8 +362,9 @@ async function loadDashboard() {
         const mins = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
         if (mins < 1) return 'just now';
         if (mins < 60) return `${mins}m ago`;
-        const hrs = (mins / 60).toFixed(1);
-        return `${hrs}h ago`;
+        const hrs = Math.floor(mins / 60);
+        const rem = mins % 60;
+        return rem > 0 ? `${hrs}h ${rem}m ago` : `${hrs}h ago`;
       };
       const dotColor = (ts) => {
         if (!ts) return '#6b7280';
@@ -369,6 +377,20 @@ async function loadDashboard() {
         <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:6px;height:6px;border-radius:50%;background:${dotColor(data.predictions_generated_at)}"></span><span style="color:#9ca3af">Preds:</span><span style="color:#e5e7eb;font-family:monospace">${fmtAge(data.predictions_generated_at)}</span></span>
         <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:6px;height:6px;border-radius:50%;background:${dotColor(data.market_intelligence_at)}"></span><span style="color:#9ca3af">Market:</span><span style="color:#e5e7eb;font-family:monospace">${fmtAge(data.market_intelligence_at)}</span></span>
       `;
+
+      // Show prominent stale-data banner if odds are > 30 min old
+      const staleBanner = document.getElementById('stale-banner');
+      if (staleBanner && data.odds_fetched_at) {
+        const oddsAge = Math.round((Date.now() - new Date(data.odds_fetched_at).getTime()) / 60000);
+        if (oddsAge > 30) {
+          const predsAge = data.predictions_generated_at ? Math.round((Date.now() - new Date(data.predictions_generated_at).getTime()) / 60000) : null;
+          const fmtMins = (m) => { const h = Math.floor(m/60), r = m%60; return h > 0 ? (r > 0 ? `${h}h ${r}m` : `${h}h`) : `${m}min`; };
+          let msg = `Odds data is ${fmtMins(oddsAge)} old`;
+          if (predsAge && predsAge > 60) msg += ` \u2022 Predictions ${fmtMins(predsAge)} old`;
+          document.getElementById('stale-msg').textContent = msg;
+          staleBanner.style.display = 'flex';
+        }
+      }
     }
 
     // Inject lineup assessment data
@@ -570,6 +592,7 @@ let _clockData = {};
 async function pollMatchClock() {
   try {
     const res = await fetch('/api/match-clock');
+    if (!res.ok) return;
     const data = await res.json();
     _clockData = data.matches || {};
     updateDashRows();

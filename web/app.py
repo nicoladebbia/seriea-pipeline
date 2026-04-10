@@ -23,7 +23,7 @@ except ImportError:
 
 from flask import Flask, render_template, jsonify, request as flask_request
 from config.settings import DATA_DIR, get_current_season
-from config.leagues import LEAGUE_REGISTRY, get_league_config
+from config.leagues import LEAGUE_REGISTRY
 
 _BASE = Path(__file__).parent.parent  # project root
 BETTING_DIR = DATA_DIR / "betting"
@@ -80,11 +80,16 @@ def _get_league_filter() -> str | None:
     """Extract and resolve the 'league' query param from the current request.
 
     Returns a canonical league key or None (all leagues).
+    Returns None on invalid league (logs warning instead of crashing).
     """
     raw = flask_request.args.get("league", "").strip()
     if not raw:
         return None
-    return _resolve_league(raw)
+    try:
+        return _resolve_league(raw)
+    except ValueError:
+        log.warning("Invalid league param '%s', treating as all leagues", raw)
+        return None
 
 
 def _team_belongs_to_league(team_name: str, league_key: str) -> bool:
@@ -160,14 +165,34 @@ def _active_leagues_info() -> list[dict]:
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
+# Gzip compression for all responses
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    pass
+
 # AI Advisor Blueprint
 from web.advisor import advisor_bp
 app.register_blueprint(advisor_bp)
 
 
 @app.after_request
-def add_no_cache_headers(response):
-    """Prevent browsers from caching API responses (stale stats)."""
+def add_security_and_cache_headers(response):
+    """Add security headers and prevent browsers from caching API responses."""
+    # Security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+        "connect-src 'self'"
+    )
+    # Cache control for API responses
     if response.content_type and "application/json" in response.content_type:
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -178,21 +203,70 @@ def add_no_cache_headers(response):
 # Helpers
 # ---------------------------------------------------------------------------
 
+_json_cache: dict[str, tuple[float, float, object]] = {}  # path → (mtime, cached_at, data)
+_JSON_CACHE_TTL = 60  # seconds
+
+_parquet_cache: dict[str, tuple[float, float, object]] = {}  # path → (mtime, cached_at, df)
+_PARQUET_CACHE_TTL = 300  # 5 minutes
+
+
+def _read_parquet_cached(path, columns=None):
+    """Read parquet with 5-minute mtime-aware cache."""
+    import pandas as pd
+    key = f"{path}|{columns}"
+    now = _time.time()
+    if key in _parquet_cache:
+        cached_mtime, cached_at, cached_df = _parquet_cache[key]
+        if (now - cached_at) < _PARQUET_CACHE_TTL:
+            return cached_df
+    try:
+        p = Path(path) if not isinstance(path, Path) else path
+        if not p.exists():
+            return pd.DataFrame()
+        mtime = p.stat().st_mtime
+        if key in _parquet_cache and _parquet_cache[key][0] == mtime:
+            _parquet_cache[key] = (mtime, now, _parquet_cache[key][2])
+            return _parquet_cache[key][2]
+        df = pd.read_parquet(p, columns=columns) if columns else pd.read_parquet(p)
+        _parquet_cache[key] = (mtime, now, df)
+        return df
+    except Exception as e:
+        log.warning("Failed to read parquet %s: %s", path, e)
+        return pd.DataFrame()
+
 def _load_json(path: Path, default=None):
-    """Safely load a JSON file. Returns default on any error."""
+    """Safely load a JSON file with 60-second mtime-aware cache."""
     if default is None:
         default = {}
+    key = str(path)
+    now = _time.time()
+    # Check cache: valid if within TTL and file mtime hasn't changed
+    if key in _json_cache:
+        cached_mtime, cached_at, cached_data = _json_cache[key]
+        if (now - cached_at) < _JSON_CACHE_TTL:
+            return cached_data
     try:
         if path.exists():
+            mtime = path.stat().st_mtime
+            # If file mtime matches cached mtime, refresh TTL without re-reading
+            if key in _json_cache and _json_cache[key][0] == mtime:
+                _json_cache[key] = (mtime, now, _json_cache[key][2])
+                return _json_cache[key][2]
             with open(path) as f:
-                return json.load(f)
+                data = json.load(f)
+            _json_cache[key] = (mtime, now, data)
+            return data
     except Exception as e:
         log.warning(f"Failed to load {path.name}: {e}")
     return default
 
 
-def _get_betting_stats():
-    """Aggregate wins/losses/pushes/ROI from history.json — single source of truth."""
+def _get_betting_stats(league_filter: str = None):
+    """Aggregate wins/losses/pushes/ROI from history.json.
+
+    Args:
+        league_filter: If set, only count bets belonging to this league.
+    """
     history_raw = _load_json(BETTING_DIR / "history.json")
     settled_bets = []
     history_totals = {}
@@ -207,6 +281,10 @@ def _get_betting_stats():
         bet["status"] = outcome.lower()
         bet["profit"] = bet.get("profit_loss", bet.get("profit", 0))
 
+    # Apply league filter if specified
+    if league_filter:
+        settled_bets = [b for b in settled_bets if _match_belongs_to_league(b, league_filter)]
+
     settled_only = [b for b in settled_bets if b.get("status") in ("won", "lost", "push")]
     wins = sum(1 for b in settled_only if b.get("status") == "won")
     losses = sum(1 for b in settled_only if b.get("status") == "lost")
@@ -214,7 +292,8 @@ def _get_betting_stats():
     total_stake = sum(b.get("stake", 0) for b in settled_only)
     total_profit = sum(b.get("profit", 0) for b in settled_only)
 
-    if history_totals:
+    # Only use pre-aggregated totals when NOT league-filtering (they're global)
+    if history_totals and not league_filter:
         total_stake = history_totals.get("total_staked", total_stake)
         total_profit = history_totals.get("net_profit", total_profit)
         wins = history_totals.get("wins", wins)
@@ -225,7 +304,7 @@ def _get_betting_stats():
         "wins": wins, "losses": losses, "pushes": pushes,
         "settled_bets": wins + losses + pushes,
         "total_stake": round(total_stake, 2), "total_profit": round(total_profit, 2),
-        "win_rate": round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0,
+        "win_rate": round(wins / (wins + losses + pushes) * 100, 1) if (wins + losses + pushes) > 0 else 0,
         "roi": round(total_profit / total_stake * 100, 1) if total_stake > 0 else 0,
     }
 
@@ -241,8 +320,46 @@ def _index_list_by_match(items: list, home_key="home_team", away_key="away_team"
             if not key and h and a:
                 key = f"{h} vs {a}"
             if key:
+                if key in result:
+                    log.debug("Duplicate match key '%s' in index — keeping latest entry", key)
                 result[key] = item
     return result
+
+
+def _compute_market_edge(pred: dict, odds_data: dict) -> float:
+    """Compute market edge from model probabilities vs implied odds probability.
+
+    Returns the edge for the predicted outcome (model_prob - implied_prob).
+    Returns 0 if odds data is missing.
+    """
+    probs = pred.get("probabilities", {})
+    h2h = odds_data.get("h2h", {})
+    if not h2h or not probs:
+        return 0
+
+    predicted = pred.get("predicted_outcome", "HOME")
+    home_odds = h2h.get("home", 0)
+    draw_odds = h2h.get("draw", 0)
+    away_odds = h2h.get("away", 0)
+
+    if not all(o > 1 for o in [home_odds, draw_odds, away_odds]):
+        return 0
+
+    # Remove overround to get fair implied probabilities
+    overround = (1/home_odds) + (1/draw_odds) + (1/away_odds)
+    if overround <= 0:
+        return 0
+
+    implied = {
+        "HOME": (1/home_odds) / overround,
+        "DRAW": (1/draw_odds) / overround,
+        "AWAY": (1/away_odds) / overround,
+    }
+
+    model_prob = probs.get(predicted.lower(), probs.get("home", 0))
+    implied_prob = implied.get(predicted, 0.33)
+
+    return round(model_prob - implied_prob, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +667,10 @@ def _api_matches_sofascore(season: str):
             } if top_away is not None and pd.notna(top_away.get("rating")) else None,
         })
 
+    league_filter = _get_league_filter()
+    if league_filter:
+        matches = [m for m in matches if _team_belongs_to_league(m.get("home_team", ""), league_filter)]
+
     # Group by matchweek, sort within each MW by date desc
     from collections import defaultdict
     by_mw = defaultdict(list)
@@ -584,7 +705,7 @@ def _api_matches_features(season: str):
     try:
         cols = ["season", "match_date", "home_team", "away_team", "result",
                 "matchweek", "home_score", "away_score"]
-        df = pd.read_parquet(DATA_DIR / "features" / "features.parquet", columns=cols)
+        df = _read_parquet_cached(DATA_DIR / "features" / "features.parquet", columns=cols)
     except Exception as e:
         return jsonify({"error": str(e), "matchweeks": []})
 
@@ -654,6 +775,16 @@ def api_dashboard():
     # Load all data sources
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
+    # Merge in EPL-specific odds file
+    epl_odds = _load_json(UPCOMING_DIR / "odds_full_premier_league.json")
+    if epl_odds and isinstance(epl_odds, dict):
+        epl_matches = epl_odds.get("matches", {})
+        if isinstance(epl_matches, dict):
+            odds_full_matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
+            # If odds_full contains wrong league, detect and use EPL file correctly
+            odds_full.setdefault("matches", {})
+            if isinstance(odds_full["matches"], dict):
+                odds_full["matches"].update(epl_matches)
     market_intel = _load_json(UPCOMING_DIR / "market_intelligence.json")
     bookmaker_raw = _load_json(UPCOMING_DIR / "bookmaker_analysis.json")
     cross_market = _load_json(UPCOMING_DIR / "cross_market_signals.json")
@@ -686,6 +817,18 @@ def api_dashboard():
     predictions_by_match = _index_list_by_match(predictions_list)
 
     odds_matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
+    # Validate league consistency: warn if predictions and odds have zero overlap
+    if predictions_by_match and odds_matches:
+        pred_teams = {m.split(" vs ")[0] for m in predictions_by_match if " vs " in m}
+        odds_teams = {m.split(" vs ")[0] for m in odds_matches if " vs " in m}
+        overlap = pred_teams & odds_teams
+        if not overlap and pred_teams and odds_teams:
+            log.warning(
+                "LEAGUE MISMATCH: predictions have %d teams (%s...) but odds have %d teams (%s...). "
+                "Zero overlap — odds may be for the wrong league.",
+                len(pred_teams), list(pred_teams)[:3],
+                len(odds_teams), list(odds_teams)[:3],
+            )
     intel_matches = market_intel.get("matches", {}) if isinstance(market_intel, dict) else {}
     book_matches = bookmaker_raw.get("matches", {}) if isinstance(bookmaker_raw, dict) else {}
     cross_matches = cross_market.get("matches", {}) if isinstance(cross_market, dict) else {}
@@ -718,6 +861,15 @@ def api_dashboard():
             home, away = parts[0].strip(), parts[1].strip()
 
         odds_data = odds_matches.get(match_key, {})
+        # Fallback: build h2h odds from odds_movement if odds_full has no data for this match
+        if not odds_data.get("h2h") and match_key in move_matches:
+            om = move_matches[match_key]
+            odds_data = dict(odds_data)  # copy to avoid mutation
+            odds_data["h2h"] = {
+                "home": om.get("current_home", 0),
+                "draw": om.get("current_draw", 0),
+                "away": om.get("current_away", 0),
+            }
         ct = odds_data.get("commence_time", "")
         # Fall back to prediction date+time if odds don't have commence_time
         if not ct and pred.get("date") and pred.get("time"):
@@ -747,9 +899,9 @@ def api_dashboard():
             "probabilities": pred.get("probabilities", {}),
             "confidence": pred.get("confidence", 0),
             "confidence_level": pred.get("confidence_level", ""),
-            "home_xg": pred.get("home_xg", 0),
-            "away_xg": pred.get("away_xg", 0),
-            "market_edge": pred.get("market_edge", 0),
+            "home_xg": pred.get("home_xg") or 0,
+            "away_xg": pred.get("away_xg") or 0,
+            "market_edge": pred.get("market_edge") or _compute_market_edge(pred, odds_data),
             "betting_recommendation": pred.get("betting_recommendation", ""),
             "lineup_source": pred.get("lineup_source", "predicted"),
 
@@ -1204,8 +1356,8 @@ def api_betting():
     for bet in main_bets:
         match_key = bet.get("match", "")
         pred = pred_by_match.get(match_key, {})
-        bet["home_xg"] = pred.get("home_xg", 0)
-        bet["away_xg"] = pred.get("away_xg", 0)
+        bet["home_xg"] = pred.get("home_xg") or None
+        bet["away_xg"] = pred.get("away_xg") or None
         bet["predicted_outcome"] = pred.get("predicted_outcome", "")
         bet["match_confidence"] = pred.get("confidence_level", "")
 
@@ -1273,8 +1425,8 @@ def api_betting():
             "probabilities": pred.get("probabilities", {}),
             "confidence": pred.get("confidence", 0),
             "confidence_level": pred.get("confidence_level", ""),
-            "home_xg": pred.get("home_xg", 0),
-            "away_xg": pred.get("away_xg", 0),
+            "home_xg": pred.get("home_xg") or None,
+            "away_xg": pred.get("away_xg") or None,
             "expected_goals": pred.get("expected_goals", {}),
             "over_25": pred.get("over_25", 0),
             "market_edge": pred.get("market_edge", 0),
@@ -1381,7 +1533,8 @@ def api_betting():
                 continue
             conf_score = b.get("confidence_score", b.get("our_probability", 0)) or 0
             our_prob = b.get("our_probability", 0) or 0
-            composite = vp * 0.4 + conf_score * 100 * 0.3 + our_prob * 100 * 0.3
+            # Weight edge (value) highest, then confidence, then raw probability
+            composite = vp * 0.5 + conf_score * 100 * 0.3 + our_prob * 100 * 0.2
             # Normalize fields for frontend consistency
             enriched = {**b, "_composite": composite, "_match_key": mk}
             if "selection" not in enriched and "bet" in enriched:
@@ -1451,7 +1604,8 @@ def api_betting():
         (b.get("stake", 0) or 0) * ((b.get("odds", 0) or 0) - 1)
         for b in all_bets_for_summary if b.get("odds") and b.get("stake")
     )
-    # Add potential_profit to each bet for frontend display
+    # Add potential_profit to each bet for frontend display (use copies to avoid cache mutation)
+    all_bets_for_summary = [{**b} for b in all_bets_for_summary]
     for b in all_bets_for_summary:
         if "potential_profit" not in b and b.get("odds") and b.get("stake"):
             b["potential_profit"] = round((b["odds"] - 1) * b["stake"], 2)
@@ -1563,7 +1717,8 @@ def api_analytics():
     placed_log_raw = _load_json(BETTING_DIR / "placed_bets_log.json", default=[])
 
     # --- Bankroll + stats from shared helper (history.json = source of truth) ---
-    stats = _get_betting_stats()
+    league_filter = _get_league_filter()
+    stats = _get_betting_stats(league_filter=league_filter)
     initial_balance = bankroll_file.get("initial_balance", bankroll_state.get("initial_bankroll", 1000))
     net_profit = stats["total_profit"]
     current_balance = initial_balance + net_profit
@@ -1629,6 +1784,10 @@ def api_analytics():
 
     # Sort by date
     all_bets.sort(key=lambda b: b.get("date", b.get("settled_at", "")))
+
+    league_filter = _get_league_filter()
+    if league_filter:
+        all_bets = [b for b in all_bets if _match_belongs_to_league(b, league_filter)]
 
     # Use shared stats; compute local vars for breakdowns
     settled_only = [b for b in all_bets if b.get("status") in ("won", "lost", "push")]
@@ -1951,7 +2110,7 @@ def api_system():
         "losses": stats["losses"],
         "pushes": stats["pushes"],
         "win_rate": stats["win_rate"],
-        "roi": round(stats["roi"] / 100, 4) if stats["roi"] else 0,  # fraction for system page
+        "roi": stats["roi"],  # percentage, consistent with other endpoints
         "total_stake": stats["total_stake"],
         "can_bet": True,
         "risk_level": "LOW",
@@ -1997,7 +2156,15 @@ def api_system():
     prediction_audit = _load_json(FEEDBACK_DIR / "prediction_audit.json", {})
     lessons = _load_json(FEEDBACK_DIR / "lessons.json", {})
     market_adj = _load_json(FEEDBACK_DIR / "market_adjustments.json", {})
-    deployment = _load_json(DATA_DIR / "models" / "deployment_state.json", {})
+    # Load per-league deployment states (created by validate_league_deployment.py)
+    deployments = {}
+    for _lk in ACTIVE_LEAGUES:
+        _ds = _load_json(DATA_DIR / "models" / _lk / "deployment_state.json", None)
+        if _ds:
+            deployments[_lk] = _ds
+    if not deployments:
+        deployments["universal"] = _load_json(DATA_DIR / "models" / "deployment_state.json", {})
+    deployment = deployments
 
     return jsonify({
         "generated_at": dashboard.get("generated_at", ""),
@@ -2165,7 +2332,11 @@ def api_logs():
 
         return jsonify({"logs": result})
 
-    # Return specific log content
+    # Return specific log content — validate log_key to prevent path traversal
+    import re as _re_logs
+    if not _re_logs.match(r'^[a-zA-Z0-9_.-]+$', log_key):
+        return jsonify({"error": "Invalid log key"}), 400
+
     info = _LOG_FILES.get(log_key)
     if not info:
         # Try auto-discovered file
@@ -2174,7 +2345,10 @@ def api_logs():
             candidate = _LOG_DIR / f"{log_key}.log"
         if not candidate.exists():
             candidate = _LOG_DIR / f"{log_key.replace('-', '_')}.log"
+        # Verify resolved path stays within _LOG_DIR
         if candidate.exists():
+            if not str(candidate.resolve()).startswith(str(_LOG_DIR.resolve())):
+                return jsonify({"error": "Invalid log path"}), 400
             info = {"file": candidate.name, "label": log_key}
         else:
             return jsonify({"error": f"Unknown log: {log_key}"}), 404
@@ -2317,6 +2491,12 @@ def api_live():
         if commence and commence[:10] < today:
             continue  # skip yesterday's matches
         filtered_matches[mk] = md
+
+    league_filter = _get_league_filter()
+    if league_filter:
+        filtered_matches = {k: v for k, v in filtered_matches.items()
+                           if _team_belongs_to_league(v.get("home_team", v.get("home", "")), league_filter)}
+
     data["matches"] = filtered_matches
 
     # Determine if any match is currently live
@@ -2907,7 +3087,7 @@ def api_live_auto_poll():
 def api_live_config():
     """Set live poll interval (seconds). Accepts 30-3600."""
     global _auto_poll_interval
-    data = flask_request.json or {}
+    data = flask_request.get_json(silent=True) or {}
     interval = data.get("interval", _auto_poll_interval)
     interval = max(30, min(3600, int(interval)))
     _auto_poll_interval = interval
@@ -3665,7 +3845,7 @@ def _scheduler_loop():
 def api_scheduler_toggle():
     """Start or stop the auto-scheduler."""
     global _scheduler_active, _scheduler_thread
-    data = flask_request.json or {}
+    data = flask_request.get_json(silent=True) or {}
     action = data.get("action", "toggle")
 
     if action == "stop" or (_scheduler_active and action == "toggle"):
@@ -3808,7 +3988,7 @@ def api_scheduler_status():
 @app.route("/api/scheduler/config", methods=["POST"])
 def api_scheduler_config():
     """Update scheduler configuration."""
-    data = flask_request.json or {}
+    data = flask_request.get_json(silent=True) or {}
     cfg = _scheduler_config
 
     if "snapshot_interval_min" in data:
@@ -4240,16 +4420,8 @@ def _auto_settle_loop():
                 except Exception as e:
                     log.warning("Auto-settle fair odds settlement failed: %s", e)
 
-                # Post-settle: ingest matches + rebuild standings
-                if settled > 0:
-                    try:
-                        from scripts.pipeline.matchday_update import matchday_update
-                        mu_result = matchday_update()
-                        fetched = mu_result.get("matches_fetched", 0)
-                        if fetched > 0:
-                            log.info("Auto-settle: post-settle ingested %d matches, standings rebuilt", fetched)
-                    except Exception as e:
-                        log.warning("Auto-settle post-settle matchday update failed: %s", e)
+                # Post-settle matchday update removed — module scripts.pipeline.matchday_update
+                # does not exist. Settlement proceeds without post-settle data ingest.
 
                 _auto_settle_last_result = {
                     "settled": settled,
@@ -4475,7 +4647,7 @@ def teams_page():
 @app.route("/team/<team_name>")
 def team_page(team_name):
     """Render team research page."""
-    return render_template("team.html", team_name=team_name, active_page="team")
+    return render_template("team.html", team_name=team_name, active_page="teams")
 
 
 @app.route("/api/teams")
@@ -4523,6 +4695,10 @@ def api_teams():
     except Exception:
         pass
 
+    league_filter = _get_league_filter()
+    if league_filter:
+        teams = {t for t in teams if _team_belongs_to_league(t, league_filter)}
+
     return jsonify({"teams": sorted(teams)})
 
 
@@ -4538,7 +4714,9 @@ def api_teams_overview():
     """
     import pandas as pd
 
-    league_filter = _get_league_filter() or "serie_a"
+    league_filter = _get_league_filter()
+    if league_filter is None:
+        league_filter = "serie_a"  # Default to Serie A for overview (needs standings data)
 
     # 1. Standings — try league-specific file first, fall back to default only for serie_a
     league_standings_path = UPCOMING_DIR / f"standings_{league_filter}.json"
@@ -4830,20 +5008,25 @@ def api_team(team_name):
     }
 
     # ── 1. Standings & position ──
-    standings_raw = _load_json(UPCOMING_DIR / "standings.json", {})
+    # Load both Serie A and EPL standings
     standings_entries = []
-    if isinstance(standings_raw, list):
-        standings_entries = standings_raw
-    elif isinstance(standings_raw, dict):
-        inner = standings_raw.get("standings", standings_raw.get("table", {}))
-        if isinstance(inner, list):
-            standings_entries = inner
-        elif isinstance(inner, dict):
-            # Dict keyed by team name -> team data
-            standings_entries = list(inner.values())
+    for standings_file in ["standings.json", "standings_premier_league.json"]:
+        standings_raw = _load_json(UPCOMING_DIR / standings_file, {})
+        if isinstance(standings_raw, list):
+            standings_entries.extend(standings_raw)
+        elif isinstance(standings_raw, dict):
+            inner = standings_raw.get("standings", standings_raw.get("table", {}))
+            if isinstance(inner, list):
+                standings_entries.extend(inner)
+            elif isinstance(inner, dict):
+                standings_entries.extend(inner.values())
 
+    # Normalize team name for lookup (handles "Manchester City" → "Man City" etc.)
+    from config.team_names import normalize_team
+    team_norm = normalize_team(team)
     for entry in standings_entries:
-        if isinstance(entry, dict) and entry.get("team", "").lower() == team.lower():
+        entry_team = entry.get("team", "") if isinstance(entry, dict) else ""
+        if entry_team.lower() == team.lower() or normalize_team(entry_team) == team_norm:
             data["overview"] = {
                 "position": entry.get("position", entry.get("rank", 0)),
                 "played": entry.get("played", entry.get("mp", 0)),
@@ -4888,8 +5071,9 @@ def api_team(team_name):
                 df = pd.read_parquet(fp)
 
                 # Find matches where team was home or away
-                home_mask = df["home_team"].str.lower() == team.lower()
-                away_mask = df["away_team"].str.lower() == team.lower()
+                # Try both original name and normalized name (handles "Manchester City" → "Man City")
+                home_mask = (df["home_team"].str.lower() == team.lower()) | (df["home_team"].str.lower() == team_norm.lower())
+                away_mask = (df["away_team"].str.lower() == team.lower()) | (df["away_team"].str.lower() == team_norm.lower())
                 team_matches = df[home_mask | away_mask].copy()
 
                 if not team_matches.empty and "match_date" in team_matches.columns:
@@ -5865,7 +6049,7 @@ def api_team_match_history(team_name):
 def match_page(date, home_team, away_team):
     """Render match detail page."""
     from urllib.parse import unquote
-    return render_template("match.html", active_page="teams",
+    return render_template("match.html", active_page="matches",
                            date=date, home_team=unquote(home_team),
                            away_team=unquote(away_team))
 
@@ -6425,6 +6609,10 @@ def api_players():
             "players": enriched,
         })
 
+    league_filter = _get_league_filter()
+    if league_filter:
+        teams_data = [t for t in teams_data if _team_belongs_to_league(t.get("team", ""), league_filter)]
+
     return jsonify({"teams": teams_data})
 
 
@@ -6982,7 +7170,7 @@ def api_place_bet():
     }
     """
     try:
-        data = flask_request.get_json()
+        data = flask_request.get_json(silent=True) or {}
         if not data:
             return jsonify({"ok": False, "error": "No JSON body"}), 400
 
@@ -6993,6 +7181,29 @@ def api_place_bet():
 
         if not bet_id:
             return jsonify({"ok": False, "error": "bet_id required"}), 400
+
+        # Validate stake
+        import re as _re_bet
+        try:
+            stake = float(stake)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "stake must be a number"}), 400
+        if stake <= 0:
+            return jsonify({"ok": False, "error": "stake must be positive"}), 400
+        if stake > 10000:
+            return jsonify({"ok": False, "error": "stake exceeds maximum (10000)"}), 400
+
+        # Validate odds
+        try:
+            exec_odds = float(exec_odds)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "execution_odds must be a number"}), 400
+        if exec_odds < 1.01 or exec_odds > 50.0:
+            return jsonify({"ok": False, "error": "odds must be between 1.01 and 50.0"}), 400
+
+        # Validate bookmaker
+        if bookmaker and not _re_bet.match(r'^[a-zA-Z0-9_ -]+$', str(bookmaker)):
+            return jsonify({"ok": False, "error": "Invalid bookmaker name"}), 400
 
         # Record in journal
         from scripts.betting.bet_journal import add_bet

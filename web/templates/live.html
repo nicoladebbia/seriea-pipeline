@@ -145,13 +145,25 @@
   .live-empty__title { font-size: 16px; font-weight: 600; color: var(--text-secondary); margin-bottom: var(--space-2); }
 
   @media (max-width: 768px) {
-    .live-match__odds { display: none; }
+    .live-match__header { flex-wrap: wrap; }
+    .live-match__odds { min-width: unset; width: 100%; justify-content: center; gap: var(--space-6); padding-top: var(--space-2); border-top: 1px solid var(--border-subtle); }
     .live-detail-grid { grid-template-columns: 1fr; }
+    .live-match__team { font-size: 13px; }
+    .live-match__score-num { font-size: 22px; }
+    .live-match__score { min-width: 70px; }
   }
 </style>
 {% endblock %}
 
 {% block page_title %}Live{% endblock %}
+
+{% block page_subtitle %}
+<div id="live-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
+  <button class="tab-pill active" onclick="liveLeagueFilter('all',this)" style="font-size:11px;padding:3px 10px;">All</button>
+  <button class="tab-pill" onclick="liveLeagueFilter('serie_a',this)" style="font-size:11px;padding:3px 10px;">Serie A</button>
+  <button class="tab-pill" onclick="liveLeagueFilter('premier_league',this)" style="font-size:11px;padding:3px 10px;">EPL</button>
+</div>
+{% endblock %}
 
 {% block content %}
 <div class="live-page">
@@ -355,9 +367,7 @@ function lpRenderMatch(mk, md, bets) {
       }).join('') + `</div>`;
   }
 
-  const anchorSlug = mk.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-
-  return `<div class="live-match ${isLive ? 'live-match--active' : ''} ${isCompleted ? 'live-match--completed' : ''}" data-match-id="${id}" id="match-${anchorSlug}">
+  return `<div class="live-match ${isLive ? 'live-match--active' : ''} ${isCompleted ? 'live-match--completed' : ''}" data-match-id="${id}" id="match-${id}">
     <div class="live-match__header" onclick="document.getElementById('${id}').classList.toggle('open')">
       <div class="live-match__teams">
         <div class="live-match__team live-match__team--home">${md.home_team || mk.split(' vs ')[0]}</div>
@@ -393,23 +403,36 @@ function lpRenderMatch(mk, md, bets) {
 }
 
 // -----------------------------------------------------------------------
+// League filter
+// -----------------------------------------------------------------------
+let _liveLeague = 'all';
+function liveLeagueFilter(league, btn) {
+  _liveLeague = league;
+  document.querySelectorAll('#live-league-tabs .tab-pill').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  lpLoad();
+}
+
+// -----------------------------------------------------------------------
 // Data loading
 // -----------------------------------------------------------------------
 async function lpLoad() {
   try {
-    const data = await apiFetch('/api/live');
+    const leagueParam = _liveLeague !== 'all' ? `?league=${_liveLeague}` : '';
+    const data = await apiFetch('/api/live' + leagueParam);
     const matches = data.matches || {};
     const keys = Object.keys(matches);
     const bets = data.bet_tracking || [];
 
     // Update status
-    const hasLive = keys.some(k => ['first_half','half_time','second_half'].includes(matches[k].status));
+    const hasLive = keys.some(k => ['first_half','half_time','second_half'].includes(matches[k]?.status));
     const dot = document.getElementById('lp-dot');
     const statusText = document.getElementById('lp-status-text');
+    if (!dot || !statusText) return;
 
     if (hasLive) {
       dot.className = 'live-dot live-dot--on';
-      const liveCount = keys.filter(k => ['first_half','half_time','second_half'].includes(matches[k].status)).length;
+      const liveCount = keys.filter(k => ['first_half','half_time','second_half'].includes(matches[k]?.status)).length;
       statusText.textContent = `${liveCount} LIVE`;
       statusText.style.color = 'var(--green)';
     } else if (keys.length) {
@@ -476,6 +499,7 @@ async function lpLoad() {
 // -----------------------------------------------------------------------
 async function lpTriggerPoll() {
   const btn = document.getElementById('lp-poll-btn');
+  if (!btn) return;
   btn.textContent = 'Polling...'; btn.disabled = true;
   try { await fetch('/api/live/trigger', {method:'POST'}); await lpLoad(); }
   catch(e) { console.error(e); }
@@ -528,6 +552,7 @@ function lpStartCountdown() {
   lpStopCountdown();
   _lpCountdown = setInterval(() => {
     const el = document.getElementById('lp-countdown');
+    if (!el) return;
     if (!_lpAutoActive || !_lpNextAt) { el.textContent = ''; return; }
     const r = Math.max(0, Math.floor(_lpNextAt - Date.now()/1000));
     el.textContent = Math.floor(r/60) + ':' + String(r%60).padStart(2,'0');
@@ -556,8 +581,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       setTimeout(() => { target.style.boxShadow = ''; }, 3000);
     }
   }
-  // Auto-refresh every 60s (matches backend poll cycle)
-  setInterval(lpLoad, 60000);
+  // Auto-refresh every 60s only when auto-poll is NOT active (avoids double polling)
+  setInterval(() => { if (!_lpAutoActive) lpLoad(); }, 60000);
 });
 </script>
 {% endblock %}

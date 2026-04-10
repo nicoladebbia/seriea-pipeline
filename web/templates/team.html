@@ -244,6 +244,7 @@
 {% endblock %}
 
 {% block content %}
+<a href="/teams" class="back-link">&larr; Back to Teams</a>
 
   <!-- Loading -->
   <div id="loading" class="team-loading">Loading team data...</div>
@@ -543,7 +544,7 @@
   </div>
 
 <script>
-const TEAM_NAME = "{{ team_name }}";
+const TEAM_NAME = {{ team_name | tojson }};
 let _teamData = null;
 let _allHistory = [];
 let _allSeasons = {};

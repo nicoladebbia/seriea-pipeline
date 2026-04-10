@@ -19,7 +19,6 @@
 {% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/css/tailwind-compat.css">
 <style>
   /* ── Pipeline Page Styles ───────────────────────────── */
 
@@ -31,19 +30,11 @@
   @media (max-width:1024px) { .pipe-status-bar { grid-template-columns:repeat(3,1fr); } }
   @media (max-width:640px) { .pipe-status-bar { grid-template-columns:repeat(2,1fr); } }
 
-  .pipe-stat {
+  .ds-stat {
     background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
     border-radius:var(--radius-md); padding:var(--space-3) var(--space-4);
   }
-  .pipe-stat__label {
-    font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
-    color:var(--text-tertiary); font-weight:600;
-  }
-  .pipe-stat__value {
-    font-size:20px; font-weight:700; color:var(--text-primary);
-    font-family:var(--font-mono); margin-top:2px; line-height:1.2;
-  }
-  .pipe-stat__sub {
+  .ds-stat__sub {
     font-size:11px; color:var(--text-tertiary); margin-top:2px;
   }
 
@@ -58,6 +49,7 @@
     background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
     border-radius:var(--radius-md); padding:var(--space-4);
     cursor:pointer; transition:all 0.15s; position:relative;
+    text-align:left; width:100%; font:inherit; color:inherit;
   }
   .pipe-action:hover { border-color:#3f3f46; background:var(--bg-tertiary); }
   .pipe-action:disabled, .pipe-action[disabled] {
@@ -103,23 +95,8 @@
   }
   .pipe-section__body { padding:0 var(--space-4) var(--space-4); }
 
-  /* Dashboard-style compact table */
-  .pipe-table {
-    width:100%; border-collapse:collapse; font-size:12px;
-    background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
-    border-radius:var(--radius-md); overflow:hidden;
-  }
-  .pipe-table th {
-    padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase;
-    letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary);
-    border-bottom:1px solid var(--border-default); font-weight:600; white-space:nowrap;
-  }
-  .pipe-table td {
-    padding:8px 10px; border-bottom:1px solid var(--border-subtle); white-space:nowrap;
-  }
-  .pipe-table tbody tr { transition:background 0.15s; }
-  .pipe-table tbody tr:hover { background:rgba(129,140,248,0.04); }
-  .pipe-table .mono { font-family:var(--font-mono); font-size:11px; }
+  /* Dashboard-style compact table — uses ds-data-table from design-system */
+  .ds-data-table .mono { font-family:var(--font-mono); font-size:11px; }
 
   /* Status dots */
   .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
@@ -191,46 +168,46 @@
 
   <!-- ═══ SECTION 1: STATUS BAR ═══ -->
   <div class="pipe-status-bar">
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">Pipeline Status</div>
-      <div class="pipe-stat__value" id="ps-status">--</div>
-      <div class="pipe-stat__sub" id="ps-status-sub"></div>
+    <div class="ds-stat">
+      <div class="ds-stat__label">Pipeline Status</div>
+      <div class="ds-stat__value" id="ps-status">--</div>
+      <div class="ds-stat__sub" id="ps-status-sub"></div>
     </div>
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">Last Run</div>
-      <div class="pipe-stat__value" id="ps-lastrun">--</div>
-      <div class="pipe-stat__sub" id="ps-lastrun-sub" title=""></div>
+    <div class="ds-stat">
+      <div class="ds-stat__label">Last Run</div>
+      <div class="ds-stat__value" id="ps-lastrun">--</div>
+      <div class="ds-stat__sub" id="ps-lastrun-sub" title=""></div>
     </div>
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">API Credits</div>
-      <div class="pipe-stat__value" id="ps-credits">--</div>
-      <div class="pipe-stat__sub" id="ps-credits-sub">
+    <div class="ds-stat">
+      <div class="ds-stat__label">API Credits</div>
+      <div class="ds-stat__value" id="ps-credits">--</div>
+      <div class="ds-stat__sub" id="ps-credits-sub">
         <div class="pipe-progress" style="width:100px;margin-top:4px;">
           <div id="ps-credits-bar" class="pipe-progress__fill" style="width:0%;background:var(--accent);"></div>
         </div>
       </div>
     </div>
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">Bankroll</div>
-      <div class="pipe-stat__value" id="ps-bankroll">--</div>
-      <div class="pipe-stat__sub" id="ps-bankroll-sub"><a href="/" style="color:var(--accent);font-size:10px;">Dashboard &rarr;</a></div>
+    <div class="ds-stat">
+      <div class="ds-stat__label">Bankroll</div>
+      <div class="ds-stat__value" id="ps-bankroll">--</div>
+      <div class="ds-stat__sub" id="ps-bankroll-sub"><a href="/" style="color:var(--accent);font-size:10px;">Dashboard &rarr;</a></div>
     </div>
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">Settled</div>
-      <div class="pipe-stat__value" id="ps-settled">--</div>
-      <div class="pipe-stat__sub" id="ps-settled-sub"></div>
+    <div class="ds-stat">
+      <div class="ds-stat__label">Settled</div>
+      <div class="ds-stat__value" id="ps-settled">--</div>
+      <div class="ds-stat__sub" id="ps-settled-sub"></div>
     </div>
-    <div class="pipe-stat">
-      <div class="pipe-stat__label">Next Match</div>
-      <div class="pipe-stat__value" id="ps-nextmatch" style="font-size:14px;">--</div>
-      <div class="pipe-stat__sub" id="ps-nextmatch-sub"></div>
+    <div class="ds-stat">
+      <div class="ds-stat__label">Next Match</div>
+      <div class="ds-stat__value" id="ps-nextmatch" style="font-size:14px;">--</div>
+      <div class="ds-stat__sub" id="ps-nextmatch-sub"></div>
     </div>
   </div>
 
   <!-- ═══ SECTION 2: QUICK ACTIONS ═══ -->
   <div class="pipe-actions" id="quick-actions-grid">
     <!-- Odds Snapshot -->
-    <div class="pipe-action" id="act-snapshot" onclick="runAction('/api/refresh/snapshot','act-snapshot','Odds Snapshot')">
+    <button type="button" class="pipe-action" id="act-snapshot" onclick="runAction('/api/refresh/snapshot','act-snapshot','Odds Snapshot')">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(74,222,128,0.1);">
@@ -242,10 +219,10 @@
         </div>
       </div>
       <div class="pipe-action__desc">Fetch latest odds from all bookmakers. Detects steam moves.</div>
-    </div>
+    </button>
 
     <!-- Full Pipeline -->
-    <div class="pipe-action" id="act-pipeline" onclick="runAction('/api/refresh','act-pipeline','Full Pipeline')">
+    <button type="button" class="pipe-action" id="act-pipeline" onclick="runAction('/api/refresh','act-pipeline','Full Pipeline')">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(129,140,248,0.1);">
@@ -257,10 +234,10 @@
         </div>
       </div>
       <div class="pipe-action__desc">Complete 32-step run: odds, features, predictions, market intel.</div>
-    </div>
+    </button>
 
     <!-- Extra Markets -->
-    <div class="pipe-action" id="act-extra" onclick="runAction('/api/refresh/extra-markets','act-extra','Extra Markets')">
+    <button type="button" class="pipe-action" id="act-extra" onclick="runAction('/api/refresh/extra-markets','act-extra','Extra Markets')">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(168,85,247,0.1);">
@@ -272,10 +249,10 @@
         </div>
       </div>
       <div class="pipe-action__desc">BTTS, DNB, O/U, alt lines for all upcoming matches.</div>
-    </div>
+    </button>
 
     <!-- Poll Live -->
-    <div class="pipe-action" id="act-live" onclick="runAction('/api/live/trigger','act-live','Poll Live')">
+    <button type="button" class="pipe-action" id="act-live" onclick="runAction('/api/live/trigger','act-live','Poll Live')">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(52,211,153,0.1);">
@@ -287,10 +264,10 @@
         </div>
       </div>
       <div class="pipe-action__desc">Check live scores, update in-play predictions.</div>
-    </div>
+    </button>
 
     <!-- Settle Bets -->
-    <div class="pipe-action" id="act-settle" onclick="runSettle(this)">
+    <button type="button" class="pipe-action" id="act-settle" onclick="runSettle(this)">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(251,191,36,0.1);">
@@ -302,10 +279,10 @@
         </div>
       </div>
       <div class="pipe-action__desc">Check results and settle pending bets in bankroll.</div>
-    </div>
+    </button>
 
     <!-- Smart Refresh -->
-    <div class="pipe-action" id="act-smart" onclick="runSmartRefresh(this)">
+    <button type="button" class="pipe-action" id="act-smart" onclick="runSmartRefresh(this)">
       <div class="pipe-action__spinner"><svg class="animate-spin" width="16" height="16" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></div>
       <div class="pipe-action__header">
         <div class="pipe-action__icon" style="background:rgba(129,140,248,0.1);">
@@ -317,7 +294,7 @@
         </div>
       </div>
       <div class="pipe-action__desc">Only refresh stale data sources. Saves credits.</div>
-    </div>
+    </button>
   </div>
 
   <!-- Action status line -->
@@ -504,7 +481,7 @@
       <!-- Category Preferences -->
       <div style="margin-bottom:var(--space-4);">
         <div style="font-size:10px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);font-weight:600;">Category Preferences</div>
-        <table class="pipe-table" id="notif-prefs-table">
+        <table class="ds-data-table" id="notif-prefs-table">
           <thead>
             <tr>
               <th>Category</th>
@@ -1082,7 +1059,7 @@ function renderDataHealth(freshness) {
   badge.style.background = staleCount > 0 ? 'var(--red-muted)' : 'var(--green-muted)';
   badge.style.color = staleCount > 0 ? 'var(--red)' : 'var(--green)';
 
-  body.innerHTML = `<table class="pipe-table">
+  body.innerHTML = `<table class="ds-data-table">
     <thead><tr><th>Source</th><th>Last Updated</th><th>Age</th><th style="text-align:center">Status</th><th style="text-align:right">Action</th></tr></thead>
     <tbody>${items.map(item => {
       const ageStr = item.age != null ? (item.age < 1 ? '<1h' : item.age < 24 ? Math.floor(item.age) + 'h' : Math.floor(item.age / 24) + 'd') : '--';
@@ -1143,7 +1120,7 @@ function renderPipelineHistory(data) {
 
   if (hist.length) {
     badge.textContent = hist.length + ' events';
-    body.innerHTML = `<table class="pipe-table">
+    body.innerHTML = `<table class="ds-data-table">
       <thead><tr><th>Timestamp</th><th>Action</th><th>Details</th></tr></thead>
       <tbody>${hist.map(h => {
         const ts = h.timestamp ? new Date(h.timestamp).toLocaleString() : '--';
@@ -1156,7 +1133,7 @@ function renderPipelineHistory(data) {
     </table>`;
   } else {
     badge.textContent = archive.length + ' predictions';
-    body.innerHTML = `<table class="pipe-table">
+    body.innerHTML = `<table class="ds-data-table">
       <thead><tr><th>Date</th><th>Match</th><th>Prediction</th><th>Result</th><th style="text-align:center">Correct</th></tr></thead>
       <tbody>${archive.slice(0, 10).map(p => {
         const correctIcon = p.actual_result
@@ -1251,31 +1228,47 @@ function renderHealthMonitor(data) {
 function renderModelFeedback(data) {
   const body = document.getElementById('model-body');
   const badge = document.getElementById('mf-badge');
-  const ds = data.deployment_state || {};
+  // deployment_state is now a dict of per-league states: {serie_a: {...}, premier_league: {...}}
+  const dsRaw = data.deployment_state || {};
   const fl = data.feedback_loop || {};
   const drift = data.drift_report || {};
 
-  if (!ds.current_model && !fl.overall) {
+  // Support both old format (single object) and new format (per-league dict)
+  const leagues = dsRaw.metrics ? {'universal': dsRaw} : dsRaw;
+  const leagueKeys = Object.keys(leagues);
+
+  if (leagueKeys.length === 0 && !fl.overall) {
     badge.textContent = 'No data';
     return;
   }
 
-  const ov = fl.overall || {};
-  const m = ds.metrics || {};
-  const ec = ds.ensemble_config || {};
-
-  badge.textContent = ds.current_model || 'Active';
+  badge.textContent = `${leagueKeys.length} league${leagueKeys.length > 1 ? 's' : ''} active`;
   badge.style.background = 'var(--accent-muted)';
   badge.style.color = 'var(--accent)';
 
+  const ov = fl.overall || {};
   let html = '';
 
-  // Model info row
-  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-3);margin-bottom:var(--space-4);">
+  // Per-league deployment cards
+  for (const [lk, ds] of Object.entries(leagues)) {
+    const m = ds.metrics || {};
+    const ec = ds.ensemble_config || {};
+    const leagueName = lk === 'serie_a' ? 'Serie A' : lk === 'premier_league' ? 'Premier League' : lk;
+    const enabled = ds.betting_enabled;
+    const statusColor = enabled ? 'var(--green)' : 'var(--amber)';
+    const statusText = enabled ? 'BETTING ON' : 'DISABLED';
+    const validStatus = ds.validation_status || 'unknown';
+
+    html += `<div style="margin-bottom:var(--space-4);padding:var(--space-3);background:var(--bg-secondary);border:1px solid var(--border-subtle);border-radius:var(--radius-md);">`;
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3);">
+      <span style="font-size:14px;font-weight:700;color:var(--text-primary);">${leagueName}</span>
+      <span style="font-size:10px;padding:2px 8px;border-radius:var(--radius-sm);font-weight:700;background:${statusColor}20;color:${statusColor};">${statusText}</span>
+    </div>`;
+
+    html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-3);">
     <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
       <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">Model</div>
       <div style="font-size:13px;font-weight:600;color:var(--text-primary);font-family:var(--font-mono);margin-top:2px;">${ds.current_model || '--'}</div>
-      <div style="font-size:10px;color:var(--text-tertiary);margin-top:1px;">${ds.features_count || '?'} features</div>
     </div>
     <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
       <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">Accuracy</div>
@@ -1285,6 +1278,20 @@ function renderModelFeedback(data) {
       <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">Log Loss</div>
       <div style="font-size:18px;font-weight:700;font-family:var(--font-mono);margin-top:2px;color:var(--text-primary);">${m.log_loss ? m.log_loss.toFixed(4) : '--'}</div>
     </div>
+    <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
+      <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">Kelly ROI</div>
+      <div style="font-size:18px;font-weight:700;font-family:var(--font-mono);margin-top:2px;color:${(m.kelly_roi||0) >= 3 ? 'var(--green)' : 'var(--amber)'};">${m.kelly_roi ? m.kelly_roi.toFixed(1)+'%' : '--'}</div>
+    </div>`;
+    html += `</div></div>`;
+  }
+
+  // Legacy single-model section (for backward compat with old deployment state format)
+  const ds = leagueKeys.length === 1 ? Object.values(leagues)[0] : (leagues['serie_a'] || Object.values(leagues)[0] || {});
+  const m = ds.metrics || {};
+  const ec = ds.ensemble_config || {};
+
+  // Continue with existing feedback/drift rendering below using first league's data
+  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-3);margin-bottom:var(--space-4);margin-top:var(--space-4);">
     <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:var(--space-3);">
       <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">Version</div>
       <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-top:2px;">${ds.model_version || '--'}</div>
@@ -1746,6 +1753,7 @@ async function copyLogs(mode) {
 
 function _showCopyStatus(msg) {
   const el = document.getElementById('log-copy-status');
+  if (!el) return;
   el.textContent = msg;
   el.style.display = 'inline';
   setTimeout(() => { el.style.display = 'none'; }, 3000);
@@ -1815,7 +1823,9 @@ async function loadNotifications() {
 
   // Load channel status
   try {
-    const statusData = await fetch('/api/notifications/status').then(r => r.json());
+    const statusRes = await fetch('/api/notifications/status');
+    if (!statusRes.ok) throw new Error(`HTTP ${statusRes.status}`);
+    const statusData = await statusRes.json();
     const tgEl = document.getElementById('notif-telegram-status');
     const tgDetail = document.getElementById('notif-telegram-detail');
     if (statusData.ok && statusData.channels?.telegram) {
@@ -1836,7 +1846,9 @@ async function loadNotifications() {
 
   // Load preferences
   try {
-    const prefsData = await fetch('/api/notifications/preferences').then(r => r.json());
+    const prefsRes = await fetch('/api/notifications/preferences');
+    if (!prefsRes.ok) throw new Error(`HTTP ${prefsRes.status}`);
+    const prefsData = await prefsRes.json();
     if (prefsData.ok) {
       renderNotifPreferences(prefsData.preferences);
       // Populate quiet hours, mute all, sound
@@ -1933,7 +1945,7 @@ function renderNotifHistory(history) {
   let html = '';
   for (const [dateLabel, entries] of Object.entries(groups)) {
     html += `<div style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;padding:var(--space-2) 0 var(--space-1) 0;border-bottom:1px solid var(--border);margin-top:var(--space-2);">${dateLabel}</div>`;
-    html += '<table class="pipe-table" style="margin-bottom:0;"><thead><tr><th>Time</th><th style="text-align:center">Level</th><th>Title</th><th>Message</th><th>Channels</th></tr></thead><tbody>';
+    html += '<table class="ds-data-table" style="margin-bottom:0;"><thead><tr><th>Time</th><th style="text-align:center">Level</th><th>Title</th><th>Message</th><th>Channels</th></tr></thead><tbody>';
     for (const n of entries) {
       const ts = n.timestamp ? relTime(n.timestamp) : '--';
       const icon = NOTIF_LEVEL_ICONS[n.level] || NOTIF_LEVEL_ICONS.info;

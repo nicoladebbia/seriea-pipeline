@@ -3,6 +3,14 @@
 {% block title %}Performance — SerieAI{% endblock %}
 {% block page_title %}Performance{% endblock %}
 
+{% block page_subtitle %}
+<div id="analytics-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
+  <button class="tab-pill active" onclick="analyticsLeagueFilter('all',this)" style="font-size:11px;padding:3px 10px;">All</button>
+  <button class="tab-pill" onclick="analyticsLeagueFilter('serie_a',this)" style="font-size:11px;padding:3px 10px;">Serie A</button>
+  <button class="tab-pill" onclick="analyticsLeagueFilter('premier_league',this)" style="font-size:11px;padding:3px 10px;">EPL</button>
+</div>
+{% endblock %}
+
 {% block header_actions %}
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
     <button onclick="triggerSettle()" id="settle-btn" class="btn btn--secondary btn--sm">
@@ -30,20 +38,10 @@
   @media (max-width:1024px) { .perf-status-bar { grid-template-columns:repeat(3,1fr); } }
   @media (max-width:640px)  { .perf-status-bar { grid-template-columns:repeat(2,1fr); } }
 
-  .pipe-stat {
+  /* Stat card wrapper — scoped override for card background/border/padding */
+  .perf-status-bar .ds-stat {
     background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
     border-radius:var(--radius-md); padding:var(--space-3) var(--space-4);
-  }
-  .pipe-stat__label {
-    font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
-    color:var(--text-tertiary); font-weight:600;
-  }
-  .pipe-stat__value {
-    font-size:20px; font-weight:700; color:var(--text-primary);
-    font-family:var(--font-mono); margin-top:2px; line-height:1.2;
-  }
-  .pipe-stat__sub {
-    font-size:11px; color:var(--text-tertiary); margin-top:2px;
   }
 
   /* Section cards (expandable) */
@@ -71,23 +69,9 @@
   }
   .pipe-section__body { padding:0 var(--space-4) var(--space-4); }
 
-  /* Dashboard-style compact table */
-  .pipe-table {
-    width:100%; border-collapse:collapse; font-size:12px;
-    background:var(--bg-card,var(--bg-secondary)); border:1px solid var(--border-subtle);
-    border-radius:var(--radius-md); overflow:hidden;
-  }
-  .pipe-table th {
-    padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase;
-    letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary);
-    border-bottom:1px solid var(--border-default); font-weight:600; white-space:nowrap;
-  }
-  .pipe-table td {
-    padding:8px 10px; border-bottom:1px solid var(--border-subtle); white-space:nowrap;
-  }
-  .pipe-table tbody tr { transition:background 0.15s; }
-  .pipe-table tbody tr:hover { background:rgba(129,140,248,0.04); }
-  .pipe-table .mono { font-family:var(--font-mono); font-size:11px; }
+  /* Table td padding override — ds-data-table uses 6px, analytics needs 8px */
+  .ds-data-table td { padding:8px 10px; }
+  .ds-data-table .mono { font-family:var(--font-mono); font-size:11px; }
 
   /* Chart containers */
   .perf-chart-wrap {
@@ -316,7 +300,7 @@
   </summary>
   <div class="pipe-section__body">
     <div style="overflow-x:auto;">
-      <table class="pipe-table" id="history-table">
+      <table class="ds-data-table" id="history-table">
         <thead>
           <tr>
             <th>Date</th>
@@ -367,10 +351,10 @@ function destroyCharts() {
 }
 
 function statCard(label, value, sub, color) {
-  return `<div class="pipe-stat">
-    <div class="pipe-stat__label">${label}</div>
-    <div class="pipe-stat__value" style="color:${color || 'var(--text-primary)'}">${value}</div>
-    ${sub ? `<div class="pipe-stat__sub">${sub}</div>` : ''}
+  return `<div class="ds-stat">
+    <div class="ds-stat__label">${label}</div>
+    <div class="ds-stat__value" style="color:${color || 'var(--text-primary)'}">${value}</div>
+    ${sub ? `<div class="ds-stat__sub">${sub}</div>` : ''}
   </div>`;
 }
 
@@ -653,7 +637,7 @@ function renderROIReport(roi) {
       </summary>
       <div class="pipe-section__body">
         <div style="overflow-x:auto;">
-          <table class="pipe-table">
+          <table class="ds-data-table">
             <thead>
               <tr>
                 <th>Market</th>
@@ -764,7 +748,7 @@ function renderBacktests(backtests) {
     <div class="pipe-section__body">
       <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:var(--space-3);">Historical model performance on completed seasons -- use as reference for live performance expectations.</div>
       <div style="overflow-x:auto;">
-        <table class="pipe-table">
+        <table class="ds-data-table">
           <thead><tr>
             <th>Market / Model</th>
             ${seasons.map(([s]) => `<th style="text-align:center;" colspan="2">${s}</th>`).join('')}
@@ -807,12 +791,22 @@ function renderBacktests(backtests) {
   el.style.display = '';
 }
 
+/* --- League Filter --- */
+let _analyticsLeague = 'all';
+function analyticsLeagueFilter(league, btn) {
+  _analyticsLeague = league;
+  document.querySelectorAll('#analytics-league-tabs .tab-pill').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  loadAnalytics();
+}
+
 /* --- Main Load (re-callable) --- */
 let lastSettledCount = null;
 
 async function loadAnalytics() {
   try {
-    const res = await fetch('/api/analytics');
+    const leagueParam = _analyticsLeague !== 'all' ? `?league=${_analyticsLeague}` : '';
+    const res = await fetch('/api/analytics' + leagueParam);
     const data = await res.json();
 
     document.getElementById('loading').style.display = 'none';

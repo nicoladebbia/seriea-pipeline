@@ -815,6 +815,10 @@ table.ds-table {
 .px-4 { padding-left: var(--space-4); padding-right: var(--space-4); }
 .py-2 { padding-top: var(--space-2); padding-bottom: var(--space-2); }
 .py-3 { padding-top: var(--space-3); padding-bottom: var(--space-3); }
+.py-4 { padding-top: var(--space-4); padding-bottom: var(--space-4); }
+.py-8 { padding-top: var(--space-8); padding-bottom: var(--space-8); }
+.py-16 { padding-top: 64px; padding-bottom: 64px; }
+.ml-2 { margin-left: var(--space-2); }
 
 
 /* --- Text Utilities --- */
@@ -822,6 +826,8 @@ table.ds-table {
 .text-right { text-align: right; }
 .text-left { text-align: left; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-sm { font-size: 13px; }
+.text-xs { font-size: 11px; }
 .font-bold { font-weight: 700; }
 .font-semibold { font-weight: 600; }
 .font-medium { font-weight: 500; }
@@ -906,6 +912,91 @@ table.ds-table {
 .glow-green { box-shadow: 0 0 12px rgba(74,222,128,0.2); }
 .glow-red { box-shadow: 0 0 12px rgba(248,113,113,0.2); }
 .glow-accent { box-shadow: 0 0 12px rgba(129,140,248,0.2); }
+
+
+/* --- Accessibility --- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+
+/* --- Mobile Navigation --- */
+.mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  transition: background 0.15s, color 0.15s;
+}
+
+.mobile-menu-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+.sidebar-overlay.active {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  .mobile-menu-btn {
+    display: flex;
+  }
+
+  .sidebar {
+    transform: translateX(-100%);
+    z-index: 50;
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .sidebar.collapsed {
+    width: var(--sidebar-width);
+  }
+
+  .sidebar.collapsed .sidebar__brand-text,
+  .sidebar.collapsed .sidebar__nav-label,
+  .sidebar.collapsed .sidebar__footer-text,
+  .sidebar.collapsed .sidebar__divider-label,
+  .sidebar.collapsed .sidebar__nav-section {
+    display: block;
+  }
+
+  .main-content {
+    margin-left: 0 !important;
+  }
+
+  .main-inner {
+    padding: var(--space-4);
+  }
+
+  .text-page-title {
+    font-size: 18px;
+  }
+}
 
 
 /* --- Value Bets Section --- */
@@ -1083,6 +1174,195 @@ table.ds-table {
   .bets-panel__row > * {
     text-align: left;
   }
+}
+
+
+/* --- Shared Stat (label / value / subtext) --- */
+.ds-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ds-stat__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.ds-stat__value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.ds-stat__value--sm {
+  font-size: 15px;
+}
+
+.ds-stat__sub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* Inline stat variant (horizontal label: value) */
+.ds-stat--inline {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ds-stat--inline .ds-stat__value {
+  font-size: 14px;
+}
+
+
+/* --- Shared Data Table --- */
+.ds-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.ds-data-table th {
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-default);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ds-data-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.ds-data-table tbody tr {
+  transition: background 0.15s;
+}
+
+.ds-data-table tbody tr:hover {
+  background: rgba(129, 140, 248, 0.06);
+}
+
+.ds-data-table--clickable tbody tr {
+  cursor: pointer;
+}
+
+.ds-data-table--sortable th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ds-data-table--sortable th:hover {
+  color: var(--text-secondary);
+}
+
+
+/* --- Loading / Empty / Error States --- */
+.ds-loading {
+  text-align: center;
+  padding: 64px 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ds-loading__spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--bg-tertiary);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: var(--space-3);
+}
+
+.ds-empty {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.ds-error {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--red);
+  font-size: 13px;
+}
+
+
+/* --- Back Link --- */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-4);
+  transition: color 0.15s;
+}
+
+.back-link:hover {
+  color: var(--accent);
+}
+
+
+/* --- Form Result Dot --- */
+.form-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.form-dot--W { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+.form-dot--D { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+.form-dot--L { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+
+
+/* --- Tab Buttons (underline style) --- */
+.tab-btn {
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tab-btn:hover {
+  color: var(--text-secondary);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 

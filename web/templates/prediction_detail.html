@@ -5,14 +5,6 @@
 
 {% block head %}
 <style>
-  /* ── Back Link ──────────────────────────────────────── */
-  .back-link {
-    display:inline-flex; align-items:center; gap:6px;
-    font-size:12px; color:var(--text-tertiary); text-decoration:none;
-    margin-bottom:var(--space-4); transition:color 0.15s;
-  }
-  .back-link:hover { color:var(--accent); }
-
   /* ── Match Hero ─────────────────────────────────────── */
   .match-hero {
     background:var(--bg-secondary); border:1px solid var(--border-default);
@@ -44,7 +36,7 @@
 
   /* ── Section Cards ──────────────────────────────────── */
   .pd-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-4); }
-  @media (max-width:900px) { .pd-grid { grid-template-columns:1fr; } }
+  @media (max-width:768px) { .pd-grid { grid-template-columns:1fr; } }
 
   .pd-card {
     background:var(--bg-secondary); border:1px solid var(--border-default);
@@ -525,7 +517,7 @@
 
 {% block scripts %}
 <script>
-const MATCH_SLUG = "{{ match_slug }}";
+const MATCH_SLUG = {{ match_slug | tojson }};
 
 // ═══════════════════════════════════════════════════════════════
 // HELPERS
@@ -770,7 +762,7 @@ function renderValueBets(m) {
   if (totals.length) {
     html += '<div style="margin-top:var(--space-3)"><div class="text-label mb-2">Totals (O/U)</div><div style="display:flex;gap:var(--space-2);flex-wrap:wrap">';
     for (const t of totals.slice(0, 4)) {
-      const point = t.point || t.total;
+      const point = t.line || t.point || t.total;
       html += `<div style="background:var(--bg-tertiary);padding:6px 12px;border-radius:var(--radius-sm);font-size:11px;border:1px solid var(--border-subtle)">
         <span class="text-tertiary">${point}</span>
         <span class="text-mono text-green">O ${oddsFmt(t.over)}</span>
@@ -820,7 +812,7 @@ function renderKeyStats(m) {
   }
 
   // O/U 2.5
-  const ou25 = totals.find(t => (t.point || t.total) === 2.5);
+  const ou25 = totals.find(t => (t.line || t.point || t.total) === 2.5);
   if (ou25) {
     items.push({ label: 'O2.5', value: oddsFmt(ou25.over), sub: 'odds' });
     items.push({ label: 'U2.5', value: oddsFmt(ou25.under), sub: 'odds' });
@@ -1194,7 +1186,10 @@ function renderDrawAnalysis(m) {
 function renderConditions(m) {
   const w = m.weather||{};
   let html = '';
-  if (w.temperature != null) {
+  // Calculate days until match for gating unreliable data
+  const daysUntil = m.commence_time ? Math.max(0, (new Date(m.commence_time) - Date.now()) / 86400000) : 999;
+
+  if (w.temperature != null && daysUntil <= 5) {
     const cond = w.conditions; let desc = '';
     if (cond && typeof cond === 'object') {
       const t=[]; if(cond.is_rainy)t.push('Rain'); if(cond.is_windy)t.push('Wind'); if(cond.is_cold)t.push('Cold'); if(cond.is_hot)t.push('Hot'); desc=t.length?t.join(', '):'Clear';
@@ -1203,9 +1198,13 @@ function renderConditions(m) {
     if (w.humidity != null) html += `<div class="dp-intel-item"><span class="text-label">Humidity</span><span class="text-small mt-1">${w.humidity}%</span></div>`;
     if (w.wind_speed != null) html += `<div class="dp-intel-item"><span class="text-label">Wind</span><span class="text-small mt-1">${w.wind_speed} km/h</span></div>`;
     html += '</div>';
+  } else if (daysUntil > 5) {
+    html += '<div class="dp-intel-grid"><div class="dp-intel-item"><span class="text-label">Weather</span><span class="text-small text-tertiary mt-1">Forecast available closer to kickoff</span></div></div>';
   }
-  if (m.referee) {
+  if (m.referee && daysUntil <= 3) {
     html += `<div style="margin-top:var(--space-3)"><div class="dp-intel-grid"><div class="dp-intel-item"><span class="text-label">Referee</span><span class="text-small mt-1">${m.referee}${m.referee_bias?' <span class="badge badge--neutral" style="font-size:9px">'+m.referee_bias.replace(/_/g,' ')+'</span>':''}</span></div></div></div>`;
+  } else if (daysUntil > 3) {
+    html += `<div style="margin-top:var(--space-3)"><div class="dp-intel-grid"><div class="dp-intel-item"><span class="text-label">Referee</span><span class="text-small text-tertiary mt-1">TBA — assigned closer to matchday</span></div></div></div>`;
   }
   if (!html) html = '<div class="text-small text-tertiary">No conditions data</div>';
   return html;
@@ -1262,7 +1261,7 @@ function renderBetting(m) {
   if (totals.length) {
     html += '<div style="margin-top:var(--space-3)"><div class="text-label mb-2">Totals (O/U)</div><div style="display:flex;gap:var(--space-2);flex-wrap:wrap">';
     for (const t of totals.slice(0, 4)) {
-      const point = t.point || t.total;
+      const point = t.line || t.point || t.total;
       html += `<div style="background:var(--bg-tertiary);padding:4px 10px;border-radius:var(--radius-sm);font-size:11px">
         <span class="text-tertiary">${point}</span>
         <span class="text-mono text-green">O ${oddsFmt(t.over)}</span>

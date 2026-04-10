@@ -100,11 +100,11 @@
     <input type="text" id="player-search-input" class="player-search" placeholder="Search players by name, team, or position..." autocomplete="off">
     <div class="filter-bar" style="margin-top:8px;">
       <div class="pos-filters">
-        <span class="pos-pill active" data-pos="all" onclick="filterPos('all',this)">All</span>
-        <span class="pos-pill" data-pos="gk" onclick="filterPos('gk',this)">GK</span>
-        <span class="pos-pill" data-pos="df" onclick="filterPos('df',this)">DF</span>
-        <span class="pos-pill" data-pos="mf" onclick="filterPos('mf',this)">MF</span>
-        <span class="pos-pill" data-pos="fw" onclick="filterPos('fw',this)">FW</span>
+        <button type="button" class="pos-pill active" data-pos="all" onclick="filterPos('all',this)">All</button>
+        <button type="button" class="pos-pill" data-pos="gk" onclick="filterPos('gk',this)">GK</button>
+        <button type="button" class="pos-pill" data-pos="df" onclick="filterPos('df',this)">DF</button>
+        <button type="button" class="pos-pill" data-pos="mf" onclick="filterPos('mf',this)">MF</button>
+        <button type="button" class="pos-pill" data-pos="fw" onclick="filterPos('fw',this)">FW</button>
       </div>
       <label class="min-toggle"><input type="checkbox" id="min-180-toggle" onchange="applyFilters()"> Min 180 min</label>
     </div>

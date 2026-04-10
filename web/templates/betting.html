@@ -245,7 +245,22 @@
 
   /* Responsive */
   @media (max-width:640px) {
-    .match-card .card-center { display:none; }
+    .match-card .card-row {
+      flex-direction:column;
+      align-items:stretch;
+    }
+    .match-card .card-center {
+      display:block;
+      width:100%;
+      text-align:left;
+      border-top:1px solid var(--border-default);
+      padding-top:var(--space-2);
+      margin-top:var(--space-2);
+    }
+    .match-card .card-right {
+      text-align:left;
+      min-width:unset;
+    }
     .tab-pill { padding:4px 10px; font-size:11px; }
     .vb-grid-3 { grid-template-columns:repeat(2,1fr); }
     .vb-grid-5 { grid-template-columns:repeat(2,1fr); }
@@ -262,7 +277,7 @@
 
 {% block content %}
   <!-- Freshness Bar -->
-  <div id="freshness-bar" class="vb-freshness" style="display:none">
+  <div id="freshness-bar" class="vb-freshness">
     <div class="vb-flex-between" style="gap:var(--space-3);flex-wrap:wrap;">
       <div class="vb-flex" style="gap:var(--space-4);flex-wrap:wrap;font-size:12px;">
         <div class="vb-flex" style="gap:var(--space-2);">
@@ -473,6 +488,7 @@ function esc(s) { return CSS.escape(s); }
 // ============================================================
 function showFreshness(data) {
   const bar = document.getElementById('freshness-bar');
+  if (!bar) return;
   bar.style.display = '';
   const oAge = getAgeMinutes(data.odds_fetched_at);
   document.getElementById('odds-age').textContent = formatAge(data.odds_fetched_at);
@@ -494,6 +510,7 @@ async function triggerRefresh() {
   document.getElementById('refresh-progress').style.display = '';
   try {
     const res = await fetch('/api/refresh', { method: 'POST' });
+    if (!res.ok) { btn.disabled = false; document.getElementById('refresh-label').textContent = 'Refresh All'; document.getElementById('refresh-icon').classList.remove('animate-spin'); return; }
     const d = await res.json();
     if (!d.ok) { btn.disabled = false; document.getElementById('refresh-label').textContent = 'Refresh All'; document.getElementById('refresh-icon').classList.remove('animate-spin'); return; }
     startRefreshPolling();
@@ -646,7 +663,7 @@ function renderMatchesGrid() {
     }
 
     html += `<div class="match-card ${hasValue ? 'has-value' : ''} ${isExpanded ? 'expanded' : ''}" id="card-${esc(mk)}">
-      <div style="padding:var(--space-3);display:flex;align-items:center;gap:var(--space-3);" onclick="expandMatch('${esc(mk)}')">
+      <div class="card-row" style="padding:var(--space-3);display:flex;align-items:center;gap:var(--space-3);" onclick="expandMatch('${esc(mk)}')">
         <!-- Time -->
         <div id="timecol-${esc(mk)}" style="width:64px;text-align:center;flex-shrink:0;">
           <div class="vb-mono" style="font-size:12px;color:var(--text-primary);">${formatKickoff(m.commence_time, m.date)}</div>
@@ -673,16 +690,24 @@ function renderMatchesGrid() {
           <span class="vb-badge" style="background:${CONF_COLORS[m.confidence_level]||'#71717a'}20;color:${CONF_COLORS[m.confidence_level]||'#71717a'};margin-top:2px;">${m.confidence_level || 'N/A'}</span>
         </div>
         <!-- Odds & Value -->
-        <div style="text-align:right;flex-shrink:0;width:110px;">
-          ${m.probabilities ? `<div class="vb-mono" style="font-size:10px;color:var(--text-tertiary);">${((m.probabilities.home||0)*100).toFixed(0)} / ${((m.probabilities.draw||0)*100).toFixed(0)} / ${((m.probabilities.away||0)*100).toFixed(0)}</div>` : ''}
-          ${hasValue ? (() => {
-            const valueBets = bets.filter(b => !b._advisory && (b.value_pct||0) > 0);
-            const bestEdge = valueBets.length ? Math.max(...valueBets.map(b => b.value_pct||0)) : 0;
-            return `<span class="vb-badge vb-badge--value" style="margin-top:4px;">${valueBets.length} BET${valueBets.length>1?'S':''}</span>` +
-              (bestEdge > 0 ? `<span class="vb-badge vb-badge--value" style="margin-top:2px;">+${bestEdge.toFixed(1)}%</span>` : '');
-          })() : `<span style="font-size:10px;color:var(--text-tertiary);">no value</span>`}
-          <div id="bets-badge-${esc(mk)}" style="margin-top:4px;"></div>
-        </div>
+        ${(() => {
+          const valueBets = (m.bets || []).filter(b => b.value_pct > 0 && !b._advisory);
+          const bestEdge = valueBets.length ? Math.max(...valueBets.map(b => b.value_pct || b.edge_pct || 0)) : 0;
+          const steamDetected = m.market_intelligence?.steam_detected || false;
+          return `<div class="card-right" style="min-width:110px;text-align:right;">
+            ${valueBets.length > 0 ? `
+              <div style="font-size:11px;font-weight:700;color:var(--green);">
+                ${valueBets.length} bet${valueBets.length>1?'s':''} · +${bestEdge.toFixed(1)}%
+              </div>
+              <div style="margin-top:3px;height:4px;border-radius:2px;background:var(--bg-tertiary);overflow:hidden;">
+                <div style="height:100%;width:${Math.min(bestEdge*10,100)}%;background:var(--green);border-radius:2px;"></div>
+              </div>
+              ${steamDetected ? '<span style="font-size:8px;color:var(--red);font-weight:700;">🔥 STEAM</span>' : ''}
+            ` : '<div style="font-size:10px;color:var(--text-tertiary);">no value</div>'}
+            ${m.odds_movement?.is_steam_move ? '<span style="font-size:9px;color:var(--red);font-weight:700;">🔥</span>' : m.odds_movement?.direction?.includes('strengthening') ? '<span style="font-size:8px;color:var(--text-tertiary);">📈 ' + m.odds_movement.direction.replace('_strengthening','').replace('_',' ') + '</span>' : ''}
+            <div id="bets-badge-${esc(mk)}" style="margin-top:4px;"></div>
+          </div>`;
+        })()}
         <svg style="width:16px;height:16px;color:var(--text-tertiary);flex-shrink:0;transition:transform 0.2s;${isExpanded ? 'transform:rotate(180deg);' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
       </div>
       <div class="detail-panel ${isExpanded ? 'open' : ''}" id="detail-${esc(mk)}">
@@ -868,6 +893,55 @@ function renderTabOverview(m) {
     html += `<div></div>`;
   }
   html += `</div>`;
+
+  // Component Prediction Consensus
+  {
+    const comps = m.component_predictions || {};
+    const methods = Object.entries(comps).filter(([k,v]) => v && v.prob_H != null);
+    if (methods.length) {
+      const weights = m.weights_applied || {};
+      const predicted = (m.predicted_outcome || '')[0];
+      const agreeing = methods.filter(([k,v]) => {
+        const best = Math.max(v.prob_H, v.prob_D, v.prob_A);
+        return (v.prob_H === best ? 'H' : v.prob_D === best ? 'D' : 'A') === predicted;
+      });
+      const consensusCol = agreeing.length >= 3 ? 'var(--green)' : 'var(--amber)';
+      const consensusLabel = agreeing.length >= 3 ? 'STRONG' : 'MIXED';
+      html += '<div class="vb-inner-card" style="margin-top:var(--space-3);">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+      html += '<span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">🧠 Model Consensus</span>';
+      html += '<span style="font-size:11px;font-weight:600;color:' + consensusCol + ';">' + agreeing.length + '/' + methods.length + ' agree &rarr; ' + consensusLabel + '</span>';
+      html += '</div>';
+      for (const [method, vals] of methods) {
+        const w = weights[method] || 0;
+        const best = Math.max(vals.prob_H, vals.prob_D, vals.prob_A);
+        const out = vals.prob_H === best ? 'H' : vals.prob_D === best ? 'D' : 'A';
+        const agrees = out === predicted;
+        html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
+        html += '<span style="width:75px;font-size:10px;color:var(--text-secondary);">' + method + ' (' + (w*100).toFixed(0) + '%)</span>';
+        html += '<div style="flex:1;display:flex;height:12px;border-radius:2px;overflow:hidden;background:var(--bg-tertiary);">';
+        html += '<div style="width:' + (vals.prob_H*100) + '%;background:#3b82f6;" title="H ' + (vals.prob_H*100).toFixed(0) + '%"></div>';
+        html += '<div style="width:' + (vals.prob_D*100) + '%;background:#f59e0b;" title="D ' + (vals.prob_D*100).toFixed(0) + '%"></div>';
+        html += '<div style="width:' + (vals.prob_A*100) + '%;background:#ef4444;" title="A ' + (vals.prob_A*100).toFixed(0) + '%"></div>';
+        html += '</div>';
+        html += '<span style="font-size:10px;font-weight:600;color:' + (agrees ? 'var(--green)' : 'var(--amber)') + ';">' + (agrees ? '✓' : '✗') + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  }
+
+  // Draw Analysis
+  if (m.draw_analysis && m.draw_analysis.is_draw_candidate) {
+    const da = m.draw_analysis;
+    html += '<div class="vb-inner-card" style="margin-top:var(--space-3);border-left:3px solid var(--amber);">';
+    html += '<div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;">⚖️ Draw Alert</div>';
+    html += '<div style="font-size:14px;font-weight:700;color:var(--amber);margin-top:2px;">Score: ' + (da.draw_score||0).toFixed(0) + '/100</div>';
+    if ((da.indicators||[]).length) {
+      html += '<div style="font-size:10px;color:var(--text-secondary);margin-top:4px;">' + da.indicators.join(' &middot; ') + '</div>';
+    }
+    html += '</div>';
+  }
 
   // AI Reasoning
   if (m.ai_reasoning) {
@@ -1843,8 +1917,14 @@ function renderTabBets(m) {
         </div>
         <span class="vb-mono" style="font-size:20px;font-weight:700;color:var(--text-primary);">${(bet.odds||0).toFixed(2)}</span>
         ${bet._advisory ? '<span style="font-size:10px;color:var(--amber);margin-left:4px;">FAIR</span>' : ''}
+        ${bet.entry_timing?.action ? `<span class="vb-badge${bet.entry_timing.action === 'ENTER_NOW' ? ' vb-badge--value' : ''}" style="font-size:9px;margin-left:6px;">${bet.entry_timing.action === 'ENTER_NOW' ? '⚡ NOW' : '⏳ WAIT'}</span>` : ''}
       </div>
       ${probBar(bet.our_probability || 0, impliedProb, bet.selection || bet.bet || '')}
+      <div style="margin:6px 0;padding:6px 8px;background:var(--bg-primary);border-radius:var(--radius-sm);font-size:10px;line-height:1.6;">
+        ${m.home_form_last5 ? `<div style="color:var(--text-secondary);">📊 ${m.home_team||''}: ${m.home_form_last5} · ${m.away_team||''}: ${m.away_form_last5}</div>` : ''}
+        ${m.h2h ? `<div style="color:var(--text-secondary);">⚔️ H2H: ${m.h2h.home_wins||0}W-${m.h2h.draws||0}D-${m.h2h.away_wins||0}L · avg ${((m.h2h.home_goals_avg||0)+(m.h2h.away_goals_avg||0)).toFixed(1)} goals</div>` : ''}
+        ${m.market_intelligence?.sharp_direction && m.market_intelligence.sharp_direction !== 'neutral' ? `<div style="color:${m.market_intelligence.steam_detected ? 'var(--red)' : 'var(--text-secondary)'};">${m.market_intelligence.steam_detected ? '🔥' : '📈'} Sharp: ${m.market_intelligence.sharp_direction}${m.market_intelligence.steam_detected ? ' (STEAM)' : ''}</div>` : ''}
+      </div>
       <div class="vb-grid-4" style="margin-top:var(--space-2);text-align:center;">
         ${bet._advisory ? `
         <div><div style="font-size:10px;color:var(--text-tertiary);">Fair Odds</div><div class="vb-mono" style="font-size:14px;color:var(--amber);">${(bet.odds||0).toFixed(2)}</div></div>
@@ -1889,6 +1969,18 @@ function renderTabBets(m) {
       </div>`;
     }
     html += `</div></div>`;
+  }
+
+  // Alternative bets considered
+  {
+    const alts = (window._rejectedBets || []).filter(rb => (rb.match||'') === mk && (rb.edge_pct||0) > 3);
+    if (alts.length) {
+      html += '<details style="margin-top:var(--space-3);"><summary style="font-size:11px;color:var(--text-secondary);cursor:pointer;">💡 ' + alts.length + ' alternative' + (alts.length>1?'s':'') + ' considered</summary><div style="margin-top:6px;">';
+      for (const a of alts) {
+        html += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-subtle);font-size:11px;"><span>' + (a.market||'') + ' <b>' + (a.selection||'') + '</b></span><span style="font-family:var(--font-mono);">@ ' + (a.best_odds||a.odds||0).toFixed(2) + ' · ' + (a.edge_pct||0).toFixed(1) + '% edge</span></div>';
+      }
+      html += '</div></details>';
+    }
   }
 
   return html;
@@ -2129,6 +2221,7 @@ async function loadBetting() {
     placedBets = data.placed_bets || [];
     playerPropVBets = data.player_prop_value_bets || [];
     rejectedBets = data.rejected_bets || [];
+    window._rejectedBets = data.rejected_bets || [];
 
     fetch('/api/props/performance').then(r => r.json()).then(d => { propPerformance = d.performance || null; }).catch(() => {});
     fetch('/api/props/kelly-pnl').then(r => r.json()).then(d => { if (!d.error) kellyPnl = d; }).catch(() => {});
@@ -2347,7 +2440,7 @@ async function pollMatchClock() {
     clockLastPoll = Date.now();
 
     if (newlyCompleted.length > 0) {
-      console.log('Match(es) completed:', newlyCompleted.join(', '));
+      // Match completion detected (logged in production for debugging)
       if (settleTimeout) clearTimeout(settleTimeout);
       settleTimeout = setTimeout(() => autoSettle(newlyCompleted), 60000);
       showToast(`${newlyCompleted.join(', ')} \u2014 FT. Settling bets in 60s...`, 'info');
@@ -2402,7 +2495,7 @@ async function autoSettle(completedMatches) {
   try {
     const res = await fetch('/api/settle', {method: 'POST'});
     const data = await res.json();
-    if (!data.ok) { console.log('Settle response:', data.message); showToast(data.message, 'info'); return; }
+    if (!data.ok) { showToast(data.message, 'info'); return; }
     pollSettleResult();
   } catch(e) { console.warn('Auto-settle trigger failed:', e); showToast('Settlement failed to start', 'error'); }
 }

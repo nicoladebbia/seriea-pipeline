@@ -96,11 +96,39 @@
 
   /* Lineup pitch */
   .lineup-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 768px) { .lineup-dual { grid-template-columns: 1fr; } }
+
+  @media (max-width: 768px) {
+    /* Match header — stack teams vertically, shrink score */
+    .match-header { padding: 16px 0; }
+    .match-header__teams { flex-direction: column; gap: 8px; }
+    .match-header__score { font-size: 32px; letter-spacing: 2px; order: 1; }
+    .match-header__team:first-child { order: 0; }
+    .match-header__team:last-child { order: 2; }
+    .match-header__team-name { font-size: 15px; }
+    .match-header__meta { gap: 8px; font-size: 10px; }
+
+    /* Single-column lineup grid */
+    .lineup-dual { grid-template-columns: 1fr; }
+
+    /* Sections — reduce padding */
+    .match-section { padding: 12px; }
+
+    /* Comparison rows — tighten values */
+    .cmp-val { font-size: 11px; }
+    .cmp-val--home { padding-right: 6px; }
+    .cmp-val--away { padding-left: 6px; }
+
+    /* Context items — allow wrapping in smaller containers */
+    .context-item__value { font-size: 12px; }
+
+    /* Ratings table — make it scrollable on tiny screens */
+    .ratings-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  }
 </style>
 {% endblock %}
 
 {% block content %}
+<a href="/matches" class="back-link">&larr; Back to Matches</a>
 <div id="match-loading" class="text-center py-16">
   <div class="text-secondary text-sm">Loading match data...</div>
 </div>
@@ -110,9 +138,9 @@
 
 {% block scripts %}
 <script>
-const MATCH_DATE = "{{ date }}";
-const HOME_TEAM = "{{ home_team }}";
-const AWAY_TEAM = "{{ away_team }}";
+const MATCH_DATE = {{ date | tojson }};
+const HOME_TEAM = {{ home_team | tojson }};
+const AWAY_TEAM = {{ away_team | tojson }};
 
 async function loadMatch() {
   try {

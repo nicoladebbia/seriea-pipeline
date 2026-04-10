@@ -98,10 +98,49 @@
   .player-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .player-tab-content { display: none; }
   .player-tab-content.active { display: block; }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    /* Profile header: stack vertically */
+    .profile-header { flex-direction: column; align-items: flex-start; gap: 12px; padding: 14px 0; }
+    .profile-name { font-size: 18px; }
+    .profile-meta { font-size: 11px; gap: 8px; }
+
+    /* Stats grid: 2-column on mobile */
+    .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .stat-card { padding: 8px 6px; }
+    .stat-card__value { font-size: 16px; }
+
+    /* Career grid: 2-column on mobile */
+    .career-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .career-item { padding: 8px 10px; }
+    .career-item__value { font-size: 15px; }
+
+    /* Market value */
+    .mv-current { font-size: 22px; }
+    .mv-stats { flex-direction: column; gap: 6px; }
+    .mv-chart-wrap { height: 140px; }
+
+    /* Match log table: horizontal scroll */
+    .section:has(.match-log) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .match-log { min-width: 520px; }
+
+    /* Tabs: allow horizontal scroll if many tabs */
+    .player-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; flex-wrap: nowrap; }
+    .player-tab { padding: 8px 12px; font-size: 11px; flex-shrink: 0; }
+
+    /* Section padding */
+    .section { padding: 12px 10px; }
+
+    /* Team history */
+    .team-entry { padding: 10px 12px; gap: 10px; }
+    .team-entry__name { font-size: 13px; }
+  }
 </style>
 {% endblock %}
 
 {% block content %}
+<a href="/players" class="back-link">&larr; Back to Players</a>
 <div id="player-loading" class="text-center py-16">
   <div class="text-secondary text-sm">Loading player data...</div>
 </div>

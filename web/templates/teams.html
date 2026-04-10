@@ -137,7 +137,19 @@
 
   /* Responsive: horizontal scroll on mobile, hide advanced cols on < 1024px */
   @media (max-width: 1023px) {
-    .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background:
+        linear-gradient(to right, var(--bg-secondary) 30%, transparent),
+        linear-gradient(to left, var(--bg-secondary) 30%, transparent),
+        linear-gradient(to right, rgba(0,0,0,0.3), transparent 15px),
+        linear-gradient(to left, rgba(0,0,0,0.3), transparent 15px);
+      background-attachment: local, local, scroll, scroll;
+      background-size: 40px 100%, 40px 100%, 15px 100%, 15px 100%;
+      background-position: left, right, left, right;
+      background-repeat: no-repeat;
+    }
     #league-table .col-xpts,
     #league-table .col-ptsdiff,
     #league-table .col-xg,

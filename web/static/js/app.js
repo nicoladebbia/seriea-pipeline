@@ -2,6 +2,13 @@
    SerieAI — Shared JavaScript Utilities
    ============================================================ */
 
+// --- HTML Sanitizer (prevent XSS in innerHTML) ---
+function sanitizeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
 // --- API Fetch Wrapper ---
 async function apiFetch(url, options = {}) {
   try {
@@ -242,7 +249,7 @@ function initTeamSearch() {
     const matches = _allTeams.filter(t => t.toLowerCase().includes(q));
     if (matches.length === 0) { dropdown.classList.add('hidden'); return; }
     dropdown.innerHTML = matches.map(t =>
-      `<a href="/team/${encodeURIComponent(t)}" class="block px-3 py-2 text-small text-secondary" style="transition:all 0.15s" onmouseover="this.style.background='var(--bg-tertiary)';this.style.color='var(--text-primary)'" onmouseout="this.style.background='';this.style.color=''">${t}</a>`
+      `<a href="/team/${encodeURIComponent(t)}" class="block px-3 py-2 text-small text-secondary" style="transition:all 0.15s" onmouseover="this.style.background='var(--bg-tertiary)';this.style.color='var(--text-primary)'" onmouseout="this.style.background='';this.style.color=''">${sanitizeHTML(t)}</a>`
     ).join('');
     dropdown.classList.remove('hidden');
   });
@@ -258,7 +265,7 @@ function showToast(title, lines, color) {
   document.getElementById('toast-title').textContent = title;
   const colorMap = { green: 'toast--green', red: 'toast--red', amber: 'toast--amber' };
   toast.className = `toast ${colorMap[color] || ''}`;
-  document.getElementById('toast-body').innerHTML = lines.map(l => `<p class="text-small text-secondary">${l}</p>`).join('');
+  document.getElementById('toast-body').innerHTML = lines.map(l => `<p class="text-small text-secondary">${sanitizeHTML(l)}</p>`).join('');
   toast.classList.remove('hidden');
   setTimeout(() => toast.classList.add('hidden'), 8000);
 }
@@ -281,6 +288,16 @@ async function smartRefresh() {
   btn.style.opacity = '0.6';
   if (label) label.textContent = 'Refreshing...';
   if (icon) icon.classList.add('animate-spin');
+
+  // Update stale banner to show refreshing state
+  const staleBanner = document.getElementById('stale-banner');
+  const staleMsg = document.getElementById('stale-msg');
+  if (staleBanner && staleBanner.style.display === 'flex') {
+    staleMsg._originalText = staleMsg.textContent;
+    staleMsg.innerHTML = '<span class="animate-spin" style="display:inline-block;width:12px;height:12px;border:2px solid rgba(251,191,36,0.3);border-top-color:var(--amber);border-radius:50%;"></span> Refreshing data...';
+    const bannerBtn = staleBanner.querySelector('button');
+    if (bannerBtn) { bannerBtn.disabled = true; bannerBtn.style.opacity = '0.4'; }
+  }
 
   try {
     const data = await apiFetch('/api/refresh/smart', { method: 'POST' });
@@ -334,6 +351,15 @@ function resetRefreshBtn() {
   if (btn) { btn.disabled = false; btn.style.opacity = ''; }
   if (label) label.textContent = 'Refresh';
   if (icon) icon.classList.remove('animate-spin');
+
+  // Reset stale banner
+  const staleBanner = document.getElementById('stale-banner');
+  const staleMsg = document.getElementById('stale-msg');
+  if (staleBanner && staleMsg && staleMsg._originalText) {
+    staleMsg.textContent = staleMsg._originalText;
+    const bannerBtn = staleBanner.querySelector('button');
+    if (bannerBtn) { bannerBtn.disabled = false; bannerBtn.style.opacity = ''; }
+  }
 }
 
 // --- Sidebar ---
@@ -344,13 +370,41 @@ function initSidebar() {
 
   // Restore state from localStorage
   const saved = localStorage.getItem('sidebar-collapsed');
-  if (saved === 'true') sidebar.classList.add('collapsed');
+  if (saved === 'true') {
+    sidebar.classList.add('collapsed');
+    toggleBtn.setAttribute('aria-expanded', 'false');
+  }
 
   toggleBtn.addEventListener('click', () => {
     sidebar.classList.toggle('collapsed');
-    localStorage.setItem('sidebar-collapsed', sidebar.classList.contains('collapsed'));
+    const isCollapsed = sidebar.classList.contains('collapsed');
+    localStorage.setItem('sidebar-collapsed', isCollapsed);
+    toggleBtn.setAttribute('aria-expanded', !isCollapsed);
   });
 }
+
+// --- Mobile Sidebar ---
+function openMobileSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (sidebar) sidebar.classList.add('mobile-open');
+  if (overlay) overlay.classList.add('active');
+}
+
+function closeMobileSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (sidebar) sidebar.classList.remove('mobile-open');
+  if (overlay) overlay.classList.remove('active');
+}
+
+// Close mobile sidebar when a nav link is clicked
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('.sidebar__nav-item');
+  if (link && window.innerWidth <= 768) {
+    closeMobileSidebar();
+  }
+});
 
 // --- Sidebar Stats ---
 async function loadSidebarStats() {
@@ -496,10 +550,10 @@ const LiveNotifications = (() => {
     el.style.cssText = `pointer-events:auto;background:var(--bg-elevated);border:1px solid rgba(${borderColor},0.4);border-radius:var(--radius-lg);padding:12px 16px;box-shadow:var(--shadow-lg);animation:slideIn 0.3s ease-out;min-width:280px;`;
     el.innerHTML = `
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:24px;line-height:1;">${icon}</span>
+        <span style="font-size:24px;line-height:1;">${sanitizeHTML(icon)}</span>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;font-weight:600;color:var(--text-primary);">${title}</div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${body}</div>
+          <div style="font-size:13px;font-weight:600;color:var(--text-primary);">${sanitizeHTML(title)}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${sanitizeHTML(body)}</div>
         </div>
         <button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;color:var(--text-tertiary);font-size:16px;cursor:pointer;padding:0 0 0 8px;">&times;</button>
       </div>`;

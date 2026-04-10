@@ -140,7 +140,7 @@
 let _matchesData = null;
 let _currentFilter = 'all';
 let _searchQuery = '';
-let _currentSeason = '2025-2026';
+let _currentSeason = null;
 let _currentSort = 'default';
 let _leagueFilter = 'all';
 
@@ -169,7 +169,9 @@ async function loadSeasons() {
   try {
     const data = await apiFetch('/api/matches/seasons');
     const select = document.getElementById('season-select');
-    select.innerHTML = (data.seasons || []).map(s =>
+    const seasons = data.seasons || [];
+    if (seasons.length && !_currentSeason) _currentSeason = seasons[0];
+    select.innerHTML = seasons.map(s =>
       `<option value="${s}" ${s === _currentSeason ? 'selected' : ''}>${s}</option>`
     ).join('');
     select.addEventListener('change', () => {
@@ -405,6 +407,6 @@ function initMatchSearch() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => { loadSeasons(); loadMatches(); });
+document.addEventListener('DOMContentLoaded', async () => { await loadSeasons(); loadMatches(); });
 </script>
 {% endblock %}
