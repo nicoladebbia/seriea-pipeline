@@ -796,6 +796,9 @@ def api_dashboard():
     lineups_raw = _load_json(UPCOMING_DIR / "confirmed_lineups.json")
     lineup_preds_raw = _load_json(UPCOMING_DIR / "lineup_predictions.json")
     epl_injuries_raw = _load_json(UPCOMING_DIR / "injuries_premier_league.json")
+    btts_raw = _load_json(UPCOMING_DIR / "btts_predictions.json", default=[])
+    btts_list = btts_raw if isinstance(btts_raw, list) else btts_raw.get("predictions", [])
+    btts_by_match = {b.get("match", ""): b for b in btts_list if isinstance(b, dict)}
 
     # Normalize into match-keyed dicts
     # Merge Serie A predictions (default) with extra league prediction files
@@ -971,6 +974,9 @@ def api_dashboard():
 
             # Predicted lineups & formations
             "lineup_prediction": lineup_pred_matches.get(match_key, {}),
+
+            # BTTS probability
+            "btts_probability": btts_by_match.get(match_key, {}).get("btts_yes"),
 
             # Actual result (if settled)
             "actual_result": result_entry.get("result", "") if result_entry else "",

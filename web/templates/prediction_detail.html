@@ -32,7 +32,8 @@
   }
   .match-hero__outcome { font-size:20px; font-weight:800; margin-bottom:4px; }
   .match-hero__odds { font-size:12px; color:var(--text-tertiary); font-family:var(--font-mono); }
-  .match-hero__prob-bar { width:200px; margin:var(--space-2) 0; }
+  .match-hero__prob-bar { width:280px; margin:var(--space-2) 0; }
+  @media (max-width:768px) { .match-hero__prob-bar { width:200px; } }
 
   /* ── Section Cards ──────────────────────────────────── */
   .pd-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-4); }
@@ -633,7 +634,13 @@ function renderHero(m, ctx) {
         ${isCompleted && actualScore
           ? `<div style="font-size:36px;font-weight:800;font-family:var(--font-mono);color:var(--text-primary);margin-bottom:4px">${actualScore[0]} - ${actualScore[1]}</div>
              <div style="font-size:11px;color:var(--text-tertiary)">Full Time</div>`
-          : `<div class="match-hero__prob-bar">${probBarHTML(probs)}</div>
+          : `<div class="match-hero__prob-bar">${probBarHTML(probs)}
+               <div style="display:flex;justify-content:space-between;padding:0 2px;margin-top:2px">
+                 <span style="font-size:10px;color:var(--green);font-weight:600">Home</span>
+                 <span style="font-size:10px;color:var(--text-tertiary)">Draw</span>
+                 <span style="font-size:10px;color:var(--red);font-weight:600">Away</span>
+               </div>
+             </div>
              <div class="match-hero__outcome" style="color:${outcomeCol}">${m.predicted_outcome||'?'}</div>
              <div class="match-hero__odds">
                ${h2h.home ? `${oddsFmt(h2h.home)} / ${oddsFmt(h2h.draw)} / ${oddsFmt(h2h.away)}` : ''}
@@ -723,23 +730,41 @@ function renderVerdict(m) {
 // ═══════════════════════════════════════════════════════════════
 // RENDER: Value Bets
 // ═══════════════════════════════════════════════════════════════
-function renderValueBets(m) {
+function renderValueBets(m, slipBets) {
+  // slipBets = array of bets from unified_bet_slip.json matching this match
   const edges = getMatchEdges(m);
   const h2h = m.odds?.h2h || {};
   const totals = m.odds?.totals || [];
   const rec = m.betting_recommendation;
   let bets = [];
 
-  // 1X2 edges
-  for (const [side, label, col] of [['home', m.home_team + ' Win', '--green'], ['draw', 'Draw', '--amber'], ['away', m.away_team + ' Win', '--red']]) {
-    const edge = edges[side];
-    if (edge && edge > 3) {
-      bets.push({ market: '1X2', selection: label, odds: h2h[side], edge, col });
+  // Priority 1: Pipeline-curated bets from unified_bet_slip.json
+  if (slipBets && slipBets.length) {
+    for (const b of slipBets) {
+      bets.push({
+        market: b.market || '1X2',
+        selection: b.selection || '?',
+        odds: b.best_odds || b.odds,
+        edge: b.edge_pct || 0,
+        bookmaker: b.best_bookmaker || '',
+        stake: b.stake_amount,
+        confidence: b.confidence_tier || b.model_confidence,
+        source: 'pipeline'
+      });
+    }
+  }
+
+  // Priority 2: Ad-hoc 1X2 edge computation (only if no slip bets)
+  if (!bets.length) {
+    for (const [side, label] of [['home', m.home_team + ' Win'], ['draw', 'Draw'], ['away', m.away_team + ' Win']]) {
+      const edge = edges[side];
+      if (edge && edge > 3) {
+        bets.push({ market: '1X2', selection: label, odds: h2h[side], edge, source: 'computed' });
+      }
     }
   }
 
   if (!bets.length) {
-    // Hide the entire value bets section if no edges
     const wrap = document.getElementById('sec-value-bets-wrap');
     if (wrap) wrap.style.display = 'none';
     return '';
@@ -747,18 +772,20 @@ function renderValueBets(m) {
 
   let html = '<div class="vb-grid">';
   for (const b of bets) {
+    const edgeCol = b.edge > 5 ? 'text-green' : b.edge > 3 ? 'text-amber' : 'text-tertiary';
     html += `<div class="vb-card">
-      <div class="vb-card__market">${b.market}</div>
-      <div class="vb-card__selection">${b.selection}</div>
+      <div class="vb-card__market">${sanitizeHTML(b.market)}</div>
+      <div class="vb-card__selection" style="font-size:14px;font-weight:600">${sanitizeHTML(b.selection)}</div>
       <div class="vb-card__row">
-        <span class="vb-card__odds">${b.odds ? '@' + b.odds.toFixed(2) : ''}</span>
-        <span class="vb-card__edge">+${b.edge.toFixed(1)}% edge</span>
+        <span class="vb-card__odds">${b.odds ? '@' + Number(b.odds).toFixed(2) : ''}</span>
+        <span class="vb-card__edge ${edgeCol}">+${Number(b.edge).toFixed(1)}% edge</span>
       </div>
+      ${b.bookmaker ? `<div style="font-size:10px;color:var(--text-tertiary);margin-top:4px">${sanitizeHTML(b.bookmaker)}${b.stake ? ' · €' + Number(b.stake).toFixed(2) : ''}${b.confidence ? ' · ' + sanitizeHTML(String(b.confidence)) : ''}</div>` : ''}
     </div>`;
   }
   html += '</div>';
 
-  // Totals as secondary bets
+  // Totals display
   if (totals.length) {
     html += '<div style="margin-top:var(--space-3)"><div class="text-label mb-2">Totals (O/U)</div><div style="display:flex;gap:var(--space-2);flex-wrap:wrap">';
     for (const t of totals.slice(0, 4)) {
@@ -825,8 +852,8 @@ function renderKeyStats(m) {
   }
 
   // Confidence
-  if (m.confidence_score != null) {
-    items.push({ label: 'Confidence', value: (m.confidence_score * 100).toFixed(0) + '%' });
+  if (m.confidence != null) {
+    items.push({ label: 'Confidence', value: (m.confidence * 100).toFixed(0) + '%' });
   }
 
   // Sharp direction
@@ -1136,9 +1163,16 @@ function renderInjuries(m) {
 // ═══════════════════════════════════════════════════════════════
 function renderCrossMarket(m) {
   const cm = m.cross_market || {};
-  if (!cm.signals_count && !cm.has_anomaly) return '<div class="text-small text-tertiary">No cross-market signal data</div>';
+  if (!cm.offensive_dominance && !cm.defensive_signal && !cm.handicap_consistency && !cm.btts_totals) return '<div class="text-small text-tertiary">No cross-market signal data</div>';
 
-  let html = '<div class="dp-intel-grid">';
+  let html = '';
+  if (cm.has_anomaly || cm.signals_count > 0) {
+    html += `<div class="flex items-center gap-2 mb-3"><span class="badge badge--amber">ANOMALY DETECTED</span><span class="text-small text-tertiary">${cm.signals_count} signal${cm.signals_count !== 1 ? 's' : ''}</span></div>`;
+  } else {
+    html += `<div class="flex items-center gap-2 mb-3"><span class="badge badge--green">ALL CLEAR</span><span class="text-small text-tertiary">No cross-market anomalies</span></div>`;
+  }
+
+  html += '<div class="dp-intel-grid">';
   if (cm.offensive_dominance) {
     const od = cm.offensive_dominance;
     html += `<div class="dp-intel-item"><span class="text-label">Offensive Dominance</span><span class="text-small mt-1">${od.detected ? `<span class="badge badge--green">${od.side}</span> str: ${(od.strength*100).toFixed(0)}%` : '<span class="text-tertiary">Not detected</span>'}</span></div>`;
@@ -1169,7 +1203,7 @@ function renderCrossMarket(m) {
 // ═══════════════════════════════════════════════════════════════
 function renderDrawAnalysis(m) {
   const da = m.draw_analysis||{};
-  if (!da.draw_score && !da.is_draw_candidate) return '<div class="text-small text-tertiary">No draw analysis data</div>';
+  if (da.draw_score == null && !da.is_draw_candidate) return '<div class="text-small text-tertiary">No draw analysis data</div>';
   const dp = (da.draw_score||0)*100;
   return `
     <div class="flex items-center gap-3 mb-2">
@@ -1217,10 +1251,48 @@ function renderConditions(m) {
 function renderSentiment(m) {
   const sent = m.sentiment||{};
   if (!sent.home_fan_confidence && !sent.away_fan_confidence) return '<div class="text-small text-tertiary">No sentiment data</div>';
-  return `<div class="dp-mini-grid">
-    <div class="dp-mini-stat"><span class="text-label">Home Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--green" style="width:${sent.home_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.home_fan_confidence||0}%</span></div></div>
-    <div class="dp-mini-stat"><span class="text-label">Away Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--red" style="width:${sent.away_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.away_fan_confidence||0}%</span></div></div>
-  </div>`;
+
+  let html = '<div class="dp-mini-grid">';
+
+  // Fan confidence bars
+  html += `<div class="dp-mini-stat"><span class="text-label">${sanitizeHTML(m.home_team)} Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--green" style="width:${sent.home_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.home_fan_confidence||0}%</span></div></div>`;
+  html += `<div class="dp-mini-stat"><span class="text-label">${sanitizeHTML(m.away_team)} Fan Confidence</span><div class="flex items-center gap-2 mt-1"><div class="progress flex-1"><div class="progress__fill progress__fill--red" style="width:${sent.away_fan_confidence||0}%"></div></div><span class="text-mono" style="font-size:12px">${sent.away_fan_confidence||0}%</span></div></div>`;
+  html += '</div>';
+
+  // Sentiment edge + contrarian + media hype
+  html += '<div class="dp-intel-grid" style="margin-top:var(--space-3)">';
+  if (sent.sentiment_edge) {
+    const edgeCol = sent.sentiment_edge.toLowerCase().includes('home') ? 'text-green' : sent.sentiment_edge.toLowerCase().includes('away') ? 'text-red' : 'text-tertiary';
+    html += `<div class="dp-intel-item"><span class="text-label">Sentiment Edge</span><span class="text-small mt-1 ${edgeCol} font-semibold">${sanitizeHTML(sent.sentiment_edge)}</span></div>`;
+  }
+  if (sent.contrarian_opportunity) {
+    html += `<div class="dp-intel-item"><span class="text-label">Contrarian</span><span class="text-small mt-1"><span class="badge badge--amber">OPPORTUNITY</span></span></div>`;
+  }
+  if (sent.media_hype_home != null || sent.media_hype_away != null) {
+    html += `<div class="dp-intel-item"><span class="text-label">Media Hype</span><span class="text-small mt-1 text-mono">${m.home_team}: ${sent.media_hype_home != null ? (sent.media_hype_home > 0 ? '+' : '') + sent.media_hype_home : '-'} | ${m.away_team}: ${sent.media_hype_away != null ? (sent.media_hype_away > 0 ? '+' : '') + sent.media_hype_away : '-'}</span></div>`;
+  }
+  if (sent.derby_pressure && sent.derby_pressure > 0) {
+    html += `<div class="dp-intel-item"><span class="text-label">Derby Pressure</span><span class="text-small mt-1 text-amber font-semibold">${sent.derby_pressure}</span></div>`;
+  }
+  html += '</div>';
+
+  // Reasoning text
+  if (sent.reasoning) {
+    // Show only the CONCLUSION line if present, otherwise truncate
+    const lines = sent.reasoning.split('\n').filter(l => l.trim());
+    const conclusion = lines.find(l => l.includes('CONCLUSION'));
+    const display = conclusion || lines[lines.length - 1] || '';
+    html += `<div style="margin-top:var(--space-3);padding:var(--space-3);background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:11px;color:var(--text-secondary);line-height:1.5;font-style:italic">${sanitizeHTML(display)}</div>`;
+  }
+
+  // Data sources
+  if (sent.sources_used) {
+    html += `<div class="text-small text-tertiary mt-2">Sources: ${sanitizeHTML(String(sent.sources_used))}</div>`;
+  } else {
+    html += `<div class="text-small text-tertiary mt-2">Based on: form analysis, league standings, injury reports, Elo ratings</div>`;
+  }
+
+  return html;
 }
 
 
@@ -1529,9 +1601,10 @@ function startLiveRefresh() {
 // ═══════════════════════════════════════════════════════════════
 async function loadMatchDetail() {
   try {
-    const [dashData, ctxData] = await Promise.all([
+    const [dashData, ctxData, bettingData] = await Promise.all([
       apiFetch('/api/dashboard'),
-      apiFetch('/api/predictions/context').catch(() => ({ h2h:{}, standings:{}, calibration:{} }))
+      apiFetch('/api/predictions/context').catch(() => ({ h2h:{}, standings:{}, calibration:{} })),
+      apiFetch('/api/betting').catch(() => ({ bets:[], matches:{} }))
     ]);
 
     // Find match by slug — check all_matches first (includes completed), fallback to matches
@@ -1563,7 +1636,12 @@ async function loadMatchDetail() {
 
     // Render all sections (new order)
     document.getElementById('body-verdict').innerHTML = renderVerdict(match);
-    document.getElementById('body-value-bets').innerHTML = renderValueBets(match);
+
+    // Match slip bets from unified_bet_slip to this match
+    const matchKey = match.match || `${match.home_team} vs ${match.away_team}`;
+    const allSlipBets = bettingData.bets || [];
+    const matchSlipBets = allSlipBets.filter(b => b.match === matchKey || (b.match && matchKey && b.match.includes(match.home_team) && b.match.includes(match.away_team)));
+    document.getElementById('body-value-bets').innerHTML = renderValueBets(match, matchSlipBets);
     document.getElementById('body-key-stats').innerHTML = renderKeyStats(match);
     document.getElementById('body-prediction').innerHTML = renderPredictionAnalysis(match);
     document.getElementById('body-h2h').innerHTML = renderH2H(match, ctxData);
