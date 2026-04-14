@@ -46,6 +46,13 @@ JOBS = [
         "minute": 0,
     },
     {
+        "name": "odds-refresh",
+        "label": f"{LABEL_PREFIX}.odds-refresh",
+        "description": "Incremental odds + predictions refresh every 3 hours",
+        "mode": "refresh",
+        "interval_seconds": 10800,  # Every 3 hours (3 * 60 * 60)
+    },
+    {
         "name": "pre-kickoff-monitor",
         "label": f"{LABEL_PREFIX}.pre-kickoff-monitor",
         "description": "Smart pre-kickoff: checks actual match times every 30 min",
@@ -92,6 +99,14 @@ JOBS = [
         "description": "Telegram chat bot — AI advisor on your phone",
         "mode": "telegram-bot",
         "custom_args": [str(PYTHON_PATH), "-m", "scripts.pipeline.telegram_bot"],
+        "keep_alive": True,  # Restart if it crashes
+    },
+    {
+        "name": "web-dashboard",
+        "label": f"{LABEL_PREFIX}.web-dashboard",
+        "description": "Flask web dashboard — betting intelligence on localhost:5001",
+        "mode": "web-dashboard",
+        "custom_args": [str(PYTHON_PATH), str(PROJECT_ROOT / "web" / "app.py")],
         "keep_alive": True,  # Restart if it crashes
     },
     {

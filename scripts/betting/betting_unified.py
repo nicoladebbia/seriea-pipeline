@@ -47,9 +47,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, MODELS_DIR
 
 UPCOMING = DATA_DIR / "upcoming"
+
+
+def _league_betting_enabled(league: str) -> bool:
+    """Check if a league has a validated deployment state allowing betting.
+
+    Serie A is always enabled (established pipeline with published metrics).
+    All other leagues require a deployment_state.json with betting_enabled=true.
+    """
+    if league == "serie_a":
+        return True
+    state_path = MODELS_DIR / league / "deployment_state.json"
+    if not state_path.exists():
+        return False
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+        return state.get("betting_enabled", False)
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -96,20 +115,28 @@ class BettingConfig:
     proportional_stake_pct: float = 2.0  # flat % when mode=proportional
 
     # -- Kelly fraction --
-    # 10% Kelly: slightly more conservative than 15% to reduce variance.
-    # At 10%, a bet with 5% edge gets ~0.5% of bankroll (EUR 5 on 1000).
-    # At 10%, a bet with 10% edge gets ~1.5% (EUR 15). Scales naturally.
-    kelly_fraction: float = 0.10
+    # 5% Kelly: conservative sizing to reduce variance and drawdown.
+    # At 5%, a bet with 5% edge gets ~0.25% of bankroll (EUR 2.50 on 1000).
+    # At 5%, a bet with 10% edge gets ~0.75% (EUR 7.50). Scales naturally.
+    kelly_fraction: float = 0.05
 
-    # -- Edge thresholds (Phase 8 live-bet audit, Feb 19 2026) --
-    # Per-market thresholds are in market_rules below; this is the global fallback.
-    # Live audit (42 bets): edges 3-8% hit 69% vs expected 55% (REAL edge).
-    # Edges 12%+ hit only 27% vs expected 67% (model overconfidence).
-    min_edge_pct: float = 4.0        # Global fallback min edge (market_rules override per market)
-    max_edge_pct: float = 8.0        # Max edge cap — live data: >10% edges are 38% WR / -EUR133 (was 12)
-    max_edge_draw_pct: float = 8.0   # Draw-specific max edge — aligned with global cap (was 10)
-    strong_edge_pct: float = 6.0     # "Strong" value threshold (%) — raised from 4.0 (was too easy to qualify)
-    elite_edge_pct: float = 8.0      # "Elite" value threshold (%) — raised from 5.5 (every 1X2 bet was ELITE)
+    # -- Edge thresholds (revised Apr 2026 — deep journal analysis, 153 bets) --
+    # 3-5% edge = +113% ROI (70% WR). 5-7% = +2%. 7-10% = -1%. 10%+ = -13%.
+    # Sweet spot is 3-7%. Anything above 7% is model overconfidence.
+    min_edge_pct: float = 3.0        # Lowered from 4.0 — 3-5% is the best bucket
+    max_edge_pct: float = 7.0        # Lowered from 8.0 — 7-10% edges = -1% ROI
+    max_edge_draw_pct: float = 6.0   # Tightened from 7.0
+    strong_edge_pct: float = 4.5     # "Strong" value threshold
+    elite_edge_pct: float = 6.0      # "Elite" value threshold
+
+    # -- Confidence-stratified edge thresholds --
+    # When model is confident (prob > 55%), it's more reliable → lower edge needed.
+    # When model is uncertain (prob < 40%), require higher edge for safety.
+    confidence_edge_tiers: Dict = field(default_factory=lambda: {
+        "high":   {"min_prob": 0.55, "min_edge_adj": -1.5},  # Lower edge threshold by 1.5pp
+        "medium": {"min_prob": 0.40, "min_edge_adj":  0.0},  # Default thresholds
+        "low":    {"min_prob": 0.00, "min_edge_adj": +2.0},  # Raise edge threshold by 2pp
+    })
 
     # -- Stake limits (% of bankroll) --
     min_stake_pct: float = 0.5       # Don't place bets smaller than this
@@ -119,7 +146,7 @@ class BettingConfig:
     max_portfolio_exposure_pct: float = 50.0  # Max TOTAL outstanding exposure (including journal pending bets)
 
     # -- Portfolio limits --
-    max_bets_per_match: int = 2      # Max correlated bets on same match (was 3; 3 creates contradictory positions)
+    max_bets_per_match: int = 1      # 1 bet per match — eliminates correlated losses (was 2)
     max_total_bets: int = 20         # Max total bets per round
     max_draw_family_bets: int = 2    # Max draw bets per round — was 3, reduced to manage variance
                                      # (31.7% WR means 6-bet avg losing streaks; cap at 2 to diversify)
@@ -194,20 +221,22 @@ class BettingConfig:
     #   BTTS:       -7.6% ROI live (no edge visible) — DISABLE
     market_rules: Dict = field(default_factory=lambda: {
         "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0},   # Home DISABLED: insufficient data
-        "1X2_Away":   {"enabled": True,  "min_edge_pct": 7.0,  "max_edge_pct": 10.0},  # ENABLED: backtest +19% ROI (33 bets, 57.6% WR)
-        "1X2_Draw":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 12.0},  # Draw gets wider edge cap: market systematically underprices draws.
-                                                                                         # 8% cap killed +€3692 profit. Backtest: 496 bets +17.3% at max=15%
-        "O/U_Over":   {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 8.0,    # RE-ENABLED: CLV analysis shows O/U 1.5 (+19.7% ROI, 100% CLV+)
-                       "allowed_lines": [1.5, 2.5]},                                   # and O/U 2.5 (+4.3% ROI, 96% CLV+). O/U 3.5 excluded (-100% ROI)
-        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0},
-        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 8.0},
-        "DC":         {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
-        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
-        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
-        "Alt_OU":     {"enabled": True,  "min_edge_pct": 6.0,  "max_edge_pct": 8.0},
-        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 8.0},
-        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
-        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},
+        "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0},   # DISABLED: live -20.4% ROI on 21 1X2 bets (28.6% WR). Re-enable after 50+ profitable bets.
+        "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},   # DISABLED 2026-04-06: Live 6W-15L (-25.5% ROI, -€91).
+                                                                                         # Backtest claimed +17.3% but live reality is -25.5%. Do not re-enable.
+        "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +14.4% ROI (78% WR, 32 bets). Crown jewel.
+                       "allowed_lines": [1.5], "kelly_fraction": 0.08},                 # 8% Kelly (up from 5%) — proven market deserves bigger stakes
+        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0},
+        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},
+        "DC":         {"enabled": True,  "min_edge_pct": 4.0,  "max_edge_pct": 7.0,    # DC 1X: +8% ROI, 59% WR.
+                       "kelly_fraction": 0.06},                                         # 6% Kelly — promising but less data than O/U
+        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
+        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
+        "Alt_OU":     {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,
+                       "allowed_lines": [1.5]},                                         # Restrict to 1.5 only (like main O/U)
+        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},
+        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
+        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
     })
 
     # -- Situational edge adjustments (multi-market backtest-derived, 760 matches) --
@@ -227,6 +256,10 @@ class BettingConfig:
         # --- Unprofitable situations: raise the threshold ---
         "derby__O/U_Over__Over":         +3.0,   # Derby overs: -56% ROI → effectively block
         "midweek__O/U_Over__Over":       +2.0,   # Midweek overs: -25% ROI
+        # --- EPL-specific (conservative defaults until backtested) ---
+        "big_6_matchup__1X2__Draw":      -1.0,   # Big 6 matchups tend to be tighter
+        "big_6_matchup__O/U_Over__Over": +1.0,   # Big 6 matches: often cagey, fewer goals
+        "london_derby__1X2__Draw":       -1.5,   # London derbies: higher draw tendency
     })
 
     @classmethod
@@ -277,18 +310,17 @@ class BettingConfig:
                 from scripts.betting.bankroll_loader import get_effective_bankroll
                 cfg.bankroll = get_effective_bankroll()
             except Exception as e:
-                log.error("CRITICAL: Failed to load bankroll from journal: %s", e)
-                log.error("Using fallback bankroll=%.0f — VERIFY this is correct before betting", cfg.bankroll)
+                log.critical("BANKROLL LOAD FAILED: %s — REFUSING TO BET", e)
                 try:
                     from scripts.pipeline.notify import send_notification
                     send_notification(
-                        f"Bankroll load failed: {e}. Using fallback EUR {cfg.bankroll:.0f}. "
-                        "Verify before placing any bets!",
+                        f"Bankroll load failed: {e}. Betting engine ABORTED.",
                         title="CRITICAL: Bankroll Error",
                         level="critical",
                     )
                 except Exception:
-                    pass  # Don't crash if notification also fails
+                    pass
+                raise RuntimeError(f"Cannot load bankroll: {e}") from e
         return cfg
 
 
@@ -378,6 +410,9 @@ class ValueBet:
     confidence_tier: str = ""    # "ELITE", "STRONG", "STANDARD"
     model_confidence: float = 0.0  # Original model confidence
 
+    # League
+    league: str = "serie_a"      # "serie_a", "premier_league", etc.
+
     # Portfolio
     match_group: str = ""        # For correlation tracking
     is_selected: bool = False    # Final portfolio selection
@@ -430,49 +465,102 @@ class AccumulatorBet:
 # 3. DATA LAYER -- Load all live files
 # =============================================================================
 def load_predictions() -> List[Dict]:
-    """Load ensemble predictions from all league files."""
+    """Load ensemble predictions from all validated league files.
+
+    Tags each prediction with a 'league' field and filters out predictions
+    from leagues that haven't passed deployment validation.
+    """
     all_preds = []
+    # Map filename → league key for tagging
     prediction_files = [
-        "predictions.json",                  # Serie A (default)
-        "predictions_premier_league.json",   # EPL
+        ("predictions.json", "serie_a"),
+        ("predictions_premier_league.json", "premier_league"),
     ]
     found_any = False
-    for fname in prediction_files:
+    for fname, league_key in prediction_files:
         p = UPCOMING / fname
         if not p.exists():
             continue
         found_any = True
+
+        # League gate: skip predictions from unvalidated leagues
+        if not _league_betting_enabled(league_key):
+            log.warning("SKIPPING %s — league '%s' not validated for betting "
+                        "(no deployment_state.json with betting_enabled=true)",
+                        fname, league_key)
+            continue
+
         try:
             with open(p) as f:
                 data = json.load(f)
             preds = data.get("predictions", [])
+            # Tag each prediction with its league
+            for pred in preds:
+                pred.setdefault("league", league_key)
             all_preds.extend(preds)
-            log.info("Loaded %d predictions from %s", len(preds), fname)
+            log.info("Loaded %d predictions from %s (league=%s)", len(preds), fname, league_key)
         except Exception as e:
             log.warning("Failed to load %s: %s", fname, e)
     if not found_any:
         log.error("No prediction files found")
+
+    # Filter out past matches at load time — prevents stale re-bets on pipeline re-runs
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    pre_filter = len(all_preds)
+    all_preds = [p for p in all_preds if p.get("date", "9999-99-99")[:10] >= today_str]
+    if pre_filter > len(all_preds):
+        log.info("Filtered %d past-date predictions at load time", pre_filter - len(all_preds))
+
     return all_preds
 
 
 def load_odds_full() -> Dict:
-    """Load full odds with all bookmakers."""
+    """Load full odds with all bookmakers (all leagues merged)."""
+    all_matches = {}
+    # Load Serie A odds (default)
     p = UPCOMING / "odds_full.json"
-    if not p.exists():
-        log.warning("No odds_full.json found")
-        return {}
-    with open(p) as f:
-        data = json.load(f)
-    return data.get("matches", {})
+    if p.exists():
+        with open(p) as f:
+            data = json.load(f)
+        all_matches.update(data.get("matches", {}))
+    # Merge in other league odds files
+    for league_file in UPCOMING.glob("odds_full_*.json"):
+        try:
+            with open(league_file) as f:
+                league_data = json.load(f)
+            league_matches = league_data.get("matches", {})
+            all_matches.update(league_matches)
+            log.info("Loaded %d matches from %s", len(league_matches), league_file.name)
+        except Exception as e:
+            log.warning("Failed to load %s: %s", league_file.name, e)
+    if not all_matches:
+        log.warning("No odds data found in any odds_full*.json file")
+    return all_matches
 
 
 def load_simple_odds() -> Dict:
-    """Load simple 1X2 odds (fallback)."""
-    p = UPCOMING / "odds.json"
-    if not p.exists():
-        return {}
-    with open(p) as f:
-        return json.load(f)
+    """Load simple 1X2 odds (fallback, all leagues merged)."""
+    all_odds = {}
+    for odds_file in [UPCOMING / "odds.json"] + list(UPCOMING.glob("odds_*.json")):
+        if odds_file.name.startswith("odds_full") or odds_file.name.startswith("odds_bookmakers"):
+            continue
+        if odds_file.name.startswith("odds_extra_markets"):
+            continue
+        if odds_file.name in ("odds_totals.json", "odds_spreads.json", "odds_btts.json",
+                              "odds_dnb.json", "odds_movement.json"):
+            continue
+        if odds_file.exists():
+            try:
+                with open(odds_file) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    # Simple odds are flat dicts keyed by match
+                    for k, v in data.items():
+                        if isinstance(v, dict) and "home" in v:
+                            all_odds[k] = v
+            except Exception:
+                pass
+    return all_odds
 
 
 def load_extended_markets() -> Dict:
@@ -542,13 +630,22 @@ def load_margin_predictions() -> List[Dict]:
 
 
 def load_extra_market_odds() -> Dict:
-    """Load extra market odds (BTTS, DC, alternate totals) with real bookmaker prices."""
-    p = UPCOMING / "odds_extra_markets.json"
-    if not p.exists():
-        return {}
-    with open(p) as f:
-        data = json.load(f)
-    return data.get("matches", {})
+    """Load extra market odds (BTTS, DC, alternate totals) with real bookmaker prices.
+
+    Merges Serie A and EPL (and any other league-suffixed) files.
+    """
+    all_extra: Dict = {}
+    for p in [UPCOMING / "odds_extra_markets.json"] + list(UPCOMING.glob("odds_extra_markets_*.json")):
+        if not p.exists():
+            continue
+        try:
+            with open(p) as f:
+                data = json.load(f)
+            matches = data.get("matches", {})
+            all_extra.update(matches)
+        except Exception:
+            log.warning(f"Failed to load extra markets from {p.name}")
+    return all_extra
 
 
 def load_odds_movement() -> Dict:
@@ -804,6 +901,20 @@ class UnifiedBettingEngine:
         "2024-2025": {"Como", "Parma", "Venezia"},
         "2025-2026": {"Sassuolo", "Pisa", "Cremonese"},
     }
+    _EPL_PROMOTED_TEAMS = {
+        "2023-2024": {"Burnley", "Sheffield United", "Luton Town"},
+        "2024-2025": {"Leicester City", "Ipswich Town", "Southampton"},
+        "2025-2026": {"Leeds", "Leeds United", "Burnley", "Sunderland"},
+    }
+    _EPL_BIG_6 = {
+        "Arsenal", "Chelsea", "Liverpool", "Man City", "Manchester City",
+        "Man United", "Manchester United", "Tottenham", "Tottenham Hotspur",
+    }
+    _LONDON_CLUBS = {
+        "Arsenal", "Chelsea", "Tottenham", "Tottenham Hotspur",
+        "West Ham", "West Ham United", "Crystal Palace",
+        "Fulham", "Brentford",
+    }
 
     def _get_situational_tags(self, pred: Dict) -> List[str]:
         """Compute situational tags from prediction data.
@@ -835,13 +946,21 @@ class UnifiedBettingEngine:
             except (ValueError, TypeError):
                 pass
 
-        # Promoted team (current season)
+        # Promoted team (current season — both leagues)
         season = self._current_season(match_date)
-        promoted = self._PROMOTED_TEAMS.get(season, set())
+        promoted = self._PROMOTED_TEAMS.get(season, set()) | self._EPL_PROMOTED_TEAMS.get(season, set())
         if home in promoted:
             tags.append("promoted_home")
         if away in promoted:
             tags.append("promoted_away")
+
+        # EPL Big 6 matchup
+        if home in self._EPL_BIG_6 and away in self._EPL_BIG_6:
+            tags.append("big_6_matchup")
+
+        # London derby
+        if home in self._LONDON_CLUBS and away in self._LONDON_CLUBS:
+            tags.append("london_derby")
 
         # Rest advantage / disadvantage — from situational_context
         # (injected by ensemble_prediction_engine from features.parquet)
@@ -935,19 +1054,45 @@ class UnifiedBettingEngine:
                     min_edge, market_cat, selection, tags
                 )
 
+        # Veto factors that are statistically losing
+        _VETO_FACTORS = {"cold_home", "away_fav_ref"}
+        if pred:
+            _all_factors = set(
+                (pred.get("neutral_factors") or []) +
+                (pred.get("home_factors") or []) +
+                (pred.get("away_factors") or [])
+            )
+            if _all_factors & _VETO_FACTORS:
+                return None
+
         # Validate inputs — reject NaN/inf before any calculation
         if (any(math.isnan(v) or math.isinf(v) for v in [model_p, sharp_p, best_o] if isinstance(v, float))
                 or model_p <= 0 or model_p >= 1 or sharp_p <= 0):
             return None
 
         raw_edge = model_p - sharp_p
-        edge_pct = (raw_edge / sharp_p * 100) if sharp_p > 0 else 0
+        # Use absolute edge (model_p - implied_p) in percentage points.
+        # This matches the dashboard display and ensures thresholds are
+        # consistent across all markets (draws aren't penalized for having
+        # lower base probabilities).
+        edge_pct = raw_edge * 100
+
+        # Hard cap removed — now handled by per-market max_edge (7.0%) at line below.
+        # Previously: edges >8% hit 37.7% WR. Now capped at 7% via market_rules.
 
         # Odds-range gating: 1.5-2.0 is a dead zone (live: 15 bets, 40% WR, -EUR121).
-        # These odds are trap territory — too short to pay well, not short enough to
-        # be safe. Require significantly higher edge to compensate.
         if 1.5 <= best_o < 2.0:
-            min_edge = max(min_edge, 9.0)
+            return None  # Dead zone: -44% ROI live. No edge overcomes it.
+
+        # Confidence-stratified edge: adjust min_edge based on model probability
+        # High confidence (prob > 55%) = more reliable = lower edge needed
+        # Low confidence (prob < 40%) = uncertain = higher edge needed
+        for tier_name in ("high", "medium", "low"):
+            tier = cfg.confidence_edge_tiers.get(tier_name, {})
+            if model_p >= tier.get("min_prob", 0):
+                adj = tier.get("min_edge_adj", 0)
+                min_edge = max(2.0, min_edge + adj)  # Floor at 2% even with adjustment
+                break
 
         if edge_pct < min_edge:
             return None
@@ -960,34 +1105,84 @@ class UnifiedBettingEngine:
         if best_o < cfg.min_odds or best_o > cfg.max_odds:
             return None
 
+        # Require Pinnacle benchmark — can't verify edge without sharp reference
+        if not pin_o or pin_o <= 1:
+            return None  # No Pinnacle data = no confidence in edge reality
+        # Reject if best odds >5% above Pinnacle (at/below = +15% ROI, above = -1.4%)
+        if best_o > pin_o * 1.05:
+            return None
+
+        # Golden zone: 2.0-2.5 odds = +38.2% ROI (best range). Lower edge threshold.
+        if 2.0 <= best_o <= 2.5:
+            min_edge = max(2.0, min_edge - 0.5)
+
+        # Away preference: away bets = +13.1% ROI vs home -0.5%. Lower threshold.
+        sel_upper = selection.upper().strip() if isinstance(selection, str) else ""
+        if any(kw in sel_upper for kw in ("AWAY", "2", "X2")):
+            min_edge = max(2.0, min_edge - 0.5)
+
+        # Re-check min_edge after adjustments
+        if edge_pct < min_edge:
+            return None
+
         ev = calculate_ev(model_p, best_o)
         if ev <= 0:
             return None  # HARD GATE: never recommend a -EV bet
 
+        # Per-market Kelly fraction (proven markets get higher fraction)
+        market_kelly = rules.get("kelly_fraction", cfg.kelly_fraction)
         kelly_raw = calculate_kelly(model_p, best_o, fraction=1.0)
-        kelly_adj = calculate_kelly(model_p, best_o, fraction=cfg.kelly_fraction)
+        kelly_adj = calculate_kelly(model_p, best_o, fraction=market_kelly)
 
         if cfg.staking_mode == "proportional":
-            # Fixed percentage of bankroll — flat sizing, no oversizing risk.
             stake_pct = min(cfg.proportional_stake_pct, cfg.max_stake_pct)
         else:
             # Kelly fractional — sizes proportional to perceived edge.
-            # Safe because overconfident edges are blocked upstream by edge caps.
             stake_pct = min(kelly_adj * 100, cfg.max_stake_pct)
-            if stake_pct < 0.30:
-                return None  # Kelly < 0.3% = edge too thin to justify variance (was 0.15)
+            if stake_pct < 0.20:
+                return None  # Kelly < 0.2% = edge too thin (lowered from 0.30)
 
-        if stake_pct < cfg.min_stake_pct:
-            stake_pct = cfg.min_stake_pct  # Floor at minimum (bet is still +EV)
+            # Edge-quality multiplier: data shows 3-5% edges = +113% ROI,
+            # 5-7% = +2% ROI. Boost proven range, reduce marginal.
+            if 3.0 <= edge_pct <= 5.0:
+                stake_pct *= 1.2   # 20% boost for sweet spot edges
+            elif edge_pct > 5.0:
+                stake_pct *= 0.85  # 15% reduction for marginal edges
+
+            # Re-apply cap after multiplier
+            stake_pct = min(stake_pct, cfg.max_stake_pct)
+
+        # NO artificial floor — if Kelly says 0.25%, stake 0.25%.
+        # The old 0.5% floor was oversizing thin edges by 67%+.
 
         # Apply draw stake reduction for variance management
         # Draws have high edge but low win rate (31.7%) → brutal losing streaks.
         # Reduce stake by draw_stake_multiplier to protect bankroll psychology.
+        # Use league-specific multiplier: EPL has lower draw rate (~22% vs 28%)
         if market_cat == "1X2_Draw" and hasattr(cfg, "draw_stake_multiplier"):
-            stake_pct *= cfg.draw_stake_multiplier
+            _bet_league = pred.get("league", "serie_a") if pred else "serie_a"
+            _draw_mult = {"serie_a": 0.80, "premier_league": 0.65}.get(
+                _bet_league, cfg.draw_stake_multiplier
+            )
+            stake_pct *= _draw_mult
+
+        # Day-of-week gate: block Monday (-40.75% ROI, 21 bets) and Friday (-9.16% ROI, 18 bets)
+        try:
+            from datetime import datetime as _dt
+            _match_dt = _dt.strptime(date[:10], "%Y-%m-%d")
+            _dow = _match_dt.weekday()
+            if _dow == 0:  # Monday: -40.75% ROI, 33% WR → full block
+                return None
+            if _dow == 4:  # Friday: -9.16% ROI despite 61% WR (bad odds profile) → full block
+                return None
+        except (ValueError, TypeError):
+            log.warning("Day-of-week check failed for date=%s — allowing bet", date)
 
         tier = ("ELITE" if edge_pct >= cfg.elite_edge_pct else
                 "STRONG" if edge_pct >= cfg.strong_edge_pct else "STANDARD")
+
+        # Extract league from prediction context
+        _league = pred.get("league", "serie_a") if pred else "serie_a"
 
         return ValueBet(
             match=match, date=date, market=market, selection=selection,
@@ -1001,6 +1196,7 @@ class UnifiedBettingEngine:
             ev_per_unit=round(ev, 4),
             expected_profit=round(cfg.bankroll * stake_pct / 100 * ev, 2),
             confidence_tier=tier, model_confidence=confidence,
+            league=_league,
             match_group=match,
         )
 
@@ -1038,19 +1234,30 @@ class UnifiedBettingEngine:
                 continue
 
             true_probs = remove_overround([pin_h, pin_d, pin_a])
-            model_d = probs.get("draw", 0)
-            if model_d <= 0:
-                continue
 
-            best_o, best_bk, avg_o, count = find_best_odds(bookmakers, "draw")
-            bet = self._make_bet(
-                match, date, "1X2", "Draw", model_d, true_probs[1],
-                best_o, best_bk, avg_o, pin_d, count,
-                confidence=pred.get("confidence", 0),
-                max_edge_override=self.cfg.max_edge_draw_pct,
-                pred=pred)
-            if bet:
-                bets.append(bet)
+            # Scan all three 1X2 outcomes based on market rules
+            outcomes = [
+                ("1X2",       "Home", probs.get("home", 0), true_probs[0], "home", pin_h, None),
+                ("1X2_Away",  "Away", probs.get("away", 0), true_probs[2], "away", pin_a, None),
+                ("1X2_Draw",  "Draw", probs.get("draw", 0), true_probs[1], "draw", pin_d, self.cfg.max_edge_draw_pct),
+            ]
+
+            for market_cat, selection, model_p, sharp_p, bk_key, pin_odds, max_edge_ovr in outcomes:
+                rule = self.cfg.market_rules.get(market_cat, {})
+                if not rule.get("enabled", False):
+                    continue
+                if model_p <= 0:
+                    continue
+
+                best_o, best_bk, avg_o, count = find_best_odds(bookmakers, bk_key)
+                bet = self._make_bet(
+                    match, date, "1X2", selection, model_p, sharp_p,
+                    best_o, best_bk, avg_o, pin_odds, count,
+                    confidence=pred.get("confidence", 0),
+                    max_edge_override=max_edge_ovr,
+                    pred=pred)
+                if bet:
+                    bets.append(bet)
         return bets
 
     def scan_ou_market(self, goal_preds: List[Dict],
@@ -1085,21 +1292,29 @@ class UnifiedBettingEngine:
                 if total.get("bookmakers_count", len(bookmakers)) < 3:
                     continue
 
-                # Map line to probability keys
+                # Map line to probability: prefer ML O/U model, fall back to Poisson
                 model_over = 0
-                if line == 2.5:
-                    model_over = gp.get("over_2_5", 0)
-                elif line == 1.5:
-                    model_over = gp.get("over_1_5", 0)
-                elif line == 3.5:
-                    model_over = gp.get("over_3_5", 0)
-                elif line == 0.5:
-                    model_over = gp.get("over_0_5", 0)
-                elif line == 4.5:
-                    model_over = gp.get("over_4_5", 0)
-                else:
-                    key = f"over_{str(line).replace('.', '_')}"
-                    model_over = gp.get(key, 0)
+
+                # Try ML model first (3-model ensemble, better calibrated)
+                ml_ou = gp.get("ml_over_under", {})
+                if isinstance(ml_ou, dict) and line in ml_ou:
+                    model_over = ml_ou[line]
+
+                # Fall back to Poisson predictions
+                if model_over <= 0:
+                    if line == 2.5:
+                        model_over = gp.get("over_2_5", 0)
+                    elif line == 1.5:
+                        model_over = gp.get("over_1_5", 0)
+                    elif line == 3.5:
+                        model_over = gp.get("over_3_5", 0)
+                    elif line == 0.5:
+                        model_over = gp.get("over_0_5", 0)
+                    elif line == 4.5:
+                        model_over = gp.get("over_4_5", 0)
+                    else:
+                        key = f"over_{str(line).replace('.', '_')}"
+                        model_over = gp.get(key, 0)
 
                 if model_over <= 0:
                     continue
@@ -1678,30 +1893,56 @@ class UnifiedBettingEngine:
     # -----------------------------------------------------------------
     @staticmethod
     def compute_confidence_score(bet: ValueBet) -> float:
-        """Compute a 0-100 composite confidence score.
+        """Compute a 0-100 composite score based on what ACTUALLY predicts profit.
+
+        Rebuilt from journal analysis (153 bets). Old weights (confidence=25%)
+        had zero predictive value. New weights reflect empirical profit drivers.
 
         Components:
-          Edge strength (0-30):   raw_edge mapped to 0-30 points
-          Model confidence (0-25): ensemble confidence level
-          Market liquidity (0-20): number of bookmakers offering this
-          Odds quality (0-15):     best_odds vs pinnacle gap
-          Kelly signal (0-10):     raw Kelly fraction strength
-
-        (Preserved from ultimate_betting_system.compute_confidence_score)
+          Edge sweet spot (0-30):  3-5% edges score highest (inverted above 5%)
+          Odds zone quality (0-25): 2.0-2.5 = max, 1.25-1.5 = good, rest = low
+          Market liquidity (0-20):  more bookmakers = more reliable odds
+          Kelly signal (0-15):      raw Kelly fraction strength
+          Pinnacle gap (0-10):      best_odds vs pinnacle — lower gap = sharper line
         """
-        edge_pts = min(30, bet.raw_edge * 200)
-        conf = bet.model_confidence if isinstance(bet.model_confidence, float) else 0
-        conf_pts = conf * 25
+        # Edge sweet spot: 3-5% = best bucket (+113% ROI). Above 5% = marginal.
+        edge = bet.raw_edge * 100  # Convert to pct
+        if 3.0 <= edge <= 5.0:
+            edge_pts = 30  # Maximum — sweet spot
+        elif edge < 3.0:
+            edge_pts = edge * 10  # 0-30 linear
+        else:
+            # 5-7%: declining quality. 5% = 25pts, 7% = 15pts.
+            edge_pts = max(10, 30 - (edge - 5.0) * 7.5)
+
+        # Odds zone quality: 2.0-2.5 = +38.2% ROI (best), 1.25-1.5 = +4.3%
+        odds = bet.best_odds
+        if 2.0 <= odds <= 2.5:
+            odds_zone_pts = 25  # Golden zone
+        elif 2.5 < odds <= 3.0:
+            odds_zone_pts = 18  # Good
+        elif 1.25 <= odds < 1.5:
+            odds_zone_pts = 15  # Decent but low value
+        elif 3.0 < odds <= 4.0:
+            odds_zone_pts = 12  # Higher risk
+        else:
+            odds_zone_pts = 5   # Outside proven ranges
+
+        # Liquidity: more bookmakers = more efficient market = more reliable edge
         liq_pts = min(20, bet.odds_count * 0.7)
 
-        if bet.pinnacle_odds > 1 and bet.best_odds > 1:
-            odds_gap = (bet.best_odds - bet.pinnacle_odds) / bet.pinnacle_odds
-            odds_pts = min(15, odds_gap * 200)
-        else:
-            odds_pts = 0
+        # Kelly signal: higher raw Kelly = stronger perceived edge
+        kelly_pts = min(15, bet.kelly_raw * 100)
 
-        kelly_pts = min(10, bet.kelly_raw * 70)
-        return round(edge_pts + conf_pts + liq_pts + odds_pts + kelly_pts, 1)
+        # Pinnacle gap: LOWER is better (we want to be AT or BELOW Pinnacle)
+        if bet.pinnacle_odds > 1 and bet.best_odds > 1:
+            gap = (bet.best_odds - bet.pinnacle_odds) / bet.pinnacle_odds
+            # gap < 0 = we're below Pinnacle (good). gap > 0 = above (risky).
+            pin_pts = max(0, min(10, 10 - gap * 200))
+        else:
+            pin_pts = 0
+
+        return round(edge_pts + odds_zone_pts + liq_pts + kelly_pts + pin_pts, 1)
 
     # -----------------------------------------------------------------
     # PORTFOLIO OPTIMIZATION (two-pass diversity + selection)
@@ -1883,31 +2124,38 @@ class UnifiedBettingEngine:
         for key in market_groups:
             market_groups[key].sort(key=lambda b: b._score, reverse=True)  # type: ignore
 
-        # PASS 1: Guaranteed best from each market
-        priority_order = ["1X2", "O/U", "AH", "DC", "DNB", "BTTS", "Cards", "Corners"]
-        for mtype in priority_order:
-            if mtype not in market_groups:
-                continue
-            for bet in market_groups[mtype]:
-                if _can_add(bet):
-                    _accept(bet)
-                    break
-
-        # PASS 2: Fill remaining by composite score
+        # QUALITY-FIRST SELECTION (replaced 2-pass diversity system)
+        # With most markets disabled (only O/U 1.5 + DC active), diversity
+        # is less important than quality. Take the best bets by score.
         max_per_market = max(3, int(cfg.max_total_bets * 0.50))
         all_sorted = sorted(all_bets, key=lambda b: b._score, reverse=True)  # type: ignore
+
+        # Track team exposure: max 3 bets involving any single team
+        team_counts: dict[str, int] = {}
+        MAX_TEAM_EXPOSURE = 3
+
         for bet in all_sorted:
             if len(selected) >= cfg.max_total_bets:
                 break
-            if bet.is_selected:
-                continue
+
+            # Market concentration cap
             mtype = self._market_group(bet.market)
             current_count = sum(1 for s in selected
                                 if self._market_group(s.market) == mtype)
             if current_count >= max_per_market:
                 continue
+
+            # Team correlation check: extract teams from match name
+            match = bet.match
+            teams = [t.strip() for t in match.split(" vs ")] if " vs " in match else []
+            if teams:
+                if any(team_counts.get(t, 0) >= MAX_TEAM_EXPOSURE for t in teams):
+                    continue
+
             if _can_add(bet):
                 _accept(bet)
+                for t in teams:
+                    team_counts[t] = team_counts.get(t, 0) + 1
 
         return selected
 
@@ -2200,6 +2448,16 @@ class UnifiedBettingEngine:
         """
         cfg = self.cfg
 
+        # Use real-time bankroll instead of static initial
+        try:
+            from scripts.betting.bankroll_loader import get_effective_bankroll
+            live_bankroll = get_effective_bankroll()
+            if live_bankroll > 0:
+                cfg.bankroll = live_bankroll
+                log.info("Using live bankroll: €%.2f", live_bankroll)
+        except Exception as e:
+            log.warning("Failed to load live bankroll, using default: %s", e)
+
         log.info("=" * 70)
         log.info("UNIFIED BETTING ENGINE v1.0 -- Consolidated Professional-Grade")
         log.info("Bankroll: %.0f | Kelly: %.0f%% | Min Edge: %.0f%%",
@@ -2300,19 +2558,39 @@ class UnifiedBettingEngine:
 
         # -- Scan markets for value (respecting per-market enable/disable) --
         mr = cfg.market_rules
+
+        # Auto-kill losing markets from risk controls
+        try:
+            from scripts.betting.risk_controls import check_market_health, _load_settled_bets, RiskConfig
+            _health = check_market_health(_load_settled_bets(), RiskConfig())
+            for _killed in _health.get("kill_markets", []):
+                _mkt = _killed.split("(")[0].strip()
+                for _rule_key in list(mr.keys()):
+                    if _mkt.lower() in _rule_key.lower():
+                        mr[_rule_key]["enabled"] = False
+                        log.warning("Auto-kill: %s disabled (%s)", _rule_key, _killed)
+        except Exception:
+            pass
         log.info("\nScanning markets for value (market rules applied)...")
         all_bets = []
 
         # Build prediction lookup for situational tagging in scanners
         pred_by_match = {p["match"]: p for p in predictions}
 
-        if mr.get("1X2", {}).get("enabled", True):
+        # Run 1X2 scanner if ANY 1X2 variant (Home, Away, Draw) is enabled
+        _1x2_home_on = mr.get("1X2", {}).get("enabled", False)
+        _1x2_away_on = mr.get("1X2_Away", {}).get("enabled", False)
+        _1x2_draw_on = mr.get("1X2_Draw", {}).get("enabled", False)
+        if _1x2_home_on or _1x2_away_on or _1x2_draw_on:
             bets_1x2 = self.scan_1x2_market(predictions, odds_full)
-            log.info("  1X2:      %d value bets (min_edge=%.0f%%)", len(bets_1x2),
-                     mr.get("1X2", {}).get("min_edge_pct", cfg.min_edge_pct))
+            enabled_parts = []
+            if _1x2_home_on: enabled_parts.append("Home")
+            if _1x2_away_on: enabled_parts.append("Away")
+            if _1x2_draw_on: enabled_parts.append("Draw")
+            log.info("  1X2:      %d value bets (%s enabled)", len(bets_1x2), "+".join(enabled_parts))
             all_bets.extend(bets_1x2)
         else:
-            log.info("  1X2:      DISABLED (backtest: unprofitable)")
+            log.info("  1X2:      DISABLED (all variants off)")
 
         ou_over_on = mr.get("O/U_Over", {}).get("enabled", True)
         ou_under_on = mr.get("O/U_Under", {}).get("enabled", True)
@@ -2435,13 +2713,13 @@ class UnifiedBettingEngine:
         slip._accumulators = accumulators  # type: ignore
         self.slip = slip
 
-        # -- Enrich with entry timing recommendations --
+        # -- Entry timing: AVOID = hard block, WAIT = keep but flag --
         try:
             from scripts.betting.entry_timer import EntryTimingAnalyzer
             analyzer = EntryTimingAnalyzer()
             if analyzer.load_snapshots() > 0:
+                to_remove = []
                 for bet in selected:
-                    # Map selection to outcome
                     sel = bet.selection.lower()
                     if "home" in sel or "1x" in sel:
                         outcome = "home"
@@ -2454,13 +2732,25 @@ class UnifiedBettingEngine:
                     rec = analyzer.recommend_entry(
                         bet.match, outcome, model_prob=bet.model_prob,
                     )
-                    bet.entry_timing = rec  # Attach to bet object
+                    bet.entry_timing = rec
                     if rec.get("action") == "AVOID":
-                        log.info("  TIMING: %s %s — AVOID (%s)",
+                        log.info("  TIMING BLOCK: %s %s — AVOID (%s)",
                                  bet.match, bet.selection, rec.get("reason", ""))
+                        to_remove.append(bet)
                     elif rec.get("action") == "WAIT":
                         log.info("  TIMING: %s %s — WAIT (%s)",
                                  bet.match, bet.selection, rec.get("reason", ""))
+                # Remove AVOID bets from selected
+                if to_remove:
+                    selected = [b for b in selected if b not in to_remove]
+                    log.info("Removed %d bets flagged AVOID by entry timer", len(to_remove))
+                    # Rebuild slip
+                    slip = BetSlip(
+                        bets=selected,
+                        total_stake=sum(b.stake_amount for b in selected),
+                        expected_profit=sum(b.expected_profit for b in selected),
+                        match_count=len(set(b.match for b in selected)),
+                    )
         except Exception as e:
             log.debug("Entry timing enrichment skipped: %s", e)
 
@@ -2481,9 +2771,9 @@ def load_bet_history() -> List[Dict]:
 
 def save_bet_history(history: List[Dict]):
     """Save bet history."""
+    from config.settings import atomic_write_json
     path = UPCOMING / "bet_history.json"
-    with open(path, "w") as f:
-        json.dump(history, f, indent=2, default=str)
+    atomic_write_json(path, history)
 
 
 def record_bets(slip: BetSlip) -> int:
@@ -2532,6 +2822,7 @@ def record_bets(slip: BetSlip) -> int:
                 "stake": bet.stake_amount,
                 "confidence": bet.confidence_tier,
                 "placed_at": slip.generated_at,
+                "league": getattr(bet, 'league', 'serie_a'),
             })
     except Exception as e:
         log.debug("Failed to write to bet journal: %s", e)
@@ -2870,9 +3161,9 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                  UPCOMING / "unified_bet_slip.json")
         return None
 
+    from config.settings import atomic_write_json
     path = UPCOMING / "unified_bet_slip.json"
-    with open(path, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    atomic_write_json(path, output)
     log.info("Saved bet slip to %s", path)
 
     # Auto-record placement odds for CLV tracking
@@ -2903,6 +3194,7 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                 "stake": bet.stake_amount,
                 "confidence": bet.confidence_tier,
                 "placed_at": slip.generated_at,
+                "league": getattr(bet, 'league', 'serie_a'),
             })
         log.info("Journal: recorded %d bets", len(slip.bets))
     except Exception as e:

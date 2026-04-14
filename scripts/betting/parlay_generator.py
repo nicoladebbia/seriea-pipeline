@@ -18,6 +18,7 @@ Usage:
 
 import hashlib
 import json
+import logging
 import math
 import sys
 from collections import defaultdict
@@ -27,6 +28,8 @@ from pathlib import Path
 
 import numpy as np
 from scipy.stats import poisson, norm
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
@@ -255,7 +258,7 @@ def calibrate_beta_k(backtest_path: str | Path | None = None) -> dict:
     for conf, k in calibrated.items():
         full_calibrated[conf] = k
         # Add title-case version
-        title = conf.title().replace("-", "-")
+        title = conf.title()
         full_calibrated[title] = k
 
     # Save
@@ -442,13 +445,17 @@ def _save_input_hash():
 # ---------------------------------------------------------------------------
 
 def _load_enrichment_data():
-    """Load predictions, bookmaker analysis, market intelligence, odds movement."""
+    """Load predictions, bookmaker analysis, market intelligence, odds movement.
+
+    Loads from ALL league prediction files (Serie A + Premier League).
+    """
     predictions = {}
-    preds_raw = _load_json(UPCOMING_DIR / "predictions.json")
-    for p in preds_raw.get("predictions", []):
-        mk = _normalize_match(p.get("match", ""))
-        if mk:
-            predictions[mk] = p
+    for pred_file in ["predictions.json", "predictions_premier_league.json"]:
+        preds_raw = _load_json(UPCOMING_DIR / pred_file)
+        for p in preds_raw.get("predictions", []):
+            mk = _normalize_match(p.get("match", ""))
+            if mk:
+                predictions[mk] = p
 
     bookmaker = {}
     bk_raw = _load_json(UPCOMING_DIR / "bookmaker_analysis.json")
@@ -539,10 +546,13 @@ def _enrich_leg(leg, predictions, bookmaker, market_intel, odds_movement):
            ("AWAY" in sel_upper and "away" in steam_dir) or \
            ("OVER" in sel_upper and "over" in steam_dir):
             leg["steam_aligned"] = True
+            leg["steam_against"] = False
         else:
             leg["steam_aligned"] = False
+            leg["steam_against"] = True  # Betting against sharp money
     else:
         leg["steam_aligned"] = False
+        leg["steam_against"] = False
 
     # Form/momentum from factors
     factors = leg.get("factors", [])
@@ -576,6 +586,8 @@ def _get_ensemble_1x2(pred: dict) -> tuple:
     avg_d = sum(p[1] for p in probs) / len(probs)
     avg_a = sum(p[2] for p in probs) / len(probs)
     total = avg_h + avg_d + avg_a
+    if total <= 0:
+        return 0.4, 0.3, 0.3  # Fallback uninformative prior
     return avg_h / total, avg_d / total, avg_a / total
 
 
@@ -670,16 +682,30 @@ def _get_blended_1x2_probs(pred: dict) -> tuple:
 
 
 def _load_extra_market_odds():
-    """Load real bookmaker odds from per-event extra markets file."""
-    raw = _load_json(UPCOMING_DIR / "odds_extra_markets.json")
-    return raw.get("matches", {})
+    """Load real bookmaker odds from per-event extra markets files (all leagues)."""
+    result = {}
+    for fname in ["odds_extra_markets.json", "odds_extra_markets_premier_league.json"]:
+        raw = _load_json(UPCOMING_DIR / fname)
+        matches = raw.get("matches", {})
+        result.update(matches)
+    return result
 
 
 def load_all_value_legs():
-    """Aggregate legs from all 12+ market types, enriched with quality signals."""
+    """Aggregate legs from all 12+ market types across ALL leagues."""
     legs = []
     predictions, bookmaker, market_intel, odds_movement, goal_preds = _load_enrichment_data()
     extra_odds = _load_extra_market_odds()
+
+    # --- Load goal predictions from ALL leagues ---
+    for gp_file in ["goal_predictions_premier_league.json"]:
+        gp_path = UPCOMING_DIR / gp_file
+        if gp_path.exists():
+            _extra_gp = _load_json(gp_path)
+            if isinstance(_extra_gp, dict):
+                for k, v in _extra_gp.items():
+                    if isinstance(v, dict) and k not in goal_preds:
+                        goal_preds[k] = v
 
     # --- 1X2 from unified_report ---
     unified = _load_json(BETTING_DIR / "unified_report.json")
@@ -1162,8 +1188,9 @@ def load_all_value_legs():
             continue
 
         # DNB returns stake on draw, so effective prob = win_prob / (1 - draw_prob)
-        dnb_p_h = p_h / (1 - p_d) if p_d < 1 else 0
-        dnb_p_a = p_a / (1 - p_d) if p_d < 1 else 0
+        _dnb_denom = max(0.01, 1.0 - min(p_d, 0.99))
+        dnb_p_h = p_h / _dnb_denom
+        dnb_p_a = p_a / _dnb_denom
         for side, sel_label, prob in [("home", "HOME", dnb_p_h), ("away", "AWAY", dnb_p_a)]:
             bk_odds = dnb.get(f"best_{side}", 0)
             # Cap at 15.0 to filter distorted lines from low-volume bookmakers
@@ -1230,6 +1257,40 @@ def load_all_value_legs():
                     continue
 
         filtered.append(leg)
+
+    # Enforce market_rules: remove legs from disabled markets
+    # (unless explicitly allowed for parlays via acca_parlay_only_markets)
+    try:
+        from scripts.betting.betting_unified import BettingConfig
+        cfg = BettingConfig()
+        _parlay_only = {m.upper() for m in getattr(cfg, "acca_parlay_only_markets", [])}
+        _market_map = {
+            "h2h": "1X2", "1x2": "1X2",
+            "totals": "O/U_Over", "spreads": "AH",
+            "double_chance": "DC", "btts": "BTTS",
+            "corners": "Corners", "cards": "Cards",
+        }
+        pre_filter = len(filtered)
+        kept = []
+        for leg in filtered:
+            raw_mkt = (leg.get("market") or "").lower()
+            rule_key = _market_map.get(raw_mkt, raw_mkt.upper())
+
+            # Check if this market category is enabled in market_rules
+            rule = cfg.market_rules.get(rule_key, {})
+            is_enabled = rule.get("enabled", True)
+            is_parlay_only = raw_mkt.upper() in _parlay_only
+
+            if is_enabled or is_parlay_only:
+                kept.append(leg)
+            # else: silently drop — market is disabled for both singles and parlays
+
+        if len(kept) < pre_filter:
+            log.info("Market-rules filter: %d -> %d legs (%d disabled-market legs removed)",
+                     pre_filter, len(kept), pre_filter - len(kept))
+        filtered = kept
+    except Exception as e:
+        log.debug("Market-rules filter skipped: %s", e)
 
     # Enrich each leg with quality signals
     for leg in filtered:
@@ -1444,12 +1505,13 @@ def _copula_joint_probability(legs):
                 phi_j = norm.pdf(z[j])
                 adjustment += rho * phi_i * phi_j
 
-    # The copula adjustment reduces the joint probability slightly
-    adjusted = naive * (1.0 - adjustment / max(naive, 1e-10))
-    # Ensure it doesn't exceed naive or go negative
-    adjusted = max(adjusted * 0.95, adjusted)  # at minimum, small reduction
+    # The copula adjustment reduces the joint probability slightly.
+    # adjustment is already in probability units (product of PDF values × rho).
+    # Correct formula: multiply naive by (1 - adjustment), not divide.
+    adjusted = naive * max(0, 1.0 - adjustment)
+    # Bounds: never exceed naive, never reduce more than 20%
     adjusted = min(adjusted, naive)
-    adjusted = max(adjusted, naive * 0.80)  # don't reduce more than 20%
+    adjusted = max(adjusted, naive * 0.80)
 
     return float(adjusted)
 
@@ -1492,6 +1554,8 @@ def _compute_leg_quality(leg, sentiment_data=None):
     intel = ci * 100
     if leg.get("steam_aligned"):
         intel = min(100, intel + 20)
+    elif leg.get("steam_against"):
+        intel = max(0, intel - 30)  # Penalize legs betting against sharp money
     scores["intel_signals"] = intel
 
     # 7. Momentum/form (5%)
@@ -1987,7 +2051,7 @@ def _mc_sgp(combo: dict, n_sims: int, rng: np.random.Generator) -> np.ndarray:
             all_hit &= outcomes[key]
         else:
             # Fallback: Beta-Bernoulli for unsupported markets
-            prob = leg["probability"]
+            prob = np.clip(leg.get("probability", 0.5), 0.001, 0.999)
             conf = leg.get("confidence_level", "MEDIUM")
             k = _get_beta_k(conf)
             a = max(prob * k, 0.5)
@@ -2052,7 +2116,7 @@ def _mc_cross_match(combo: dict, n_sims: int, rng: np.random.Generator) -> np.nd
         U = norm.cdf(Z_corr)  # transform to uniform [0,1]
 
         for i, leg in enumerate(legs):
-            prob = leg["probability"]
+            prob = np.clip(leg.get("probability", 0.5), 0.001, 0.999)
             conf = leg.get("confidence_level", "MEDIUM")
             k = _get_beta_k(conf)
             a = max(prob * k, 0.5)
@@ -2063,7 +2127,7 @@ def _mc_cross_match(combo: dict, n_sims: int, rng: np.random.Generator) -> np.nd
     else:
         # Independent Beta-Bernoulli
         for leg in legs:
-            prob = leg["probability"]
+            prob = np.clip(leg.get("probability", 0.5), 0.001, 0.999)
             conf = leg.get("confidence_level", "MEDIUM")
             k = _get_beta_k(conf)
             a = max(prob * k, 0.5)
@@ -2227,30 +2291,55 @@ def _diversification_score(combo):
 
 
 def _parlay_quality_score(combo):
-    """Compute composite parlay quality (0-100)."""
-    ev = combo.get("expected_roi", 0)
-    ev_score = min(max(ev * 100, 0), 100)
+    """Compute composite parlay quality (0-100).
 
-    avg_leg_quality = np.mean([l.get("quality_score", 50) for l in combo["legs"]])
+    Rebuilt to prioritize what actually predicts parlay success:
+    1. Individual leg quality (35%) — bad legs = bad parlay, period
+    2. Hit probability (25%) — realistic chance of hitting
+    3. Minimum leg probability (15%) — weakest link penalty
+    4. Sharp alignment (15%) — are bookmakers agreeing?
+    5. Expected value (10%) — is the edge real?
+    """
+    legs = combo.get("legs", [])
+    if not legs:
+        return 0.0
 
+    # 1. Average leg quality (0-100) — the foundation
+    avg_leg_quality = np.mean([l.get("quality_score", 50) for l in legs])
+
+    # 2. Hit probability score — realistic scaling
+    # 50% hit = 100, 30% = 60, 10% = 20 (linear, not the old 500x)
     hit_median = combo.get("hit_probability", {}).get("median", 0)
-    hit_score = min(hit_median * 500, 100)  # scale: 20% hit = 100
+    hit_score = min(hit_median * 200, 100)
 
-    div = combo.get("diversification", {}).get("score", 50)
+    # 3. Weakest link penalty — a parlay is only as good as its worst leg
+    min_leg_prob = min(l.get("probability", 0) for l in legs)
+    # Contrarian legs (prob < 30%) get heavily penalized
+    if min_leg_prob < 0.30:
+        min_leg_score = min_leg_prob * 100  # 20% prob → 20 score
+    elif min_leg_prob < 0.50:
+        min_leg_score = 30 + (min_leg_prob - 0.30) * 200  # 30-70 range
+    else:
+        min_leg_score = 70 + (min_leg_prob - 0.50) * 60  # 70-100 range
 
+    # 4. Sharp alignment
     sharp_pct = combo.get("sharp_alignment_pct", 50)
 
+    # 5. Expected value (capped sensibly)
+    ev = combo.get("expected_roi", 0)
+    ev_score = min(max(ev * 200, 0), 100)  # 50% EV → 100
+
     quality = (
-        ev_score * 0.30 +
-        avg_leg_quality * 0.25 +
-        hit_score * 0.20 +
-        div * 0.15 +
-        sharp_pct * 0.10
+        avg_leg_quality * 0.35 +
+        hit_score * 0.25 +
+        min_leg_score * 0.15 +
+        sharp_pct * 0.15 +
+        ev_score * 0.10
     )
 
-    # DC Anchor boost (Step 2): +10 for parlays with a Double Chance leg
+    # DC Anchor boost: +5 (reduced from +10 — don't over-reward DC)
     if combo.get("dc_anchored"):
-        quality += 10
+        quality += 5
 
     return round(min(quality, 100), 1)
 
@@ -2401,6 +2490,10 @@ def generate_draw_parlays(legs: list, predictions_data: dict = None,
 
             # Kelly sizing (more conservative for draw parlays: 3% Kelly)
             kelly_frac = 0.03
+            if combined_odds <= 1.01 or adj_prob <= 0:
+                combo["stake"] = 0
+                draw_combos.append(combo)
+                continue
             full_kelly = (adj_prob * combined_odds - 1) / (combined_odds - 1)
             if full_kelly > 0:
                 stake = bankroll * full_kelly * kelly_frac
@@ -2434,6 +2527,8 @@ def categorize_parlays(combos):
     for p in combos:
         if not p.get("stake") or p["stake"] <= 0:
             continue
+        if not p.get("legs"):
+            continue
 
         n = p["n_legs"]
         hit_med = p.get("hit_probability", {}).get("median", 0)
@@ -2457,15 +2552,13 @@ def categorize_parlays(combos):
             p["category"] = "same_game"
             assigned = True
 
-        # Banker combos FIRST — high-probability legs are the "safe parlay" concept.
-        # Must be checked BEFORE sharp_specials because many high-prob legs are also
-        # sharp-aligned, and we want to surface them as banker combos for the user.
+        # Banker combos — ALL legs must be high probability. A "safe" parlay
+        # with one contrarian leg isn't safe at all.
         max_prob = max(l["probability"] for l in p["legs"])
         min_prob = min(l["probability"] for l in p["legs"])
         avg_prob = np.mean([l["probability"] for l in p["legs"]])
         if not assigned and (
-            (max_prob >= 0.70 and n <= 4) or  # 1 banker leg + up to 3 others
-            (min_prob >= 0.60 and avg_prob >= 0.65 and n <= 4)  # all legs high-prob
+            min_prob >= 0.55 and avg_prob >= 0.65 and n <= 4  # ALL legs must be 55%+
         ):
             categories["banker_combos"].append(p)
             p["category"] = "banker_combos"
@@ -2612,16 +2705,16 @@ def select_top_parlays(categories, combo_multipliers=None, n=3):
     if not all_parlays:
         return []
 
-    # Score each parlay
+    # Score each parlay for top pick selection
     scored = []
     for cat_key, p in all_parlays:
         base_quality = p.get("parlay_quality", 0)
+        legs = p.get("legs", [])
 
-        # Combo multiplier from historical analysis
-        markets = sorted(set(l.get("market", "") for l in p.get("legs", [])))
+        # Combo multiplier from historical analysis (capped to avoid over-weighting)
+        markets = sorted(set(l.get("market", "") for l in legs))
         combo_key = "+".join(markets)
         combo_mult = combo_multipliers.get(combo_key, 1.0)
-        # Also check pair-level multipliers
         if len(markets) >= 2:
             pair_mults = []
             for i, m1 in enumerate(markets):
@@ -2630,11 +2723,18 @@ def select_top_parlays(categories, combo_multipliers=None, n=3):
                     pair_mults.append(combo_multipliers.get(pk, 1.0))
             if pair_mults:
                 combo_mult = max(combo_mult, sum(pair_mults) / len(pair_mults))
+        combo_mult = min(combo_mult, 1.3)  # Cap at 1.3x — don't let history dominate
 
-        # DC anchor boost already in parlay_quality, don't double-count
-        anchor_boost = 1.0
+        # Penalty for contrarian legs (picking against >70% favorites)
+        contrarian_penalty = 1.0
+        if legs:
+            min_prob = min(l.get("probability", 0.5) for l in legs)
+            if min_prob < 0.25:
+                contrarian_penalty = 0.6  # Harsh — picking against 75%+ favorites
+            elif min_prob < 0.35:
+                contrarian_penalty = 0.8  # Moderate — risky picks
 
-        rec_score = base_quality * combo_mult * anchor_boost
+        rec_score = base_quality * combo_mult * contrarian_penalty
         scored.append((rec_score, cat_key, p))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -2658,14 +2758,27 @@ def select_top_parlays(categories, combo_multipliers=None, n=3):
         if sharp_count > 0:
             why_parts.append(f"{sharp_count}/{len(legs)} legs sharp-aligned")
 
-        # DC anchor
-        if any(l.get("market") == "double_chance" for l in legs):
-            why_parts.append("DC anchor (83% hist WR)")
+        # DC anchor — compute actual WR from journal instead of hardcoding
+        dc_legs = [l for l in legs if l.get("market") == "double_chance"]
+        if dc_legs:
+            try:
+                from scripts.betting.bet_journal import _load_journal
+                j = _load_journal()
+                dc_bets = [b for b in j["bets"].values()
+                           if b.get("status") in ("won", "lost", "push")
+                           and "DC" in (b.get("market") or "").upper()]
+                if len(dc_bets) >= 5:
+                    dc_wr = sum(1 for b in dc_bets if b["status"] == "won") / len(dc_bets)
+                    why_parts.append(f"DC anchor ({dc_wr:.0%} live WR on {len(dc_bets)} bets)")
+                else:
+                    why_parts.append("Double Chance anchor")
+            except Exception:
+                why_parts.append("Double Chance anchor")
 
-        # High-prob legs
+        # High-prob legs — clarify this is MODEL probability, not implied
         high_prob = [l for l in legs if l.get("probability", 0) >= 0.70]
         if high_prob:
-            why_parts.append(f"{len(high_prob)} high-prob legs (>70%)")
+            why_parts.append(f"{len(high_prob)} high-probability legs (over 70% each)")
 
         # Form/momentum
         hot_legs = [l for l in legs if l.get("momentum") == "hot"]

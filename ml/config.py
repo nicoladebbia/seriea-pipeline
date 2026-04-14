@@ -46,6 +46,8 @@ ODDS_COLUMN_PATTERNS: List[str] = [
     "home_prob_best", "draw_prob_best", "away_prob_best",
     "market_elo_disagreement", "goal_total_vs_xg", "ah_x_form",
     "sharp_soft_x_elo",
+    "line_vel_",                                                # Line velocity (kickoff-time only)
+    "steam_move_flag",                                          # Steam move (kickoff-time only)
 ]
 
 # Odds-derived features to KEEP even with exclude_odds=True.
@@ -67,13 +69,9 @@ ODDS_META_KEEP: frozenset = frozenset({
     "odds_consistency",          # Bookmaker agreement level (32% coverage)
     "odds_home_fav",             # Binary home favourite flag (66% coverage)
     "sharp_soft_x_elo",          # Sharp-soft divergence × Elo interaction
-    # Odds velocity: direction of sharp money movement (Pinnacle line moves).
-    # Captures WHERE sharp bettors are moving before kickoff — strong signal
-    # for mispricings that the model can exploit. 65% coverage (Pinnacle).
-    "line_vel_pin_home",         # Pinnacle implied prob change: home (open→close)
-    "line_vel_pin_draw",         # Pinnacle implied prob change: draw
-    "line_vel_pin_away",         # Pinnacle implied prob change: away
-    "steam_move_flag",           # Binary: >3% implied prob shift (sharp steam)
+    # NOTE: line_vel_pin_* and steam_move_flag REMOVED — they are computed from
+    # Pinnacle open-to-close line movement, only available AT kickoff. Using
+    # them in a pre-match model is data leakage. Moved to ODDS_COLUMN_PATTERNS.
 })
 
 # Reproducibility seed used everywhere
@@ -99,9 +97,11 @@ class ModelConfig:
     draw_weight_multiplier: float = 2.0  # Only used when draw_weight_mode != "auto"
 
     # Time-decay: exponential decay per season gap from the most recent training
-    # season. 0.85 means a match 5 seasons old has weight 0.85^5 = 0.44.
-    # 1.0 disables time-decay (legacy). Dixon-Coles (1997) recommends ~0.85.
-    time_decay_per_season: float = 0.85
+    # season. 0.90 means a match 5 seasons old has weight 0.90^5 = 0.59.
+    # Decay sweep (Apr 2026): tested 0.80-0.92, optimal=0.90 (last-2-fold
+    # log_loss 0.9416 vs 0.9458 at 0.88, accuracy 56.1% vs 55.7%).
+    # Higher decay = more weight on older data = better with new temporal features.
+    time_decay_per_season: float = 0.90
 
     xgb_params: dict = field(default_factory=lambda: {
         "objective": "multi:softprob",
@@ -131,7 +131,7 @@ class ModelConfig:
         "reg_lambda": 2.0,
         "min_child_samples": 20,
         "num_leaves": 31,
-        "is_unbalance": True,
+        # "is_unbalance": True,  # REMOVED: conflicts with manual sample_weight class balancing
         "random_state": RANDOM_SEED,
         "verbose": -1,
     })
@@ -145,7 +145,7 @@ class ModelConfig:
         "l2_leaf_reg": 3.0,
         "bagging_temperature": 0.8,
         "random_strength": 1.0,
-        "auto_class_weights": "Balanced",
+        # "auto_class_weights": "Balanced",  # REMOVED: conflicts with manual sample_weight class balancing
         "random_seed": RANDOM_SEED,
         "verbose": 0,
     })
@@ -182,10 +182,10 @@ class FeatureConfig:
 
     # A feature is "universal" if NaN fraction < this across all seasons
     # (applied AFTER smart imputation, so more features qualify).
-    # Raised from 0.20 to 0.45: with min_train_season="2017-2018" and
-    # time-decay weighting, pre-2017 NaN doesn't matter. This unlocks
-    # xG, pressing, odds velocity, and lineup features (~90% coverage post-2017).
-    universal_nan_threshold: float = 0.45
+    # Balanced threshold: 0.45 was too loose (admitted noise), 0.25 too strict
+    # (pruned sparse-but-useful features like squad values). 0.40 admits features
+    # with ≤40% NaN — tree models handle remaining NaN natively.
+    universal_nan_threshold: float = 0.40
 
     # Correlation pruning: drop less-important feature when |r| > threshold
     correlation_threshold: float = 0.70
@@ -268,6 +268,13 @@ class TuningConfig:
         "random_strength":   {"low": 0.1,  "high": 3.0},
     })
 
+    # Time-decay search range (for future Optuna integration).
+    # To enable: suggest time_decay in the objective function and pass to
+    # _compute_sample_weights via ModelConfig override.
+    time_decay_search_space: Dict[str, float] = field(default_factory=lambda: {
+        "low": 0.82, "high": 0.95,
+    })
+
 
 # ---------------------------------------------------------------------------
 # Calibration
@@ -275,7 +282,14 @@ class TuningConfig:
 
 @dataclass
 class CalibrationConfig:
-    """Isotonic regression calibration settings."""
+    """Probability calibration settings."""
+
+    # Method: "isotonic", "temperature", or "auto" (pick best on validation)
+    method: str = "auto"
+
+    # Temperature scaling: T < 1.0 sharpens predictions, T > 1.0 smooths
+    # Analysis showed T=0.70 improves ECE by 27% (draw ECE by 27.5%)
+    temperature: float = 0.70
 
     # Clamp calibrated probabilities to [y_min, y_max]
     y_min: float = 0.01

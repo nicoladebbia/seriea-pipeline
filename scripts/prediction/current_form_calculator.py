@@ -350,6 +350,41 @@ def calculate_all_forms(matches_file: str = None, league: str = None) -> Dict:
     return output
 
 
+_SERIE_A_BIG_STADIUMS = {"Inter", "Milan", "Juventus", "Roma", "Lazio", "Napoli"}
+_EPL_BIG_STADIUMS = {
+    "Man United", "Manchester United", "Arsenal", "Tottenham", "Tottenham Hotspur",
+    "West Ham", "West Ham United", "Liverpool", "Man City", "Manchester City",
+    "Newcastle", "Newcastle United",
+}
+
+_SERIE_A_DERBIES = {
+    ("Inter", "Milan"), ("Milan", "Inter"),
+    ("Roma", "Lazio"), ("Lazio", "Roma"),
+    ("Juventus", "Torino"), ("Torino", "Juventus"),
+    ("Genoa", "Sampdoria"), ("Sampdoria", "Genoa"),
+}
+
+_EPL_DERBIES = {
+    ("Arsenal", "Tottenham"), ("Tottenham", "Arsenal"),
+    ("Arsenal", "Tottenham Hotspur"), ("Tottenham Hotspur", "Arsenal"),
+    ("Liverpool", "Everton"), ("Everton", "Liverpool"),
+    ("Man United", "Man City"), ("Man City", "Man United"),
+    ("Manchester United", "Manchester City"), ("Manchester City", "Manchester United"),
+    ("Chelsea", "Tottenham"), ("Tottenham", "Chelsea"),
+    ("Chelsea", "Tottenham Hotspur"), ("Tottenham Hotspur", "Chelsea"),
+    ("Chelsea", "Arsenal"), ("Arsenal", "Chelsea"),
+    ("Chelsea", "West Ham"), ("West Ham", "Chelsea"),
+    ("Chelsea", "West Ham United"), ("West Ham United", "Chelsea"),
+    ("Crystal Palace", "Brighton"), ("Brighton", "Crystal Palace"),
+    ("Crystal Palace", "Brighton and Hove Albion"), ("Brighton and Hove Albion", "Crystal Palace"),
+}
+
+_EPL_BIG_6 = {
+    "Arsenal", "Chelsea", "Liverpool", "Man City", "Manchester City",
+    "Man United", "Manchester United", "Tottenham", "Tottenham Hotspur",
+}
+
+
 def identify_factors(home_form: Dict, away_form: Dict, elo_diff: float, match: Dict) -> List[str]:
     """Identify which validated factors apply to this match.
 
@@ -361,10 +396,11 @@ def identify_factors(home_form: Dict, away_form: Dict, elo_diff: float, match: D
     - cold_away: Away team cold form (+6% home win)
     """
     factors = []
+    home_team = match.get("home_team", "")
+    away_team = match.get("away_team", "")
 
-    # Big stadium (need to check stadium capacity)
-    big_stadiums = ["Inter", "Milan", "Juventus", "Roma", "Lazio", "Napoli"]
-    if match.get("home_team") in big_stadiums:
+    # Big stadium
+    if home_team in _SERIE_A_BIG_STADIUMS or home_team in _EPL_BIG_STADIUMS:
         factors.append("big_stadium")
 
     # Elo-based factors
@@ -392,15 +428,14 @@ def identify_factors(home_form: Dict, away_form: Dict, elo_diff: float, match: D
     if away_form.get("form_status") == "hot" or away_form.get("away_form_status") == "hot":
         factors.append("hot_away")
 
-    # Derby detection
-    derbies = [
-        ("Inter", "Milan"), ("Milan", "Inter"),
-        ("Roma", "Lazio"), ("Lazio", "Roma"),
-        ("Juventus", "Torino"), ("Torino", "Juventus"),
-        ("Genoa", "Sampdoria"), ("Sampdoria", "Genoa"),
-    ]
-    if (match.get("home_team"), match.get("away_team")) in derbies:
+    # Derby detection (both leagues)
+    pair = (home_team, away_team)
+    if pair in _SERIE_A_DERBIES or pair in _EPL_DERBIES:
         factors.append("derby")
+
+    # EPL Big 6 matchup
+    if home_team in _EPL_BIG_6 and away_team in _EPL_BIG_6:
+        factors.append("big_6_matchup")
 
     return factors
 

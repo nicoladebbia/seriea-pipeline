@@ -381,6 +381,20 @@ def analytics():
     return render_template("analytics.html", active_page="analytics")
 
 
+@app.route("/performance")
+def performance_page():
+    return render_template("performance.html", active_page="performance")
+
+
+@app.route("/api/performance")
+def api_performance():
+    try:
+        from scripts.betting.benchmark_tracker import get_benchmark_report
+        return jsonify(get_benchmark_report())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/system")
 def system():
     return render_template("system.html", active_page="system")

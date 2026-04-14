@@ -1,0 +1,36 @@
+# Data files (5GB+ of parquet, models, cache)
+# Block heavy subdirectories but allow data/upcoming/ (predictions, odds, match data)
+data/models/
+data/cache/
+data/external/
+data/features/
+data/experiments/
+data/analysis/
+data/monitoring/
+data/bankroll/
+data/calibration/
+data/live/
+data/lineup_history/
+data/betting/
+data/feedback/
+data/ai_reasoning_cache/
+*.parquet
+*.cbm
+
+catboost_info/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+
+# Test/lint cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

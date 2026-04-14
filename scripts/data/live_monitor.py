@@ -60,16 +60,7 @@ SHARP_BOOKS = {"pinnacle", "betfair_ex_eu", "matchbook", "betcris"}
 
 # ─── API Layer ────────────────────────────────────────────────────────────────
 
-def _get_api_key() -> str:
-    key = os.environ.get("ODDS_API_KEY", "")
-    if not key:
-        env_path = Path(__file__).parent.parent.parent / ".env"
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("ODDS_API_KEY="):
-                    key = line.split("=", 1)[1].strip()
-    return key
+from config.api_keys import get_odds_api_key
 
 
 def _track_credits(response):
@@ -681,7 +672,7 @@ def poll_once() -> Dict:
     Makes 2 Odds API calls + 2 Sofascore calls per live match.
     Returns summary dict.
     """
-    api_key = _get_api_key()
+    api_key = get_odds_api_key()
     if not api_key:
         log.error("ODDS_API_KEY not set")
         return {"error": "no_api_key"}

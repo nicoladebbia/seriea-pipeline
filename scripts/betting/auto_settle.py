@@ -67,9 +67,8 @@ def _load_pnl_history() -> List[Dict]:
 
 def _save_pnl_history(history: List[Dict]):
     """Save P&L time-series."""
-    PNL_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PNL_HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+    from config.settings import atomic_write_json
+    atomic_write_json(PNL_HISTORY_FILE, history)
 
 
 def append_pnl_snapshot(settlement_summary: Dict, stats: Dict) -> Dict:
@@ -313,9 +312,8 @@ def _save_drift_alerts(alerts: List[Dict]):
         "has_critical": any(a["level"] == "CRITICAL" for a in alerts),
         "has_warning": any(a["level"] == "WARNING" for a in alerts),
     }
-    DRIFT_ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(DRIFT_ALERTS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    from config.settings import atomic_write_json
+    atomic_write_json(DRIFT_ALERTS_FILE, data)
 
 
 # =============================================================================
@@ -512,6 +510,97 @@ def run(
                 log.info("Settled %d parlay(s) in tracker", n_parlay_settled)
         except Exception as e:
             log.warning("Parlay tracker settlement failed: %s", e)
+
+    # ── Step 2c: Score predictions against results ──
+    if completed_results and not dry_run:
+        try:
+            from scripts.betting.prediction_tracker import (
+                load_predictions, score_predictions, compute_metrics,
+                compute_draw_edge_pnl, save_tracker, load_tracker
+            )
+            predictions = load_predictions()
+            scored = score_predictions(predictions, completed_results)
+            if scored:
+                metrics = compute_metrics(scored)
+                draw_pnl = compute_draw_edge_pnl(scored, completed_results)
+                tracker = load_tracker()
+                existing_keys = {(s["home_team"], s["away_team"], s["match_date"])
+                                 for s in tracker["scored"]}
+                new_scored = [s for s in scored
+                              if (s["home_team"], s["away_team"], s["match_date"]) not in existing_keys]
+                tracker["scored"].extend(new_scored)
+                tracker["last_scored_at"] = datetime.now().isoformat()
+                save_tracker(tracker)
+                log.info("Prediction tracker: scored %d predictions (%d new), accuracy %.1f%%",
+                         len(scored), len(new_scored), metrics["accuracy"] * 100)
+                if draw_pnl["total_bets"] > 0:
+                    log.info("Draw edge: %d bets, %d won, ROI %+.1f%%",
+                             draw_pnl["total_bets"], draw_pnl["won"], draw_pnl["roi"])
+        except Exception as e:
+            log.warning("Prediction tracking failed: %s", e)
+
+    # ── Step 2d: Update rolling corrector with settled predictions ──
+    if completed_results and not dry_run:
+        try:
+            from ml.correction_layer import CorrectionLayer
+            from scripts.betting.bet_journal import get_settled_bets
+
+            layer = CorrectionLayer()
+            layer.load()
+
+            # Feed recently settled bets into rolling corrector
+            settled = get_settled_bets()
+            updated = 0
+            for bet in settled:
+                prob_h = bet.get("model_prob")
+                if prob_h is None:
+                    continue
+                # Reconstruct H/D/A probabilities from model_prob
+                # For 1X2 bets, model_prob is the selected outcome's probability
+                market = (bet.get("market") or "").upper()
+                selection = (bet.get("selection") or "").upper()
+                result_score = bet.get("result_score", "")
+                if not result_score or "-" not in str(result_score):
+                    continue
+
+                # Determine actual result
+                try:
+                    hs, as_ = int(result_score.split("-")[0]), int(result_score.split("-")[1])
+                except (ValueError, IndexError):
+                    continue
+
+                if hs > as_:
+                    actual = "H"
+                elif hs < as_:
+                    actual = "A"
+                else:
+                    actual = "D"
+
+                # We need full H/D/A probabilities but journal only stores model_prob
+                # for the selected outcome. Use a rough reconstruction:
+                # This is imperfect but better than nothing for rolling learning.
+                sharp = bet.get("sharp_implied_prob")
+                if sharp and market in ("H2H", "1X2"):
+                    # Use model_prob as the selected class, distribute rest
+                    p_sel = float(prob_h)
+                    remainder = 1.0 - p_sel
+                    if selection in ("HOME", "1"):
+                        p_H, p_D, p_A = p_sel, remainder * 0.35, remainder * 0.65
+                    elif selection in ("DRAW", "X"):
+                        p_H, p_D, p_A = remainder * 0.55, p_sel, remainder * 0.45
+                    elif selection in ("AWAY", "2"):
+                        p_H, p_D, p_A = remainder * 0.55, remainder * 0.35, p_sel
+                    else:
+                        continue
+
+                    layer.update_rolling(p_H, p_D, p_A, actual, bet.get("date"))
+                    updated += 1
+
+            if updated > 0:
+                layer.save_rolling()
+                log.info("Updated rolling corrector with %d settled predictions", updated)
+        except Exception as e:
+            log.warning("Rolling corrector update failed: %s", e)
 
     # ── Step 3: Rolling metrics ──
     rolling = compute_rolling_metrics()

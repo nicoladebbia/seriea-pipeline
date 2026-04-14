@@ -66,12 +66,13 @@ class RiskConfig:
 
     # Market kill switches (live ROI thresholds to disable a market)
     # If live ROI is worse than threshold with >= min_bets, disable the market
-    market_kill_min_bets: int = 15       # Need 15+ bets before killing a market
-    market_kill_roi_threshold: float = -30.0  # Kill if live ROI < -30%
+    market_kill_min_bets: int = 10       # Need 10+ bets before killing a market (was 15)
+    market_kill_roi_threshold: float = -20.0  # Kill if live ROI < -20% (was -30%)
 
-    # Stake reduction under stress
-    # When drawdown > warning but < max, reduce stakes by this factor
-    stress_stake_multiplier: float = _YAML_DEFAULTS.get("stress_stake_multiplier", 0.5)
+    # Stake reduction under stress — SOFTENED from 0.5 to 0.80
+    # Data shows after 3+ loss streaks, next bet wins 64.7% (regression to mean).
+    # Aggressive reduction hurts ROI by undersizing during recovery.
+    stress_stake_multiplier: float = _YAML_DEFAULTS.get("stress_stake_multiplier", 0.80)
 
 
 # =============================================================================
@@ -155,12 +156,17 @@ def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
     if not settled:
         return {"status": "ok", "streak": 0, "message": "no data"}
 
-    # Count current streak (from most recent)
+    # Count current non-win streak (from most recent).
+    # Push/void count as non-wins for risk management — they represent
+    # consecutive outcomes without profit and the same drawdown psychology.
     current_streak = 0
     for bet in reversed(settled):
-        if bet.get("status") == "lost":
+        status = bet.get("status")
+        if status == "lost":
             current_streak += 1
-        else:
+        elif status in ("push", "void"):
+            current_streak += 1  # non-wins extend the losing run
+        else:  # won
             break
 
     # Count recent consecutive wins (for recovery detection)
@@ -367,11 +373,10 @@ def check_risk_gates(
 
 def _save_risk_state(state: Dict):
     """Persist risk state for monitoring/dashboard."""
+    from config.settings import atomic_write_json
     path = DATA_DIR / "betting" / "risk_state.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(path, "w") as f:
-            json.dump(state, f, indent=2, default=str)
+        atomic_write_json(path, state)
     except Exception as e:
         log.warning("Failed to save risk state: %s", e)
 

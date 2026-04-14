@@ -47,7 +47,16 @@ def predict_upcoming(
         for col in missing:
             upcoming[col] = np.nan
 
-    X = upcoming[feature_names]
+    X = upcoming[feature_names].copy()
+
+    # Apply same NaN imputation strategy used during training to prevent
+    # train/predict distribution shift on sparse features.
+    try:
+        from ml.data import _smart_impute
+        X = _smart_impute(X, feature_names)
+    except ImportError:
+        log.warning("_smart_impute not available; predictions may use raw NaN")
+
     y_proba = wrapper.predict_proba(X)
 
     results = pd.DataFrame({

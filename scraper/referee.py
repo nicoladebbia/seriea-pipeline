@@ -47,6 +47,21 @@ WF_LEAGUE_SLUGS: dict[str, str] = {
     "ligue_1": "fra-ligue-1",
 }
 
+# Worldfootball.net competition codes
+WF_COMP_CODES: dict[str, str] = {
+    "serie_a": "co111",
+    "premier_league": "co13",
+    "la_liga": "co16",
+    "bundesliga": "co14",
+    "ligue_1": "co15",
+}
+
+
+def _wf_comp_code(league: str) -> str:
+    """Get worldfootball.net competition code for a league."""
+    return WF_COMP_CODES.get(league, "co111")
+
+
 # worldfootball.net season IDs per league
 # Key: (league, season) -> season_id
 WF_SEASON_IDS_BY_LEAGUE: dict[str, dict[str, str]] = {
@@ -269,7 +284,7 @@ def scrape_referee_matches(
 
     url = (
         f"{WF_BASE}/person/{person_id}/{slug}"
-        f"/co111/{comp_name}/{season_id}/{season}/matches-as-referee/"
+        f"/{_wf_comp_code(league)}/{comp_name}/{season_id}/{season}/matches-as-referee/"
     )
 
     resp = _fetch(url)
@@ -376,7 +391,8 @@ def scrape_all_referee_assignments(
         match_date, home_team, away_team, referee, matchweek,
         ref_yellows, ref_second_yellows, ref_reds, season
     """
-    cache_path = REFEREE_DIR / "referee_assignments.parquet"
+    # League-specific cache to avoid returning Serie A data for EPL queries
+    cache_path = REFEREE_DIR / f"referee_assignments_{league}.parquet"
     if cache_path.exists():
         log.info("Loading cached referee assignments from %s", cache_path)
         return pd.read_parquet(cache_path)
@@ -403,8 +419,11 @@ def scrape_all_referee_assignments(
 
     # Deduplicate (same match might appear for VAR refs or duplicates)
     if not df.empty:
+        dedup_cols = ["match_date", "home_team", "away_team"]
+        if "season" in df.columns:
+            dedup_cols.insert(0, "season")
         df = df.drop_duplicates(
-            subset=["match_date", "home_team", "away_team"],
+            subset=dedup_cols,
             keep="first",
         )
 

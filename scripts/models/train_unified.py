@@ -220,7 +220,15 @@ def discover_features(df: pd.DataFrame, exclude_odds: bool = False,
     return usable
 
 
-def select_by_importance(
+from ml.feature_selection import importance_based_selection as select_by_importance, correlation_pruning  # noqa: E402
+
+
+def _select_by_importance_REMOVED():
+    """Moved to ml.feature_selection.importance_based_selection."""
+    pass
+
+
+def _original_select_by_importance(
     X: pd.DataFrame, y: pd.Series, feature_names: List[str], top_k: int = 120,
 ) -> Tuple[List[str], Dict[str, float]]:
     """Select top_k features by XGBoost importance."""
@@ -483,9 +491,12 @@ class UnifiedTrainer:
         # Previously ran on the full dataset, which leaked test-fold information
         # into feature selection — inflating CV metrics by ~1-3%.
         first_train_idx = splits[0][0]
-        df_first_train = df.loc[first_train_idx]
+        df_first_train = df.loc[first_train_idx].copy()
+        # Ensure _season column exists for feature_selection's TimeSeriesSplitter
+        if "_season" not in df_first_train.columns and "season" in df_first_train.columns:
+            df_first_train["_season"] = df_first_train["season"]
         selected, importance = select_by_importance(
-            df_first_train, df_first_train["home_score"], all_features,
+            df_first_train, df_first_train["result"], all_features,
             top_k=self.cfg.top_k_features,
         )
         selected = correlation_pruning(

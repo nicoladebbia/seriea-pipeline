@@ -112,6 +112,21 @@ def validate_match_data(match: Dict) -> tuple[bool, List[str]]:
         except ValueError:
             errors.append(f"Invalid date format: '{match.get('date')}' (expected YYYY-MM-DD)")
 
+    # Validate odds if present (sanity check: must be > 1.0 and < 100)
+    odds_fields = ["home_odds", "draw_odds", "away_odds",
+                   "avg_home_odds", "avg_draw_odds", "avg_away_odds"]
+    for field in odds_fields:
+        val = match.get(field)
+        if val is not None:
+            try:
+                odds_val = float(val)
+                if odds_val < 1.0:
+                    errors.append(f"Odds below 1.0: {field}={odds_val}")
+                elif odds_val > 100:
+                    errors.append(f"Odds suspiciously high: {field}={odds_val}")
+            except (TypeError, ValueError):
+                errors.append(f"Non-numeric odds: {field}={val}")
+
     return len(errors) == 0, errors
 
 

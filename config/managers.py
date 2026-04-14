@@ -465,7 +465,7 @@ MANAGER_TENURES: list[tuple[str, str, str, str | None]] = [
     ("Stoke", "Paul Lambert", "2018-01-15", "2018-05-13"),
 
     # ── Middlesbrough ── (relegated 2017)
-    ("Middlesbrough", "Aitor Karanka", "2017-06-01", "2017-03-16"),
+    ("Middlesbrough", "Aitor Karanka", "2016-06-01", "2017-03-16"),
 
     # ── Hull ── (relegated 2017)
     ("Hull", "Marco Silva", "2017-01-05", "2017-05-21"),

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""PERPLEXITY SENTIMENT ANALYZER - Advanced Market Intelligence
+"""WEB SEARCH SENTIMENT ANALYZER - Advanced Market Intelligence
 
-Uses Perplexity AI for real-time sentiment analysis of Serie A matches.
+Uses Google Gemini (primary) and Groq Compound (fallback) for real-time
+sentiment analysis of Serie A matches via grounded web search.
 
 Features:
 - Fan sentiment analysis from social media
@@ -45,6 +46,19 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+try:
+    from google import genai
+    from google.genai import types as genai_types
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
+
+try:
+    from groq import Groq
+    HAS_GROQ = True
+except ImportError:
+    HAS_GROQ = False
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -56,17 +70,126 @@ try:
 except ImportError:
     pass  # dotenv not required if env vars set externally
 
-# Perplexity API Configuration
+# Web Search API Configuration (Gemini primary, Groq fallback)
+GOOGLE_GEMINI_KEY = os.environ.get("GOOGLE_GEMINI_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+# Legacy — kept for backwards compatibility
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
-PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
-PERPLEXITY_MODEL = "sonar"  # Perplexity sonar model with web search
 
-if not PERPLEXITY_API_KEY:
-    logging.warning("PERPLEXITY_API_KEY not set - sentiment analysis will use fallback data")
+HAS_WEB_SEARCH_KEY = bool(GOOGLE_GEMINI_KEY) or bool(GROQ_API_KEY)
+
+if not HAS_WEB_SEARCH_KEY:
+    logging.warning("No web search API key set (GOOGLE_GEMINI_KEY / GROQ_API_KEY) - sentiment will use fallback data")
 
 # Cache settings
 CACHE_DIR = DATA_DIR / "cache" / "sentiment"
 CACHE_DURATION_HOURS = 6  # Sentiment is time-sensitive
+
+# API Rate Limits (free tiers)
+# Gemini: 5,000 grounded queries/month free. Reserve 10% buffer.
+GEMINI_MONTHLY_LIMIT = 4500
+# Groq compound-beta: ~1,000 RPD free tier. Be conservative.
+GROQ_DAILY_LIMIT = 800
+# Usage tracking file
+API_USAGE_FILE = DATA_DIR / "cache" / "api_usage.json"
+
+
+class APIUsageTracker:
+    """Tracks API call counts to prevent hitting free tier limits.
+
+    Persists to disk so usage survives restarts. Auto-resets daily/monthly.
+    """
+
+    def __init__(self, usage_file: Path = API_USAGE_FILE):
+        self._file = usage_file
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._usage = self._load()
+
+    def _load(self) -> dict:
+        try:
+            if self._file.exists():
+                with open(self._file) as f:
+                    return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
+
+    def _save(self):
+        try:
+            with open(self._file, "w") as f:
+                json.dump(self._usage, f, indent=2)
+        except OSError as e:
+            log.warning(f"Failed to save API usage: {e}")
+
+    def _today(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _month(self) -> str:
+        return datetime.now().strftime("%Y-%m")
+
+    def record_call(self, provider: str):
+        """Record one API call for a provider."""
+        today = self._today()
+        month = self._month()
+
+        if provider not in self._usage:
+            self._usage[provider] = {}
+        p = self._usage[provider]
+
+        # Daily counter (auto-resets)
+        if p.get("current_day") != today:
+            p["current_day"] = today
+            p["daily_calls"] = 0
+        p["daily_calls"] = p.get("daily_calls", 0) + 1
+
+        # Monthly counter (auto-resets)
+        if p.get("current_month") != month:
+            p["current_month"] = month
+            p["monthly_calls"] = 0
+        p["monthly_calls"] = p.get("monthly_calls", 0) + 1
+
+        self._save()
+
+    def can_call(self, provider: str) -> bool:
+        """Check if we're within rate limits for this provider."""
+        today = self._today()
+        month = self._month()
+        p = self._usage.get(provider, {})
+
+        if provider == "gemini":
+            monthly = p.get("monthly_calls", 0) if p.get("current_month") == month else 0
+            if monthly >= GEMINI_MONTHLY_LIMIT:
+                return False
+        elif provider == "groq":
+            daily = p.get("daily_calls", 0) if p.get("current_day") == today else 0
+            if daily >= GROQ_DAILY_LIMIT:
+                return False
+        return True
+
+    def get_status(self) -> dict:
+        """Return usage summary for health monitoring."""
+        today = self._today()
+        month = self._month()
+        status = {}
+        for provider in ("gemini", "groq"):
+            p = self._usage.get(provider, {})
+            if provider == "gemini":
+                used = p.get("monthly_calls", 0) if p.get("current_month") == month else 0
+                limit = GEMINI_MONTHLY_LIMIT
+                status[provider] = {
+                    "used": used, "limit": limit, "period": "monthly",
+                    "remaining": max(0, limit - used),
+                    "pct_used": round(used / limit * 100, 1) if limit else 0,
+                }
+            elif provider == "groq":
+                used = p.get("daily_calls", 0) if p.get("current_day") == today else 0
+                limit = GROQ_DAILY_LIMIT
+                status[provider] = {
+                    "used": used, "limit": limit, "period": "daily",
+                    "remaining": max(0, limit - used),
+                    "pct_used": round(used / limit * 100, 1) if limit else 0,
+                }
+        return status
 
 # Sentiment scoring weights
 SENTIMENT_WEIGHTS = {
@@ -144,70 +267,94 @@ class MatchSentiment:
 
 
 # =============================================================================
-# PERPLEXITY API CLIENT
+# WEB SEARCH API CLIENTS (Gemini primary, Groq fallback)
 # =============================================================================
 
-class PerplexityClient:
-    """Client for Perplexity AI API with web search capabilities."""
+# Shared usage tracker (singleton)
+_usage_tracker = APIUsageTracker()
+
+
+class GeminiClient:
+    """Client for Google Gemini API with grounded web search."""
 
     def __init__(self, api_key: str = None):
-        self.api_key = api_key or PERPLEXITY_API_KEY
-        self.session = requests.Session() if HAS_REQUESTS else None
+        self.api_key = api_key or GOOGLE_GEMINI_KEY
+        self._client = None
+        if HAS_GEMINI and self.api_key:
+            self._client = genai.Client(api_key=self.api_key)
 
     def query(self, prompt: str, system_prompt: str = None) -> Optional[str]:
-        """Send query to Perplexity API."""
-        if not self.session:
-            log.error("Requests library not installed")
+        """Send query to Gemini API with Google Search grounding."""
+        if not self._client:
+            log.debug("Gemini client not available")
             return None
 
-        if not self.api_key:
-            log.error("No Perplexity API key configured")
+        if not _usage_tracker.can_call("gemini"):
+            status = _usage_tracker.get_status().get("gemini", {})
+            log.warning(
+                f"Gemini monthly limit reached ({status.get('used', '?')}/{status.get('limit', '?')}). "
+                "Skipping to avoid overage."
+            )
             return None
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        try:
+            full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+            response = self._client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=full_prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=1000,
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                    tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                ),
+            )
+            _usage_tracker.record_call("gemini")
+            return response.text
+        except Exception as e:
+            log.warning(f"Gemini API error: {e}")
+            return None
+
+
+class GroqClient:
+    """Client for Groq Compound Beta API with built-in web search."""
+
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or GROQ_API_KEY
+        self._client = None
+        if HAS_GROQ and self.api_key:
+            self._client = Groq(api_key=self.api_key)
+
+    def query(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Send query to Groq Compound Beta API."""
+        if not self._client:
+            log.debug("Groq client not available")
+            return None
+
+        if not _usage_tracker.can_call("groq"):
+            status = _usage_tracker.get_status().get("groq", {})
+            log.warning(
+                f"Groq daily limit reached ({status.get('used', '?')}/{status.get('limit', '?')}). "
+                "Skipping to avoid overage."
+            )
+            return None
 
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        payload = {
-            "model": PERPLEXITY_MODEL,
-            "messages": messages,
-            "max_tokens": 1000,
-            "temperature": 0.2,  # Low temperature for factual responses
-        }
-
         try:
-            response = self.session.post(
-                PERPLEXITY_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=60
+            response = self._client.chat.completions.create(
+                model="compound-beta",
+                messages=messages,
+                max_tokens=1000,
+                temperature=0.2,
             )
-            response.raise_for_status()
-
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-
-            # Log citations if available
-            citations = data.get("citations", [])
-            if citations:
-                log.debug(f"Sources used: {len(citations)}")
-
-            return content
-
-        except requests.exceptions.Timeout:
-            log.error("Perplexity API request timed out")
-            return None
-        except requests.exceptions.RequestException as e:
-            log.error(f"Perplexity API error: {e}")
-            return None
-        except (KeyError, IndexError) as e:
-            log.error(f"Unexpected API response format: {e}")
+            _usage_tracker.record_call("groq")
+            return response.choices[0].message.content
+        except Exception as e:
+            log.warning(f"Groq API error: {e}")
             return None
 
 
@@ -405,13 +552,21 @@ class DataDrivenSentiment:
 class SentimentAnalyzer:
     """Analyzes sentiment for Serie A matches.
 
-    Uses Perplexity API when available, falls back to data-driven analysis
-    from standings, form, H2H, and derby data.
+    Uses Gemini Grounding (primary) or Groq Compound (fallback) for web-search
+    sentiment, falls back to data-driven analysis from standings, form, H2H.
     """
 
     def __init__(self):
-        self.client = PerplexityClient()
-        self._use_perplexity = bool(PERPLEXITY_API_KEY)
+        # Web search client cascade: Gemini -> Groq
+        self._gemini = GeminiClient()
+        self._groq = GroqClient()
+        if self._gemini._client:
+            self.client = self._gemini
+        elif self._groq._client:
+            self.client = self._groq
+        else:
+            self.client = GeminiClient()  # Dummy — will return None
+        self._use_web_search = HAS_WEB_SEARCH_KEY
         self._data_driven = DataDrivenSentiment()
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -692,18 +847,31 @@ Assess the psychological pressure on each team."""
 
         return round(composite, 1)
 
-    def _analyze_match_perplexity(self, home_team: str, away_team: str) -> Optional[dict]:
-        """Try Perplexity API for all sentiment components. Returns None on failure."""
-        if not self._use_perplexity:
+    def _analyze_match_web_search(self, home_team: str, away_team: str) -> Optional[dict]:
+        """Try web search API for all sentiment components. Returns None on failure.
+
+        Cascade: Gemini Grounding -> Groq Compound -> None (triggers data-driven).
+        """
+        if not self._use_web_search:
             return None
 
         try:
             home_fan, home_fan_reason = self.analyze_fan_sentiment(home_team)
-            # If Perplexity returned the default fallback, it failed
+            # If web search returned the default fallback, it failed
             if home_fan_reason == "Unable to analyze fan sentiment":
-                log.warning("Perplexity API appears non-functional, switching to data-driven")
-                self._use_perplexity = False
-                return None
+                # Primary failed — try switching to secondary before giving up
+                if isinstance(self.client, GeminiClient) and self._groq._client:
+                    log.warning("Gemini failed, falling back to Groq")
+                    self.client = self._groq
+                    home_fan, home_fan_reason = self.analyze_fan_sentiment(home_team)
+                    if home_fan_reason == "Unable to analyze fan sentiment":
+                        log.warning("Groq also failed, switching to data-driven")
+                        self._use_web_search = False
+                        return None
+                else:
+                    log.warning("Web search API non-functional, switching to data-driven")
+                    self._use_web_search = False
+                    return None
 
             time.sleep(1)
             away_fan, away_fan_reason = self.analyze_fan_sentiment(away_team)
@@ -720,6 +888,7 @@ Assess the psychological pressure on each team."""
             time.sleep(1)
             derby_pressure, derby_reason = self.check_derby_pressure(home_team, away_team)
 
+            source = "Gemini Grounding" if isinstance(self.client, GeminiClient) else "Groq Compound"
             return {
                 "home_fan": home_fan, "home_fan_reason": home_fan_reason,
                 "away_fan": away_fan, "away_fan_reason": away_fan_reason,
@@ -730,10 +899,10 @@ Assess the psychological pressure on each team."""
                 "home_transfer": home_transfer, "home_transfer_reason": home_transfer_reason,
                 "away_transfer": away_transfer, "away_transfer_reason": away_transfer_reason,
                 "derby_pressure": derby_pressure, "derby_reason": derby_reason,
-                "source": "Perplexity AI",
+                "source": source,
             }
         except Exception as e:
-            log.warning(f"Perplexity analysis failed: {e}")
+            log.warning(f"Web search analysis failed: {e}")
             return None
 
     def _analyze_match_data_driven(self, home_team: str, away_team: str) -> dict:
@@ -773,7 +942,7 @@ Assess the psychological pressure on each team."""
     def analyze_match(self, home_team: str, away_team: str, match_date: str) -> MatchSentiment:
         """Perform complete sentiment analysis for a match.
 
-        Cascade: Perplexity API → data-driven fallback from pipeline data.
+        Cascade: Gemini Grounding → Groq Compound → data-driven fallback.
         """
         match_name = f"{home_team} vs {away_team}"
 
@@ -786,8 +955,8 @@ Assess the psychological pressure on each team."""
 
         log.info(f"Analyzing sentiment for {match_name}...")
 
-        # Try Perplexity first, fall back to data-driven
-        result = self._analyze_match_perplexity(home_team, away_team)
+        # Try web search first, fall back to data-driven
+        result = self._analyze_match_web_search(home_team, away_team)
         if not result:
             result = self._analyze_match_data_driven(home_team, away_team)
 
@@ -877,8 +1046,10 @@ CONCLUSION: Sentiment edge favors {sentiment_edge.upper()}
 
         if source == "Data-Driven Analysis":
             sources = ["Standings & Form", "Elo Ratings", "Head-to-Head"]
+        elif "Gemini" in source:
+            sources = ["Google Gemini", "Google Search", "Italian Sports Media"]
         else:
-            sources = ["Perplexity AI", "Italian Sports Media", "Social Media Analysis"]
+            sources = ["Groq Compound", "Web Search", "Italian Sports Media"]
 
         sentiment = MatchSentiment(
             match=match_name,

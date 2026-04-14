@@ -187,7 +187,7 @@ DERBIES: dict[str, dict[frozenset[str], int]] = {
 
 PROMOTED_TEAMS: dict[str, dict[str, set[str]]] = {
     "serie_a": {
-        "2017-2018": {"Benevento", "Spal", "Verona"},
+        "2017-2018": {"Benevento", "SPAL", "Verona"},
         "2018-2019": {"Parma", "Empoli", "Frosinone"},
         "2019-2020": {"Brescia", "Lecce", "Verona"},
         "2020-2021": {"Benevento", "Crotone", "Spezia"},

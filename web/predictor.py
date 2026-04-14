@@ -13,24 +13,32 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
-MODELS_DIR = PROJECT_ROOT / "data" / "models" / "universal"
+_DEFAULT_MODELS_DIR = PROJECT_ROOT / "data" / "models" / "universal"
 FEATURES_PATH = PROJECT_ROOT / "data" / "features" / "features.parquet"
 
 
 class MatchPredictor:
     """Loads trained model and makes predictions with explanations."""
 
-    def __init__(self, use_no_odds_model: bool = False):
+    def __init__(self, use_no_odds_model: bool = False, league: str | None = None):
         """Initialize the predictor.
 
         Args:
             use_no_odds_model: If True, use the model trained without odds
                               (better for predicting future matches)
+            league: If specified, load per-league model from data/models/{league}/.
+                    Falls back to universal if league-specific model doesn't exist.
         """
         self.model = None
         self.feature_names = []
         self.metadata = {}
         self.use_no_odds_model = use_no_odds_model
+        # Resolve model directory: per-league if available, else universal
+        if league:
+            league_dir = PROJECT_ROOT / "data" / "models" / league
+            self._models_dir = league_dir if league_dir.exists() else _DEFAULT_MODELS_DIR
+        else:
+            self._models_dir = _DEFAULT_MODELS_DIR
         self._load_model()
 
     def _load_model(self):
@@ -42,26 +50,26 @@ class MatchPredictor:
             # For upcoming/future matches, use the pre-match features model
             if self.use_no_odds_model:
                 # Try upcoming model first (pre-match features only)
-                model_path = MODELS_DIR / "catboost_upcoming.cbm"
-                metadata_path = MODELS_DIR / "catboost_upcoming_metadata.json"
+                model_path = self._models_dir / "catboost_upcoming.cbm"
+                metadata_path = self._models_dir / "catboost_upcoming_metadata.json"
 
                 if not model_path.exists():
                     # Fall back to no-odds model
-                    model_path = MODELS_DIR / "catboost_no_odds.cbm"
-                    metadata_path = MODELS_DIR / "catboost_no_odds_metadata.json"
+                    model_path = self._models_dir / "catboost_no_odds.cbm"
+                    metadata_path = self._models_dir / "catboost_no_odds_metadata.json"
             else:
-                model_path = MODELS_DIR / "catboost_latest.cbm"
-                metadata_path = MODELS_DIR / "catboost_metadata.json"
+                model_path = self._models_dir / "catboost_latest.cbm"
+                metadata_path = self._models_dir / "catboost_metadata.json"
 
             if not model_path.exists():
                 log.warning(f"Model not found at {model_path}")
                 # Fall back to the other model
                 if self.use_no_odds_model:
-                    model_path = MODELS_DIR / "catboost_latest.cbm"
-                    metadata_path = MODELS_DIR / "catboost_metadata.json"
+                    model_path = self._models_dir / "catboost_latest.cbm"
+                    metadata_path = self._models_dir / "catboost_metadata.json"
                 else:
-                    model_path = MODELS_DIR / "catboost_no_odds.cbm"
-                    metadata_path = MODELS_DIR / "catboost_no_odds_metadata.json"
+                    model_path = self._models_dir / "catboost_no_odds.cbm"
+                    metadata_path = self._models_dir / "catboost_no_odds_metadata.json"
 
             if not model_path.exists():
                 log.error("No model found")

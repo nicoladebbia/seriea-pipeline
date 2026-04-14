@@ -173,15 +173,30 @@ def add_understat_features(matches: pd.DataFrame) -> pd.DataFrame:
             )
             df["season"] = df["season_start"].astype(str) + "-" + (df["season_start"] + 1).astype(str)
 
-    # Merge home team stats
-    home_stats = team_stats.copy()
-    home_stats.columns = ["home_team_norm", "season"] + [f"home_us_{c}" for c in team_stats.columns[2:]]
-    df = df.merge(home_stats, on=["home_team_norm", "season"], how="left")
+    # FIX: Use PREVIOUS season's stats to avoid look-ahead bias.
+    # Current-season totals include future matches (MW1 would see MW38 data).
+    # Previous season's stats are fully known and a strong predictor.
+    def _prev_season(s: str) -> str:
+        """Convert '2023-2024' to '2022-2023'."""
+        try:
+            start = int(s.split("-")[0]) - 1
+            return f"{start}-{start + 1}"
+        except (ValueError, IndexError):
+            return ""
 
-    # Merge away team stats
+    df["_prev_season"] = df["season"].apply(_prev_season)
+
+    # Merge home team stats from PREVIOUS season
+    home_stats = team_stats.copy()
+    home_stats = home_stats.rename(columns={"season": "_prev_season"})
+    home_stats.columns = ["home_team_norm", "_prev_season"] + [f"home_us_{c}" for c in team_stats.columns[2:]]
+    df = df.merge(home_stats, on=["home_team_norm", "_prev_season"], how="left")
+
+    # Merge away team stats from PREVIOUS season
     away_stats = team_stats.copy()
-    away_stats.columns = ["away_team_norm", "season"] + [f"away_us_{c}" for c in team_stats.columns[2:]]
-    df = df.merge(away_stats, on=["away_team_norm", "season"], how="left")
+    away_stats = away_stats.rename(columns={"season": "_prev_season"})
+    away_stats.columns = ["away_team_norm", "_prev_season"] + [f"away_us_{c}" for c in team_stats.columns[2:]]
+    df = df.merge(away_stats, on=["away_team_norm", "_prev_season"], how="left")
 
     # Compute derived features
     # xG differential
@@ -195,7 +210,7 @@ def add_understat_features(matches: pd.DataFrame) -> pd.DataFrame:
     ).astype(int)
 
     # Clean up temp columns
-    df = df.drop(columns=["home_team_norm", "away_team_norm", "match_year", "match_month", "season_start"], errors="ignore")
+    df = df.drop(columns=["home_team_norm", "away_team_norm", "match_year", "match_month", "season_start", "_prev_season"], errors="ignore")
 
     n_covered = df["us_coverage"].sum()
     log.info(f"Understat features: {n_covered}/{len(df)} matches covered ({100*n_covered/len(df):.1f}%)")

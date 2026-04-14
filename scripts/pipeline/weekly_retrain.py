@@ -620,7 +620,15 @@ def full_retrain(dry_run: bool = False) -> dict:
     try:
         from ml.training import train_optimized
 
-        train_results = train_optimized(exclude_odds=True)
+        # Train both leagues with all improvements (exclude_odds, per-league)
+        for _league in ["serie_a", "premier_league"]:
+            log.info("Training %s...", _league)
+            try:
+                train_optimized(league=_league, exclude_odds=True)
+                log.info("%s training complete", _league)
+            except Exception as _le:
+                log.error("%s training failed: %s — continuing with other leagues", _league, _le)
+
         elapsed = time.time() - t0
         log.info("Full training completed in %.1f seconds (%.1f min)", elapsed, elapsed / 60)
         result["training_time_seconds"] = round(elapsed, 1)

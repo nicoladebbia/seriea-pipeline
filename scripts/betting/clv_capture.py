@@ -81,9 +81,12 @@ def _load_cached_odds() -> Dict:
                 log.warning("Failed to load %s: %s", fname, e)
                 continue
 
-    # Merge extra markets (DC, BTTS, DNB, alternate spreads/totals)
-    extra_path = DATA_DIR / "upcoming" / "odds_extra_markets.json"
-    if extra_path.exists():
+    # Merge extra markets (DC, BTTS, DNB, alternate spreads/totals) — all leagues
+    extra_paths = [DATA_DIR / "upcoming" / "odds_extra_markets.json"] + \
+        list((DATA_DIR / "upcoming").glob("odds_extra_markets_*.json"))
+    for extra_path in extra_paths:
+        if not extra_path.exists():
+            continue
         try:
             with open(extra_path) as f:
                 extra = json.load(f)
@@ -98,10 +101,10 @@ def _load_cached_odds() -> Dict:
                     if mkt_key in extra_data:
                         odds[match_key][mkt_key] = extra_data[mkt_key]
                         merged += 1
-            log.info("Merged extra markets: %d market entries from %d matches",
-                     merged, len(extra_matches))
+            log.info("Merged extra markets from %s: %d entries from %d matches",
+                     extra_path.name, merged, len(extra_matches))
         except Exception as e:
-            log.warning("Failed to load extra markets: %s", e)
+            log.warning("Failed to load extra markets from %s: %s", extra_path.name, e)
 
     if not odds:
         log.warning("No cached odds found")

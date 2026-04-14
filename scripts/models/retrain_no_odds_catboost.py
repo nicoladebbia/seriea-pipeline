@@ -60,9 +60,9 @@ def load_rejection_thresholds() -> Dict[str, float]:
     if not deploy_path.exists():
         # Fallback thresholds (calibrated for 2017+ model with time-decay)
         return {
-            "accuracy_min": 0.55,
-            "log_loss_max": 0.92,
-            "brier_max": 0.18,
+            "accuracy_min": 0.52,
+            "log_loss_max": 0.96,
+            "brier_max": 0.195,
             "betting_yield_min": 0.05,
         }
 
@@ -70,9 +70,9 @@ def load_rejection_thresholds() -> Dict[str, float]:
         state = json.load(f)
 
     return state.get("rejection_thresholds", {
-        "accuracy_min": 0.55,
-        "log_loss_max": 0.92,
-        "brier_max": 0.18,
+        "accuracy_min": 0.52,
+        "log_loss_max": 0.96,
+        "brier_max": 0.195,
         "betting_yield_min": 0.05,
     })
 

@@ -27,7 +27,7 @@ from scipy.optimize import minimize
 from sklearn.metrics import log_loss as sk_log_loss
 
 from config.settings import MODELS_DIR
-from ml.calibration import ProbabilityCalibrator
+from ml.calibration import AutoCalibrator, ProbabilityCalibrator
 from ml.config import (
     CLASS_INDICES,
     LABEL_MAP,
@@ -113,12 +113,14 @@ class WeightedAverageEnsemble:
         model_configs: Dict[str, dict],
         use_sample_weights: bool = True,
         ensemble_config: EnsembleConfig | None = None,
+        variant: str = "universal",
     ):
         self.model_configs = model_configs
         self.use_sample_weights = use_sample_weights
         self.config = ensemble_config or EnsembleConfig()
+        self.variant = variant
         self.base_models: Dict[str, Any] = {}
-        self.blend_calibrator: ProbabilityCalibrator | None = None
+        self.blend_calibrator: AutoCalibrator | ProbabilityCalibrator | None = None
         self.weights: np.ndarray | None = None
         self.model_order: list[str] = []
         self.feature_names: list[str] | None = None
@@ -220,14 +222,17 @@ class WeightedAverageEnsemble:
                  ", ".join(f"{mt}={w:.3f}" for mt, w in zip(self.model_order, self.weights)))
 
         # Fit a single calibrator on the BLENDED OOF predictions
+        # AutoCalibrator compares isotonic vs temperature scaling, picks best
         blended_oof = _normalize_probs(sum(w * p for w, p in zip(self.weights, probas_list)))
-        self.blend_calibrator = ProbabilityCalibrator()
+        self.blend_calibrator = AutoCalibrator()
         self.blend_calibrator.fit(oof_y, blended_oof)
 
-        # Persist CALIBRATED OOF predictions for the correction layer.
-        # Must be calibrated to match prediction-time probs (training-serving parity).
+        # Persist BOTH raw and calibrated OOF predictions.
+        # The correction layer trains on raw (pre-calibration) to avoid double-calibration.
+        # Calibrated OOF kept for diagnostics and ensemble evaluation.
         calibrated_oof = _normalize_probs(self.blend_calibrator.calibrate(blended_oof))
-        self._persist_oof_predictions(X, joint_ok, calibrated_oof, oof_y, context_df)
+        self._persist_oof_predictions(X, joint_ok, calibrated_oof, oof_y, context_df,
+                                      raw_oof=blended_oof)
 
         # Retrain base models on all data
         X_all = X.drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
@@ -243,23 +248,27 @@ class WeightedAverageEnsemble:
         log.info("Base models retrained on all %d samples", len(X_all))
         return self
 
-    @staticmethod
     def _persist_oof_predictions(
+        self,
         X: pd.DataFrame,
         joint_ok: np.ndarray,
         blended_oof: np.ndarray,
         oof_y: pd.Series,
         context_df: pd.DataFrame | None = None,
+        raw_oof: np.ndarray | None = None,
     ) -> None:
         """Save OOF predictions + context features for the correction layer.
 
-        Writes to data/models/universal/cv_predictions.parquet with columns:
-        prob_H, prob_D, prob_A, actual, plus context features for correction.
+        Writes to data/models/{variant}/cv_predictions.parquet with columns:
+        prob_H, prob_D, prob_A (calibrated), raw_prob_H/D/A (pre-calibration),
+        actual, plus context features for correction.
 
         Args:
             context_df: Optional full features DataFrame (pre-feature-selection)
                         for sourcing columns like matchweek, is_promoted that may
                         have been pruned from the feature-selected X.
+            raw_oof: Pre-calibration blended OOF probabilities. The correction
+                     layer should train on these to avoid double-calibration.
         """
         try:
             oof_df = pd.DataFrame({
@@ -268,6 +277,11 @@ class WeightedAverageEnsemble:
                 "prob_A": blended_oof[:, 2],
                 "actual": oof_y.values,
             })
+            # Persist raw (pre-calibration) OOF for the correction layer
+            if raw_oof is not None:
+                oof_df["raw_prob_H"] = raw_oof[:, 0]
+                oof_df["raw_prob_D"] = raw_oof[:, 1]
+                oof_df["raw_prob_A"] = raw_oof[:, 2]
 
             # Extract context features from X (the feature-selected matrix + meta cols)
             X_oof = X[joint_ok].reset_index(drop=True)
@@ -318,7 +332,7 @@ class WeightedAverageEnsemble:
                 oof_df["match_date"] = X_oof["_match_date"].values
 
             # Save
-            save_path = MODELS_DIR / "universal" / "cv_predictions.parquet"
+            save_path = MODELS_DIR / self.variant / "cv_predictions.parquet"
             save_path.parent.mkdir(parents=True, exist_ok=True)
             oof_df.to_parquet(save_path, index=False)
             log.info("Saved %d OOF predictions to %s (columns: %s)",
@@ -369,8 +383,11 @@ class WeightedAverageEnsemble:
 
         # Save single blend calibrator
         if self.blend_calibrator is not None:
-            with open(save_dir / "blend_calibrator.pkl", "wb") as f:
-                pickle.dump(self.blend_calibrator.calibrators, f)
+            if isinstance(self.blend_calibrator, AutoCalibrator):
+                self.blend_calibrator.save(self.variant, "blend")
+            else:
+                with open(save_dir / "blend_calibrator.pkl", "wb") as f:
+                    pickle.dump(self.blend_calibrator.calibrators, f)
 
         metadata = {
             "ensemble_type": "weighted_average_v2",
@@ -421,14 +438,22 @@ class WeightedAverageEnsemble:
                 model = booster
             ens.base_models[mt] = model
 
-        # Load blend calibrator
+        # Load blend calibrator (supports both legacy ProbabilityCalibrator and AutoCalibrator)
         cal_path = load_dir / "blend_calibrator.pkl"
         if cal_path.exists():
-            cal = ProbabilityCalibrator()
             with open(cal_path, "rb") as f:
-                cal.calibrators = pickle.load(f)
-            cal.fitted = True
-            ens.blend_calibrator = cal
+                data = pickle.load(f)
+            if isinstance(data, dict) and "method" in data:
+                # New AutoCalibrator format
+                cal = AutoCalibrator()
+                cal.load(ens.variant, "blend")
+                ens.blend_calibrator = cal
+            else:
+                # Legacy: list of isotonic regressors
+                cal = ProbabilityCalibrator()
+                cal.calibrators = data if isinstance(data, list) else []
+                cal.fitted = bool(cal.calibrators)
+                ens.blend_calibrator = cal
 
         log.info("Loaded ensemble from %s (weights: %s)", load_dir,
                  ", ".join(f"{mt}={w:.3f}" for mt, w in zip(ens.model_order, ens.weights)))
@@ -551,9 +576,9 @@ def evaluate_ensemble_cv(
         oof_list = [oof_probas[mt][joint_ok] for mt in active_models]
         weights = _optimize_blend_weights(oof_list, oof_y_int)
 
-        # Fit single calibrator on blended OOF
+        # Fit single calibrator on blended OOF (auto-selects best method)
         blended_oof = _normalize_probs(sum(w * p for w, p in zip(weights, oof_list)))
-        blend_cal = ProbabilityCalibrator()
+        blend_cal = AutoCalibrator()
         blend_cal.fit(oof_y, blended_oof)
 
         # --- Retrain base models on ALL training data, predict test ---

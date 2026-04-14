@@ -430,15 +430,15 @@ def test_sentiment_analyzer_can_run():
     print("\n=== Testing Sentiment Analyzer Module ===")
 
     try:
-        from scripts.prediction.sentiment_analyzer import SentimentAnalyzer, PERPLEXITY_API_KEY
+        from scripts.prediction.sentiment_analyzer import SentimentAnalyzer, HAS_WEB_SEARCH_KEY
 
         # Check API key exists
-        if PERPLEXITY_API_KEY:
-            results.add_pass("Perplexity API key configured",
-                           f"Key length: {len(PERPLEXITY_API_KEY)}")
+        if HAS_WEB_SEARCH_KEY:
+            results.add_pass("Web search API key configured",
+                           "GOOGLE_GEMINI_KEY or GROQ_API_KEY set")
         else:
-            results.add_fail("Perplexity API key configured",
-                           "PERPLEXITY_API_KEY not set")
+            results.add_fail("Web search API key configured",
+                           "Neither GOOGLE_GEMINI_KEY nor GROQ_API_KEY set")
             return
 
         # Check analyzer can be instantiated

@@ -263,9 +263,24 @@ class _NotificationBatcher:
             except Exception as e:
                 log.warning("Immediate flush failed for %s: %s", category, e)
 
+    def shutdown(self):
+        """Cancel all pending timers and flush remaining items on exit."""
+        with self._lock:
+            for cat, timer in list(self._timers.items()):
+                timer.cancel()
+            # Collect all pending items for logging (can't flush without flush_fn)
+            pending_count = sum(len(v) for v in self._pending.values())
+            if pending_count:
+                log.warning("Batcher shutdown: %d buffered notifications lost", pending_count)
+            self._pending.clear()
+            self._timers.clear()
+
 
 # Global batcher instance
 _batcher = _NotificationBatcher(window_sec=45.0)
+
+import atexit
+atexit.register(_batcher.shutdown)
 
 # Default preferences — used when data/notification_preferences.json doesn't exist
 _DEFAULT_PREFERENCES = {
@@ -439,9 +454,16 @@ def _record_history(title: str, message: str, level: str, category: str, channel
             # Keep only last _MAX_HISTORY
             if len(lines) > _MAX_HISTORY:
                 lines = lines[-_MAX_HISTORY:]
-            # Write back
-            with open(_HISTORY_PATH, "w") as f:
-                f.writelines(lines)
+            # Write back atomically (crash between truncate and write would lose history)
+            import tempfile as _th
+            _fd, _tmp = _th.mkstemp(dir=_HISTORY_PATH.parent, suffix=".tmp")
+            try:
+                with open(_fd, "w") as f:
+                    f.writelines(lines)
+                Path(_tmp).rename(_HISTORY_PATH)
+            except BaseException:
+                Path(_tmp).unlink(missing_ok=True)
+                raise
     except Exception as e:
         log.debug("Failed to record notification history: %s", e)
 
@@ -539,9 +561,9 @@ def _notify_macos(message: str, title: str) -> bool:
         sound = prefs.get("sound", "Basso")
         if sound not in _VALID_SOUNDS:
             sound = "Basso"
-        # Escape double quotes to prevent osascript injection
-        safe_msg = message.replace('"', '\\"')[:256]
-        safe_title = title.replace('"', '\\"')[:64]
+        # Escape for osascript: backslashes first, then double quotes
+        safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')[:256]
+        safe_title = title.replace("\\", "\\\\").replace('"', '\\"')[:64]
         script = (
             f'display notification "{safe_msg}" '
             f'with title "{safe_title}" sound name "{sound}"'
@@ -598,60 +620,98 @@ def _notify_telegram(message: str, title: str, level: str = "info",
         # Legacy plain-text message — escape for HTML
         text = f"{emoji} <b>{_html_escape(title)}</b>\n{_html_escape(message)}"
 
+    # Split long messages into chunks (Telegram limit: 4096 chars)
+    MAX_TG_LEN = 4096
+    if len(text) > MAX_TG_LEN:
+        chunks = []
+        while text:
+            if len(text) <= MAX_TG_LEN:
+                chunks.append(text)
+                break
+            # Try to split at a newline near the limit
+            split_at = text.rfind("\n", 0, MAX_TG_LEN)
+            if split_at < MAX_TG_LEN // 2:
+                split_at = MAX_TG_LEN  # no good newline, hard split
+            chunks.append(text[:split_at])
+            text = text[split_at:].lstrip("\n")
+        log.info("Telegram message split into %d chunks (%d chars total)",
+                 len(chunks), sum(len(c) for c in chunks))
+    else:
+        chunks = [text]
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload_dict = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    # Low-priority notifications are sent silently (no sound/vibration)
-    if priority == PRIORITY_LOW:
-        payload_dict["disable_notification"] = True
-
-    # Inline keyboard buttons (quick-action buttons)
-    if reply_markup:
-        payload_dict["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else reply_markup
-
-    payload = json.dumps(payload_dict).encode("utf-8")
-
-    # Retry with exponential backoff (3 attempts: 0s, 2s, 4s)
     import time as _time
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status == 200:
-                    log.debug("Telegram notification sent")
-                    return True
-                log.warning("Telegram returned HTTP %d (attempt %d)", resp.status, attempt + 1)
-        except urllib.error.HTTPError as e:
-            body = ""
+    all_ok = True
+
+    for chunk_idx, chunk_text in enumerate(chunks):
+        payload_dict = {
+            "chat_id": chat_id,
+            "text": chunk_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if priority == PRIORITY_LOW:
+            payload_dict["disable_notification"] = True
+        # Attach keyboard only to the last chunk
+        if reply_markup and chunk_idx == len(chunks) - 1:
+            payload_dict["reply_markup"] = json.dumps(reply_markup) if isinstance(reply_markup, dict) else reply_markup
+
+        payload = json.dumps(payload_dict).encode("utf-8")
+
+        # Retry with exponential backoff (3 attempts: 0s, 2s, 4s)
+        chunk_ok = False
+        for attempt in range(3):
             try:
-                body = e.read().decode("utf-8", errors="replace")[:200]
+                req = urllib.request.Request(
+                    url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        chunk_ok = True
+                        break
+                    log.warning("Telegram returned HTTP %d (attempt %d)", resp.status, attempt + 1)
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    pass
+                log.warning("Telegram HTTP error %d (attempt %d): %s", e.code, attempt + 1, body)
+                if e.code == 429:
+                    _time.sleep(5)
+                    continue
+            except urllib.error.URLError as e:
+                log.warning("Telegram connection error (attempt %d): %s", attempt + 1, e.reason)
+            except Exception as e:
+                log.warning("Telegram notification failed (attempt %d): %s", attempt + 1, e)
+
+            if attempt < 2:
+                _time.sleep(2 ** attempt)
+
+        if not chunk_ok:
+            # Retry once without HTML parsing (broken tags from mid-split)
+            payload_dict.pop("parse_mode", None)
+            payload = json.dumps(payload_dict).encode("utf-8")
+            try:
+                req = urllib.request.Request(url, data=payload,
+                                            headers={"Content-Type": "application/json"},
+                                            method="POST")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        chunk_ok = True
+                        log.info("Telegram chunk %d sent without HTML (fallback)", chunk_idx + 1)
             except Exception:
                 pass
-            log.warning("Telegram HTTP error %d (attempt %d): %s", e.code, attempt + 1, body)
-            # 429 Too Many Requests: wait longer
-            if e.code == 429:
-                _time.sleep(5)
-                continue
-        except urllib.error.URLError as e:
-            log.warning("Telegram connection error (attempt %d): %s", attempt + 1, e.reason)
-        except Exception as e:
-            log.warning("Telegram notification failed (attempt %d): %s", attempt + 1, e)
+            if not chunk_ok:
+                log.error("Telegram chunk %d/%d failed after all attempts", chunk_idx + 1, len(chunks))
+                all_ok = False
 
-        if attempt < 2:
-            _time.sleep(2 ** attempt)  # 1s, 2s backoff
-            continue
-
-    log.error("Telegram notification failed after 3 attempts")
-    return False
+    if all_ok:
+        log.debug("Telegram notification sent (%d chunks)", len(chunks))
+    return all_ok
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +762,23 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
                 reply_markup=tg_reply_markup)
     else:
         results["telegram"] = False
+
+    # Fallback: if Telegram failed on critical/error messages, ensure macOS is sent
+    if not results.get("telegram") and level in ("critical", "error") and not results.get("macos"):
+        log.warning("Telegram failed for %s message — sending macOS fallback", level)
+        results["macos_fallback"] = _notify_macos(f"[TG DOWN] {message}", title)
+
+    # Emergency: if ALL channels failed for critical messages, write to emergency log
+    if level in ("critical", "error"):
+        any_sent = any(v for v in results.values() if v is True)
+        if not any_sent:
+            try:
+                emergency_log = PROJECT_ROOT / "logs" / "emergency_alerts.log"
+                emergency_log.parent.mkdir(parents=True, exist_ok=True)
+                with open(emergency_log, "a") as f:
+                    f.write(f"[{datetime.now().isoformat()}] [{level.upper()}] {title}: {message}\n")
+            except Exception:
+                pass
 
     # Record to history (non-blocking, uses plain text for readability)
     try:
@@ -811,21 +888,38 @@ _FT_LOSS_OPENERS = [
 # ---------------------------------------------------------------------------
 
 def _get_bankroll_context() -> dict:
-    """Load bankroll state for contextual messaging."""
+    """Compute live bankroll state from bet_journal.json (source of truth).
+
+    Previously read from bankroll/state.json which was stale since March 1.
+    Now computes directly from settled bets in the journal.
+    """
     try:
-        state_path = DATA_DIR / "bankroll" / "state.json"
-        if state_path.exists():
-            with open(state_path) as f:
-                state = json.load(f)
-            current = state.get("current_bankroll", 0)
-            initial = state.get("initial_bankroll", 1000)
-            peak = state.get("peak_bankroll", current)
+        journal_path = DATA_DIR / "betting" / "bet_journal.json"
+        if journal_path.exists():
+            with open(journal_path) as f:
+                journal = json.load(f)
+            # Journal uses dict keyed by bet_id, not a list
+            bets_raw = journal.get("bets", {})
+            bets = list(bets_raw.values()) if isinstance(bets_raw, dict) else bets_raw
+            initial = journal.get("initial_bankroll", journal.get("metadata", {}).get("initial_bankroll", 1000))
+            # Sum profits from all settled bets
+            settled = [b for b in bets if b.get("status") in ("won", "lost", "push")]
+            total_profit = sum((b.get("profit") or 0) for b in settled)
+            current = initial + total_profit
+            # Track peak by computing running balance chronologically
+            peak = initial
+            running = initial
+            settled_sorted = sorted(settled, key=lambda b: b.get("settled_at", ""))
+            for b in settled_sorted:
+                running += (b.get("profit") or 0)
+                if running > peak:
+                    peak = running
             return {
-                "current": current,
+                "current": round(current, 2),
                 "initial": initial,
-                "peak": peak,
-                "roi_pct": ((current - initial) / initial * 100) if initial else 0,
-                "drawdown_pct": ((peak - current) / peak * 100) if peak else 0,
+                "peak": round(peak, 2),
+                "roi_pct": round((current - initial) / initial * 100, 1) if initial else 0,
+                "drawdown_pct": round((peak - current) / peak * 100, 1) if peak else 0,
                 "is_up": current > initial,
                 "is_at_peak": current >= peak * 0.98,
             }
@@ -1023,6 +1117,21 @@ def _detect_league_name(match_dict: dict) -> str:
     return ""
 
 
+def _league_badge(match_or_bet: dict = None, match_key: str = "") -> str:
+    """Return flag emoji for the match's league. 🇮🇹 Serie A, 🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL."""
+    if match_or_bet:
+        league = _detect_league_name(match_or_bet)
+    elif match_key:
+        league = _detect_league_name({"match": match_key})
+    else:
+        return ""
+    if "premier" in league.lower() or "epl" in league.lower():
+        return "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
+    if league:
+        return "\U0001f1ee\U0001f1f9"
+    return ""
+
+
 def notify_value_bets(bets: list[dict]) -> dict:
     """Send a rich notification about new value bets found."""
     if not bets:
@@ -1084,8 +1193,9 @@ def notify_value_bets(bets: list[dict]) -> dict:
         tg.raw(f"<b>{_html_escape(b.get('match', '?'))}</b>{conf_tag}{time_tag}{league_tag}")
         tg.raw(f"  {_html_escape(b.get('selection', '?'))} ({_html_escape(b.get('market', '?'))}) "
                f"@ <b>{b.get('best_odds', '?')}</b>  \u2014  {_html_escape(_edge_label(edge))}")
-        tg.raw(f"  Model {b.get('model_prob', 0)*100:.0f}% vs market {100/b.get('best_odds',100):.0f}%"
-               f"  |  \u20ac{b.get('stake_amount', 0):.0f} stake")
+        market_pct = b.get('sharp_implied_prob', 0) * 100 if b.get('sharp_implied_prob') else (100 / b.get('best_odds', 1))
+        tg.raw(f"  Model {b.get('model_prob', 0)*100:.0f}% vs sharp {market_pct:.0f}%"
+               f"  |  \u20ac{b.get('stake', 0):.0f} stake")
 
         # Match-specific factors
         factors = (b.get("home_factors") or []) + (b.get("away_factors") or [])
@@ -1155,6 +1265,10 @@ def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
     is_positive = profit >= 0
     streak = _get_streak()
     br_ctx = _get_bankroll_context()
+    # Use passed balance if available (from settlement engine) instead of stale state
+    if balance > 0:
+        br_ctx["current"] = balance
+        br_ctx["roi_pct"] = round((balance - br_ctx["initial"]) / br_ctx["initial"] * 100, 1) if br_ctx["initial"] else 0
     opener = _smart_opener("settle_win" if is_positive else "settle_loss",
                            profit=profit, streak=streak, bankroll_ctx=br_ctx)
     level = "success" if is_positive else "warning"
@@ -1165,34 +1279,56 @@ def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
     # macOS: the one number that matters
     mac_msg = f"{record} | {sign}\u20ac{profit:.2f} | Balance: {_bankroll_in_context(br_ctx)}"
 
-    # Telegram
+    # Telegram — rich per-bet summary
     tg = TgMsg()
     tg.line(opener)
     tg.blank()
 
-    # Group by league when multiple leagues have settled bets
+    # Show each settled bet with details
     if settled_bets:
-        by_league: dict[str, list[dict]] = {}
-        for sb in settled_bets:
-            ln = _detect_league_name(sb) or "Other"
-            by_league.setdefault(ln, []).append(sb)
-        if len(by_league) > 1:
-            for league_name, league_bets in sorted(by_league.items()):
-                lw = sum(1 for b in league_bets if b.get("status") == "won")
-                ll = sum(1 for b in league_bets if b.get("status") == "lost")
-                lp = sum(b.get("profit", 0) for b in league_bets)
-                ls = "+" if lp >= 0 else ""
-                tg.raw(f"<b>{_html_escape(league_name)}:</b> {lw}W-{ll}L ({ls}\u20ac{lp:.2f})")
-            tg.blank()
+        tg.raw("<b>\U0001f4ca Match Day Results</b>")
+        tg.blank()
+        for b in settled_bets:
+            status = b.get("status", "")
+            icon = "\u2705" if status == "won" else "\u274c" if status == "lost" else "\u21a9\ufe0f"
+            match = _html_escape(b.get("match", "?"))
+            market = _html_escape(b.get("market", ""))
+            selection = _html_escape(b.get("selection", ""))
+            odds = b.get("odds", 0)
+            stake = b.get("stake", 0)
+            bet_profit = b.get("profit") or 0
+            score = _html_escape(b.get("result_score", ""))
 
+            badge = _league_badge(b)
+            tg.raw(f"{badge} {icon} <b>{match}</b>{f' ({score})' if score else ''}")
+            tg.raw(f"   {market} {selection} @ {odds:.2f}")
+            if status == "won":
+                tg.raw(f"   \u20ac{stake:.0f} \u2192 Won \u20ac{stake + bet_profit:.0f} (+\u20ac{bet_profit:.0f})")
+            elif status == "lost":
+                tg.raw(f"   \u20ac{stake:.0f} \u2192 Lost (-\u20ac{stake:.0f})")
+            else:
+                tg.raw(f"   \u20ac{stake:.0f} \u2192 Push (refunded)")
+            tg.raw("")
+
+    # Daily totals
+    tg.raw("\u2501" * 20)
     total = won + lost + push
-    tg.raw(f"<b>{_html_escape(record)}</b>")
+    tg.raw(f"<b>Today:</b> {record} | {sign}\u20ac{profit:.2f}")
+    if settled_bets:
+        total_staked = sum(b.get("stake", 0) for b in settled_bets)
+        if total_staked > 0:
+            tg.raw(f"Staked: \u20ac{total_staked:.0f} | ROI: {profit / total_staked * 100:+.1f}%")
     if total > 0:
         tg.progress_bar(won, total)
-
     tg.blank()
-    tg.pnl(profit)
-    tg.raw(f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
+    tg.raw(f"Balance: \u20ac{br_ctx['current']:,.0f} ({_html_escape(_bankroll_in_context(br_ctx))})")
+
+    # Inline drawdown warning (replaces separate drawdown notification)
+    dd = br_ctx.get("drawdown_pct", 0)
+    if dd > 15:
+        tg.raw(f"\u26a0\ufe0f <b>Drawdown: {dd:.0f}%</b> from peak \u20ac{br_ctx.get('peak', 0):,.0f}")
+        if dd > 25:
+            tg.italic("Consider reducing stakes until momentum turns.")
 
     # Best/worst — tell the story, not just the number
     if best_win and is_positive:
@@ -1220,41 +1356,60 @@ def notify_goal(match_key: str, scorer: str, team: str,
                 home_score: int, away_score: int, minute: int,
                 is_home: bool, has_bet: bool = False, bet_selection: str = "",
                 bet_context: dict = None) -> dict:
-    """Send a goal notification where the BET STATUS is the hero, not the goal."""
+    """Rich goal notification: score, bet impact, time context, league badge."""
 
     has_active_bet = (bet_context and bet_context.get("has_bets")) or has_bet
     remaining_min = max(0, 90 - minute)
+    added_time = minute > 90
     total = home_score + away_score
+    badge = _league_badge(match_key=match_key)
 
-    # macOS: bet-first if active
-    if has_active_bet:
-        mac_msg = f"{scorer} {minute}' \u2014 {match_key} {home_score}-{away_score}"
+    # Time context
+    if added_time:
+        time_str = f"{minute}' (added time)"
+    elif remaining_min <= 10:
+        time_str = f"{minute}' ({remaining_min} min left)"
     else:
-        mac_msg = f"\u26bd {scorer} ({team}) {minute}' \u2014 {match_key} {home_score}-{away_score}"
+        time_str = f"{minute}'"
 
-    # Telegram: structured, bet-status-first
+    # macOS: compact, bet-aware
+    if has_active_bet:
+        mac_msg = f"{scorer} {time_str} \u2014 {match_key} {home_score}-{away_score}"
+    else:
+        mac_msg = f"\u26bd {scorer} ({team}) {time_str} \u2014 {match_key} {home_score}-{away_score}"
+
+    # Telegram: rich, structured
     tg = TgMsg()
 
-    # Score line — compact
-    tg.raw(f"\u26bd <b>{_html_escape(scorer)}</b> ({_html_escape(team)}) {minute}'")
+    # Header: badge + goal + score
+    tg.raw(f"{badge} \u26bd <b>{_html_escape(scorer)}</b> ({_html_escape(team)}) {time_str}")
     tg.raw(f"<b>{_html_escape(match_key)}</b>  <code>{home_score} - {away_score}</code>")
 
+    # Bet impact — the main event for bettors
     if bet_context and bet_context.get("has_bets"):
         tg.blank()
         for b in bet_context["bets"]:
             sel = b.get("selection", "")
             won = b.get("is_winning")
             commentary = b.get("commentary", "")
+            odds = b.get("odds", 0)
+            stake = b.get("stake", 0)
 
-            # Build bet-specific status line with context
             if won is True:
-                tg.raw(f"\u2705 <b>{_html_escape(sel)}</b>: {_html_escape(commentary)}")
+                potential = round(stake * (odds - 1), 2) if odds > 1 else 0
+                tg.raw(f"\u2705 <b>{_html_escape(sel)}</b> @ {odds:.2f} \u2014 winning (+\u20ac{potential:.0f})")
+                if commentary:
+                    tg.raw(f"   {_html_escape(commentary)}")
             elif won is False:
-                tg.raw(f"\u274c <b>{_html_escape(sel)}</b>: {_html_escape(commentary)}")
+                tg.raw(f"\u274c <b>{_html_escape(sel)}</b> @ {odds:.2f} \u2014 lost (-\u20ac{stake:.0f})")
+                if commentary:
+                    tg.raw(f"   {_html_escape(commentary)}")
             else:
-                # In progress — add time context
-                time_ctx = f" ({remaining_min} min left)" if remaining_min > 0 else ""
-                tg.raw(f"\u23f3 <b>{_html_escape(sel)}</b>: {_html_escape(commentary)}{time_ctx}")
+                # In progress — contextual status
+                time_ctx = f" \u2014 {remaining_min} min left" if remaining_min > 0 else ""
+                tg.raw(f"\u23f3 <b>{_html_escape(sel)}</b> @ {odds:.2f}{time_ctx}")
+                if commentary:
+                    tg.raw(f"   {_html_escape(commentary)}")
 
             # Parlay tracking
             for pl in b.get("parlay_legs", []):
@@ -1267,18 +1422,33 @@ def notify_goal(match_key: str, scorer: str, team: str,
             try:
                 line = float(bet_selection.lower().replace("over", "").strip())
                 if total > line:
-                    tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 hit!")
+                    tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 hit! \U0001f389")
                 else:
                     need = line - total + 1
+                    urgency = "\u26a0\ufe0f" if remaining_min < 15 else ""
                     tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b> \u2014 "
-                           f"need {need:.0f} more ({remaining_min} min left)")
+                           f"need {need:.0f} more goal{'s' if need > 1 else ''} in {remaining_min} min {urgency}")
             except ValueError:
                 tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b>")
         elif "home" in bet_selection.lower():
             if home_score > away_score:
-                tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 winning")
+                tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 winning \U0001f4aa")
+            elif home_score == away_score:
+                tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b> \u2014 level, need another ({remaining_min} min)")
             else:
-                tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b> \u2014 need the turnaround")
+                tg.raw(f"\u274c <b>{_html_escape(bet_selection)}</b> \u2014 behind, need comeback ({remaining_min} min)")
+        elif "away" in bet_selection.lower():
+            if away_score > home_score:
+                tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 winning \U0001f4aa")
+            elif home_score == away_score:
+                tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b> \u2014 level, need another ({remaining_min} min)")
+            else:
+                tg.raw(f"\u274c <b>{_html_escape(bet_selection)}</b> \u2014 behind ({remaining_min} min)")
+        elif "draw" in bet_selection.lower():
+            if home_score == away_score:
+                tg.raw(f"\u2705 <b>{_html_escape(bet_selection)}</b> \u2014 holding \U0001f91e ({remaining_min} min)")
+            else:
+                tg.raw(f"\u274c <b>{_html_escape(bet_selection)}</b> \u2014 broken by this goal")
         else:
             tg.raw(f"\u23f3 <b>{_html_escape(bet_selection)}</b>")
 
@@ -1286,7 +1456,7 @@ def notify_goal(match_key: str, scorer: str, team: str,
 
     return notify(
         message=mac_msg,
-        title=f"\u26bd {home_score}-{away_score}",
+        title=f"{badge} \u26bd {home_score}-{away_score}",
         level="info",
         category="live",
         priority=priority,
@@ -1380,18 +1550,21 @@ def notify_full_time(match_key: str, home_score: int, away_score: int,
         if bet_won:
             opener = random.choice(_FT_WIN_OPENERS)
             msg = f"{opener} {match_key} {home_score}-{away_score}"
-            if bet_profit:
+            if bet_profit and bet_profit > 0:
                 msg += f" | +\u20ac{bet_profit:.2f}"
             level = "success"
         else:
             opener = random.choice(_FT_LOSS_OPENERS)
             msg = f"{opener} {match_key} {home_score}-{away_score}"
+            if bet_profit and bet_profit < 0:
+                msg += f" | -\u20ac{abs(bet_profit):.2f}"
             level = "warning"
     else:
         msg = f"Full time: {match_key} {home_score}-{away_score}"
         level = "info"
 
-    return notify(msg, title=f"\U0001f3c1 FT {home_score}-{away_score}", level=level, category="live")
+    badge = _league_badge(match_key=match_key)
+    return notify(msg, title=f"{badge} \U0001f3c1 FT {home_score}-{away_score}", level=level, category="live")
 
 
 def notify_retrain(mode: str, matchweek: int, promoted: bool,
@@ -1480,7 +1653,9 @@ def notify_daily_digest() -> dict:
 
     history = _load_json(DATA_DIR / "betting" / "history.json", default=[])
     journal_data = _load_json(DATA_DIR / "betting" / "bet_journal.json")
-    bankroll = _load_json(DATA_DIR / "bankroll" / "state.json")
+    _br = _get_bankroll_context()
+    bankroll = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
+                "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
     predictions = _load_json(DATA_DIR / "upcoming" / "predictions.json")
     bet_slip = _load_json(DATA_DIR / "upcoming" / "unified_bet_slip.json")
 
@@ -1552,7 +1727,14 @@ def notify_daily_digest() -> dict:
     slip_bets = bet_slip.get("selected_bets", [])
     tomorrow_value_bets = [b for b in slip_bets if b.get("date", "").startswith(tomorrow)]
     if not tomorrow_value_bets:
-        tomorrow_value_bets = slip_bets
+        # Show next available date's bets, not ALL bets
+        future_dates = sorted(set(
+            b.get("date", "") for b in slip_bets
+            if b.get("date", "") > tomorrow
+        ))
+        if future_dates:
+            next_date = future_dates[0]
+            tomorrow_value_bets = [b for b in slip_bets if b.get("date") == next_date]
 
     # Skip digest on truly quiet days: nothing settled, nothing tomorrow
     if total_settled == 0 and not tomorrow_matches and not slip_bets:
@@ -1644,7 +1826,7 @@ def notify_daily_digest() -> dict:
 
 def notify_drawdown(current: float, peak: float, drawdown_pct: float) -> dict:
     """Send a coaching-style drawdown warning."""
-    msg = f"Bankroll is ${current:,.2f}, down {drawdown_pct:.0f}% from the peak of ${peak:,.2f}.\n\n"
+    msg = f"Bankroll is \u20ac{current:,.2f}, down {drawdown_pct:.0f}% from the peak of \u20ac{peak:,.2f}.\n\n"
     if drawdown_pct < 15:
         msg += "Normal variance. Stay disciplined, stick to the model's edges."
     elif drawdown_pct < 25:
@@ -1693,7 +1875,9 @@ def notify_morning_briefing() -> dict:
             all_predictions.extend(preds)
     bet_slip = _load(DATA_DIR / "upcoming" / "unified_bet_slip.json")
     journal = _load(DATA_DIR / "betting" / "bet_journal.json")
-    bankroll_state = _load(DATA_DIR / "bankroll" / "state.json")
+    _br = _get_bankroll_context()
+    bankroll_state = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
+                      "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
     parlay_report = _load(DATA_DIR / "betting" / "parlay_report.json")
     sentiment = _load(DATA_DIR / "upcoming" / "sentiment_analysis.json")
 
@@ -1830,7 +2014,9 @@ def notify_matchday_update() -> dict:
         return default if default is not None else {}
 
     journal = _load(DATA_DIR / "betting" / "bet_journal.json")
-    bankroll_state = _load(DATA_DIR / "bankroll" / "state.json")
+    _br = _get_bankroll_context()
+    bankroll_state = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
+                      "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
 
     journal_bets = journal.get("bets", {})
     if isinstance(journal_bets, dict):
@@ -1996,13 +2182,36 @@ def notify_odds_snapshot(n_matches: int = 0, n_bookmakers: int = 0) -> dict:
 
 def notify_lineups_confirmed(matches: str = "", changes: str = "") -> dict:
     """Send a coaching-style notification when lineups are confirmed."""
+    # Dedup: don't send same lineup notification twice in a day
+    import hashlib as _hl
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    msg_sig = _hl.md5(f"{matches}|{changes}".encode()).hexdigest()[:12]
+    _lineup_dedup_path = DATA_DIR / ".lineups_dedup.json"
+    try:
+        if _lineup_dedup_path.exists():
+            with open(_lineup_dedup_path) as _f:
+                _dedup = json.load(_f)
+            if _dedup.get("date") == today_str and _dedup.get("sig") == msg_sig:
+                log.info("Lineup notification skipped (already sent today)")
+                return {}
+    except Exception:
+        pass
+
     opener = random.choice(_LINEUP_OPENERS)
     msg = f"{opener}\n\n"
     if matches:
         msg += f"Confirmed for: {matches}"
     if changes:
         msg += f"\nKey changes: {changes}"
-    return notify(msg, title="Lineups Confirmed", level="info", category="system")
+    result = notify(msg, title="Lineups Confirmed", level="info", category="betting")
+
+    # Save dedup marker
+    try:
+        with open(_lineup_dedup_path, "w") as _f:
+            json.dump({"date": today_str, "sig": msg_sig}, _f)
+    except Exception:
+        pass
+    return result
 
 
 def notify_predictions_ready(n_matches: int = 0) -> dict:
@@ -2010,7 +2219,7 @@ def notify_predictions_ready(n_matches: int = 0) -> dict:
     opener = random.choice(_PREDICTIONS_READY_OPENERS)
     detail = f" {n_matches} matches updated." if n_matches else ""
     msg = f"{opener}{detail}"
-    return notify(msg, title="Predictions Ready", level="info", category="system")
+    return notify(msg, title="Predictions Ready", level="info", category="betting")
 
 
 def notify_kickoff(match_key: str, bet_context: dict = None) -> dict:
@@ -2101,9 +2310,11 @@ def notify_parlays_ready(n_parlays: int = 0, best_odds: float = 0,
             log.info("Parlay notification skipped (report not regenerated)")
             return {"macos": False, "telegram": False, "skipped": True}
 
+    # Extract top picks BEFORE dedup check (was causing NameError)
+    top_picks = parlay_report.get("top_picks", []) if parlay_report else []
+
     # Dedup
     today_str = datetime.now().strftime("%Y-%m-%d")
-    # Dedup: hash the top picks content, not just count
     import hashlib as _hl
     picks_sig = ""
     if top_picks:
@@ -2123,8 +2334,6 @@ def notify_parlays_ready(n_parlays: int = 0, best_odds: float = 0,
                 return {"macos": False, "telegram": False, "skipped": True}
     except Exception:
         pass
-
-    top_picks = parlay_report.get("top_picks", []) if parlay_report else []
     title = "\U0001f3b0 Parlay Picks"
 
     # --- Build rich Telegram HTML ---
@@ -2227,9 +2436,9 @@ def notify_bankroll_milestone(old_balance: float, new_balance: float) -> dict:
     if new_hundred > old_hundred and new_balance > old_balance:
         milestone = new_hundred * 100
         opener = random.choice(_BANKROLL_MILESTONE_UP)
-        msg = f"{opener}\n\nBankroll crossed ${milestone:,.0f} (now ${new_balance:,.2f})."
+        msg = f"{opener}\n\nBankroll crossed \u20ac{milestone:,.0f} (now \u20ac{new_balance:,.2f})."
         msg += "\nStay disciplined — the edge compounds."
-        return notify(msg, title=f"Milestone: ${milestone:,.0f}", level="success", category="betting")
+        return notify(msg, title=f"Milestone: \u20ac{milestone:,.0f}", level="success", category="betting")
 
     # Check downward milestones (every $500)
     old_five = int(old_balance // 500)
@@ -2238,9 +2447,9 @@ def notify_bankroll_milestone(old_balance: float, new_balance: float) -> dict:
     if new_five < old_five and new_balance < old_balance:
         milestone = (new_five + 1) * 500
         opener = random.choice(_BANKROLL_MILESTONE_DOWN)
-        msg = f"{opener}\n\nBankroll dropped below ${milestone:,.0f} (now ${new_balance:,.2f})."
+        msg = f"{opener}\n\nBankroll dropped below \u20ac{milestone:,.0f} (now \u20ac{new_balance:,.2f})."
         msg += "\nStick to the system. Variance is part of the game."
-        return notify(msg, title=f"Below ${milestone:,.0f}", level="warning", category="betting")
+        return notify(msg, title=f"Below \u20ac{milestone:,.0f}", level="warning", category="betting")
 
     return {}
 
@@ -2334,13 +2543,24 @@ def notify_bet_settled(bet: dict, result_score: str = "") -> dict:
 
     mac_msg = f"{emoji} {match} | {selection} @{odds:.2f} | {pnl_str}"
 
+    # Check if this is a post-improvement bet
+    placed_at = (bet.get("placed_at") or "")[:10]
+    is_new_method = placed_at >= "2026-04-10"
+    new_tag = " \U0001f195" if is_new_method else ""  # 🆕
+
     tg = TgMsg()
-    tg.raw(f"{emoji} <b>{_html_escape(match)}</b>")
+    tg.raw(f"{emoji} <b>{_html_escape(match)}</b>{new_tag}")
     tg.raw(f"{_html_escape(selection)} @{odds:.2f} | "
            f"Stake \u20ac{stake:.2f}")
     if result_score:
         tg.raw(f"Score: <b>{_html_escape(result_score)}</b>")
     tg.pnl(profit)
+
+    # CLV (Closing Line Value) — did we beat the market?
+    clv = bet.get("clv_pct")
+    if clv is not None:
+        clv_emoji = "\U0001f4c8" if clv > 0 else "\U0001f4c9"  # 📈 or 📉
+        tg.raw(f"{clv_emoji} CLV: {clv:+.1f}% {'(beat closing line)' if clv > 0 else '(below closing line)'}")
 
     return notify(
         message=mac_msg,
@@ -2462,6 +2682,21 @@ def notify_lineup_impact(match: str, old_pred: dict = None, new_pred: dict = Non
     if not old_pred or not new_pred:
         return {}
 
+    # Dedup: don't send same lineup impact twice
+    import hashlib as _hl
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    impact_sig = _hl.md5(f"{match}|{new_pred}".encode()).hexdigest()[:12]
+    _impact_dedup_path = DATA_DIR / ".lineup_impact_dedup.json"
+    try:
+        if _impact_dedup_path.exists():
+            with open(_impact_dedup_path) as _f:
+                _dedup = json.load(_f)
+            if _dedup.get("date") == today_str and impact_sig in _dedup.get("sigs", []):
+                log.info("Lineup impact skipped (already sent for %s today)", match)
+                return {}
+    except Exception:
+        pass
+
     old_h = old_pred.get("prob_H", 0)
     new_h = new_pred.get("prob_H", 0)
     old_d = old_pred.get("prob_D", 0)
@@ -2501,13 +2736,27 @@ def notify_lineup_impact(match: str, old_pred: dict = None, new_pred: dict = Non
         tg.blank()
         tg.italic("Significant shift — review your bets on this match.")
 
-    return notify(
+    result = notify(
         message=mac_msg,
         title=f"Lineup shift: {match}",
         level="warning" if max_shift > 0.05 else "info",
         category="betting",
         tg_html=tg.build(),
     )
+    # Save dedup marker
+    try:
+        existing_sigs = []
+        if _impact_dedup_path.exists():
+            with open(_impact_dedup_path) as _f:
+                _d = json.load(_f)
+            if _d.get("date") == today_str:
+                existing_sigs = _d.get("sigs", [])
+        existing_sigs.append(impact_sig)
+        with open(_impact_dedup_path, "w") as _f:
+            json.dump({"date": today_str, "sigs": existing_sigs}, _f)
+    except Exception:
+        pass
+    return result
 
 
 def notify_clv_degradation(current_clv: float, previous_clv: float,
@@ -2574,7 +2823,8 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
         if not journal_path.exists():
             return {}
 
-        journal = _json.load(open(journal_path))
+        with open(journal_path) as _jf:
+            journal = _json.load(_jf)
         bets = journal.get("bets", {})
 
         # Detect current matchweek from matches data
@@ -2585,6 +2835,9 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
                 if matches_path.exists():
                     mdf = pd.read_parquet(matches_path)
                     current = mdf[mdf["season"] == "2025-2026"]
+                    # Filter to single league to avoid inflated MW numbers
+                    if "league" in current.columns:
+                        current = current[current["league"] == "serie_a"]
                     if "matchweek" in current.columns:
                         # Find the latest matchweek that has at least 5 matches
                         mw_counts = current.groupby("matchweek").size()
@@ -2618,12 +2871,11 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
         total_lost = sum(1 for b in week_bets if b["status"] == "lost")
         total_push = sum(1 for b in week_bets if b["status"] == "push")
         total_staked = sum(b.get("stake", 0) for b in week_bets)
-        total_profit = 0
-        for b in week_bets:
-            if b["status"] == "won":
-                total_profit += b.get("profit", 0)
-            elif b["status"] == "lost":
-                total_profit -= b.get("stake", 0)
+        total_profit = sum(
+            (b.get("profit") or 0)
+            for b in week_bets
+            if b.get("status") in ("won", "lost", "push")
+        )
 
         roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
 

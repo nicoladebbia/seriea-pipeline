@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -46,12 +47,17 @@ LEAGUE_DISPLAY_NAMES.setdefault("premier_league", "Premier League")
 def _league_model_dir(league: str) -> Path:
     """Return the model directory for a given league.
 
-    Serie A models live directly under data/models/ (backward compat).
-    Other leagues live under data/models/{league}/.
+    All leagues live under data/models/{league}/.
+    Falls back to data/models/ for Serie A backward compat if the
+    per-league directory doesn't exist yet.
     """
+    league_dir = MODELS_DIR / league
+    if league_dir.exists():
+        return league_dir
+    # Backward compat: Serie A models may still be at the root
     if league == "serie_a":
         return MODELS_DIR
-    return MODELS_DIR / league
+    return league_dir
 
 
 def _league_predictions_path(league: str) -> Path:
@@ -261,6 +267,29 @@ def _load_league_model(model_dir: Path):
     return None
 
 
+def _estimate_xg(prob_h: float, prob_d: float, prob_a: float, is_home: bool) -> float:
+    """Estimate per-team xG from 1X2 probabilities using Poisson inversion.
+
+    Under a Poisson model, P(draw) ≈ exp(-(λ_home + λ_away)) * I_0(2*sqrt(λh*λa)).
+    We use the simpler approximation: total goals ≈ -ln(P(draw)) * 1.03,
+    then split by home/away win probability ratio.
+    """
+    prob_d = max(prob_d, 0.05)  # avoid log(0)
+    total_xg = -math.log(prob_d) * 1.95  # calibrated: avg P(draw)≈0.25 → ~2.7 goals
+    total_xg = max(1.5, min(total_xg, 6.0))
+
+    # Split total xG between teams based on win probability ratio
+    attack_ratio = prob_h / (prob_h + prob_a) if (prob_h + prob_a) > 0 else 0.5
+    home_xg = total_xg * attack_ratio
+    away_xg = total_xg * (1.0 - attack_ratio)
+
+    # Clamp to reasonable range
+    home_xg = max(0.3, min(home_xg, 4.0))
+    away_xg = max(0.3, min(away_xg, 4.0))
+
+    return home_xg if is_home else away_xg
+
+
 def _predict_match(model, match_key: str, match_data: Dict, league: str) -> Optional[Dict]:
     """Generate a prediction for a single match using the league model.
 
@@ -355,8 +384,8 @@ def _predict_match(model, match_key: str, match_data: Dict, league: str) -> Opti
             "draw": round(best_d, 3),
             "away": round(best_a, 3),
         },
-        "home_xg": 0,
-        "away_xg": 0,
+        "home_xg": round(_estimate_xg(prob_h, prob_d, prob_a, is_home=True), 2),
+        "away_xg": round(_estimate_xg(prob_h, prob_d, prob_a, is_home=False), 2),
         "home_factors": home_factors,
         "away_factors": away_factors,
         "neutral_factors": [],

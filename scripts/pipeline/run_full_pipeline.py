@@ -48,7 +48,9 @@ Usage:
     python scripts/run_full_pipeline.py --live-status   # Show live monitoring status
 """
 
+import fcntl
 import json
+import os
 import sys
 import time
 import threading
@@ -93,6 +95,34 @@ def _get_json_encoder():
     return _Encoder
 
 
+def _validate_data_gate(name: str, data, min_threshold: int, required: bool = True) -> bool:
+    """Check data completeness after a pipeline step.
+
+    Returns True if data passes. If required=True and data is insufficient,
+    raises RuntimeError to abort the pipeline.
+    """
+    import pandas as pd
+    if data is None:
+        count = 0
+    elif isinstance(data, dict):
+        count = len(data)
+    elif isinstance(data, (list, pd.DataFrame)):
+        count = len(data)
+    else:
+        count = 1 if data else 0
+
+    if count < min_threshold:
+        msg = f"Data gate FAILED: {name} has {count} items (min: {min_threshold})"
+        if required:
+            log.critical(msg)
+            raise RuntimeError(msg)
+        else:
+            log.warning(msg)
+            return False
+    log.info("Data gate OK: %s has %d items", name, count)
+    return True
+
+
 def _update_placed_bets_log(settlement: dict):
     """Update the persistent bet log with settlement results."""
     log_path = DATA_DIR / "betting" / "placed_bets_log.json"
@@ -102,7 +132,11 @@ def _update_placed_bets_log(settlement: dict):
     try:
         with open(log_path) as f:
             bet_log = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError as e:
+        log.warning("Corrupt bet log JSON at %s: %s", log_path, e)
+        return
+    except OSError as e:
+        log.warning("Cannot read bet log at %s: %s", log_path, e)
         return
 
     # Load history to cross-reference settled bets
@@ -362,6 +396,33 @@ def _run_market_analysis(odds: dict, summary: dict):
         print(f"      Market intelligence warning: {e}")
         log.debug(f"Incremental market intelligence: {e}")
 
+    # Re-merge EPL data into shared files (Serie A steps above overwrite them)
+    print(f"    EPL market data merge...")
+    try:
+        from scripts.prediction.generate_epl_supplementary import (
+            generate_epl_bookmaker_analysis, generate_epl_cross_market_signals,
+            generate_epl_market_intelligence, _load_json, _merge_matches, _save_json,
+            get_epl_predictions, UPCOMING_DIR,
+        )
+        if get_epl_predictions():
+            bk = generate_epl_bookmaker_analysis()
+            cm = generate_epl_cross_market_signals()
+            mi_epl = generate_epl_market_intelligence(bk, cm)
+            for fname, data, ts_key in [
+                ("bookmaker_analysis.json", bk, "analyzed_at"),
+                ("cross_market_signals.json", cm, "analyzed_at"),
+                ("market_intelligence.json", mi_epl, "analyzed_at"),
+            ]:
+                existing = _load_json(UPCOMING_DIR / fname)
+                merged = _merge_matches(existing, data, ts_key)
+                _save_json(UPCOMING_DIR / fname, merged)
+            print(f"      {len(mi_epl)} EPL matches merged")
+        else:
+            print(f"      No EPL predictions, skipping")
+    except Exception as e:
+        print(f"      EPL market merge warning: {e}")
+        log.debug(f"EPL market merge: {e}")
+
 
 def _run_supplementary_analysis(summary: dict):
     """Run player analysis, lineup predictions, and sentiment — local computations."""
@@ -615,14 +676,23 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     else:
         print(f"\n[4/6] Supplementary analysis is fresh, skipping")
 
-    # ── Step 5: Predict new fixtures ──
-    print(f"\n[5/6] Running predictions for new fixtures...")
+    # ── Step 5: Predict new fixtures (or refresh stale predictions) ──
+    print(f"\n[5/6] Running predictions...")
     try:
         if odds:
             new_fixtures = get_new_fixtures(odds, state)
             print(f"  {len(new_fixtures)} new fixtures to predict (of {len(odds)} total)")
 
-            if new_fixtures:
+            # Also regenerate if odds were refreshed and predictions are stale (>3h)
+            predictions_stale = _is_data_stale(
+                DATA_DIR / "upcoming" / "predictions.json", max_age_hours=3.0
+            )
+            should_regenerate = bool(new_fixtures) or (odds_were_refreshed and predictions_stale)
+
+            if should_regenerate:
+                if not new_fixtures:
+                    print(f"  Odds refreshed & predictions >3h old — regenerating with fresh odds")
+
                 # Archive existing predictions first
                 try:
                     from scripts.analysis.performance_dashboard import archive_predictions
@@ -638,7 +708,7 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
                 summary["predictions_updated"] = True
 
                 # Track new predictions in summary
-                new_match_keys = set(new_fixtures.keys())
+                new_match_keys = set(new_fixtures.keys()) if new_fixtures else set()
                 for pred in predictions:
                     match = pred.get("match", "")
                     if match in new_match_keys:
@@ -655,8 +725,6 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
                 try:
                     from scripts.betting.betting_unified import BetSlip, record_bets
                     from scripts.betting.betting_unified import load_predictions as load_betting_preds
-                    # Betting engine runs through predict_unified → betting_unified chain
-                    # which is already triggered by the pipeline. Skip duplicate call.
                     log.info("Betting recommendations generated via predict_unified pipeline step")
                 except ImportError:
                     pass
@@ -666,7 +734,7 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
                 pred_dates = [p.get("date", "") for p in predictions]
                 state = mark_predicted(state, pred_keys, pred_dates)
             else:
-                print(f"  All fixtures already predicted, nothing to do")
+                print(f"  All fixtures already predicted & predictions fresh, nothing to do")
         else:
             print(f"  No odds data available, skipping predictions")
     except Exception as e:
@@ -1088,13 +1156,34 @@ def _run_parallel_data_collection(quick: bool = False, total_steps: int = 32):
                  f"Group B {timings.get('group_b', 0):.1f}s, "
                  f"Group C {timings.get('group_c', 0):.1f}s")
 
+    # Data quality gates — abort early if critical data is missing
+    _validate_data_gate("odds", shared["odds"], min_threshold=1, required=True)
+
     return shared["odds"], shared["market_intel_results"]
 
+
+_pipeline_lock_fd = None
 
 def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: bool = False,
                  no_parallel: bool = False, run_challenger: bool = False,
                  leagues: list = None):
     """Run the complete betting pipeline."""
+    global _pipeline_lock_fd
+
+    # Acquire exclusive lock to prevent concurrent pipeline runs
+    lock_path = DATA_DIR / "pipeline.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _pipeline_lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(_pipeline_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _pipeline_lock_fd.write(f"PID {os.getpid()} since {datetime.now().isoformat()}\n")
+        _pipeline_lock_fd.flush()
+    except BlockingIOError:
+        print("  Another pipeline is already running. Exiting.")
+        log.warning("Pipeline lock held by another process, aborting")
+        _pipeline_lock_fd.close()
+        _pipeline_lock_fd = None
+        return
 
     start_time = time.time()
 
@@ -1408,9 +1497,8 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         if _refs:
             import json as _json
             _ref_path = DATA_DIR / "upcoming" / "referees.json"
-            _ref_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(_ref_path, "w") as _f:
-                _json.dump(_refs, _f, indent=2)
+            from config.settings import atomic_write_json as _awj
+            _awj(_ref_path, _refs)
             print(f"  Referees: {len(_refs)} assignments loaded")
     except Exception as e:
         print(f"  Referee data warning: {e}")
@@ -1503,8 +1591,11 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 wrapper = {"predictions": predictions}
         except Exception:
             wrapper = {"predictions": predictions}
-        with open(preds_path, "w") as f:
-            json.dump(wrapper, f, indent=2, cls=_get_json_encoder())
+        # Preserve league field through enrichment
+        for _p in predictions:
+            _p.setdefault("league", "serie_a")
+        from config.settings import atomic_write_json as _awj
+        _awj(preds_path, wrapper, cls=_get_json_encoder())
         print(f"  Saved enriched predictions ({len(predictions)} matches)")
 
     # =========================================================================
@@ -1547,7 +1638,15 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     try:
         from scripts.prediction.h2h_generator import generate_h2h_for_upcoming
         h2h = generate_h2h_for_upcoming()
-        print(f"  Generated H2H for {h2h.get('match_count', 0)} matches")
+        print(f"  Generated H2H for {h2h.get('match_count', 0)} Serie A matches")
+        # Generate H2H for extra leagues (merges into same file)
+        for league in extra_leagues:
+            try:
+                h2h_extra = generate_h2h_for_upcoming(league=league)
+                extra_count = len(h2h_extra.get("h2h", {})) - h2h.get("match_count", 0)
+                print(f"  Generated H2H for {extra_count} {league} matches")
+            except Exception as e:
+                print(f"  H2H {league} warning: {e}")
     except Exception as e:
         print(f"  H2H warning: {e}")
         log.warning(f"H2H error: {e}")
@@ -1649,14 +1748,17 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         pred_data["intelligence_applied"] = True
         pred_data["intelligence_sources"] = []
         if sentiment_results:
-            pred_data["intelligence_sources"].append("perplexity_sentiment")
+            pred_data["intelligence_sources"].append("web_search_sentiment")
         if player_results:
             pred_data["intelligence_sources"].append("player_analysis")
         if market_intel_count > 0:
             pred_data["intelligence_sources"].append("market_intelligence")
 
-        with open(pred_path, "w") as f:
-            json.dump(pred_data, f, indent=2, cls=_get_json_encoder())
+        # Preserve league field through enrichment
+        for _p in pred_data.get("predictions", []):
+            _p.setdefault("league", pred_data.get("league", "serie_a"))
+        from config.settings import atomic_write_json as _awj2
+        _awj2(pred_path, pred_data, cls=_get_json_encoder())
 
         print(f"  Applied intelligence to {adjusted_count}/{len(pred_data.get('predictions', []))} predictions")
         if sentiment_results:
@@ -1822,8 +1924,8 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 player_preds_all[match_key] = match_preds
 
             out_path = DATA_DIR / "upcoming" / "player_predictions.json"
-            with open(out_path, "w") as f:
-                _json.dump(player_preds_all, f, indent=2, default=str)
+            from config.settings import atomic_write_json as _awj3
+            _awj3(out_path, player_preds_all)
             total_players = sum(
                 len(m.get("home_players", [])) + len(m.get("away_players", []))
                 for m in player_preds_all.values()
@@ -2325,6 +2427,42 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     print("  3. Place bets with recommended stakes")
     print("  4. Track results with: python scripts/performance_tracker.py")
     print("  5. Run --snapshot-only 3-4x daily for temporal depth")
+
+    # Post-pipeline data validation — catch issues before they reach users
+    try:
+        from scripts.utils.data_validator import validate_pipeline_output
+        print("\n" + "=" * 70)
+        print(" DATA VALIDATION")
+        print("=" * 70)
+        validation = validate_pipeline_output()
+        n_crit = len(validation.get("critical", []))
+        n_warn = len(validation.get("warning", []))
+        if n_crit:
+            print(f"\n  ⚠️  {n_crit} CRITICAL issues found — check logs!")
+            try:
+                from scripts.pipeline.notify import notify
+                notify(
+                    f"Pipeline completed but {n_crit} data issues detected: "
+                    + "; ".join(validation["critical"][:3]),
+                    title="Data Validation Warning",
+                    level="warning",
+                )
+            except Exception:
+                pass
+        elif n_warn:
+            print(f"\n  {n_warn} warnings (non-critical)")
+        else:
+            print("\n  All checks passed ✓")
+    except Exception as e:
+        log.warning("Data validation skipped: %s", e)
+
+    # Release pipeline lock
+    if _pipeline_lock_fd:
+        try:
+            fcntl.flock(_pipeline_lock_fd, fcntl.LOCK_UN)
+            _pipeline_lock_fd.close()
+        except Exception:
+            pass
 
     return report
 

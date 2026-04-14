@@ -29,6 +29,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 def _compute_sample_weights(
     y: pd.Series,
     seasons: pd.Series | None = None,
+    decay_override: float | None = None,
 ) -> np.ndarray:
     """Compute sample weights: class balancing × draw correction × time decay.
 
@@ -44,6 +45,8 @@ def _compute_sample_weights(
         y: Target labels (H/D/A strings or 0/1/2 ints)
         seasons: Season strings aligned with y, for time-decay computation.
                  If None, time-decay is skipped.
+        decay_override: If set, overrides ModelConfig.time_decay_per_season.
+                        Used by decay sweep to test different values.
     """
     from ml.config import ModelConfig
     mc = ModelConfig()
@@ -87,7 +90,7 @@ def _compute_sample_weights(
     w = y.map(class_weights).values.astype(np.float64)
 
     # --- 3. Time decay (Dixon-Coles) ---
-    decay = mc.time_decay_per_season
+    decay = decay_override if decay_override is not None else mc.time_decay_per_season
     if seasons is not None and decay < 1.0:
         season_vals = seasons.values if hasattr(seasons, 'values') else seasons
         # Map seasons to integer order (most recent = 0)
@@ -165,7 +168,7 @@ def _cb_search_space(trial: optuna.Trial, cfg: TuningConfig) -> Dict[str, Any]:
         "iterations": n_iter,
         "random_seed": RANDOM_SEED,
         "verbose": 0,
-        "auto_class_weights": "Balanced",
+        # "auto_class_weights": "Balanced",  # REMOVED: conflicts with manual sample_weight
     })
     return params
 

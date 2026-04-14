@@ -764,14 +764,24 @@ def compute_european_handicap(home_xg: float, away_xg: float) -> dict:
 
 
 def generate_extended_markets():
-    """Load predictions.json and compute all extended markets for each match."""
-    pred_path = DATA_DIR / "upcoming" / "predictions.json"
-    if not pred_path.exists():
-        log.warning("No predictions.json found")
+    """Load predictions from ALL leagues and compute extended markets for each match."""
+    # Load predictions from all league files
+    all_predictions = []
+    for pred_file in ["predictions.json", "predictions_premier_league.json"]:
+        pred_path = DATA_DIR / "upcoming" / pred_file
+        if pred_path.exists():
+            with open(pred_path) as f:
+                pred_data = json.load(f)
+            preds = pred_data.get("predictions", [])
+            log.info("Loaded %d predictions from %s", len(preds), pred_file)
+            all_predictions.extend(preds)
+
+    if not all_predictions:
+        log.warning("No predictions found in any league file")
         return {}
 
-    with open(pred_path) as f:
-        pred_data = json.load(f)
+    # Create a fake pred_data structure for backward compat
+    pred_data = {"predictions": all_predictions}
 
     # Load cards predictions for red card market
     cards_data = {}

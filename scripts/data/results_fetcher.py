@@ -47,41 +47,8 @@ BANKROLL_FILE = DATA_DIR / "betting" / "bankroll.json"
 RESULTS_FILE = DATA_DIR / "upcoming" / "results.json"
 
 # Team name normalization — use the canonical mapping from config/team_names.py
-try:
-    from config.team_names import normalize_team
-except ImportError:
-    # Minimal fallback if config not on path
-    _TEAM_MAPPINGS = {
-        "Inter Milan": "Inter", "Internazionale": "Inter",
-        "AC Milan": "Milan", "AS Roma": "Roma",
-        "SS Lazio": "Lazio", "SSC Napoli": "Napoli",
-        "Juventus FC": "Juventus", "ACF Fiorentina": "Fiorentina",
-        "Atalanta BC": "Atalanta", "Bologna FC": "Bologna",
-        "Torino FC": "Torino", "Genoa CFC": "Genoa",
-        "Hellas Verona": "Verona", "Udinese Calcio": "Udinese",
-        "US Sassuolo": "Sassuolo", "Empoli FC": "Empoli",
-        "Cagliari Calcio": "Cagliari", "US Lecce": "Lecce",
-        "AC Monza": "Monza", "Parma Calcio": "Parma",
-        "Como 1907": "Como", "Venezia FC": "Venezia",
-        "US Cremonese": "Cremonese", "AC Pisa": "Pisa",
-    }
-    def normalize_team(name: str) -> str:
-        return _TEAM_MAPPINGS.get(name, name)
-
-
-def _get_api_key() -> str:
-    """Get The Odds API key."""
-    key = os.environ.get("ODDS_API_KEY", "")
-    if not key:
-        config_path = DATA_DIR.parent / "config" / "api_keys.json"
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    config = json.load(f)
-                key = config.get("ODDS_API_KEY", "")
-            except Exception as e:
-                log.warning(f"Failed to load API key from config: {e}")
-    return key
+from config.team_names import normalize_team
+from config.api_keys import get_odds_api_key
 
 
 def fetch_scores(days_from: int = 3) -> List[Dict]:
@@ -97,7 +64,7 @@ def fetch_scores(days_from: int = 3) -> List[Dict]:
         log.error("requests library not available")
         return []
 
-    api_key = _get_api_key()
+    api_key = get_odds_api_key()
     if not api_key:
         log.error("ODDS_API_KEY not set")
         return []
@@ -342,8 +309,25 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
     Reads pending bets from journal first, falls back to unified_report.json.
     Updates history.json, bankroll.json, and journal.
 
+    Uses advisory file locking to prevent concurrent settlement runs from
+    double-counting profits.
+
     Returns settlement summary.
     """
+    import fcntl
+    _settle_lock_path = DATA_DIR / "betting" / ".settle.lock"
+    _settle_lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _lock_fd = open(_settle_lock_path, "w")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX)
+        return _settle_bets_locked(results)
+    finally:
+        fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+        _lock_fd.close()
+
+
+def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
+    """Inner settlement logic — must be called under settle lock."""
     # Try journal first for pending bets
     journal_bets = []
     use_journal = False
@@ -382,6 +366,26 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
             report = json.load(f)
 
         bets = report.get("bets", [])
+    # Dedup: if pipeline re-ran and placed multiple bets on same match+market,
+    # only settle the newest one (by bet_id / placed_at) to prevent double P&L.
+    if use_journal and len(bets) > 1:
+        from collections import defaultdict
+        _match_market_groups = defaultdict(list)
+        for _b in bets:
+            _key = f"{_b['match']}_{_b.get('market', 'h2h')}"
+            _match_market_groups[_key].append(_b)
+        deduped = []
+        for _key, _group in _match_market_groups.items():
+            if len(_group) > 1:
+                # Keep newest by bet_id (lexicographically, includes date prefix)
+                _newest = max(_group, key=lambda b: str(b.get("_bet_id", "") or ""))
+                deduped.append(_newest)
+                log.info("Dedup: kept %s, skipped %d older bets for %s",
+                         _newest.get("_bet_id"), len(_group) - 1, _key)
+            else:
+                deduped.append(_group[0])
+        bets = deduped
+
     history = _load_history()
     bankroll = _load_bankroll()
 
@@ -444,6 +448,23 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
         stake = bet.get("stake", 0.0)
         outcome = "lost"  # default
 
+        # Handle edge cases: postponed, abandoned, walkover matches
+        match_status = result.get("status", "").lower()
+        if match_status in ("postponed", "cancelled", "suspended"):
+            outcome = "void"
+            log.info("Match %s was %s — voiding bet", match_key, match_status)
+        elif match_status == "abandoned":
+            # Most bookmakers void if abandoned before 70-75 minutes
+            minutes_played = result.get("minutes_played", 0)
+            if minutes_played < 70:
+                outcome = "void"
+                log.info("Match %s abandoned at %d' — voiding bet", match_key, minutes_played)
+            else:
+                log.info("Match %s abandoned at %d' — settling on score", match_key, minutes_played)
+        elif match_status == "walkover":
+            outcome = "void"
+            log.info("Match %s was walkover — voiding bet", match_key)
+
         sel_upper = selection.upper().strip()
         mkt_upper = market.upper().strip()
         home_score = result.get("home_score", 0)
@@ -452,8 +473,11 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
         btts = result.get("btts", home_score > 0 and away_score > 0)
         match_result = result.get("result", "")  # "HOME", "DRAW", "AWAY"
 
+        # Skip market evaluation for voided matches
+        if outcome == "void":
+            pass
         # ── 1X2 / h2h ──
-        if mkt_upper in ("H2H", "1X2"):
+        elif mkt_upper in ("H2H", "1X2"):
             if sel_upper in ("HOME", "1"):
                 outcome = "won" if home_score > away_score else "lost"
             elif sel_upper in ("DRAW", "X"):
@@ -534,7 +558,9 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
                     outcome = "lost"
 
         # Calculate profit based on outcome
-        if outcome == "won":
+        if outcome == "void":
+            profit = 0.0  # stake refunded, match not played/completed
+        elif outcome == "won":
             profit = stake * (odds - 1)
         elif outcome == "push":
             profit = 0.0  # stake refunded, no gain

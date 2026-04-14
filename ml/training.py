@@ -48,6 +48,7 @@ def walk_forward_validate(
     config: ValidationConfig | None = None,
     params: dict | None = None,
     use_sample_weights: bool = True,
+    decay_override: float | None = None,
 ) -> pd.DataFrame:
     """Run walk-forward cross-validation and return per-fold metrics."""
     config = config or ValidationConfig()
@@ -69,7 +70,9 @@ def walk_forward_validate(
         fit_kwargs = {}
         if use_sample_weights:
             train_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
-            fit_kwargs["sample_weight"] = _compute_sample_weights(y_train, seasons=train_seasons_s)
+            fit_kwargs["sample_weight"] = _compute_sample_weights(
+                y_train, seasons=train_seasons_s, decay_override=decay_override
+            )
 
         model.fit(X_train, y_train, **fit_kwargs)
         y_proba = model.predict_proba(X_test)
@@ -225,6 +228,7 @@ def train_rich(
 # ---------------------------------------------------------------------------
 
 def train_optimized(
+    league: str | None = None,
     n_tune_trials: int | None = None,
     top_k_features: int | None = None,
     corr_threshold: float | None = None,
@@ -241,6 +245,8 @@ def train_optimized(
     6. Save everything
 
     Args:
+        league: if specified, train on per-league features only (e.g. "serie_a").
+                None = all leagues combined (backward compat).
         exclude_odds: if True, remove all odds-derived features before training.
     """
     from ml.ensemble import WeightedAverageEnsemble, evaluate_ensemble_cv
@@ -262,19 +268,37 @@ def train_optimized(
     if corr_threshold is None:
         corr_threshold = feat_cfg.correlation_threshold
 
-    fp = str(features_path())
-    loader = DataLoader(fp)
-    X, y, feature_names = loader.get_universal_dataset()
+    # Load per-league features when available, fall back to combined file
+    from pathlib import Path
+    variant = league or "universal"
+    fp = str(features_path(league=league))
+    if league and not Path(fp).exists():
+        log.warning("Per-league features not found at %s, falling back to combined file", fp)
+        fp = str(features_path())
+        loader = DataLoader(fp)
+        X, y, feature_names = loader.get_universal_dataset(league=league)
+    else:
+        loader = DataLoader(fp)
+        X, y, feature_names = loader.get_universal_dataset()
 
     # Extract context columns from the raw DataFrame for correction layer OOF persistence.
     # These columns (matchweek, home_team, etc.) may not be in the universal feature set
     # but are needed for correction layer training (training-serving parity).
+    # CRITICAL: apply the same league + season filters as get_universal_dataset() so
+    # context_for_oof has the same row count as X.
     _context_cols = ["matchweek", "home_is_promoted", "away_is_promoted",
                      "home_elo", "away_elo", "home_form_points_5", "away_form_points_5",
                      "home_rest_days", "away_rest_days", "home_team", "away_team"]
     _raw_mask = loader.df["result"].isin(["H", "D", "A"])
+    from ml.config import ValidationConfig as _VC
+    _val_cfg = _VC()
+    if _val_cfg.min_train_season:
+        _raw_mask = _raw_mask & (loader.df["season"] >= _val_cfg.min_train_season)
+    if league and "league" in loader.df.columns:
+        _raw_mask = _raw_mask & (loader.df["league"] == league)
     _avail = [c for c in _context_cols if c in loader.df.columns]
     context_for_oof = loader.df.loc[_raw_mask, _avail].reset_index(drop=True)
+    log.info("Context for OOF: %d rows (X has %d rows)", len(context_for_oof), len(X))
 
     results: Dict = {}
 
@@ -309,7 +333,7 @@ def train_optimized(
         log.info("  %2d. %-40s  %.4f%s", i + 1, feat, score, marker)
 
     # Persist importance history for drift detection across runs
-    save_importance_history(importance, selected_feats, variant="universal")
+    save_importance_history(importance, selected_feats, variant=variant)
 
     # Filter X to selected features (avoid duplicating _has_* columns already selected)
     selected_set = set(selected_feats)
@@ -370,31 +394,56 @@ def train_optimized(
         avg_ens["ensemble_brier"], avg_ens_rps, avg_ens_ece, avg_ens_kelly, avg_ens_f1d,
     )
 
-    # --- Step 5: Train final models + ensemble on all data ---
+    # --- Step 5: Train final models + ensemble on all-but-holdout data ---
     log.info("=" * 60)
-    log.info("STEP 5: Training final production models")
+    log.info("STEP 5: Training final production models (with held-out test)")
     log.info("=" * 60)
+
+    all_seasons = sorted(X_sel["_season"].unique())
+    holdout_season = all_seasons[-1]
+    train_mask = X_sel["_season"] != holdout_season
+    holdout_mask = X_sel["_season"] == holdout_season
+    log.info("Held-out test set: %s (%d matches)", holdout_season, holdout_mask.sum())
+
     for mt in MODEL_TYPES:
         model = get_model(mt, tuned_params[mt])
-        all_seasons = X_sel["_season"] if "_season" in X_sel.columns else None
-        sw = _compute_sample_weights(y, seasons=all_seasons)
-        model.fit(_strip_meta(X_sel), y, sample_weight=sw)
+        train_seasons_s = X_sel[train_mask]["_season"] if "_season" in X_sel.columns else None
+        sw = _compute_sample_weights(y[train_mask], seasons=train_seasons_s)
+        model.fit(_strip_meta(X_sel[train_mask]), y[train_mask], sample_weight=sw)
 
-        last_season = sorted(X_sel["_season"].unique())[-1]
-        last_mask = X_sel["_season"] == last_season
-        y_proba = model.predict_proba(_strip_meta(X_sel[last_mask]))
-        final_metrics = compute_metrics(y[last_mask], y_proba)
+        # True held-out evaluation (model has never seen holdout_season)
+        y_proba = model.predict_proba(_strip_meta(X_sel[holdout_mask]))
+        holdout_metrics = compute_metrics(y[holdout_mask], y_proba)
 
-        path = save_model(model, "universal", mt, selected_feats, final_metrics)
+        # Compare with CV metrics for overfitting detection
+        cv_key = f"{mt}_cv"
+        if cv_key in results and "log_loss" in results[cv_key]:
+            cv_ll = results[cv_key]["log_loss"].mean() if hasattr(results[cv_key]["log_loss"], "mean") else results[cv_key]["log_loss"]
+            holdout_ll = holdout_metrics["log_loss"]
+            gap = abs(holdout_ll - cv_ll)
+            if gap > 0.02:
+                log.warning(
+                    "OVERFIT FLAG: %s CV log_loss=%.4f vs holdout=%.4f (gap=%.4f > 0.02)",
+                    mt, cv_ll, holdout_ll, gap,
+                )
+        results[f"{mt}_holdout_metrics"] = holdout_metrics
+
+        path = save_model(model, variant, mt, selected_feats, holdout_metrics)
         results[f"{mt}_path"] = str(path)
 
-    # Train and save weighted average ensemble
+    # Train and save weighted average ensemble on training data
     # Pass context_for_oof so OOF persistence can source context features (matchweek,
     # is_promoted, etc.) that may not be in the feature-selected X_sel.
-    ensemble = WeightedAverageEnsemble(tuned_params, use_sample_weights=True)
-    ensemble.fit(X_sel, y, selected_feats, context_df=context_for_oof)
-    ensemble.save("universal")
-    results["ensemble_path"] = str(MODELS_DIR / "universal" / "ensemble")
+    ensemble = WeightedAverageEnsemble(tuned_params, use_sample_weights=True,
+                                       variant=variant)
+    ctx_filtered = None
+    if context_for_oof is not None:
+        ctx_filtered = context_for_oof.loc[X_sel[train_mask].index].reset_index(drop=True)
+    ensemble.fit(X_sel[train_mask].reset_index(drop=True), y[train_mask].reset_index(drop=True),
+                 selected_feats, context_df=ctx_filtered)
+    ensemble.save(variant)
+    results["ensemble_path"] = str(MODELS_DIR / variant / "ensemble")
+    results["holdout_season"] = holdout_season
 
     # --- Step 6: Train correction layer on OOF predictions ---
     log.info("=" * 60)
@@ -403,14 +452,22 @@ def train_optimized(
     try:
         from ml.correction_layer import CorrectionLayer
 
-        cv_preds_path = MODELS_DIR / "universal" / "cv_predictions.parquet"
+        cv_preds_path = MODELS_DIR / variant / "cv_predictions.parquet"
         if cv_preds_path.exists():
             oof_df = pd.read_parquet(cv_preds_path)
 
-            # Load raw features for context join
-            features_df = pd.read_parquet(str(features_path()))
+            # Use raw (pre-calibration) probabilities to avoid double-calibration.
+            # The correction layer should learn to correct the raw ensemble output,
+            # not an already-calibrated version.
+            if "raw_prob_H" in oof_df.columns:
+                oof_df["prob_H"] = oof_df["raw_prob_H"]
+                oof_df["prob_D"] = oof_df["raw_prob_D"]
+                oof_df["prob_A"] = oof_df["raw_prob_A"]
 
-            layer = CorrectionLayer()
+            # Load raw features for context join
+            features_df = pd.read_parquet(str(features_path(league=league)))
+
+            layer = CorrectionLayer(league=league)
             correction_metrics = layer.train_static(oof_df, features_df)
             results["correction_layer"] = correction_metrics
 
@@ -419,7 +476,7 @@ def train_optimized(
                          correction_metrics.get("reason", "unknown"),
                          correction_metrics.get("log_loss_before", 0))
                 # Delete stale model if it exists so we don't use an old one
-                stale_path = MODELS_DIR / "universal" / "correction_layer.pkl"
+                stale_path = MODELS_DIR / variant / "correction_layer.pkl"
                 if stale_path.exists():
                     stale_path.unlink()
                     log.info("Removed stale correction model at %s", stale_path)
@@ -470,7 +527,7 @@ def train_optimized(
         "ensemble_cv": ensemble_cv.to_dict(),
         "top_20_features": sorted_imp[:20],
     }
-    report_dir = MODELS_DIR / "universal"
+    report_dir = MODELS_DIR / variant
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "training_report.json"
     report_path.write_text(json.dumps(report, indent=2, default=str))

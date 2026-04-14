@@ -504,23 +504,41 @@ def calculate_over_under_value(
 # =============================================================================
 
 def load_predictions() -> List[Dict]:
-    """Load match predictions from predictions.json."""
-    predictions_path = DATA_DIR / "upcoming" / "predictions.json"
-
-    if not predictions_path.exists():
-        log.warning("No predictions file found")
-        return []
-
-    with open(predictions_path) as f:
-        data = json.load(f)
-
-    return data.get("predictions", [])
+    """Load match predictions from all league files."""
+    all_preds = []
+    for fname in ["predictions.json", "predictions_premier_league.json"]:
+        p = DATA_DIR / "upcoming" / fname
+        if p.exists():
+            try:
+                with open(p) as f:
+                    data = json.load(f)
+                preds = data.get("predictions", [])
+                all_preds.extend(preds)
+                log.info("O/U model: loaded %d predictions from %s", len(preds), fname)
+            except Exception as e:
+                log.warning("Failed to load %s: %s", fname, e)
+    if not all_preds:
+        log.warning("No predictions files found")
+    return all_preds
 
 
 def load_totals_odds() -> Dict[str, List[Dict]]:
-    """Load over/under odds from odds_totals.json."""
-    odds_path = DATA_DIR / "upcoming" / "odds_totals.json"
+    """Load over/under odds from all league odds_totals files."""
+    all_odds = {}
+    for fname in ["odds_totals.json", "odds_totals_premier_league.json"]:
+        odds_path = DATA_DIR / "upcoming" / fname
+        if odds_path.exists():
+            try:
+                with open(odds_path) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    all_odds.update(data)
+            except Exception:
+                pass
+    if all_odds:
+        return all_odds
 
+    odds_path = DATA_DIR / "upcoming" / "odds_totals.json"
     if not odds_path.exists():
         log.warning("No totals odds file found")
         return {}

@@ -108,14 +108,22 @@ import json as _json
 import tempfile as _tempfile
 
 
-def atomic_write_json(path: Path, data, indent: int = 2):
-    """Write JSON atomically: write to temp file, then rename."""
+def atomic_write_json(path: Path, data, indent: int = 2, cls=None):
+    """Write JSON atomically: write to temp file, then rename.
+
+    When cls is provided, it takes full control of serialization (json.dump
+    ignores `default` when `cls` is set). When cls is None, `default=str`
+    handles datetime/Path/etc.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = _tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with open(fd, "w") as f:
-            _json.dump(data, f, indent=indent, default=str)
+            if cls is not None:
+                _json.dump(data, f, indent=indent, cls=cls)
+            else:
+                _json.dump(data, f, indent=indent, default=str)
         Path(tmp).rename(path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

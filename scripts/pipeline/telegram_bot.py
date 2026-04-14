@@ -409,27 +409,44 @@ def _button(text: str, callback_data: str) -> dict:
     return {"text": text, "callback_data": callback_data}
 
 
+# ---------------------------------------------------------------------------
+# Persistent reply keyboard (bottom buttons)
+# ---------------------------------------------------------------------------
+
+# Map button labels → slash commands
+_REPLY_BUTTON_MAP: dict[str, str] = {
+    "💰 Bets": "/bets",
+    "📊 Bankroll": "/bankroll",
+    "⚽ Today": "/today",
+    "🔴 Live": "/live",
+    "🎯 Match": "/match",
+    "🏆 Parlays": "/parlays",
+    "📋 Summary": "/summary",
+    "📰 Digest": "/digest",
+}
+
+
+def _reply_keyboard() -> dict:
+    """Build a persistent reply keyboard shown at the bottom of the chat."""
+    return {
+        "keyboard": [
+            [{"text": "💰 Bets"}, {"text": "📊 Bankroll"}, {"text": "⚽ Today"}],
+            [{"text": "🔴 Live"}, {"text": "🎯 Match"}, {"text": "🏆 Parlays"}],
+            [{"text": "📋 Summary"}, {"text": "📰 Digest"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
 def _register_commands(token: str):
-    """Register slash commands with Telegram — shows them in the / menu."""
-    commands = [
-        {"command": "bets", "description": "Value bets with edge + stake"},
-        {"command": "today", "description": "Today's matches and predictions"},
-        {"command": "match", "description": "Tap a match for deep analysis"},
-        {"command": "live", "description": "Live scores and active bets"},
-        {"command": "parlays", "description": "Top parlay combinations"},
-        {"command": "bankroll", "description": "Balance, ROI, and streak"},
-        {"command": "league", "description": "Filter by league (EPL, Serie A)"},
-        {"command": "digest", "description": "Full daily summary report"},
-        {"command": "summary", "description": "Weekly bet history by week"},
-        {"command": "settings", "description": "Notification preferences"},
-        {"command": "help", "description": "All commands and tips"},
-        {"command": "clear", "description": "Reset conversation memory"},
-    ]
-    result = _tg_request(token, "setMyCommands", {"commands": commands}, timeout=10)
+    """Clear the slash command menu — commands are handled via inline buttons instead."""
+    # Send empty list to remove the ☰ menu commands
+    result = _tg_request(token, "setMyCommands", {"commands": []}, timeout=10)
     if result is not None:
-        log.info("Registered %d bot commands with Telegram", len(commands))
+        log.info("Cleared bot command menu (using inline buttons instead)")
     else:
-        log.warning("Failed to register bot commands")
+        log.warning("Failed to clear bot command menu")
 
 
 def _edit_message(token: str, chat_id: str, message_id: int, text: str,
@@ -689,7 +706,7 @@ def _call_claude(user_message: str, conversation: ConversationManager,
             status_text = f"\u23f3 <i>{status_text}...</i>"
 
             if status_msg_id:
-                _edit_message(token, chat_id, status_msg_id, status_text)
+                _edit_message_status(token, chat_id, status_msg_id, status_text)
             else:
                 status_msg_id = _send_status(token, chat_id, status_text)
 
@@ -825,8 +842,8 @@ def _send_status(token: str, chat_id: str, text: str) -> int | None:
     return None
 
 
-def _edit_message(token: str, chat_id: str, message_id: int | None, text: str):
-    """Edit an existing message (for updating status)."""
+def _edit_message_status(token: str, chat_id: str, message_id: int | None, text: str):
+    """Edit an existing message (for updating status indicators)."""
     if not message_id:
         return
     _tg_request(token, "editMessageText", {
@@ -947,29 +964,22 @@ def _handle_bets() -> str:
             for b in bets:
                 _format_bet_line(tg, b, MKT_NAMES, _html_escape)
 
-        # Handicap bets
-        hcap = result.get("handicap_bets", [])
-        if hcap:
-            tg.raw(f"<b>Handicap Bets</b> ({len(hcap)})")
-            for b in hcap[:4]:
-                tg.raw(f"   {_html_escape(b.get('match', '?'))}: "
-                       f"{_html_escape(b.get('bet', '?'))} @{b.get('odds', '?')}")
-            tg.blank()
+        # Removed: Handicap/Goals/BTTS raw predictions were showing disabled markets.
+        # Only show bets from unified_bet_slip (already filtered by market_rules).
 
-        # O/U bets
-        ou = result.get("over_under_bets", [])
-        if ou:
-            tg.raw(f"<b>Goals Bets</b> ({len(ou)})")
-            for b in ou[:4]:
-                tg.raw(f"   {_html_escape(b.get('match', '?'))}: "
-                       f"{_html_escape(b.get('bet', '?'))} @{b.get('odds', '?')}")
-            tg.blank()
-
-        tg.italic("Ask me about any match for deeper analysis.")
+        tg.italic("Ask me about any pick for deeper analysis.")
         return tg.build()
     except Exception as e:
         log.warning("/bets failed: %s", e)
         return f"Failed to load bets: {e}"
+
+
+_BOOKMAKER_DISPLAY = {
+    "Alt totals book": "Alt Totals",
+    "DC bookmaker (real)": "DC Book",
+    "DC bookmaker": "DC Book",
+    "alt_totals": "Alt Totals",
+}
 
 
 def _format_bet_line(tg, b: dict, mkt_names: dict, escape_fn):
@@ -979,7 +989,8 @@ def _format_bet_line(tg, b: dict, mkt_names: dict, escape_fn):
     market = mkt_names.get(market_raw, market_raw)
     stake = b.get("stake", b.get("stake_amount", 0))
     odds = b.get("odds", b.get("best_odds", 0))
-    bm = b.get("bookmaker", b.get("best_bookmaker", ""))
+    bm_raw = b.get("bookmaker", b.get("best_bookmaker", ""))
+    bm = _BOOKMAKER_DISPLAY.get(bm_raw, bm_raw)
 
     tg.raw(f"\u26bd <b>{escape_fn(b.get('match', '?'))}</b>")
     tg.raw(f"   {escape_fn(market)}: <b>{escape_fn(b.get('selection', '?'))}</b>")
@@ -1025,20 +1036,70 @@ def _handle_bankroll() -> str:
             if dd > 2:
                 tg.raw(f"   \u26a0\ufe0f {dd:.0f}% below peak balance")
 
-        # Market breakdown
+        # Market breakdown — consolidated and sorted by profitability
         mkt = result.get("market_breakdown", {})
         if mkt:
+            # Consolidate similar markets
+            _MARKET_GROUPS = {
+                "1X2": "Match Result",
+                "DC": "Double Chance",
+                "DNB": "Draw No Bet",
+                "BTTS": "BTTS",
+            }
+            consolidated: dict = {}
+            for name, stats in mkt.items():
+                # Group AH variants → "Asian Handicap", O/U variants → "Over/Under"
+                if name.startswith(("AH", "spreads")):
+                    group = "Asian Handicap"
+                elif name.startswith(("O/U", "totals")):
+                    group = "Over/Under"
+                else:
+                    group = _MARKET_GROUPS.get(name, name)
+
+                g = consolidated.setdefault(group, {"wins": 0, "losses": 0, "profit": 0.0, "total": 0})
+                g["wins"] += stats.get("wins", 0)
+                g["losses"] += stats.get("losses", 0)
+                g["profit"] += stats.get("profit", 0)
+                g["total"] += stats.get("total", stats.get("wins", 0) + stats.get("losses", 0))
+
+            # Sort: profitable first, then by total bets
+            sorted_markets = sorted(
+                consolidated.items(),
+                key=lambda x: (-1 if x[1]["profit"] >= 0 else 1, -x[1]["total"]),
+            )
+
             tg.blank()
             tg.raw("<b>Performance by Market:</b>")
-            for name, stats in mkt.items():
-                wr = stats.get("win_rate", 0)
-                n = stats.get("total", stats.get("n_bets", 0))
-                profit = stats.get("profit", 0)
+            for name, stats in sorted_markets:
+                if stats["total"] == 0:
+                    continue
+                wr = stats["wins"] / max(stats["total"], 1) * 100
+                profit = stats["profit"]
                 sign = "+" if profit >= 0 else ""
                 emoji = "\u2705" if profit >= 0 else "\u274c"
                 tg.raw(f"   {emoji} {_html_escape(name)}: "
-                       f"{wr:.0f}% win rate ({n} bets), "
+                       f"{wr:.0f}% WR ({stats['total']} bets), "
                        f"{sign}\u20ac{profit:.2f}")
+
+        # Post-improvement tracking
+        try:
+            from scripts.betting.benchmark_tracker import get_benchmark_report
+            bench = get_benchmark_report()
+            after = bench.get("after", {})
+            progress = bench.get("progress_pct", 0)
+            if after.get("count", 0) > 0 or progress > 0:
+                tg.blank()
+                tg.raw("<b>Since Improvements (Apr 10):</b>")
+                if after["count"] > 0:
+                    tg.raw(f"   Record: {after['wins']}W-{after['losses']}L"
+                           f" ({after['win_rate']:.0f}% WR)")
+                    tg.raw(f"   P&L: {'+'if after['total_profit']>=0 else ''}"
+                           f"\u20ac{after['total_profit']:.2f}"
+                           f" ({after['roi_pct']:+.1f}% ROI)")
+                tg.raw(f"   Progress: {after['count']}/{bench.get('target_bets', 50)} "
+                       f"bets ({progress:.0f}%)")
+        except Exception:
+            pass
 
         return tg.build()
     except Exception as e:
@@ -1743,17 +1804,19 @@ def _handle_match(token: str, chat_id: str) -> bool:
     try:
         from config.settings import DATA_DIR
         today = datetime.now().strftime("%Y-%m-%d")
-        preds_path = DATA_DIR / "upcoming" / "predictions.json"
-        if not preds_path.exists():
-            return False
 
-        with open(preds_path) as f:
-            preds = json.load(f)
+        # Load predictions from ALL leagues
+        pred_list = []
+        for pred_file in ["predictions.json", "predictions_premier_league.json"]:
+            preds_path = DATA_DIR / "upcoming" / pred_file
+            if preds_path.exists():
+                with open(preds_path) as f:
+                    preds = json.load(f)
+                for p in preds.get("predictions", []):
+                    pred_list.append(p)
 
-        pred_list = preds.get("predictions", [])
         matches = [p for p in pred_list if p.get("date", "").startswith(today)]
         if not matches:
-            # Try all upcoming
             matches = pred_list[:10]
 
         if not matches:
@@ -2147,8 +2210,8 @@ def _call_claude_with_image(user_text: str, photo: dict,
                 log.info("Vision tool call: %s(%s)", tool_name, json.dumps(tu["input"])[:100])
 
                 status_text = _TOOL_STATUS.get(tool_name, f"Working on {tool_name}")
-                _edit_message(token, chat_id, status_msg_id,
-                              f"\u23f3 <i>{status_text}...</i>")
+                _edit_message_status(token, chat_id, status_msg_id,
+                                     f"\u23f3 <i>{status_text}...</i>")
 
                 handler = TOOL_HANDLERS.get(tool_name)
                 if handler:
@@ -2237,9 +2300,13 @@ def run_bot():
     """Main bot loop — long-polls Telegram for messages."""
     global _running
 
+    _acquire_lock()
+    # Register signal handlers AFTER acquiring lock to avoid the old
+    # process's SIGTERM death setting _running=False in the new process
+    # during the kill-and-wait window.
+    _running = True
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
-    _acquire_lock()
 
     token = _get_env("TELEGRAM_BOT_TOKEN")
     chat_id = _get_env("TELEGRAM_CHAT_ID")
@@ -2312,7 +2379,18 @@ def run_bot():
                     cb_chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", ""))
                     if cb_chat_id != str(chat_id):
                         continue
-                    cb_result = _handle_callback_query(token, chat_id, callback_query, conversation)
+                    try:
+                        cb_result = _handle_callback_query(token, chat_id, callback_query, conversation)
+                    except Exception as e:
+                        log.exception("Callback handler error: %s", e)
+                        query_id = callback_query.get("id", "")
+                        if query_id:
+                            _tg_request(token, "answerCallbackQuery", {
+                                "callback_query_id": query_id,
+                                "text": f"Error: {str(e)[:50]}",
+                                "show_alert": True,
+                            }, timeout=5)
+                        cb_result = None
                     if cb_result:
                         # Feed the callback result as a user message to Claude
                         typing = _TypingKeepAlive(token, chat_id)
@@ -2354,6 +2432,11 @@ def run_bot():
                 cmd = text.split()[0].lower() if text.startswith("/") else None
                 response_text = None
 
+                # Map persistent reply keyboard button taps to commands
+                if not cmd and text in _REPLY_BUTTON_MAP:
+                    text = _REPLY_BUTTON_MAP[text]
+                    cmd = text.split()[0].lower()
+
                 if cmd == "/start":
                     response_text = _handle_start()
                 elif cmd == "/bets":
@@ -2378,7 +2461,7 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
-                elif cmd.startswith("/player"):
+                elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
                     if not player_name:
@@ -2413,9 +2496,10 @@ def run_bot():
                     finally:
                         typing.stop()
 
-                # Send response
+                # Send response (always attach persistent keyboard)
                 if response_text:
-                    success = _tg_send_message(token, chat_id, response_text)
+                    success = _tg_send_message(token, chat_id, response_text,
+                                               reply_markup=_reply_keyboard())
                     if success:
                         log.info("Response sent (%d chars)", len(response_text))
                     else:

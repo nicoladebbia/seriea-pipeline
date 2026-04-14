@@ -109,7 +109,7 @@ def compute_current_bankroll(config: Dict = None) -> Dict:
             peak_profit = max(peak_profit, running)
     settled_profit = running
 
-    # Sum pending stakes
+    # Count pending stakes (for reporting only, not subtracted from balance)
     pending_stakes = 0.0
     for bet in bets.values():
         if not isinstance(bet, dict):
@@ -117,20 +117,51 @@ def compute_current_bankroll(config: Dict = None) -> Dict:
         if bet.get("status") == "pending":
             pending_stakes += bet.get("stake", 0) or 0
 
-    balance = initial + settled_profit - pending_stakes
+    balance = initial + settled_profit
     peak_balance = initial + peak_profit
 
-    # Safety guards
+    # Safety guards — never silently override, find last known good balance
     if balance <= 0 or balance > initial * 10:
-        log.warning(
-            "Computed balance %.2f looks wrong (initial=%.2f) — using initial",
-            balance, initial,
+        log.critical(
+            "BANKROLL ANOMALY: computed balance %.2f (initial=%.2f, settled=%.2f). "
+            "Falling back to last known good balance from journal history.",
+            balance, initial, settled_profit,
         )
-        balance = initial
+        try:
+            from scripts.pipeline.notify import notify
+            notify(
+                message=(f"CRITICAL: Bankroll anomaly detected. "
+                         f"Computed={balance:.2f}, Initial={initial:.2f}, "
+                         f"Settled P&L={settled_profit:.2f}"),
+                title="Bankroll Safety Alert",
+                level="critical",
+                category="betting",
+            )
+        except Exception:
+            pass  # notification best-effort
+
+        # Walk journal chronologically to find last valid balance
+        last_good = initial
+        running_replay = 0.0
+        sorted_bets = sorted(
+            (b for b in bets.values() if isinstance(b, dict)
+             and b.get("status") in ("won", "lost", "push", "void")),
+            key=lambda b: str(b.get("settled_at", "") or ""),
+        )
+        for bet in sorted_bets:
+            running_replay += bet.get("profit", 0) or 0
+            candidate = initial + running_replay
+            if 0 < candidate <= initial * 10:
+                last_good = candidate
+        balance = last_good
+        log.critical("Using last known good balance: %.2f", balance)
+
+    available = max(0.0, balance - pending_stakes)
 
     return {
         "initial_balance": initial,
         "current_balance": round(balance, 2),
+        "available_balance": round(available, 2),
         "pending_stakes": round(pending_stakes, 2),
         "settled_profit": round(settled_profit, 2),
         "peak_balance": round(peak_balance, 2),
@@ -138,12 +169,16 @@ def compute_current_bankroll(config: Dict = None) -> Dict:
 
 
 def get_effective_bankroll() -> float:
-    """High-level: load config + compute balance, return the number for stake sizing."""
+    """High-level: load config + compute balance, return the number for stake sizing.
+
+    Returns available_balance (current minus pending stakes) so that new bets
+    are sized against capital not already committed.
+    """
     config = load_bankroll_config()
     info = compute_current_bankroll(config)
-    balance = info["current_balance"]
-    log.info("Effective bankroll: €%.2f (initial: €%.2f, P&L: %+.2f, pending: €%.2f)",
-             balance, info["initial_balance"], info["settled_profit"], info["pending_stakes"])
+    balance = info["available_balance"]
+    log.info("Effective bankroll: €%.2f (current: €%.2f, pending: €%.2f, P&L: %+.2f)",
+             balance, info["current_balance"], info["pending_stakes"], info["settled_profit"])
     return balance
 
 
@@ -173,6 +208,7 @@ def update_bankroll_json(balance_info: Dict = None):
     bankroll_data = {
         "initial_balance": balance_info["initial_balance"],
         "current_balance": balance_info["current_balance"],
+        "available_balance": balance_info.get("available_balance", balance_info["current_balance"]),
         "peak_balance": balance_info["peak_balance"],
         "lowest_balance": balance_info["initial_balance"],  # Not tracked here; kept for compat
         "pending_bets": pending_count,
@@ -180,8 +216,7 @@ def update_bankroll_json(balance_info: Dict = None):
         "updated_at": datetime.now().isoformat(),
     }
 
-    _BANKROLL_JSON.parent.mkdir(parents=True, exist_ok=True)
-    with open(_BANKROLL_JSON, "w") as f:
-        json.dump(bankroll_data, f, indent=2)
+    from config.settings import atomic_write_json
+    atomic_write_json(_BANKROLL_JSON, bankroll_data)
 
     log.info("Updated bankroll.json: €%.2f", balance_info["current_balance"])

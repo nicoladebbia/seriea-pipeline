@@ -31,8 +31,8 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+from config.team_names import TEAM_NAME_MAP
 from scraper.lineup_fetcher import (
-    TEAM_NAME_MAP,
     normalize_player_name,
     standardize_api_team_name,
 )
@@ -42,7 +42,8 @@ log = logging.getLogger(__name__)
 API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
 SERIE_A_LEAGUE_ID = 135
-SERIE_A_SEASON = 2025  # 2025-26 season
+from config.settings import get_current_season
+SERIE_A_SEASON = get_current_season()
 
 SQUADS_DIR = DATA_DIR / "squads"
 SQUADS_PATH = SQUADS_DIR / "current_squads.json"
@@ -105,7 +106,7 @@ class SquadFetcher:
             resp = requests.get(
                 f"{API_FOOTBALL_BASE}/teams",
                 headers=headers,
-                params={"league": SERIE_A_LEAGUE_ID, "season": 2024},
+                params={"league": SERIE_A_LEAGUE_ID, "season": int(SERIE_A_SEASON.split("-")[0])},
                 timeout=15,
             )
             if resp.status_code == 429:
@@ -181,7 +182,7 @@ class SquadFetcher:
         return {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "source": "api_football",
-            "season": "2025-26",
+            "season": SERIE_A_SEASON,
             "teams": result_teams,
         }
 
@@ -247,7 +248,7 @@ class SquadFetcher:
         return {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "source": "football_data_org",
-            "season": "2025-26",
+            "season": SERIE_A_SEASON,
             "teams": result_teams,
         }
 
@@ -289,7 +290,7 @@ class SquadFetcher:
         return {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "source": "profiles_fallback",
-            "season": "2025-26",
+            "season": SERIE_A_SEASON,
             "teams": result_teams,
         }
 
@@ -344,8 +345,8 @@ class SquadFetcher:
         merged_teams = {**existing, **new_teams}
         data["teams"] = merged_teams
 
-        with open(SQUADS_PATH, "w") as f:
-            json.dump(data, f, indent=2)
+        from config.settings import atomic_write_json
+        atomic_write_json(SQUADS_PATH, data)
 
         api_count = len(new_teams)
         kept_count = len(merged_teams) - api_count

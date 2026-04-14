@@ -137,7 +137,7 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
             (row.get("away_team"), away_post_intl),
         ]:
             if not team or pd.isna(team) or pd.isna(md):
-                result_list.append(None)
+                result_list.append(np.nan)
                 continue
 
             last = team_last_match.get(team)
@@ -145,13 +145,54 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
                 gap = (md - last).days
                 result_list.append(1 if gap >= _INTL_BREAK_GAP_DAYS else 0)
             else:
-                result_list.append(None)
+                result_list.append(np.nan)
 
             team_last_match[team] = md
 
     df["home_post_intl_break"] = home_post_intl
     df["away_post_intl_break"] = away_post_intl
     added += 2
+
+    # ---------------------------------------------------------------
+    # A2. Regime Change Flags
+    # ---------------------------------------------------------------
+    # These capture structural changes in football that affect predictions.
+
+    # COVID no-crowd flag (2020-21): home advantage disappeared without fans.
+    # Research: Serie A home win rate dropped 46% → 36%, EPL similar.
+    if "season" in df.columns:
+        df["is_no_crowd_match"] = df["season"].isin(["2020-2021"]).astype(int)
+        added += 1
+
+        # Five-substitution rule era (introduced 2020-21, permanent from 2022-23).
+        # Deep squads benefit more — changes fatigue dynamics.
+        _five_sub_seasons = {
+            "2020-2021", "2021-2022", "2022-2023", "2023-2024",
+            "2024-2025", "2025-2026", "2026-2027",
+        }
+        df["five_sub_era"] = df["season"].isin(_five_sub_seasons).astype(int)
+        added += 1
+
+    # VAR era flag (league-specific introduction dates).
+    # Serie A: from 2017-18, EPL: from 2019-20.
+    # Changes penalty rates (+40%), card patterns, offside decisions.
+    if "season" in df.columns:
+        league_col = df.get("league")
+        if league_col is not None:
+            var_flags = []
+            for _, row in df.iterrows():
+                season = row["season"]
+                league = row.get("league", "serie_a")
+                if league == "premier_league":
+                    var_flags.append(1 if season >= "2019-2020" else 0)
+                else:
+                    # Serie A, La Liga, Bundesliga — all from 2017-18 or earlier
+                    var_flags.append(1 if season >= "2017-2018" else 0)
+            df["var_era"] = var_flags
+        else:
+            # Default: assume VAR present (training starts 2017+)
+            df["var_era"] = 1
+        added += 1
 
     # ---------------------------------------------------------------
     # B. Scheduling Patterns
@@ -175,12 +216,18 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
         as_ = pd.to_numeric(df.get("away_score"), errors="coerce")
         df["_total_goals"] = hs + as_
 
-        # Expanding average goals per matchweek (shifted to prevent leakage)
-        mw_avg = (
-            df.groupby("matchweek")["_total_goals"]
-            .apply(lambda s: s.expanding().mean().shift(1))
-            .reset_index(level=0, drop=True)
-        )
+        # FIX: Group by season only (not matchweek) to prevent same-matchweek
+        # peers from leaking. Matches in the same matchweek happen simultaneously,
+        # so one MW10 match should not see another MW10 match's goals.
+        _group_cols = ["season"] if "season" in df.columns else []
+        if _group_cols:
+            mw_avg = (
+                df.groupby(_group_cols)["_total_goals"]
+                .apply(lambda s: s.expanding().mean().shift(1))
+                .reset_index(level=0, drop=True)
+            )
+        else:
+            mw_avg = df["_total_goals"].expanding().mean().shift(1)
         df["matchweek_avg_goals"] = mw_avg
         df.drop(columns=["_total_goals"], inplace=True, errors="ignore")
         added += 1
@@ -210,6 +257,55 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
         df["promoted_vs_established"] = (
             (df["home_is_promoted"] != df["away_is_promoted"])
         ).astype(int)
+        added += 4
+
+        # Enriched promoted team features: how long since this team was last
+        # in the top flight?  Distinguishes returning giants (Sassuolo, 1 yr)
+        # from long-absent newcomers (Pisa, many years).
+        all_seasons = sorted(df["season"].unique())
+        # Build team→set-of-seasons lookup from the DataFrame itself
+        _team_seasons: dict[str, set[str]] = {}
+        for t in set(df["home_team"].unique()) | set(df["away_team"].unique()):
+            _team_seasons[t] = set(
+                df[(df["home_team"] == t) | (df["away_team"] == t)]["season"].unique()
+            )
+
+        home_since = []
+        away_since = []
+        home_prev = []
+        away_prev = []
+        for _, row in df.iterrows():
+            cur_season = row.get("season", "")
+            for team_col, promoted_val, since_list, prev_list in [
+                ("home_team", row.get("home_is_promoted", 0) if "home_is_promoted" in df.columns else 0, home_since, home_prev),
+                ("away_team", row.get("away_is_promoted", 0) if "away_is_promoted" in df.columns else 0, away_since, away_prev),
+            ]:
+                team = row.get(team_col, "")
+                if not promoted_val or not team:
+                    since_list.append(0)
+                    prev_list.append(0)
+                    continue
+                # Find prior seasons this team appeared in (before current)
+                prior_szns = sorted(
+                    s for s in _team_seasons.get(team, set()) if s < cur_season
+                )
+                if prior_szns:
+                    # Gap = number of seasons between last appearance and current
+                    last_idx = all_seasons.index(prior_szns[-1]) if prior_szns[-1] in all_seasons else -1
+                    cur_idx = all_seasons.index(cur_season) if cur_season in all_seasons else -1
+                    gap = (cur_idx - last_idx - 1) if last_idx >= 0 and cur_idx >= 0 else 0
+                    since_list.append(max(gap, 1))  # at least 1 (they were promoted)
+                    # Previously in league within last 5 seasons?
+                    recent_prior = [s for s in prior_szns if cur_idx - all_seasons.index(s) <= 5] if cur_idx >= 0 else []
+                    prev_list.append(1 if recent_prior else 0)
+                else:
+                    since_list.append(10)  # never seen before in this dataset
+                    prev_list.append(0)
+
+        df["home_seasons_since_topflight"] = home_since
+        df["away_seasons_since_topflight"] = away_since
+        df["home_previously_in_league"] = home_prev
+        df["away_previously_in_league"] = away_prev
         added += 4
 
     # ---------------------------------------------------------------

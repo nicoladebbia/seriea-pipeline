@@ -216,14 +216,14 @@ def calculate_team_ppda(
     key = (team.lower().strip(), season)
     entry = cache.get(key)
     if entry:
-        return entry["ppda_mean"]
+        return entry.get("ppda_avg", entry.get("ppda_mean", 12.0))
 
     # Try common name variants
     for variant in [team.lower(), _normalize_team(team)]:
         key = (variant, season)
         entry = cache.get(key)
         if entry:
-            return entry["ppda_mean"]
+            return entry.get("ppda_avg", entry.get("ppda_mean", 12.0))
 
     return 12.0  # League average default
 
@@ -268,7 +268,7 @@ def add_ppda_features(feature_df: pd.DataFrame) -> pd.DataFrame:
 
             entry = cache.get((team_norm, season)) or cache.get((team, season))
             if entry:
-                ppda_list.append(entry["ppda_mean"])
+                ppda_list.append(entry.get("ppda_avg", entry.get("ppda_mean", 12.0)))
                 ppda_allowed_list.append(entry["ppda_allowed_mean"])
             else:
                 ppda_list.append(12.0)

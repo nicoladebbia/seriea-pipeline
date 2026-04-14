@@ -22,10 +22,12 @@ Usage:
     python scripts/bet_journal.py settle        # Fetch results + auto-settle
 """
 
+import fcntl
 import json
 import logging
 import shutil
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -45,6 +47,27 @@ LEGACY_FILES = {
     "history": DATA_DIR / "betting" / "history.json",
     "clv_history": DATA_DIR / "betting" / "clv_history.json",
 }
+
+
+# =============================================================================
+# FILE LOCKING — prevents race conditions between pipeline and auto_settle
+# =============================================================================
+
+_JOURNAL_LOCK_PATH = DATA_DIR / "betting" / ".journal.lock"
+
+
+def _with_journal_lock(func):
+    """Decorator: acquire advisory file lock before journal read/write."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        _JOURNAL_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_JOURNAL_LOCK_PATH, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    return wrapper
 
 
 # =============================================================================
@@ -87,16 +110,117 @@ def _save_journal(journal: Dict):
     tmp_path.rename(JOURNAL_PATH)
 
 
+def get_clv_lookup() -> Dict[str, float]:
+    """Build a CLV lookup table by market type.
+
+    Returns dict mapping market_type → average CLV%.
+    Used to gate bets: if a market type has historically negative CLV,
+    we're betting into adverse moves and should block.
+
+    Markets with <5 settled bets return None (insufficient data).
+    """
+    journal = _load_journal()
+    from collections import defaultdict
+    market_clvs: Dict[str, list] = defaultdict(list)
+
+    for bet in journal["bets"].values():
+        if bet.get("status") not in ("won", "lost", "push"):
+            continue
+        clv = bet.get("clv_pct")
+        if clv is None:
+            continue
+        market = (bet.get("market") or "unknown").upper()
+        # Normalize market names
+        if market in ("H2H", "MONEYLINE"):
+            market = "1X2"
+        market_clvs[market].append(clv)
+
+    result = {}
+    for market, clvs in market_clvs.items():
+        if len(clvs) >= 5:
+            result[market] = round(sum(clvs) / len(clvs), 2)
+        # else: insufficient data, don't include
+
+    return result
+
+
+def _compute_clv(bet: Dict) -> None:
+    """Compute Closing Line Value for a settled bet.
+
+    CLV measures whether we got better odds than the sharp market implied.
+    Positive CLV = we beat the market (good). Negative = we didn't (bad).
+
+    Two methods, in priority order:
+    1. If closing_odds available: CLV = (1/placed_odds) - (1/closing_odds)
+       (we got better odds than closing line)
+    2. If sharp_implied_prob available: CLV = (1/placed_odds) - sharp_implied_prob
+       (we got better odds than Pinnacle's implied probability)
+
+    Stored as percentage (e.g., 2.5 means +2.5% edge over closing/sharp).
+    """
+    placed_odds = bet.get("odds")
+    if not placed_odds or placed_odds <= 1.0:
+        return
+
+    placed_implied = 1.0 / placed_odds
+
+    # Method 1: closing odds (best — actual closing line)
+    closing_odds = bet.get("closing_odds")
+    if closing_odds and closing_odds > 1.0:
+        closing_implied = 1.0 / closing_odds
+        bet["clv_pct"] = round((closing_implied - placed_implied) * 100, 2)
+        return
+
+    # Method 2: sharp implied probability (Pinnacle at placement time)
+    sharp_prob = bet.get("sharp_implied_prob")
+    if sharp_prob and sharp_prob > 0:
+        # CLV = sharp thinks outcome is X% likely, we got odds implying Y%
+        # If sharp says 45% but our odds imply 40%, CLV = +5% (we got value)
+        bet["clv_pct"] = round((sharp_prob - placed_implied) * 100, 2)
+        return
+
+
+def backfill_clv() -> Dict:
+    """Backfill CLV for all settled bets that have the required data.
+
+    Returns dict with counts of bets updated.
+    """
+    journal = _load_journal()
+    updated = 0
+
+    for bet_id, bet in journal["bets"].items():
+        if bet.get("status") not in ("won", "lost", "push"):
+            continue
+        if bet.get("clv_pct") is not None:
+            continue  # Already has CLV
+
+        _compute_clv(bet)
+        if bet.get("clv_pct") is not None:
+            updated += 1
+
+    if updated > 0:
+        _save_journal(journal)
+        log.info("Backfilled CLV for %d settled bets", updated)
+
+    return {"updated": updated, "total_settled": sum(
+        1 for b in journal["bets"].values()
+        if b.get("status") in ("won", "lost", "push")
+    )}
+
+
 def _generate_bet_id(date: str, match: str, market: str, selection: str) -> str:
-    """Generate deterministic bet_id for deduplication."""
-    # Normalize market: h2h/moneyline → 1X2, totals → O/U, etc.
+    """Generate deterministic bet_id for deduplication.
+
+    Normalizes market names so h2h/H2H/1X2/moneyline all produce the same ID.
+    """
     m = market.strip().upper()
     if m in ("H2H", "1X2", "MONEYLINE"):
-        m = "1X2"
-    elif m in ("TOTALS",) or m.startswith("O/U"):
-        m = market.strip().replace(" ", "_").replace("/", "")  # preserve line info
+        m = "h2h"  # Canonical: always lowercase h2h
+    elif "TOTALS" in m or "O/U" in m:
+        # Preserve line info (e.g., "O/U 2.5" → "OU_2.5")
+        m = market.strip().upper().replace(" ", "_").replace("/", "")
     else:
-        m = market.strip().replace(" ", "_").replace("/", "")
+        m = market.strip().upper().replace(" ", "_").replace("/", "")
     parts = [
         date.strip(),
         match.strip().replace(" ", "_"),
@@ -113,6 +237,7 @@ def _generate_bet_id(date: str, match: str, market: str, selection: str) -> str:
 MAX_EDGE_PCT = 12.0  # Defense-in-depth: reject bets above this edge regardless of caller
 
 
+@_with_journal_lock
 def add_bet(bet_data: Dict) -> str:
     """Add a bet to the journal. Returns bet_id.
 
@@ -132,6 +257,9 @@ def add_bet(bet_data: Dict) -> str:
         )
         return ""
 
+    if not bet_data.get("date"):
+        bet_data["date"] = datetime.now().strftime("%Y-%m-%d")
+
     journal = _load_journal()
 
     bet_id = _generate_bet_id(
@@ -146,6 +274,21 @@ def add_bet(bet_data: Dict) -> str:
         if existing.get("status") != "pending":
             log.debug("Skipping settled bet %s", bet_id)
             return bet_id
+    else:
+        # Extra safety: check for same match+selection with different bet_id
+        # (catches market name variants that produce different IDs)
+        match_norm = bet_data.get("match", "").strip()
+        sel_norm = bet_data.get("selection", "").strip().upper()
+        for existing_id, existing_bet in journal["bets"].items():
+            if (existing_bet.get("match", "").strip() == match_norm and
+                existing_bet.get("selection", "").strip().upper() == sel_norm and
+                existing_bet.get("status") not in ("superseded",)):
+                log.warning("Duplicate blocked: %s %s already exists as %s",
+                           match_norm, sel_norm, existing_id)
+                return existing_id
+
+    if bet_id in journal["bets"]:
+        existing = journal["bets"][bet_id]
         # Update pending bet with latest pipeline data.
         # Always update odds/stake from pipeline re-runs — staking config
         # changes (e.g., Kelly → proportional) must propagate to journal.
@@ -223,6 +366,7 @@ def get_settled_bets() -> List[Dict]:
     return sorted(settled, key=lambda b: b.get("settled_at", ""))
 
 
+@_with_journal_lock
 def settle_bet(bet_id: str, status: str, result_score: str = None,
                profit: float = None) -> bool:
     """Mark a bet as won/lost/push/void.
@@ -239,10 +383,25 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
         return False
 
     bet = journal["bets"][bet_id]
-    # Allow settling pending and superseded bets (superseded = pipeline re-ran
-    # but original bet may have been placed)
-    if bet.get("status") not in ("pending", "superseded"):
-        log.debug("Bet %s already settled as %s", bet_id, bet.get("status"))
+    # Superseded bets: allow settling ONLY if no replacement is already settled
+    # (user may have placed the original bet before the pipeline superseded it).
+    if bet.get("status") == "superseded":
+        replacement_id = bet.get("superseded_by")
+        if replacement_id:
+            replacement = journal["bets"].get(replacement_id)
+            if replacement is None:
+                log.warning("Bet %s superseded_by %s but replacement not found in journal",
+                            bet_id, replacement_id)
+                # Allow settling — replacement may have been deleted
+            elif replacement.get("status") in ("won", "lost", "push", "void"):
+                log.debug("Bet %s superseded by %s (already settled) — skipping",
+                          bet_id, replacement_id)
+                return False
+        elif not replacement_id:
+            log.warning("Bet %s is superseded but has no superseded_by field", bet_id)
+        # No replacement settled yet — allow settling the original
+    elif bet.get("status") != "pending":
+        log.debug("Bet %s cannot be settled (status=%s)", bet_id, bet.get("status"))
         return False
 
     bet["status"] = status
@@ -250,8 +409,13 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
     bet["profit"] = profit
     bet["settled_at"] = datetime.now().isoformat()
 
+    # Compute CLV (Closing Line Value) from stored data
+    # CLV = placed_implied_prob - sharp_implied_prob (positive = we got better odds than sharp market)
+    _compute_clv(bet)
+
     _save_journal(journal)
-    log.info("Settled %s as %s (profit: %s)", bet_id, status, profit)
+    log.info("Settled %s as %s (profit: %s, clv: %s%%)",
+             bet_id, status, profit, bet.get("clv_pct"))
     return True
 
 

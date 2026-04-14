@@ -12,3 +12,6 @@ config/api_keys.json
 
 # CatBoost training artifacts
 catboost_info/
+
+# Codesight codebase maps
+.codesight/

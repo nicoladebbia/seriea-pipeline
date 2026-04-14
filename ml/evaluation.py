@@ -89,12 +89,12 @@ def kelly_profit_simulation(
     y_pred = np.argmax(y_proba, axis=1)
 
     if odds is None:
-        # Simulate market odds from base-rate frequencies + overround.
-        # Count each class in the test set as a proxy for market priors.
+        # Use fixed historical base rates to avoid leaking test-set class
+        # distribution into the evaluation metric. These are the long-run
+        # averages across Serie A 2015-2025.
         n_classes = y_proba.shape[1]
-        class_counts = np.bincount(y_true.astype(int), minlength=n_classes)
-        base_probs = class_counts / class_counts.sum()
-        base_probs = np.clip(base_probs, 0.05, 0.90)  # avoid degenerate odds
+        base_probs = np.array([0.44, 0.27, 0.29])[:n_classes]  # H, D, A
+        base_probs = np.clip(base_probs, 0.05, 0.90)
         # Apply overround: market_prob = base_prob * overround, odds = 1/market_prob
         market_probs = base_probs * market_overround
         odds = np.tile(1.0 / market_probs, (n, 1))  # same "market line" for all matches

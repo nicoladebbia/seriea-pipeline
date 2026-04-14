@@ -80,7 +80,6 @@ SERIE_A_TEAMS_TM: dict[str, tuple[str, int]] = {
     "Lazio": ("ss-lazio", 398),
     "Lecce": ("us-lecce", 1005),
     "Milan": ("ac-milan", 5),
-    "Monza": ("ac-monza", 2919),
     "Napoli": ("ssc-napoli", 6195),
     "Parma": ("parma-calcio-1913", 130),
     "Pisa": ("ac-pisa-1909", 1029),
@@ -88,8 +87,38 @@ SERIE_A_TEAMS_TM: dict[str, tuple[str, int]] = {
     "Sassuolo": ("us-sassuolo-calcio", 6574),
     "Torino": ("torino-fc", 416),
     "Udinese": ("udinese-calcio", 410),
-    "Venezia": ("venezia-fc", 607),
     "Verona": ("hellas-verona", 276),
+}
+
+# Premier League team IDs on Transfermarkt (team_name -> (slug, verein_id))
+EPL_TEAMS_TM: dict[str, tuple[str, int]] = {
+    "Arsenal": ("arsenal-fc", 11),
+    "Aston Villa": ("aston-villa", 405),
+    "Bournemouth": ("afc-bournemouth", 989),
+    "Brentford": ("brentford-fc", 1148),
+    "Brighton": ("brighton-amp-hove-albion", 1237),
+    "Chelsea": ("chelsea-fc", 631),
+    "Crystal Palace": ("crystal-palace", 873),
+    "Everton": ("everton-fc", 29),
+    "Fulham": ("fulham-fc", 931),
+    "Ipswich Town": ("ipswich-town", 677),
+    "Leicester City": ("leicester-city", 1003),
+    "Liverpool": ("liverpool-fc", 31),
+    "Manchester City": ("manchester-city", 281),
+    "Manchester United": ("manchester-united", 985),
+    "Newcastle United": ("newcastle-united", 762),
+    "Nottingham Forest": ("nottingham-forest", 703),
+    "Southampton": ("southampton-fc", 180),
+    "Sunderland": ("sunderland-afc", 289),
+    "Tottenham Hotspur": ("tottenham-hotspur", 148),
+    "West Ham United": ("west-ham-united", 379),
+    "Wolverhampton Wanderers": ("wolverhampton-wanderers", 543),
+}
+
+# League -> TM mapping registry
+LEAGUE_TEAMS_TM: dict[str, dict[str, tuple[str, int]]] = {
+    "serie_a": SERIE_A_TEAMS_TM,
+    "premier_league": EPL_TEAMS_TM,
 }
 
 # ESPN team IDs for Serie A (corrected — no duplicates)
@@ -135,8 +164,10 @@ class _RateLimiter:
         with self._lock:
             now = time.monotonic()
             elapsed = now - self._last_request
-            if elapsed < self._min_interval:
-                time.sleep(self._min_interval - elapsed)
+            wait_time = max(0, self._min_interval - elapsed)
+        if wait_time > 0:
+            time.sleep(wait_time)
+        with self._lock:
             self._last_request = time.monotonic()
 
 
@@ -241,11 +272,17 @@ def scrape_team_injuries_tm(team: str, max_retries: int = 1) -> list[PlayerInjur
     Returns:
         List of PlayerInjury objects for currently injured players
     """
-    if team not in SERIE_A_TEAMS_TM:
-        log.warning(f"Team {team} not found in Transfermarkt mapping")
+    # Look up team in any league mapping
+    tm_entry = None
+    for league_map in LEAGUE_TEAMS_TM.values():
+        if team in league_map:
+            tm_entry = league_map[team]
+            break
+    if tm_entry is None:
+        log.warning(f"Team {team} not found in any Transfermarkt mapping")
         return []
 
-    slug, verein_id = SERIE_A_TEAMS_TM[team]
+    slug, verein_id = tm_entry
     url = f"{TM_BASE}/{slug}/kader/verein/{verein_id}/plus/1"
 
     for attempt in range(1 + max_retries):
@@ -351,8 +388,8 @@ def scrape_team_injuries_espn(team: str) -> list[PlayerInjury]:
         return []
 
 
-def scrape_all_injuries(delay: float = 2.5) -> pd.DataFrame:
-    """Scrape injury data for all Serie A teams.
+def scrape_all_injuries(delay: float = 2.5, league: str = "serie_a") -> pd.DataFrame:
+    """Scrape injury data for all teams in a given league.
 
     Uses concurrent fetching with per-domain rate limiting for speed.
     ESPN is only tried as fallback for teams where Transfermarkt failed.
@@ -360,16 +397,13 @@ def scrape_all_injuries(delay: float = 2.5) -> pd.DataFrame:
     Args:
         delay: Minimum seconds between same-domain requests (default 2.5).
                Passed for API compat but the rate limiter handles actual timing.
+        league: League key — "serie_a" or "premier_league".
 
     Returns:
         DataFrame with all current injuries
     """
-    current_teams = [
-        "Atalanta", "Bologna", "Cagliari", "Como", "Cremonese",
-        "Fiorentina", "Genoa", "Inter", "Juventus", "Lazio",
-        "Lecce", "Milan", "Napoli", "Parma", "Pisa",
-        "Roma", "Sassuolo", "Torino", "Udinese", "Verona",
-    ]
+    tm_mapping = LEAGUE_TEAMS_TM.get(league, SERIE_A_TEAMS_TM)
+    current_teams = list(tm_mapping.keys())
 
     # Override rate limiter interval if caller passed a custom delay
     _tm_limiter._min_interval = max(delay, 2.0)
@@ -439,15 +473,16 @@ def scrape_all_injuries(delay: float = 2.5) -> pd.DataFrame:
         for inj in all_injuries
     ])
 
-    # Save to cache
-    cache_path = INJURIES_DIR / f"injuries_{date.today().isoformat()}.parquet"
+    # Save to cache (league-specific filename for non-Serie A)
+    suffix = f"_{league}" if league != "serie_a" else ""
+    cache_path = INJURIES_DIR / f"injuries{suffix}_{date.today().isoformat()}.parquet"
     df.to_parquet(cache_path, index=False)
     log.info(f"Saved {len(df)} injuries to {cache_path}")
 
     return df
 
 
-def get_current_injuries(auto_scrape: bool = False) -> pd.DataFrame:
+def get_current_injuries(auto_scrape: bool = False, league: str = "serie_a") -> pd.DataFrame:
     """Get the most recent injury data from cache.
 
     Checks for cached data from today or recent days.
@@ -455,30 +490,38 @@ def get_current_injuries(auto_scrape: bool = False) -> pd.DataFrame:
 
     Args:
         auto_scrape: If True, scrape fresh data when no cache exists (slow)
+        league: League key — "serie_a" or "premier_league".
 
     Returns:
         DataFrame with current injuries (may be empty if no cache)
     """
-    today_cache = INJURIES_DIR / f"injuries_{date.today().isoformat()}.parquet"
+    suffix = f"_{league}" if league != "serie_a" else ""
+
+    today_cache = INJURIES_DIR / f"injuries{suffix}_{date.today().isoformat()}.parquet"
 
     if today_cache.exists():
         log.debug(f"Loading cached injuries from {today_cache}")
         return pd.read_parquet(today_cache)
 
-    # Check for recent cache (within last 7 days for more tolerance)
+    # Check for recent cache — warn if stale, reject if too old
     for days_ago in range(1, 8):
         old_date = date.today() - timedelta(days=days_ago)
-        old_cache = INJURIES_DIR / f"injuries_{old_date.isoformat()}.parquet"
+        old_cache = INJURIES_DIR / f"injuries{suffix}_{old_date.isoformat()}.parquet"
         if old_cache.exists():
-            log.debug(f"Loading cached injuries from {old_cache}")
+            if days_ago > 2:
+                log.warning("Injury cache is %d days old — data may be stale", days_ago)
+            if days_ago >= 7:
+                log.warning("Injury cache is %d days old — too stale, returning empty", days_ago)
+                break  # fall through to auto_scrape or empty return
+            log.debug(f"Loading cached injuries from {old_cache} ({days_ago}d old)")
             return pd.read_parquet(old_cache)
 
     # No recent cache - only scrape if explicitly requested
     if auto_scrape:
-        log.info("No recent injury data found, scraping fresh data")
-        return scrape_all_injuries()
+        log.info(f"No recent {league} injury data found, scraping fresh data")
+        return scrape_all_injuries(league=league)
     else:
-        log.debug("No injury cache available, returning empty DataFrame")
+        log.debug(f"No {league} injury cache available, returning empty DataFrame")
         return pd.DataFrame()
 
 

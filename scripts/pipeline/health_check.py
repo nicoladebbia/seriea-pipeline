@@ -56,6 +56,7 @@ def check_data_freshness() -> Dict:
 
     files = {
         "features.parquet": DATA_DIR / "features" / "features.parquet",
+        "fixtures": DATA_DIR / "upcoming" / "matches.json",
         "odds_data": DATA_DIR / "upcoming" / "odds.json",
         "predictions": DATA_DIR / "upcoming" / "predictions.json",
         "results": DATA_DIR / "upcoming" / "results.json",
@@ -71,6 +72,8 @@ def check_data_freshness() -> Dict:
             status = "MISSING"
         elif name == "features.parquet" and age_hours > MAX_FEATURES_AGE_DAYS * 24:
             status = "STALE"
+        elif name == "fixtures" and age_hours > 48:
+            status = "STALE"  # Fixtures older than 48h = blind to upcoming matches
         elif name == "odds_data" and age_hours > MAX_ODDS_AGE_HOURS:
             status = "STALE"
         elif name == "predictions" and age_hours > MAX_PREDICTIONS_AGE_HOURS:
@@ -303,12 +306,227 @@ def check_model_metadata_consistency() -> Dict:
     return result
 
 
+def check_data_quality() -> Dict:
+    """Validate content quality of key data files (NaN rates, row counts, schema)."""
+    checks = {}
+
+    # Check features.parquet
+    features_path = DATA_DIR / "features" / "features.parquet"
+    if features_path.exists():
+        try:
+            import pandas as pd
+            df = pd.read_parquet(features_path)
+            row_count = len(df)
+            nan_rate = float(df.isna().mean().mean())
+
+            status = "OK"
+            issues = []
+
+            if row_count < 100:
+                status = "WARNING"
+                issues.append(f"Low row count: {row_count}")
+            if nan_rate > 0.5:
+                status = "WARNING"
+                issues.append(f"High avg NaN rate: {nan_rate:.1%}")
+
+            # Per-column sparse detection: flag columns >90% NaN
+            col_nan = df.isna().mean()
+            sparse_cols = col_nan[col_nan > 0.90].sort_values(ascending=False)
+            if len(sparse_cols) > 0:
+                if status == "OK":
+                    status = "WARNING"
+                issues.append(
+                    f"{len(sparse_cols)} sparse columns (>90% NaN): "
+                    f"{', '.join(sparse_cols.index[:5])}{'...' if len(sparse_cols) > 5 else ''}"
+                )
+
+            required = ["home_team", "away_team"]
+            missing = [c for c in required if c not in df.columns]
+            if missing:
+                status = "CRITICAL"
+                issues.append(f"Missing columns: {missing}")
+
+            checks["features_quality"] = {
+                "status": status,
+                "rows": row_count,
+                "columns": len(df.columns),
+                "nan_rate": round(nan_rate, 3),
+                "max_col_nan_rate": round(float(col_nan.max()), 3) if len(col_nan) else 0,
+                "sparse_columns": len(sparse_cols),
+                "issues": issues,
+            }
+        except Exception as e:
+            checks["features_quality"] = {"status": "ERROR", "error": str(e)}
+    else:
+        checks["features_quality"] = {"status": "MISSING"}
+
+    # Check predictions probability sums
+    preds_path = DATA_DIR / "upcoming" / "predictions.json"
+    if preds_path.exists():
+        try:
+            with open(preds_path) as f:
+                preds = json.load(f)
+            bad_sums = 0
+            total = 0
+            pred_list = preds.get("predictions", []) if isinstance(preds, dict) else preds
+            for p in pred_list:
+                if isinstance(p, dict):
+                    # Support multiple formats: flat keys, nested "probabilities" dict
+                    probs = p.get("probabilities", {}) if isinstance(p.get("probabilities"), dict) else {}
+                    h = probs.get("home") or p.get("prob_home") or p.get("prob_H")
+                    d = probs.get("draw") or p.get("prob_draw") or p.get("prob_D")
+                    a = probs.get("away") or p.get("prob_away") or p.get("prob_A")
+                    if h is not None and d is not None and a is not None:
+                        total += 1
+                        s = float(h) + float(d) + float(a)
+                        if abs(s - 1.0) > 0.05:
+                            bad_sums += 1
+            checks["prediction_probs"] = {
+                "status": "WARNING" if bad_sums > 0 else "OK",
+                "total": total,
+                "bad_probability_sums": bad_sums,
+            }
+        except Exception as e:
+            checks["prediction_probs"] = {"status": "ERROR", "error": str(e)}
+
+    # Check predictions-odds consistency
+    odds_path = DATA_DIR / "upcoming" / "odds.json"
+    if preds_path.exists() and odds_path.exists():
+        try:
+            with open(odds_path) as f:
+                odds = json.load(f)
+            # Re-load predictions to avoid NameError if probability check failed
+            with open(preds_path) as f:
+                _preds_for_consistency = json.load(f)
+            odds_matches = set(odds.keys()) if isinstance(odds, dict) else set()
+            pred_matches = set()
+            pred_list = _preds_for_consistency.get("predictions", []) if isinstance(_preds_for_consistency, dict) else _preds_for_consistency
+            for p in pred_list:
+                if isinstance(p, dict) and p.get("match"):
+                    pred_matches.add(p["match"])
+            missing_odds = pred_matches - odds_matches
+            if missing_odds:
+                checks["data_consistency"] = {
+                    "status": "WARNING",
+                    "predictions_count": len(pred_matches),
+                    "odds_count": len(odds_matches),
+                    "missing_odds_for": len(missing_odds),
+                    "examples": list(missing_odds)[:3],
+                }
+            else:
+                checks["data_consistency"] = {
+                    "status": "OK",
+                    "predictions_count": len(pred_matches),
+                    "odds_count": len(odds_matches),
+                }
+        except Exception as e:
+            checks["data_consistency"] = {"status": "ERROR", "error": str(e)}
+
+    return checks
+
+
+def check_disk_space() -> Dict:
+    """Check available disk space on the project partition."""
+    import shutil
+    try:
+        stat = shutil.disk_usage(str(DATA_DIR))
+        free_pct = (stat.free / stat.total) * 100
+        status = "OK"
+        if free_pct < 5:
+            status = "CRITICAL"
+        elif free_pct < 20:
+            status = "WARNING"
+        return {
+            "status": status,
+            "free_gb": round(stat.free / 1e9, 1),
+            "total_gb": round(stat.total / 1e9, 1),
+            "free_pct": round(free_pct, 1),
+        }
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+
+
+def check_log_sizes() -> Dict:
+    """Check for oversized log files that could fill disk."""
+    LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+    MAX_SIZE_MB = 100
+    result = {"status": "OK", "large_logs": [], "total_mb": 0}
+    if not LOG_DIR.exists():
+        return result
+    try:
+        total = 0
+        for log_file in LOG_DIR.glob("*.log*"):
+            size_mb = log_file.stat().st_size / (1024 * 1024)
+            total += size_mb
+            if size_mb > MAX_SIZE_MB:
+                result["large_logs"].append({
+                    "file": log_file.name,
+                    "size_mb": round(size_mb, 1),
+                })
+        result["total_mb"] = round(total, 1)
+        if result["large_logs"]:
+            result["status"] = "WARNING"
+    except Exception as e:
+        result["status"] = "ERROR"
+        result["error"] = str(e)
+    return result
+
+
+def check_feature_model_alignment() -> Dict:
+    """Verify features.parquet columns align with deployed model expectations."""
+    result = {"status": "OK", "issues": []}
+    features_path = DATA_DIR / "features" / "features.parquet"
+
+    if not features_path.exists():
+        return {"status": "MISSING", "issues": ["features.parquet not found"]}
+
+    # Check multiple metadata locations (different model naming conventions)
+    meta_candidates = [
+        MODELS_DIR / "universal" / "catboost_no_odds_metadata.json",
+        MODELS_DIR / "universal" / "ensemble" / "ensemble_metadata.json",
+    ]
+
+    try:
+        import pandas as pd
+        import pyarrow.parquet as pq
+        feature_cols = set(pq.ParquetFile(features_path).schema.names)
+        result["data_columns"] = len(feature_cols)
+
+        for meta_path in meta_candidates:
+            if not meta_path.exists():
+                continue
+            with open(meta_path) as f:
+                meta = json.load(f)
+            model_features = set(meta.get("feature_names", meta.get("features", [])))
+            if not model_features:
+                continue
+
+            model_name = meta_path.stem.replace("_metadata", "")
+            missing_in_data = model_features - feature_cols
+            if missing_in_data:
+                result["status"] = "CRITICAL"
+                result["issues"].append(
+                    f"{model_name}: {len(missing_in_data)} features missing in data: "
+                    f"{', '.join(sorted(missing_in_data)[:5])}"
+                )
+            result[f"{model_name}_features"] = len(model_features)
+
+    except Exception as e:
+        result["status"] = "ERROR"
+        result["issues"].append(str(e))
+    return result
+
+
 def run_health_check() -> Dict:
     """Run all health checks and return unified result."""
     result = {
         "timestamp": datetime.now().isoformat(),
         "overall_status": "HEALTHY",
         "data_freshness": check_data_freshness(),
+        "data_quality": check_data_quality(),
+        "disk_space": check_disk_space(),
+        "log_sizes": check_log_sizes(),
+        "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
         "model_consistency": check_model_metadata_consistency(),
         "betting_health": check_betting_health(),
@@ -355,6 +573,32 @@ def run_health_check() -> Dict:
     if not result["system_integrity"].get("imports_ok", True):
         issues.append(("CRITICAL", "Missing critical Python packages"))
 
+    # Disk space issues
+    disk = result.get("disk_space", {})
+    if disk.get("status") == "CRITICAL":
+        issues.append(("CRITICAL", f"Disk space critically low: {disk.get('free_pct', 0):.1f}% free ({disk.get('free_gb', 0)} GB)"))
+    elif disk.get("status") == "WARNING":
+        issues.append(("WARNING", f"Disk space low: {disk.get('free_pct', 0):.1f}% free"))
+
+    # Log size issues
+    logs = result.get("log_sizes", {})
+    if logs.get("status") == "WARNING":
+        for lg in logs.get("large_logs", []):
+            issues.append(("WARNING", f"Large log file: {lg['file']} ({lg['size_mb']} MB)"))
+
+    # Feature-model alignment issues
+    alignment = result.get("feature_model_alignment", {})
+    if alignment.get("status") == "CRITICAL":
+        for iss in alignment.get("issues", []):
+            issues.append(("CRITICAL", f"Feature-model mismatch: {iss}"))
+
+    # Data quality issues
+    dq = result.get("data_quality", {})
+    for check_name, check_data in dq.items():
+        if isinstance(check_data, dict) and check_data.get("status") in ("WARNING", "CRITICAL"):
+            for iss in check_data.get("issues", []):
+                issues.append((check_data["status"], f"Data quality ({check_name}): {iss}"))
+
     result["issues"] = issues
 
     # Overall status
@@ -362,6 +606,11 @@ def run_health_check() -> Dict:
         result["overall_status"] = "CRITICAL"
     elif any(level == "WARNING" for level, _ in issues):
         result["overall_status"] = "WARNING"
+
+    # NOTE: Notifications are NOT sent here — callers (monitor.py, CLI) are
+    # responsible for deciding when/how to alert. This prevents duplicate
+    # notifications when run_health_check() is called from monitor.py which
+    # has its own notification logic with deduplication.
 
     return result
 
@@ -448,6 +697,16 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2, default=str))
     else:
         print_health_check(result)
+
+    # Send notification for critical issues when run standalone (not via monitor)
+    critical = [i for i in result.get("issues", []) if i[0] == "CRITICAL"]
+    if critical:
+        try:
+            from scripts.pipeline.notify import notify
+            notify("\n".join(i[1] for i in critical),
+                   title="Health Check: CRITICAL", level="error", category="alert")
+        except Exception:
+            pass
 
     # Exit codes
     if result["overall_status"] == "CRITICAL":

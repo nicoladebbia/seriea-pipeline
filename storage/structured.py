@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 from dataclasses import asdict
@@ -60,8 +61,16 @@ def _coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
         if col in KNOWN_NUMERIC or (df[col].dtype == object):
             try:
                 coerced = pd.to_numeric(df[col], errors="coerce")
+                orig_notna = df[col].notna().sum()
+                coerced_notna = coerced.notna().sum()
                 # Only replace if at least 80% converted (avoid text columns)
-                if coerced.notna().sum() >= 0.8 * df[col].notna().sum():
+                if coerced_notna >= 0.8 * orig_notna:
+                    lost = orig_notna - coerced_notna
+                    if lost > 0:
+                        log.warning(
+                            "Numeric coercion of column '%s' dropped %d/%d non-null values",
+                            col, lost, orig_notna,
+                        )
                     df[col] = coerced
             except Exception:
                 pass
@@ -111,8 +120,9 @@ def _fill_missing_matchweeks(df: pd.DataFrame) -> pd.DataFrame:
                 # Normalize team names (Sofascore uses "Hellas Verona" etc.)
                 home = normalize_team(home_raw) if normalize_team else home_raw
                 away = normalize_team(away_raw) if normalize_team else away_raw
-                # Key by home_team + away_team (season-unique fixture)
-                sofascore_lookup[(home, away)] = int(mw)
+                # Key by (home, away, season) to avoid cross-season overwrites
+                season_str = fixture_file.stem.split("_")[-1] if "_" in fixture_file.stem else ""
+                sofascore_lookup[(home, away, season_str)] = int(mw)
         except Exception as e:
             log.debug("Failed to load Sofascore fixtures %s: %s", fixture_file.name, e)
 
@@ -121,7 +131,15 @@ def _fill_missing_matchweeks(df: pd.DataFrame) -> pd.DataFrame:
         for idx in df.index[nan_mask]:
             home = df.at[idx, "home_team"]
             away = df.at[idx, "away_team"]
-            mw = sofascore_lookup.get((home, away))
+            season = df.at[idx, "season"] if "season" in df.columns else ""
+            # Try with season key first, fall back to without
+            mw = sofascore_lookup.get((home, away, season))
+            if mw is None:
+                # Try matching any season (backwards compat)
+                for k, v in sofascore_lookup.items():
+                    if len(k) == 3 and k[0] == home and k[1] == away:
+                        mw = v
+                        break
             if mw is not None:
                 df.at[idx, "matchweek"] = mw
                 filled_sofa += 1
@@ -167,32 +185,56 @@ def _fill_missing_matchweeks(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _append_or_create(df: pd.DataFrame, table_name: str) -> None:
-    """Append df to an existing Parquet table, or create it."""
+    """Append df to an existing Parquet table, or create it.
+
+    Uses per-table advisory locking to prevent concurrent read-modify-write
+    races, and atomic writes (tmp+rename) to prevent corruption on crash.
+    """
+    from config.settings import atomic_write_parquet
+
     path = parsed_path(table_name)
+    lock_path = path.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if path.exists():
-        existing = pd.read_parquet(path)
-        # Remove any rows with match_ids already present (in case of reparse)
-        if "match_id" in df.columns and "match_id" in existing.columns:
-            new_ids = set(df["match_id"].unique())
-            existing = existing[~existing["match_id"].isin(new_ids)]
-        df = pd.concat([existing, df], ignore_index=True)
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            if path.exists():
+                existing = pd.read_parquet(path)
+                # Remove any rows with match_ids already present (in case of reparse)
+                if "match_id" in df.columns and "match_id" in existing.columns:
+                    new_ids = set(df["match_id"].unique())
+                    existing = existing[~existing["match_id"].isin(new_ids)]
+                df = pd.concat([existing, df], ignore_index=True)
+                # Drop exact duplicate rows for tables without match_id
+                before = len(df)
+                df = df.drop_duplicates()
+                dropped = before - len(df)
+                if dropped > 0:
+                    log.info("Dropped %d exact duplicate rows in %s", dropped, table_name)
 
-    # Coerce mixed-type columns to avoid ArrowInvalid on parquet write
-    df = _coerce_numeric_columns(df)
+            # Coerce mixed-type columns to avoid ArrowInvalid on parquet write
+            df = _coerce_numeric_columns(df)
 
-    # Normalize dtypes that cause parquet write failures from mixed types
-    if "match_date" in df.columns:
-        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-    if "matchweek" in df.columns:
-        df["matchweek"] = pd.to_numeric(df["matchweek"], errors="coerce")
+            # Normalize dtypes that cause parquet write failures from mixed types
+            if "match_date" in df.columns:
+                before_nat = df["match_date"].isna().sum()
+                df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+                after_nat = df["match_date"].isna().sum()
+                new_nat = after_nat - before_nat
+                if new_nat > 0:
+                    log.warning("Date coercion created %d new NaT values in match_date", new_nat)
+            if "matchweek" in df.columns:
+                df["matchweek"] = pd.to_numeric(df["matchweek"], errors="coerce")
 
-    # Fill any NaN matchweeks before saving (matches table only)
-    if table_name == "matches" and "matchweek" in df.columns:
-        df = _fill_missing_matchweeks(df)
+            # Fill any NaN matchweeks before saving (matches table only)
+            if table_name == "matches" and "matchweek" in df.columns:
+                df = _fill_missing_matchweeks(df)
 
-    df.to_parquet(path, index=False)
-    log.info("Saved %s: %d rows to %s", table_name, len(df), path)
+            atomic_write_parquet(path, df, index=False)
+            log.info("Saved %s: %d rows to %s", table_name, len(df), path)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
 def _save_matches(matches: list[MatchData]) -> None:

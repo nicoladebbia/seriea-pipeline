@@ -1232,15 +1232,41 @@ def generate_epl_lineup_predictions() -> dict:
 def generate_epl_injuries() -> dict:
     """Generate injury/suspension data for EPL matches.
 
-    Since we don't have a live injury feed, we derive two signals from real data:
-    1. Missing players: from Sofascore match JSON missing_players field (latest match)
-    2. Suspension risk: players with high foul rates who are likely to accumulate
-       yellow cards (using fouls per game from player_match_stats)
-
-    Also checks matches_epl.parquet for team-level yellow card patterns.
+    Primary source: Transfermarkt scraper (real injury data).
+    Fallback: Sofascore missing_players + foul-rate heuristics.
 
     Returns: dict keyed by match name with home_injured / away_injured lists.
     """
+    # Try real Transfermarkt injury data first
+    try:
+        from scraper.injuries import get_current_injuries
+        inj_df = get_current_injuries(auto_scrape=True, league="premier_league")
+        if not inj_df.empty:
+            predictions = get_epl_predictions()
+            if predictions:
+                # Build team -> [player_name] map
+                injury_map = {}
+                for _, row in inj_df.iterrows():
+                    team = row["team"]
+                    injury_map.setdefault(team, []).append(row["player_name"])
+
+                results = {}
+                for pred in predictions:
+                    match_key = pred.get("match", "")
+                    home = pred.get("home_team", "")
+                    away = pred.get("away_team", "")
+                    results[match_key] = {
+                        "home_injured": injury_map.get(home, []),
+                        "away_injured": injury_map.get(away, []),
+                        "home_count": len(injury_map.get(home, [])),
+                        "away_count": len(injury_map.get(away, [])),
+                        "source": "transfermarkt",
+                    }
+                log.info(f"EPL injuries from Transfermarkt: {len(results)} matches, "
+                         f"{sum(len(v) for v in injury_map.values())} total injuries")
+                return results
+    except Exception as e:
+        log.warning(f"Transfermarkt EPL injuries failed, falling back to heuristic: {e}")
     import pandas as pd
 
     predictions = get_epl_predictions()
@@ -1526,7 +1552,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print(f"         {len(lineup_results)} matches with predicted XIs")
 
     # 9. Injuries & suspension risk
-    print("  [9/9] Generating injury/suspension data...")
+    print("  [9/11] Generating injury/suspension data...")
     injury_results = generate_epl_injuries()
     if not dry_run and injury_results:
         _save_json(UPCOMING_DIR / "injuries_premier_league.json", {
@@ -1535,6 +1561,43 @@ def generate_all_epl_supplementary(dry_run: bool = False):
             "match_count": len(injury_results),
         })
     print(f"         {len(injury_results)} matches with injury/suspension data")
+
+    # 10. H2H history
+    h2h_count = 0
+    print("  [10/11] Generating H2H history...")
+    if not dry_run:
+        try:
+            from scripts.prediction.h2h_generator import generate_h2h_for_upcoming
+            h2h_result = generate_h2h_for_upcoming(league="premier_league")
+            h2h_count = len(h2h_result.get("h2h", {}))
+        except Exception as e:
+            print(f"         H2H error: {e}")
+    print(f"         {h2h_count} H2H records (merged with Serie A)")
+
+    # 11. Team form
+    form_count = 0
+    print("  [11/11] Generating team form data...")
+    if not dry_run:
+        try:
+            from scripts.prediction.current_form_calculator import calculate_all_forms
+            form_result = calculate_all_forms(league="premier_league")
+            form_count = len(form_result.get("teams", {}))
+            # Merge EPL teams into the shared current_form.json
+            existing_form = _load_json(UPCOMING_DIR / "current_form.json")
+            if existing_form:
+                existing_teams = existing_form.get("teams", {})
+                existing_teams.update(form_result.get("teams", {}))
+                existing_matchups = existing_form.get("matchups", {})
+                existing_matchups.update(form_result.get("matchups", {}))
+                existing_form["teams"] = existing_teams
+                existing_form["matchups"] = existing_matchups
+                existing_form["calculated_at"] = datetime.now().isoformat()
+                _save_json(UPCOMING_DIR / "current_form.json", existing_form)
+            else:
+                _save_json(UPCOMING_DIR / "current_form.json", form_result)
+        except Exception as e:
+            print(f"         Form error: {e}")
+    print(f"         {form_count} EPL team form records")
 
     # Summary
     print("\n" + "=" * 60)
@@ -1549,6 +1612,8 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print(f"  Standings Positions:    {len(standings_enriched)} entries")
     print(f"  Lineup Predictions:     {len(lineup_results)} matches")
     print(f"  Injuries/Suspensions:   {len(injury_results)} matches")
+    print(f"  H2H History:            {h2h_count} records")
+    print(f"  Team Form:              {form_count} teams")
     if dry_run:
         print("\n  [DRY RUN] No files were written.")
     else:

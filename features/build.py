@@ -42,7 +42,7 @@ from features.enhanced_momentum import add_momentum_features
 from features.player_impact import add_player_impact_features
 from features.referee import add_referee_features
 from features.rest_days import add_rest_days, pivot_rest_to_match
-from features.rolling import add_rolling_features
+from features.rolling import add_rolling_features, add_rolling_variance_features
 from features.shot_quality import add_shot_quality_features
 from features.strength import add_elo_ratings, add_strength_ratings
 from features.team_aggregates import add_team_aggregate_features
@@ -201,11 +201,14 @@ class FeaturePipeline:
     Each plugin's output can be cached to parquet for fast re-runs.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Optional[Path] = None, league: Optional[str] = None):
         from config.settings import DATA_DIR
         self._plugins: List[FeaturePlugin] = []
         self._plugin_map: dict[str, FeaturePlugin] = {}
-        self._cache_dir = cache_dir or (DATA_DIR / "cache" / "features")
+        self._league = league
+        base_cache = cache_dir or (DATA_DIR / "cache" / "features")
+        # Per-league cache isolation prevents cross-league contamination
+        self._cache_dir = base_cache / league if league else base_cache
 
     def register(self, plugin: FeaturePlugin) -> None:
         """Register a plugin for execution."""
@@ -272,25 +275,33 @@ class FeaturePipeline:
         A cache file is valid if:
           1. It exists on disk
           2. The plugin version matches (encoded in filename)
+          3. The plugin source code hasn't changed (fingerprint check)
         """
-        # We cache team_log and feature_df separately for plugins that
-        # operate on team_log vs feature_df. But since the state is mutable
-        # and many plugins just transform in-place, we cache the relevant
-        # DataFrame after each step.
-        #
-        # For team-level plugins (steps 1-8), we cache team_log.
-        # For match-level plugins (steps 10+), we cache feature_df.
-        # The pivot step (9) is never cached because it depends on
-        # both matches and team_log.
         cache_file = self._cache_path(plugin)
-        return cache_file.exists()
+        if not cache_file.exists():
+            return False
+
+        # Check source fingerprint — detect code changes without version bumps
+        fp_file = cache_file.with_suffix(".fingerprint")
+        current_fp = self._source_fingerprint(plugin)
+        if fp_file.exists():
+            stored_fp = fp_file.read_text().strip()
+            if stored_fp != current_fp:
+                log.info("Cache invalidated for %s: source code changed (was %s, now %s)",
+                         plugin.name, stored_fp[:8], current_fp[:8])
+                return False
+        return True
 
     def _save_cache(self, plugin: FeaturePlugin, df: pd.DataFrame,
                     suffix: str = "") -> None:
-        """Save a DataFrame to the plugin's cache file."""
+        """Save a DataFrame and source fingerprint to the plugin's cache file."""
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         path = self._cache_path(plugin, suffix)
-        df.to_parquet(path, index=False)
+        from config.settings import atomic_write_parquet
+        atomic_write_parquet(path, df, index=False)
+        # Save source fingerprint alongside cache for invalidation
+        fp_file = path.with_suffix(".fingerprint")
+        fp_file.write_text(self._source_fingerprint(plugin))
         log.debug("Cached %s → %s (%d rows x %d cols)",
                   plugin.name, path.name, len(df), len(df.columns))
 
@@ -359,6 +370,7 @@ class FeaturePipeline:
 
             if not cache_hit:
                 cache_misses += 1
+                plugin_succeeded = True
                 # Execute the plugin
                 if plugin.non_critical:
                     try:
@@ -368,11 +380,12 @@ class FeaturePipeline:
                             "Plugin %s failed (non-critical): %s",
                             plugin.name, e,
                         )
+                        plugin_succeeded = False
                 else:
                     state = plugin.apply(state)
 
-                # Save to cache (if appropriate)
-                if not never_cache:
+                # Save to cache ONLY if plugin succeeded (don't cache failure states)
+                if not never_cache and plugin_succeeded:
                     try:
                         df_to_cache = (
                             state.team_log if is_team_level
@@ -450,6 +463,7 @@ class Step02RollingStats(FeaturePlugin):
 
     def apply(self, state: FeatureState) -> FeatureState:
         state.team_log = add_rolling_features(state.team_log)
+        state.team_log = add_rolling_variance_features(state.team_log)
         return state
 
 
@@ -938,11 +952,24 @@ class Step26bDerby(FeaturePlugin):
         return state
 
 
+class Step26cGoalFeatures(FeaturePlugin):
+    """Step 26c: Goal-specific features for O/U and BTTS prediction."""
+    name = "goal_features"
+    version = "1.0"
+    dependencies = ["derby"]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        from features.goal_features import add_goal_features
+        state.feature_df = add_goal_features(state.feature_df)
+        return state
+
+
 class Step27LeagueDrawFeatures(FeaturePlugin):
     """Step 27: League-aware and draw-specific features."""
     name = "league_draw"
     version = "1.0"
-    dependencies = ["derby"]
+    dependencies = ["goal_features"]
     non_critical = False
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -1122,9 +1149,9 @@ class Step38SubstitutionPatterns(FeaturePlugin):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _create_pipeline() -> FeaturePipeline:
+def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
     """Create the feature pipeline and register all 38 step plugins."""
-    pipeline = FeaturePipeline()
+    pipeline = FeaturePipeline(league=league)
 
     # Pre-steps
     pipeline.register(BackfillManagersPlugin())
@@ -1173,6 +1200,7 @@ def _create_pipeline() -> FeaturePipeline:
     pipeline.register(Step25Formations())
     pipeline.register(Step26DerivedMatchLevel())
     pipeline.register(Step26bDerby())
+    pipeline.register(Step26cGoalFeatures())
 
     # Steps 27-31: external data
     pipeline.register(Step27LeagueDrawFeatures())
@@ -1196,16 +1224,17 @@ def _create_pipeline() -> FeaturePipeline:
 
 def _build_features_for_matches(matches: pd.DataFrame,
                                 season: str | None = None,
-                                use_cache: bool = True) -> pd.DataFrame:
+                                use_cache: bool = True,
+                                league: str | None = None) -> pd.DataFrame:
     """Build features for a single league's matches.
 
     This is the core feature-building pipeline extracted from build_features()
     so it can be called per-league for multi-league data.
     """
-    log.info("Building features for %d matches", len(matches))
+    log.info("Building features for %d matches (league=%s)", len(matches), league or "all")
 
     # Create pipeline and state
-    pipeline = _create_pipeline()
+    pipeline = _create_pipeline(league=league)
     state = FeatureState(matches=matches, season=season)
 
     # Execute the full pipeline
@@ -1253,7 +1282,12 @@ def _build_features_for_matches(matches: pd.DataFrame,
                     if feature_df[c].dtype in ("float64", "float32", "int64", "int32")]
     if len(numeric_cols) > 1:
         dup_to_drop = set()
-        sample = feature_df[numeric_cols].fillna(0)
+        # Use dropna instead of fillna(0) — filling NaN with 0 inflates
+        # correlations between columns with shared missingness patterns
+        sample = feature_df[numeric_cols].dropna(axis=0, how="any")
+        if len(sample) < 200:
+            # Not enough complete rows; fall back to pairwise correlation
+            sample = feature_df[numeric_cols]
         if len(sample) > 2000:
             sample = sample.sample(2000, random_state=42)
         corr = sample.corr().abs()
@@ -1345,9 +1379,14 @@ def build_features(season: str | None = None,
             log.info("--- Building features for %s (%d matches) ---",
                      league, len(league_matches))
             features = _build_features_for_matches(
-                league_matches, season, use_cache=use_cache
+                league_matches, season, use_cache=use_cache, league=league
             )
             if not features.empty:
+                # Save per-league parquet (source of truth for per-league training)
+                league_out = features_path(league=league)
+                features.to_parquet(league_out, index=False)
+                log.info("Per-league features saved: %s (%d rows x %d cols)",
+                         league_out, len(features), len(features.columns))
                 all_features.append(features)
 
         if not all_features:
@@ -1418,6 +1457,28 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
         # Post-match lineup ratings (leakage — computed from match performance)
         "home_lineup_rating_mean", "away_lineup_rating_mean",
         "lineup_rating_mean_diff",
+        # Noise features — near-zero predictive signal, dilute gradient splits
+        "kickoff_hour", "is_night_match", "is_evening_kickoff", "is_primetime",
+        "is_early_kickoff", "is_monday_night",
+        "day_of_week", "is_weekend", "is_midweek",
+        "is_august", "is_december", "is_january", "is_may",
+        "is_late_season", "season_phase",
+        "nothing_to_play_for", "safe_from_relegation", "out_of_europe",
+        # Zero-importance features (confirmed 0.0 in feature importance analysis)
+        "home_xg_attack_strength", "away_xg_attack_strength",
+        "home_xg_defense_strength", "away_xg_defense_strength",
+        "xg_attack_strength_diff", "xg_defense_strength_diff",
+        "home_short_rest", "away_short_rest",
+        "home_very_short_rest", "away_very_short_rest",
+        # Features unavailable at prediction time (100% NaN for upcoming matches)
+        # Referee features: assigned close to kickoff, not available when predictions run
+        "ref_avg_reds", "ref_big_match_cards", "ref_last_match_reds",
+        "ref_regression_signal", "ref_strictness_trend", "ref_vs_away_team_bias",
+        "ref_avg_yellows", "ref_home_bias", "ref_home_cards_bias",
+        "ref_vs_home_team_bias", "ref_avg_total_goals", "ref_avg_xg",
+        "ref_xg_vs_league", "ref_matches",
+        # Weather: not reliably available at prediction time
+        "weather_relative_humidity_2m_mean",
     }
 
     # Raw match-day stat columns that leak current-match info
@@ -1785,128 +1846,48 @@ def _pivot_to_match_level(matches: pd.DataFrame, team_log: pd.DataFrame) -> pd.D
 
 
 def _add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create interaction features that amplify weak signals via strong ones.
+    """Create interaction features that combine strong predictors.
 
-    Combines new features (injury, transfer, PPDA, manager) with established
-    strong predictors (Elo, odds, xG rolling) to boost their discriminative power.
+    Pruned: removed 9 interactions that combined zero-importance features
+    (injury, PPDA, manager tenure, squad disruption) — all had 0.0 importance.
 
-    Adds ~8 interaction columns.
+    Kept: proven interactions + new strong×strong combinations.
     """
     added = 0
 
-    # 1. Injury impact x Elo difference: injuries matter more in close matchups
-    if "home_injury_impact" in df.columns and "elo_diff" in df.columns:
-        df["injury_x_elo"] = (
-            (df["home_injury_impact"].fillna(0) - df["away_injury_impact"].fillna(0))
-            * df["elo_diff"].fillna(0)
-        ).round(3)
-        added += 1
+    # --- Proven interactions (kept from original) ---
 
-    # 2. PPDA x rolling goals: pressing intensity amplifies goal-scoring differential
-    if "ppda_differential" in df.columns:
-        goal_col = None
-        for candidate in ["home_roll_5_goals_scored", "home_roll_10_goals_scored", "home_roll_5_xg_for"]:
-            if candidate in df.columns:
-                goal_col = candidate
-                break
-        if goal_col:
-            away_goal_col = goal_col.replace("home_", "away_")
-            if away_goal_col in df.columns:
-                goal_diff = df[goal_col].fillna(0) - df[away_goal_col].fillna(0)
-                df["ppda_x_goals"] = (df["ppda_differential"].fillna(0) * goal_diff).round(3)
-                added += 1
-
-    # 3. New manager x home advantage: new manager reduces home familiarity
-    if "home_manager_is_new" in df.columns and "elo_diff" in df.columns:
-        df["new_mgr_x_home"] = (
-            df["home_manager_is_new"].fillna(0).astype(float)
-            * df["elo_diff"].fillna(0) * -0.1
-        ).round(3)
-        added += 1
-
-    # 4. Squad disruption x Elo: disruption hurts stronger teams more
-    if "home_squad_disruption" in df.columns and "elo_diff" in df.columns:
-        df["disruption_x_elo"] = (
-            (df["home_squad_disruption"].fillna(0) - df["away_squad_disruption"].fillna(0))
-            * df["elo_diff"].fillna(0) * -1
-        ).round(3)
-        added += 1
-
-    # 5. Manager tenure x form: established managers benefit more from good form
-    if "home_manager_tenure" in df.columns:
-        form_col = None
-        for candidate in ["home_roll_5_points", "home_roll_10_points", "home_momentum"]:
-            if candidate in df.columns:
-                form_col = candidate
-                break
-        if form_col:
-            away_form = form_col.replace("home_", "away_")
-            if away_form in df.columns:
-                home_tenure = df["home_manager_tenure"].fillna(1).clip(upper=30)
-                away_tenure = df["away_manager_tenure"].fillna(1).clip(upper=30)
-                home_stability = (home_tenure / 30) * df[form_col].fillna(0)
-                away_stability = (away_tenure / 30) * df[away_form].fillna(0)
-                df["tenure_x_form"] = (home_stability - away_stability).round(3)
-                added += 1
-
-    # 6. PPDA allowed differential: who faces more pressing?
-    if "home_ppda_allowed" in df.columns and "away_ppda_allowed" in df.columns:
-        df["ppda_allowed_diff"] = (
-            df["home_ppda_allowed"].fillna(12) - df["away_ppda_allowed"].fillna(12)
-        ).round(2)
-        added += 1
-
-    # 7. Pressing mismatch x Elo: pressing advantage with quality gap
-    if "pressing_mismatch" in df.columns and "elo_diff" in df.columns:
-        df["press_mismatch_x_elo"] = (
-            df["pressing_mismatch"].fillna(0).astype(float) * df["elo_diff"].fillna(0)
-        ).round(3)
-        added += 1
-
-    # 8. Combined new-feature signal (injury + transfer disruption + manager newness)
-    injury_signal = df.get("home_injury_impact", pd.Series(0, index=df.index)).fillna(0) - \
-                    df.get("away_injury_impact", pd.Series(0, index=df.index)).fillna(0)
-    disruption_signal = df.get("home_squad_disruption", pd.Series(0, index=df.index)).fillna(0) - \
-                        df.get("away_squad_disruption", pd.Series(0, index=df.index)).fillna(0)
-    mgr_signal = df.get("home_manager_is_new", pd.Series(0, index=df.index)).fillna(0).astype(float) - \
-                 df.get("away_manager_is_new", pd.Series(0, index=df.index)).fillna(0).astype(float)
-    df["combined_disruption"] = (injury_signal + disruption_signal + mgr_signal * 0.3).round(3)
-    added += 1
-
-    # --- Phase 4 additions: cross strong x strong and strong x weak interactions ---
-
-    # 9. Elo x form: strong team in good form vs strong team in bad form
+    # 1. Elo x form: strong team in good form vs weak team in bad form
     if "elo_diff" in df.columns and "home_roll_5_points" in df.columns:
         form_diff = df["home_roll_5_points"].fillna(0) - df.get("away_roll_5_points", pd.Series(0, index=df.index)).fillna(0)
         df["elo_x_form"] = (df["elo_diff"].fillna(0) * form_diff / 10).round(3)
         added += 1
 
-    # 10. Attack strength x defense weakness: mismatch exploitation
+    # 2. Attack strength x defense weakness: mismatch exploitation
     if "home_attack_strength" in df.columns and "away_defense_strength" in df.columns:
         home_mismatch = df["home_attack_strength"].fillna(1) / df["away_defense_strength"].fillna(1).clip(lower=0.1)
         away_mismatch = df["away_attack_strength"].fillna(1) / df["home_defense_strength"].fillna(1).clip(lower=0.1)
         df["attack_defense_mismatch"] = (home_mismatch - away_mismatch).round(3)
         added += 1
 
-    # 11. League position differential
+    # 3. League position differential
     if "home_league_pos" in df.columns and "away_league_pos" in df.columns:
         df["league_pos_diff"] = (
             df["away_league_pos"].fillna(10) - df["home_league_pos"].fillna(10)
         ).round(0)  # positive = home is higher in table
         added += 1
 
-    # 12. Rest days advantage x Elo: rest matters more in tight matchups
+    # 4. Rest days advantage
     if "home_rest_days" in df.columns and "away_rest_days" in df.columns:
         rest_diff = df["home_rest_days"].fillna(7) - df["away_rest_days"].fillna(7)
         df["rest_advantage"] = rest_diff.clip(-5, 5).round(0)
         if "elo_diff" in df.columns:
-            # Rest advantage amplified when Elo is close (abs < 50)
             elo_close = (df["elo_diff"].fillna(0).abs() < 50).astype(float)
             df["rest_x_close_elo"] = (rest_diff * elo_close).round(1)
             added += 1
         added += 1
 
-    # 13. xG overperformance: goals vs xG indicates luck (regression candidate)
+    # 5. xG overperformance: goals vs xG indicates luck (regression candidate)
     if "home_roll_5_goals_scored" in df.columns and "home_roll_5_xg_for" in df.columns:
         home_ovp = df["home_roll_5_goals_scored"].fillna(0) - df["home_roll_5_xg_for"].fillna(0)
         away_ovp = df.get("away_roll_5_goals_scored", pd.Series(0, index=df.index)).fillna(0) - \
@@ -1914,39 +1895,73 @@ def _add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
         df["xg_overperformance_diff"] = (home_ovp - away_ovp).round(3)
         added += 1
 
-    # 14. Defensive solidity: clean sheets x goals conceded trend
+    # 6. Defensive solidity differential
     if "home_roll_5_goals_conceded" in df.columns:
         home_def = df["home_roll_5_goals_conceded"].fillna(1.5)
         away_def = df.get("away_roll_5_goals_conceded", pd.Series(1.5, index=df.index)).fillna(1.5)
-        df["defensive_form_diff"] = (away_def - home_def).round(3)  # positive = home defends better
+        df["defensive_form_diff"] = (away_def - home_def).round(3)
         added += 1
 
-    # 15. PPDA x xG trend: pressing teams that also create chances
-    if "home_ppda" in df.columns and "home_roll_5_xg_for" in df.columns:
-        # Low PPDA (aggressive press) + high xG = dangerous team
-        home_press_attack = (15 - df["home_ppda"].fillna(12)) * df["home_roll_5_xg_for"].fillna(1)
-        away_press_attack = (15 - df["away_ppda"].fillna(12)) * df.get("away_roll_5_xg_for", pd.Series(1, index=df.index)).fillna(1)
-        df["press_attack_signal"] = (home_press_attack - away_press_attack).round(3)
+    # --- NEW: Strong × Strong interactions ---
+
+    # 7. Elo × xG signal: quality gap amplified by recent scoring efficiency
+    #    elo_diff (10.03 importance) × us_xg_diff (1.59 importance)
+    if "elo_diff" in df.columns and "us_xg_diff" in df.columns:
+        df["elo_xg_signal"] = (
+            (df["elo_diff"].fillna(0) / 100) * df["us_xg_diff"].fillna(0)
+        ).round(3)
         added += 1
 
-    # --- Odds-model interaction features ---
+    # 8. Attack strength × form alignment: talent aligned with current form
+    #    attack_strength_diff (1.64) × form_points differential
+    if "attack_strength_diff" in df.columns and "home_form_points_5" in df.columns:
+        form_diff = (
+            df["home_form_points_5"].fillna(0) -
+            df.get("away_form_points_5", pd.Series(0, index=df.index)).fillna(0)
+        )
+        df["attack_form_alignment"] = (
+            df["attack_strength_diff"].fillna(0) * form_diff / 10
+        ).round(3)
+        added += 1
 
-    # 16. Sharp-soft divergence x Elo: market disagreement amplified by quality gap
+    # 9. H2H × competitiveness: history matters more in close games
+    #    h2h_home_win_rate (0.84) × matchup_competitiveness (3.50)
+    if "h2h_home_win_rate" in df.columns and "matchup_competitiveness" in df.columns:
+        df["h2h_competitiveness_signal"] = (
+            (df["h2h_home_win_rate"].fillna(0.5) - 0.5) *
+            df["matchup_competitiveness"].fillna(0)
+        ).round(3)
+        added += 1
+
+    # 10. Form × Elo signal: form momentum weighted by quality gap
+    #     form_points_5 (0.63) × elo_diff (10.03)
+    if "home_form_points_5" in df.columns and "elo_diff" in df.columns:
+        form_diff = (
+            df["home_form_points_5"].fillna(0) -
+            df.get("away_form_points_5", pd.Series(0, index=df.index)).fillna(0)
+        )
+        df["form_elo_signal"] = (
+            form_diff * df["elo_diff"].fillna(0) / 100
+        ).round(3)
+        added += 1
+
+    # --- Odds-model interaction features (kept) ---
+
+    # 11. Sharp-soft divergence x Elo
     if "sharp_soft_home_div" in df.columns and "elo_diff" in df.columns:
         df["sharp_soft_x_elo"] = (
             df["sharp_soft_home_div"].fillna(0) * df["elo_diff"].fillna(0)
         ).round(4)
         added += 1
 
-    # 17. Market prob vs Elo-expected prob: disagreement signal
+    # 12. Market prob vs Elo-expected prob: disagreement signal
     if "home_prob_best" in df.columns and "home_elo" in df.columns and "away_elo" in df.columns:
-        # Elo expected home win prob: 1 / (1 + 10^((away_elo - home_elo) / 400))
         elo_diff = df["home_elo"].fillna(1500) - df["away_elo"].fillna(1500)
         elo_expected = 1.0 / (1.0 + 10 ** (-elo_diff / 400))
         df["market_elo_disagreement"] = (df["home_prob_best"].fillna(elo_expected) - elo_expected).round(4)
         added += 1
 
-    # 18. Market implied goals vs rolling xG: goals model disagreement
+    # 13. Market implied goals vs rolling xG
     if "market_goal_total" in df.columns and "home_roll_5_xg_for" in df.columns:
         rolling_xg_total = (
             df["home_roll_5_xg_for"].fillna(0) + df.get("away_roll_5_xg_for", pd.Series(0, index=df.index)).fillna(0)
@@ -1954,7 +1969,7 @@ def _add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
         df["goal_total_vs_xg"] = (df["market_goal_total"].fillna(0) - rolling_xg_total).round(3)
         added += 1
 
-    # 19. Asian handicap line x form differential
+    # 14. Asian handicap line x form differential
     if "ah_line_normalized" in df.columns and "home_roll_5_points" in df.columns:
         form_diff = (
             df["home_roll_5_points"].fillna(0) - df.get("away_roll_5_points", pd.Series(0, index=df.index)).fillna(0)
@@ -1962,14 +1977,14 @@ def _add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
         df["ah_x_form"] = (df["ah_line_normalized"].fillna(0) * form_diff / 10).round(4)
         added += 1
 
-    # 20. Draw convergence x competitiveness: draw-prone teams of similar quality
+    # 15. Draw convergence x competitiveness
     if "combined_draw_tendency" in df.columns and "matchup_competitiveness" in df.columns:
         df["draw_convergence_x_competitiveness"] = (
             df["combined_draw_tendency"].fillna(0) * df["matchup_competitiveness"].fillna(0)
         ).round(4)
         added += 1
 
-    log.info("Added %d interaction features (8 original + %d new)", added, max(0, added - 8))
+    log.info("Added %d interaction features", added)
     return df
 
 

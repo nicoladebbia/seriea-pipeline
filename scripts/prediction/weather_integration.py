@@ -103,6 +103,17 @@ def get_weather_forecast(team: str, date: str, time: str = "15:00") -> Optional[
         log.warning(f"No coordinates for team: {team}")
         return None
 
+    # Open-Meteo forecasts are unreliable beyond 5 days
+    try:
+        from datetime import datetime as _dt
+        match_date = _dt.strptime(date, "%Y-%m-%d").date()
+        days_until = (match_date - _dt.now().date()).days
+        if days_until > 5:
+            log.info(f"Skipping weather for {team} on {date} — {days_until} days away (max 5)")
+            return None
+    except ValueError:
+        pass
+
     try:
         # Open-Meteo API (free, no key required)
         tz = coords.get("tz", "Europe/Rome")

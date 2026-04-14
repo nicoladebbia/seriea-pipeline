@@ -27,19 +27,17 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, SEASONS
+from config.team_names import TEAM_NAME_MAP
 
 log = logging.getLogger(__name__)
 
 
-# Known team name mappings across sources
-TEAM_NAME_VARIANTS = {
-    "Inter": ["Inter", "Inter Milan", "Internazionale"],
-    "Milan": ["Milan", "AC Milan"],
-    "Roma": ["Roma", "AS Roma"],
-    "Napoli": ["Napoli", "SSC Napoli"],
-    "Verona": ["Verona", "Hellas Verona"],
-    "SPAL": ["SPAL", "Spal"],
-}
+# Build team name variants from the canonical mapping (canonical -> list of aliases)
+TEAM_NAME_VARIANTS: dict[str, list[str]] = {}
+for _variant, _canonical in TEAM_NAME_MAP.items():
+    TEAM_NAME_VARIANTS.setdefault(_canonical, [])
+    if _variant not in TEAM_NAME_VARIANTS[_canonical]:
+        TEAM_NAME_VARIANTS[_canonical].append(_variant)
 
 
 def check_parquet_files() -> dict:

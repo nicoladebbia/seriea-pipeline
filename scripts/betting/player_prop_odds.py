@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from config.team_names import normalize_team
 
 try:
     import requests
@@ -71,44 +72,7 @@ MIN_BOOKMAKERS_OU = 1     # O/U markets have standardized lines, 1 bookmaker OK
 CACHE_DIR = DATA_DIR / "cache"
 OUTPUT_DIR = DATA_DIR / "upcoming"
 
-# Team name normalization (same as odds_fetcher.py)
-TEAM_MAPPINGS = {
-    "Inter Milan": "Inter", "Internazionale": "Inter",
-    "AC Milan": "Milan", "AS Roma": "Roma", "SS Lazio": "Lazio",
-    "SSC Napoli": "Napoli", "Juventus FC": "Juventus",
-    "ACF Fiorentina": "Fiorentina", "Atalanta BC": "Atalanta",
-    "Bologna FC": "Bologna", "Torino FC": "Torino",
-    "Genoa CFC": "Genoa", "Hellas Verona": "Verona",
-    "Udinese Calcio": "Udinese", "US Sassuolo": "Sassuolo",
-    "Empoli FC": "Empoli", "Cagliari Calcio": "Cagliari",
-    "US Lecce": "Lecce", "AC Monza": "Monza",
-    "Parma Calcio": "Parma", "Como 1907": "Como",
-    "Venezia FC": "Venezia", "US Cremonese": "Cremonese",
-    "AC Pisa": "Pisa",
-}
-
-
-def _normalize_team(name: str) -> str:
-    if name in TEAM_MAPPINGS:
-        return TEAM_MAPPINGS[name]
-    for api_name, std in TEAM_MAPPINGS.items():
-        if api_name.lower() in name.lower() or name.lower() in api_name.lower():
-            return std
-    return name
-
-
-def _load_api_key() -> str:
-    key = os.environ.get("ODDS_API_KEY", "")
-    if key:
-        return key
-    config_path = Path(__file__).parent.parent.parent / "config" / "api_keys.json"
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                return json.load(f).get("ODDS_API_KEY", "")
-        except Exception as e:
-            log.warning(f"Failed to load API key from config: {e}")
-    return ""
+from config.api_keys import get_odds_api_key
 
 
 # =============================================================================
@@ -121,7 +85,7 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
     Returns:
         Dict keyed by "Home vs Away" with player prop odds per market.
     """
-    api_key = _load_api_key()
+    api_key = get_odds_api_key()
     if not api_key:
         log.error("No ODDS_API_KEY found. Set it in .env or config/api_keys.json")
         return {}
@@ -166,8 +130,8 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
 
     for event in events:
         event_id = event["id"]
-        home = _normalize_team(event.get("home_team", ""))
-        away = _normalize_team(event.get("away_team", ""))
+        home = normalize_team(event.get("home_team", ""))
+        away = normalize_team(event.get("away_team", ""))
         match_key = f"{home} vs {away}"
         commence = event.get("commence_time", "")
 

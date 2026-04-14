@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
+
+# Cap H2H lookback to prevent feature drift: older folds had ~8 meetings,
+# recent folds accumulate 20+. Capping normalizes the distribution.
+MAX_H2H_MEETINGS = 7
 
 
 def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
@@ -34,6 +39,8 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
         "h2h_weighted_home_win_rate": [],
         # Recent-5 meetings only
         "h2h_recent_5_win_rate": [],
+        # H2H goal trends: total goals in recent 3 meetings (O/U signal)
+        "h2h_recent_3_total_goals": [],
     }
 
     # Decay constant for recency weighting
@@ -44,7 +51,7 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
         away = row["away_team"]
         date = row["match_date"]
 
-        # All prior meetings (either direction)
+        # All prior meetings (either direction), capped to most recent N
         prior = df[
             (df["match_date"] < date)
             & (
@@ -52,13 +59,16 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
                 | ((df["home_team"] == away) & (df["away_team"] == home))
             )
         ]
+        # Cap to last MAX_H2H_MEETINGS to prevent drift (already sorted by date)
+        if len(prior) > MAX_H2H_MEETINGS:
+            prior = prior.tail(MAX_H2H_MEETINGS)
 
         n = len(prior)
         h2h_cols["h2h_matches_played"].append(n)
 
         if n == 0:
             for key in list(h2h_cols.keys())[1:]:
-                h2h_cols[key].append(None)
+                h2h_cols[key].append(np.nan)
             continue
 
         # Normalize: from the perspective of current home vs current away
@@ -67,7 +77,7 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
         draws = 0
         home_goals_total = 0
         away_goals_total = 0
-        last_result = None
+        last_result = np.nan
 
         # For recency weighting
         weighted_home_wins = 0.0
@@ -75,6 +85,8 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
 
         # For recent-5: collect results in chronological order
         recent_results = []
+        # For H2H goal trends: total goals per meeting
+        meeting_goals = []
 
         for _, prev in prior.iterrows():
             hs = prev.get("home_score")
@@ -83,6 +95,7 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             hs, as_ = int(hs), int(as_)
+            meeting_goals.append(hs + as_)
 
             # Compute recency weight
             years_ago = (date - prev["match_date"]).days / 365.25
@@ -129,26 +142,32 @@ def add_h2h_features(matches: pd.DataFrame) -> pd.DataFrame:
         h2h_cols["h2h_home_wins"].append(home_wins)
         h2h_cols["h2h_away_wins"].append(away_wins)
         h2h_cols["h2h_draws"].append(draws)
-        h2h_cols["h2h_draw_rate"].append(round(draws / played, 4) if played > 0 else None)
-        h2h_home_avg = home_goals_total / played if played > 0 else None
-        h2h_away_avg = away_goals_total / played if played > 0 else None
+        h2h_cols["h2h_draw_rate"].append(round(draws / played, 4) if played > 0 else np.nan)
+        h2h_home_avg = home_goals_total / played if played > 0 else np.nan
+        h2h_away_avg = away_goals_total / played if played > 0 else np.nan
         h2h_cols["h2h_goals_avg"].append(
-            round(h2h_home_avg + h2h_away_avg, 4) if h2h_home_avg is not None else None
+            round(h2h_home_avg + h2h_away_avg, 4) if not np.isnan(h2h_home_avg) else np.nan
         )
         h2h_cols["h2h_home_goals_avg"].append(h2h_home_avg)
         h2h_cols["h2h_away_goals_avg"].append(h2h_away_avg)
-        h2h_cols["h2h_home_win_rate"].append(home_wins / played if played > 0 else None)
+        h2h_cols["h2h_home_win_rate"].append(home_wins / played if played > 0 else np.nan)
         h2h_cols["h2h_last_result"].append(last_result)
 
         # Recency-weighted win rate
         h2h_cols["h2h_weighted_home_win_rate"].append(
-            round(weighted_home_wins / weighted_total, 4) if weighted_total > 0 else None
+            round(weighted_home_wins / weighted_total, 4) if weighted_total > 0 else np.nan
         )
 
         # Recent-5 win rate (last 5 meetings only)
         last_5 = recent_results[-5:]
         h2h_cols["h2h_recent_5_win_rate"].append(
-            round(sum(last_5) / len(last_5), 4) if last_5 else None
+            round(sum(last_5) / len(last_5), 4) if last_5 else np.nan
+        )
+
+        # Recent-3 total goals average (O/U signal for this matchup)
+        last_3_goals = meeting_goals[-3:]
+        h2h_cols["h2h_recent_3_total_goals"].append(
+            round(sum(last_3_goals) / len(last_3_goals), 2) if last_3_goals else np.nan
         )
 
     for key, values in h2h_cols.items():

@@ -87,8 +87,15 @@ def _compute_side_indices(df: pd.DataFrame, side: str) -> pd.DataFrame:
         if not cols:
             df[out_col] = np.nan
             continue
-        # Rank-normalize each column (NaN-safe: NaN stays NaN after rank)
-        ranked = df[cols].rank(pct=True)
+        # FIX: Use expanding rank to avoid look-ahead bias.
+        # Previous code used df[cols].rank(pct=True) which ranks across ALL rows
+        # including future matches. Expanding rank only uses data up to each row.
+        ranked_parts = []
+        for c in cols:
+            ranked_parts.append(
+                df[c].expanding().rank(pct=True)
+            )
+        ranked = pd.concat(ranked_parts, axis=1)
         # Average across group members, ignoring NaN
         df[out_col] = ranked.mean(axis=1, skipna=True)
         # If all source columns were NaN for a row, mean returns NaN — correct

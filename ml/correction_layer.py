@@ -45,6 +45,11 @@ log = logging.getLogger(__name__)
 class CorrectionConfig:
     """All tunable parameters for the correction layer."""
 
+    # Static corrector: DISABLED — analysis showed ECE worsened by 59%
+    # (0.0113 → 0.0180) while log_loss improved only 0.15%.
+    # Keeping code for future improvement; set to True to re-enable.
+    static_enabled: bool = False
+
     # Static corrector: LogisticRegression C candidates (selected via inner CV)
     static_C_candidates: List[float] = field(
         default_factory=lambda: [0.01, 0.1, 0.5, 1.0, 5.0]
@@ -556,8 +561,12 @@ class CorrectionLayer:
         layer.save_rolling()
     """
 
-    def __init__(self, config: CorrectionConfig | None = None):
+    def __init__(self, config: CorrectionConfig | None = None,
+                 league: str | None = None):
         self.config = config or CorrectionConfig()
+        self._variant = league or "universal"
+        self._model_path = MODELS_DIR / self._variant / "correction_layer.pkl"
+        self._rolling_path = MODELS_DIR / self._variant / "rolling_calibration.json"
         self.static = StaticCorrector(self.config)
         self.rolling = RollingCorrector(self.config)
         self.active = False
@@ -568,6 +577,9 @@ class CorrectionLayer:
         features_df: pd.DataFrame | None = None,
     ) -> Dict[str, float]:
         """Train the static corrector. See StaticCorrector.fit()."""
+        if not self.config.static_enabled:
+            log.info("Static corrector disabled (config.static_enabled=False)")
+            return {"status": "disabled"}
         metrics = self.static.fit(oof_df, features_df)
         self.active = self.static.is_fitted
         return metrics
@@ -585,8 +597,8 @@ class CorrectionLayer:
         """
         orig = (prob_H, prob_D, prob_A)
 
-        # Static correction (structural biases)
-        if self.static.is_fitted and context is not None:
+        # Static correction (structural biases) — disabled by default (ECE regression)
+        if self.config.static_enabled and self.static.is_fitted and context is not None:
             prob_H, prob_D, prob_A = self.static.correct(prob_H, prob_D, prob_A, context)
 
         after_static = (prob_H, prob_D, prob_A)
@@ -618,7 +630,7 @@ class CorrectionLayer:
 
     def save(self, model_path: Path | None = None, rolling_path: Path | None = None) -> None:
         """Save both static model and rolling state."""
-        model_path = model_path or CORRECTION_MODEL_PATH
+        model_path = model_path or self._model_path
         model_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.static.is_fitted:
@@ -635,15 +647,15 @@ class CorrectionLayer:
                 }, f)
             log.info("Saved static correction model to %s", model_path)
 
-        self.rolling.save(rolling_path)
+        self.rolling.save(rolling_path or self._rolling_path)
 
     def save_rolling(self, path: Path | None = None) -> None:
         """Save only rolling state (after settlement updates)."""
-        self.rolling.save(path)
+        self.rolling.save(path or self._rolling_path)
 
     def load(self, model_path: Path | None = None, rolling_path: Path | None = None) -> bool:
         """Load static model + rolling state. Graceful fallback — missing = passthrough."""
-        model_path = model_path or CORRECTION_MODEL_PATH
+        model_path = model_path or self._model_path
         loaded_any = False
 
         if model_path.exists():
@@ -663,7 +675,7 @@ class CorrectionLayer:
             except Exception as e:
                 log.warning("Failed to load static correction model: %s", e)
 
-        if self.rolling.load(rolling_path):
+        if self.rolling.load(rolling_path or self._rolling_path):
             loaded_any = True
 
         self.active = loaded_any

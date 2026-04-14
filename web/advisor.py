@@ -68,12 +68,13 @@ def _get_bankroll() -> dict:
     state_mtime = state_path.stat().st_mtime if state_path.exists() else 0
     live_mtime = live_path.stat().st_mtime if live_path.exists() else 0
 
-    # Build unified view
+    # Build unified view — prefer live bankroll.json for balance and peak
+    # state.json peak_bankroll is stale (from old system) and unreliable
     if live_mtime > state_mtime and live.get("current_balance"):
         return {
             "current_bankroll": live.get("current_balance"),
             "initial_bankroll": live.get("initial_balance", state.get("initial_bankroll", 1000)),
-            "peak_bankroll": max(live.get("peak_balance", 0), state.get("peak_bankroll", 0)),
+            "peak_bankroll": live.get("peak_balance", live.get("current_balance", 1000)),
             "daily_pnl": state.get("daily_pnl", 0),
             "total_bets": state.get("total_bets", 0),
             "total_wins": state.get("total_wins", 0),
@@ -85,7 +86,7 @@ def _get_bankroll() -> dict:
         return {
             "current_bankroll": state.get("current_bankroll", live.get("current_balance")),
             "initial_bankroll": state.get("initial_bankroll", 1000),
-            "peak_bankroll": max(state.get("peak_bankroll", 0), live.get("peak_balance", 0)),
+            "peak_bankroll": live.get("peak_balance", state.get("peak_bankroll", 1000)),
             "daily_pnl": state.get("daily_pnl", 0),
             "total_bets": state.get("total_bets", 0),
             "total_wins": state.get("total_wins", 0),
@@ -1275,7 +1276,12 @@ def _tool_get_bankroll_status(args: dict) -> str:
                 ms["losses"] += 1
             ms["profit"] += b.get("profit", b.get("profit_loss", 0))
         result["market_breakdown"] = {
-            k: {**v, "profit": round(v["profit"], 2), "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1)}
+            k: {
+                **v,
+                "total": v["wins"] + v["losses"],
+                "profit": round(v["profit"], 2),
+                "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
+            }
             for k, v in market_stats.items()
         }
 

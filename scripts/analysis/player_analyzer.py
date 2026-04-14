@@ -40,6 +40,7 @@ from collections import defaultdict
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, PROJECT_ROOT
+from config.team_names import normalize_team
 from scraper.lineup_fetcher import normalize_player_name
 
 try:
@@ -74,36 +75,6 @@ POSITION_WEIGHTS = {
     "RW": 0.08,
     "ST": 0.12,
     "CF": 0.12,
-}
-
-# Team name mappings for consistency
-TEAM_MAPPINGS = {
-    "Inter Milan": "Inter",
-    "Internazionale": "Inter",
-    "AC Milan": "Milan",
-    "AS Roma": "Roma",
-    "SS Lazio": "Lazio",
-    "SSC Napoli": "Napoli",
-    "Juventus FC": "Juventus",
-    "ACF Fiorentina": "Fiorentina",
-    "US Lecce": "Lecce",
-    "Udinese Calcio": "Udinese",
-    "Atalanta BC": "Atalanta",
-    "Bologna FC": "Bologna",
-    "Torino FC": "Torino",
-    "Genoa CFC": "Genoa",
-    "Cagliari Calcio": "Cagliari",
-    "Hellas Verona": "Verona",
-    "US Salernitana": "Salernitana",
-    "US Sassuolo": "Sassuolo",
-    "US Cremonese": "Cremonese",
-    "Empoli FC": "Empoli",
-    "Spezia Calcio": "Spezia",
-    "Monza": "Monza",
-    "Frosinone Calcio": "Frosinone",
-    "Parma Calcio": "Parma",
-    "Como 1907": "Como",
-    "Venezia FC": "Venezia",
 }
 
 # Logging
@@ -246,7 +217,7 @@ class PlayerDataScraper:
 
     def _normalize_team(self, team: str) -> str:
         """Normalize team name."""
-        return TEAM_MAPPINGS.get(team, team)
+        return normalize_team(team)
 
     def _get_cache_path(self, key: str) -> Path:
         """Get cache file path."""
@@ -1055,7 +1026,7 @@ class PlayerAnalyzer:
         1. Sofascore player_match_stats.parquet (real match data — most reliable)
         2. FBref/player_props.json (fallback, may have stale transfers)
         """
-        team = TEAM_MAPPINGS.get(team, team)
+        team = normalize_team(team)
 
         # Primary source: Sofascore actual match data
         team_players = self._build_squad_from_sofascore(team)

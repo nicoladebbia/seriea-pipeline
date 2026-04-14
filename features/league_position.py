@@ -129,6 +129,28 @@ def add_league_position_features(matches: pd.DataFrame) -> pd.DataFrame:
     a_pos = pd.to_numeric(df["away_league_pos"], errors="coerce")
     df["league_position_diff"] = h_pos - a_pos
 
+    # Position trajectory: how many places has the team climbed/fallen
+    # over the last 5 matchweeks? Positive = climbing, negative = falling.
+    for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+        pos_col = f"{prefix}_league_pos"
+        pos = pd.to_numeric(df[pos_col], errors="coerce")
+        # Position N matches ago for this team (shift by team history)
+        pos_prev = (
+            df.sort_values("_date")
+            .groupby(team_col)[pos_col]
+            .transform(lambda s: pd.to_numeric(s, errors="coerce").shift(5))
+        )
+        # Positive = climbing (was 10th, now 7th: 10-7=3)
+        df[f"{prefix}_position_momentum"] = (
+            pd.to_numeric(pos_prev, errors="coerce") - pos
+        )
+
+    if "home_position_momentum" in df.columns and "away_position_momentum" in df.columns:
+        df["position_momentum_diff"] = (
+            pd.to_numeric(df["home_position_momentum"], errors="coerce").fillna(0) -
+            pd.to_numeric(df["away_position_momentum"], errors="coerce").fillna(0)
+        )
+
     df.drop(columns=["_date"], inplace=True)
     return df
 

@@ -317,10 +317,18 @@ def add_injury_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     df = feature_df.copy()
     profiles = _load_player_profiles()
 
-    # Load current injuries
+    # Load current injuries from ALL active leagues
     try:
         from scraper.injuries import get_current_injuries
-        injuries_df = get_current_injuries()
+        dfs = []
+        for _league in ["serie_a", "premier_league"]:
+            try:
+                _inj = get_current_injuries(league=_league)
+                if not _inj.empty:
+                    dfs.append(_inj)
+            except Exception:
+                pass
+        injuries_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
     except Exception:
         injuries_df = pd.DataFrame()
 
@@ -336,6 +344,16 @@ def add_injury_features(feature_df: pd.DataFrame) -> pd.DataFrame:
         log.info("No injury data available — injury features set to 0")
         return df
 
+    # FIX: Only apply current injuries to UPCOMING matches (not historical).
+    # Applying today's injuries to past matches is look-ahead bias.
+    today = pd.Timestamp.now().normalize()
+    df["_match_dt"] = pd.to_datetime(df["match_date"], errors="coerce")
+    historical_mask = df["_match_dt"].notna() & (df["_match_dt"] < today)
+    if historical_mask.all():
+        log.info("All matches are historical — skipping injury features to avoid look-ahead bias")
+        df.drop(columns=["_match_dt"], errors="ignore", inplace=True)
+        return df
+
     # Build team -> injured players map
     team_injuries: dict[str, list[str]] = {}
     for _, row in injuries_df.iterrows():
@@ -345,6 +363,9 @@ def add_injury_features(feature_df: pd.DataFrame) -> pd.DataFrame:
             team_injuries.setdefault(team, []).append(player)
 
     for idx, row in df.iterrows():
+        # Skip historical matches — only apply current injuries to upcoming matches
+        if historical_mask.iloc[idx] if idx < len(historical_mask) else False:
+            continue
         for prefix in ("home", "away"):
             team = row.get(f"{prefix}_team", "")
             injured = team_injuries.get(team, [])
@@ -369,6 +390,7 @@ def add_injury_features(feature_df: pd.DataFrame) -> pd.DataFrame:
             disruption = model_chemistry_disruption(team, injured, profiles=profiles)
             df.at[idx, f"{prefix}_chemistry_disruption"] = round(disruption, 3)
 
+    df.drop(columns=["_match_dt"], errors="ignore", inplace=True)
     n_with_injuries = (df["home_injuries_count"] + df["away_injuries_count"] > 0).sum()
     log.info(f"Added 10 injury features ({n_with_injuries} matches with injury data)")
 

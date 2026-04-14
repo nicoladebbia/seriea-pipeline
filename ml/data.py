@@ -69,6 +69,15 @@ def _is_manager_feature(col: str) -> bool:
 def _is_market_feature(col: str) -> bool:
     return any(kw in col for kw in ("squad_value", "transfer_", "net_spend", "market_value"))
 
+def _is_line_velocity_feature(col: str) -> bool:
+    return col.startswith("line_vel_") or col == "steam_move_flag"
+
+def _is_squad_value_feature(col: str) -> bool:
+    return "squad_value" in col or "avg_player_value" in col
+
+def _is_sofascore_feature(col: str) -> bool:
+    return col.startswith(("home_ss_idx_", "away_ss_idx_", "ss_idx_diff_"))
+
 
 # ---------------------------------------------------------------------------
 # Domain-aware imputation
@@ -86,7 +95,7 @@ _H2H_DEFAULTS = {
 }
 
 
-def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+def _smart_impute(df: pd.DataFrame, cols: list[str], fit_mask: pd.Series | None = None) -> pd.DataFrame:
     """Impute NaN values using category-aware strategies.
 
     Called BEFORE the NaN-threshold filter so more features can qualify
@@ -107,10 +116,13 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     # Filter to numeric columns only — object columns (team names, etc.) can't be imputed
     cols = [c for c in cols if X[c].dtype.kind in ('f', 'i', 'u', 'b')]
 
-    # Pre-compute per-season medians for features that need them
+    # Pre-compute per-season medians for features that need them.
+    # When fit_mask is provided, compute stats only from fitting (train) rows
+    # to prevent test-set information from leaking into imputation.
+    fit_df = X[fit_mask] if fit_mask is not None else X
     season_col = SEASON_COL if SEASON_COL in X.columns else None
     if season_col:
-        season_medians = X.groupby(season_col)[cols].median()
+        season_medians = fit_df.groupby(season_col)[cols].median()
     else:
         season_medians = None
 
@@ -136,7 +148,7 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
             X[col] = X[col].fillna(0.0)
 
         elif _is_referee_feature(col):
-            X[col] = X[col].fillna(X[col].median())
+            X[col] = X[col].fillna(fit_df[col].median())
 
         elif _is_manager_feature(col):
             X[col] = X[col].fillna(0.0)
@@ -151,7 +163,7 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
                         if pd.notna(med):
                             X.loc[mask, col] = med
             if X[col].isna().any():
-                X[col] = X[col].fillna(X[col].median())
+                X[col] = X[col].fillna(fit_df[col].median())
 
         elif _is_player_aggregate_feature(col) or _is_gk_feature(col) or _is_shot_quality_feature(col):
             # Per-season median: these features exist only for FBref seasons
@@ -162,9 +174,9 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
                         med = season_medians.loc[season_val, col] if season_val in season_medians.index else np.nan
                         if pd.notna(med):
                             X.loc[mask, col] = med
-            # Remaining NaN (seasons with no data at all): global median
+            # Remaining NaN (seasons with no data at all): global median from fit data
             if X[col].isna().any():
-                X[col] = X[col].fillna(X[col].median())
+                X[col] = X[col].fillna(fit_df[col].median())
 
         elif _is_market_feature(col):
             if season_medians is not None and col in season_medians.columns:
@@ -175,7 +187,12 @@ def _smart_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
                         if pd.notna(med):
                             X.loc[mask, col] = med
             if X[col].isna().any():
-                X[col] = X[col].fillna(X[col].median())
+                X[col] = X[col].fillna(fit_df[col].median())
+
+        elif _is_sofascore_feature(col):
+            # Sofascore indices are rank-normalized [0,1]. 0.0 = worst in dataset
+            # which is a false signal for missing data. Use 0.5 (midpoint) instead.
+            X[col] = X[col].fillna(0.5)
 
         else:
             # Generic fallback: 0.0 (neutral for tree-based models)
@@ -227,6 +244,24 @@ def _add_availability_flags(df: pd.DataFrame, ml_cols: list[str]) -> list[str]:
         df["_has_odds"] = (~df[odds_cols].isna().all(axis=1)).astype(np.int8)
         indicators.append("_has_odds")
 
+    # Line movement / velocity data (34% NaN in 2025-26)
+    line_cols = [c for c in ml_cols if _is_line_velocity_feature(c)]
+    if line_cols:
+        df["_has_line_movement"] = (~df[line_cols].isna().all(axis=1)).astype(np.int8)
+        indicators.append("_has_line_movement")
+
+    # Squad value data (19.7% NaN in 2025-26)
+    sv_cols = [c for c in ml_cols if _is_squad_value_feature(c)]
+    if sv_cols:
+        df["_has_squad_value"] = (~df[sv_cols].isna().all(axis=1)).astype(np.int8)
+        indicators.append("_has_squad_value")
+
+    # Sofascore indices (100% NaN pre-2022, ~1.5% after)
+    ss_cols = [c for c in ml_cols if _is_sofascore_feature(c)]
+    if ss_cols:
+        df["_has_sofascore"] = (~df[ss_cols].isna().all(axis=1)).astype(np.int8)
+        indicators.append("_has_sofascore")
+
     return indicators
 
 
@@ -252,6 +287,10 @@ class DataLoader:
 
         # --- NaN tier report (diagnostic) ---
         nan_pcts = self.df[ml_cols].isna().mean()
+        # Save pre-imputation NaN rates for per-league filtering later.
+        # After imputation, 100%-NaN features become 100%-zero and escape the
+        # NaN threshold filter. This lets get_universal_dataset() catch them.
+        self._pre_imputation_nan = nan_pcts.copy()
         tier1 = (nan_pcts < 0.10).sum()
         tier2 = ((nan_pcts >= 0.10) & (nan_pcts < 0.30)).sum()
         tier3 = ((nan_pcts >= 0.30) & (nan_pcts < 0.60)).sum()
@@ -343,10 +382,34 @@ class DataLoader:
         # Recompute universal features on the FILTERED dataset (league + season)
         # This is critical: features that are 70% NaN on all-data (2005-2026, all leagues)
         # may be only 5% NaN on the filtered training set (e.g., EPL 2017+).
+        #
+        # ALSO check pre-imputation NaN rates: features that were 100% NaN for this
+        # league subset get imputed to 0.0 and escape the post-imputation threshold.
+        # Example: away_squad_disruption is 100% NaN for all EPL → imputed to 0 → looks
+        # fine post-imputation but carries zero signal. We use the raw NaN rates to catch these.
         from ml.config import FeatureConfig
         feat_cfg = FeatureConfig()
         filtered_df = self.df.loc[mask]
         filtered_nan = filtered_df[self.all_ml_features].isna().mean()
+
+        # Pre-imputation check: recompute raw NaN rates on the league-filtered subset
+        # using the saved pre-imputation snapshot. Features that were >95% NaN before
+        # imputation for THIS subset are dead signal and should be excluded.
+        if hasattr(self, '_pre_imputation_nan') and league is not None:
+            raw_df = pd.read_parquet(self.features_path)
+            raw_filtered = raw_df.loc[mask]
+            avail_cols = [c for c in self.all_ml_features if c in raw_filtered.columns]
+            raw_nan = raw_filtered[avail_cols].isna().mean()
+            dead_features = set(raw_nan[raw_nan > 0.95].index)
+            if dead_features:
+                log.warning("Pre-imputation check: %d features are >95%% NaN for league=%s "
+                            "(imputed to 0 but carry no signal): %s",
+                            len(dead_features), league,
+                            sorted(dead_features)[:10])
+                # Exclude dead features from the filtered universal set
+                filtered_nan = filtered_nan.drop(labels=list(dead_features & set(filtered_nan.index)),
+                                                  errors="ignore")
+
         filtered_universal = sorted(
             filtered_nan[filtered_nan < feat_cfg.universal_nan_threshold].index.tolist()
         )
@@ -362,11 +425,13 @@ class DataLoader:
         y = self.df.loc[mask, RESULT_COL].copy().reset_index(drop=True)
         seasons = self.df.loc[mask, SEASON_COL].copy().reset_index(drop=True)
 
-        # Fill any remaining NaN (e.g., odds left un-imputed) with 0.0
+        # Fill remaining NaN — let tree models handle odds NaN natively
         for col in features_to_use:
             if X[col].isna().any():
                 if col in _H2H_DEFAULTS:
                     X[col] = X[col].fillna(_H2H_DEFAULTS[col])
+                elif _is_odds_feature(col) or _is_line_velocity_feature(col):
+                    pass  # XGBoost/LightGBM/CatBoost handle NaN natively
                 else:
                     X[col] = X[col].fillna(0.0)
 

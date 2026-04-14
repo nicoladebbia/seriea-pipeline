@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+{% block title %}Performance Tracker — SerieAI{% endblock %}
+{% block page_title %}Performance Tracker{% endblock %}
+
+{% block header_actions %}
+<div style="display:flex;align-items:center;gap:12px;">
+  <span id="last-updated" style="font-size:11px;color:var(--text-tertiary);"></span>
+  <button onclick="exportReport()" class="btn btn--secondary btn--sm">Export JSON</button>
+</div>
+{% endblock %}
+
+{% block head %}
+<script src="/static/js/chart.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  .perf-stats-bar { display:grid; grid-template-columns:repeat(6,1fr); gap:var(--space-3); margin-bottom:var(--space-6); }
+  @media(max-width:1024px) { .perf-stats-bar { grid-template-columns:repeat(3,1fr); } }
+  @media(max-width:640px) { .perf-stats-bar { grid-template-columns:repeat(2,1fr); } }
+
+  .stat-card { background:var(--bg-secondary); border:1px solid var(--border-default); border-radius:var(--radius-lg); padding:var(--space-4) var(--space-5); }
+  .stat-card__label { display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); margin-bottom:4px; }
+  .stat-card__value { font-size:22px; font-weight:700; font-family:var(--font-mono); color:var(--text-primary); }
+  .stat-card__sub { font-size:11px; color:var(--text-tertiary); margin-top:2px; }
+  .val-pos { color:var(--green) !important; }
+  .val-neg { color:var(--red) !important; }
+  .val-neutral { color:var(--text-secondary) !important; }
+
+  .perf-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin-bottom:var(--space-6); }
+  @media(max-width:768px) { .perf-grid { grid-template-columns:1fr; } }
+  .perf-section { background:var(--bg-secondary); border:1px solid var(--border-default); border-radius:var(--radius-lg); padding:var(--space-5); margin-bottom:var(--space-4); }
+  .perf-section h3 { margin:0 0 var(--space-4); font-size:13px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; }
+  .full-width { grid-column:1/-1; }
+
+  .verdict-box { padding:var(--space-4) var(--space-5); border-radius:var(--radius-lg); margin-bottom:var(--space-4); border-left:4px solid; }
+  .verdict-box.positive,.verdict-box.success { background:rgba(74,222,128,0.06); border-color:var(--green); }
+  .verdict-box.negative { background:rgba(248,113,113,0.06); border-color:var(--red); }
+  .verdict-box.neutral,.verdict-box.pending { background:rgba(113,113,122,0.06); border-color:var(--text-tertiary); }
+  .verdict-text { font-size:14px; font-weight:500; }
+
+  .progress-bar { height:10px; background:var(--bg-tertiary); border-radius:5px; overflow:hidden; }
+  .progress-fill { height:100%; border-radius:5px; transition:width 0.6s ease; }
+
+  .ds-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .ds-table th { padding:8px 10px; text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); background:var(--bg-tertiary); border-bottom:1px solid var(--border-default); }
+  .ds-table td { padding:8px 10px; border-bottom:1px solid var(--border-subtle); font-family:var(--font-mono); font-size:11px; }
+
+  .streak-dots { display:flex; gap:3px; flex-wrap:wrap; margin:var(--space-3) 0; }
+  .streak-dot { width:14px; height:14px; border-radius:50%; }
+  .streak-dot.W { background:var(--green); }
+  .streak-dot.L { background:var(--red); }
+  .streak-dot.P { background:var(--amber); }
+
+  .chart-wrap { position:relative; height:220px; }
+  .chart-wrap-tall { position:relative; height:280px; }
+
+  .imp-list { list-style:none; padding:0; margin:0; }
+  .imp-list li { padding:5px 0; border-bottom:1px solid var(--border-subtle); font-size:11px; color:var(--text-secondary); }
+  .imp-list li::before { content:"\2713 "; color:var(--green); font-weight:700; }
+
+  .rec-list { list-style:none; padding:0; margin:0; }
+  .rec-list li { padding:8px 10px; margin-bottom:4px; background:rgba(251,191,36,0.06); border-radius:var(--radius-sm); font-size:11px; border-left:3px solid var(--amber); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="perf-loading" style="text-align:center;padding:60px;color:var(--text-tertiary);">Loading performance data...</div>
+<div id="perf-content" style="display:none;">
+
+<!-- S1: Hero Stats Bar -->
+<div class="perf-stats-bar" id="hero-stats"></div>
+
+<!-- S2: Verdict + Progress -->
+<div id="verdict-box" class="verdict-box pending">
+  <div id="verdict-text" class="verdict-text"></div>
+</div>
+<div class="perf-section" style="padding:var(--space-3) var(--space-5);">
+  <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);margin-bottom:4px;">
+    <span id="progress-label"></span><span id="progress-pct"></span>
+  </div>
+  <div class="progress-bar"><div id="progress-fill" class="progress-fill" style="width:0%;background:var(--text-tertiary);"></div></div>
+</div>
+
+<!-- S3: Before vs After -->
+<div class="perf-grid">
+  <div class="perf-section"><h3>Before Improvements</h3><div id="before-card"></div></div>
+  <div class="perf-section"><h3>After Improvements</h3><div id="after-card"></div></div>
+</div>
+
+<!-- S4: Cumulative P&L Chart -->
+<div class="perf-section"><h3>Cumulative P&L</h3><div class="chart-wrap-tall"><canvas id="pnl-chart"></canvas></div></div>
+
+<!-- S5: Market Performance + Edge Distribution -->
+<div class="perf-grid">
+  <div class="perf-section"><h3>Market Performance</h3><div class="chart-wrap"><canvas id="market-chart"></canvas></div></div>
+  <div class="perf-section"><h3>Edge Distribution (ROI by Edge Size)</h3><div class="chart-wrap"><canvas id="edge-chart"></canvas></div></div>
+</div>
+
+<!-- S6: CLV Analysis + Odds Performance -->
+<div class="perf-grid">
+  <div class="perf-section">
+    <h3>CLV Analysis</h3>
+    <div id="clv-stats" style="margin-bottom:var(--space-4);"></div>
+    <div class="chart-wrap"><canvas id="clv-chart"></canvas></div>
+  </div>
+  <div class="perf-section"><h3>Odds Range Performance</h3><div class="chart-wrap"><canvas id="odds-chart"></canvas></div></div>
+</div>
+
+<!-- S7: Streaks + Best/Worst -->
+<div class="perf-section">
+  <h3>Streak Analysis</h3>
+  <div style="display:flex;gap:var(--space-8);flex-wrap:wrap;margin-bottom:var(--space-4);">
+    <div><span style="font-size:11px;color:var(--text-tertiary);">Current</span><div id="streak-current" class="stat-card__value" style="font-size:20px;">—</div></div>
+    <div><span style="font-size:11px;color:var(--text-tertiary);">Longest Win</span><div id="streak-lw" class="stat-card__value" style="font-size:20px;">—</div></div>
+    <div><span style="font-size:11px;color:var(--text-tertiary);">Longest Loss</span><div id="streak-ll" class="stat-card__value" style="font-size:20px;">—</div></div>
+  </div>
+  <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:4px;">Recent 20 bets</div>
+  <div id="streak-dots" class="streak-dots"></div>
+</div>
+
+<div class="perf-grid">
+  <div class="perf-section">
+    <h3>Best Bets</h3>
+    <table class="ds-table"><thead><tr><th>Match</th><th>Market</th><th>Odds</th><th>Profit</th></tr></thead><tbody id="best-bets"></tbody></table>
+  </div>
+  <div class="perf-section">
+    <h3>Worst Bets</h3>
+    <table class="ds-table"><thead><tr><th>Match</th><th>Market</th><th>Odds</th><th>Profit</th></tr></thead><tbody id="worst-bets"></tbody></table>
+  </div>
+</div>
+
+<!-- S8: Weekly Trend + Recommendations -->
+<div class="perf-grid">
+  <div class="perf-section"><h3>Weekly ROI Trend</h3><div class="chart-wrap"><canvas id="weekly-chart"></canvas></div></div>
+  <div class="perf-section">
+    <h3>Improvements Deployed</h3>
+    <ul id="imp-list" class="imp-list"></ul>
+    <h3 style="margin-top:var(--space-5);">Recommendations</h3>
+    <ul id="rec-list" class="rec-list"></ul>
+    <div id="no-recs" style="font-size:12px;color:var(--text-tertiary);display:none;">Need more post-improvement bets for recommendations.</div>
+  </div>
+</div>
+
+</div><!-- /perf-content -->
+
+<script>
+let _data = null;
+const chartInstances = {};
+
+function vc(v) { if (v == null || isNaN(v)) return 'val-neutral'; return v > 0 ? 'val-pos' : v < 0 ? 'val-neg' : 'val-neutral'; }
+function sp(v) { const n = v ?? 0; return (n >= 0 ? '+' : '') + n.toFixed(1); }
+
+function destroyChart(id) { if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; } }
+
+async function loadPerformance() {
+  try {
+    const res = await fetch('/api/performance');
+    _data = await res.json();
+    if (_data.error) throw new Error(_data.error);
+    document.getElementById('perf-loading').style.display = 'none';
+    document.getElementById('perf-content').style.display = 'block';
+    renderAll(_data);
+    document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('perf-loading').textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderAll(d) {
+  const b = d.before, a = d.after;
+
+  // S1: Hero stats
+  const allCount = b.count + a.count;
+  const allProfit = b.total_profit + a.total_profit;
+  const allStaked = b.total_staked + a.total_staked;
+  const allROI = allStaked > 0 ? (allProfit / allStaked * 100) : 0;
+  const allWR = allCount > 0 ? ((b.wins + a.wins) / allCount * 100) : 0;
+  const clvAvg = d.clv_analysis?.avg;
+  const streak = d.streaks?.current || '—';
+
+  document.getElementById('hero-stats').innerHTML = [
+    statCard('Total Bets', allCount, `${b.count} before + ${a.count} after`),
+    statCard('Win Rate', allWR.toFixed(1) + '%', `${b.wins + a.wins}W / ${b.losses + a.losses}L`, vc(allWR - 50)),
+    statCard('ROI', sp(allROI) + '%', `on \u20ac${allStaked.toFixed(0)} staked`, vc(allROI)),
+    statCard('P&L', (allProfit >= 0 ? '+' : '') + '\u20ac' + allProfit.toFixed(2), '', vc(allProfit)),
+    statCard('Avg CLV', clvAvg != null ? sp(clvAvg) + '%' : 'N/A', clvAvg != null && d.clv_analysis ? (d.clv_analysis.positive_pct + '% positive') : '', clvAvg != null ? vc(clvAvg) : ''),
+    statCard('Streak', streak, `Best: ${d.streaks?.longest_win}W | Worst: ${d.streaks?.longest_loss}L`, streak.includes('W') ? 'val-pos' : streak.includes('L') ? 'val-neg' : ''),
+  ].join('');
+
+  // S2: Verdict + Progress
+  document.getElementById('verdict-box').className = 'verdict-box ' + d.verdict_status;
+  document.getElementById('verdict-text').textContent = d.verdict;
+  const pct = d.progress_pct;
+  document.getElementById('progress-label').textContent = `${a.count} / ${d.target_bets} post-improvement bets`;
+  document.getElementById('progress-pct').textContent = pct + '%';
+  const fill = document.getElementById('progress-fill');
+  fill.style.width = pct + '%';
+  fill.style.background = pct >= 100 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--text-tertiary)';
+
+  // S3: Before vs After cards
+  document.getElementById('before-card').innerHTML = periodCard(b);
+  document.getElementById('after-card').innerHTML = a.count > 0 ? periodCard(a, d.deltas) : '<div style="color:var(--text-tertiary);font-size:13px;">No bets yet after improvements. Place bets and settle them to see results here.</div>';
+
+  // S4: P&L Chart
+  renderPnLChart(d.pnl_timeline, d.cutoff_date);
+
+  // S5: Market + Edge charts
+  renderBarChart('market-chart', d.before.by_market, d.after.by_market);
+  renderEdgeChart('edge-chart', d.edge_distribution);
+
+  // S6: CLV + Odds
+  renderCLVSection(d.clv_analysis);
+  renderOddsChart('odds-chart', d.odds_performance);
+
+  // S7: Streaks
+  const sk = d.streaks || {};
+  document.getElementById('streak-current').textContent = sk.current || '—';
+  document.getElementById('streak-current').className = 'stat-card__value ' + ((sk.current||'').includes('W') ? 'val-pos' : (sk.current||'').includes('L') ? 'val-neg' : '');
+  document.getElementById('streak-lw').textContent = (sk.longest_win || 0) + 'W';
+  document.getElementById('streak-lw').className = 'stat-card__value val-pos';
+  document.getElementById('streak-ll').textContent = (sk.longest_loss || 0) + 'L';
+  document.getElementById('streak-ll').className = 'stat-card__value val-neg';
+  document.getElementById('streak-dots').innerHTML = (sk.recent_20 || []).map(o =>
+    `<div class="streak-dot ${o}" title="${o}"></div>`
+  ).join('');
+
+  // Best/worst tables
+  document.getElementById('best-bets').innerHTML = (d.best_worst?.best || []).map(b =>
+    `<tr><td>${b.match||'—'}</td><td>${b.market||'—'}</td><td>${(b.odds??0).toFixed(2)}</td><td class="val-pos">+\u20ac${(b.profit??0).toFixed(2)}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--text-tertiary)">No data</td></tr>';
+  document.getElementById('worst-bets').innerHTML = (d.best_worst?.worst || []).map(b =>
+    `<tr><td>${b.match||'—'}</td><td>${b.market||'—'}</td><td>${(b.odds??0).toFixed(2)}</td><td class="val-neg">\u20ac${(b.profit??0).toFixed(2)}</td></tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--text-tertiary)">No data</td></tr>';
+
+  // S8: Weekly + Recommendations
+  renderWeeklyChart('weekly-chart', d.weekly_trend);
+  document.getElementById('imp-list').innerHTML = d.improvements.map(i => `<li>${i}</li>`).join('');
+  const recList = document.getElementById('rec-list');
+  const noRecs = document.getElementById('no-recs');
+  if (d.recommendations?.length) { recList.innerHTML = d.recommendations.map(r => `<li>${r}</li>`).join(''); noRecs.style.display='none'; }
+  else { recList.innerHTML=''; noRecs.style.display='block'; }
+}
+
+function statCard(label, value, sub, cls='') {
+  return `<div class="stat-card"><span class="stat-card__label">${label}</span><span class="stat-card__value ${cls}">${value}</span><div class="stat-card__sub">${sub}</div></div>`;
+}
+
+function periodCard(s, deltas) {
+  let html = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">`;
+  const items = [
+    ['Bets', s.count], ['Wins', s.wins], ['Win Rate', s.win_rate + '%'],
+    ['ROI', sp(s.roi_pct) + '%'], ['Staked', '\u20ac' + s.total_staked.toFixed(0)],
+    ['Profit', (s.total_profit >= 0 ? '+' : '') + '\u20ac' + s.total_profit.toFixed(2)],
+    ['Avg Edge', s.avg_edge + '%'], ['Avg CLV', s.avg_clv != null ? sp(s.avg_clv) + '%' : 'N/A'],
+  ];
+  items.forEach(([k,v]) => { html += `<div><span style="color:var(--text-tertiary);">${k}</span><br><span style="font-family:var(--font-mono);font-weight:600;">${v}</span></div>`; });
+  html += '</div>';
+  if (deltas) {
+    html += '<div style="margin-top:12px;font-size:11px;border-top:1px solid var(--border-subtle);padding-top:8px;">';
+    if (deltas.roi_pct != null) html += `<span class="${vc(deltas.roi_pct)}">ROI: ${sp(deltas.roi_pct)}pp</span> `;
+    if (deltas.win_rate != null) html += `<span class="${vc(deltas.win_rate)}">WR: ${sp(deltas.win_rate)}pp</span>`;
+    html += '</div>';
+  }
+  return html;
+}
+
+function renderPnLChart(timeline, cutoff) {
+  destroyChart('pnl-chart');
+  if (!timeline?.length) return;
+  const ctx = document.getElementById('pnl-chart').getContext('2d');
+  const cutoffIdx = timeline.findIndex(t => t.is_after);
+
+  chartInstances['pnl-chart'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: timeline.map(t => t.num),
+      datasets: [{
+        label: 'Cumulative P&L',
+        data: timeline.map(t => t.cumulative),
+        borderColor: timeline.map(t => t.is_after ? '#4ade80' : '#818cf8'),
+        backgroundColor: 'transparent',
+        borderWidth: 2, pointRadius: 0, tension: 0.1,
+        segment: { borderColor: ctx2 => timeline[ctx2.p0DataIndex]?.is_after ? '#4ade80' : '#818cf8' },
+      }, {
+        label: 'Balance',
+        data: timeline.map(t => t.balance),
+        borderColor: 'rgba(113,113,122,0.3)', borderWidth: 1, borderDash: [4,4],
+        pointRadius: 0, tension: 0.1, yAxisID: 'y1',
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => { const t = timeline[items[0].dataIndex]; return `#${t.num} — ${t.match}`; },
+            label: item => {
+              const t = timeline[item.dataIndex];
+              if (item.datasetIndex === 0) return `P&L: \u20ac${t.cumulative.toFixed(2)} (${t.profit >= 0 ? '+' : ''}\u20ac${t.profit.toFixed(2)})`;
+              return `Balance: \u20ac${t.balance.toFixed(2)}`;
+            }
+          }
+        },
+        annotation: cutoffIdx > 0 ? {
+          annotations: { cutoff: { type: 'line', xMin: cutoffIdx, xMax: cutoffIdx, borderColor: '#fbbf24', borderWidth: 2, borderDash: [6,3],
+            label: { display: true, content: 'Improvements', position: 'start', backgroundColor: 'rgba(251,191,36,0.15)', color: '#fbbf24', font: { size: 10 } }
+          }}
+        } : undefined,
+      },
+      scales: {
+        x: { display: true, title: { display: true, text: 'Bet #', color: '#71717a', font: { size: 10 } }, ticks: { maxTicksLimit: 15 } },
+        y: { position: 'left', title: { display: true, text: 'P&L (\u20ac)', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y1: { position: 'right', title: { display: true, text: 'Balance', color: '#71717a', font: { size: 10 } }, grid: { display: false } },
+      }
+    }
+  });
+}
+
+function renderBarChart(id, beforeMkt, afterMkt) {
+  destroyChart(id);
+  const allMkts = [...new Set([...Object.keys(beforeMkt || {}), ...Object.keys(afterMkt || {})])];
+  if (!allMkts.length) return;
+  const ctx = document.getElementById(id).getContext('2d');
+  chartInstances[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: allMkts,
+      datasets: [
+        { label: 'Before', data: allMkts.map(m => beforeMkt[m]?.roi || 0), backgroundColor: 'rgba(129,140,248,0.6)' },
+        { label: 'After', data: allMkts.map(m => afterMkt[m]?.roi || 0), backgroundColor: 'rgba(74,222,128,0.6)' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#a1a1aa', font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { font: { size: 10 } } },
+        y: { title: { display: true, text: 'ROI %', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } }
+      }
+    }
+  });
+}
+
+function renderEdgeChart(id, dist) {
+  destroyChart(id);
+  if (!dist?.length) return;
+  const ctx = document.getElementById(id).getContext('2d');
+  chartInstances[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: dist.map(d => d.bucket),
+      datasets: [{
+        label: 'ROI %',
+        data: dist.map(d => d.roi),
+        backgroundColor: dist.map(d => d.roi >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'),
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: item => { const d = dist[item.dataIndex]; return `${d.count} bets | ${d.wr}% WR`; } } }
+      },
+      scales: {
+        y: { title: { display: true, text: 'ROI %', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } }
+      }
+    }
+  });
+}
+
+function renderCLVSection(clv) {
+  const el = document.getElementById('clv-stats');
+  if (!clv || clv.avg == null) { el.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;">No CLV data</div>'; return; }
+  el.innerHTML = `<div style="display:flex;gap:var(--space-6);font-size:12px;">
+    <div><span style="color:var(--text-tertiary);">Avg CLV</span><br><span class="stat-card__value ${vc(clv.avg)}" style="font-size:18px;">${sp(clv.avg)}%</span></div>
+    <div><span style="color:var(--text-tertiary);">CLV+ Rate</span><br><span class="stat-card__value" style="font-size:18px;">${clv.positive_pct}%</span></div>
+    <div><span style="color:var(--text-tertiary);">Median</span><br><span class="stat-card__value" style="font-size:18px;">${sp(clv.median)}%</span></div>
+  </div>`;
+
+  // CLV vs outcome chart
+  destroyChart('clv-chart');
+  const ctx = document.getElementById('clv-chart').getContext('2d');
+  chartInstances['clv-chart'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['CLV Positive', 'CLV Negative'],
+      datasets: [{
+        label: 'Win Rate %',
+        data: [clv.clv_pos_wr, clv.clv_neg_wr],
+        backgroundColor: ['rgba(74,222,128,0.7)', 'rgba(248,113,113,0.7)'],
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: item => item.dataIndex === 0 ? `${clv.clv_pos_count} bets` : `${clv.clv_neg_count} bets` } }
+      },
+      scales: { x: { max: 100, title: { display: true, text: 'Win Rate %', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } } }
+    }
+  });
+}
+
+function renderOddsChart(id, odds) {
+  destroyChart(id);
+  if (!odds?.length) return;
+  const ctx = document.getElementById(id).getContext('2d');
+  chartInstances[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: odds.map(o => o.range),
+      datasets: [{
+        label: 'ROI %',
+        data: odds.map(o => o.roi),
+        backgroundColor: odds.map(o => o.roi >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'),
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: item => { const o = odds[item.dataIndex]; return `${o.count} bets | ${o.wr}% WR`; } } }
+      },
+      scales: { y: { title: { display: true, text: 'ROI %', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } } }
+    }
+  });
+}
+
+function renderWeeklyChart(id, weekly) {
+  destroyChart(id);
+  if (!weekly?.length) return;
+  const ctx = document.getElementById(id).getContext('2d');
+  chartInstances[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: weekly.map(w => w.week),
+      datasets: [{
+        label: 'ROI %',
+        data: weekly.map(w => w.roi),
+        backgroundColor: weekly.map(w => w.roi >= 0 ? 'rgba(74,222,128,0.6)' : 'rgba(248,113,113,0.6)'),
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { afterLabel: item => { const w = weekly[item.dataIndex]; return `${w.bets} bets | \u20ac${w.profit.toFixed(2)}`; } } }
+      },
+      scales: { y: { title: { display: true, text: 'ROI %', color: '#71717a', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } } }
+    }
+  });
+}
+
+function exportReport() {
+  if (!_data) return;
+  const blob = new Blob([JSON.stringify(_data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'performance_report_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+loadPerformance();
+setInterval(loadPerformance, 60000);
+</script>
+{% endblock %}

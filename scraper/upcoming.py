@@ -189,7 +189,8 @@ def get_upcoming_fixtures(
 
     if not upcoming.empty:
         # Save for caching
-        upcoming.to_parquet(UPCOMING_FIXTURES_PATH)
+        from config.settings import atomic_write_parquet
+        atomic_write_parquet(UPCOMING_FIXTURES_PATH, upcoming)
         return _df_to_matches(upcoming, season)
 
     return _get_known_upcoming_fixtures(season, today, end_date)
@@ -486,7 +487,8 @@ def add_upcoming_fixture(
     }
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    df.to_parquet(UPCOMING_FIXTURES_PATH)
+    from config.settings import atomic_write_parquet
+    atomic_write_parquet(UPCOMING_FIXTURES_PATH, df)
 
     log.info(f"Added upcoming fixture: {home} vs {away} on {match_date}")
     return match

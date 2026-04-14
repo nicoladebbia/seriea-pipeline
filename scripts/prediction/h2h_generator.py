@@ -16,13 +16,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
 
 
-def generate_h2h_for_upcoming() -> dict:
-    """For each match in predictions.json, compute H2H from matches.parquet."""
-    pred_path = DATA_DIR / "upcoming" / "predictions.json"
+def generate_h2h_for_upcoming(league: str = None) -> dict:
+    """For each upcoming match, compute H2H from matches.parquet.
+
+    Args:
+        league: If set (e.g. "premier_league"), reads from the league-specific
+                predictions file and filters historical matches by league.
+                Results are merged into the shared h2h_upcoming.json.
+    """
+    if league and league != "serie_a":
+        pred_path = DATA_DIR / "upcoming" / f"predictions_{league}.json"
+    else:
+        pred_path = DATA_DIR / "upcoming" / "predictions.json"
     parquet_path = DATA_DIR / "parsed" / "matches.parquet"
 
     if not pred_path.exists() or not parquet_path.exists():
-        print("Missing predictions.json or matches.parquet")
+        print(f"Missing {pred_path.name} or matches.parquet")
         return {}
 
     with open(pred_path) as f:
@@ -31,6 +40,8 @@ def generate_h2h_for_upcoming() -> dict:
     df = pd.read_parquet(parquet_path)
     df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
     df = df.dropna(subset=["home_score", "away_score"])
+    if league and "league" in df.columns:
+        df = df[df["league"] == league]
     df = df.sort_values("match_date")
 
     h2h_data = {}
@@ -118,19 +129,36 @@ def generate_h2h_for_upcoming() -> dict:
             "last_score": last_score,
         }
 
-    output = {
-        "generated_at": datetime.now().isoformat(),
-        "match_count": len(h2h_data),
-        "h2h": h2h_data,
-    }
-
     out_path = DATA_DIR / "upcoming" / "h2h_upcoming.json"
+
+    # For non-Serie-A leagues, merge into the existing shared file
+    if league and league != "serie_a" and out_path.exists():
+        with open(out_path) as f:
+            existing = json.load(f)
+        existing_h2h = existing.get("h2h", {})
+        existing_h2h.update(h2h_data)
+        output = {
+            "generated_at": datetime.now().isoformat(),
+            "match_count": len(existing_h2h),
+            "h2h": existing_h2h,
+        }
+    else:
+        output = {
+            "generated_at": datetime.now().isoformat(),
+            "match_count": len(h2h_data),
+            "h2h": h2h_data,
+        }
+
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
 
-    print(f"Generated H2H for {len(h2h_data)} matches -> {out_path}")
+    print(f"Generated H2H for {len(h2h_data)} {league or 'serie_a'} matches -> {out_path}")
     return output
 
 
 if __name__ == "__main__":
-    generate_h2h_for_upcoming()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--league", default=None)
+    args = parser.parse_args()
+    generate_h2h_for_upcoming(league=args.league)

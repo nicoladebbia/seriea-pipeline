@@ -8,6 +8,7 @@ instead of after 16 days.
 Checks:
   1. All existing health_check checks (data freshness, models, betting, system)
   2. Odds API key alive? (GET /v4/sports/ — costs 0 requests)
+  3. Gemini + Groq API keys alive? (minimal ping requests)
   3. Perplexity API key alive? (tiny chat completion)
   4. Last successful pipeline run age (from pipeline_state.json)
   5. Last successful odds fetch age (from api_usage.json)
@@ -141,45 +142,60 @@ def check_odds_api_key() -> Dict:
         return {"status": "WARNING", "detail": f"Connection failed: {e}"}
 
 
-def check_perplexity_api_key() -> Dict:
-    """Validate the Perplexity API key with a minimal request."""
-    import urllib.request
-    import urllib.error
-
-    key = _load_env_key("PERPLEXITY_API_KEY")
+def check_gemini_api_key() -> Dict:
+    """Validate the Google Gemini API key with a minimal request."""
+    key = _load_env_key("GOOGLE_GEMINI_KEY")
     if not key:
-        return {"status": "WARNING", "detail": "PERPLEXITY_API_KEY not set (optional)"}
-
-    url = "https://api.perplexity.ai/chat/completions"
-    payload = json.dumps({
-        "model": "sonar",
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-    }).encode()
+        return {"status": "WARNING", "detail": "GOOGLE_GEMINI_KEY not set (optional)"}
 
     try:
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        from google import genai
+        client = genai.Client(api_key=key)
+        from google.genai import types as genai_types
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents="Say OK.",
+            config=genai_types.GenerateContentConfig(
+                max_output_tokens=10,
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            ),
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status == 200:
-                return {"status": "OK", "detail": "Key valid"}
-            return {"status": "WARNING", "detail": f"HTTP {resp.status}"}
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return {"status": "CRITICAL", "detail": f"Perplexity key INVALID ({e.code})"}
-        # 429 = rate limited, which means key is valid
-        if e.code == 429:
-            return {"status": "OK", "detail": "Key valid (rate limited)"}
-        return {"status": "WARNING", "detail": f"HTTP {e.code}: {e.reason}"}
+        if response.text is not None:
+            return {"status": "OK", "detail": "Gemini key valid"}
+        return {"status": "WARNING", "detail": "Gemini returned empty response"}
     except Exception as e:
-        return {"status": "WARNING", "detail": f"Connection failed: {e}"}
+        err = str(e)
+        if "401" in err or "403" in err or "INVALID" in err.upper() or "API_KEY" in err.upper():
+            return {"status": "CRITICAL", "detail": f"Gemini key INVALID: {err[:80]}"}
+        if "429" in err:
+            return {"status": "OK", "detail": "Gemini key valid (rate limited)"}
+        return {"status": "WARNING", "detail": f"Gemini check failed: {err[:80]}"}
+
+
+def check_groq_api_key() -> Dict:
+    """Validate the Groq API key with a minimal request."""
+    key = _load_env_key("GROQ_API_KEY")
+    if not key:
+        return {"status": "WARNING", "detail": "GROQ_API_KEY not set (optional)"}
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=key)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+        if response.choices:
+            return {"status": "OK", "detail": "Groq key valid"}
+        return {"status": "WARNING", "detail": "Groq returned empty response"}
+    except Exception as e:
+        err = str(e)
+        if "401" in err or "403" in err:
+            return {"status": "CRITICAL", "detail": f"Groq key INVALID: {err[:80]}"}
+        if "429" in err:
+            return {"status": "OK", "detail": "Groq key valid (rate limited)"}
+        return {"status": "WARNING", "detail": f"Groq check failed: {err[:80]}"}
 
 
 def check_pipeline_staleness() -> Dict:
@@ -341,15 +357,46 @@ def run_monitor() -> Dict:
         result["issues"].append(("WARNING", f"[odds_api] {odds_api['detail']}"))
     log.info(f"  Odds API: {odds_api['status']} — {odds_api['detail']}")
 
-    # 3. Perplexity API key
-    log.info("Checking Perplexity API key...")
-    pplx = check_perplexity_api_key()
-    result["checks"]["perplexity_api_key"] = pplx
-    if pplx["status"] == "CRITICAL":
-        result["issues"].append(("CRITICAL", f"[perplexity] {pplx['detail']}"))
-    elif pplx["status"] == "WARNING":
-        result["issues"].append(("WARNING", f"[perplexity] {pplx['detail']}"))
-    log.info(f"  Perplexity: {pplx['status']} — {pplx['detail']}")
+    # 3. Web Search API keys (Gemini primary, Groq fallback)
+    log.info("Checking Gemini API key...")
+    gemini = check_gemini_api_key()
+    result["checks"]["gemini_api_key"] = gemini
+    if gemini["status"] == "CRITICAL":
+        result["issues"].append(("CRITICAL", f"[gemini] {gemini['detail']}"))
+    elif gemini["status"] == "WARNING":
+        result["issues"].append(("WARNING", f"[gemini] {gemini['detail']}"))
+    log.info(f"  Gemini: {gemini['status']} — {gemini['detail']}")
+
+    log.info("Checking Groq API key...")
+    groq_check = check_groq_api_key()
+    result["checks"]["groq_api_key"] = groq_check
+    if groq_check["status"] == "CRITICAL":
+        result["issues"].append(("CRITICAL", f"[groq] {groq_check['detail']}"))
+    elif groq_check["status"] == "WARNING":
+        result["issues"].append(("WARNING", f"[groq] {groq_check['detail']}"))
+    log.info(f"  Groq: {groq_check['status']} — {groq_check['detail']}")
+
+    # 3b. API usage limits
+    log.info("Checking API usage limits...")
+    try:
+        from scripts.prediction.sentiment_analyzer import _usage_tracker
+        usage = _usage_tracker.get_status()
+        result["checks"]["api_usage"] = usage
+        for provider, info in usage.items():
+            pct = info.get("pct_used", 0)
+            remaining = info.get("remaining", 0)
+            period = info.get("period", "?")
+            if pct >= 95:
+                result["issues"].append(("CRITICAL",
+                    f"[api_usage] {provider} {period} limit EXHAUSTED: "
+                    f"{info['used']}/{info['limit']} ({pct}%) — sentiment will use fallback"))
+            elif pct >= 80:
+                result["issues"].append(("WARNING",
+                    f"[api_usage] {provider} {period} usage high: "
+                    f"{info['used']}/{info['limit']} ({pct}%), {remaining} remaining"))
+            log.info(f"  {provider}: {info['used']}/{info['limit']} {period} ({pct}% used)")
+    except Exception as e:
+        log.debug(f"API usage check skipped: {e}")
 
     # 4. Pipeline staleness
     log.info("Checking pipeline staleness...")
@@ -396,10 +443,6 @@ def run_monitor() -> Dict:
                 log.info("AUTO-RECOVERY: Pipeline stale >12h — triggering emergency run")
                 try:
                     import subprocess
-                    _recovery_dedup.parent.mkdir(parents=True, exist_ok=True)
-                    with open(_recovery_dedup, "w") as _f:
-                        json.dump({"last_attempt": datetime.now().isoformat()}, _f)
-
                     cmd = [
                         sys.executable,
                         str(PROJECT_ROOT / "scripts" / "pipeline" / "run_full_pipeline.py"),
@@ -411,6 +454,12 @@ def run_monitor() -> Dict:
                     )
                     log.info(f"Emergency pipeline started (PID {proc.pid})")
                     result["auto_recovery"] = {"triggered": True, "pid": proc.pid}
+
+                    # Write dedup AFTER Popen succeeds — if Popen fails, we can
+                    # retry on the next monitor cycle instead of being blocked for 6h
+                    _recovery_dedup.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_recovery_dedup, "w") as _f:
+                        json.dump({"last_attempt": datetime.now().isoformat()}, _f)
 
                     _unified_notify(
                         f"Pipeline was stale ({age:.0f}h). Auto-recovery triggered.",

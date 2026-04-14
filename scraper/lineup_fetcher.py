@@ -36,8 +36,9 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 API_BASE = "https://v3.football.api-sports.io"
-SERIE_A_LEAGUE_ID = 135
-SERIE_A_SEASON = 2025  # 2025-26 season
+from config.settings import get_current_season
+SERIE_A_LEAGUE_ID = 135  # API-Football Serie A ID
+SERIE_A_SEASON = int(get_current_season().split("-")[0])  # e.g., 2025 from "2025-2026"
 
 # Team name normalization is handled by config/team_names.py via
 # _canonical_normalize (imported above).

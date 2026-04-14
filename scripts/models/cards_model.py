@@ -459,17 +459,18 @@ def generate_cards_bets(prediction: CardsPrediction) -> List[CardsBet]:
 # =============================================================================
 
 def load_predictions() -> List[Dict]:
-    """Load match predictions with referee data."""
-    predictions_path = DATA_DIR / "upcoming" / "predictions.json"
-
-    if not predictions_path.exists():
-        log.warning("No predictions file found")
-        return []
-
-    with open(predictions_path) as f:
-        data = json.load(f)
-
-    return data.get("predictions", [])
+    """Load match predictions from all league files."""
+    all_preds = []
+    for fname in ["predictions.json", "predictions_premier_league.json"]:
+        p = DATA_DIR / "upcoming" / fname
+        if p.exists():
+            try:
+                with open(p) as f:
+                    data = json.load(f)
+                all_preds.extend(data.get("predictions", []))
+            except Exception:
+                pass
+    return all_preds
 
 
 # =============================================================================

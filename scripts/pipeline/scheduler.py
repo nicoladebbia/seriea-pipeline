@@ -342,10 +342,9 @@ def _load_pre_kickoff_state() -> Dict:
 
 
 def _save_pre_kickoff_state(state: Dict):
-    """Save pre-kickoff state."""
-    PRE_KICKOFF_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PRE_KICKOFF_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2, default=str)
+    """Save pre-kickoff state (atomic write)."""
+    from config.settings import atomic_write_json
+    atomic_write_json(PRE_KICKOFF_STATE_FILE, state)
 
 
 
@@ -372,6 +371,52 @@ MATCH_CLOCK_STAGES = [
         "description": "Post-match settlement check",
     },
 ]
+
+
+def run_refresh(bankroll: float = 0, leagues: list = None) -> bool:
+    """Lightweight incremental refresh — keeps odds + predictions fresh.
+
+    Designed to run every 3 hours between full pipeline runs. Uses
+    run_incremental() which only fetches fresh data when stale (>4h for odds,
+    >6h for market data) and only predicts unseen fixtures.
+
+    API cost: 2-4 credits per run (~20 credits/day for 7 runs).
+    Duration: 30-90 seconds typical.
+    """
+    log.info("=" * 60)
+    log.info("INCREMENTAL REFRESH — keeping odds & predictions fresh")
+    log.info("=" * 60)
+
+    try:
+        from scripts.pipeline.run_full_pipeline import run_incremental
+        from scripts.betting.bankroll_loader import get_effective_bankroll
+
+        br = bankroll if bankroll > 0 else get_effective_bankroll()
+        summary = run_incremental(bankroll=br, leagues=leagues)
+
+        status = summary.get("status", "unknown")
+        credits = summary.get("credits_used", 0)
+        odds_updated = summary.get("odds_updated", False)
+        preds_updated = summary.get("predictions_updated", False)
+
+        log.info("Refresh complete: status=%s, credits=%d, odds=%s, predictions=%s",
+                 status, credits, odds_updated, preds_updated)
+
+        if summary.get("errors"):
+            for err in summary["errors"]:
+                log.warning("Refresh error: %s", err)
+
+        return status != "error"
+
+    except Exception as e:
+        log.error("Incremental refresh failed: %s", e, exc_info=True)
+        try:
+            from scripts.pipeline.notify import notify
+            notify(f"Incremental refresh failed: {e}",
+                   title="Refresh Error", level="warning", category="system")
+        except Exception:
+            pass
+        return False
 
 
 def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
@@ -603,6 +648,25 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
     log.info("STARTING SCHEDULED PIPELINE RUN (leagues: %s)", ", ".join(leagues))
     log.info("=" * 60)
 
+    # Refresh fixtures if stale (>24h) — pipeline needs fresh fixture list
+    try:
+        import os
+        from datetime import datetime as _dt
+        _fixtures_path = DATA_DIR / "upcoming" / "matches.json"
+        _fixtures_age_h = 999
+        if _fixtures_path.exists():
+            _fixtures_age_h = (_dt.now() - _dt.fromtimestamp(os.path.getmtime(_fixtures_path))).total_seconds() / 3600
+        if _fixtures_age_h > 24:
+            log.info("Fixtures are %.0fh old — refreshing...", _fixtures_age_h)
+            from scripts.data.fetch_upcoming_matches import get_upcoming_matches, save_upcoming_matches
+            matches = get_upcoming_matches()
+            if matches:
+                save_upcoming_matches(matches)
+                log.info("Refreshed %d upcoming matches", len(matches))
+            log.info("Fixtures refreshed")
+    except Exception as e:
+        log.warning("Fixture refresh failed: %s — continuing with stale data", e)
+
     # Health check gate — abort on critical system issues
     try:
         from scripts.pipeline.health_check import run_health_check
@@ -613,10 +677,17 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
         if status == "CRITICAL":
             critical_msgs = [msg for lvl, msg in issues if lvl == "CRITICAL"]
             log.warning("HEALTH CHECK CRITICAL: %s", "; ".join(critical_msgs))
-            send_notification(
-                "\n".join(critical_msgs) + "\n\nPipeline will run predictions but skip betting.",
-                title="HEALTH WARNING: Issues Detected"
-            )
+            # Only notify if the message changed (prevent daily spam for same issue)
+            _alert_key = ";".join(sorted(critical_msgs))
+            _alert_cache_path = DATA_DIR / "cache" / ".last_health_alert"
+            _alert_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            _last_alert = _alert_cache_path.read_text().strip() if _alert_cache_path.exists() else ""
+            if _alert_key != _last_alert:
+                send_notification(
+                    "\n".join(critical_msgs) + "\n\nPipeline will run predictions but skip betting.",
+                    title="HEALTH WARNING: Issues Detected"
+                )
+                _alert_cache_path.write_text(_alert_key)
             # Don't abort — still run predictions and odds updates.
             # The risk gate below will handle betting pause separately.
         elif status == "WARNING":
@@ -665,7 +736,7 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                timeout=1200  # 20 minute timeout (ensemble can take 15min on cold start)
+                timeout=2400  # 40 min timeout (2 leagues × ~8 min features + data + predictions)
             )
 
             if result.returncode == 0:
@@ -683,8 +754,8 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
                             state = _json.load(_f)
                     state["last_run"] = _dt.now().isoformat()
                     state["last_run_status"] = "success"
-                    with open(state_path, "w") as _f:
-                        _json.dump(state, _f, indent=2)
+                    from config.settings import atomic_write_json as _awj
+                    _awj(state_path, state)
                 except Exception:
                     pass
                 return True
@@ -901,16 +972,24 @@ def run_settle() -> bool:
         alerts = result.get("alerts", [])
 
         if settled > 0:
-            # Use the coaching-style settlement notification instead of raw send
+            # Use the coaching-style settlement notification with per-bet details
             try:
                 from scripts.pipeline.notify import notify_settlement
+                from scripts.betting.bet_journal import get_journal_stats
                 won = result.get("settlement", {}).get("won", 0)
                 lost = result.get("settlement", {}).get("lost", 0)
                 push = result.get("settlement", {}).get("push", 0)
                 balance = result.get("settlement", {}).get("balance", 0)
+                # Get today's settled bets for the rich summary
+                try:
+                    stats = get_journal_stats()
+                    settled_bets = stats.get("settled_today", [])
+                except Exception:
+                    settled_bets = None
                 notify_settlement(
                     settled=settled, won=won, lost=lost, push=push,
                     profit=profit, balance=balance,
+                    settled_bets=settled_bets,
                 )
             except Exception:
                 # Fallback to simple notification
@@ -927,24 +1006,16 @@ def run_settle() -> bool:
                 title="CRITICAL: Betting Drift Alert"
             )
 
-        # Per-bet settlement notifications + loss streak check
+        # Post-settlement: loss streak check (per-bet notifications removed —
+        # batch notify_settlement() already shows each bet with full details)
         if settled > 0:
             try:
-                from scripts.pipeline.notify import notify_bet_settled, notify_loss_streak
+                from scripts.pipeline.notify import notify_loss_streak
                 from scripts.betting.bet_journal import get_journal_stats
 
-                # Send per-bet notifications for today's settlements
                 stats = get_journal_stats()
-                settled_today = stats.get("settled_today", [])
-                for bet in settled_today[-5:]:  # Cap at 5 to avoid spam
-                    try:
-                        notify_bet_settled(bet, result_score=bet.get("result_score", ""))
-                    except Exception:
-                        pass  # Per-bet notification failure shouldn't block
-
-                # Check for loss streak
                 streak = stats.get("current_streak", 0)
-                if streak < -2:  # 3+ consecutive losses
+                if streak < -4:  # 5+ consecutive losses (raised from 3 to reduce noise)
                     streak_loss = stats.get("streak_loss", 0)
                     recent = stats.get("recent_losses", [])
                     try:
@@ -954,6 +1025,31 @@ def run_settle() -> bool:
                         pass
             except Exception as e:
                 log.debug("Post-settlement notification extras failed: %s", e)
+
+            # Sync bankroll files to match journal (single source of truth)
+            try:
+                from scripts.pipeline.notify import _get_bankroll_context
+                import json as _json
+                _ctx = _get_bankroll_context()
+                _bk_path = DATA_DIR / "betting" / "bankroll.json"
+                if _bk_path.exists():
+                    _bk = _json.load(open(_bk_path))
+                    _bk["current_balance"] = _ctx["current"]
+                    _bk["peak_balance"] = _ctx["peak"]
+                    with open(_bk_path, "w") as _f:
+                        _json.dump(_bk, _f, indent=2)
+                _st_path = DATA_DIR / "bankroll" / "state.json"
+                if _st_path.exists():
+                    _st = _json.load(open(_st_path))
+                    _st["current_bankroll"] = _ctx["current"]
+                    _st["peak_bankroll"] = _ctx["peak"]
+                    from datetime import datetime as _dt
+                    _st["last_updated"] = _dt.now().isoformat()
+                    with open(_st_path, "w") as _f:
+                        _json.dump(_st, _f, indent=2)
+                log.info("Bankroll synced: €%.2f (peak €%.2f)", _ctx["current"], _ctx["peak"])
+            except Exception as e:
+                log.debug("Bankroll sync failed: %s", e)
 
         # Run post-settlement reconciliation
         if settled > 0:
@@ -1429,8 +1525,8 @@ def main():
 
     parser.add_argument(
         "mode",
-        choices=["daemon", "once", "pre-kickoff", "pre-kickoff-monitor", "settle",
-                 "health", "monitor", "retrain", "cron-setup", "status"],
+        choices=["daemon", "once", "refresh", "pre-kickoff", "pre-kickoff-monitor",
+                 "settle", "health", "monitor", "retrain", "cron-setup", "status"],
         help="Run mode (monitor: weekly drift/calibration check, retrain: force model retraining)"
     )
     parser.add_argument(
@@ -1467,6 +1563,8 @@ def main():
         run_daemon(args.bankroll, leagues=active_leagues)
     elif args.mode == "once":
         run_once(args.bankroll, args.quick, leagues=active_leagues)
+    elif args.mode == "refresh":
+        run_refresh(args.bankroll, leagues=active_leagues)
     elif args.mode == "pre-kickoff":
         success = run_pre_kickoff(args.bankroll)
         sys.exit(0 if success else 1)

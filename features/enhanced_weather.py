@@ -384,18 +384,18 @@ def compute_altitude_effect(home_team: str, away_team: str) -> Dict[str, float]:
     # Altitude difference (positive = home is higher)
     alt_diff = home_alt - away_alt
 
-    # Effect is small but measurable above 200m difference
+    # Effect is small but measurable above 150m difference
     effect = 0.0
-    if alt_diff > 150:
-        effect = 0.02  # Slight home advantage
-    elif alt_diff > 250:
+    if alt_diff > 250:
         effect = 0.04
+    elif alt_diff > 150:
+        effect = 0.02  # Slight home advantage
 
     # Reverse for away altitude advantage
-    if alt_diff < -150:
-        effect = -0.02
-    elif alt_diff < -250:
+    if alt_diff < -250:
         effect = -0.04
+    elif alt_diff < -150:
+        effect = -0.02
 
     return {
         "altitude_diff": alt_diff,

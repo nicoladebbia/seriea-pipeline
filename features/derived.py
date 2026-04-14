@@ -31,10 +31,14 @@ def add_derived_features(team_log: pd.DataFrame) -> pd.DataFrame:
 
     df = _add_opponent_adjusted_stats(df)
     df = _add_form_vs_difficulty(df)
+    # Drop temporary opponent strength columns (kept through _add_form_vs_difficulty)
+    df.drop(columns=["opp_attack_strength", "opp_defense_strength"],
+            inplace=True, errors="ignore")
     df = _add_goal_diff_momentum(df)
     df = _add_scoring_efficiency(df)
     df = _add_momentum_sequences(df)
     df = _add_opposition_adjusted_xg(df)
+    df = _add_form_volatility(df)
 
     return df
 
@@ -52,6 +56,9 @@ def add_match_level_derived(matches: pd.DataFrame) -> pd.DataFrame:
     df = _add_ht_scoring_patterns(df)
     df = _add_points_pace(df)
     df = _add_relative_features(df)
+    df = _add_nonlinear_transforms(df)
+    df = _add_elo_enhancements(df)
+    df = _add_poisson_expectancy(df)
 
     df.drop(columns=["_date"], errors="ignore", inplace=True)
     return df
@@ -115,9 +122,8 @@ def _add_opponent_adjusted_stats(df: pd.DataFrame) -> pd.DataFrame:
                 df[gc_col] / df["opp_attack_strength"].replace(0, np.nan)
             ).fillna(df[gc_col])
 
-    # Clean up temporary columns
-    df.drop(columns=["opp_attack_strength", "opp_defense_strength"],
-            inplace=True, errors="ignore")
+    # NOTE: opp_attack_strength / opp_defense_strength are kept for use
+    # by _add_form_vs_difficulty() below, then dropped after.
 
     return df
 
@@ -347,6 +353,29 @@ def _add_opposition_adjusted_xg(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _add_form_volatility(df: pd.DataFrame) -> pd.DataFrame:
+    """Add form volatility: std of recent points.
+
+    A team averaging 2.0 PPG with std=0.5 (consistent: W-W-D-W-D) is more
+    predictable than one with std=1.5 (volatile: W-L-W-L-W).
+
+    Column added:
+      form_volatility - std of points over last 5 matches
+    """
+    if "points" not in df.columns:
+        return df
+
+    group_cols = ["team", "season"] if "season" in df.columns else ["team"]
+
+    df["form_volatility"] = (
+        df.groupby(group_cols)["points"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=3).std())
+    )
+
+    log.info("Added form_volatility feature")
+    return df
+
+
 # ─── Match-level derived features (post-pivot) ───────────────────────────
 
 
@@ -456,6 +485,195 @@ def _add_relative_features(df: pd.DataFrame) -> pd.DataFrame:
             a = pd.to_numeric(df[a_col], errors="coerce")
             df[name] = h - a
 
+    return df
+
+
+def _add_elo_enhancements(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Elo-derived features that capture momentum and form alignment.
+
+    Elo alone (importance=10.03) captures overall quality but misses:
+    - Direction: is the team improving or declining?
+    - Form alignment: does current form agree with long-term quality?
+
+    Columns added:
+      home/away_elo_momentum  - Elo change over last N matches (direction)
+      elo_form_blend_diff     - blended Elo+form differential
+      elo_form_disagreement   - divergence between Elo-implied and form-implied quality
+    """
+    if "home_elo" not in df.columns or "away_elo" not in df.columns:
+        return df
+
+    added = 0
+    _date_col = "_date" if "_date" in df.columns else "match_date"
+
+    # Elo momentum: compute each team's Elo N matches ago via rolling
+    for side, team_col in [("home", "home_team"), ("away", "away_team")]:
+        elo_col = f"{side}_elo"
+        if team_col not in df.columns:
+            continue
+
+        # Build team Elo history and compute momentum (Elo now - Elo 10 matches ago)
+        elo_prev = (
+            df.sort_values(_date_col)
+            .groupby(team_col)[elo_col]
+            .transform(lambda s: s.shift(10))
+        )
+        df[f"{side}_elo_momentum"] = (df[elo_col] - elo_prev).round(1)
+        added += 1
+
+    # Elo momentum differential
+    if "home_elo_momentum" in df.columns and "away_elo_momentum" in df.columns:
+        df["elo_momentum_diff"] = (
+            df["home_elo_momentum"].fillna(0) - df["away_elo_momentum"].fillna(0)
+        ).round(1)
+        added += 1
+
+    # Elo-form blend: combine long-term quality (Elo) with short-term form
+    # Scale form_points_5 to Elo range: 0 pts → 1400, 15 pts → 1600
+    for side in ("home", "away"):
+        form_col = f"{side}_form_points_5"
+        elo_col = f"{side}_elo"
+        if form_col in df.columns and elo_col in df.columns:
+            form_scaled = 1400 + (pd.to_numeric(df[form_col], errors="coerce").fillna(7.5) / 15.0) * 200
+            df[f"{side}_elo_form_blend"] = (
+                0.75 * df[elo_col].fillna(1500) + 0.25 * form_scaled
+            ).round(1)
+
+    if "home_elo_form_blend" in df.columns and "away_elo_form_blend" in df.columns:
+        df["elo_form_blend_diff"] = (
+            df["home_elo_form_blend"] - df["away_elo_form_blend"]
+        ).round(1)
+        added += 1
+
+    # Elo-form disagreement: when form ≠ Elo, regression or breakout is likely
+    if "home_elo_form_blend" in df.columns:
+        df["elo_form_disagreement"] = (
+            (df["home_elo_form_blend"] - df["home_elo"].fillna(1500)) -
+            (df["away_elo_form_blend"] - df["away_elo"].fillna(1500))
+        ).round(1)
+        added += 1
+
+    # Clean up intermediate columns
+    for side in ("home", "away"):
+        df.drop(columns=[f"{side}_elo_form_blend"], errors="ignore", inplace=True)
+
+    log.info("Added %d Elo enhancement features", added)
+    return df
+
+
+def _add_poisson_expectancy(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Poisson-model expected probabilities as features.
+
+    Uses attack_strength × opponent_defense_weakness × league_avg_goals
+    to compute expected goals for each team, then derives P(H), P(D), P(A)
+    from the Poisson distribution.
+
+    This gives the tree models an analytical prior — a simple statistical
+    baseline they can learn to correct.
+
+    Columns added:
+      poisson_home_xg     - expected goals for home team
+      poisson_away_xg     - expected goals for away team
+      poisson_prob_H      - Poisson-implied P(home win)
+      poisson_prob_D      - Poisson-implied P(draw)
+      poisson_prob_A      - Poisson-implied P(away win)
+    """
+    required = ["home_attack_strength", "away_attack_strength",
+                "home_defense_strength", "away_defense_strength"]
+    if not all(c in df.columns for c in required):
+        return df
+
+    from scipy.stats import poisson
+
+    LEAGUE_AVG_GOALS = 1.35  # Average goals per team per match (~2.7 total)
+
+    home_atk = pd.to_numeric(df["home_attack_strength"], errors="coerce").fillna(1.0)
+    away_atk = pd.to_numeric(df["away_attack_strength"], errors="coerce").fillna(1.0)
+    home_def = pd.to_numeric(df["home_defense_strength"], errors="coerce").fillna(1.0)
+    away_def = pd.to_numeric(df["away_defense_strength"], errors="coerce").fillna(1.0)
+
+    # Expected goals: attack strength × opponent defense weakness × league avg
+    # Home advantage built into attack_strength (computed on home matches)
+    home_xg = (home_atk * away_def * LEAGUE_AVG_GOALS).clip(0.1, 5.0)
+    away_xg = (away_atk * home_def * LEAGUE_AVG_GOALS).clip(0.1, 5.0)
+
+    df["poisson_home_xg"] = home_xg.round(3)
+    df["poisson_away_xg"] = away_xg.round(3)
+
+    # Compute P(H), P(D), P(A) from Poisson
+    max_goals = 7  # Sum probabilities for 0-7 goals (covers >99.9%)
+    prob_H = np.zeros(len(df))
+    prob_D = np.zeros(len(df))
+    prob_A = np.zeros(len(df))
+
+    for i in range(max_goals + 1):
+        p_home_i = poisson.pmf(i, home_xg.values)
+        for j in range(max_goals + 1):
+            p_away_j = poisson.pmf(j, away_xg.values)
+            joint = p_home_i * p_away_j
+            if i > j:
+                prob_H += joint
+            elif i == j:
+                prob_D += joint
+            else:
+                prob_A += joint
+
+    df["poisson_prob_H"] = np.round(prob_H, 4)
+    df["poisson_prob_D"] = np.round(prob_D, 4)
+    df["poisson_prob_A"] = np.round(prob_A, 4)
+
+    log.info("Added Poisson expectancy features (avg home_xg=%.2f, away_xg=%.2f)",
+             home_xg.mean(), away_xg.mean())
+    return df
+
+
+def _add_nonlinear_transforms(df: pd.DataFrame) -> pd.DataFrame:
+    """Add nonlinear transforms of top features to help tree models.
+
+    Tree models can learn nonlinear splits, but explicit transforms provide
+    pre-computed signals that reduce the depth needed for the same split,
+    improving generalization.
+
+    Columns added:
+      elo_diff_log             - log transform for diminishing returns on Elo gaps
+      attack_strength_diff_log - log transform for diminishing returns
+      home_adj_attack_5_sqrt, home_adj_attack_10_sqrt  - stability dampening
+      away_adj_attack_5_sqrt, away_adj_attack_10_sqrt
+      home_form_points_5_sq, away_form_points_5_sq     - amplify extreme form
+    """
+    added = 0
+
+    # Log transforms: diminishing returns on quality gaps
+    # elo_diff 50→100 matters more than 200→250
+    if "elo_diff" in df.columns:
+        elo = pd.to_numeric(df["elo_diff"], errors="coerce").fillna(0)
+        df["elo_diff_log"] = (np.sign(elo) * np.log1p(np.abs(elo))).round(3)
+        added += 1
+
+    if "attack_strength_diff" in df.columns:
+        asd = pd.to_numeric(df["attack_strength_diff"], errors="coerce").fillna(0)
+        df["attack_strength_diff_log"] = (np.sign(asd) * np.log1p(np.abs(asd))).round(4)
+        added += 1
+
+    # Sqrt transforms: stability dampening on opponent-adjusted stats
+    for side in ("home", "away"):
+        for window in (5, 10):
+            col = f"{side}_adj_attack_{window}"
+            if col in df.columns:
+                vals = pd.to_numeric(df[col], errors="coerce").fillna(1.0)
+                df[f"{col}_sqrt"] = np.sqrt(vals.clip(lower=0)).round(4)
+                added += 1
+
+    # Squared form: amplify extreme form (very hot or very cold)
+    for side in ("home", "away"):
+        col = f"{side}_form_points_5"
+        if col in df.columns:
+            pts = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            # Normalize to 0-1 range (max 15 points from 5 matches) then square
+            df[f"{col}_sq"] = ((pts / 15.0) ** 2).round(4)
+            added += 1
+
+    log.info("Added %d nonlinear transform features", added)
     return df
 
 

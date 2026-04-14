@@ -722,7 +722,7 @@ class TestBettingPipeline:
 
         cfg = BettingConfig()
         assert cfg.bankroll == 1000.0
-        assert cfg.kelly_fraction == 0.10
+        assert cfg.kelly_fraction == 0.05
         assert cfg.min_edge_pct > 0
         assert cfg.max_edge_pct > cfg.min_edge_pct
         assert cfg.max_stake_pct > cfg.min_stake_pct
@@ -1362,7 +1362,7 @@ class TestCrossModuleConsistency:
         from scripts.betting.betting_unified import BettingConfig
 
         cfg = BettingConfig()
-        assert cfg.kelly_fraction == 0.10, (
+        assert cfg.kelly_fraction == 0.05, (
             "BettingConfig default Kelly should be 0.10 (conservative Kelly)"
         )
 

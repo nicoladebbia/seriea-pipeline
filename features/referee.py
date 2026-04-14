@@ -154,9 +154,9 @@ def add_referee_features(matches: pd.DataFrame) -> pd.DataFrame:
     ]
     results: dict[str, list] = {c: [] for c in col_names}
 
-    # Global league averages (expanding, for comparison)
-    league_home_win_rate = df["_home_win"].expanding().mean()
-    league_avg_xg = df["_match_xg"].expanding().mean()
+    # Global league averages (expanding, shifted to avoid including current match)
+    league_home_win_rate = df["_home_win"].shift(1).expanding().mean()
+    league_avg_xg = df["_match_xg"].shift(1).expanding().mean()
 
     for idx, row in df.iterrows():
         referee = row.get("referee", "")

@@ -40,9 +40,17 @@ def parsed_path(table_name: str) -> Path:
     return PARSED_DIR / f"{table_name}.parquet"
 
 
-def features_path() -> Path:
+def features_path(league: str | None = None) -> Path:
+    """Return path for the ML feature table.
+
+    Args:
+        league: If specified, return per-league path (e.g. features_serie_a.parquet).
+                None returns the combined all-league file (backward compat).
+    """
     FEATURES_DIR.mkdir(parents=True, exist_ok=True)
-    return FEATURES_DIR / "features.parquet"
+    if league is None:
+        return FEATURES_DIR / "features.parquet"
+    return FEATURES_DIR / f"features_{league}.parquet"
 
 
 def registry_path() -> Path:
