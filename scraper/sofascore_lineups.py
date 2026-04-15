@@ -20,7 +20,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 import sys
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 from config.team_names import normalize_team
 from config.leagues import get_league_config, LEAGUE_REGISTRY
 
@@ -30,7 +30,6 @@ from scraper.sofascore_events import _get_json, _jitter_delay, _BASE_URL
 log = logging.getLogger(__name__)
 
 SOFASCORE_DIR = _PROJECT_ROOT / "data" / "external" / "sofascore"
-UPCOMING_DIR = DATA_DIR / "upcoming"
 
 # Set of Sofascore tournament IDs we support (for filtering scheduled events)
 _SUPPORTED_TOURNAMENT_IDS = {

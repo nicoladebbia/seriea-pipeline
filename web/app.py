@@ -22,14 +22,12 @@ except ImportError:
     pass
 
 from flask import Flask, render_template, jsonify, request as flask_request
-from config.settings import DATA_DIR, get_current_season
+from config.settings import (
+    DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR,
+)
 from config.leagues import LEAGUE_REGISTRY
 
 _BASE = Path(__file__).parent.parent  # project root
-BETTING_DIR = DATA_DIR / "betting"
-UPCOMING_DIR = DATA_DIR / "upcoming"
-LIVE_DIR = DATA_DIR / "live"
-BANKROLL_DIR = DATA_DIR / "bankroll"
 FEEDBACK_DIR = DATA_DIR / "feedback"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

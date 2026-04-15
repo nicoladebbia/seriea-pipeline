@@ -32,9 +32,8 @@ from scipy.stats import poisson, norm
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 
-UPCOMING_DIR = DATA_DIR / "upcoming"
 BETTING_DIR = DATA_DIR / "betting"
 BANKROLL_DIR = DATA_DIR / "bankroll"
 

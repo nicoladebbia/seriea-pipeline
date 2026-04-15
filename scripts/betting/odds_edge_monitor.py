@@ -35,11 +35,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 
 log = logging.getLogger(__name__)
 
-UPCOMING_DIR = DATA_DIR / "upcoming"
 BETTING_DIR = DATA_DIR / "betting"
 SNAPSHOTS_DIR = DATA_DIR / "odds_snapshots"
 

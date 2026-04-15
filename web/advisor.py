@@ -27,12 +27,7 @@ advisor_bp = Blueprint("advisor", __name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-_BASE = Path(__file__).parent.parent
-DATA_DIR = _BASE / "data"
-UPCOMING_DIR = DATA_DIR / "upcoming"
-BETTING_DIR = DATA_DIR / "betting"
-BANKROLL_DIR = DATA_DIR / "bankroll"
-LIVE_DIR = DATA_DIR / "live"
+from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR
 USAGE_FILE = DATA_DIR / "api_usage.json"
 
 # ---------------------------------------------------------------------------

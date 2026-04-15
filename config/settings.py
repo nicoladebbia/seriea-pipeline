@@ -93,6 +93,10 @@ RAW_FIXTURES_DIR = DATA_DIR / "raw" / "fixtures"
 PARSED_DIR = DATA_DIR / "parsed"
 FEATURES_DIR = DATA_DIR / "features"
 MODELS_DIR = DATA_DIR / "models"
+UPCOMING_DIR = DATA_DIR / "upcoming"
+BETTING_DIR = DATA_DIR / "betting"
+BANKROLL_DIR = DATA_DIR / "bankroll"
+LIVE_DIR = DATA_DIR / "live"
 REGISTRY_PATH = DATA_DIR / "registry.json"
 
 # Existing data (from old project)

@@ -30,13 +30,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 
 log = logging.getLogger(__name__)
 
 BETTING_DIR = DATA_DIR / "betting"
 LIVE_DIR = DATA_DIR / "live"
-UPCOMING_DIR = DATA_DIR / "upcoming"
 
 LEDGER_PATH = BETTING_DIR / "prop_ledger.json"
 PERFORMANCE_PATH = BETTING_DIR / "prop_performance.json"

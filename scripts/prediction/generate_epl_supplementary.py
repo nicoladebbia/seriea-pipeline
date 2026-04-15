@@ -26,12 +26,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-UPCOMING_DIR = DATA_DIR / "upcoming"
 
 # =============================================================================
 # EPL TEAM NAME MAPPING

@@ -21,7 +21,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 import sys
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR
 from config.team_names import normalize_team
 
 try:
@@ -34,7 +34,6 @@ log = logging.getLogger(__name__)
 
 API_BASE = "https://api.football-data.org/v4"
 SERIE_A_CODE = "SA"  # football-data.org competition code for Serie A
-UPCOMING_DIR = DATA_DIR / "upcoming"
 
 # football-data.org team names → our canonical names
 _FD_NAME_MAP = {

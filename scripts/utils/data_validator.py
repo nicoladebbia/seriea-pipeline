@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 
 _BASE = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = _BASE / "data"
-UPCOMING_DIR = DATA_DIR / "upcoming"
 
 # Maximum age in hours before data is considered stale
 FRESHNESS_LIMITS = {
