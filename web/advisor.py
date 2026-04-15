@@ -28,23 +28,12 @@ advisor_bp = Blueprint("advisor", __name__)
 # Paths
 # ---------------------------------------------------------------------------
 from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR
+from scripts.utils.json_utils import load_json_safe
 USAGE_FILE = DATA_DIR / "api_usage.json"
 
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
-
-def _load_json(path: Path, default=None):
-    if default is None:
-        default = {}
-    try:
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    except Exception as e:
-        log.warning("Failed to load %s: %s", path.name, e)
-    return default
-
 
 def _get_bankroll() -> dict:
     """Get bankroll from the freshest source.
@@ -54,8 +43,8 @@ def _get_bankroll() -> dict:
     - betting/bankroll.json (updated by settle flow)
     We merge both, preferring the one with the higher 'updated_at' or file mtime.
     """
-    state = _load_json(BANKROLL_DIR / "state.json")
-    live = _load_json(BETTING_DIR / "bankroll.json")
+    state = load_json_safe(BANKROLL_DIR / "state.json")
+    live = load_json_safe(BETTING_DIR / "bankroll.json")
 
     # Determine which is fresher by file mtime
     state_path = BANKROLL_DIR / "state.json"
@@ -164,7 +153,7 @@ def _tool_get_match_prediction(args: dict) -> str:
             parts = match_str.split(" - ", 1)
             home, away = parts[0].strip(), parts[1].strip()
 
-    preds_data = _load_json(UPCOMING_DIR / "predictions.json")
+    preds_data = load_json_safe(UPCOMING_DIR / "predictions.json")
     predictions = preds_data.get("predictions", [])
     for p in predictions:
         p.setdefault("league", "serie_a")
@@ -172,7 +161,7 @@ def _tool_get_match_prediction(args: dict) -> str:
     # Merge predictions from all active leagues (e.g. EPL)
     for extra_league in ["premier_league"]:
         extra_path = UPCOMING_DIR / f"predictions_{extra_league}.json"
-        extra_raw = _load_json(extra_path)
+        extra_raw = load_json_safe(extra_path)
         if extra_raw:
             extra_list = extra_raw.get("predictions", []) if isinstance(extra_raw, dict) else extra_raw
             for p in extra_list:
@@ -228,7 +217,7 @@ def _tool_get_match_prediction(args: dict) -> str:
     }
 
     # Inject betting info
-    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     h_canon = _resolve_team(home)
     a_canon = _resolve_team(away)
     match_bets = [
@@ -244,7 +233,7 @@ def _tool_get_match_prediction(args: dict) -> str:
         ]
 
     # Inject player analysis narrative
-    pa = _load_json(UPCOMING_DIR / "player_analysis.json")
+    pa = load_json_safe(UPCOMING_DIR / "player_analysis.json")
     for m in pa.get("matches", []):
         if m.get("home_team") == h_canon and m.get("away_team") == a_canon:
             result["player_analysis"] = m.get("analysis_summary", "")
@@ -254,14 +243,14 @@ def _tool_get_match_prediction(args: dict) -> str:
             break
 
     # Inject sentiment narrative
-    sa = _load_json(UPCOMING_DIR / "sentiment_analysis.json")
+    sa = load_json_safe(UPCOMING_DIR / "sentiment_analysis.json")
     for m in sa.get("matches", []):
         if m.get("home_team") == h_canon and m.get("away_team") == a_canon:
             result["sentiment"] = m.get("analysis", m.get("summary", ""))
             break
 
     # Inject goal predictions (detailed)
-    goals = _load_json(UPCOMING_DIR / "goal_predictions.json")
+    goals = load_json_safe(UPCOMING_DIR / "goal_predictions.json")
     match_str = f"{h_canon} vs {a_canon}"
     if isinstance(goals, dict):
         for key, m in (goals.get("predictions", {}).items() if isinstance(goals.get("predictions"), dict) else enumerate(goals.get("predictions", []))):
@@ -279,7 +268,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject BTTS predictions
-    btts = _load_json(UPCOMING_DIR / "btts_predictions.json", default=[])
+    btts = load_json_safe(UPCOMING_DIR / "btts_predictions.json", default=[])
     if isinstance(btts, list):
         for m in btts:
             if h_canon in m.get("match", "") and a_canon in m.get("match", ""):
@@ -292,7 +281,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject corners predictions
-    corners = _load_json(UPCOMING_DIR / "corners_predictions.json", default=[])
+    corners = load_json_safe(UPCOMING_DIR / "corners_predictions.json", default=[])
     if isinstance(corners, list):
         for m in corners:
             if h_canon in m.get("match", "") and a_canon in m.get("match", ""):
@@ -307,7 +296,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject cards predictions
-    cards = _load_json(UPCOMING_DIR / "cards_predictions.json", default=[])
+    cards = load_json_safe(UPCOMING_DIR / "cards_predictions.json", default=[])
     if isinstance(cards, list):
         for m in cards:
             if h_canon in m.get("match", "") and a_canon in m.get("match", ""):
@@ -321,7 +310,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject margin predictions
-    margins = _load_json(UPCOMING_DIR / "margin_predictions.json")
+    margins = load_json_safe(UPCOMING_DIR / "margin_predictions.json")
     if isinstance(margins, dict):
         for key, m in (margins.get("predictions", {}).items() if isinstance(margins.get("predictions"), dict) else enumerate(margins.get("predictions", []))):
             m_data = m if isinstance(m, dict) else {}
@@ -336,7 +325,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject lineups (confirmed or predicted)
-    confirmed = _load_json(UPCOMING_DIR / "confirmed_lineups.json")
+    confirmed = load_json_safe(UPCOMING_DIR / "confirmed_lineups.json")
     conf_matches = confirmed.get("matches", {})
     lineup_found = False
     for key, lu in conf_matches.items():
@@ -356,7 +345,7 @@ def _tool_get_match_prediction(args: dict) -> str:
             break
 
     if not lineup_found:
-        predicted = _load_json(UPCOMING_DIR / "lineup_predictions.json")
+        predicted = load_json_safe(UPCOMING_DIR / "lineup_predictions.json")
         for key, lu in predicted.get("matches", {}).items():
             if h_canon in key and a_canon in key:
                 home_data = lu.get("home_lineup", {})
@@ -380,7 +369,7 @@ def _tool_get_match_prediction(args: dict) -> str:
                 break
 
     # Inject bookmaker analysis (sharp vs soft consensus)
-    bk = _load_json(UPCOMING_DIR / "bookmaker_analysis.json")
+    bk = load_json_safe(UPCOMING_DIR / "bookmaker_analysis.json")
     bk_matches = bk.get("matches", [])
     if isinstance(bk_matches, list):
         for m in bk_matches:
@@ -406,13 +395,13 @@ def _tool_get_team_detail(args: dict) -> str:
     result: dict[str, Any] = {"team": team}
 
     # Standings
-    standings = _load_json(UPCOMING_DIR / "standings.json")
+    standings = load_json_safe(UPCOMING_DIR / "standings.json")
     team_standing = standings.get("standings", {}).get(team)
     if team_standing:
         result["standings"] = team_standing
 
     # Form
-    form_data = _load_json(UPCOMING_DIR / "current_form.json")
+    form_data = load_json_safe(UPCOMING_DIR / "current_form.json")
     team_form = form_data.get("teams", {}).get(team)
     if team_form:
         result["form"] = team_form
@@ -445,7 +434,7 @@ def _tool_get_team_detail(args: dict) -> str:
         log.warning("Team top scorers lookup failed: %s", e)
 
     # Recent results for this team
-    results_data = _load_json(UPCOMING_DIR / "results.json")
+    results_data = load_json_safe(UPCOMING_DIR / "results.json")
     results_all = results_data.get("results", {})
     team_results = []
     if isinstance(results_all, dict):
@@ -821,7 +810,7 @@ def _tool_get_player_stats(args: dict) -> str:
         log.warning("Sofascore player lookup failed: %s", e)
 
     # 3. Upcoming match props from player_props.json
-    props = _load_json(UPCOMING_DIR / "player_props.json")
+    props = load_json_safe(UPCOMING_DIR / "player_props.json")
     for match_key, match_data in props.get("matches", {}).items():
         if isinstance(match_data, dict):
             for p in match_data.get("players", []):
@@ -855,7 +844,7 @@ def _tool_get_h2h(args: dict) -> str:
     if not t1 or not t2:
         return json.dumps({"error": "Could not resolve team names."})
 
-    h2h_data = _load_json(UPCOMING_DIR / "h2h_upcoming.json")
+    h2h_data = load_json_safe(UPCOMING_DIR / "h2h_upcoming.json")
     h2h_list = h2h_data.get("h2h", [])
     if isinstance(h2h_list, list):
         for entry in h2h_list:
@@ -869,7 +858,7 @@ def _tool_get_h2h(args: dict) -> str:
 def _tool_get_value_bets(args: dict) -> str:
     from datetime import datetime as _dt
 
-    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     bets = slip.get("selected_bets", [])
     summary = slip.get("summary", {})
     today = _dt.now().strftime("%Y-%m-%d")
@@ -910,7 +899,7 @@ def _tool_get_value_bets(args: dict) -> str:
     }
 
     # Add handicap bets — mark which are today
-    hcap = _load_json(UPCOMING_DIR / "handicap_bets.json")
+    hcap = load_json_safe(UPCOMING_DIR / "handicap_bets.json")
     hcap_bets = hcap.get("recommended", [])
     if hcap_bets:
         result["handicap_bets"] = [
@@ -929,7 +918,7 @@ def _tool_get_value_bets(args: dict) -> str:
         ]
 
     # Add over/under bets — mark which are today
-    ou = _load_json(UPCOMING_DIR / "over_under_bets.json")
+    ou = load_json_safe(UPCOMING_DIR / "over_under_bets.json")
     ou_bets = ou.get("recommended", [])
     if ou_bets:
         result["over_under_bets"] = [
@@ -1102,13 +1091,13 @@ def _tool_get_match_players(args: dict) -> str:
 def _tool_get_live_matches(args: dict) -> str:
     """Get live match data from today's matchday file."""
     today = datetime.now().strftime("%Y-%m-%d")
-    matchday = _load_json(LIVE_DIR / f"{today}.json")
+    matchday = load_json_safe(LIVE_DIR / f"{today}.json")
 
     if not matchday or not matchday.get("matches"):
         # Try yesterday (late matches may still be in yesterday's file)
         from datetime import timedelta
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        matchday = _load_json(LIVE_DIR / f"{yesterday}.json")
+        matchday = load_json_safe(LIVE_DIR / f"{yesterday}.json")
         if not matchday or not matchday.get("matches"):
             return json.dumps({"status": "No live match data available for today."})
 
@@ -1164,7 +1153,7 @@ def _tool_get_results(args: dict) -> str:
     date_filter = args.get("date", "")  # optional YYYY-MM-DD filter
 
     # Match results
-    results_data = _load_json(UPCOMING_DIR / "results.json")
+    results_data = load_json_safe(UPCOMING_DIR / "results.json")
     results = results_data.get("results", {})
     if isinstance(results, dict):
         results_list = list(results.values())
@@ -1194,7 +1183,7 @@ def _tool_get_results(args: dict) -> str:
         })
 
     # Settled bets for those matches
-    history = _load_json(BETTING_DIR / "history.json")
+    history = load_json_safe(BETTING_DIR / "history.json")
     settled = history.get("settled_bets", []) if isinstance(history, dict) else history if isinstance(history, list) else []
 
     # Filter settled bets to matching dates
@@ -1224,7 +1213,7 @@ def _tool_get_results(args: dict) -> str:
 
 def _tool_get_bankroll_status(args: dict) -> str:
     state = _get_bankroll()
-    history = _load_json(BETTING_DIR / "history.json")
+    history = load_json_safe(BETTING_DIR / "history.json")
 
     result: dict[str, Any] = {
         "current_bankroll": state.get("current_bankroll"),
@@ -1249,7 +1238,7 @@ def _tool_get_bankroll_status(args: dict) -> str:
         result["history_totals"] = totals
 
     # P&L history (recent daily snapshots)
-    pnl = _load_json(BETTING_DIR / "pnl_history.json", default=[])
+    pnl = load_json_safe(BETTING_DIR / "pnl_history.json", default=[])
     if isinstance(pnl, list) and pnl:
         result["pnl_history"] = [
             {
@@ -1263,7 +1252,7 @@ def _tool_get_bankroll_status(args: dict) -> str:
         ]
 
     # CLV tracking (Closing Line Value — are we beating closing odds?)
-    clv = _load_json(BETTING_DIR / "clv_history.json")
+    clv = load_json_safe(BETTING_DIR / "clv_history.json")
     if isinstance(clv, dict) and clv.get("running_clv") is not None:
         result["clv"] = {
             "running_clv_pct": clv.get("running_clv_pct"),
@@ -1303,10 +1292,10 @@ def _tool_get_betting_performance(args: dict) -> str:
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
 
     # Load data sources
-    history = _load_json(BETTING_DIR / "history.json")
-    journal = _load_json(BETTING_DIR / "bet_journal.json")
-    pnl = _load_json(BETTING_DIR / "pnl_history.json", default=[])
-    perf_dash = _load_json(DATA_DIR / "performance_dashboard.json")
+    history = load_json_safe(BETTING_DIR / "history.json")
+    journal = load_json_safe(BETTING_DIR / "bet_journal.json")
+    pnl = load_json_safe(BETTING_DIR / "pnl_history.json", default=[])
+    perf_dash = load_json_safe(DATA_DIR / "performance_dashboard.json")
 
     # Settled bets — normalise to a list
     settled: list[dict] = []
@@ -1585,7 +1574,7 @@ def _tool_get_match_context(args: dict) -> str:
     result: dict[str, Any] = {"home_team": h, "away_team": a}
 
     # Referee
-    refs = _load_json(UPCOMING_DIR / "referees.json")
+    refs = load_json_safe(UPCOMING_DIR / "referees.json")
     if isinstance(refs, dict):
         for match_key, ref_info in refs.items():
             if h in match_key and a in match_key:
@@ -1598,7 +1587,7 @@ def _tool_get_match_context(args: dict) -> str:
                 break
 
     # Weather
-    weather = _load_json(UPCOMING_DIR / "weather.json")
+    weather = load_json_safe(UPCOMING_DIR / "weather.json")
     if isinstance(weather, dict):
         for match_key, w_info in weather.items():
             if h in str(match_key) and a in str(match_key):
@@ -1611,7 +1600,7 @@ def _tool_get_match_context(args: dict) -> str:
                 break
 
     # Odds movement
-    odds_mv = _load_json(UPCOMING_DIR / "odds_movement.json")
+    odds_mv = load_json_safe(UPCOMING_DIR / "odds_movement.json")
     if isinstance(odds_mv, dict):
         for match_key, mv_info in odds_mv.items():
             if h in str(match_key) and a in str(match_key):
@@ -1624,7 +1613,7 @@ def _tool_get_match_context(args: dict) -> str:
                 break
 
     # Cross-market signals narrative
-    cms = _load_json(UPCOMING_DIR / "cross_market_signals.json")
+    cms = load_json_safe(UPCOMING_DIR / "cross_market_signals.json")
     cms_matches = cms.get("matches", {})
     if isinstance(cms_matches, dict):
         for key, m in cms_matches.items():
@@ -1638,7 +1627,7 @@ def _tool_get_match_context(args: dict) -> str:
                 break
 
     # Full odds from all bookmakers
-    odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
+    odds_full = load_json_safe(UPCOMING_DIR / "odds_full.json")
     for match_key, odds_data in odds_full.get("matches", {}).items():
         if h in match_key and a in match_key:
             # Compact: just best odds per outcome + bookmaker list
@@ -1664,7 +1653,7 @@ def _tool_get_match_scorers(args: dict) -> str:
     result: dict[str, Any] = {"home_team": h, "away_team": a, "scorers": []}
 
     # 1. Get anytime goal probabilities from player_props.json
-    props = _load_json(UPCOMING_DIR / "player_props.json")
+    props = load_json_safe(UPCOMING_DIR / "player_props.json")
     props_by_name: dict[str, dict] = {}
     for match_key, match_data in props.get("matches", {}).items():
         if h in match_key and a in match_key:
@@ -1749,7 +1738,7 @@ def _tool_get_match_scorers(args: dict) -> str:
     result["top_scorer_overall"] = scorers[0]["name"] if scorers else None
 
     # Player prop odds if available
-    prop_odds = _load_json(UPCOMING_DIR / "player_prop_odds.json")
+    prop_odds = load_json_safe(UPCOMING_DIR / "player_prop_odds.json")
     for match_key, odds_data in prop_odds.get("matches", {}).items():
         if h in match_key and a in match_key:
             result["bookmaker_goalscorer_odds"] = odds_data.get("anytime_goalscorer", odds_data.get("odds", {}))
@@ -1771,7 +1760,7 @@ def _tool_place_bet(args: dict) -> str:
 
     # --- place_all: bulk place all selected bets ---
     if action == "place_all":
-        slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+        slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
         bets = slip.get("selected_bets", [])
         if not bets:
             return json.dumps({"error": "No value bets in the current bet slip."})
@@ -1827,12 +1816,12 @@ def _tool_place_bet(args: dict) -> str:
     resolved = _resolve_team(match_query)
 
     # Search the unified bet slip for matching bets
-    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     all_bets = slip.get("selected_bets", [])
 
     # Also check handicap + O/U specialty bets
-    hcap = _load_json(UPCOMING_DIR / "handicap_bets.json")
-    ou = _load_json(UPCOMING_DIR / "over_under_bets.json")
+    hcap = load_json_safe(UPCOMING_DIR / "handicap_bets.json")
+    ou = load_json_safe(UPCOMING_DIR / "over_under_bets.json")
 
     # Find bets matching the team/match query
     q_lower = match_query.lower()
@@ -2375,7 +2364,7 @@ def _tool_build_parlay(args: dict) -> str:
     custom_stake = args.get("stake")
     place = args.get("place", False)
 
-    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     all_bets = slip.get("selected_bets", [])
 
     if not all_bets:
@@ -3017,7 +3006,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
         ("standings.json", "Serie A"),
         ("standings_premier_league.json", "Premier League"),
     ]:
-        standings_data = _load_json(UPCOMING_DIR / standings_file)
+        standings_data = load_json_safe(UPCOMING_DIR / standings_file)
         standings = standings_data.get("standings", {})
         if standings:
             sorted_teams = sorted(standings.values(), key=lambda x: x.get("position", 99))
@@ -3032,7 +3021,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 
     # Inject form summary (Serie A + EPL)
     for form_file in ["current_form.json", "current_form_premier_league.json"]:
-        form_data = _load_json(UPCOMING_DIR / form_file)
+        form_data = load_json_safe(UPCOMING_DIR / form_file)
         teams_form = form_data.get("teams", {})
         if teams_form:
             hot = []
@@ -3050,7 +3039,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
             parts.append("")
 
     # Inject bankroll
-    bank = _load_json(BANKROLL_DIR / "state.json")
+    bank = load_json_safe(BANKROLL_DIR / "state.json")
     if bank.get("current_bankroll"):
         initial = bank.get("initial_bankroll", 1000)
         current = bank.get("current_bankroll", initial)
@@ -3066,7 +3055,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 
     # Inject upcoming matches so Claude knows what's scheduled — WITH dates
     today_str = datetime.now().strftime("%Y-%m-%d")
-    predictions = _load_json(UPCOMING_DIR / "predictions.json")
+    predictions = load_json_safe(UPCOMING_DIR / "predictions.json")
     upcoming_list = predictions.get("predictions", [])
     if isinstance(upcoming_list, list) and upcoming_list:
         # Sort by date
@@ -3110,7 +3099,7 @@ def _build_greeting() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
 
     # Check if matches settled today
-    history = _load_json(BETTING_DIR / "history.json")
+    history = load_json_safe(BETTING_DIR / "history.json")
     settled_bets = history.get("settled_bets", []) if isinstance(history, dict) else history if isinstance(history, list) else []
     today_settled = [
         b for b in settled_bets
@@ -3118,7 +3107,7 @@ def _build_greeting() -> dict:
     ]
 
     # Check today's results
-    results_data = _load_json(UPCOMING_DIR / "results.json")
+    results_data = load_json_safe(UPCOMING_DIR / "results.json")
     results_all = results_data.get("results", {})
     today_results = []
     if isinstance(results_all, dict):
@@ -3129,7 +3118,7 @@ def _build_greeting() -> dict:
         today_results = [r for r in results_all if today in (r.get("commence_time", "") or r.get("date", ""))]
 
     # Value bets for upcoming matches
-    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     bets = slip.get("selected_bets", [])
     completed_matches = {r.get("match", "") for r in today_results}
     future_bets = [b for b in bets if b.get("match", "") not in completed_matches]
@@ -3199,7 +3188,7 @@ def _build_greeting() -> dict:
             )
 
     # Pending bets reminder
-    pending = _load_json(BETTING_DIR / "pending_bets.json")
+    pending = load_json_safe(BETTING_DIR / "pending_bets.json")
     pending_list = pending.get("pending_bets", []) if isinstance(pending, dict) else pending if isinstance(pending, list) else []
     if pending_list:
         greeting_parts.append(
@@ -3326,7 +3315,7 @@ def _compress_history(history: list) -> list:
 def _track_usage(usage: dict):
     """Append usage stats to data/api_usage.json."""
     try:
-        data = _load_json(USAGE_FILE, default={"daily": {}, "total": {}})
+        data = load_json_safe(USAGE_FILE, default={"daily": {}, "total": {}})
         today = datetime.now().strftime("%Y-%m-%d")
 
         day = data.setdefault("daily", {}).setdefault(today, {

@@ -27,7 +27,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config.team_names import normalize_team
+from config.settings import ROLLING_WINDOW
+from config.team_names import normalize_team_safe
+from features._utils import merge_side
 
 log = logging.getLogger(__name__)
 
@@ -37,13 +39,8 @@ PLAYER_STATS_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats.parquet"
 # scraper/fbref_scrape_epl.py pipeline and share the same schema.
 PLAYER_STATS_EPL_PATH = PROJECT_ROOT / "data" / "parsed" / "player_stats_epl.parquet"
 
-ROLLING_WINDOW = 5
 
-
-def _normalize_team(name: str) -> str:
-    if pd.isna(name):
-        return ""
-    return normalize_team(name)
+_normalize_team = normalize_team_safe
 
 
 def _load_player_stats(league: str | None = None) -> pd.DataFrame | None:
@@ -292,33 +289,9 @@ def add_fbref_features(
     lookup = lookup.dropna(subset=["match_date"])
     lookup = lookup.sort_values(["team_norm", "match_date"]).reset_index(drop=True)
 
-    def _merge_side(df_in, team_col, prefix):
-        side_df = df_in[["_match_date", team_col]].copy()
-        side_df = side_df.rename(columns={team_col: "team_norm"})
-        side_df = side_df.dropna(subset=["_match_date"])
-        side_df = side_df.sort_values("_match_date").reset_index()
-
-        right_df = lookup.rename(columns={"match_date": "_match_date"}).copy()
-        right_df = right_df.sort_values("_match_date").reset_index(drop=True)
-
-        merged = pd.merge_asof(
-            side_df,
-            right_df,
-            on="_match_date",
-            by="team_norm",
-            direction="backward",
-        ).set_index("index")
-
-        for c in fb_cols:
-            if c in merged.columns:
-                col_name = f"{prefix}_{c}"
-                df_in.loc[merged.index, col_name] = merged[c].values
-
-        return df_in
-
     df = df.sort_values("_match_date")
-    df = _merge_side(df, "_home_norm", "home")
-    df = _merge_side(df, "_away_norm", "away")
+    df = merge_side(df, "_home_norm", "home", lookup, "match_date", fb_cols)
+    df = merge_side(df, "_away_norm", "away", lookup, "match_date", fb_cols)
 
     # Differential features (build all at once to avoid fragmentation)
     diff_data = {}

@@ -373,39 +373,8 @@ def _load_pre_match_odds() -> Dict[str, Dict]:
 
 # --- Football-Data.org Backup Score Source -----------------------------------
 
-# football-data.org team names -> our canonical names
-_FD_NAME_MAP = {
-    "AC Milan": "Milan",
-    "SSC Napoli": "Napoli",
-    "SS Lazio": "Lazio",
-    "ACF Fiorentina": "Fiorentina",
-    "Hellas Verona FC": "Verona",
-    "AS Roma": "Roma",
-    "FC Internazionale Milano": "Inter",
-    "US Cremonese": "Cremonese",
-    "Juventus FC": "Juventus",
-    "Bologna FC 1909": "Bologna",
-    "Torino FC": "Torino",
-    "Genoa CFC": "Genoa",
-    "Udinese Calcio": "Udinese",
-    "US Lecce": "Lecce",
-    "Cagliari Calcio": "Cagliari",
-    "Parma Calcio 1913": "Parma",
-    "Como 1907": "Como",
-    "AC Pisa 1909": "Pisa",
-    "US Sassuolo Calcio": "Sassuolo",
-    "Atalanta BC": "Atalanta",
-    "Empoli FC": "Empoli",
-    "AC Monza": "Monza",
-    "Venezia FC": "Venezia",
-}
-
-
-def _normalize_fd_team(name: str) -> str:
-    """Normalize a football-data.org team name to canonical form."""
-    if name in _FD_NAME_MAP:
-        return _FD_NAME_MAP[name]
-    return normalize_team(name)
+# Import canonical football-data.org team normalization
+from scraper.footballdata_lineups import _normalize_fd_team  # noqa: E402
 
 
 def _get_footballdata_key() -> str:

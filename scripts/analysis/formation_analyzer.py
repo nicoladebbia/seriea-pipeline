@@ -39,6 +39,7 @@ from dataclasses import dataclass, asdict, field
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, PROJECT_ROOT
+from scripts.utils.parsing import get_cache_path
 
 try:
     import requests
@@ -237,14 +238,9 @@ class LineupScraper:
         else:
             self.session = None
 
-    def _get_cache_path(self, key: str) -> Path:
-        """Get cache file path."""
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        return CACHE_DIR / f"{hashlib.md5(key.encode()).hexdigest()}.json"
-
     def _load_from_cache(self, key: str) -> Optional[Dict]:
         """Load lineup from cache if still valid."""
-        cache_path = self._get_cache_path(key)
+        cache_path = get_cache_path(CACHE_DIR, key)
         if not cache_path.exists():
             return None
 
@@ -262,7 +258,7 @@ class LineupScraper:
 
     def _save_to_cache(self, key: str, lineup: Dict):
         """Save lineup to cache."""
-        cache_path = self._get_cache_path(key)
+        cache_path = get_cache_path(CACHE_DIR, key)
         try:
             with open(cache_path, "w") as f:
                 json.dump({

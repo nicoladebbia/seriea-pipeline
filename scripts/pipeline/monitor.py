@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR, PROJECT_ROOT
 from scripts.pipeline.health_check import run_health_check
+from scripts.utils.json_utils import load_json_safe
 
 # ─── Paths ───
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -73,31 +74,13 @@ log.addHandler(_console_handler)
 # ─── Helpers ───
 
 def _load_env_key(name: str) -> str:
-    """Load an API key from environment or .env file."""
-    val = os.environ.get(name)
-    if val:
-        return val
-    env_file = PROJECT_ROOT / ".env"
-    if env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    if k.strip() == name:
-                        return v.strip()
-    return ""
+    """Load an API key from environment or .env file.
 
+    Delegates to scripts.pipeline.notify._load_env_key.
+    """
+    from scripts.pipeline.notify import _load_env_key as _impl
 
-def _load_json(path: Path) -> dict:
-    """Safely load a JSON file, returning empty dict on failure."""
-    if not path.exists():
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    return _impl(name)
 
 
 def _iso_age_hours(iso_str: str) -> float:
@@ -200,7 +183,7 @@ def check_groq_api_key() -> Dict:
 
 def check_pipeline_staleness() -> Dict:
     """Check when the pipeline last ran successfully."""
-    state = _load_json(DATA_DIR / "pipeline_state.json")
+    state = load_json_safe(DATA_DIR / "pipeline_state.json")
 
     last_run = state.get("last_run")
     age = _iso_age_hours(last_run)
@@ -226,8 +209,8 @@ def check_pipeline_staleness() -> Dict:
 
 def check_odds_fetch_staleness() -> Dict:
     """Check when odds were last fetched, using both pipeline_state and api_usage."""
-    state = _load_json(DATA_DIR / "pipeline_state.json")
-    usage = _load_json(DATA_DIR / "api_usage.json")
+    state = load_json_safe(DATA_DIR / "pipeline_state.json")
+    usage = load_json_safe(DATA_DIR / "api_usage.json")
 
     # Best source: pipeline_state.last_odds_fetch
     last_fetch = state.get("last_odds_fetch")
@@ -269,7 +252,7 @@ def check_pending_bets() -> Dict:
     placed_bets.json (which is a CLV tracking log that persists after settlement).
     """
     # Use journal for actual pending status
-    journal = _load_json(DATA_DIR / "betting" / "bet_journal.json")
+    journal = load_json_safe(DATA_DIR / "betting" / "bet_journal.json")
     journal_bets = journal.get("bets", {})
     bets = [v for v in journal_bets.values() if v.get("status") == "pending"]
 
@@ -430,7 +413,7 @@ def run_monitor() -> Dict:
             should_recover = True
             try:
                 if _recovery_dedup.exists():
-                    rd = _load_json(_recovery_dedup)
+                    rd = load_json_safe(_recovery_dedup)
                     last_attempt = rd.get("last_attempt", "")
                     if last_attempt:
                         hours_since = _iso_age_hours(last_attempt)

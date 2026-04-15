@@ -7,7 +7,6 @@ then trains a meta-learner on those + contextual features.
 import sys, json, logging, gc, warnings
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from pathlib import Path
 from sklearn.model_selection import StratifiedKFold
 
@@ -19,41 +18,10 @@ log = logging.getLogger(__name__)
 from scripts.models.comprehensive_markets import load_unified_training_data, get_training_features, _compute_targets
 from config.settings import MODELS_DIR
 from catboost import CatBoostClassifier, CatBoostRegressor
+from ml.poisson import poisson_1x2_vec, market_implied_probs
 
 MDIR = MODELS_DIR / "markets"
 LABEL_MAP = {"H": 0, "D": 1, "A": 2}
-
-
-def poisson_1x2_vec(hxg_arr, axg_arr):
-    """Vectorized Poisson 1X2 probabilities."""
-    n = len(hxg_arr)
-    probs = np.zeros((n, 3))
-    for i in range(n):
-        pH = pD = pA = 0.0
-        hx, ax = hxg_arr[i], axg_arr[i]
-        for h in range(8):
-            for a in range(8):
-                p = poisson.pmf(h, hx) * poisson.pmf(a, ax)
-                if h > a: pH += p
-                elif h == a: pD += p
-                else: pA += p
-        t = pH + pD + pA
-        probs[i] = [pH / t, pD / t, pA / t]
-    return probs
-
-
-def get_mkt_probs(df, mask):
-    psh = df.loc[mask, "odds_PSH"].values
-    psd = df.loc[mask, "odds_PSD"].values
-    psa = df.loc[mask, "odds_PSA"].values
-    p = np.zeros((mask.sum(), 3))
-    for i in range(len(psh)):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1 / psh[i], 1 / psd[i], 1 / psa[i]])
-            p[i] = raw / raw.sum()
-        else:
-            p[i] = [0.4, 0.3, 0.3]
-    return p
 
 
 def build_meta_features(cb_probs, xgb_probs, lgb_probs, pois_probs, mkt_probs,
@@ -168,7 +136,7 @@ def train_base_models(X_tr, y_tr, X_eval, y_eval, df_v, train_mask, eval_mask):
            early_stopping_rounds=100, verbose=0)
     hxg = np.clip(hg.predict(X_eval), 0.3, 4.0)
     axg = np.clip(ag.predict(X_eval), 0.3, 4.0)
-    pois_probs = poisson_1x2_vec(hxg, axg)
+    pois_probs = poisson_1x2_vec(hxg, axg, min_xg=None)
     gd_pred = hxg - axg
     del hg, ag; gc.collect()
     
@@ -186,7 +154,7 @@ def train_base_models(X_tr, y_tr, X_eval, y_eval, df_v, train_mask, eval_mask):
     del draw_clf; gc.collect()
     
     # Market probs
-    mkt_probs = get_mkt_probs(df_v, eval_mask)
+    mkt_probs = market_implied_probs(df_v, eval_mask)
     
     return cb_probs, xgb_probs, lgb_probs, pois_probs, mkt_probs, draw_det, gd_pred
 
@@ -286,7 +254,7 @@ def main():
             oof_draw[va_idx] = draw_p
             oof_gd[va_idx] = gd_p
         
-        mkt_full = get_mkt_probs(df_v, full_train_m)
+        mkt_full = market_implied_probs(df_v, full_train_m)
         
         # Build meta-features for training
         meta_X_train = build_meta_features(

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config.team_names import normalize_team
+from config.team_names import normalize_team_safe
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +26,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 UNDERSTAT_PLAYERS_PATH = PROJECT_ROOT / "data" / "parsed" / "understat_players.parquet"
 
 
-def _normalize_team_name(name: str) -> str:
-    """Normalize team name to match our pipeline.
-
-    Understat uses varied casing; normalize_team handles all known variants
-    and returns the canonical title-case name.
-    """
-    if pd.isna(name):
-        return ""
-    return normalize_team(name)
+_normalize_team_name = normalize_team_safe
 
 
 def _load_understat_players() -> pd.DataFrame | None:

@@ -12,7 +12,6 @@ Strategy:
 import sys, json, logging, gc, warnings
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from pathlib import Path
 from itertools import product
 
@@ -24,41 +23,10 @@ log = logging.getLogger(__name__)
 from scripts.models.comprehensive_markets import load_unified_training_data, get_training_features, _compute_targets
 from config.settings import MODELS_DIR
 from catboost import CatBoostClassifier, CatBoostRegressor
+from ml.poisson import poisson_1x2_vec, market_implied_probs
 
 MDIR = MODELS_DIR / "markets"
 LABEL_MAP = {"H": 0, "D": 1, "A": 2}
-
-
-def poisson_1x2_vec(hxg_arr, axg_arr):
-    n = len(hxg_arr)
-    probs = np.zeros((n, 3))
-    for i in range(n):
-        pH = pD = pA = 0.0
-        hx, ax = max(hxg_arr[i], 0.3), max(axg_arr[i], 0.3)
-        for h in range(8):
-            for a in range(8):
-                p = poisson.pmf(h, hx) * poisson.pmf(a, ax)
-                if h > a: pH += p
-                elif h == a: pD += p
-                else: pA += p
-        t = pH + pD + pA
-        if t > 0: probs[i] = [pH/t, pD/t, pA/t]
-        else: probs[i] = [0.4, 0.3, 0.3]
-    return probs
-
-
-def get_mkt_probs(df, mask):
-    psh = df.loc[mask, "odds_PSH"].values
-    psd = df.loc[mask, "odds_PSD"].values
-    psa = df.loc[mask, "odds_PSA"].values
-    p = np.zeros((mask.sum(), 3))
-    for i in range(len(psh)):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1/psh[i], 1/psd[i], 1/psa[i]])
-            p[i] = raw / raw.sum()
-        else:
-            p[i] = [0.4, 0.3, 0.3]
-    return p
 
 
 def feature_importance_select(X_tr, y_tr, X_val, y_val, features, top_n):
@@ -116,7 +84,7 @@ def main():
         n_test = test_m.sum()
         n_draws_actual = (y_te == "D").sum()
         
-        mkt_te = get_mkt_probs(df_v, test_m)
+        mkt_te = market_implied_probs(df_v, test_m)
         mkt_preds = np.array(["H","D","A"])[mkt_te.argmax(1)]
         mkt_acc = (mkt_preds == y_te).mean()
         log.info("Market baseline: %.1f%% (%d draws actual)", mkt_acc * 100, n_draws_actual)
@@ -254,7 +222,7 @@ def main():
             del draw_clf; gc.collect()
             
             # === MARKET PROBS ===
-            mkt_val = get_mkt_probs(df_v, val_m)
+            mkt_val = market_implied_probs(df_v, val_m)
             
             # === OPTIMIZE ON VALIDATION ===
             best_val_acc = 0

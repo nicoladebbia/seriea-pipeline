@@ -33,6 +33,8 @@ log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, UPCOMING_DIR
+from scripts.utils.json_utils import load_json_safe
+from scripts.utils.parsing import extract_line
 
 BETTING_DIR = DATA_DIR / "betting"
 BANKROLL_DIR = DATA_DIR / "bankroll"
@@ -292,16 +294,8 @@ class _NumpySafeEncoder(json.JSONEncoder):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_json(path):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
 def _get_bankroll():
-    state = _load_json(BANKROLL_DIR / "state.json")
+    state = load_json_safe(BANKROLL_DIR / "state.json")
     return state.get("current_bankroll", 1000)
 
 
@@ -338,7 +332,7 @@ def _analyze_historical_combos() -> dict:
     Returns dict of combo-type (e.g. "double_chance+totals") -> multiplier.
     Multiplier > 1.0 means the combo historically outperforms, < 1.0 underperforms.
     """
-    journal = _load_json(BETTING_DIR / "bet_journal.json")
+    journal = load_json_safe(BETTING_DIR / "bet_journal.json")
     bets = journal.get("bets", {})
     if isinstance(bets, dict):
         bets = list(bets.values())
@@ -450,29 +444,29 @@ def _load_enrichment_data():
     """
     predictions = {}
     for pred_file in ["predictions.json", "predictions_premier_league.json"]:
-        preds_raw = _load_json(UPCOMING_DIR / pred_file)
+        preds_raw = load_json_safe(UPCOMING_DIR / pred_file)
         for p in preds_raw.get("predictions", []):
             mk = _normalize_match(p.get("match", ""))
             if mk:
                 predictions[mk] = p
 
     bookmaker = {}
-    bk_raw = _load_json(UPCOMING_DIR / "bookmaker_analysis.json")
+    bk_raw = load_json_safe(UPCOMING_DIR / "bookmaker_analysis.json")
     for mk, data in bk_raw.get("matches", {}).items():
         bookmaker[_normalize_match(mk)] = data
 
     market_intel = {}
-    mi_raw = _load_json(UPCOMING_DIR / "market_intelligence.json")
+    mi_raw = load_json_safe(UPCOMING_DIR / "market_intelligence.json")
     for mk, data in mi_raw.get("matches", {}).items():
         market_intel[_normalize_match(mk)] = data
 
     odds_movement = {}
-    om_raw = _load_json(UPCOMING_DIR / "odds_movement.json")
+    om_raw = load_json_safe(UPCOMING_DIR / "odds_movement.json")
     for mk, data in om_raw.get("matches", {}).items():
         odds_movement[_normalize_match(mk)] = data
 
     goal_preds = {}
-    gp_raw = _load_json(UPCOMING_DIR / "goal_predictions.json")
+    gp_raw = load_json_safe(UPCOMING_DIR / "goal_predictions.json")
     for p in gp_raw.get("predictions", []):
         mk = _normalize_match(p.get("match", ""))
         if mk:
@@ -684,7 +678,7 @@ def _load_extra_market_odds():
     """Load real bookmaker odds from per-event extra markets files (all leagues)."""
     result = {}
     for fname in ["odds_extra_markets.json", "odds_extra_markets_premier_league.json"]:
-        raw = _load_json(UPCOMING_DIR / fname)
+        raw = load_json_safe(UPCOMING_DIR / fname)
         matches = raw.get("matches", {})
         result.update(matches)
     return result
@@ -700,14 +694,14 @@ def load_all_value_legs():
     for gp_file in ["goal_predictions_premier_league.json"]:
         gp_path = UPCOMING_DIR / gp_file
         if gp_path.exists():
-            _extra_gp = _load_json(gp_path)
+            _extra_gp = load_json_safe(gp_path)
             if isinstance(_extra_gp, dict):
                 for k, v in _extra_gp.items():
                     if isinstance(v, dict) and k not in goal_preds:
                         goal_preds[k] = v
 
     # --- 1X2 from unified_report ---
-    unified = _load_json(BETTING_DIR / "unified_report.json")
+    unified = load_json_safe(BETTING_DIR / "unified_report.json")
     for bet in unified.get("bets", []):
         prob = bet.get("our_probability", 0) or 0
         odds = bet.get("odds", 0) or 0
@@ -727,7 +721,7 @@ def load_all_value_legs():
             })
 
     # --- Over/Under value bets ---
-    ou = _load_json(UPCOMING_DIR / "over_under_bets.json")
+    ou = load_json_safe(UPCOMING_DIR / "over_under_bets.json")
     for bet in ou.get("recommended", []) + ou.get("consider", []):
         prob = bet.get("our_probability", 0) or 0
         odds = bet.get("odds", 0) or 0
@@ -782,7 +776,7 @@ def load_all_value_legs():
                     })
 
     # --- Handicap value bets ---
-    hc = _load_json(UPCOMING_DIR / "handicap_bets.json")
+    hc = load_json_safe(UPCOMING_DIR / "handicap_bets.json")
     for bet in hc.get("recommended", []) + hc.get("consider", []):
         prob = bet.get("our_probability", 0) or 0
         odds = bet.get("odds", 0) or 0
@@ -802,7 +796,7 @@ def load_all_value_legs():
             })
 
     # --- Handicap from margin_predictions (raw probs, all 7 lines) ---
-    margin_raw = _load_json(UPCOMING_DIR / "margin_predictions.json")
+    margin_raw = load_json_safe(UPCOMING_DIR / "margin_predictions.json")
     for pred_entry in margin_raw.get("predictions", []):
         mk = pred_entry.get("match", "")
         hc_probs = pred_entry.get("handicap_probs", {})
@@ -833,7 +827,7 @@ def load_all_value_legs():
                         })
 
     # --- BTTS & Corners value bets ---
-    bc = _load_json(UPCOMING_DIR / "btts_corners_bets.json")
+    bc = load_json_safe(UPCOMING_DIR / "btts_corners_bets.json")
     for bet in bc.get("recommended", []) + bc.get("consider", []):
         prob = bet.get("our_probability", 0) or 0
         val = bet.get("value_pct", 0) or 0
@@ -857,7 +851,7 @@ def load_all_value_legs():
             })
 
     # --- BTTS from btts_predictions (raw) — enhanced with real bookmaker odds ---
-    btts_raw = _load_json(UPCOMING_DIR / "btts_predictions.json")
+    btts_raw = load_json_safe(UPCOMING_DIR / "btts_predictions.json")
     # Handle both list and dict formats (file may be a plain list or {"predictions": [...]})
     btts_preds = btts_raw if isinstance(btts_raw, list) else btts_raw.get("predictions", [])
     for bp in btts_preds:
@@ -891,7 +885,7 @@ def load_all_value_legs():
                     })
 
     # --- Corners from corners_predictions ---
-    corners_raw = _load_json(UPCOMING_DIR / "corners_predictions.json")
+    corners_raw = load_json_safe(UPCOMING_DIR / "corners_predictions.json")
     corners_preds = corners_raw if isinstance(corners_raw, list) else corners_raw.get("predictions", [])
     for cp in corners_preds:
         mk = cp.get("match", "")
@@ -918,7 +912,7 @@ def load_all_value_legs():
                     })
 
     # --- Cards value bets ---
-    cards = _load_json(UPCOMING_DIR / "cards_bets.json")
+    cards = load_json_safe(UPCOMING_DIR / "cards_bets.json")
     for bet in cards.get("recommended", []) + cards.get("consider", []):
         prob = bet.get("our_probability", 0) or 0
         fair = bet.get("fair_odds", 0) or 0
@@ -942,7 +936,7 @@ def load_all_value_legs():
 
     # --- Extended markets (double chance, team totals, first half, multi-goal) ---
     # Now enhanced with real bookmaker odds from per-event endpoint
-    ext = _load_json(UPCOMING_DIR / "extended_markets.json")
+    ext = load_json_safe(UPCOMING_DIR / "extended_markets.json")
 
     for match_key, mdata in ext.get("matches", {}).items():
         ext_match = extra_odds.get(match_key, {})
@@ -1345,7 +1339,7 @@ def _sgp_joint_probability(legs, matrix, home_xg, away_xg):
                             leg_mask[h, a] = True
 
         elif market == "totals":
-            line = _extract_line(sel)
+            line = extract_line(sel)
             if line is not None:
                 is_over = "OVER" in sel
                 for h in range(n):
@@ -1370,7 +1364,7 @@ def _sgp_joint_probability(legs, matrix, home_xg, away_xg):
                             leg_mask[h, a] = True
 
         elif market == "team_totals":
-            line = _extract_line(sel)
+            line = extract_line(sel)
             if line is not None:
                 is_over = "OVER" in sel or "over" in sel
                 # Determine which team
@@ -1384,7 +1378,7 @@ def _sgp_joint_probability(legs, matrix, home_xg, away_xg):
                             leg_mask[h, a] = True
 
         elif market == "spreads":
-            line = _extract_line(sel)
+            line = extract_line(sel)
             if line is not None:
                 is_home = "HOME" in sel
                 for h in range(n):
@@ -1431,14 +1425,6 @@ def _sgp_joint_probability(legs, matrix, home_xg, away_xg):
     joint = (matrix * mask).sum()
     return float(joint) if joint > 0 else None
 
-
-def _extract_line(sel):
-    """Extract numeric line from selection string like 'OVER 2.5' or 'HOME -1'."""
-    import re
-    match = re.search(r'[-+]?\d+\.?\d*', sel)
-    if match:
-        return float(match.group())
-    return None
 
 
 def _extract_range(sel):
@@ -1651,11 +1637,11 @@ def _legs_conflict(leg_a, leg_b):
 
     # Under totals + BTTS YES (general check)
     if mkt_a == "totals" and "UNDER" in sel_a and mkt_b == "btts" and "YES" in sel_b:
-        line = _extract_line(sel_a)
+        line = extract_line(sel_a)
         if line is not None and line <= 2.5:
             return True
     if mkt_b == "totals" and "UNDER" in sel_b and mkt_a == "btts" and "YES" in sel_a:
-        line = _extract_line(sel_b)
+        line = extract_line(sel_b)
         if line is not None and line <= 2.5:
             return True
 
@@ -1671,7 +1657,7 @@ def _legs_conflict(leg_a, leg_b):
 
     if spread_leg:
         spread_sel = spread_leg["selection"].upper()
-        spread_line = _extract_line(spread_sel)
+        spread_line = extract_line(spread_sel)
         other_mkt = spread_other["market"]
         other_sel = spread_other["selection"].upper()
 
@@ -1891,7 +1877,7 @@ def _compute_hit_probability(combo, predictions_data):
             away_xg = pred.get("away_xg", 0)
 
         if home_xg <= 0 or away_xg <= 0:
-            ext = _load_json(UPCOMING_DIR / "extended_markets.json")
+            ext = load_json_safe(UPCOMING_DIR / "extended_markets.json")
             ext_match = ext.get("matches", {}).get(match_key, {})
             home_xg = ext_match.get("home_xg", 1.3)
             away_xg = ext_match.get("away_xg", 1.0)
@@ -2643,7 +2629,7 @@ def categorize_parlays(combos):
 
 def _load_todays_singles() -> set:
     """Load today's placed singles as (match, market, selection) tuples."""
-    placed = _load_json(BETTING_DIR / "placed_bets.json")
+    placed = load_json_safe(BETTING_DIR / "placed_bets.json")
     bets = placed.get("bets", [])
     if isinstance(bets, dict):
         bets = list(bets.values())
@@ -2927,7 +2913,7 @@ def generate_parlay_report(bankroll=None):
 
     # Step 7: Load sentiment data for quality scoring
     sentiment_data = {}
-    sent_raw = _load_json(UPCOMING_DIR / "sentiment_analysis.json")
+    sent_raw = load_json_safe(UPCOMING_DIR / "sentiment_analysis.json")
     sent_matches = sent_raw.get("matches", [])
     if isinstance(sent_matches, list):
         for s in sent_matches:
@@ -2971,7 +2957,7 @@ def generate_parlay_report(bankroll=None):
     # Engine 2 & 3: Compute hit probabilities
     print("  [Engine 2/3] Computing hit probabilities (Poisson + Copula)...")
     predictions_data = {}
-    preds_raw = _load_json(UPCOMING_DIR / "predictions.json")
+    preds_raw = load_json_safe(UPCOMING_DIR / "predictions.json")
     for p in preds_raw.get("predictions", []):
         predictions_data[_normalize_match(p.get("match", ""))] = p
 

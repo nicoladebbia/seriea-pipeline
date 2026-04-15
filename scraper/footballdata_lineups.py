@@ -57,6 +57,9 @@ _FD_NAME_MAP = {
     "AC Pisa 1909": "Pisa",
     "US Sassuolo Calcio": "Sassuolo",
     "Atalanta BC": "Atalanta",
+    "Empoli FC": "Empoli",
+    "AC Monza": "Monza",
+    "Venezia FC": "Venezia",
 }
 
 

@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from scripts.utils.ledger import load_json_ledger, save_json_ledger
+
 log = logging.getLogger(__name__)
 
 BASE = Path(__file__).resolve().parent.parent.parent
@@ -36,7 +38,7 @@ def record_predictions(predictions: List[Dict]) -> Dict:
     Returns:
         dict with count of new predictions recorded.
     """
-    ledger = _load_ledger()
+    ledger = load_json_ledger(LEDGER_PATH)
     existing_keys = {
         (r["match"], r.get("prediction_date", r.get("date", "")))
         for r in ledger
@@ -96,7 +98,7 @@ def record_predictions(predictions: List[Dict]) -> Dict:
         new_count += 1
 
     if new_count:
-        _save_ledger(ledger)
+        save_json_ledger(LEDGER_PATH, ledger)
         log.info("Recorded %d new fair odds predictions", new_count)
 
     return {"recorded": new_count}
@@ -112,7 +114,7 @@ def settle_predictions(results: Dict[str, Dict] = None) -> Dict:
     Returns:
         dict with count settled and accuracy stats.
     """
-    ledger = _load_ledger()
+    ledger = load_json_ledger(LEDGER_PATH)
     unsettled = [r for r in ledger if not r.get("settled")]
     if not unsettled:
         return {"settled": 0}
@@ -149,7 +151,7 @@ def settle_predictions(results: Dict[str, Dict] = None) -> Dict:
         settled_count += 1
 
     if settled_count:
-        _save_ledger(ledger)
+        save_json_ledger(LEDGER_PATH, ledger)
         _update_summary(ledger)
         log.info("Settled %d fair odds records", settled_count)
 
@@ -323,17 +325,3 @@ def _load_results() -> Dict:
     return results
 
 
-def _load_ledger() -> List[Dict]:
-    if LEDGER_PATH.exists():
-        try:
-            with open(LEDGER_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return []
-    return []
-
-
-def _save_ledger(ledger: List[Dict]):
-    BETTING_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LEDGER_PATH, "w") as f:
-        json.dump(ledger, f, indent=2)

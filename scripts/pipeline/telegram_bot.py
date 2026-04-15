@@ -577,9 +577,9 @@ MAX_TOOL_ROUNDS = 5
 
 
 def _truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
-    if len(result_str) <= max_chars:
-        return result_str
-    return result_str[:max_chars] + "\n... [truncated]"
+    from web.advisor import _truncate_tool_result as _impl
+
+    return _impl(result_str, max_chars=max_chars)
 
 
 # Tool name → user-friendly status message

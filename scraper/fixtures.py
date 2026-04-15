@@ -7,10 +7,11 @@ import re
 from datetime import date, datetime
 
 import pandas as pd
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup
 
 from config.settings import FBREF_BASE_URL, SERIE_A_COMP_ID
 from config.team_names import normalize_team
+from parser.html_utils import _uncomment_tables
 from scraper.client import FBrefClient
 from storage.paths import fixtures_csv_path
 
@@ -73,14 +74,6 @@ def _fixture_url(season: str, league: str = "serie_a") -> str:
         f"{FBREF_BASE_URL}/en/comps/{comp_id}"
         f"/{season}/schedule/{season}-{league_name}-Scores-and-Fixtures"
     )
-
-
-def _uncomment_tables(soup: BeautifulSoup) -> None:
-    """FBref sometimes hides tables inside HTML comments. Unwrap them in-place."""
-    for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
-        if "<table" in comment:
-            fragment = BeautifulSoup(comment, "lxml")
-            comment.replace_with(fragment)
 
 
 def _safe_int(val: str | None) -> int | None:

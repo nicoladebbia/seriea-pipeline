@@ -58,6 +58,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR, MODELS_DIR
+from ml.poisson import poisson_1x2, poisson_1x2_vec, market_implied_probs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,47 +128,7 @@ def _fmt_duration(secs: float) -> str:
     return f"{m}m{s:02d}s"
 
 
-def poisson_1x2_from_xg(hxg: float, axg: float) -> np.ndarray:
-    """Convert xG to 1X2 probabilities via Poisson."""
-    pH = pD = pA = 0.0
-    hxg = max(hxg, 0.3)
-    axg = max(axg, 0.3)
-    for h in range(8):
-        for a in range(8):
-            p = poisson.pmf(h, hxg) * poisson.pmf(a, axg)
-            if h > a:
-                pH += p
-            elif h == a:
-                pD += p
-            else:
-                pA += p
-    t = pH + pD + pA
-    return np.array([pH / t, pD / t, pA / t]) if t > 0 else np.array([0.4, 0.3, 0.3])
-
-
-def poisson_1x2_batch(hxg_arr: np.ndarray, axg_arr: np.ndarray) -> np.ndarray:
-    """Batch-vectorized Poisson 1X2 probabilities."""
-    n = len(hxg_arr)
-    probs = np.zeros((n, 3))
-    for i in range(n):
-        probs[i] = poisson_1x2_from_xg(hxg_arr[i], axg_arr[i])
-    return probs
-
-
-def get_market_probs(df: pd.DataFrame, mask: pd.Series) -> np.ndarray:
-    """Extract market-implied probabilities from Pinnacle odds."""
-    psh = df.loc[mask, "odds_PSH"].values
-    psd = df.loc[mask, "odds_PSD"].values
-    psa = df.loc[mask, "odds_PSA"].values
-    n = mask.sum()
-    probs = np.zeros((n, 3))
-    for i in range(n):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1 / psh[i], 1 / psd[i], 1 / psa[i]])
-            probs[i] = raw / raw.sum()
-        else:
-            probs[i] = [0.4, 0.3, 0.3]
-    return probs
+get_market_probs = market_implied_probs  # alias for backward compat
 
 
 # =============================================================================
@@ -830,11 +791,11 @@ class UnifiedOptimizer:
 
             hxg_te = np.clip(m_hg.predict(X_te), 0.3, 4.0)
             axg_te = np.clip(m_ag.predict(X_te), 0.3, 4.0)
-            pois_probs_te = poisson_1x2_batch(hxg_te, axg_te)
+            pois_probs_te = poisson_1x2_vec(hxg_te, axg_te)
 
             hxg_val = np.clip(m_hg.predict(X_val), 0.3, 4.0)
             axg_val = np.clip(m_ag.predict(X_val), 0.3, 4.0)
-            pois_probs_val = poisson_1x2_batch(hxg_val, axg_val)
+            pois_probs_val = poisson_1x2_vec(hxg_val, axg_val)
 
             del m_hg, m_ag
             gc.collect()
@@ -1247,7 +1208,7 @@ class UnifiedOptimizer:
 
                 hxg = np.clip(hg_model.predict(X_te), 0.3, 4.0)
                 axg = np.clip(ag_model.predict(X_te), 0.3, 4.0)
-                pois_probs = poisson_1x2_batch(hxg, axg)
+                pois_probs = poisson_1x2_vec(hxg, axg)
 
                 # Also get O/U and BTTS from Poisson
                 n_te = test_m.sum()

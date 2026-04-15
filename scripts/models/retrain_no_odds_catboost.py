@@ -22,9 +22,10 @@ import pandas as pd
 from catboost import CatBoostClassifier
 
 from config.settings import MODELS_DIR
-from ml.config import LABEL_MAP, META_COLS, ValidationConfig
+from ml.config import LABEL_MAP, ValidationConfig
 from ml.data import TimeSeriesSplitter
 from ml.evaluation import compute_metrics
+from ml.training import _strip_meta
 from ml.tuning import _compute_sample_weights
 from storage.paths import features_path
 
@@ -33,11 +34,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-
-def _strip_meta(X: pd.DataFrame) -> pd.DataFrame:
-    """Drop metadata columns before training."""
-    return X.drop(columns=[c for c in META_COLS if c in X.columns])
 
 
 def load_current_feature_set() -> list[str]:

@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Callable, Tuple
 import numpy as np
 
+from monitoring.utils import load_json_history, save_json_history
+
 try:
     from scipy import stats
     SCIPY_AVAILABLE = True
@@ -359,16 +361,11 @@ class ABTestFramework:
 
     def _load_history(self):
         """Load experiment history."""
-        if self.history_file.exists():
-            with open(self.history_file) as f:
-                self.experiment_history = json.load(f)
-        else:
-            self.experiment_history = []
+        self.experiment_history = load_json_history(self.history_file)
 
     def _save_history(self):
         """Save experiment history."""
-        with open(self.history_file, "w") as f:
-            json.dump(self.experiment_history, f, indent=2)
+        save_json_history(self.history_file, self.experiment_history)
 
     def create_experiment(
         self,

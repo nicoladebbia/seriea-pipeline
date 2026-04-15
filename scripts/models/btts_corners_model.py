@@ -14,7 +14,6 @@ Now fetches real BTTS odds from The Odds API for accurate value detection.
 
 import json
 import logging
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +22,8 @@ from dataclasses import dataclass
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from ml.poisson import poisson_probability, poisson_cumulative
+from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -445,17 +446,6 @@ def get_team_corners(team: str, location: str) -> float:
     return corners.get(team, 4.0)
 
 
-def poisson_probability(k: int, lambda_: float) -> float:
-    """Calculate Poisson probability."""
-    if lambda_ <= 0:
-        return 1.0 if k == 0 else 0.0
-    return (math.exp(-lambda_) * (lambda_ ** k)) / math.factorial(k)
-
-
-def poisson_cumulative(k: int, lambda_: float) -> float:
-    """Calculate cumulative Poisson P(X <= k)."""
-    return sum(poisson_probability(i, lambda_) for i in range(k + 1))
-
 
 def calculate_corners(
     home_team: str,
@@ -736,25 +726,6 @@ def generate_corners_bets(prediction: CornersPrediction) -> List[BTTSCornersBet]
             ))
 
     return bets
-
-
-# =============================================================================
-# DATA LOADING
-# =============================================================================
-
-def load_predictions() -> List[Dict]:
-    """Load match predictions from all league files."""
-    all_preds = []
-    for fname in ["predictions.json", "predictions_premier_league.json"]:
-        p = DATA_DIR / "upcoming" / fname
-        if p.exists():
-            try:
-                with open(p) as f:
-                    data = json.load(f)
-                all_preds.extend(data.get("predictions", []))
-            except Exception:
-                pass
-    return all_preds
 
 
 # =============================================================================

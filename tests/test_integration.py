@@ -1067,9 +1067,9 @@ class TestBacktestPipeline:
 
     def test_poisson_1x2_from_xg(self):
         """Poisson 1X2 conversion in optimize_unified produces valid arrays."""
-        from scripts.models.optimize_unified import poisson_1x2_from_xg
+        from ml.poisson import poisson_1x2
 
-        probs = poisson_1x2_from_xg(1.5, 1.0)
+        probs = poisson_1x2(1.5, 1.0, min_xg=0.3)
         assert len(probs) == 3
         assert abs(probs.sum() - 1.0) < 0.001
         assert probs[0] > probs[2], "Home should be favored with higher xG"
@@ -1278,12 +1278,12 @@ class TestOptimizePipeline:
 
     def test_poisson_batch_conversion(self):
         """Batch Poisson conversion produces consistent results."""
-        from scripts.models.optimize_unified import poisson_1x2_from_xg, poisson_1x2_batch
+        from ml.poisson import poisson_1x2, poisson_1x2_vec
 
         hxg = np.array([1.5, 1.0, 2.0])
         axg = np.array([1.0, 1.5, 0.8])
 
-        batch_result = poisson_1x2_batch(hxg, axg)
+        batch_result = poisson_1x2_vec(hxg, axg)
         assert batch_result.shape == (3, 3)
 
         # Each row should sum to 1
@@ -1293,7 +1293,7 @@ class TestOptimizePipeline:
 
         # Individual results should match batch
         for i in range(3):
-            single = poisson_1x2_from_xg(hxg[i], axg[i])
+            single = poisson_1x2(hxg[i], axg[i], min_xg=0.3)
             np.testing.assert_allclose(batch_result[i], single, atol=0.001)
 
 

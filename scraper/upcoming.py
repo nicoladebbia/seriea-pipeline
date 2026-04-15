@@ -61,10 +61,7 @@ class UpcomingMatch:
     venue: Optional[str] = None
 
 
-def _make_match_id(match_date: date, home: str, away: str) -> str:
-    """Generate unique match ID."""
-    date_str = match_date.isoformat()
-    return f"{date_str}_{home}_{away}".replace(" ", "-")
+from scraper.fixtures import _make_match_id  # noqa: E402 — canonical definition
 
 
 def fetch_fixtures_from_football_data(league: str = "serie_a") -> pd.DataFrame:

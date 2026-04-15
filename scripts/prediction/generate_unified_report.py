@@ -40,21 +40,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from scripts.utils.json_utils import load_json_safe
+
 log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "upcoming"
-
-
-def _load_json(path: Path) -> Optional[Any]:
-    """Load a JSON file, return None if missing or invalid."""
-    if not path.exists():
-        return None
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning("Failed to load %s: %s", path.name, e)
-        return None
 
 
 def _normalize_match_key(key: str) -> str:
@@ -122,28 +112,28 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
 
     # ── Load all source files ──────────────────────────────────────
     # Try current pipeline output first, fall back to legacy name
-    predictions = _load_json(data_dir / "predictions.json")
+    predictions = load_json_safe(data_dir / "predictions.json", default=None)
     if not predictions:
-        predictions = _load_json(data_dir / "predictions_unified.json")
-    bet_slip = _load_json(data_dir / "unified_bet_slip.json")
-    player_analysis = _load_json(data_dir / "player_analysis.json")
-    current_form = _load_json(data_dir / "current_form.json")
-    h2h = _load_json(data_dir / "h2h_upcoming.json")
-    market_intel = _load_json(data_dir / "market_intelligence.json")
-    weather = _load_json(data_dir / "weather.json")
-    referees = _load_json(data_dir / "referees.json")
-    lineups = _load_json(data_dir / "lineup_predictions.json")
-    cross_market = _load_json(data_dir / "cross_market_signals.json")
-    bookmaker = _load_json(data_dir / "bookmaker_analysis.json")
-    goals = _load_json(data_dir / "goal_predictions.json")
-    margins = _load_json(data_dir / "margin_predictions.json")
-    extended = _load_json(data_dir / "extended_markets.json")
-    odds_full = _load_json(data_dir / "odds_full.json")
-    sentiment = _load_json(data_dir / "sentiment_analysis.json")
-    standings_data = _load_json(data_dir / "standings.json")
-    btts = _load_json(data_dir / "btts_predictions.json")
-    cards = _load_json(data_dir / "cards_predictions.json")
-    corners = _load_json(data_dir / "corners_predictions.json")
+        predictions = load_json_safe(data_dir / "predictions_unified.json", default=None)
+    bet_slip = load_json_safe(data_dir / "unified_bet_slip.json", default=None)
+    player_analysis = load_json_safe(data_dir / "player_analysis.json", default=None)
+    current_form = load_json_safe(data_dir / "current_form.json", default=None)
+    h2h = load_json_safe(data_dir / "h2h_upcoming.json", default=None)
+    market_intel = load_json_safe(data_dir / "market_intelligence.json", default=None)
+    weather = load_json_safe(data_dir / "weather.json", default=None)
+    referees = load_json_safe(data_dir / "referees.json", default=None)
+    lineups = load_json_safe(data_dir / "lineup_predictions.json", default=None)
+    cross_market = load_json_safe(data_dir / "cross_market_signals.json", default=None)
+    bookmaker = load_json_safe(data_dir / "bookmaker_analysis.json", default=None)
+    goals = load_json_safe(data_dir / "goal_predictions.json", default=None)
+    margins = load_json_safe(data_dir / "margin_predictions.json", default=None)
+    extended = load_json_safe(data_dir / "extended_markets.json", default=None)
+    odds_full = load_json_safe(data_dir / "odds_full.json", default=None)
+    sentiment = load_json_safe(data_dir / "sentiment_analysis.json", default=None)
+    standings_data = load_json_safe(data_dir / "standings.json", default=None)
+    btts = load_json_safe(data_dir / "btts_predictions.json", default=None)
+    cards = load_json_safe(data_dir / "cards_predictions.json", default=None)
+    corners = load_json_safe(data_dir / "corners_predictions.json", default=None)
 
     # ── Build match indexes ────────────────────────────────────────
     pred_index = _extract_matches(predictions, "predictions")

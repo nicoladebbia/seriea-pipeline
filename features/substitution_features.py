@@ -25,7 +25,6 @@ Leakage safety:
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -34,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from config.team_names import normalize_team
+from scripts.utils.ledger import load_json_ledger
 
 log = logging.getLogger(__name__)
 
@@ -47,22 +47,6 @@ _LOOKBACK_N = 10
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _load_ledger() -> List[dict]:
-    """Load the substitution ledger.  Returns [] if missing or malformed."""
-    if not SUBS_FILE.exists():
-        return []
-    try:
-        with open(SUBS_FILE) as fh:
-            data = json.load(fh)
-        if not isinstance(data, list):
-            log.warning("substitutions.json is not a list — returning empty ledger")
-            return []
-        return data
-    except (json.JSONDecodeError, IOError) as exc:
-        log.warning("Could not read substitutions.json: %s", exc)
-        return []
-
 
 def _build_team_timeline(ledger: List[dict]) -> Dict[str, List[dict]]:
     """Index ledger records by normalised team name, sorted by date ascending.
@@ -170,7 +154,7 @@ def add_substitution_features(matches: pd.DataFrame) -> pd.DataFrame:
     """
     df = matches.copy()
 
-    ledger = _load_ledger()
+    ledger = load_json_ledger(SUBS_FILE)
     if not ledger:
         log.info(
             "Substitution ledger is empty — all sub pattern features will be NaN. "

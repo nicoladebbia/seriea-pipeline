@@ -36,7 +36,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config.team_names import normalize_team
+from config.settings import ROLLING_WINDOW
+from config.team_names import normalize_team, normalize_team_safe
+from features._utils import merge_side
 
 log = logging.getLogger(__name__)
 
@@ -44,19 +46,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 SOFASCORE_DIR = PROJECT_ROOT / "data" / "external" / "sofascore"
 SOFASCORE_PATH = SOFASCORE_DIR / "player_match_stats.parquet"
 
-ROLLING_WINDOW = 5
 
-
-def _normalize(name: str) -> str:
-    """Normalize Sofascore team names to pipeline canonical form.
-
-    Uses the central normalize_team() which handles case-insensitive matching,
-    so Sofascore's varied casing (e.g., "ac milan", "Inter") is resolved
-    to canonical title-case names ("Milan", "Inter").
-    """
-    if pd.isna(name):
-        return ""
-    return normalize_team(name)
+_normalize = normalize_team_safe
 
 
 def _load_sofascore(league: str | None = None) -> pd.DataFrame | None:
@@ -867,36 +858,9 @@ def add_sofascore_features(matches: pd.DataFrame) -> pd.DataFrame:
     lookup = lookup.dropna(subset=["_date"])
     lookup = lookup.sort_values(["team_norm", "_date"]).reset_index(drop=True)
 
-    def _merge_side(df_in, team_col, prefix):
-        """Merge rolling stats for one side (home/away) using merge_asof."""
-        side_df = df_in[["_match_date", team_col]].copy()
-        side_df = side_df.rename(columns={team_col: "team_norm"})
-        side_df = side_df.dropna(subset=["_match_date"])
-        side_df = side_df.sort_values("_match_date").reset_index()
-
-        right_df = lookup.copy()
-        right_df = right_df.rename(columns={"_date": "_match_date"})
-        right_df = right_df.dropna(subset=["_match_date"])
-        right_df = right_df.sort_values("_match_date").reset_index(drop=True)
-
-        merged = pd.merge_asof(
-            side_df,
-            right_df,
-            on="_match_date",
-            by="team_norm",
-            direction="backward",
-        ).set_index("index")
-
-        # Rename to home_/away_ prefix
-        for c in [col for col in ss_cols if col in merged.columns]:
-            col_name = f"{prefix}_{c}"
-            df_in.loc[merged.index, col_name] = merged[c].values
-
-        return df_in
-
     df = df.sort_values("_match_date")
-    df = _merge_side(df, "home_team_norm", "home")
-    df = _merge_side(df, "away_team_norm", "away")
+    df = merge_side(df, "home_team_norm", "home", lookup, "_date", ss_cols)
+    df = merge_side(df, "away_team_norm", "away", lookup, "_date", ss_cols)
 
     # Differential features (build all at once to avoid fragmentation)
     diff_data = {}

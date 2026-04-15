@@ -41,6 +41,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, PROJECT_ROOT
 from config.team_names import normalize_team
+from scripts.utils.parsing import get_cache_path
 from scraper.lineup_fetcher import normalize_player_name
 
 try:
@@ -219,14 +220,9 @@ class PlayerDataScraper:
         """Normalize team name."""
         return normalize_team(team)
 
-    def _get_cache_path(self, key: str) -> Path:
-        """Get cache file path."""
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        return CACHE_DIR / f"{hashlib.md5(key.encode()).hexdigest()}.json"
-
     def _load_from_cache(self, key: str, max_age_hours: int = 24) -> Optional[Dict]:
         """Load data from cache if valid."""
-        cache_path = self._get_cache_path(key)
+        cache_path = get_cache_path(CACHE_DIR, key)
         if not cache_path.exists():
             return None
 
@@ -244,7 +240,7 @@ class PlayerDataScraper:
 
     def _save_to_cache(self, key: str, data: any):
         """Save data to cache."""
-        cache_path = self._get_cache_path(key)
+        cache_path = get_cache_path(CACHE_DIR, key)
         try:
             with open(cache_path, "w") as f:
                 json.dump({

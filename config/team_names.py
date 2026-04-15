@@ -4,6 +4,8 @@ Maps football-data.co.uk names (and FBref variants) to a single canonical name
 per team. Organized by league for clarity, but all share one global lookup.
 """
 
+import unicodedata
+
 # ---------------------------------------------------------------------------
 # Serie A (Italy) — including all teams from 2005 onwards
 # ---------------------------------------------------------------------------
@@ -530,3 +532,31 @@ def normalize_team(name) -> str:
     if result is not None:
         return result
     return stripped
+
+
+def normalize_team_safe(name: str) -> str:
+    """NaN-safe wrapper around :func:`normalize_team`.
+
+    Returns ``""`` for NaN / None inputs, otherwise delegates to
+    :func:`normalize_team`.  Useful in pandas ``.apply()`` calls where
+    the column may contain missing values.
+    """
+    try:
+        import pandas as pd
+
+        if pd.isna(name):
+            return ""
+    except Exception:
+        pass
+    return normalize_team(name)
+
+
+def strip_accents(s: str) -> str:
+    """Remove diacritical marks from a string.
+
+    Useful for fuzzy matching player/team names across sources that differ
+    only in accent usage (e.g. "Martínez" vs "Martinez").
+    """
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+    )

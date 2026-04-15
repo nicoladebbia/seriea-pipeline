@@ -29,6 +29,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import poisson
 
+from scripts.betting.betting_unified import remove_overround
+
 from config.settings import DATA_DIR, MODELS_DIR
 from storage.paths import features_path
 
@@ -168,19 +170,7 @@ def match_1x2_probs(matrix: np.ndarray) -> Dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def remove_overround(odds_list: List[float]) -> List[float]:
-    """Remove overround using power method (Shin's simplified).
-
-    More accurate than simple normalization for 2-way markets.
-    Falls back to basic normalization for robustness.
-    """
-    implied = [1.0 / o for o in odds_list]
-    total = sum(implied)
-    if total <= 0:
-        n = len(odds_list)
-        return [1.0 / n] * n
-    # Basic normalization (sufficient for Pinnacle's thin margins ~2-3%)
-    return [p / total for p in implied]
+# remove_overround imported from scripts.betting.betting_unified
 
 
 def compute_clv(opening_odds: float, closing_odds: float) -> float:

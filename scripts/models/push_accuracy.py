@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, accuracy_score
 from sklearn.neural_network import MLPClassifier
@@ -30,6 +29,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR, MODELS_DIR
+from ml.poisson import poisson_1x2, market_implied_probs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -44,18 +44,6 @@ def load_data():
     features = get_training_features(df)
     df = _compute_targets(df)
     return df, features
-
-
-def poisson_1x2(hxg, axg):
-    pH = pD = pA = 0.0
-    for h in range(8):
-        for a in range(8):
-            p = poisson.pmf(h, hxg) * poisson.pmf(a, axg)
-            if h > a: pH += p
-            elif h == a: pD += p
-            else: pA += p
-    t = pH + pD + pA
-    return np.array([pH / t, pD / t, pA / t])
 
 
 def get_splits(df_v, features, test_season):
@@ -80,18 +68,7 @@ def get_splits(df_v, features, test_season):
     }
 
 
-def get_market_probs(df_v, mask):
-    psh = df_v.loc[mask, "odds_PSH"].values
-    psd = df_v.loc[mask, "odds_PSD"].values
-    psa = df_v.loc[mask, "odds_PSA"].values
-    p = np.zeros((mask.sum(), 3))
-    for i in range(len(psh)):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1 / psh[i], 1 / psd[i], 1 / psa[i]])
-            p[i] = raw / raw.sum()
-        else:
-            p[i] = [0.4, 0.3, 0.3]
-    return p
+get_market_probs = market_implied_probs  # alias for backward compat
 
 
 def train_base_models(s):

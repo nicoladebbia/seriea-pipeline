@@ -17,7 +17,6 @@ Strategy:
 import sys, json, logging, gc, warnings
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from pathlib import Path
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.isotonic import IsotonicRegression
@@ -30,45 +29,17 @@ log = logging.getLogger(__name__)
 
 from scripts.models.comprehensive_markets import load_unified_training_data, get_training_features, _compute_targets
 from config.settings import MODELS_DIR
+from ml.poisson import poisson_1x2, poisson_1x2_vec, market_implied_probs
 
 MDIR = MODELS_DIR / "markets"
 LABEL_MAP = {"H": 0, "D": 1, "A": 2}
 INV_LABEL = {0: "H", 1: "D", 2: "A"}
 
 
-def poisson_1x2(hxg, axg):
-    pH = pD = pA = 0.0
-    for h in range(8):
-        for a in range(8):
-            p = poisson.pmf(h, hxg) * poisson.pmf(a, axg)
-            if h > a: pH += p
-            elif h == a: pD += p
-            else: pA += p
-    t = pH + pD + pA
-    return np.array([pH / t, pD / t, pA / t])
-
-
-def get_mkt(df_v, mask):
-    psh = df_v.loc[mask, "odds_PSH"].values
-    psd = df_v.loc[mask, "odds_PSD"].values
-    psa = df_v.loc[mask, "odds_PSA"].values
-    p = np.zeros((mask.sum(), 3))
-    for i in range(len(psh)):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1 / psh[i], 1 / psd[i], 1 / psa[i]])
-            p[i] = raw / raw.sum()
-        else:
-            p[i] = [0.4, 0.3, 0.3]
-    return p
-
-
 def build_pois_probs(hg, ag, X):
     hxg = np.clip(hg.predict(X), 0.3, 4.0)
     axg = np.clip(ag.predict(X), 0.3, 4.0)
-    p = np.zeros((len(X), 3))
-    for i in range(len(X)):
-        p[i] = poisson_1x2(hxg[i], axg[i])
-    return p
+    return poisson_1x2_vec(hxg, axg)
 
 
 def main():
@@ -105,9 +76,9 @@ def main():
         y_tr_num = pd.Series(y_tr).map(LABEL_MAP).values
         y_val_num = pd.Series(y_val).map(LABEL_MAP).values
 
-        mkt_tr = get_mkt(df_v, train_m)
-        mkt_val = get_mkt(df_v, val_m)
-        mkt_te = get_mkt(df_v, test_m)
+        mkt_tr = market_implied_probs(df_v, train_m)
+        mkt_val = market_implied_probs(df_v, val_m)
+        mkt_te = market_implied_probs(df_v, test_m)
 
         log.info("Train: %d, Val: %d, Test: %d", len(X_tr), len(X_val), len(X_te))
 

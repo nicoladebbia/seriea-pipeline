@@ -51,13 +51,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR, MODELS_DIR, SEASONS
+from ml.evaluation import (
+    _multiclass_brier,
+    expected_calibration_error,
+    ranked_probability_score,
+)
+from ml.poisson import poisson_win_prob
 from storage.paths import features_path
 
 # Lazy-loaded ML classifier for backtest
@@ -449,23 +454,14 @@ def predict_market(row: pd.Series) -> Optional[Dict[str, float]]:
 
 
 def _poisson_probs(home_xg: float, away_xg: float, max_goals: int = 10) -> Dict[str, float]:
-    """Convert xG to win probabilities via Poisson."""
-    home_p = [poisson.pmf(g, home_xg) for g in range(max_goals)]
-    away_p = [poisson.pmf(g, away_xg) for g in range(max_goals)]
+    """Convert xG to win probabilities via Poisson.
 
-    prob_H = prob_D = prob_A = 0.0
-    for h in range(max_goals):
-        for a in range(max_goals):
-            p = home_p[h] * away_p[a]
-            if h > a:
-                prob_H += p
-            elif h == a:
-                prob_D += p
-            else:
-                prob_A += p
-
-    total = prob_H + prob_D + prob_A
-    return {"prob_H": prob_H / total, "prob_D": prob_D / total, "prob_A": prob_A / total}
+    Thin wrapper around ml.poisson.poisson_win_prob that remaps keys to
+    prob_H/prob_D/prob_A format expected by the backtest ensemble.
+    Caller already clamps xG, so we disable internal clamping.
+    """
+    p = poisson_win_prob(home_xg, away_xg, max_goals=max_goals, min_xg=0.0, max_xg=999.0)
+    return {"prob_H": p["H"], "prob_D": p["D"], "prob_A": p["A"]}
 
 
 def predict_ensemble(
@@ -618,51 +614,6 @@ def predict_ensemble(
 # =============================================================================
 # METRICS ENGINE
 # =============================================================================
-
-def ranked_probability_score(y_true: np.ndarray, y_proba: np.ndarray) -> float:
-    """Ranked Probability Score -- proper ordinal metric for H/D/A.
-
-    RPS penalises predictions that are far from the true outcome in ordinal
-    space (Home < Draw < Away). Lower is better. Fully vectorized.
-    """
-    n = len(y_true)
-    y_onehot = np.zeros_like(y_proba)
-    y_onehot[np.arange(n), y_true] = 1.0
-    cum_pred = np.cumsum(y_proba, axis=1)
-    cum_true = np.cumsum(y_onehot, axis=1)
-    return float(np.mean(np.mean((cum_pred - cum_true) ** 2, axis=1)))
-
-
-def expected_calibration_error(
-    y_true: np.ndarray,
-    y_proba: np.ndarray,
-    n_bins: int = 10,
-) -> float:
-    """Expected Calibration Error -- weighted average of per-bin calibration gap."""
-    n = len(y_true)
-    y_pred = np.argmax(y_proba, axis=1)
-    confidences = np.max(y_proba, axis=1)
-    correct = (y_pred == y_true).astype(float)
-
-    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
-    ece = 0.0
-    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
-        mask = (confidences > lo) & (confidences <= hi)
-        count = mask.sum()
-        if count == 0:
-            continue
-        avg_conf = confidences[mask].mean()
-        avg_acc = correct[mask].mean()
-        ece += (count / n) * abs(avg_acc - avg_conf)
-    return float(ece)
-
-
-def _multiclass_brier(y_int: np.ndarray, y_proba: np.ndarray) -> float:
-    """Mean squared error between predicted probabilities and one-hot truth."""
-    n_classes = y_proba.shape[1]
-    y_onehot = np.zeros((len(y_int), n_classes))
-    y_onehot[np.arange(len(y_int)), y_int] = 1
-    return float(np.mean((y_proba - y_onehot) ** 2))
 
 
 def compute_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
@@ -1554,7 +1505,6 @@ class BacktestEngine:
         log.info("Running ML walk-forward cross-validation")
 
         from ml.walk_forward import walk_forward_split, WalkForwardFold
-        from ml.evaluation import ranked_probability_score as eval_rps
 
         # Get feature columns (exclude meta and target columns)
         exclude_cols = {
@@ -1630,7 +1580,7 @@ class BacktestEngine:
                 brier = float(np.mean((y_proba - y_onehot) ** 2))
 
                 # RPS
-                rps = eval_rps(y_test_int, y_proba)
+                rps = ranked_probability_score(y_test_int, y_proba)
 
                 # Per-class accuracy
                 home_mask = y_test == "H"

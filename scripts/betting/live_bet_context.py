@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from scripts.utils.parsing import extract_line
+
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -211,7 +213,7 @@ def _generate_commentary(market: str, selection: str, home_score: int,
 
     # Over/Under
     if norm_market == "totals":
-        line = _extract_line(selection)
+        line = extract_line(selection)
         if line is not None:
             if "over" in selection.lower():
                 needed = line - total + 1
@@ -296,7 +298,7 @@ def _generate_commentary(market: str, selection: str, home_score: int,
 
     # Asian Handicap / Spreads
     if norm_market == "spreads":
-        line = _extract_line(selection)
+        line = extract_line(selection)
         if line is not None:
             is_home = not selection.lower().startswith("away")
             if is_home:
@@ -357,9 +359,4 @@ def _normalize_market(market: str) -> str:
     return m
 
 
-def _extract_line(selection: str) -> Optional[float]:
-    """Extract numeric line from selection string, e.g. 'Over 2.5' -> 2.5."""
-    match = re.search(r'[-+]?\d+\.?\d*', selection)
-    if match:
-        return float(match.group())
-    return None
+

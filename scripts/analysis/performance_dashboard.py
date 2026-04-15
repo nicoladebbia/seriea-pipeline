@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from config.settings import DATA_DIR
+from scripts.utils.json_utils import load_json_safe
 
 log = logging.getLogger(__name__)
 
@@ -34,24 +35,13 @@ FEATURES_PATH = DATA_DIR / "features" / "features.parquet"
 DASHBOARD_OUT = DATA_DIR / "performance_dashboard.json"
 
 
-def _load_json(path: Path) -> list | dict:
-    """Load JSON, return empty on failure."""
-    if not path.exists():
-        return []
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
 def archive_predictions():
     """Archive current predictions before they get overwritten by next pipeline run.
 
     Call this BEFORE running the pipeline to preserve predictions for verification.
     Stores predictions keyed by match name to avoid duplicates.
     """
-    preds = _load_json(PREDICTIONS_PATH)
+    preds = load_json_safe(PREDICTIONS_PATH, default=[])
     if not preds:
         return 0
 
@@ -60,7 +50,7 @@ def archive_predictions():
         return 0
 
     # Load existing archive
-    archive = _load_json(PREDICTIONS_ARCHIVE)
+    archive = load_json_safe(PREDICTIONS_ARCHIVE, default=[])
     if not isinstance(archive, dict):
         archive = {}
 
@@ -108,9 +98,9 @@ def check_prediction_accuracy() -> dict:
 
     Uses both current predictions.json AND the predictions archive.
     """
-    preds = _load_json(PREDICTIONS_PATH)
-    archive = _load_json(PREDICTIONS_ARCHIVE)
-    results = _load_json(RESULTS_PATH)
+    preds = load_json_safe(PREDICTIONS_PATH, default=[])
+    archive = load_json_safe(PREDICTIONS_ARCHIVE, default=[])
+    results = load_json_safe(RESULTS_PATH, default=[])
 
     if not preds and not archive:
         return {"status": "no_data", "predictions": 0, "results": 0}
@@ -218,9 +208,9 @@ def check_prediction_accuracy() -> dict:
 
 def check_betting_performance() -> dict:
     """Analyze betting P&L from history."""
-    history = _load_json(BETTING_HISTORY)
-    bankroll = _load_json(BANKROLL_PATH)
-    bet_log = _load_json(BETTING_LOG)
+    history = load_json_safe(BETTING_HISTORY, default=[])
+    bankroll = load_json_safe(BANKROLL_PATH, default=[])
+    bet_log = load_json_safe(BETTING_LOG, default=[])
 
     # history.json uses "settled_bets" or "bets" key
     if isinstance(history, dict):
@@ -429,9 +419,9 @@ def check_feature_drift() -> dict:
 
 def check_confidence_calibration() -> dict:
     """Check if confidence levels correlate with accuracy."""
-    preds = _load_json(PREDICTIONS_PATH)
-    archive = _load_json(PREDICTIONS_ARCHIVE)
-    results = _load_json(RESULTS_PATH)
+    preds = load_json_safe(PREDICTIONS_PATH, default=[])
+    archive = load_json_safe(PREDICTIONS_ARCHIVE, default=[])
+    results = load_json_safe(RESULTS_PATH, default=[])
 
     if (not preds and not archive) or not results:
         return {"status": "insufficient_data"}
@@ -513,8 +503,8 @@ def check_settled_bet_feedback() -> dict:
     Compares our predicted probability vs actual outcome, flags data errors,
     and identifies systematic biases (e.g. overconfidence on certain markets).
     """
-    history = _load_json(BETTING_HISTORY)
-    archive = _load_json(PREDICTIONS_ARCHIVE)
+    history = load_json_safe(BETTING_HISTORY, default=[])
+    archive = load_json_safe(PREDICTIONS_ARCHIVE, default=[])
 
     if isinstance(history, dict):
         bets = history.get("settled_bets", history.get("bets", []))

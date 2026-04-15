@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, UPCOMING_DIR
+from scripts.utils.json_utils import load_json_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -112,20 +113,6 @@ EPL_REFEREES = {
 # HELPERS
 # =============================================================================
 
-def _load_json(path: Path, default=None):
-    """Load JSON file safely."""
-    if default is None:
-        default = {}
-    if not path.exists():
-        return default
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception as e:
-        log.warning(f"Failed to load {path}: {e}")
-        return default
-
-
 def _save_json(path: Path, data: dict):
     """Save JSON file with pretty formatting."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,25 +139,25 @@ def _merge_matches(existing_data: dict, new_matches: dict, timestamp_key: str = 
 
 def get_epl_predictions() -> List[dict]:
     """Load EPL predictions."""
-    data = _load_json(UPCOMING_DIR / "predictions_premier_league.json")
+    data = load_json_safe(UPCOMING_DIR / "predictions_premier_league.json")
     return data.get("predictions", [])
 
 
 def get_epl_odds() -> dict:
     """Load EPL odds data (match-keyed dict)."""
-    data = _load_json(UPCOMING_DIR / "odds_full_premier_league.json")
+    data = load_json_safe(UPCOMING_DIR / "odds_full_premier_league.json")
     return data.get("matches", {})
 
 
 def get_epl_standings() -> dict:
     """Load EPL standings (short team names)."""
-    data = _load_json(UPCOMING_DIR / "standings_premier_league.json")
+    data = load_json_safe(UPCOMING_DIR / "standings_premier_league.json")
     return data.get("standings", {})
 
 
 def get_epl_form() -> dict:
     """Load form data (already has EPL teams with full names)."""
-    data = _load_json(UPCOMING_DIR / "current_form.json")
+    data = load_json_safe(UPCOMING_DIR / "current_form.json")
     return data.get("teams", {})
 
 
@@ -1421,7 +1408,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [1/9] Generating bookmaker analysis...")
     bk_results = generate_epl_bookmaker_analysis()
     if not dry_run:
-        existing = _load_json(UPCOMING_DIR / "bookmaker_analysis.json")
+        existing = load_json_safe(UPCOMING_DIR / "bookmaker_analysis.json")
         merged = _merge_matches(existing, bk_results, "analyzed_at")
         merged["summary"] = {
             "total_matches": len(merged["matches"]),
@@ -1435,7 +1422,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [2/9] Generating cross-market signals...")
     cm_results = generate_epl_cross_market_signals()
     if not dry_run:
-        existing = _load_json(UPCOMING_DIR / "cross_market_signals.json")
+        existing = load_json_safe(UPCOMING_DIR / "cross_market_signals.json")
         merged = _merge_matches(existing, cm_results, "analyzed_at")
         merged["summary"] = {
             "total_matches": len(merged["matches"]),
@@ -1448,7 +1435,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [3/9] Aggregating market intelligence...")
     mi_results = generate_epl_market_intelligence(bk_results, cm_results)
     if not dry_run:
-        existing = _load_json(UPCOMING_DIR / "market_intelligence.json")
+        existing = load_json_safe(UPCOMING_DIR / "market_intelligence.json")
         merged = _merge_matches(existing, mi_results, "analyzed_at")
         merged["summary"] = {
             "total_matches": len(merged["matches"]),
@@ -1463,7 +1450,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [4/9] Generating sentiment analysis...")
     sentiment_results = generate_epl_sentiment()
     if not dry_run:
-        existing = _load_json(UPCOMING_DIR / "sentiment_analysis.json")
+        existing = load_json_safe(UPCOMING_DIR / "sentiment_analysis.json")
         # Sentiment is list-based, not dict-based
         existing_list = existing.get("matches", [])
         if isinstance(existing_list, dict):
@@ -1493,7 +1480,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [5/9] Fetching weather forecasts...")
     weather_results = generate_epl_weather()
     if not dry_run and weather_results:
-        existing = _load_json(UPCOMING_DIR / "weather.json")
+        existing = load_json_safe(UPCOMING_DIR / "weather.json")
         # weather.json can be dict (match-keyed) or other format
         if isinstance(existing, dict) and "matches" in existing:
             merged = _merge_matches(existing, weather_results, "fetched_at")
@@ -1510,7 +1497,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [6/9] Assigning referees...")
     ref_results = generate_epl_referees()
     if not dry_run:
-        existing = _load_json(UPCOMING_DIR / "referees.json")
+        existing = load_json_safe(UPCOMING_DIR / "referees.json")
         if isinstance(existing, dict):
             existing.update(ref_results)
             _save_json(UPCOMING_DIR / "referees.json", existing)
@@ -1524,7 +1511,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     if not dry_run and standings_enriched:
         # Re-read the full standings file and update
         standings_file = UPCOMING_DIR / "standings_premier_league.json"
-        standings_data = _load_json(standings_file)
+        standings_data = load_json_safe(standings_file)
         # Keep only canonical short-name entries in the file; full-name aliases
         # are added at runtime by the web app for JS lookups.
         _full_name_set = set(FULL_TO_SHORT.keys())
@@ -1539,7 +1526,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print("  [8/9] Generating lineup predictions...")
     lineup_results = generate_epl_lineup_predictions()
     if not dry_run and lineup_results:
-        existing = _load_json(UPCOMING_DIR / "lineup_predictions.json")
+        existing = load_json_safe(UPCOMING_DIR / "lineup_predictions.json")
         existing_matches = existing.get("matches", {})
         if isinstance(existing_matches, list):
             existing_matches = {m.get("match", ""): m for m in existing_matches if m.get("match")}
@@ -1582,7 +1569,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
             form_result = calculate_all_forms(league="premier_league")
             form_count = len(form_result.get("teams", {}))
             # Merge EPL teams into the shared current_form.json
-            existing_form = _load_json(UPCOMING_DIR / "current_form.json")
+            existing_form = load_json_safe(UPCOMING_DIR / "current_form.json")
             if existing_form:
                 existing_teams = existing_form.get("teams", {})
                 existing_teams.update(form_result.get("teams", {}))

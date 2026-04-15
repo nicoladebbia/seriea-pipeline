@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Fast targeted hyperparameter tuning — 6 configs only."""
 import sys, json, logging, numpy as np, pandas as pd, gc
-from scipy.stats import poisson
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -9,33 +8,10 @@ log = logging.getLogger(__name__)
 
 from scripts.models.comprehensive_markets import load_unified_training_data, get_training_features, _compute_targets
 from config.settings import MODELS_DIR
+from ml.poisson import poisson_1x2, market_implied_probs
 from catboost import CatBoostClassifier, CatBoostRegressor
 
 LABEL_MAP = {"H": 0, "D": 1, "A": 2}
-
-def poisson_1x2(hxg, axg):
-    pH = pD = pA = 0.0
-    for h in range(8):
-        for a in range(8):
-            p = poisson.pmf(h, hxg) * poisson.pmf(a, axg)
-            if h > a: pH += p
-            elif h == a: pD += p
-            else: pA += p
-    t = pH + pD + pA
-    return np.array([pH/t, pD/t, pA/t])
-
-def get_mkt(df_v, mask):
-    psh = df_v.loc[mask, "odds_PSH"].values
-    psd = df_v.loc[mask, "odds_PSD"].values
-    psa = df_v.loc[mask, "odds_PSA"].values
-    p = np.zeros((mask.sum(), 3))
-    for i in range(len(psh)):
-        if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-            raw = np.array([1/psh[i], 1/psd[i], 1/psa[i]])
-            p[i] = raw / raw.sum()
-        else:
-            p[i] = [0.4, 0.3, 0.3]
-    return p
 
 df = load_unified_training_data()
 features = get_training_features(df)
@@ -55,7 +31,7 @@ X_te = df_v.loc[test_m, features].fillna(0)
 y_tr = df_v.loc[train_m, "result"].map(LABEL_MAP).values
 y_val = df_v.loc[val_m, "result"].map(LABEL_MAP).values
 y_te = df_v.loc[test_m, "result"].values
-mkt_te = get_mkt(df_v, test_m)
+mkt_te = market_implied_probs(df_v, test_m)
 
 configs = [
     {"depth": 6, "lr": 0.02, "l2": 3, "ml": 30},   # default baseline

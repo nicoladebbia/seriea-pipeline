@@ -45,13 +45,9 @@ POSITION_TO_FORMATION = {
     (3, 3, 3): "3-3-3-1",  # approximate
 }
 
-from config.team_names import normalize_team
+from config.team_names import normalize_team_safe
 
-
-def _normalize(name: str) -> str:
-    if pd.isna(name):
-        return ""
-    return normalize_team(name)
+_normalize = normalize_team_safe
 
 
 def _infer_formation_from_positions(d_count: int, m_count: int, f_count: int) -> str:

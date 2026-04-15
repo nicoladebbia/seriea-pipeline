@@ -44,23 +44,10 @@ import logging
 import numpy as np
 import pandas as pd
 
+from features._utils import _safe_div
 from storage.paths import parsed_path
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Helper: safe division
-# ---------------------------------------------------------------------------
-
-def _safe_div(a, b, default: float = 0.0):
-    """Element-wise a/b, returning default where b is 0 or NaN."""
-    if isinstance(a, (pd.Series, np.ndarray)):
-        result = np.where((b == 0) | pd.isna(b), default, a / b)
-        return pd.Series(result, index=a.index) if isinstance(a, pd.Series) else result
-    if b == 0 or pd.isna(b):
-        return default
-    return a / b
 
 
 def _gini(values: list[float]) -> float:

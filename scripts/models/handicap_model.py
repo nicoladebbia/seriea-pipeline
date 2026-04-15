@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
 from scripts.betting.italian_market_standards import normalize_line_to_italian
+from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -455,19 +456,6 @@ def calculate_handicap_value(
 # DATA LOADING
 # =============================================================================
 
-def load_predictions() -> List[Dict]:
-    """Load match predictions from all league files."""
-    all_preds = []
-    for fname in ["predictions.json", "predictions_premier_league.json"]:
-        p = DATA_DIR / "upcoming" / fname
-        if p.exists():
-            try:
-                with open(p) as f:
-                    data = json.load(f)
-                all_preds.extend(data.get("predictions", []))
-            except Exception:
-                pass
-    return all_preds
 
 
 def load_spreads_odds() -> Dict[str, List[Dict]]:

@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config.team_names import normalize_team
+from config.team_names import normalize_team_safe
 
 log = logging.getLogger(__name__)
 
@@ -33,10 +33,7 @@ PREDICTIONS_PATH = PROJECT_ROOT / "data" / "upcoming" / "predictions.json"
 LOOKBACK = 5
 
 
-def _normalize(name: str) -> str:
-    if pd.isna(name):
-        return ""
-    return normalize_team(name)
+_normalize = normalize_team_safe
 
 
 def _build_team_rolling_stats() -> pd.DataFrame:

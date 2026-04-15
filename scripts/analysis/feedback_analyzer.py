@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR
+from scripts.utils.json_utils import load_json_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -42,23 +43,13 @@ class _NumpySafeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _load_json(path: Path):
-    if not path.exists():
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
 def match_predictions_to_results():
     """Join archive entries with settled results by match name.
 
     Returns list of dicts with prediction + actual outcome.
     """
-    archive = _load_json(ARCHIVE_PATH)
-    results_raw = _load_json(RESULTS_PATH)
+    archive = load_json_safe(ARCHIVE_PATH)
+    results_raw = load_json_safe(RESULTS_PATH)
 
     if not archive or not results_raw:
         return []

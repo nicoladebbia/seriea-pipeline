@@ -17,6 +17,7 @@ from ml.config import (
     RANDOM_SEED,
     TuningConfig,
     ValidationConfig,
+    drop_meta,
 )
 from ml.data import TimeSeriesSplitter
 
@@ -259,9 +260,9 @@ def _walk_forward_score(
         train_mask = X["_season"].isin(train_seasons)
         test_mask = X["_season"].isin(test_seasons)
 
-        X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+        X_tr = drop_meta(X[train_mask])
         y_tr = y_int[train_mask]
-        X_te = X[test_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+        X_te = drop_meta(X[test_mask])
         y_te = y_int[test_mask]
 
         model = _build_model(model_type, params)

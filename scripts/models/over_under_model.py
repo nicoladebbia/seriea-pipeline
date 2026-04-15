@@ -16,7 +16,6 @@ Based on 7,829 historical matches with validated factors.
 
 import json
 import logging
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -25,6 +24,8 @@ from dataclasses import dataclass
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from ml.poisson import poisson_probability, poisson_cumulative, calculate_over_probability
+from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -172,29 +173,6 @@ class OverUnderBet:
     factors: List[str]
 
 
-# =============================================================================
-# POISSON DISTRIBUTION
-# =============================================================================
-
-def poisson_probability(k: int, lambda_: float) -> float:
-    """Calculate Poisson probability P(X = k) given rate lambda."""
-    if lambda_ <= 0:
-        return 1.0 if k == 0 else 0.0
-    return (math.exp(-lambda_) * (lambda_ ** k)) / math.factorial(k)
-
-
-def poisson_cumulative(k: int, lambda_: float) -> float:
-    """Calculate cumulative Poisson P(X <= k)."""
-    return sum(poisson_probability(i, lambda_) for i in range(k + 1))
-
-
-def calculate_over_probability(goals_threshold: float, lambda_total: float) -> float:
-    """Calculate P(Total Goals > threshold).
-
-    For 2.5 line: P(X >= 3) = 1 - P(X <= 2)
-    """
-    k = int(goals_threshold)  # e.g., 2 for 2.5 line
-    return 1 - poisson_cumulative(k, lambda_total)
 
 
 def calculate_exact_score_matrix(lambda_home: float, lambda_away: float, max_goals: int = 7) -> Dict:
@@ -503,23 +481,6 @@ def calculate_over_under_value(
 # DATA LOADING
 # =============================================================================
 
-def load_predictions() -> List[Dict]:
-    """Load match predictions from all league files."""
-    all_preds = []
-    for fname in ["predictions.json", "predictions_premier_league.json"]:
-        p = DATA_DIR / "upcoming" / fname
-        if p.exists():
-            try:
-                with open(p) as f:
-                    data = json.load(f)
-                preds = data.get("predictions", [])
-                all_preds.extend(preds)
-                log.info("O/U model: loaded %d predictions from %s", len(preds), fname)
-            except Exception as e:
-                log.warning("Failed to load %s: %s", fname, e)
-    if not all_preds:
-        log.warning("No predictions files found")
-    return all_preds
 
 
 def load_totals_odds() -> Dict[str, List[Dict]]:

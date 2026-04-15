@@ -38,6 +38,7 @@ from ml.config import (
     RANDOM_SEED,
     EnsembleConfig,
     ValidationConfig,
+    drop_meta,
 )
 from ml.data import TimeSeriesSplitter
 from ml.evaluation import compute_metrics
@@ -165,11 +166,9 @@ class WeightedAverageEnsemble:
             test_mask = X["_season"].isin(test_seasons)
             test_indices = X.index[test_mask]
 
-            X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
-            X_tr = X_tr[feature_names]
+            X_tr = drop_meta(X[train_mask])[feature_names]
             y_tr = y_int[train_mask]
-            X_te = X[test_mask].drop(columns=[c for c in META_COLS if c in X.columns])
-            X_te = X_te[feature_names]
+            X_te = drop_meta(X[test_mask])[feature_names]
 
             train_seasons_s = X[train_mask]["_season"] if "_season" in X.columns else None
             sw = _compute_sample_weights(y[train_mask], seasons=train_seasons_s) if self.use_sample_weights else None
@@ -235,7 +234,7 @@ class WeightedAverageEnsemble:
                                       raw_oof=blended_oof)
 
         # Retrain base models on all data
-        X_all = X.drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
+        X_all = drop_meta(X)[feature_names]
         y_all = y_int
         all_seasons_s = X["_season"] if "_season" in X.columns else None
         sw_all = _compute_sample_weights(y, seasons=all_seasons_s) if self.use_sample_weights else None
@@ -507,7 +506,7 @@ def evaluate_ensemble_cv(
         X_train_full = X[train_mask]
         y_train_full = y[train_mask]
         y_train_int = y_int[train_mask]
-        X_test = X[test_mask].drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
+        X_test = drop_meta(X[test_mask])[feature_names]
         y_test = y[test_mask]
 
         # --- Inner walk-forward OOF within training seasons ---
@@ -524,13 +523,9 @@ def evaluate_ensemble_cv(
             inner_val_mask = X_train_full["_season"].isin(inner_val_s)
             val_indices = X_train_full.index[inner_val_mask]
 
-            X_itr = X_train_full[inner_train_mask].drop(
-                columns=[c for c in META_COLS if c in X.columns]
-            )[feature_names]
+            X_itr = drop_meta(X_train_full[inner_train_mask])[feature_names]
             y_itr = y_train_int[inner_train_mask]
-            X_ival = X_train_full[inner_val_mask].drop(
-                columns=[c for c in META_COLS if c in X.columns]
-            )[feature_names]
+            X_ival = drop_meta(X_train_full[inner_val_mask])[feature_names]
 
             inner_seasons = X_train_full[inner_train_mask]["_season"] if "_season" in X_train_full.columns else None
             sw = _compute_sample_weights(y_train_full[inner_train_mask], seasons=inner_seasons) if use_sample_weights else None
@@ -582,7 +577,7 @@ def evaluate_ensemble_cv(
         blend_cal.fit(oof_y, blended_oof)
 
         # --- Retrain base models on ALL training data, predict test ---
-        X_tr_all = X_train_full.drop(columns=[c for c in META_COLS if c in X.columns])[feature_names]
+        X_tr_all = drop_meta(X_train_full)[feature_names]
         outer_seasons = X_train_full["_season"] if "_season" in X_train_full.columns else None
         sw_all = _compute_sample_weights(y_train_full, seasons=outer_seasons) if use_sample_weights else None
         base_test_probas = {}
@@ -720,7 +715,7 @@ def build_fold_models(
 
     for fold_idx, (train_seasons, test_seasons) in enumerate(splits):
         train_mask = X["_season"].isin(train_seasons)
-        X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+        X_tr = drop_meta(X[train_mask])
 
         # Filter to available features
         available = [f for f in feature_names if f in X_tr.columns]

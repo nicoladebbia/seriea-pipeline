@@ -32,7 +32,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from sklearn.metrics import accuracy_score, log_loss, mean_absolute_error
 
 # ---------------------------------------------------------------------------
@@ -43,6 +42,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, MODELS_DIR
 from features.build import get_ml_feature_columns
 from ml.config import LABEL_MAP, ODDS_COLUMN_PATTERNS
+from ml.data import _is_odds_feature
+from ml.feature_selection import correlation_pruning, identify_odds_columns
+from ml.poisson import poisson_win_prob
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -175,11 +177,6 @@ def _is_pre_match_feature(col: str) -> bool:
     return True
 
 
-def _is_odds_feature(col: str) -> bool:
-    """Check if a column is derived from betting odds."""
-    return any(col.startswith(p) or col == p.rstrip("_") for p in ODDS_COLUMN_PATTERNS)
-
-
 def _is_pre_match_feature_with_odds(col: str) -> bool:
     """Check if a column is available pre-match (including odds)."""
     col_lower = col.lower()
@@ -189,14 +186,6 @@ def _is_pre_match_feature_with_odds(col: str) -> bool:
     if col in POST_MATCH_EXACT:
         return False
     return True
-
-
-def identify_odds_columns(feature_names: List[str]) -> List[str]:
-    """Return feature names that are derived from betting odds."""
-    return [
-        f for f in feature_names
-        if any(f.startswith(p) or f.endswith(p.rstrip("_")) for p in ODDS_COLUMN_PATTERNS)
-    ]
 
 
 def discover_features(df: pd.DataFrame, exclude_odds: bool = False,
@@ -273,32 +262,6 @@ def select_by_importance_classifier(
     return selected, importance
 
 
-def correlation_pruning(
-    X: pd.DataFrame, feature_names: List[str], importance: Dict[str, float],
-    threshold: float = 0.85,
-) -> List[str]:
-    """Remove highly correlated features, keeping the more important one."""
-    X_feat = X[feature_names].fillna(0)
-    corr = X_feat.corr().abs()
-
-    to_drop = set()
-    for i in range(len(feature_names)):
-        if feature_names[i] in to_drop:
-            continue
-        for j in range(i + 1, len(feature_names)):
-            if feature_names[j] in to_drop:
-                continue
-            if corr.iloc[i, j] > threshold:
-                fi, fj = feature_names[i], feature_names[j]
-                if importance.get(fi, 0) >= importance.get(fj, 0):
-                    to_drop.add(fj)
-                else:
-                    to_drop.add(fi)
-
-    selected = [f for f in feature_names if f not in to_drop]
-    log.info("Correlation pruning: %d -> %d features (r>%.2f, dropped %d)",
-             len(feature_names), len(selected), threshold, len(to_drop))
-    return selected
 
 
 def time_series_split(df: pd.DataFrame, n_splits: int = 5,
@@ -318,39 +281,6 @@ def time_series_split(df: pd.DataFrame, n_splits: int = 5,
             splits.append((train_idx, test_idx))
 
     return splits[-n_splits:] if len(splits) > n_splits else splits
-
-
-def poisson_win_prob(home_xg: float, away_xg: float,
-                      max_goals: int = 10,
-                      min_xg: float = 0.3,
-                      max_xg: float = 4.0) -> Dict[str, float]:
-    """Calculate win probabilities from expected goals using Poisson distribution."""
-    home_xg = max(min_xg, min(max_xg, home_xg))
-    away_xg = max(min_xg, min(max_xg, away_xg))
-
-    home_probs = [poisson.pmf(g, home_xg) for g in range(max_goals)]
-    away_probs = [poisson.pmf(g, away_xg) for g in range(max_goals)]
-
-    prob_home_win = 0.0
-    prob_draw = 0.0
-    prob_away_win = 0.0
-
-    for h_goals in range(max_goals):
-        for a_goals in range(max_goals):
-            prob = home_probs[h_goals] * away_probs[a_goals]
-            if h_goals > a_goals:
-                prob_home_win += prob
-            elif h_goals == a_goals:
-                prob_draw += prob
-            else:
-                prob_away_win += prob
-
-    total = prob_home_win + prob_draw + prob_away_win
-    return {
-        "H": prob_home_win / total,
-        "D": prob_draw / total,
-        "A": prob_away_win / total,
-    }
 
 
 def evaluate_high_confidence(y_true: List[int], y_pred: List[int],

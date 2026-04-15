@@ -36,16 +36,10 @@ import logging
 import numpy as np
 import pandas as pd
 
+from features._utils import _safe_div
 from storage.paths import parsed_path
 
 log = logging.getLogger(__name__)
-
-
-def _safe_div(a, b, default: float = 0.0) -> float:
-    """Safe scalar division."""
-    if b == 0 or pd.isna(b):
-        return default
-    return a / b
 
 
 def _compute_advanced_shot_metrics(shots: pd.DataFrame) -> pd.DataFrame:

@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR
+from scripts.utils.json_utils import load_json_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -70,16 +71,6 @@ class _NumpySafeEncoder(json.JSONEncoder):
         except ImportError:
             pass
         return super().default(obj)
-
-
-def _load_json(path: Path):
-    if not path.exists():
-        return {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
-        return {}
 
 
 def _determine_status(n_settled: int) -> str:
@@ -167,7 +158,7 @@ def _build_weights_output(optimized: dict, current: dict, status: str,
                           n_settled: int, reason: str) -> dict:
     """Build the output dict with history tracking."""
     # Load existing to preserve history
-    existing = _load_json(WEIGHTS_PATH)
+    existing = load_json_safe(WEIGHTS_PATH)
     history = existing.get("history", [])
 
     # Add current entry to history
@@ -216,7 +207,7 @@ def compute_factor_decay(analysis: dict) -> dict:
     factor_eff = analysis.get("factor_effectiveness", {})
 
     # Load existing multipliers to apply incremental changes
-    existing = _load_json(FACTOR_ADJ_PATH)
+    existing = load_json_safe(FACTOR_ADJ_PATH)
     existing_multipliers = existing.get("multipliers", {})
 
     multipliers = {}
@@ -372,7 +363,7 @@ def run_weight_optimization() -> dict:
     """Orchestrate all optimization steps."""
     log.info("Starting weight optimization...")
 
-    analysis = _load_json(ANALYSIS_PATH)
+    analysis = load_json_safe(ANALYSIS_PATH)
     if not analysis:
         log.warning("No feedback analysis found at %s", ANALYSIS_PATH)
         return {"status": "no_analysis"}

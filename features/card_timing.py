@@ -29,40 +29,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.settings import ROLLING_WINDOW as _ROLLING_WINDOW
+from features._utils import build_id_bridge
+
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _INCIDENTS_PATH = _PROJECT_ROOT / "data" / "external" / "sofascore" / "match_incidents.parquet"
-_PMS_PATH = _PROJECT_ROOT / "data" / "external" / "sofascore" / "player_match_stats.parquet"
-
-_ROLLING_WINDOW = 5
-
-# Sofascore team name -> pipeline team name
-_TEAM_MAP = {
-    "ac milan": "milan", "parma calcio 1913": "parma", "spal 2013": "spal",
-    "hellas verona": "verona", "internazionale": "inter", "chievoverona": "chievo",
-}
-
-
-def _norm_team(name: str) -> str:
-    if pd.isna(name):
-        return ""
-    low = name.lower().strip()
-    return _TEAM_MAP.get(low, low).title()
-
-
-def _build_id_bridge() -> dict:
-    """Build mapping: Sofascore int match_id -> pipeline string match_id."""
-    if not _PMS_PATH.exists():
-        return {}
-    pms = pd.read_parquet(_PMS_PATH, columns=["match_id", "date", "home_team", "away_team"])
-    pms = pms.drop_duplicates("match_id")
-    bridge = {}
-    for _, row in pms.iterrows():
-        home = _norm_team(row["home_team"])
-        away = _norm_team(row["away_team"])
-        bridge[row["match_id"]] = f"{row['date']}_{home}_{away}"
-    return bridge
 
 
 def _load_incidents() -> pd.DataFrame:
@@ -72,7 +45,7 @@ def _load_incidents() -> pd.DataFrame:
     try:
         df = pd.read_parquet(_INCIDENTS_PATH)
         # Remap Sofascore int match_ids to pipeline string match_ids
-        bridge = _build_id_bridge()
+        bridge = build_id_bridge()
         df["match_id"] = df["match_id"].map(bridge)
         df = df.dropna(subset=["match_id"])
         log.debug("Loaded %d incidents with %d mapped match IDs", len(df), df["match_id"].nunique())

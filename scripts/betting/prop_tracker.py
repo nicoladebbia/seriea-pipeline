@@ -31,6 +31,9 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config.settings import DATA_DIR, UPCOMING_DIR
+from config.team_names import strip_accents
+from scripts.utils.ledger import load_json_ledger, save_json_ledger
+from scripts.utils.parsing import extract_line
 
 log = logging.getLogger(__name__)
 
@@ -41,24 +44,6 @@ LEDGER_PATH = BETTING_DIR / "prop_ledger.json"
 PERFORMANCE_PATH = BETTING_DIR / "prop_performance.json"
 
 
-def _load_ledger() -> List[Dict]:
-    """Load persistent prop ledger."""
-    if LEDGER_PATH.exists():
-        try:
-            with open(LEDGER_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return []
-    return []
-
-
-def _save_ledger(ledger: List[Dict]):
-    """Save prop ledger."""
-    BETTING_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LEDGER_PATH, "w") as f:
-        json.dump(ledger, f, indent=2)
-
-
 def _evaluate_prop_outcome(market: str, pstats: dict) -> dict:
     """Evaluate a prop bet outcome given final player stats.
 
@@ -66,10 +51,6 @@ def _evaluate_prop_outcome(market: str, pstats: dict) -> dict:
     """
     market_lower = market.lower()
     import re
-
-    def _extract_line(s, default=0.5):
-        m = re.search(r"(\d+\.?\d*)", s)
-        return float(m.group(1)) if m else default
 
     # Anytime Goalscorer
     if "anytime" in market_lower and "goal" in market_lower:
@@ -88,25 +69,25 @@ def _evaluate_prop_outcome(market: str, pstats: dict) -> dict:
     # SOT Over X.5
     if "sot" in market_lower or ("shot" in market_lower and "target" in market_lower):
         sot = pstats.get("shots_on_target", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if sot > line else "lost", "actual": sot, "line": line}
 
     # Shots Over X.5
     if "shot" in market_lower and "target" not in market_lower:
         shots = pstats.get("shots", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if shots > line else "lost", "actual": shots, "line": line}
 
     # Tackles Over X.5
     if "tackle" in market_lower:
         tackles = pstats.get("tackles", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if tackles > line else "lost", "actual": tackles, "line": line}
 
     # Fouls Over X.5
     if "foul" in market_lower:
         fouls = pstats.get("fouls_committed", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if fouls > line else "lost", "actual": fouls, "line": line}
 
     # To Be Carded
@@ -117,19 +98,19 @@ def _evaluate_prop_outcome(market: str, pstats: dict) -> dict:
     # Assists
     if "assist" in market_lower:
         assists = pstats.get("assists", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if assists > line else "lost", "actual": assists, "line": line}
 
     # Key Passes
     if "key" in market_lower and "pass" in market_lower:
         kp = pstats.get("key_passes", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if kp > line else "lost", "actual": kp, "line": line}
 
     # Crosses
     if "cross" in market_lower:
         crosses = pstats.get("crosses", 0)
-        line = _extract_line(market_lower)
+        line = extract_line(market_lower, default=0.5)
         return {"status": "hit" if crosses > line else "lost", "actual": crosses, "line": line}
 
     return {"status": "void", "actual": None, "line": None}
@@ -143,12 +124,6 @@ def settle_props(date_str: str = None) -> Dict:
 
     Returns summary dict with hit counts, ROI, etc.
     """
-    import unicodedata
-
-    def _strip_accents(s):
-        return "".join(c for c in unicodedata.normalize("NFD", s)
-                       if unicodedata.category(c) != "Mn")
-
     if date_str is None:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -173,7 +148,7 @@ def settle_props(date_str: str = None) -> Dict:
         return {"settled": 0, "message": "No prop bets to settle"}
 
     # Load existing ledger to check for already-settled bets
-    ledger = _load_ledger()
+    ledger = load_json_ledger(LEDGER_PATH)
     settled_keys = set()
     for entry in ledger:
         k = f"{entry.get('date')}|{entry.get('player')}|{entry.get('market')}|{entry.get('match')}"
@@ -210,15 +185,15 @@ def settle_props(date_str: str = None) -> Dict:
                 name = p.get("name", "")
                 if name:
                     lookup[name.lower()] = p
-                    lookup[_strip_accents(name).lower()] = p
+                    lookup[strip_accents(name).lower()] = p
                     short = p.get("short_name", "")
                     if short:
                         lookup[short.lower()] = p
-                        lookup[_strip_accents(short).lower()] = p
+                        lookup[strip_accents(short).lower()] = p
                     parts = name.split()
                     if len(parts) > 1:
                         lookup[parts[-1].lower()] = p
-                        lookup[_strip_accents(parts[-1]).lower()] = p
+                        lookup[strip_accents(parts[-1]).lower()] = p
         # Store lookup with both raw and normalized match keys
         match_lookups[mk] = lookup
         parts = mk.split(" vs ", 1)
@@ -252,13 +227,13 @@ def settle_props(date_str: str = None) -> Dict:
         # Find player
         pstats = lookup.get(player_name.lower())
         if not pstats:
-            pstats = lookup.get(_strip_accents(player_name).lower())
+            pstats = lookup.get(strip_accents(player_name).lower())
         if not pstats:
             parts = player_name.split()
             if len(parts) > 1:
                 pstats = lookup.get(parts[-1].lower())
                 if not pstats:
-                    pstats = lookup.get(_strip_accents(parts[-1]).lower())
+                    pstats = lookup.get(strip_accents(parts[-1]).lower())
 
         if not pstats:
             # Player not in lineup — mark as void
@@ -310,7 +285,7 @@ def settle_props(date_str: str = None) -> Dict:
     # Append to ledger and save
     if new_entries:
         ledger.extend(new_entries)
-        _save_ledger(ledger)
+        save_json_ledger(LEDGER_PATH, ledger)
         log.info("Settled %d prop bets for %s", len(new_entries), date_str)
 
     # Generate summary
@@ -487,7 +462,7 @@ def get_calibration_adjustments(min_samples: int = 20) -> Dict[str, float]:
 
     Used by player_prop_odds.py value scanner to correct systematic model biases.
     """
-    ledger = _load_ledger()
+    ledger = load_json_ledger(LEDGER_PATH)
     settled = [e for e in ledger if e["outcome"] in ("hit", "lost")]
     if len(settled) < min_samples:
         return {}
@@ -552,7 +527,7 @@ def get_hypothetical_kelly_pnl(bankroll: float = 1000.0) -> Dict:
     Returns:
         dict with total_pnl, final_bankroll, roi_pct, bet_count, and per-bet breakdown.
     """
-    ledger = _load_ledger()
+    ledger = load_json_ledger(LEDGER_PATH)
     settled = [e for e in ledger if e["outcome"] in ("hit", "lost")]
     if not settled:
         return {

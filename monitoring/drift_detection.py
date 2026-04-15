@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from monitoring.utils import load_json_history, save_json_history
+
 try:
     from scipy import stats
     SCIPY_AVAILABLE = True
@@ -285,22 +287,10 @@ class AccuracyMonitor:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
         self.history_file = self.storage_dir / "accuracy_history.json"
-        self.history = self._load_history()
+        self.history = load_json_history(self.history_file)
 
         self.baseline_accuracy: Optional[float] = None
         self.recent_predictions: List[Dict] = []
-
-    def _load_history(self) -> List[Dict]:
-        """Load accuracy history."""
-        if self.history_file.exists():
-            with open(self.history_file) as f:
-                return json.load(f)
-        return []
-
-    def _save_history(self):
-        """Save accuracy history."""
-        with open(self.history_file, "w") as f:
-            json.dump(self.history[-1000:], f, indent=2)  # Keep last 1000
 
     def set_baseline(self, accuracy: float):
         """Set baseline accuracy to monitor against."""
@@ -340,7 +330,7 @@ class AccuracyMonitor:
 
         # Periodic save
         if len(self.history) % 10 == 0:
-            self._save_history()
+            save_json_history(self.history_file, self.history, max_entries=1000)
 
     def record_batch(
         self,

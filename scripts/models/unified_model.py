@@ -11,7 +11,6 @@ This avoids the K-fold memory issues and is more principled for time-series data
 import sys, json, logging, gc, warnings
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
@@ -22,29 +21,10 @@ log = logging.getLogger(__name__)
 from scripts.models.comprehensive_markets import load_unified_training_data, get_training_features, _compute_targets
 from config.settings import MODELS_DIR
 from catboost import CatBoostClassifier, CatBoostRegressor
+from ml.poisson import poisson_1x2_vec
 
 MDIR = MODELS_DIR / "markets"
 LABEL_MAP = {"H": 0, "D": 1, "A": 2}
-
-
-def poisson_1x2_vec(hxg_arr, axg_arr):
-    n = len(hxg_arr)
-    probs = np.zeros((n, 3))
-    for i in range(n):
-        pH = pD = pA = 0.0
-        hx, ax = max(hxg_arr[i], 0.3), max(axg_arr[i], 0.3)
-        for h in range(8):
-            for a in range(8):
-                p = poisson.pmf(h, hx) * poisson.pmf(a, ax)
-                if h > a: pH += p
-                elif h == a: pD += p
-                else: pA += p
-        t = pH + pD + pA
-        if t > 0:
-            probs[i] = [pH / t, pD / t, pA / t]
-        else:
-            probs[i] = [0.4, 0.3, 0.3]
-    return probs
 
 
 def add_derived_features(df_v, features, X_df):

@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
-from config.team_names import normalize_team
+from config.team_names import normalize_team, strip_accents
 
 try:
     import requests
@@ -292,19 +292,15 @@ def _fuzzy_match_player(model_name: str, odds_name: str) -> bool:
 
     # Substring match (handles "Lautaro Martínez" vs "Lautaro Martinez")
     # Remove common accent variations
-    import unicodedata
-    def _strip_accents(s):
-        return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-
-    m_clean = _strip_accents(m)
-    o_clean = _strip_accents(o)
+    m_clean = strip_accents(m)
+    o_clean = strip_accents(o)
 
     if m_clean == o_clean:
         return True
 
     # Last name without accents
-    m_last = _strip_accents(m_parts[-1]) if m_parts else ""
-    o_last = _strip_accents(o_parts[-1]) if o_parts else ""
+    m_last = strip_accents(m_parts[-1]) if m_parts else ""
+    o_last = strip_accents(o_parts[-1]) if o_parts else ""
     if m_last and o_last and m_last == o_last:
         return True
 

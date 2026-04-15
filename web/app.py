@@ -26,6 +26,8 @@ from config.settings import (
     DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR,
 )
 from config.leagues import LEAGUE_REGISTRY
+from config.team_names import strip_accents
+from scripts.utils.parsing import extract_line
 
 _BASE = Path(__file__).parent.parent  # project root
 FEEDBACK_DIR = DATA_DIR / "feedback"
@@ -2755,27 +2757,22 @@ def api_live_props(match_slug):
     is_completed = match_status == "completed"
 
     # Build event lookup: lowercase player name -> list of events
-    import unicodedata
-
-    def _strip_accents(s):
-        return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
-
     stat_lookup = {}
     for side in ("home", "away"):
         for p in player_stats.get(side, []):
             name = p.get("name", "")
             if name:
                 stat_lookup[name.lower()] = p
-                stat_lookup[_strip_accents(name).lower()] = p
+                stat_lookup[strip_accents(name).lower()] = p
                 # Also index by short name and surname
                 short = p.get("short_name", "")
                 if short:
                     stat_lookup[short.lower()] = p
-                    stat_lookup[_strip_accents(short).lower()] = p
+                    stat_lookup[strip_accents(short).lower()] = p
                 parts = name.split()
                 if len(parts) > 1:
                     stat_lookup[parts[-1].lower()] = p
-                    stat_lookup[_strip_accents(parts[-1]).lower()] = p
+                    stat_lookup[strip_accents(parts[-1]).lower()] = p
 
     # Build event lookup: lowercase player name -> list of relevant events
     event_lookup = {}
@@ -2790,25 +2787,25 @@ def api_live_props(match_slug):
             assister = ev.get("assist", "")
             goal_type = ev.get("goal_type", "regular")
             if scorer:
-                key = _strip_accents(scorer).lower()
+                key = strip_accents(scorer).lower()
                 event_lookup.setdefault(key, []).append(f"Scored {min_str}" + (f" ({goal_type})" if goal_type != "regular" else ""))
             if assister:
-                key = _strip_accents(assister).lower()
+                key = strip_accents(assister).lower()
                 event_lookup.setdefault(key, []).append(f"Assist {min_str}")
         elif ev_type == "card":
             player = ev.get("player", "")
             card_type = ev.get("card_type", "yellow")
             if player:
-                key = _strip_accents(player).lower()
+                key = strip_accents(player).lower()
                 event_lookup.setdefault(key, []).append(f"{card_type.capitalize()} card {min_str}")
 
     def _get_live_evidence(player_name, market, pstats_data, result):
         """Build human-readable live evidence string."""
         # Check event lookup for this player (try multiple name forms)
-        name_keys = [_strip_accents(player_name).lower()]
+        name_keys = [strip_accents(player_name).lower()]
         parts = player_name.split()
         if len(parts) > 1:
-            name_keys.append(_strip_accents(parts[-1]).lower())
+            name_keys.append(strip_accents(parts[-1]).lower())
 
         player_events = []
         for nk in name_keys:
@@ -2902,14 +2899,14 @@ def api_live_props(match_slug):
         # Find player's live stats (with accent-stripped fallback)
         pstats = stat_lookup.get(player_name.lower())
         if not pstats:
-            pstats = stat_lookup.get(_strip_accents(player_name).lower())
+            pstats = stat_lookup.get(strip_accents(player_name).lower())
         if not pstats:
             # Try surname match
             parts = player_name.split()
             if len(parts) > 1:
                 pstats = stat_lookup.get(parts[-1].lower())
                 if not pstats:
-                    pstats = stat_lookup.get(_strip_accents(parts[-1]).lower())
+                    pstats = stat_lookup.get(strip_accents(parts[-1]).lower())
 
         result_status = "no_data"
         actual_value = None
@@ -2987,7 +2984,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Shots On Target Over X.5 (check before general shots — "sot" must match first)
     if ("sot" in market_lower or ("shot" in market_lower and "target" in market_lower)):
         sot = pstats.get("shots_on_target", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if sot > line:
             return {"status": "hit", "actual": sot, "line": line}
         return {
@@ -2999,7 +2996,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Shots Over X.5 (general — not "on target")
     if "shot" in market_lower and "target" not in market_lower:
         shots = pstats.get("shots", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if shots > line:
             return {"status": "hit", "actual": shots, "line": line}
         return {
@@ -3011,7 +3008,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Tackles Over X.5
     if "tackle" in market_lower:
         tackles = pstats.get("tackles", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if tackles > line:
             return {"status": "hit", "actual": tackles, "line": line}
         return {
@@ -3023,7 +3020,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Fouls Over X.5
     if "foul" in market_lower:
         fouls = pstats.get("fouls_committed", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if fouls > line:
             return {"status": "hit", "actual": fouls, "line": line}
         return {
@@ -3046,7 +3043,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Assists
     if "assist" in market_lower:
         assists = pstats.get("assists", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if assists > line:
             return {"status": "hit", "actual": assists, "line": line}
         return {
@@ -3058,7 +3055,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Key Passes
     if "key" in market_lower and "pass" in market_lower:
         kp = pstats.get("key_passes", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if kp > line:
             return {"status": "hit", "actual": kp, "line": line}
         return {
@@ -3070,7 +3067,7 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
     # Crosses
     if "cross" in market_lower:
         crosses = pstats.get("crosses", 0)
-        line = _extract_line(market_lower, default=0.5)
+        line = extract_line(market_lower, default=0.5)
         if crosses > line:
             return {"status": "hit", "actual": crosses, "line": line}
         return {
@@ -3081,14 +3078,6 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
 
     return {"status": "open", "actual": None, "line": None}
 
-
-def _extract_line(market_str: str, default: float = 0.5) -> float:
-    """Extract numeric line from market string like 'Shots Over 1.5'."""
-    import re
-    match = re.search(r"(\d+\.?\d*)", market_str)
-    if match:
-        return float(match.group(1))
-    return default
 
 
 def _ensure_auto_poll():

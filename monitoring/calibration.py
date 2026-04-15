@@ -9,13 +9,14 @@ Provides:
 - Calibration tracking over time
 """
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+
+from monitoring.utils import load_json_history, save_json_history
 
 try:
     from sklearn.calibration import calibration_curve
@@ -259,19 +260,7 @@ class CalibrationTracker:
         self.storage_dir = storage_dir or DATA_DIR / "monitoring" / "calibration"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.history_file = self.storage_dir / "calibration_history.json"
-        self.history = self._load_history()
-
-    def _load_history(self) -> List[Dict]:
-        """Load calibration history."""
-        if self.history_file.exists():
-            with open(self.history_file) as f:
-                return json.load(f)
-        return []
-
-    def _save_history(self):
-        """Save calibration history."""
-        with open(self.history_file, "w") as f:
-            json.dump(self.history, f, indent=2)
+        self.history = load_json_history(self.history_file)
 
     def record_calibration(
         self,
@@ -309,7 +298,7 @@ class CalibrationTracker:
         }
 
         self.history.append(record)
-        self._save_history()
+        save_json_history(self.history_file, self.history)
 
         return record
 

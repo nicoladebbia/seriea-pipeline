@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from scripts.utils.json_utils import load_json_safe
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,16 +60,6 @@ REQUIRED_PREDICTION_FIELDS = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _load_json(path: Path) -> Any:
-    try:
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    except Exception as e:
-        log.warning("Validator: failed to load %s: %s", path.name, e)
-    return {}
-
 
 def _extract_match_keys(data: Any) -> set[str]:
     """Extract match keys from various JSON formats."""
@@ -147,8 +139,8 @@ def _classify_league(match_keys: set[str]) -> dict[str, set[str]]:
 
 def _check_league_consistency(issues: dict[str, list]) -> None:
     """Check that odds_full.json matches the same league as predictions.json."""
-    preds = _load_json(UPCOMING_DIR / "predictions.json")
-    odds = _load_json(UPCOMING_DIR / "odds_full.json")
+    preds = load_json_safe(UPCOMING_DIR / "predictions.json")
+    odds = load_json_safe(UPCOMING_DIR / "odds_full.json")
 
     pred_keys = _extract_match_keys(preds)
     odds_keys = _extract_match_keys(odds)
@@ -181,7 +173,7 @@ def _check_league_consistency(issues: dict[str, list]) -> None:
 def _check_probability_integrity(issues: dict[str, list]) -> None:
     """Check all predictions have valid probabilities."""
     for fname in ["predictions.json", "predictions_premier_league.json"]:
-        data = _load_json(UPCOMING_DIR / fname)
+        data = load_json_safe(UPCOMING_DIR / fname)
         if not data:
             continue
         preds = data.get("predictions", data) if isinstance(data, dict) else data
@@ -207,7 +199,7 @@ def _check_probability_integrity(issues: dict[str, list]) -> None:
 def _check_odds_sanity(issues: dict[str, list]) -> None:
     """Check odds are in valid range."""
     for fname in ["odds_full.json", "odds_full_premier_league.json"]:
-        data = _load_json(UPCOMING_DIR / fname)
+        data = load_json_safe(UPCOMING_DIR / fname)
         matches = data.get("matches", {}) if isinstance(data, dict) else {}
         if not isinstance(matches, dict):
             continue
@@ -245,7 +237,7 @@ def _check_staleness(issues: dict[str, list]) -> None:
 def _check_field_completeness(issues: dict[str, list]) -> None:
     """Check predictions have all required fields."""
     for fname in ["predictions.json", "predictions_premier_league.json"]:
-        data = _load_json(UPCOMING_DIR / fname)
+        data = load_json_safe(UPCOMING_DIR / fname)
         if not data:
             continue
         preds = data.get("predictions", data) if isinstance(data, dict) else data
@@ -261,7 +253,7 @@ def _check_field_completeness(issues: dict[str, list]) -> None:
 
 def _check_cross_coverage(issues: dict[str, list]) -> None:
     """Check supplementary files cover all prediction matches."""
-    preds = _load_json(UPCOMING_DIR / "predictions.json")
+    preds = load_json_safe(UPCOMING_DIR / "predictions.json")
     pred_keys = _extract_match_keys(preds)
     if not pred_keys:
         return
@@ -275,7 +267,7 @@ def _check_cross_coverage(issues: dict[str, list]) -> None:
     }
 
     for fname, level in supplementary.items():
-        data = _load_json(UPCOMING_DIR / fname)
+        data = load_json_safe(UPCOMING_DIR / fname)
         file_keys = _extract_match_keys(data)
         missing = pred_keys - file_keys
         if missing and len(missing) > len(pred_keys) * 0.25:
@@ -287,7 +279,7 @@ def _check_cross_coverage(issues: dict[str, list]) -> None:
 def _check_odds_league_tag(issues: dict[str, list]) -> None:
     """Ensure odds files have explicit league tags to prevent future mix-ups."""
     for fname in ["odds_full.json", "odds_full_premier_league.json"]:
-        data = _load_json(UPCOMING_DIR / fname)
+        data = load_json_safe(UPCOMING_DIR / fname)
         if isinstance(data, dict) and data.get("matches"):
             league = data.get("league", "")
             if not league:

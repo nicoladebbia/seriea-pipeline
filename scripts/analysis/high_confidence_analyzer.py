@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR
 from ml.config import LABEL_MAP
+from scripts.models.train_unified import time_series_split
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -63,24 +64,6 @@ BASE_FEATURES = [
     "matchup_competitiveness",
 ]
 
-
-def time_series_split(df: pd.DataFrame, n_splits: int = 5):
-    """Walk-forward time series splits."""
-    seasons = sorted(df["season"].unique())
-    splits = []
-    min_train = 5
-
-    for i in range(min_train, len(seasons)):
-        train_seasons = seasons[:i]
-        test_season = seasons[i]
-
-        train_idx = df[df["season"].isin(train_seasons)].index
-        test_idx = df[df["season"] == test_season].index
-
-        if len(test_idx) > 0:
-            splits.append((train_idx, test_idx))
-
-    return splits[-n_splits:] if len(splits) > n_splits else splits
 
 
 def train_binary_model(X_train, y_train, X_val, y_val):

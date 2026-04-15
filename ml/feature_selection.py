@@ -18,6 +18,7 @@ from ml.config import (
     ODDS_META_KEEP,
     FeatureConfig,
     ValidationConfig,
+    drop_meta,
 )
 from ml.data import TimeSeriesSplitter
 
@@ -109,8 +110,7 @@ def importance_based_selection(
 
     for fold_idx, (train_seasons, _) in enumerate(splits):
         train_mask = X["_season"].isin(train_seasons)
-        X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
-        X_tr = X_tr[feature_names]
+        X_tr = drop_meta(X[train_mask])[feature_names]
         y_tr = y_int[train_mask]
 
         # Per-feature coverage: fraction of non-NaN values in this fold
@@ -170,8 +170,7 @@ def importance_based_selection(
 
         for train_seasons, _ in recent_splits:
             train_mask = X["_season"].isin(train_seasons)
-            X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
-            X_tr = X_tr[feature_names]
+            X_tr = drop_meta(X[train_mask])[feature_names]
             y_tr = y_int[train_mask]
             coverage = X_tr.notna().mean()
 

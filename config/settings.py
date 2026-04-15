@@ -84,6 +84,7 @@ DEFAULT_LEAGUE = "serie_a"
 
 # Feature engineering
 ROLLING_WINDOWS = [3, 5, 10]
+ROLLING_WINDOW = 5  # Default single rolling window for feature engineering
 
 # Paths (relative to project root)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

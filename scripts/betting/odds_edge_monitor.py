@@ -36,6 +36,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config.settings import DATA_DIR, UPCOMING_DIR
+from scripts.betting.betting_unified import remove_overround
 
 log = logging.getLogger(__name__)
 
@@ -115,14 +116,6 @@ def _save_state(state: Dict):
     with open(STATE_PATH, "w") as f:
         json.dump(state, f, indent=2, default=str)
 
-
-def _remove_overround(odds_list: List[float]) -> List[float]:
-    """Remove bookmaker margin from odds to get true probabilities."""
-    implied = [1.0 / o for o in odds_list if o > 1.0]
-    total = sum(implied)
-    if total <= 0:
-        return implied
-    return [p / total for p in implied]
 
 
 def _get_pinnacle_odds(bookmakers: list, outcome: str) -> float:
@@ -319,7 +312,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             if ref_under <= 1.0:
                 ref_under = pin_under if pin_under > 1.0 else 2.0
 
-            true_probs = _remove_overround([ref_over, ref_under])
+            true_probs = remove_overround([ref_over, ref_under])
             sharp_implied = true_probs[0] if true_probs else 1.0 / ref_over
             edge_pct = ((model_over - sharp_implied) / sharp_implied * 100) if sharp_implied > 0 else 0
 

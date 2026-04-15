@@ -52,6 +52,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, MODELS_DIR
+from ml.feature_selection import correlation_pruning
 from storage.paths import features_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -335,35 +336,6 @@ def select_by_importance(
     return selected, importance
 
 
-def correlation_pruning(
-    X: pd.DataFrame, feature_names: List[str], importance: Dict[str, float],
-    threshold: float = 0.85,
-) -> List[str]:
-    """Remove highly correlated features, keeping the more important one.
-
-    For each pair with |r| > threshold, drop the less important feature.
-    """
-    X_feat = X[feature_names].fillna(0)
-    corr = X_feat.corr().abs()
-
-    to_drop = set()
-    for i in range(len(feature_names)):
-        if feature_names[i] in to_drop:
-            continue
-        for j in range(i + 1, len(feature_names)):
-            if feature_names[j] in to_drop:
-                continue
-            if corr.iloc[i, j] > threshold:
-                fi, fj = feature_names[i], feature_names[j]
-                if importance.get(fi, 0) >= importance.get(fj, 0):
-                    to_drop.add(fj)
-                else:
-                    to_drop.add(fi)
-
-    selected = [f for f in feature_names if f not in to_drop]
-    log.info("Correlation pruning: %d -> %d features (r>%.2f, dropped %d)",
-             len(feature_names), len(selected), threshold, len(to_drop))
-    return selected
 
 
 # =============================================================================

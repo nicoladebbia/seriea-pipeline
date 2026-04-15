@@ -18,7 +18,6 @@ bookmakers that offer cards markets (Bet365, William Hill, etc.)
 
 import json
 import logging
-import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -27,6 +26,8 @@ from dataclasses import dataclass
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from ml.poisson import poisson_probability, poisson_cumulative, calculate_over_probability
+from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -176,26 +177,6 @@ class CardsBet:
     factors: List[str]
 
 
-# =============================================================================
-# POISSON CALCULATIONS
-# =============================================================================
-
-def poisson_probability(k: int, lambda_: float) -> float:
-    """Calculate Poisson probability P(X = k)."""
-    if lambda_ <= 0:
-        return 1.0 if k == 0 else 0.0
-    return (math.exp(-lambda_) * (lambda_ ** k)) / math.factorial(k)
-
-
-def poisson_cumulative(k: int, lambda_: float) -> float:
-    """Calculate cumulative Poisson P(X <= k)."""
-    return sum(poisson_probability(i, lambda_) for i in range(k + 1))
-
-
-def calculate_over_probability(threshold: float, expected: float) -> float:
-    """Calculate P(X > threshold)."""
-    k = int(threshold)
-    return 1 - poisson_cumulative(k, expected)
 
 
 # =============================================================================
@@ -453,24 +434,6 @@ def generate_cards_bets(prediction: CardsPrediction) -> List[CardsBet]:
 
     return bets
 
-
-# =============================================================================
-# DATA LOADING
-# =============================================================================
-
-def load_predictions() -> List[Dict]:
-    """Load match predictions from all league files."""
-    all_preds = []
-    for fname in ["predictions.json", "predictions_premier_league.json"]:
-        p = DATA_DIR / "upcoming" / fname
-        if p.exists():
-            try:
-                with open(p) as f:
-                    data = json.load(f)
-                all_preds.extend(data.get("predictions", []))
-            except Exception:
-                pass
-    return all_preds
 
 
 # =============================================================================

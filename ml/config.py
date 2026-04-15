@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+import pandas as pd
+
 
 # ---------------------------------------------------------------------------
 # Label encoding (derived from the data; the only "hardcoded" mapping)
@@ -22,6 +24,13 @@ N_CLASSES: int = len(LABEL_MAP)
 
 # Column-name constants (single source of truth)
 META_COLS = frozenset({"_season", "_match_date", "_league"})
+
+
+def drop_meta(X: pd.DataFrame) -> pd.DataFrame:
+    """Drop metadata columns (META_COLS) from a feature DataFrame."""
+    return X.drop(columns=[c for c in META_COLS if c in X.columns])
+
+
 RESULT_COL = "result"
 SEASON_COL = "season"
 MATCH_DATE_COL = "match_date"

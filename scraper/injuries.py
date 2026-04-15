@@ -31,23 +31,15 @@ import requests
 from bs4 import BeautifulSoup
 
 from config.settings import DATA_DIR
+from scraper.transfermarkt import TM_HEADERS
 
 log = logging.getLogger(__name__)
 
 INJURIES_DIR = DATA_DIR / "external" / "injuries"
 INJURIES_DIR.mkdir(parents=True, exist_ok=True)
 
-# Transfermarkt base URL and headers
+# Transfermarkt base URL
 TM_BASE = "https://www.transfermarkt.com"
-TM_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/121.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
 # ESPN base URL for injuries
 # ESPN changed URL format in late 2025 — try both old and new patterns

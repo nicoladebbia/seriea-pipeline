@@ -15,6 +15,7 @@ from ml.config import (
     META_COLS,
     MODEL_TYPES,
     FeatureConfig,
+    drop_meta,
     TuningConfig,
     ValidationConfig,
 )
@@ -30,7 +31,7 @@ log = logging.getLogger(__name__)
 
 def _strip_meta(X: pd.DataFrame) -> pd.DataFrame:
     """Drop metadata columns before training, and deduplicate any repeated columns."""
-    out = X.drop(columns=[c for c in META_COLS if c in X.columns])
+    out = drop_meta(X)
     # Safety: deduplicate columns (LightGBM rejects duplicates)
     if out.columns.duplicated().any():
         out = out.loc[:, ~out.columns.duplicated()]

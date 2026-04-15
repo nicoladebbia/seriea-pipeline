@@ -25,13 +25,13 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-from scipy.stats import poisson
 from sklearn.metrics import log_loss
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, MODELS_DIR
+from ml.poisson import poisson_1x2, poisson_1x2_vec, market_implied_probs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -45,18 +45,6 @@ def load_data():
     features = get_training_features(df)
     df = _compute_targets(df)
     return df, features
-
-
-def poisson_1x2(hxg, axg):
-    pH = pD = pA = 0
-    for h in range(8):
-        for a in range(8):
-            p = poisson.pmf(h, hxg) * poisson.pmf(a, axg)
-            if h > a: pH += p
-            elif h == a: pD += p
-            else: pA += p
-    t = pH + pD + pA
-    return np.array([pH/t, pD/t, pA/t])
 
 
 def calibrated_ensemble(df, features, test_season):
@@ -120,26 +108,13 @@ def calibrated_ensemble(df, features, test_season):
     def get_poisson_probs(X):
         hxg = np.clip(m_hg.predict(X), 0.3, 4.0)
         axg = np.clip(m_ag.predict(X), 0.3, 4.0)
-        probs = np.zeros((len(X), 3))
-        for i in range(len(X)):
-            probs[i] = poisson_1x2(hxg[i], axg[i])
-        return probs
+        return poisson_1x2_vec(hxg, axg)
 
     # Get probabilities from all models on all sets
     def get_all_probs(X_data, mask):
         cls_p = m_cls.predict_proba(X_data)
         pois_p = get_poisson_probs(X_data)
-
-        psh = df_v.loc[mask, "odds_PSH"].values
-        psd = df_v.loc[mask, "odds_PSD"].values
-        psa = df_v.loc[mask, "odds_PSA"].values
-        mkt_p = np.zeros((len(X_data), 3))
-        for i in range(len(psh)):
-            if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-                raw = np.array([1/psh[i], 1/psd[i], 1/psa[i]])
-                mkt_p[i] = raw / raw.sum()
-            else:
-                mkt_p[i] = [0.4, 0.3, 0.3]
+        mkt_p = market_implied_probs(df_v, mask)
         return cls_p, pois_p, mkt_p
 
     cls_val, pois_val, mkt_val = get_all_probs(X_val, val_m)
@@ -344,29 +319,13 @@ def multi_season_backtest(df, features):
         def get_pois(X):
             hxg = np.clip(m_hg.predict(X), 0.3, 4.0)
             axg = np.clip(m_ag.predict(X), 0.3, 4.0)
-            p = np.zeros((len(X), 3))
-            for i in range(len(X)):
-                p[i] = poisson_1x2(hxg[i], axg[i])
-            return p
+            return poisson_1x2_vec(hxg, axg)
 
         pois_val = get_pois(X_val)
         pois_te = get_pois(X_te)
 
-        def get_mkt(mask):
-            psh = df_v.loc[mask, "odds_PSH"].values
-            psd = df_v.loc[mask, "odds_PSD"].values
-            psa = df_v.loc[mask, "odds_PSA"].values
-            p = np.zeros((mask.sum(), 3))
-            for i in range(len(psh)):
-                if psh[i] > 1 and psd[i] > 1 and psa[i] > 1:
-                    raw = np.array([1/psh[i], 1/psd[i], 1/psa[i]])
-                    p[i] = raw / raw.sum()
-                else:
-                    p[i] = [0.4, 0.3, 0.3]
-            return p
-
-        mkt_val = get_mkt(val_m)
-        mkt_te = get_mkt(test_m)
+        mkt_val = market_implied_probs(df_v, val_m)
+        mkt_te = market_implied_probs(df_v, test_m)
 
         # Calibrate on val
         best_acc = 0

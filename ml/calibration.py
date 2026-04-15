@@ -26,6 +26,7 @@ from ml.config import (
     N_CLASSES,
     CalibrationConfig,
     ValidationConfig,
+    drop_meta,
 )
 
 log = logging.getLogger(__name__)
@@ -520,9 +521,9 @@ def fit_calibrator_from_cv(
     train_mask = X["_season"].isin(train_seasons)
     test_mask = X["_season"].isin(test_seasons)
 
-    X_tr = X[train_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+    X_tr = drop_meta(X[train_mask])
     y_tr = y[train_mask].map(LABEL_MAP)
-    X_te = X[test_mask].drop(columns=[c for c in META_COLS if c in X.columns])
+    X_te = drop_meta(X[test_mask])
     y_te = y[test_mask]
 
     if params is None:
