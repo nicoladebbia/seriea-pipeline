@@ -341,6 +341,12 @@ class WeightedAverageEnsemble:
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Predict calibrated weighted average probabilities."""
+        if self.feature_names:
+            missing = [f for f in self.feature_names if f not in X.columns]
+            if missing:
+                for col in missing:
+                    X[col] = 0.0
+                log.warning("Filled %d missing features with 0: %s", len(missing), missing[:5])
         X_feat = X[self.feature_names] if self.feature_names else X
         probas = []
         for mt in self.model_order:
@@ -353,6 +359,11 @@ class WeightedAverageEnsemble:
 
     def predict_proba_breakdown(self, X: pd.DataFrame) -> Dict[str, np.ndarray]:
         """Return per-model raw probabilities + calibrated ensemble."""
+        if self.feature_names:
+            missing = [f for f in self.feature_names if f not in X.columns]
+            if missing:
+                for col in missing:
+                    X[col] = 0.0
         X_feat = X[self.feature_names] if self.feature_names else X
         result = {}
         probas = []

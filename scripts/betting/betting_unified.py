@@ -226,8 +226,7 @@ class BettingConfig:
                        "allowed_lines": [1.5], "kelly_fraction": 0.08},                 # 8% Kelly (up from 5%) — proven market deserves bigger stakes
         "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0},
         "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},
-        "DC":         {"enabled": True,  "min_edge_pct": 4.0,  "max_edge_pct": 7.0,    # DC 1X: +8% ROI, 59% WR.
-                       "kelly_fraction": 0.06},                                         # 6% Kelly — promising but less data than O/U
+        "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},   # DISABLED 2026-04-15: Live -1.7% ROI on 43 bets. Claimed +8% was noise.
         "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
         "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
         "Alt_OU":     {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,
