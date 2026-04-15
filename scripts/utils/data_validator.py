@@ -124,7 +124,9 @@ def _classify_league(match_keys: set[str]) -> dict[str, set[str]]:
     except ImportError:
         return {"unknown": match_keys}
 
-    result: dict[str, set[str]] = {"serie_a": set(), "premier_league": set(), "unknown": set()}
+    from config.leagues import ACTIVE_LEAGUES
+    result: dict[str, set[str]] = {lg: set() for lg in ACTIVE_LEAGUES}
+    result["unknown"] = set()
     for mk in match_keys:
         parts = mk.split(" vs ")
         if len(parts) != 2:

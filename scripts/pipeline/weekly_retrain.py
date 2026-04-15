@@ -621,7 +621,8 @@ def full_retrain(dry_run: bool = False) -> dict:
         from ml.training import train_optimized
 
         # Train both leagues with all improvements (exclude_odds, per-league)
-        for _league in ["serie_a", "premier_league"]:
+        from config.leagues import ACTIVE_LEAGUES
+        for _league in ACTIVE_LEAGUES:
             log.info("Training %s...", _league)
             try:
                 train_optimized(league=_league, exclude_odds=True)

@@ -2520,9 +2520,10 @@ def main():
                        help="Run model challenger after pipeline (retrain + validate + swap)")
     parser.add_argument("--incremental", action="store_true",
                        help="Incremental refresh: only new results, fresh odds if stale, new predictions (~4 credits)")
-    parser.add_argument("--leagues", type=str, default="serie_a,premier_league",
-                       help="Comma-separated leagues to run (default: serie_a,premier_league). "
-                            "E.g. --leagues serie_a,premier_league")
+    from config.leagues import ACTIVE_LEAGUES as _AL
+    _default_leagues = ",".join(_AL)
+    parser.add_argument("--leagues", type=str, default=_default_leagues,
+                       help=f"Comma-separated leagues to run (default: {_default_leagues})")
     args = parser.parse_args()
 
     # Auto-load bankroll from journal if not explicitly set

@@ -93,7 +93,8 @@ def run_sweep(league: str = "serie_a", model_type: str = DEFAULT_MODEL) -> pd.Da
 
 def main():
     parser = argparse.ArgumentParser(description="Time-decay sweep")
-    parser.add_argument("--league", default="serie_a", choices=["serie_a", "premier_league"])
+    from config.leagues import ACTIVE_LEAGUES
+    parser.add_argument("--league", default="serie_a", choices=ACTIVE_LEAGUES)
     parser.add_argument("--model", default=DEFAULT_MODEL, choices=["xgboost", "lightgbm", "catboost"])
     args = parser.parse_args()
 

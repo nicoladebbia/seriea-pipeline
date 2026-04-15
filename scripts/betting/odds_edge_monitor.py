@@ -43,8 +43,7 @@ UPCOMING_DIR = DATA_DIR / "upcoming"
 BETTING_DIR = DATA_DIR / "betting"
 SNAPSHOTS_DIR = DATA_DIR / "odds_snapshots"
 
-# Active leagues for edge scanning (add leagues as models become available)
-ACTIVE_LEAGUES = ["serie_a", "premier_league"]
+from config.leagues import ACTIVE_LEAGUES
 
 # Edge thresholds (must match betting_unified.py BettingConfig)
 EDGE_THRESHOLDS = {

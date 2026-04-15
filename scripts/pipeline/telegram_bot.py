@@ -1687,8 +1687,7 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
         "ligue_1": "ligue_1", "ligue1": "ligue_1", "fra": "ligue_1",
     }
 
-    # Active leagues with pipeline data
-    ACTIVE_KEYS = ["serie_a", "premier_league"]
+    from config.leagues import ACTIVE_LEAGUES as ACTIVE_KEYS
 
     arg = args.strip().lower().replace("-", "_").replace(" ", "_")
 

@@ -3955,7 +3955,8 @@ def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a")
         league: League identifier ("serie_a", "premier_league", etc.).
                 Default "serie_a" preserves backward compatibility.
     """
-    league_display = {"serie_a": "Serie A", "premier_league": "Premier League"}.get(league, league)
+    from config.leagues import LEAGUE_REGISTRY
+    league_display = LEAGUE_REGISTRY[league].name if league in LEAGUE_REGISTRY else league
     log.info("=" * 70)
     log.info("ENSEMBLE PREDICTION ENGINE — %s", league_display)
     log.info("=" * 70)
@@ -4283,7 +4284,8 @@ def _get_betting_recommendation(outcome: str, h_prob: float, d_prob: float, a_pr
 def print_ensemble_predictions(output: Dict):
     """Print ensemble predictions in a readable format."""
     league = output.get("league", "serie_a")
-    league_display = {"serie_a": "Serie A", "premier_league": "Premier League"}.get(league, league.upper())
+    from config.leagues import LEAGUE_REGISTRY
+    league_display = LEAGUE_REGISTRY[league].name if league in LEAGUE_REGISTRY else league.upper()
     print("\n" + "=" * 80)
     print(f"{league_display} PREDICTIONS - ENSEMBLE MODEL")
     print("=" * 80)

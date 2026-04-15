@@ -321,7 +321,8 @@ def add_injury_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     try:
         from scraper.injuries import get_current_injuries
         dfs = []
-        for _league in ["serie_a", "premier_league"]:
+        from config.leagues import ACTIVE_LEAGUES
+        for _league in ACTIVE_LEAGUES:
             try:
                 _inj = get_current_injuries(league=_league)
                 if not _inj.empty:
