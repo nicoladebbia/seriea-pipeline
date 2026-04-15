@@ -343,7 +343,8 @@ def calculate_all_forms(matches_file: str = None, league: str = None) -> Dict:
         "matchups": matchups
     }
 
-    output_path = DATA_DIR / "upcoming" / "current_form.json"
+    _suffix = f"_{league}" if league and league != "serie_a" else ""
+    output_path = DATA_DIR / "upcoming" / f"current_form{_suffix}.json"
     atomic_write_json(output_path, output)
 
     log.info(f"Saved form data to {output_path}")

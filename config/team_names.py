@@ -482,6 +482,29 @@ SERIE_A_2025_26: list[str] = [
     "Verona",       # canonical name (Sofascore uses "Hellas Verona")
 ]
 
+PREMIER_LEAGUE_2025_26: list[str] = [
+    "Arsenal",
+    "Aston Villa",
+    "Bournemouth",
+    "Brentford",
+    "Brighton",
+    "Chelsea",
+    "Crystal Palace",
+    "Everton",
+    "Fulham",
+    "Ipswich",
+    "Leicester",
+    "Liverpool",
+    "Man City",
+    "Man United",
+    "Newcastle",
+    "Nott'ham Forest",
+    "Southampton",
+    "Tottenham",
+    "West Ham",
+    "Wolves",
+]
+
 
 # Pre-built case-insensitive lookup: lowered variant -> canonical name.
 # Covers sources that send lowercase names (Understat, Sofascore).

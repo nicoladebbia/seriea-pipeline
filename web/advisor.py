@@ -97,30 +97,44 @@ def _get_bankroll() -> dict:
 
 
 def _resolve_team(query: str) -> str | None:
-    """Fuzzy-resolve user input to canonical team name."""
+    """Fuzzy-resolve user input to canonical team name (Serie A + EPL)."""
     try:
-        from config.team_names import normalize_team, SERIE_A_2025_26
+        from config.team_names import (
+            normalize_team, SERIE_A_2025_26, PREMIER_LEAGUE_2025_26,
+        )
     except ImportError:
         return query
 
+    all_teams = set(SERIE_A_2025_26) | set(PREMIER_LEAGUE_2025_26)
+
     # Exact match via normalize_team
     canonical = normalize_team(query)
-    if canonical in SERIE_A_2025_26:
+    if canonical in all_teams:
         return canonical
 
     # Substring match
     q = query.lower().strip()
-    for team in SERIE_A_2025_26:
+    for team in all_teams:
         if q in team.lower():
             return team
     # Common nicknames
     nicknames = {
+        # Serie A
         "juve": "Juventus", "inter": "Inter", "milan": "Milan",
         "roma": "Roma", "lazio": "Lazio", "napoli": "Napoli",
         "viola": "Fiorentina", "toro": "Torino", "samp": "Sampdoria",
         "ata": "Atalanta", "dea": "Atalanta", "grifone": "Genoa",
+        # EPL
+        "city": "Man City", "united": "Man United", "spurs": "Tottenham",
+        "toffees": "Everton", "gunners": "Arsenal", "reds": "Liverpool",
+        "blues": "Chelsea", "hammers": "West Ham", "magpies": "Newcastle",
+        "saints": "Southampton", "foxes": "Leicester", "bees": "Brentford",
+        "seagulls": "Brighton", "cherries": "Bournemouth", "eagles": "Crystal Palace",
+        "forest": "Nott'ham Forest", "cottagers": "Fulham", "villa": "Aston Villa",
+        "lfc": "Liverpool", "mufc": "Man United", "mcfc": "Man City",
+        "cfc": "Chelsea", "afc": "Arsenal", "thfc": "Tottenham",
     }
-    if q in nicknames and nicknames[q] in SERIE_A_2025_26:
+    if q in nicknames and nicknames[q] in all_teams:
         return nicknames[q]
     return None
 
@@ -2998,42 +3012,47 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - Never explain what xG or Kelly criterion means unless explicitly asked.
 - When asked about season-end predictions (final standings, top scorer, best player), be clear these are SPECULATIVE PROJECTIONS, not model outputs. Use phrases like "Based on current form and extrapolation..." rather than presenting projections as precise data. Our model predicts individual MATCHES, not season outcomes.
 - Don't pad responses with filler. Every sentence should either contain data, an insight, or a coaching decision. But DO give the full story when the question calls for it — a "tell me about Napoli" deserves more than 2 sentences.
-- **NEVER list your capabilities.** If the user asks something outside Serie A, just say "That's not my area — I'm here for Serie A." in one sentence. Do NOT show a bulleted list of what you can do. The user already knows.
+- **NEVER list your capabilities.** If the user asks something outside Serie A or Premier League, just say "That's not my area — I cover Serie A and Premier League." in one sentence. Do NOT show a bulleted list of what you can do. The user already knows.
 - **NEVER give up on typos or unclear names.** If the user writes something that sounds like a player name (e.g., "necropods" → "Nico Paz", "lukako" → "Lukaku", "kvara" → "Kvaratskhelia"), interpret it and call the tool. If you're unsure, make your best guess and say "I'm guessing you mean [X] — let me check." NEVER say "I don't know what that is" when it's obviously a misspelled name.""",
         "",
     ]
 
-    # Inject standings summary
-    standings_data = _load_json(UPCOMING_DIR / "standings.json")
-    standings = standings_data.get("standings", {})
-    if standings:
-        sorted_teams = sorted(standings.values(), key=lambda x: x.get("position", 99))
-        parts.append("## Current Serie A Standings (Top 10)")
-        for t in sorted_teams[:10]:
-            parts.append(
-                f"{t.get('position', '?')}. {t.get('team', '?')} — "
-                f"{t.get('points', 0)}pts, {t.get('wins', 0)}W-{t.get('draws', 0)}D-{t.get('losses', 0)}L, "
-                f"GD {t.get('gd', 0):+d}, Form: {t.get('form_last5', '?')}"
-            )
-        parts.append("")
+    # Inject standings summary (Serie A + EPL)
+    for standings_file, league_label in [
+        ("standings.json", "Serie A"),
+        ("standings_premier_league.json", "Premier League"),
+    ]:
+        standings_data = _load_json(UPCOMING_DIR / standings_file)
+        standings = standings_data.get("standings", {})
+        if standings:
+            sorted_teams = sorted(standings.values(), key=lambda x: x.get("position", 99))
+            parts.append(f"## Current {league_label} Standings (Top 10)")
+            for t in sorted_teams[:10]:
+                parts.append(
+                    f"{t.get('position', '?')}. {t.get('team', '?')} — "
+                    f"{t.get('points', 0)}pts, {t.get('wins', 0)}W-{t.get('draws', 0)}D-{t.get('losses', 0)}L, "
+                    f"GD {t.get('gd', 0):+d}, Form: {t.get('form_last5', '?')}"
+                )
+            parts.append("")
 
-    # Inject form summary
-    form_data = _load_json(UPCOMING_DIR / "current_form.json")
-    teams_form = form_data.get("teams", {})
-    if teams_form:
-        hot = []
-        cold = []
-        for team, f in teams_form.items():
-            ppg = f.get("total_points", 0) / max(f.get("total_matches", 1), 1)
-            if ppg >= 2.2:
-                hot.append(f"{team} ({ppg:.1f} PPG)")
-            elif ppg <= 0.8:
-                cold.append(f"{team} ({ppg:.1f} PPG)")
-        if hot:
-            parts.append(f"**Hot teams (last {form_data.get('teams', {}).get(list(teams_form.keys())[0], {}).get('last_n', 5)} matches):** {', '.join(hot)}")
-        if cold:
-            parts.append(f"**Cold teams:** {', '.join(cold)}")
-        parts.append("")
+    # Inject form summary (Serie A + EPL)
+    for form_file in ["current_form.json", "current_form_premier_league.json"]:
+        form_data = _load_json(UPCOMING_DIR / form_file)
+        teams_form = form_data.get("teams", {})
+        if teams_form:
+            hot = []
+            cold = []
+            for team, f in teams_form.items():
+                ppg = f.get("total_points", 0) / max(f.get("total_matches", 1), 1)
+                if ppg >= 2.2:
+                    hot.append(f"{team} ({ppg:.1f} PPG)")
+                elif ppg <= 0.8:
+                    cold.append(f"{team} ({ppg:.1f} PPG)")
+            if hot:
+                parts.append(f"**Hot teams (last {form_data.get('teams', {}).get(list(teams_form.keys())[0], {}).get('last_n', 5)} matches):** {', '.join(hot)}")
+            if cold:
+                parts.append(f"**Cold teams:** {', '.join(cold)}")
+            parts.append("")
 
     # Inject bankroll
     bank = _load_json(BANKROLL_DIR / "state.json")

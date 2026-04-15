@@ -550,13 +550,13 @@ class DataDrivenSentiment:
 
 
 class SentimentAnalyzer:
-    """Analyzes sentiment for Serie A matches.
+    """Analyzes sentiment for football matches (Serie A + Premier League).
 
     Uses Gemini Grounding (primary) or Groq Compound (fallback) for web-search
     sentiment, falls back to data-driven analysis from standings, form, H2H.
     """
 
-    def __init__(self):
+    def __init__(self, league: str = "serie_a"):
         # Web search client cascade: Gemini -> Groq
         self._gemini = GeminiClient()
         self._groq = GroqClient()
@@ -568,6 +568,8 @@ class SentimentAnalyzer:
             self.client = GeminiClient()  # Dummy — will return None
         self._use_web_search = HAS_WEB_SEARCH_KEY
         self._data_driven = DataDrivenSentiment()
+        self._league = league
+        self._league_label = "Premier League" if "premier" in league else "Serie A"
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     def _get_cache_key(self, match: str, date: str) -> str:
@@ -611,7 +613,7 @@ class SentimentAnalyzer:
 
     def analyze_fan_sentiment(self, team: str) -> Tuple[float, str]:
         """Analyze fan sentiment for a team."""
-        prompt = f"""Analyze the current fan sentiment for {team} (Serie A football club).
+        prompt = f"""Analyze the current fan sentiment for {team} ({self._league_label} football club).
 
 Search for recent social media discussions, fan forums, and supporter reactions.
 
@@ -629,8 +631,8 @@ Format your response as JSON:
     "key_topics": ["<topic1>", "<topic2>"]
 }}"""
 
-        system_prompt = """You are a Serie A football sentiment analyst.
-Focus on Italian football fan communities, tifosi culture, and ultras sentiment.
+        system_prompt = """You are a football sentiment analyst covering the {self._league_label}.
+Focus on fan communities, supporter sentiment, and recent news.
 Be objective and base your analysis on actual recent discussions and news."""
 
         response = self.client.query(prompt, system_prompt)
@@ -695,7 +697,7 @@ Identify media narratives and biases objectively."""
 
     def analyze_injury_impact(self, team: str) -> Tuple[float, str]:
         """Analyze injury situation and its impact."""
-        prompt = f"""Analyze the current injury situation for {team} (Serie A).
+        prompt = f"""Analyze the current injury situation for {team} ({self._league_label}).
 
 Search for the latest injury news, player availability, and squad fitness.
 
@@ -713,7 +715,7 @@ Format your response as JSON:
     "reasoning": "<brief explanation>"
 }}"""
 
-        system_prompt = """You are a Serie A squad analyst.
+        system_prompt = """You are a {self._league_label} squad analyst.
 Focus on confirmed injuries, doubtful players, and expected return dates.
 Assess the importance of missing players to the team."""
 
@@ -734,7 +736,7 @@ Assess the importance of missing players to the team."""
 
     def analyze_transfer_buzz(self, team: str) -> Tuple[float, str]:
         """Analyze transfer activity and its impact on morale."""
-        prompt = f"""Analyze recent transfer activity for {team} (Serie A).
+        prompt = f"""Analyze recent transfer activity for {team} ({self._league_label}).
 
 Search for transfer rumors, completed deals, and their impact on squad morale.
 
@@ -752,7 +754,7 @@ Format your response as JSON:
     "reasoning": "<brief explanation>"
 }}"""
 
-        system_prompt = """You are a Serie A transfer market analyst.
+        system_prompt = """You are a {self._league_label} transfer market analyst.
 Focus on recent signings, departures, and ongoing negotiations.
 Assess the psychological impact on the squad."""
 

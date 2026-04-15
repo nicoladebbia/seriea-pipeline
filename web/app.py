@@ -1101,37 +1101,43 @@ def _italy_offset(date_str: str) -> timedelta:
 
 
 def _load_commence_times() -> dict:
-    """Load commence_time UTC map from odds_full.json + predictions.json fallback.
+    """Load commence_time UTC map from odds + predictions files (all leagues).
 
-    Priority: odds_full.json (authoritative UTC from Odds API), then
-    predictions.json date+time fields (Italian CET/CEST, converted to UTC).
+    Priority: odds_full*.json (authoritative UTC from Odds API), then
+    predictions*.json date+time fields (converted to UTC).
     """
-    odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
     ct_map = {}
-    matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
-    for mk, m in matches.items():
-        ct = m.get("commence_time", "")
-        if ct:
-            ct_map[mk] = ct
 
-    # Fallback: build commence_time from predictions.json date + time
-    # The time field is in the system's local timezone (set at pipeline runtime)
-    predictions = _load_json(UPCOMING_DIR / "predictions.json")
-    pred_list = predictions if isinstance(predictions, list) else predictions.get("predictions", predictions.get("matches", []))
-    for pred in pred_list:
-        mk = pred.get("match", "")
-        if mk and mk not in ct_map:
-            date_str = pred.get("date", "")
-            time_str = pred.get("time", "")
-            if date_str and time_str:
-                try:
-                    local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-                    # Convert local system time to UTC via astimezone
-                    local_aware = local_dt.astimezone()  # attach system tz
-                    utc_dt = local_aware.astimezone(timezone.utc)
-                    ct_map[mk] = utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                except (ValueError, TypeError):
-                    pass
+    # Load odds commence times from all league files
+    for odds_file in [UPCOMING_DIR / "odds_full.json"] + list(UPCOMING_DIR.glob("odds_full_*.json")):
+        if not odds_file.exists():
+            continue
+        odds_full = _load_json(odds_file)
+        matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
+        for mk, m in matches.items():
+            ct = m.get("commence_time", "")
+            if ct:
+                ct_map[mk] = ct
+
+    # Fallback: build commence_time from all prediction files
+    for pred_file in [UPCOMING_DIR / "predictions.json"] + list(UPCOMING_DIR.glob("predictions_*.json")):
+        if not pred_file.exists():
+            continue
+        predictions = _load_json(pred_file)
+        pred_list = predictions if isinstance(predictions, list) else predictions.get("predictions", predictions.get("matches", []))
+        for pred in pred_list:
+            mk = pred.get("match", "")
+            if mk and mk not in ct_map:
+                date_str = pred.get("date", "")
+                time_str = pred.get("time", "")
+                if date_str and time_str:
+                    try:
+                        local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+                        local_aware = local_dt.astimezone()
+                        utc_dt = local_aware.astimezone(timezone.utc)
+                        ct_map[mk] = utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    except (ValueError, TypeError):
+                        pass
     return ct_map
 
 
@@ -1142,14 +1148,13 @@ _COMMENCE_TIME_MTIME = 0.0
 
 def _get_commence_times() -> dict:
     global _COMMENCE_TIME_MAP, _COMMENCE_TIME_MTIME
-    # Invalidate cache if source files changed
+    # Invalidate cache if any source file changed (all leagues)
     try:
-        odds_path = UPCOMING_DIR / "odds_full.json"
-        preds_path = UPCOMING_DIR / "predictions.json"
-        current_mtime = max(
-            odds_path.stat().st_mtime if odds_path.exists() else 0,
-            preds_path.stat().st_mtime if preds_path.exists() else 0,
-        )
+        mtimes = []
+        for pattern in ["odds_full*.json", "predictions*.json"]:
+            for p in UPCOMING_DIR.glob(pattern):
+                mtimes.append(p.stat().st_mtime)
+        current_mtime = max(mtimes) if mtimes else 0
     except OSError:
         current_mtime = 0
     if not _COMMENCE_TIME_MAP or current_mtime > _COMMENCE_TIME_MTIME:

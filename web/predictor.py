@@ -237,16 +237,12 @@ class MatchPredictor:
 
 
 def get_upcoming_matches() -> list[dict]:
-    """Get upcoming and recent Serie A matches from the features table."""
+    """Get upcoming and recent matches from the features table (all leagues)."""
     if not FEATURES_PATH.exists():
         return []
 
     try:
         df = pd.read_parquet(FEATURES_PATH)
-
-        # Filter to Serie A
-        if "league" in df.columns:
-            df = df[df["league"] == "serie_a"]
 
         # Parse dates
         df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
@@ -271,6 +267,7 @@ def get_upcoming_matches() -> list[dict]:
                 "home_team": str(row.get("home_team", "Unknown")),
                 "away_team": str(row.get("away_team", "Unknown")),
                 "season": str(row.get("season", "")),
+                "league": str(row.get("league", "")),
                 "matchweek": int(row.get("matchweek", 0)) if pd.notna(row.get("matchweek")) else 0,
                 "home_score": int(row.get("home_score")) if pd.notna(row.get("home_score")) else None,
                 "away_score": int(row.get("away_score")) if pd.notna(row.get("away_score")) else None,
