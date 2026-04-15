@@ -569,7 +569,11 @@ class SentimentAnalyzer:
         self._use_web_search = HAS_WEB_SEARCH_KEY
         self._data_driven = DataDrivenSentiment()
         self._league = league
-        self._league_label = "Premier League" if "premier" in league else "Serie A"
+        try:
+            from config.leagues import LEAGUE_REGISTRY
+            self._league_label = LEAGUE_REGISTRY[league].name if league in LEAGUE_REGISTRY else league
+        except Exception:
+            self._league_label = league
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     def _get_cache_key(self, match: str, date: str) -> str:
