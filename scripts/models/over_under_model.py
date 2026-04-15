@@ -42,17 +42,17 @@ ODDS_SANITY = {
 # CONSTANTS & HISTORICAL DATA
 # =============================================================================
 
-# Serie A average goals per game (2023-2025 calibrated: actual 2.586 over 760 matches)
-# Previously 2.67 (historical all-time). Recent seasons trend lower.
-SERIE_A_AVG_GOALS = 2.58
+# Serie A average goals per game (2022-2026 calibrated: actual 2.549 over 1460 matches)
+# Trend: 3.05 (2020-21) → 2.56 (2022-24) → 2.44 (2025-26). League getting more defensive.
+SERIE_A_AVG_GOALS = 2.50
 
-# Historical over/under rates (from 21-season analysis)
+# Historical over/under rates (2022-2026, 4 recent seasons)
 HISTORICAL_OVER_RATES = {
-    0.5: 0.89,  # 89% of matches have at least 1 goal
-    1.5: 0.72,  # 72% of matches have 2+ goals
-    2.5: 0.52,  # 52% of matches have 3+ goals
-    3.5: 0.28,  # 28% of matches have 4+ goals
-    4.5: 0.12,  # 12% of matches have 5+ goals
+    0.5: 0.93,  # 92.7% of matches have at least 1 goal
+    1.5: 0.74,  # 73.6% of matches have 2+ goals
+    2.5: 0.47,  # 47.4% of matches have 3+ goals
+    3.5: 0.25,  # 24.9% of matches have 4+ goals
+    4.5: 0.11,  # 10.8% of matches have 5+ goals
 }
 
 # Goal scoring factors from validation
@@ -87,33 +87,39 @@ GOAL_FACTORS = {
 }
 
 # Team attacking/defensive strength adjustments
-# Based on historical goals scored/conceded vs league average
+# Data-driven from 2024-2026 seasons (goals scored/conceded vs league average)
+# attack_mod: positive = scores more than average, defense_mod: positive = concedes fewer
 TEAM_STRENGTHS = {
-    # Top attacking teams (goals scored above average)
-    "Inter": {"attack_mod": 0.35, "defense_mod": 0.30},
-    "Napoli": {"attack_mod": 0.30, "defense_mod": 0.25},
-    "Juventus": {"attack_mod": 0.20, "defense_mod": 0.35},
-    "Atalanta": {"attack_mod": 0.40, "defense_mod": 0.15},
-    "Milan": {"attack_mod": 0.25, "defense_mod": 0.20},
-    "Roma": {"attack_mod": 0.15, "defense_mod": 0.15},
-    "Lazio": {"attack_mod": 0.25, "defense_mod": 0.10},
-    "Fiorentina": {"attack_mod": 0.15, "defense_mod": 0.10},
-    "Bologna": {"attack_mod": 0.10, "defense_mod": 0.15},
-    "Torino": {"attack_mod": 0.05, "defense_mod": 0.10},
+    # Top tier
+    "Inter": {"attack_mod": 0.75, "defense_mod": 0.27},
+    "Atalanta": {"attack_mod": 0.39, "defense_mod": 0.26},
+    "Juventus": {"attack_mod": 0.29, "defense_mod": 0.27},
+    "Napoli": {"attack_mod": 0.22, "defense_mod": 0.34},
+    "Milan": {"attack_mod": 0.23, "defense_mod": 0.20},
 
-    # Mid-table teams
-    "Genoa": {"attack_mod": 0.00, "defense_mod": 0.05},
-    "Udinese": {"attack_mod": 0.00, "defense_mod": 0.10},
-    "Sassuolo": {"attack_mod": 0.05, "defense_mod": -0.05},  # Promoted 2025-26
-    "Como": {"attack_mod": 0.10, "defense_mod": -0.10},
-    "Parma": {"attack_mod": 0.05, "defense_mod": -0.05},
-    "Verona": {"attack_mod": 0.05, "defense_mod": -0.10},
+    # Upper mid
+    "Roma": {"attack_mod": 0.15, "defense_mod": 0.28},
+    "Como": {"attack_mod": 0.19, "defense_mod": 0.11},
+    "Bologna": {"attack_mod": 0.13, "defense_mod": 0.04},
+    "Fiorentina": {"attack_mod": 0.11, "defense_mod": 0.03},
+    "Lazio": {"attack_mod": 0.06, "defense_mod": 0.10},
 
-    # Lower table teams
-    "Cagliari": {"attack_mod": -0.05, "defense_mod": -0.05},
-    "Lecce": {"attack_mod": -0.10, "defense_mod": 0.00},
-    "Pisa": {"attack_mod": -0.05, "defense_mod": 0.00},       # Promoted 2025-26
-    "Cremonese": {"attack_mod": -0.10, "defense_mod": -0.10},  # Promoted 2025-26
+    # Mid-table
+    "Sassuolo": {"attack_mod": -0.03, "defense_mod": -0.07},
+    "Udinese": {"attack_mod": -0.10, "defense_mod": -0.12},
+    "Torino": {"attack_mod": -0.13, "defense_mod": -0.13},
+    "Genoa": {"attack_mod": -0.15, "defense_mod": -0.07},
+    "Cagliari": {"attack_mod": -0.17, "defense_mod": -0.14},
+
+    # Lower table
+    "Parma": {"attack_mod": -0.24, "defense_mod": -0.12},
+    "Empoli": {"attack_mod": -0.31, "defense_mod": -0.24},
+    "Venezia": {"attack_mod": -0.33, "defense_mod": -0.18},
+    "Cremonese": {"attack_mod": -0.35, "defense_mod": -0.17},
+    "Verona": {"attack_mod": -0.35, "defense_mod": -0.38},
+    "Monza": {"attack_mod": -0.41, "defense_mod": -0.45},
+    "Pisa": {"attack_mod": -0.43, "defense_mod": -0.45},
+    "Lecce": {"attack_mod": -0.45, "defense_mod": -0.17},
 }
 
 
