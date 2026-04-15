@@ -316,8 +316,8 @@ function renderMatchCard(m, showMW) {
   const aXgW = m.away_xg ? Math.min(100, (m.away_xg / maxXg) * 100) : 0;
 
   // Scorers text
-  const homeScorers = m.scorers.filter(s => s.team === m.home_team).map(s => s.name.split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
-  const awayScorers = m.scorers.filter(s => s.team === m.away_team).map(s => s.name.split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
+  const homeScorers = (m.scorers||[]).filter(s => s.team === m.home_team).map(s => (s.name||'').split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
+  const awayScorers = (m.scorers||[]).filter(s => s.team === m.away_team).map(s => (s.name||'').split(' ').pop() + (s.goals > 1 ? ` x${s.goals}` : '')).join(', ');
 
   const matchUrl = `/match/${m.date}/${encodeURIComponent(m.home_team)}/${encodeURIComponent(m.away_team)}`;
 
@@ -356,7 +356,7 @@ function renderMatchCard(m, showMW) {
     </a>
     <div class="match-card__stats">
       <div class="match-card__stat"><span>Shots</span><span class="match-card__stat-val">${m.home_shots}-${m.away_shots}</span></div>
-      ${m.home_top_rated ? `<div class="match-card__stat"><span>MOTM</span><span class="match-card__stat-val">${m.home_top_rated.rating > (m.away_top_rated?.rating || 0) ? m.home_top_rated.name.split(' ').pop() + ' ' + m.home_top_rated.rating : (m.away_top_rated ? m.away_top_rated.name.split(' ').pop() + ' ' + m.away_top_rated.rating : '-')}</span></div>` : ''}
+      ${m.home_top_rated ? `<div class="match-card__stat"><span>MOTM</span><span class="match-card__stat-val">${m.home_top_rated.rating > (m.away_top_rated?.rating || 0) ? (m.home_top_rated.name||'').split(' ').pop() + ' ' + m.home_top_rated.rating : (m.away_top_rated ? (m.away_top_rated.name||'').split(' ').pop() + ' ' + m.away_top_rated.rating : '-')}</span></div>` : ''}
       ${homeScorers || awayScorers ? `<div class="match-card__scorers">${[homeScorers, awayScorers].filter(Boolean).join(' | ')}</div>` : ''}
     </div>
   </div>`;

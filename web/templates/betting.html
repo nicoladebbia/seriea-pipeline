@@ -373,6 +373,14 @@ let _allSortedMatchKeys = [];
 let placedBets = [];
 let currentView = 'all';
 let _vbLeagueFilter = 'all';
+const _BET_EPL_TEAMS = new Set(['Arsenal','Aston Villa','Bournemouth','Brentford','Brighton','Chelsea','Crystal Palace','Everton','Fulham','Ipswich','Leicester','Liverpool','Man City','Man United','Newcastle',"Nott'ham Forest",'Southampton','Tottenham','West Ham','Wolves','Leeds','Burnley','Luton','Sheffield Utd','Sunderland','Nottingham Forest']);
+function _detectBetLeague(m) {
+  if (m.league && m.league !== 'unknown') return m.league;
+  const mk = m.match || '';
+  const parts = mk.split(' vs ');
+  if (parts.length === 2 && (_BET_EPL_TEAMS.has(parts[0].trim()) || _BET_EPL_TEAMS.has(parts[1].trim()))) return 'premier_league';
+  return 'serie_a';
+}
 
 function vbLeagueFilter(league, btn) {
   _vbLeagueFilter = league;
@@ -384,7 +392,7 @@ function vbLeagueFilter(league, btn) {
   } else {
     sortedMatchKeys = _allSortedMatchKeys.filter(mk => {
       const m = allMatches[mk] || {};
-      return (m.league || 'serie_a') === _vbLeagueFilter;
+      return _detectBetLeague(m) === _vbLeagueFilter;
     });
   }
   renderMatchesGrid();

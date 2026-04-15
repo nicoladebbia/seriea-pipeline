@@ -374,7 +374,7 @@ function lpRenderMatch(mk, md, bets) {
         <div class="live-match__score">
           <div class="live-match__score-num">${score[0]} - ${score[1]}</div>
           <div class="live-match__status ${isLive ? 'text-green' : isCompleted ? 'text-secondary' : 'text-tertiary'}">
-            ${isLive ? '<span class="live-dot live-dot--on" style="width:6px;height:6px;"></span>' : ''}
+            ${isLive ? '<span class="live-dot live-dot--on"></span>' : ''}
             ${statusLabel}${displayMinute ? ` ${displayMinute}` : ''}
           </div>
         </div>
