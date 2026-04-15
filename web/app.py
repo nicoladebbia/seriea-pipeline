@@ -39,8 +39,8 @@ log = logging.getLogger(__name__)
 # Multi-league helpers
 # ---------------------------------------------------------------------------
 
-# Leagues that currently have pipeline data (add keys here as pipelines go live)
-ACTIVE_LEAGUES = ["serie_a", "premier_league"]
+# Import from central config — single source of truth for active leagues
+from config.leagues import ACTIVE_LEAGUES
 
 # League key aliases for flexible query params
 _LEAGUE_ALIASES: dict[str, str] = {
@@ -74,6 +74,55 @@ def _resolve_league(raw: str | None) -> str | None:
     if resolved is None:
         raise ValueError(f"Unknown league '{raw}'. Valid: {', '.join(sorted(LEAGUE_REGISTRY))}")
     return resolved
+
+
+def _load_all_leagues_json(base_name: str, key: str | None = None) -> dict | list:
+    """Load a JSON data file merged across all active leagues.
+
+    For dict-type data (standings, odds, form, h2h):
+      base_name="standings.json", key="standings"
+      → loads standings.json + standings_premier_league.json + ...
+      → merges the dicts under the given key
+
+    For list-type data (predictions):
+      base_name="predictions.json", key="predictions"
+      → loads predictions.json + predictions_premier_league.json + ...
+      → concatenates the lists, tagging each with league
+
+    Args:
+        base_name: Base filename (e.g., "odds_full.json")
+        key: Key to extract from each file (e.g., "matches", "standings")
+             If None, returns the raw merged dict.
+    """
+    stem = base_name.replace(".json", "")
+    merged = _load_json(UPCOMING_DIR / base_name, {})
+
+    for league in ACTIVE_LEAGUES:
+        if league == "serie_a":
+            continue
+        league_file = UPCOMING_DIR / f"{stem}_{league}.json"
+        extra = _load_json(league_file, {})
+        if not extra or not isinstance(extra, dict):
+            continue
+        if key:
+            src = extra.get(key, {})
+            if isinstance(src, dict):
+                merged.setdefault(key, {})
+                if isinstance(merged.get(key), dict):
+                    merged[key].update(src)
+            elif isinstance(src, list):
+                merged.setdefault(key, [])
+                if isinstance(merged.get(key), list):
+                    # Tag each item with league
+                    for item in src:
+                        if isinstance(item, dict):
+                            item.setdefault("league", league)
+                    merged[key].extend(src)
+        else:
+            if isinstance(extra.get("matches"), dict) and isinstance(merged.get("matches"), dict):
+                merged["matches"].update(extra["matches"])
+
+    return merged
 
 
 def _get_league_filter() -> str | None:
@@ -1253,28 +1302,10 @@ def api_betting():
     bankroll_file = _load_json(BETTING_DIR / "bankroll.json")
     bankroll_state = _load_json(BANKROLL_DIR / "state.json")
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
-    odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
-    # Merge EPL odds into odds_full
-    _epl_odds = _load_json(UPCOMING_DIR / "odds_full_premier_league.json")
-    if _epl_odds and isinstance(_epl_odds, dict):
-        odds_full.setdefault("matches", {})
-        if isinstance(odds_full.get("matches"), dict) and isinstance(_epl_odds.get("matches"), dict):
-            odds_full["matches"].update(_epl_odds["matches"])
+    odds_full = _load_all_leagues_json("odds_full.json", "matches")
     parlay_raw = _load_json(BETTING_DIR / "parlay_report.json")
-    standings_raw = _load_json(UPCOMING_DIR / "standings.json")
-    # Merge EPL standings
-    _epl_standings = _load_json(UPCOMING_DIR / "standings_premier_league.json")
-    if _epl_standings and isinstance(_epl_standings, dict):
-        standings_raw.setdefault("standings", {})
-        if isinstance(_epl_standings.get("standings"), dict):
-            standings_raw["standings"].update(_epl_standings["standings"])
-    h2h_raw = _load_json(UPCOMING_DIR / "h2h_upcoming.json")
-    # Merge EPL h2h if file exists
-    _epl_h2h = _load_json(UPCOMING_DIR / "h2h_upcoming_premier_league.json")
-    if _epl_h2h and isinstance(_epl_h2h, dict):
-        h2h_raw.setdefault("h2h", {})
-        if isinstance(_epl_h2h.get("h2h"), dict):
-            h2h_raw["h2h"].update(_epl_h2h["h2h"])
+    standings_raw = _load_all_leagues_json("standings.json", "standings")
+    h2h_raw = _load_all_leagues_json("h2h_upcoming.json", "h2h")
     extended_raw = _load_json(UPCOMING_DIR / "extended_markets.json")
     player_props_raw = _load_json(UPCOMING_DIR / "player_props.json")
     player_raw = _load_json(UPCOMING_DIR / "player_analysis.json")
@@ -1288,14 +1319,10 @@ def api_betting():
     goal_preds_raw = _load_json(UPCOMING_DIR / "goal_predictions.json")
     margin_preds_raw = _load_json(UPCOMING_DIR / "margin_predictions.json")
     weather_raw = _load_json(UPCOMING_DIR / "weather.json")
-    form_raw = _load_json(UPCOMING_DIR / "current_form.json")
-    # Merge EPL form
-    _epl_form = _load_json(UPCOMING_DIR / "current_form_premier_league.json")
-    if _epl_form and isinstance(_epl_form, dict):
-        for key in ("teams", "matchups"):
-            if isinstance(_epl_form.get(key), dict):
-                form_raw.setdefault(key, {})
-                form_raw[key].update(_epl_form[key])
+    form_raw = _load_all_leagues_json("current_form.json", "teams")
+    # Also merge matchups key for form
+    _form_matchups = _load_all_leagues_json("current_form.json", "matchups")
+    form_raw["matchups"] = _form_matchups.get("matchups", {})
     odds_bk_raw = _load_json(UPCOMING_DIR / "odds_bookmakers.json")
 
     lineup_preds_raw2 = _load_json(UPCOMING_DIR / "lineup_predictions.json")

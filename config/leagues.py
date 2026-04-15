@@ -100,6 +100,11 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
     ),
 }
 
+# Leagues currently active for predictions + betting.
+# To add a new league: register it in LEAGUE_REGISTRY above, then add its key here.
+# All pipeline steps, web routes, and data loaders iterate over this list.
+ACTIVE_LEAGUES: list[str] = ["serie_a", "premier_league"]
+
 
 # ---------------------------------------------------------------------------
 # B) Derby / Rivalry Definitions

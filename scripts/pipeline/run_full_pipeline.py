@@ -676,6 +676,34 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     else:
         print(f"\n[4/6] Supplementary analysis is fresh, skipping")
 
+    # ── Step 4b: Auto-refresh stale data sources ──
+    # Injuries: refresh if >48h stale (uses Football-Data API, 0 credits)
+    injuries_path = DATA_DIR / "upcoming" / "injuries.json"
+    if _is_data_stale(injuries_path, max_age_hours=48.0):
+        print(f"\n[4b/6] Auto-refreshing stale injuries (>48h old)...")
+        try:
+            from scraper.injuries import get_current_injuries
+            injuries = get_current_injuries(auto_scrape=True)
+            if injuries:
+                print(f"  Refreshed injuries for {len(injuries)} teams")
+                summary["injuries_refreshed"] = True
+        except Exception as e:
+            print(f"  Injury refresh warning: {e}")
+            log.warning(f"Incremental injury refresh: {e}")
+
+    # Features: rebuild if >3 days stale (local computation, 0 credits)
+    features_path = DATA_DIR / "features" / "features.parquet"
+    if _is_data_stale(features_path, max_age_hours=72.0):
+        print(f"  Auto-rebuilding stale features (>3d old)...")
+        try:
+            from features.build import build_features
+            build_features()
+            print(f"  Features rebuilt")
+            summary["features_rebuilt"] = True
+        except Exception as e:
+            print(f"  Feature rebuild warning: {e}")
+            log.warning(f"Incremental feature rebuild: {e}")
+
     # ── Step 5: Predict new fixtures (or refresh stale predictions) ──
     print(f"\n[5/6] Running predictions...")
     try:
