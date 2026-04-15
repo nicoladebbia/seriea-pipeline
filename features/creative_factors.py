@@ -179,15 +179,14 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
     if "season" in df.columns:
         league_col = df.get("league")
         if league_col is not None:
+            from config.leagues import LEAGUE_REGISTRY
             var_flags = []
             for _, row in df.iterrows():
                 season = row["season"]
                 league = row.get("league", "serie_a")
-                if league == "premier_league":
-                    var_flags.append(1 if season >= "2019-2020" else 0)
-                else:
-                    # Serie A, La Liga, Bundesliga — all from 2017-18 or earlier
-                    var_flags.append(1 if season >= "2017-2018" else 0)
+                _lcfg = LEAGUE_REGISTRY.get(league)
+                _var_season = _lcfg.var_introduced if _lcfg else "2017-2018"
+                var_flags.append(1 if season >= _var_season else 0)
             df["var_era"] = var_flags
         else:
             # Default: assume VAR present (training starts 2017+)

@@ -276,17 +276,13 @@ class BettingConfig:
         cfg = cls()
         league_lower = league.lower().replace(" ", "_")
 
-        # Draw stake multiplier: varies by league draw rate
-        # Serie A ~28% draw rate, EPL ~22%, others ~25%
-        draw_multipliers = {
-            "serie_a": 0.80,
-            "epl": 0.65,
-            "premier_league": 0.65,
-            "la_liga": 0.70,
-            "bundesliga": 0.70,
-            "ligue_1": 0.70,
-        }
-        cfg.draw_stake_multiplier = draw_multipliers.get(league_lower, 0.70)
+        # Draw stake multiplier: derived from league draw rate in registry
+        try:
+            from config.leagues import LEAGUE_REGISTRY
+            _lcfg = LEAGUE_REGISTRY.get(league_lower)
+            cfg.draw_stake_multiplier = min(0.90, max(0.50, _lcfg.draw_rate * 2.85)) if _lcfg else 0.70
+        except Exception:
+            cfg.draw_stake_multiplier = 0.70
 
         # Situational adjustments: only apply for Serie A (calibrated data)
         if league_lower != "serie_a":
@@ -1158,12 +1154,16 @@ class UnifiedBettingEngine:
         # Apply draw stake reduction for variance management
         # Draws have high edge but low win rate (31.7%) → brutal losing streaks.
         # Reduce stake by draw_stake_multiplier to protect bankroll psychology.
-        # Use league-specific multiplier: EPL has lower draw rate (~22% vs 28%)
+        # Multiplier derived from league draw rate: higher draw rate = less reduction.
         if market_cat == "1X2_Draw" and hasattr(cfg, "draw_stake_multiplier"):
             _bet_league = pred.get("league", "serie_a") if pred else "serie_a"
-            _draw_mult = {"serie_a": 0.80, "premier_league": 0.65}.get(
-                _bet_league, cfg.draw_stake_multiplier
-            )
+            try:
+                from config.leagues import LEAGUE_REGISTRY
+                _lcfg = LEAGUE_REGISTRY.get(_bet_league)
+                # Scale: draw_rate 0.28 → mult 0.80, draw_rate 0.22 → mult 0.65
+                _draw_mult = min(0.90, max(0.50, _lcfg.draw_rate * 2.85)) if _lcfg else cfg.draw_stake_multiplier
+            except Exception:
+                _draw_mult = cfg.draw_stake_multiplier
             stake_pct *= _draw_mult
 
         # Day-of-week gate: block Monday (-40.75% ROI, 21 bets) and Friday (-9.16% ROI, 18 bets)

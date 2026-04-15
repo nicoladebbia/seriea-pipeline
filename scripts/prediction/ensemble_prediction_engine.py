@@ -1514,11 +1514,14 @@ class FeatureBuilder:
         # Weather — seasonal defaults (24% coverage in training, model handles 0)
         features.setdefault("weather_rain_sum", 0.0)
         month = ref_date.month
-        # Approximate temperature by month (°C) — league-specific
-        _monthly_temp_ita = {1:7,2:9,3:13,4:16,5:21,6:26,7:29,8:29,9:24,10:18,11:12,12:8}
-        _monthly_temp_eng = {1:5,2:5,3:8,4:10,5:14,6:17,7:19,8:19,9:16,10:12,11:8,12:5}
-        _temps = _monthly_temp_eng if self.league == "premier_league" else _monthly_temp_ita
-        features.setdefault("weather_apparent_temperature_max", _temps.get(month, 12))
+        # Approximate temperature by month (°C) — from league registry
+        try:
+            from config.leagues import LEAGUE_REGISTRY
+            _lcfg = LEAGUE_REGISTRY.get(self.league)
+            _temp = _lcfg.avg_monthly_temps[month - 1] if _lcfg and _lcfg.avg_monthly_temps else 12
+        except Exception:
+            _temp = 12
+        features.setdefault("weather_apparent_temperature_max", _temp)
         # Wind direction: 0=N, 180=S — use neutral/typical value
         features.setdefault("weather_wind_direction_10m_dominant", 200)
 

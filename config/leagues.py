@@ -30,6 +30,9 @@ class LeagueConfig:
     worldfootball_slug: str          # worldfootball.net league slug
     matchweeks_per_season: int       # Standard number of matchweeks
     timezone: str                    # Primary timezone for match scheduling
+    draw_rate: float = 0.25          # Historical draw rate (for stake sizing)
+    var_introduced: str = "2017-2018"  # Season VAR was introduced
+    avg_monthly_temps: tuple = ()    # (Jan..Dec) avg °C for weather features
 
 
 LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
@@ -45,6 +48,9 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
         worldfootball_slug="ita-serie-a",
         matchweeks_per_season=38,
         timezone="Europe/Rome",
+        draw_rate=0.28,
+        var_introduced="2017-2018",
+        avg_monthly_temps=(7, 9, 12, 16, 20, 25, 28, 28, 24, 18, 12, 8),
     ),
     "premier_league": LeagueConfig(
         name="Premier League",
@@ -58,6 +64,9 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
         worldfootball_slug="eng-premier-league",
         matchweeks_per_season=38,
         timezone="Europe/London",
+        draw_rate=0.22,
+        var_introduced="2019-2020",
+        avg_monthly_temps=(5, 5, 7, 10, 13, 16, 18, 18, 15, 11, 7, 5),
     ),
     "la_liga": LeagueConfig(
         name="La Liga",
@@ -71,6 +80,9 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
         worldfootball_slug="esp-primera-division",
         matchweeks_per_season=38,
         timezone="Europe/Madrid",
+        draw_rate=0.24,
+        var_introduced="2018-2019",
+        avg_monthly_temps=(6, 8, 11, 14, 18, 24, 28, 27, 22, 16, 10, 7),
     ),
     "bundesliga": LeagueConfig(
         name="Bundesliga",
@@ -84,6 +96,9 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
         worldfootball_slug="ger-1-bundesliga",
         matchweeks_per_season=34,
         timezone="Europe/Berlin",
+        draw_rate=0.23,
+        var_introduced="2017-2018",
+        avg_monthly_temps=(1, 2, 6, 10, 15, 18, 20, 20, 16, 10, 5, 2),
     ),
     "ligue_1": LeagueConfig(
         name="Ligue 1",
@@ -97,6 +112,9 @@ LEAGUE_REGISTRY: dict[str, LeagueConfig] = {
         worldfootball_slug="fra-ligue-1",
         matchweeks_per_season=34,
         timezone="Europe/Paris",
+        draw_rate=0.24,
+        var_introduced="2018-2019",
+        avg_monthly_temps=(4, 5, 9, 12, 16, 20, 22, 22, 18, 13, 8, 5),
     ),
 }
 
