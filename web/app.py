@@ -1254,9 +1254,27 @@ def api_betting():
     bankroll_state = _load_json(BANKROLL_DIR / "state.json")
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
+    # Merge EPL odds into odds_full
+    _epl_odds = _load_json(UPCOMING_DIR / "odds_full_premier_league.json")
+    if _epl_odds and isinstance(_epl_odds, dict):
+        odds_full.setdefault("matches", {})
+        if isinstance(odds_full.get("matches"), dict) and isinstance(_epl_odds.get("matches"), dict):
+            odds_full["matches"].update(_epl_odds["matches"])
     parlay_raw = _load_json(BETTING_DIR / "parlay_report.json")
     standings_raw = _load_json(UPCOMING_DIR / "standings.json")
+    # Merge EPL standings
+    _epl_standings = _load_json(UPCOMING_DIR / "standings_premier_league.json")
+    if _epl_standings and isinstance(_epl_standings, dict):
+        standings_raw.setdefault("standings", {})
+        if isinstance(_epl_standings.get("standings"), dict):
+            standings_raw["standings"].update(_epl_standings["standings"])
     h2h_raw = _load_json(UPCOMING_DIR / "h2h_upcoming.json")
+    # Merge EPL h2h if file exists
+    _epl_h2h = _load_json(UPCOMING_DIR / "h2h_upcoming_premier_league.json")
+    if _epl_h2h and isinstance(_epl_h2h, dict):
+        h2h_raw.setdefault("h2h", {})
+        if isinstance(_epl_h2h.get("h2h"), dict):
+            h2h_raw["h2h"].update(_epl_h2h["h2h"])
     extended_raw = _load_json(UPCOMING_DIR / "extended_markets.json")
     player_props_raw = _load_json(UPCOMING_DIR / "player_props.json")
     player_raw = _load_json(UPCOMING_DIR / "player_analysis.json")
@@ -1271,6 +1289,13 @@ def api_betting():
     margin_preds_raw = _load_json(UPCOMING_DIR / "margin_predictions.json")
     weather_raw = _load_json(UPCOMING_DIR / "weather.json")
     form_raw = _load_json(UPCOMING_DIR / "current_form.json")
+    # Merge EPL form
+    _epl_form = _load_json(UPCOMING_DIR / "current_form_premier_league.json")
+    if _epl_form and isinstance(_epl_form, dict):
+        for key in ("teams", "matchups"):
+            if isinstance(_epl_form.get(key), dict):
+                form_raw.setdefault(key, {})
+                form_raw[key].update(_epl_form[key])
     odds_bk_raw = _load_json(UPCOMING_DIR / "odds_bookmakers.json")
 
     lineup_preds_raw2 = _load_json(UPCOMING_DIR / "lineup_predictions.json")
@@ -3211,13 +3236,28 @@ def api_match_clock():
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
 
-    # Load data sources
+    # Load data sources (all leagues)
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     odds_full = _load_json(UPCOMING_DIR / "odds_full.json")
     live_data = _load_json(LIVE_DIR / f"{today_str}.json", default=None)
 
     predictions_list = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else []
+    for p in predictions_list:
+        p.setdefault("league", "serie_a")
+    # Merge EPL predictions + odds
+    for _lk in ACTIVE_LEAGUES:
+        if _lk == "serie_a":
+            continue
+        _ep = _load_json(UPCOMING_DIR / f"predictions_{_lk}.json")
+        if _ep:
+            _el = _ep.get("predictions", []) if isinstance(_ep, dict) else []
+            for p in _el:
+                p.setdefault("league", _lk)
+            predictions_list.extend(_el)
     odds_matches = odds_full.get("matches", {}) if isinstance(odds_full, dict) else {}
+    _epl_of = _load_json(UPCOMING_DIR / "odds_full_premier_league.json")
+    if _epl_of and isinstance(_epl_of.get("matches"), dict):
+        odds_matches.update(_epl_of["matches"])
     live_matches = live_data.get("matches", {}) if live_data else {}
     live_bet_tracking = live_data.get("bet_tracking", []) if live_data else []
 
@@ -4708,35 +4748,38 @@ def api_teams():
     """List all teams for search/autocomplete."""
     teams = set()
 
-    # From standings
-    standings = _load_json(UPCOMING_DIR / "standings.json", {})
-    if isinstance(standings, list):
-        for entry in standings:
-            if isinstance(entry, dict) and entry.get("team"):
-                teams.add(entry["team"])
-    elif isinstance(standings, dict):
-        inner = standings.get("standings", standings.get("table", {}))
-        if isinstance(inner, dict):
-            # Dict keyed by team name
-            for team_name, entry in inner.items():
+    # From standings (all leagues)
+    for _sf in [UPCOMING_DIR / "standings.json", UPCOMING_DIR / "standings_premier_league.json"]:
+        standings = _load_json(_sf, {})
+        if isinstance(standings, list):
+            for entry in standings:
                 if isinstance(entry, dict) and entry.get("team"):
                     teams.add(entry["team"])
-                else:
-                    teams.add(team_name)
-        elif isinstance(inner, list):
-            for entry in inner:
-                if isinstance(entry, dict) and entry.get("team"):
-                    teams.add(entry["team"])
+        elif isinstance(standings, dict):
+            inner = standings.get("standings", standings.get("table", {}))
+            if isinstance(inner, dict):
+                for team_name, entry in inner.items():
+                    if isinstance(entry, dict) and entry.get("team"):
+                        teams.add(entry["team"])
+                    else:
+                        teams.add(team_name)
+            elif isinstance(inner, list):
+                for entry in inner:
+                    if isinstance(entry, dict) and entry.get("team"):
+                        teams.add(entry["team"])
 
-    # From predictions
-    preds = _load_json(UPCOMING_DIR / "predictions.json", [])
-    pred_list = preds if isinstance(preds, list) else preds.get("predictions", [])
-    for p in pred_list:
-        if isinstance(p, dict):
-            if p.get("home_team"):
-                teams.add(p["home_team"])
-            if p.get("away_team"):
-                teams.add(p["away_team"])
+    # From predictions (all leagues)
+    for _pf in [UPCOMING_DIR / "predictions.json"] + list(UPCOMING_DIR.glob("predictions_*.json")):
+        if not _pf.exists() or _pf.name == "predictions_archive.json":
+            continue
+        preds = _load_json(_pf, [])
+        pred_list = preds if isinstance(preds, list) else preds.get("predictions", [])
+        for p in pred_list:
+            if isinstance(p, dict):
+                if p.get("home_team"):
+                    teams.add(p["home_team"])
+                if p.get("away_team"):
+                    teams.add(p["away_team"])
 
     # From features.parquet if available
     try:
@@ -5017,9 +5060,14 @@ def api_teams_compare():
     except Exception as e:
         log.warning("teams/compare h2h error: %s", e)
 
-    # Check if they have an upcoming match against each other
-    preds = _load_json(UPCOMING_DIR / "predictions.json", [])
-    pred_list = preds if isinstance(preds, list) else preds.get("predictions", [])
+    # Check if they have an upcoming match against each other (all leagues)
+    pred_list = []
+    for _pf in [UPCOMING_DIR / "predictions.json"] + list(UPCOMING_DIR.glob("predictions_*.json")):
+        if not _pf.exists() or _pf.name == "predictions_archive.json":
+            continue
+        _pr = _load_json(_pf, [])
+        _pl = _pr if isinstance(_pr, list) else _pr.get("predictions", [])
+        pred_list.extend(_pl)
     ct_map = _get_commence_times()
     for pred in pred_list:
         if not isinstance(pred, dict):
@@ -5095,8 +5143,15 @@ def api_team(team_name):
             }
             break
 
-    # ── 2. Current form ──
+    # ── 2. Current form (all leagues) ──
     form_data = _load_json(UPCOMING_DIR / "current_form.json", {})
+    _epl_form = _load_json(UPCOMING_DIR / "current_form_premier_league.json", {})
+    if isinstance(_epl_form, dict):
+        for _fk in ("teams", "matchups"):
+            if isinstance(_epl_form.get(_fk), dict):
+                form_data.setdefault(_fk, {})
+                if isinstance(form_data.get(_fk), dict):
+                    form_data[_fk].update(_epl_form[_fk])
     if isinstance(form_data, dict):
         team_form = form_data.get("teams", {}).get(team, form_data.get(team, {}))
         if isinstance(team_form, dict):
@@ -5455,10 +5510,15 @@ def api_team(team_name):
             }
             break
 
-    # ── 5. Upcoming prediction ──
+    # ── 5. Upcoming prediction (all leagues) ──
     archive = _load_json(UPCOMING_DIR / "predictions_archive.json", {})
-    preds = _load_json(UPCOMING_DIR / "predictions.json", [])
-    pred_list = preds if isinstance(preds, list) else preds.get("predictions", [])
+    pred_list = []
+    for _pf in [UPCOMING_DIR / "predictions.json"] + list(UPCOMING_DIR.glob("predictions_*.json")):
+        if not _pf.exists() or _pf.name == "predictions_archive.json":
+            continue
+        _pr = _load_json(_pf, [])
+        _pl = _pr if isinstance(_pr, list) else _pr.get("predictions", [])
+        pred_list.extend(_pl)
 
     ct_map = _get_commence_times()
     for pred in pred_list:
@@ -5497,14 +5557,16 @@ def api_team(team_name):
                 }
                 break
 
-    # ── 6. H2H data ──
-    h2h_root = _load_json(UPCOMING_DIR / "h2h_upcoming.json", {})
-    if isinstance(h2h_root, dict):
-        h2h_matches = h2h_root.get("h2h", h2h_root)
-        for match_key, h2h_data in h2h_matches.items():
-            if team.lower() in match_key.lower():
-                data["h2h"] = h2h_data
-                break
+    # ── 6. H2H data (all leagues) ──
+    h2h_all = {}
+    for _hf in [UPCOMING_DIR / "h2h_upcoming.json", UPCOMING_DIR / "h2h_upcoming_premier_league.json"]:
+        _hr = _load_json(_hf, {})
+        if isinstance(_hr, dict):
+            h2h_all.update(_hr.get("h2h", _hr))
+    for match_key, h2h_data in h2h_all.items():
+        if team.lower() in match_key.lower():
+            data["h2h"] = h2h_data
+            break
 
     # ── 7. Lineup prediction ──
     lineup_preds = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
