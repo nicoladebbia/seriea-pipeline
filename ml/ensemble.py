@@ -344,8 +344,8 @@ class WeightedAverageEnsemble:
         if self.feature_names:
             missing = [f for f in self.feature_names if f not in X.columns]
             if missing:
-                for col in missing:
-                    X[col] = 0.0
+                missing_df = pd.DataFrame(0.0, index=X.index, columns=missing)
+                X = pd.concat([X, missing_df], axis=1)
                 log.warning("Filled %d missing features with 0: %s", len(missing), missing[:5])
         X_feat = X[self.feature_names] if self.feature_names else X
         probas = []
@@ -362,8 +362,8 @@ class WeightedAverageEnsemble:
         if self.feature_names:
             missing = [f for f in self.feature_names if f not in X.columns]
             if missing:
-                for col in missing:
-                    X[col] = 0.0
+                missing_df = pd.DataFrame(0.0, index=X.index, columns=missing)
+                X = pd.concat([X, missing_df], axis=1)
         X_feat = X[self.feature_names] if self.feature_names else X
         result = {}
         probas = []

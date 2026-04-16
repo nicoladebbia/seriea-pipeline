@@ -489,8 +489,9 @@ class DrawDetector:
             missing = [f for f in self.feature_names if f not in features.columns]
 
             X = features[available].copy()
-            for col in missing:
-                X[col] = 0.0
+            if missing:
+                missing_df = pd.DataFrame(0.0, index=X.index, columns=missing)
+                X = pd.concat([X, missing_df], axis=1)
             X = X[self.feature_names]
 
             raw_prob = self.model.predict_proba(X)[0][1]
@@ -2048,8 +2049,9 @@ class OverUnderPredictor:
             missing = [f for f in feat_names if f not in features.columns]
 
             X = features[available].copy()
-            for col in missing:
-                X[col] = 0.0
+            if missing:
+                missing_df = pd.DataFrame(0.0, index=X.index, columns=missing)
+                X = pd.concat([X, missing_df], axis=1)
 
             # Ensure column order matches training
             X = X[feat_names]
