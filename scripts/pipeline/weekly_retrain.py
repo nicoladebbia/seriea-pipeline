@@ -266,6 +266,29 @@ def _append_metrics_history(entry: dict):
         f.write(json.dumps(entry) + "\n")
 
 
+def _retrain_ou_classifiers():
+    """Retrain O/U binary classifiers for active lines (1.5, 2.5).
+
+    Prevents model drift on the only profitable market. Called automatically
+    after the main ensemble is promoted during quick/full retrain.
+    """
+    try:
+        from scripts.models.train_over_under import train_over_under
+        log.info("Retraining O/U classifiers (lines 1.5, 2.5)...")
+        report = train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
+        for line, info in report.get("lines", {}).items():
+            cv = info.get("cv_results", {})
+            log.info(
+                "  O/U %s: acc=%.3f, brier=%.4f, ll=%.4f",
+                line,
+                cv.get("overall_accuracy", 0),
+                cv.get("overall_brier", 0),
+                cv.get("overall_log_loss", 0),
+            )
+    except Exception as e:
+        log.error("O/U classifier retrain failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Auxiliary model retraining (catboost_no_odds + xG regressors)
 # ---------------------------------------------------------------------------
@@ -559,6 +582,9 @@ def quick_retrain(dry_run: bool = False) -> dict:
 
             result["promoted"] = True
 
+            # Retrain O/U classifiers (prevents model drift on active market)
+            _retrain_ou_classifiers()
+
             # Re-run predictions with the new model
             _refresh_predictions()
 
@@ -682,6 +708,9 @@ def full_retrain(dry_run: bool = False) -> dict:
     if promote:
         # train_optimized already saves models to _latest
         result["promoted"] = True
+
+        # Retrain O/U classifiers (prevents model drift on active market)
+        _retrain_ou_classifiers()
 
         # Re-run predictions with the new model
         _refresh_predictions()

@@ -1232,6 +1232,16 @@ def run_model_retrain() -> bool:
 
         if result.returncode == 0:
             log.info("Model retraining completed successfully")
+
+            # Also retrain O/U classifiers (active betting market)
+            try:
+                from scripts.models.train_over_under import train_over_under
+                log.info("Retraining O/U classifiers...")
+                train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
+                log.info("O/U classifiers retrained")
+            except Exception as ou_e:
+                log.error("O/U retrain failed (non-fatal): %s", ou_e)
+
             send_notification(
                 "Models retrained successfully with latest data",
                 title="Betting Pipeline Model Retrain"
