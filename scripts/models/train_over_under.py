@@ -49,7 +49,8 @@ def _build_binary_target(
     total_goals = (
         df.loc[mask, "home_score"].values + df.loc[mask, "away_score"].values
     )
-    return pd.Series((total_goals >= line).astype(int), index=mask[mask].index).reset_index(drop=True)
+    # Reset index to align with X from get_universal_dataset() which also resets
+    return pd.Series((total_goals >= line).astype(int)).reset_index(drop=True)
 
 
 def binary_importance_selection(
@@ -310,9 +311,12 @@ def train_over_under(
     X_no_odds, feats_no_odds = exclude_odds(X, feature_names)
     log.info("After excluding odds: %d features", len(feats_no_odds))
 
-    # Build mask aligned with X (same rows as get_universal_dataset)
-    from ml.config import CLASS_LABELS, RESULT_COL
+    # Build mask aligned with X (must match get_universal_dataset's filtering)
+    from ml.config import CLASS_LABELS, RESULT_COL, ValidationConfig, SEASON_COL
+    _val_cfg = ValidationConfig()
     raw_mask = loader.df[RESULT_COL].isin(CLASS_LABELS)
+    if _val_cfg.min_train_season:
+        raw_mask = raw_mask & (loader.df[SEASON_COL] >= _val_cfg.min_train_season)
 
     report = {
         "timestamp": datetime.now(timezone.utc).isoformat(),

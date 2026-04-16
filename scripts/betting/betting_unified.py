@@ -218,22 +218,24 @@ class BettingConfig:
     #   DNB:        -37.3% ROI live (0% WR, 0 of 2 won) — DISABLE
     #   BTTS:       -7.6% ROI live (no edge visible) — DISABLE
     market_rules: Dict = field(default_factory=lambda: {
-        "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0},   # Home DISABLED: insufficient data
-        "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0},   # DISABLED: live -20.4% ROI on 21 1X2 bets (28.6% WR). Re-enable after 50+ profitable bets.
-        "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0},   # DISABLED 2026-04-06: Live 6W-15L (-25.5% ROI, -€91).
-                                                                                         # Backtest claimed +17.3% but live reality is -25.5%. Do not re-enable.
+        # edge_shrinkage: 1.0 = trust model fully, 0.6 = blend 60% model + 40% market.
+        # Prevents overconfident edge claims. O/U has proven calibration (14% ROI).
+        # Other markets showed 9.9% claimed → 1.8% actual (overconfident). Use 0.6 if re-enabled.
+        "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
+        "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
         "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +14.4% ROI (78% WR, 32 bets). Crown jewel.
-                       "allowed_lines": [1.5], "kelly_fraction": 0.08},                 # 8% Kelly (up from 5%) — proven market deserves bigger stakes
-        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0},
-        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},
-        "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},   # DISABLED 2026-04-15: Live -1.7% ROI on 43 bets. Claimed +8% was noise.
-        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
-        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
+                       "allowed_lines": [1.5], "kelly_fraction": 0.08},                 # No shrinkage needed — proven calibration
+        "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Alt_OU":     {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,
-                       "allowed_lines": [1.5]},                                         # Restrict to 1.5 only (like main O/U)
-        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0},
-        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
-        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0},
+                       "allowed_lines": [1.5]},                                         # No shrinkage — same proven O/U model
+        "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
+        "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
     })
 
     # -- Situational edge adjustments (multi-market backtest-derived, 760 matches) --
@@ -1063,7 +1065,13 @@ class UnifiedBettingEngine:
                 or model_p <= 0 or model_p >= 1 or sharp_p <= 0):
             return None
 
-        raw_edge = model_p - sharp_p
+        # Edge shrinkage: blend model toward market to combat overconfidence.
+        # Per-market shrinkage factor (1.0 = trust model fully, 0.5 = blend 50/50).
+        # O/U_Over has proven calibration (14% ROI), other markets were overconfident.
+        shrinkage = rules.get("edge_shrinkage", 1.0)
+        effective_model_p = shrinkage * model_p + (1 - shrinkage) * sharp_p
+
+        raw_edge = effective_model_p - sharp_p
         # Use absolute edge (model_p - implied_p) in percentage points.
         # This matches the dashboard display and ensures thresholds are
         # consistent across all markets (draws aren't penalized for having
