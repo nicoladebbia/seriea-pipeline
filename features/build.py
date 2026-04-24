@@ -64,6 +64,12 @@ except ImportError:
     HAS_LINEUP_XG = False
 
 try:
+    from features.xi_quality import add_xi_quality_features
+    HAS_XI_QUALITY = True
+except ImportError:
+    HAS_XI_QUALITY = False
+
+try:
     from features.match_patterns import add_match_pattern_features
     HAS_MATCH_PATTERNS = True
 except ImportError:
@@ -139,6 +145,34 @@ try:
     HAS_SUBSTITUTION = True
 except ImportError:
     HAS_SUBSTITUTION = False
+
+# Phase 0b plugins (simulator prerequisites)
+try:
+    from features.shot_level_xg import add_shot_level_features
+    HAS_SHOT_LEVEL_XG = True
+except ImportError:
+    HAS_SHOT_LEVEL_XG = False
+try:
+    from features.situational_xg import add_situational_xg_features
+    HAS_SITUATIONAL_XG = True
+except ImportError:
+    HAS_SITUATIONAL_XG = False
+try:
+    from features.missing_players import add_missing_players_features
+    HAS_MISSING_PLAYERS = True
+except ImportError:
+    HAS_MISSING_PLAYERS = False
+try:
+    from features.first_half_splits import add_first_half_splits_features
+    HAS_FIRST_HALF_SPLITS = True
+except ImportError:
+    HAS_FIRST_HALF_SPLITS = False
+try:
+    from features.european_congestion import add_european_congestion_features
+    HAS_EUROPEAN_CONGESTION = True
+except ImportError:
+    HAS_EUROPEAN_CONGESTION = False
+
 from storage.paths import features_path, parsed_path
 
 log = logging.getLogger(__name__)
@@ -165,6 +199,10 @@ class FeatureState:
     season: Optional[str] = None
     team_log: Optional[pd.DataFrame] = None
     feature_df: Optional[pd.DataFrame] = None
+    # League the pipeline is building features for (e.g. "serie_a",
+    # "premier_league"). Plugins that load league-specific external files
+    # (Sofascore, FBref EPL, etc.) must route on this value.
+    league: Optional[str] = None
 
     # Track column counts for logging
     _cols_before: set = field(default_factory=set, repr=False)
@@ -751,7 +789,7 @@ class Step19cPlayerDepth(FeaturePlugin):
 class Step19c2LineupXg(FeaturePlugin):
     """Step 19c2: Historical lineup xG reconstruction (Sofascore + Understat)."""
     name = "lineup_xg"
-    version = "1.0"
+    version = "1.1"  # 2026-04-24: league-aware Sofascore file routing (Phase 2.1)
     dependencies = ["player_depth"]
     non_critical = True
 
@@ -760,8 +798,34 @@ class Step19c2LineupXg(FeaturePlugin):
             log.info("Skipping lineup xG features (module not available)")
             return state
         _cols_before = len(state.feature_df.columns)
-        state.feature_df = add_lineup_xg_features(state.feature_df)
+        state.feature_df = add_lineup_xg_features(
+            state.feature_df, league=state.league
+        )
         log.info("  Lineup xG added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+class Step19c3XiQuality(FeaturePlugin):
+    """Step 19c3: Pre-match starting XI quality (Phase 3a, 2026-04-24).
+
+    Features from announced starters' prior-match history only — no current-match
+    stats. See features/xi_quality.py leakage spec.
+    """
+    name = "xi_quality"
+    version = "1.0"
+    dependencies = ["lineup_xg"]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_XI_QUALITY:
+            log.info("Skipping xi_quality features (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_xi_quality_features(
+            state.feature_df, league=state.league
+        )
+        log.info("  XI quality added %d new columns",
                  len(state.feature_df.columns) - _cols_before)
         return state
 
@@ -1145,12 +1209,116 @@ class Step38SubstitutionPatterns(FeaturePlugin):
 
 
 # ────────────────────────────────────────────────────────────────────────────
+#  Phase 0b plugins — simulator prerequisites (steps 39-43)
+#
+#  All are non_critical: missing input data logs a warning, doesn't break the
+#  build. This keeps the historical pipeline healthy while new features
+#  incrementally fill in.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class Step39ShotLevelXg(FeaturePlugin):
+    """Step 39: Shot-level xG rolling features from all_shots_with_xg.parquet.
+
+    See features/shot_level_xg.py. Unlocks per-shot xG priors, situational
+    decomposition (counter-attack, set-piece, penalty xG shares), distance
+    and big-chance rates.
+    """
+    name = "shot_level_xg"
+    version = "1.0"
+    dependencies = []
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_SHOT_LEVEL_XG:
+            log.info("Skipping shot-level xG (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_shot_level_features(state.feature_df)
+        log.info("  Step 39 (shot_level_xg) added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+class Step40SituationalXg(FeaturePlugin):
+    """Step 40: Situational xG share decomposition (open-play / set-piece / counter / penalty)."""
+    name = "situational_xg"
+    version = "1.0"
+    dependencies = ["shot_level_xg"]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_SITUATIONAL_XG:
+            log.info("Skipping situational xG (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_situational_xg_features(state.feature_df)
+        log.info("  Step 40 (situational_xg) added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+class Step41MissingPlayers(FeaturePlugin):
+    """Step 41: Match-time missing players from Sofascore raw JSON `missing_players` arrays."""
+    name = "missing_players_match_time"
+    version = "1.0"
+    dependencies = []
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_MISSING_PLAYERS:
+            log.info("Skipping match-time missing players (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_missing_players_features(state.feature_df)
+        log.info("  Step 41 (missing_players) added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+class Step42FirstHalfSplits(FeaturePlugin):
+    """Step 42: First-half / second-half stat splits from Sofascore team_stats periods."""
+    name = "first_half_splits"
+    version = "1.0"
+    dependencies = []
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_FIRST_HALF_SPLITS:
+            log.info("Skipping first-half splits (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_first_half_splits_features(state.feature_df)
+        log.info("  Step 42 (first_half_splits) added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+class Step43EuropeanCongestion(FeaturePlugin):
+    """Step 43: European + Coppa Italia fixture-congestion enrichment."""
+    name = "european_congestion"
+    version = "1.0"
+    dependencies = ["congestion"]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        if not HAS_EUROPEAN_CONGESTION:
+            log.info("Skipping European congestion (module not available)")
+            return state
+        _cols_before = len(state.feature_df.columns)
+        state.feature_df = add_european_congestion_features(state.feature_df)
+        log.info("  Step 43 (european_congestion) added %d new columns",
+                 len(state.feature_df.columns) - _cols_before)
+        return state
+
+
+# ────────────────────────────────────────────────────────────────────────────
 #  Pipeline Assembly & Public API
 # ────────────────────────────────────────────────────────────────────────────
 
 
 def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
-    """Create the feature pipeline and register all 38 step plugins."""
+    """Create the feature pipeline and register all step plugins."""
     pipeline = FeaturePipeline(league=league)
 
     # Pre-steps
@@ -1185,6 +1353,7 @@ def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
     pipeline.register(Step19b2SofascoreIndices())
     pipeline.register(Step19cPlayerDepth())
     pipeline.register(Step19c2LineupXg())
+    pipeline.register(Step19c3XiQuality())
     pipeline.register(Step19dMatchPatterns())
     pipeline.register(Step19eCreativeFactors())
     pipeline.register(Step19fCaptain())
@@ -1219,6 +1388,13 @@ def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
     pipeline.register(Step37Contextual())
     pipeline.register(Step38SubstitutionPatterns())
 
+    # Steps 39-43: Phase 0b simulator prerequisites (non-critical, fail-safe)
+    pipeline.register(Step39ShotLevelXg())
+    pipeline.register(Step40SituationalXg())
+    pipeline.register(Step41MissingPlayers())
+    pipeline.register(Step42FirstHalfSplits())
+    pipeline.register(Step43EuropeanCongestion())
+
     return pipeline
 
 
@@ -1235,7 +1411,7 @@ def _build_features_for_matches(matches: pd.DataFrame,
 
     # Create pipeline and state
     pipeline = _create_pipeline(league=league)
-    state = FeatureState(matches=matches, season=season)
+    state = FeatureState(matches=matches, season=season, league=league)
 
     # Execute the full pipeline
     state = pipeline.build(state, use_cache=use_cache)

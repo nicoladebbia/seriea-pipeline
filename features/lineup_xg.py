@@ -28,9 +28,19 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).parent.parent / "data"
 
 
-def _load_sofascore_starters() -> pd.DataFrame | None:
-    """Load Sofascore per-match starter data with xG."""
-    path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+def _load_sofascore_starters(league: str | None = None) -> pd.DataFrame | None:
+    """Load Sofascore per-match starter data with xG.
+
+    If `league` is given, uses the league-specific file when available (EPL
+    is stored in `player_match_stats_premier_league.parquet`, which is a
+    separate scraper output). Without `league`, falls back to the default
+    (Serie A) file for backward compatibility.
+    """
+    base = DATA_DIR / "external" / "sofascore"
+    if league == "premier_league":
+        path = base / "player_match_stats_premier_league.parquet"
+    else:
+        path = base / "player_match_stats.parquet"
     if not path.exists():
         log.info("No Sofascore player stats at %s", path)
         return None
@@ -38,8 +48,9 @@ def _load_sofascore_starters() -> pd.DataFrame | None:
     df = pd.read_parquet(path)
     # Filter to starters with xG data
     starters = df[df["is_starter"] == True].copy()
-    log.info("Loaded %d Sofascore starter records (seasons: %s)",
-             len(starters), sorted(starters["season"].unique()))
+    log.info("Loaded %d Sofascore starter records for league=%s (seasons: %s)",
+             len(starters), league or "default",
+             sorted(starters["season"].unique()))
     return starters
 
 
@@ -195,13 +206,18 @@ def _compute_understat_lineup_proxy(
     return df
 
 
-def add_lineup_xg_features(feature_df: pd.DataFrame) -> pd.DataFrame:
-    """Add all lineup xG features to the match-level feature DataFrame."""
+def add_lineup_xg_features(feature_df: pd.DataFrame,
+                            league: str | None = None) -> pd.DataFrame:
+    """Add all lineup xG features to the match-level feature DataFrame.
+
+    `league` routes Sofascore starter data to the correct file — SA is
+    `player_match_stats.parquet`, EPL is `player_match_stats_premier_league.parquet`.
+    """
     df = feature_df.copy()
     cols_before = len(df.columns)
 
-    # Source 1: Sofascore per-match (2022+)
-    starters = _load_sofascore_starters()
+    # Source 1: Sofascore per-match (SA: 2022+, EPL: 2017+)
+    starters = _load_sofascore_starters(league=league)
     if starters is not None:
         df = _compute_sofascore_lineup_features(df, starters)
 
