@@ -1,5 +1,16 @@
 # Phase 3a — Pre-match XI Quality Features (NULL RESULT)
 
+> **PRODUCTION DIVERGENCE NOTICE (added 2026-04-24 post-trace):** All metrics
+> below are measured on `data/models/walkforward/` model families. The
+> production prediction engine loads `data/models/universal/catboost_no_odds.cbm`,
+> a separate model trained by a different pipeline. The xi_quality plugin
+> *is* in the live feature pipeline (build.py registers it), so newly-built
+> features for production *would* include XI columns — but the production
+> model wasn't retrained with them, and the null result above was measured
+> on a different model regardless. Production unaffected.
+
+
+
 **Hypothesis:** Adding 6 features describing the announced starting XI's
 prior-match quality (rating, xG/90, lineup continuity) will improve Kelly ROI
 by ≥6pp on at least one league.

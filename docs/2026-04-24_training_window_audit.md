@@ -1,5 +1,18 @@
 # Training-Window Audit — 2026-04-24 (Phase 1, FINAL)
 
+> **PRODUCTION DIVERGENCE NOTICE (added 2026-04-24 post-trace):** All metrics
+> in this document are measured on `data/models/walkforward/` model families
+> (used by `scripts/diagnostics/deep_backtest_1x2.py` and
+> `scripts/diagnostics/backtest_rules_engine.py`). The production prediction
+> engine (`scripts/prediction/ensemble_prediction_engine.py`) loads a
+> different model — `data/models/universal/catboost_no_odds.cbm` +
+> `lean_calibrators.pkl` — which is trained by
+> `scripts/models/retrain_no_odds_catboost.py`, a separate pipeline. None of
+> the changes or findings below have been validated against the production
+> model. They are backtest findings.
+
+
+
 **Question:** Does restricting the walk-forward training window from 2005+
 to 2017+ or 2019+ improve 1X2 model quality?
 
