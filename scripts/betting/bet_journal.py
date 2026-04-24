@@ -236,6 +236,83 @@ def _generate_bet_id(date: str, match: str, market: str, selection: str) -> str:
 
 MAX_EDGE_PCT = 12.0  # Defense-in-depth: reject bets above this edge regardless of caller
 
+# =============================================================================
+# MODEL VERSION STAMPING — auto-tags every new bet with the deployed model
+# =============================================================================
+
+_MODEL_VERSION_CACHE: Dict = {"mtime": None, "data": None}
+_DEPLOYMENT_STATE_PATH = DATA_DIR / "models" / "deployment_state.json"
+_GIT_SHA_CACHE: Optional[str] = None
+
+
+def _get_git_sha() -> Optional[str]:
+    """Current HEAD short SHA. Cached per-process. None if not a git repo / git missing."""
+    global _GIT_SHA_CACHE
+    if _GIT_SHA_CACHE is not None:
+        return _GIT_SHA_CACHE or None
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(_PROJECT_ROOT),
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).decode().strip()
+        _GIT_SHA_CACHE = sha
+        return sha
+    except Exception:
+        _GIT_SHA_CACHE = ""  # sentinel = "tried, failed"
+        return None
+
+
+def _get_model_snapshot() -> Dict:
+    """Read deployment_state.json and return (model_version, deployed_at, model_accuracy).
+
+    Cached per-process; re-read if the file's mtime changes (so a retrain between
+    two add_bet calls in a long-running process picks up the new version).
+    """
+    if not _DEPLOYMENT_STATE_PATH.exists():
+        return {"model_version": "unknown", "model_deployed_at": None, "model_accuracy": None}
+    try:
+        mtime = _DEPLOYMENT_STATE_PATH.stat().st_mtime
+    except OSError:
+        return {"model_version": "unknown", "model_deployed_at": None, "model_accuracy": None}
+
+    if _MODEL_VERSION_CACHE["mtime"] == mtime and _MODEL_VERSION_CACHE["data"] is not None:
+        return _MODEL_VERSION_CACHE["data"]
+
+    try:
+        with open(_DEPLOYMENT_STATE_PATH) as f:
+            ds = json.load(f)
+    except Exception as e:
+        log.debug("deployment_state.json unreadable: %s", e)
+        return {"model_version": "unknown", "model_deployed_at": None, "model_accuracy": None}
+
+    snapshot = {
+        "model_version": ds.get("model_version") or "unknown",
+        "model_deployed_at": ds.get("deployed_at"),
+        "model_accuracy": (ds.get("metrics") or {}).get("accuracy"),
+    }
+    _MODEL_VERSION_CACHE["mtime"] = mtime
+    _MODEL_VERSION_CACHE["data"] = snapshot
+    return snapshot
+
+
+def _stamp_model_version(entry: Dict) -> None:
+    """Stamp the bet entry with model_version, model_deployed_at, model_accuracy, git_sha.
+
+    Idempotent: if the entry already has these fields (e.g. a caller pre-set them),
+    they're preserved. Only missing fields are filled.
+    """
+    snapshot = _get_model_snapshot()
+    entry.setdefault("model_version", snapshot["model_version"])
+    entry.setdefault("model_deployed_at", snapshot["model_deployed_at"])
+    entry.setdefault("model_accuracy_at_placement", snapshot["model_accuracy"])
+    sha = _get_git_sha()
+    if sha:
+        entry.setdefault("git_sha", sha)
+
+
 
 @_with_journal_lock
 def add_bet(bet_data: Dict) -> str:
@@ -328,8 +405,10 @@ def add_bet(bet_data: Dict) -> str:
             "settled_at": None,
             "pipeline_status": bet_data.get("pipeline_status"),
         }
+        # Auto-tag model version so post-retrain audits can filter by model.
+        _stamp_model_version(entry)
         journal["bets"][bet_id] = entry
-        log.debug("Added new bet %s", bet_id)
+        log.debug("Added new bet %s (model=%s)", bet_id, entry.get("model_version"))
 
     _save_journal(journal)
     return bet_id
@@ -368,8 +447,19 @@ def get_settled_bets() -> List[Dict]:
 
 @_with_journal_lock
 def settle_bet(bet_id: str, status: str, result_score: str = None,
-               profit: float = None) -> bool:
+               profit: float = None,
+               match_kickoff_at: str | None = None) -> bool:
     """Mark a bet as won/lost/push/void.
+
+    Args:
+        bet_id: journal key
+        status: won / lost / push / void
+        result_score: "home-away" string, e.g. "2-1"
+        profit: signed profit amount (negative on loss)
+        match_kickoff_at: ISO kickoff timestamp from the match source.
+            Stored as a separate field from `settled_at` — the latter is the
+            audit timestamp of when our grader ran; the former is when the
+            match kicked off (used for chronological sorting).
 
     Returns True if bet was found and updated, False otherwise.
     """
@@ -408,6 +498,8 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
     bet["result_score"] = result_score
     bet["profit"] = profit
     bet["settled_at"] = datetime.now().isoformat()
+    if match_kickoff_at:
+        bet["match_kickoff_at"] = match_kickoff_at
 
     # Compute CLV (Closing Line Value) from stored data
     # CLV = placed_implied_prob - sharp_implied_prob (positive = we got better odds than sharp market)

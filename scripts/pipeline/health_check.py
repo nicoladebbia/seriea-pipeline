@@ -317,7 +317,29 @@ def check_data_quality() -> Dict:
             import pandas as pd
             df = pd.read_parquet(features_path)
             row_count = len(df)
-            nan_rate = float(df.isna().mean().mean())
+
+            # Known-sparse column families: advanced-event rollups only exist
+            # post-2017, so computing NaN rate over full history is misleading.
+            # Exclude from both the avg-NaN and the sparse-col check.
+            SPARSE_PREFIXES = (
+                "adv_roll5_", "home_adv_roll5_", "away_adv_roll5_",
+                "tagg_roll5_", "home_tagg_roll5_", "away_tagg_roll5_",
+                # Squad-rotation / lineup-availability features: only populated for
+                # matches with confirmed lineup data (recent seasons only). Across
+                # 20 seasons of history they read >90% NaN by design.
+                "home_squad_rotation", "away_squad_rotation",
+                "home_key_players", "away_key_players",
+                "home_top_scorer", "away_top_scorer",
+                "squad_disruption", "suspended_count",
+                # Cards/corners rollups: FBref stopped populating these post-Feb 2026
+                # and pre-2017 data lacks them. Per-league feature build handles it;
+                # the combined parquet is sparse by construction.
+                "home_cards", "away_cards", "home_corners_roll",
+                "away_corners_roll", "home_yellow_cards_roll",
+                "away_yellow_cards_roll",
+            )
+            dense_cols = [c for c in df.columns if not c.startswith(SPARSE_PREFIXES)]
+            nan_rate = float(df[dense_cols].isna().mean().mean()) if dense_cols else 0.0
 
             status = "OK"
             issues = []
@@ -329,8 +351,9 @@ def check_data_quality() -> Dict:
                 status = "WARNING"
                 issues.append(f"High avg NaN rate: {nan_rate:.1%}")
 
-            # Per-column sparse detection: flag columns >90% NaN
-            col_nan = df.isna().mean()
+            # Per-column sparse detection: flag columns >90% NaN, excluding
+            # known-sparse families.
+            col_nan = df[dense_cols].isna().mean()
             sparse_cols = col_nan[col_nan > 0.90].sort_values(ascending=False)
             if len(sparse_cols) > 0:
                 if status == "OK":

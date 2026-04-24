@@ -296,6 +296,27 @@ def get_kickoff_times() -> List[Dict]:
         except Exception as e:
             log.warning("Could not read manual_matches.json: %s", e)
 
+    # Source 3: The Odds API /events endpoint (FREE, 0 credits) — authoritative for EPL
+    # and any league not maintained in manual_matches.json. Only called once per
+    # scheduler tick; failures are non-fatal.
+    try:
+        from scripts.data.odds_fetcher import discover_kickoffs_via_events
+        for ev in discover_kickoffs_via_events():
+            key = ev["match"]
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "match": key,
+                "home_team": ev["home_team"],
+                "away_team": ev["away_team"],
+                "kickoff_utc": ev["kickoff_utc"],
+                "date": _to_italy_date(ev["kickoff_utc"]),
+                "league": ev.get("league", ""),
+            })
+    except Exception as e:
+        log.debug("discover_kickoffs_via_events unavailable: %s", e)
+
     # Source 2: results.json (for recently completed matches — has commence_time)
     results_path = DATA_DIR / "upcoming" / "results.json"
     if results_path.exists():
@@ -349,7 +370,34 @@ def _save_pre_kickoff_state(state: Dict):
 
 # Multi-stage match clock events — each fires once per match per day
 # (except lineup_fetch which retries if lineups weren't confirmed)
+#
+# kind="odds"          → dispatched via _dispatch_odds_stage (odds_fetcher.fetch_tagged_snapshot)
+# kind="player_props"  → dispatched via _dispatch_player_props_stage (requires confirmed lineups)
+# kind missing         → existing in-code dispatch (lineup_fetch / prediction_update / settlement_check)
 MATCH_CLOCK_STAGES = [
+    # --- Odds snapshots: bulk per league, cheap (1 credit per market, eu region) ---
+    {"name": "odds_T72h", "minutes_before": 72*60, "window": (70*60, 74*60),
+     "description": "Opening-line bulk snapshot",
+     "kind": "odds", "include_extra_markets": False, "critical": False},
+    {"name": "odds_T24h", "minutes_before": 24*60, "window": (22*60, 26*60),
+     "description": "T-24h bulk snapshot",
+     "kind": "odds", "include_extra_markets": False, "critical": False},
+    {"name": "odds_T6h",  "minutes_before":  6*60, "window": (5*60, 7*60),
+     "description": "T-6h bulk + extra markets",
+     "kind": "odds", "include_extra_markets": True, "critical": False},
+    {"name": "odds_T3h",  "minutes_before":  3*60, "window": (2*60+30, 3*60+30),
+     "description": "T-3h bulk + extra markets",
+     "kind": "odds", "include_extra_markets": True, "critical": False},
+    {"name": "odds_T5m",  "minutes_before":        5, "window": (0, 15),
+     "description": "Closing-line bulk (CRITICAL — bypasses soft quota cap)",
+     "kind": "odds", "include_extra_markets": False, "critical": True},
+
+    # --- Player props: only after confirmed_lineups.json has the match ---
+    {"name": "player_props_T60", "minutes_before": 60, "window": (40, 70),
+     "description": "Player-prop odds snapshot (lineup-gated)",
+     "kind": "player_props", "critical": False, "retry_if_empty": True},
+
+    # --- Existing match-day stages (unchanged) ---
     {
         "name": "lineup_fetch",
         "minutes_before": 55,   # T-55: lineups drop at T-60, give 5 min buffer
@@ -370,6 +418,151 @@ MATCH_CLOCK_STAGES = [
         "description": "Post-match settlement check",
     },
 ]
+
+# How far ahead the match clock looks. Widened from "today only" to 80h so the
+# T-72h odds stage can fire on Tuesday for a match on Friday.
+MATCH_CLOCK_LOOKAHEAD_HOURS = 80
+
+
+def _dispatch_odds_stage(stage: Dict, matches: List[Dict]) -> bool:
+    """Fire an odds-snapshot stage for one or more matches. Returns True on success."""
+    if not matches:
+        return True
+    from config.leagues import ACTIVE_LEAGUES
+    # Group by league so we make one bulk call per league, not per match.
+    leagues_to_fetch = {m.get("league") for m in matches if m.get("league")}
+    if not leagues_to_fetch:
+        leagues_to_fetch = set(ACTIVE_LEAGUES)
+
+    try:
+        from scripts.data.odds_fetcher import fetch_tagged_snapshot
+    except Exception as e:
+        log.warning("odds stage %s: odds_fetcher unavailable — %s", stage["name"], e)
+        return False
+
+    ok_all = True
+    for league in sorted(leagues_to_fetch):
+        try:
+            fetch_tagged_snapshot(
+                league=league,
+                include_extra_markets=bool(stage.get("include_extra_markets")),
+                critical=bool(stage.get("critical")),
+                tag=stage["name"],
+            )
+        except Exception as e:
+            log.warning("odds stage %s: fetch failed for %s — %s",
+                        stage["name"], league, e)
+            ok_all = False
+    return ok_all
+
+
+def _dispatch_player_props_stage(stage: Dict, matches: List[Dict]) -> bool:
+    """Fire player-prop odds fetch, but only for matches whose lineups have posted."""
+    if not matches:
+        return True
+    try:
+        lineups_path = DATA_DIR / "upcoming" / "confirmed_lineups.json"
+        confirmed = set()
+        if lineups_path.exists():
+            with open(lineups_path) as f:
+                lineups_data = json.load(f)
+            for mk, mdata in lineups_data.get("matches", {}).items():
+                home_xi = mdata.get("home_lineup", [])
+                away_xi = mdata.get("away_lineup", [])
+                if (isinstance(home_xi, list) and isinstance(away_xi, list)
+                        and len(home_xi) >= 7 and len(away_xi) >= 7):
+                    confirmed.add(mk)
+    except Exception as e:
+        log.warning("player_props stage: lineup read failed — %s", e)
+        confirmed = set()
+
+    gated = [m for m in matches if m["match"] in confirmed]
+    skipped = [m["match"] for m in matches if m["match"] not in confirmed]
+    if skipped:
+        log.info("player_props stage: deferring %d match(es) — lineups not confirmed: %s",
+                 len(skipped), ", ".join(skipped))
+    if not gated:
+        return False  # returning False keeps retry_if_empty alive
+
+    try:
+        from scripts.betting.player_prop_odds import fetch_player_prop_odds
+    except Exception as e:
+        log.warning("player_props stage: module unavailable — %s", e)
+        return False
+
+    by_league: Dict[str, List[Dict]] = {}
+    for m in gated:
+        by_league.setdefault(m.get("league") or "serie_a", []).append(m)
+
+    ok_all = True
+    for league, mlist in by_league.items():
+        try:
+            fetch_player_prop_odds(league=league, use_cache=False)
+            log.info("player_props[%s]: fetched for %d match(es)", league, len(mlist))
+        except TypeError:
+            try:
+                fetch_player_prop_odds()
+            except Exception as e:
+                log.warning("player_props[%s]: legacy fallback failed — %s", league, e)
+                ok_all = False
+        except Exception as e:
+            log.warning("player_props[%s]: fetch failed — %s", league, e)
+            ok_all = False
+    return ok_all
+
+
+def run_line_movement(leagues: list = None) -> bool:
+    """Hourly line-movement snapshot during match-day windows.
+
+    Cheap bulk h2h+totals snapshot for each active league — but ONLY if any
+    match is within a 72h look-ahead window. Otherwise exits at 0 credits.
+
+    Output: timestamped snapshot file via odds_tracker; feeds the line_vel_*
+    feature family. Use to compute intra-day line velocity outside of the
+    match-clock T-X stages.
+
+    Launchd cadence: every 60 min.
+    """
+    if leagues is None:
+        leagues = ACTIVE_LEAGUES
+
+    try:
+        from scripts.data.odds_fetcher import fetch_tagged_snapshot
+    except Exception as e:
+        log.error("line_movement: odds_fetcher unavailable — %s", e)
+        return False
+
+    now = _utc_now()
+    kickoffs = get_kickoff_times()
+    horizon = timedelta(hours=72)
+
+    relevant_leagues = set()
+    for k in kickoffs:
+        if 0 <= (k["kickoff_utc"] - now).total_seconds() <= horizon.total_seconds():
+            lg = k.get("league")
+            # Fallback: if league wasn't tagged (manual_matches.json entries), assume SA
+            relevant_leagues.add(lg if lg in leagues else "serie_a")
+
+    relevant_leagues &= set(leagues)
+    if not relevant_leagues:
+        log.info("line_movement: no matches within 72h in %s — skipping (0 credits)",
+                 ",".join(leagues))
+        return True
+
+    log.info("line_movement: capturing for %s", sorted(relevant_leagues))
+    ok_all = True
+    for lg in sorted(relevant_leagues):
+        try:
+            fetch_tagged_snapshot(
+                league=lg,
+                include_extra_markets=False,  # bulk h2h+totals+spreads only
+                critical=False,
+                tag="linemove",
+            )
+        except Exception as e:
+            log.warning("line_movement[%s]: %s", lg, e)
+            ok_all = False
+    return ok_all
 
 
 def run_refresh(bankroll: float = 0, leagues: list = None) -> bool:
@@ -437,10 +630,19 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     today_italy = _to_italy_date(now)
 
     kickoffs = get_kickoff_times()
-    today_matches = [k for k in kickoffs if k["date"] == today_italy]
 
-    if not today_matches:
-        log.info("Match clock: no matches today (Italy date: %s)", today_italy)
+    # Widened horizon: include any match kicking off within LOOKAHEAD hours AND
+    # any match that kicked off up to 3h ago (so settlement_check still fires).
+    lookahead = timedelta(hours=MATCH_CLOCK_LOOKAHEAD_HOURS)
+    settlement_tail = timedelta(hours=3)
+    horizon_matches = [
+        k for k in kickoffs
+        if (now - settlement_tail) <= k["kickoff_utc"] <= (now + lookahead)
+    ]
+
+    if not horizon_matches:
+        log.info("Match clock: no matches in +%dh / -3h window (Italy date: %s)",
+                 MATCH_CLOCK_LOOKAHEAD_HOURS, today_italy)
         return True
 
     state = _load_pre_kickoff_state()
@@ -451,18 +653,20 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     processed = {k: v for k, v in processed.items()
                  if isinstance(v, dict) and v.get("date", "") >= cutoff}
 
-    actions_needed = {"lineup_fetch": [], "prediction_update": [], "settlement_check": []}
+    # actions_needed maps stage_name → list of match dicts (full objects, for dispatch)
+    actions_needed: Dict[str, List[Dict]] = {s["name"]: [] for s in MATCH_CLOCK_STAGES}
 
-    for match in today_matches:
+    for match in horizon_matches:
         match_key = match["match"]
         kickoff_utc = match["kickoff_utc"]
+        match_date = match.get("date", today_italy)
         # Both are UTC-aware — subtraction gives correct timedelta anywhere
         minutes_until = (kickoff_utc - now).total_seconds() / 60
 
-        # Initialize match state
-        match_state = processed.get(match_key, {"date": today_italy, "stages": {}})
-        if match_state.get("date") != today_italy:
-            match_state = {"date": today_italy, "stages": {}}
+        # Initialize match state (scoped by each match's own date, not today's)
+        match_state = processed.get(match_key, {"date": match_date, "stages": {}})
+        if match_state.get("date") != match_date:
+            match_state = {"date": match_date, "stages": {}}
         stages_done = match_state.get("stages", {})
 
         for stage in MATCH_CLOCK_STAGES:
@@ -480,7 +684,7 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
             if win_lo <= minutes_until <= win_hi:
                 log.info("Match clock [%s] %s: kickoff in %.0f min — TRIGGERING %s",
                          stage_name, match_key, minutes_until, stage["description"])
-                actions_needed[stage_name].append(match_key)
+                actions_needed[stage_name].append(match)
                 stages_done[stage_name] = {
                     "triggered_at": now.isoformat(),
                     "minutes_until_kickoff": round(minutes_until),
@@ -502,6 +706,33 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
 
     # Execute actions
     success = True
+
+    # --- Dispatch kind=odds and kind=player_props stages via the new dispatchers ---
+    for stage in MATCH_CLOCK_STAGES:
+        kind = stage.get("kind")
+        matches = actions_needed.get(stage["name"], [])
+        if not matches:
+            continue
+        if kind == "odds":
+            ok = _dispatch_odds_stage(stage, matches)
+        elif kind == "player_props":
+            ok = _dispatch_player_props_stage(stage, matches)
+        else:
+            continue  # in-code stages below handle themselves
+        if not ok and stage.get("retry_if_empty"):
+            # Mark for retry on next tick
+            for m in matches:
+                pkey = m["match"]
+                ps = processed.get(pkey, {}).setdefault("stages", {})
+                if stage["name"] in ps:
+                    ps[stage["name"]]["needs_retry"] = True
+            state["processed"] = processed
+            _save_pre_kickoff_state(state)
+
+    # The legacy stage dispatchers below key off the dict's "match" string — rebuild
+    # a flat-key view so we don't have to rewrite the three downstream blocks.
+    _actions_flat = {k: [m["match"] for m in v] for k, v in actions_needed.items()}
+    actions_needed = _actions_flat  # back-compat for legacy dispatcher blocks
 
     # Stage 1: Lineup fetch (retries if lineups not yet available)
     if actions_needed["lineup_fetch"]:
@@ -1144,65 +1375,84 @@ def run_weekly_monitoring() -> bool:
     Designed to run weekly (Sunday morning). Detects feature drift, checks model
     calibration, and triggers retraining if accuracy has degraded.
     """
+    import time as _t
     log.info("=" * 60)
     log.info("WEEKLY MONITORING CYCLE")
     log.info("=" * 60)
+
+    t0 = _t.time()
+    details: dict = {}
+    status = "ok"
+    error_msg = None
 
     try:
         from scripts.pipeline.run_monitoring import MonitoringSystem
         monitor = MonitoringSystem()
         result = monitor.run_full_cycle()
 
-        status = result.get("status", "unknown")
+        mon_status = result.get("status", "unknown")
         drift = result.get("drift", {})
         retrain = result.get("retrain", {})
         calibration = result.get("calibration", {})
 
-        # Report drift
         n_drifted = drift.get("features_drifted", 0)
+        details["Drift status"] = mon_status
+        details["Features drifted"] = n_drifted
+        if calibration.get("status"):
+            details["Calibration"] = calibration.get("status")
+        if retrain.get("retrained", False):
+            details["Retrain"] = "executed"
+            status = "warn"
+        elif n_drifted > 5:
+            details["Retrain"] = "recommended"
+            status = "warn"
+        else:
+            details["Retrain"] = "not needed"
+
         if n_drifted > 0:
             log.warning("Feature drift detected: %d features drifted", n_drifted)
 
-        # Report calibration
         cal_status = calibration.get("status", "ok")
         if cal_status != "ok":
             log.warning("Calibration issue: %s", cal_status)
 
-        # CLV trend check
         try:
             from scripts.analysis.clv_analysis import analyze_trends
             trends = analyze_trends(window_weeks=2)
             if trends.get("periods") and len(trends["periods"]) >= 2:
                 latest_clv = trends["periods"][-1]["avg_clv"]
                 prev_clv = trends["periods"][-2]["avg_clv"]
+                details["CLV (latest)"] = f"{latest_clv:.2f}%"
                 if prev_clv - latest_clv > 1.5:
                     from scripts.pipeline.notify import notify_clv_degradation
                     notify_clv_degradation(latest_clv, prev_clv, period="2 weeks")
                     log.warning("CLV degradation: %.2f%% -> %.2f%%", prev_clv, latest_clv)
+                    status = "warn"
         except Exception as e:
             log.debug("CLV trend check failed: %s", e)
 
-        # Report retrain
-        if retrain.get("retrained", False):
-            log.info("Model retrained successfully")
-            send_notification(
-                f"Weekly monitoring: {n_drifted} features drifted | Model retrained",
-                title="Betting Pipeline Weekly Monitoring"
-            )
-        elif n_drifted > 5:
-            send_notification(
-                f"Weekly monitoring: {n_drifted} features drifted — consider retraining",
-                title="Betting Pipeline Drift Warning"
-            )
-        else:
-            log.info("Weekly monitoring: system healthy, no retrain needed")
-
-        return True
+        success = True
 
     except Exception as e:
         log.error("Weekly monitoring failed: %s", e)
-        send_notification(f"Monitoring failed: {e}", title="Betting Pipeline Monitoring ERROR")
-        return False
+        status = "fail"
+        error_msg = str(e)
+        success = False
+
+    elapsed = _t.time() - t0
+    try:
+        from scripts.pipeline.notify import notify_scheduler_run
+        notify_scheduler_run(
+            name="weekly-monitor",
+            status=status,
+            duration_sec=elapsed,
+            details=details,
+            error=error_msg,
+        )
+    except Exception as e:
+        log.debug("Notify failed: %s", e)
+
+    return success
 
 
 def run_model_retrain() -> bool:
@@ -1211,9 +1461,16 @@ def run_model_retrain() -> bool:
     Called monthly by launchd or on-demand. Retrains all models using latest
     data and validates via walk-forward CV before promoting.
     """
+    import time as _t
     log.info("=" * 60)
     log.info("MODEL RETRAINING")
     log.info("=" * 60)
+
+    t0 = _t.time()
+    status = "fail"
+    details: dict = {}
+    error_msg = None
+    success = False
 
     try:
         cmd = [
@@ -1232,35 +1489,51 @@ def run_model_retrain() -> bool:
 
         if result.returncode == 0:
             log.info("Model retraining completed successfully")
+            details["Ensemble retrain"] = "promoted"
 
-            # Also retrain O/U classifiers (active betting market)
             try:
                 from scripts.models.train_over_under import train_over_under
                 log.info("Retraining O/U classifiers...")
                 train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
                 log.info("O/U classifiers retrained")
+                details["O/U classifiers"] = "promoted"
             except Exception as ou_e:
                 log.error("O/U retrain failed (non-fatal): %s", ou_e)
+                details["O/U classifiers"] = f"failed: {ou_e}"
+                status = "warn"
 
-            send_notification(
-                "Models retrained successfully with latest data",
-                title="Betting Pipeline Model Retrain"
-            )
-            return True
+            if status != "warn":
+                status = "success"
+            success = True
         else:
-            log.error("Model retraining failed: %s", result.stderr[-500:])
-            send_notification(
-                f"Model retrain failed: {result.stderr[-200:]}",
-                title="Betting Pipeline Retrain ERROR"
-            )
-            return False
+            tail = result.stderr[-500:]
+            log.error("Model retraining failed: %s", tail)
+            error_msg = tail
+            success = False
 
     except subprocess.TimeoutExpired:
         log.error("Model retraining timed out (30 min)")
-        return False
+        error_msg = "Timed out after 30 minutes"
+        success = False
     except Exception as e:
         log.error("Model retraining error: %s", e)
-        return False
+        error_msg = str(e)
+        success = False
+
+    elapsed = _t.time() - t0
+    try:
+        from scripts.pipeline.notify import notify_scheduler_run
+        notify_scheduler_run(
+            name="monthly-retrain",
+            status=status if success else "fail",
+            duration_sec=elapsed,
+            details=details,
+            error=error_msg,
+        )
+    except Exception as e:
+        log.debug("Notify failed: %s", e)
+
+    return success
 
 
 # =============================================================================
@@ -1373,13 +1646,51 @@ def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
     if leagues is None:
         leagues = ACTIVE_LEAGUES
 
+    import time as _t
+    t0 = _t.time()
     success = run_pipeline(bankroll, quick, leagues=leagues)
+    elapsed = _t.time() - t0
+
+    # Infer which schedule this is (morning vs evening) from wall-clock hour
+    hour = datetime.now().hour
+    if 5 <= hour < 14:
+        sched_name = "morning"
+    elif 17 <= hour < 23:
+        sched_name = "evening"
+    else:
+        sched_name = "morning" if hour < 5 else "evening"
 
     league_label = " + ".join(l.replace("_", " ").title() for l in leagues)
-    if success:
-        send_notification("Pipeline completed successfully", f"{league_label} Betting")
-    else:
-        send_notification("Pipeline failed after retries", f"{league_label} Betting ERROR")
+
+    # Pull predictions + bet count for the card
+    details = {"Leagues": league_label}
+    try:
+        import json as _json
+        preds_path = PROJECT_ROOT / "data" / "upcoming" / "predictions.json"
+        if preds_path.exists():
+            raw = _json.loads(preds_path.read_text())
+            preds = raw.get("predictions", raw) if isinstance(raw, dict) else raw
+            if isinstance(preds, list):
+                details["Predictions"] = len(preds)
+        bets_path = PROJECT_ROOT / "data" / "betting" / "unified_report.json"
+        if bets_path.exists():
+            raw = _json.loads(bets_path.read_text())
+            bets = raw.get("bets", []) if isinstance(raw, dict) else []
+            details["Value bets"] = len(bets)
+    except Exception as e:
+        log.debug("Card enrichment failed: %s", e)
+
+    try:
+        from scripts.pipeline.notify import notify_scheduler_run
+        notify_scheduler_run(
+            name=sched_name,
+            status="success" if success else "fail",
+            duration_sec=elapsed,
+            details=details,
+            error=None if success else "Pipeline failed after retries (see launchd err log)",
+        )
+    except Exception as e:
+        log.error("Scheduler notification failed: %s", e)
 
     sys.exit(0 if success else 1)
 
@@ -1535,7 +1846,8 @@ def main():
     parser.add_argument(
         "mode",
         choices=["daemon", "once", "refresh", "pre-kickoff", "pre-kickoff-monitor",
-                 "settle", "health", "monitor", "retrain", "cron-setup", "status"],
+                 "settle", "health", "monitor", "retrain", "cron-setup", "status",
+                 "line-movement"],
         help="Run mode (monitor: weekly drift/calibration check, retrain: force model retraining)"
     )
     parser.add_argument(
@@ -1598,6 +1910,9 @@ def main():
         show_cron_setup(args.bankroll)
     elif args.mode == "status":
         show_status()
+    elif args.mode == "line-movement":
+        success = run_line_movement(leagues=active_leagues)
+        sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

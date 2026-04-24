@@ -49,6 +49,23 @@
   .dash-badge { font-size:9px; padding:1px 6px; border-radius:3px; font-weight:600; }
   .dash-badge--value { background:rgba(74,222,128,0.15); color:var(--green); }
   .dash-badge--steam { background:rgba(248,113,113,0.15); color:var(--red); }
+
+  /* Stale-data guard: when odds > 24h old, mute edge + flag columns and strike
+     through the value/steam badges so the table reads as not-actionable. The
+     attribute is toggled from the stale-banner logic in the scripts block. */
+  #matches-container[data-stale="1"] .dash-badge--value,
+  #matches-container[data-stale="1"] .dash-badge--steam {
+    text-decoration: line-through;
+    opacity: 0.4;
+  }
+  #matches-container[data-stale="1"] td:nth-last-child(3),  /* Edge column */
+  #matches-container[data-stale="1"] td:nth-last-child(1) { /* Flags column */
+    opacity: 0.4;
+    font-style: italic;
+  }
+  #matches-container[data-stale="1"] .dash-summary-strip {
+    opacity: 0.5;
+  }
   .dash-badge--confirmed { background:rgba(74,222,128,0.1); color:var(--green); border:1px solid rgba(74,222,128,0.2); }
   .dash-badge--live { background:var(--green); color:#000; animation:pulse-live 1.5s ease-in-out infinite; }
   .dash-badge--ht { background:rgba(251,191,36,0.15); color:var(--amber); }
@@ -153,6 +170,14 @@
     <div style="width:1px;height:20px;background:var(--border-subtle);"></div>
     <div id="quick-freshness" style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary);">
       Checking freshness...
+    </div>
+    <div style="width:1px;height:20px;background:var(--border-subtle);"></div>
+    <!-- Odds API quota — hidden until first /api/quota poll succeeds -->
+    <div id="quick-quota" style="display:none;align-items:center;gap:8px;">
+      <span style="font-size:11px;color:var(--text-tertiary);">API quota:</span>
+      <span id="quota-remaining" style="font-size:13px;font-weight:600;color:var(--text-primary);">--</span>
+      <span id="quota-reset" style="font-size:11px;color:var(--text-tertiary);">--</span>
+      <span id="quota-undercount" style="display:none;font-size:11px;font-weight:600;color:var(--red);padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);" title="Header-derived cost disagreed with estimate — see logs">⚠ undercount</span>
     </div>
   </div>
 </div>
@@ -309,7 +334,7 @@ async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _
   const el=id=>document.getElementById(id);
   // Value bets count
   const vbCount = bets.length;
-  if(el('quick-vb-count')) el('quick-vb-count').textContent = vbCount + ' value bet' + (vbCount !== 1 ? 's' : '') + ' found';
+  if(el('quick-vb-count')) el('quick-vb-count').textContent = vbCount + ' qualifying bet' + (vbCount !== 1 ? 's' : '');
   // Bankroll + ROI in stats bar
   const bal=b.current_balance||1000;
   if(el('stat-bankroll')){el('stat-bankroll').textContent=eurFmt(bal);const t=el('stat-bankroll-trend');if(t){const d=b.net_profit||0;t.className='stat-card__trend '+(d>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=(d>=0?'+':'')+eurFmt(d);}}
@@ -386,18 +411,37 @@ async function loadDashboard() {
         const predsAge = data.predictions_generated_at ? Math.round((Date.now() - new Date(data.predictions_generated_at).getTime()) / 60000) : null;
         const marketAge = data.market_intelligence_at ? Math.round((Date.now() - new Date(data.market_intelligence_at).getTime()) / 60000) : null;
 
-        // Only show banner if any source is > 3 hours old
-        const staleThreshold = 180;
+        const staleThreshold = 180;       // 3h = banner appears (soft warn)
+        const doNotBetThreshold = 1440;   // 24h = edges become fiction, mark container + harden banner
         const staleParts = [];
         if (oddsAge && oddsAge > staleThreshold) staleParts.push(`Odds ${fmtMins(oddsAge)} old`);
         if (predsAge && predsAge > staleThreshold) staleParts.push(`Predictions ${fmtMins(predsAge)} old`);
         if (marketAge && marketAge > staleThreshold) staleParts.push(`Market intel ${fmtMins(marketAge)} old`);
 
+        const matchesContainer = document.getElementById('matches-container');
+        const doNotBet = (oddsAge && oddsAge > doNotBetThreshold) || (predsAge && predsAge > doNotBetThreshold);
+
         if (staleParts.length > 0) {
-          document.getElementById('stale-msg').textContent = staleParts.join(' \u2022 ');
+          const msgEl = document.getElementById('stale-msg');
+          if (doNotBet) {
+            // Harden the banner: red, explicit DO NOT BET
+            msgEl.innerHTML = `<strong>\u26a0 DO NOT BET \u2014 edges shown below are computed from stale odds and are not actionable.</strong> ${staleParts.join(' \u2022 ')}`;
+            staleBanner.style.background = 'rgba(239,68,68,0.12)';
+            staleBanner.style.border = '1px solid rgba(239,68,68,0.40)';
+            staleBanner.style.color = 'var(--red)';
+            if (matchesContainer) matchesContainer.setAttribute('data-stale', '1');
+          } else {
+            // Soft yellow warn (original style)
+            msgEl.textContent = staleParts.join(' \u2022 ');
+            staleBanner.style.background = 'rgba(251,191,36,0.08)';
+            staleBanner.style.border = '1px solid rgba(251,191,36,0.25)';
+            staleBanner.style.color = 'var(--amber)';
+            if (matchesContainer) matchesContainer.removeAttribute('data-stale');
+          }
           staleBanner.style.display = 'flex';
         } else {
           staleBanner.style.display = 'none';
+          if (matchesContainer) matchesContainer.removeAttribute('data-stale');
         }
       }
     }
@@ -493,7 +537,7 @@ async function loadDashboard() {
             <tbody>${matches.map(m => renderMatchRow(m)).join('')}</tbody>
           </table>
           <div class="dash-summary-strip">
-            <span>${matches.filter(m => Math.abs((m.market_edge||0)*100) > 3).length} value bet${matches.filter(m => Math.abs((m.market_edge||0)*100) > 3).length !== 1 ? 's' : ''} in this matchday</span>
+            <span>${matches.filter(m => (m.market_edge||0)*100 >= 3).length} match${matches.filter(m => (m.market_edge||0)*100 >= 3).length !== 1 ? 'es' : ''} with +3% model edge</span>
             <a href="/predictions" style="color:var(--accent);text-decoration:none;font-size:11px">Full analysis &rarr;</a>
           </div>
         </div>
@@ -657,5 +701,51 @@ function updateDashRows() {
 
 // Start polling after initial load
 setTimeout(() => { pollMatchClock(); setInterval(pollMatchClock, 30000); }, 2000);
+
+// ═══════════════════════════════════════════════════════════════════════
+// Odds API quota widget — polls /api/quota every 60s
+// ═══════════════════════════════════════════════════════════════════════
+async function pollQuota() {
+  try {
+    const resp = await fetch('/api/quota');
+    if (!resp.ok) return;  // graceful: hide widget if endpoint errors
+    const q = await resp.json();
+    if (q.error || q.api_remaining === undefined || q.api_remaining === null) return;
+
+    const container = document.getElementById('quick-quota');
+    const remainingEl = document.getElementById('quota-remaining');
+    const resetEl = document.getElementById('quota-reset');
+    const undercountEl = document.getElementById('quota-undercount');
+    if (!container) return;
+
+    container.style.display = 'flex';
+
+    const remaining = q.api_remaining;
+    const pct = Math.max(0, Math.min(100, (remaining / (q.monthly_limit || 100000)) * 100));
+    let color = 'var(--green)';
+    if (q.status === 'hard_stop') color = 'var(--red)';
+    else if (q.status === 'soft_stop') color = 'var(--amber)';
+    else if (pct < 10) color = 'var(--amber)';
+
+    remainingEl.textContent = `${remaining.toLocaleString()} / ${(q.monthly_limit || 100000).toLocaleString()}`;
+    remainingEl.style.color = color;
+    remainingEl.title = `${pct.toFixed(1)}% remaining. Status: ${q.status || 'unknown'}.`;
+
+    const days = q.days_to_reset;
+    resetEl.textContent = (days !== undefined && days !== null)
+      ? `(${days}d to reset)` : '';
+
+    if (q.undercount_events && q.undercount_events > 0) {
+      undercountEl.style.display = 'inline-block';
+      undercountEl.title = `${q.undercount_events} API calls where header-reported cost disagreed with estimate. Check logs/launchd-pre-kickoff-monitor.log.`;
+    } else {
+      undercountEl.style.display = 'none';
+    }
+  } catch (e) {
+    // silent — widget hides on any error
+  }
+}
+
+setTimeout(() => { pollQuota(); setInterval(pollQuota, 60000); }, 2500);
 </script>
 {% endblock %}

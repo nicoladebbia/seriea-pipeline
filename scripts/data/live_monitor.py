@@ -63,13 +63,15 @@ SHARP_BOOKS = {"pinnacle", "betfair_ex_eu", "matchbook", "betcris"}
 from config.api_keys import get_odds_api_key
 
 
-def _track_credits(response):
-    """Track API credits from response headers."""
+def _track_credits(response, endpoint: str = "live_monitor"):
+    """Track API credits from response headers (delta-based, see odds_fetcher.track_api_call)."""
     try:
-        from scripts.data.odds_fetcher import track_api_call
-        remaining = int(response.headers.get("x-requests-remaining", 0))
-        used = int(response.headers.get("x-requests-used", 1))
-        track_api_call(credits_used=1, credits_remaining=remaining)
+        from scripts.data.odds_fetcher import track_api_call, REGIONS
+        remaining_hdr = response.headers.get("x-requests-remaining")
+        remaining = int(remaining_hdr) if remaining_hdr is not None else None
+        # Estimate: regions × 1 market (live_monitor fetches one market at a time)
+        est = len(REGIONS.split(","))
+        track_api_call(credits_remaining=remaining, estimated_cost=est, endpoint=endpoint)
     except Exception as e:
         log.debug(f"Failed to track API credits: {e}")
 

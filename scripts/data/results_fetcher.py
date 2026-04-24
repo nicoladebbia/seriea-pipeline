@@ -84,10 +84,17 @@ def fetch_scores(days_from: int = 3) -> List[Dict]:
         remaining = int(response.headers.get("x-requests-remaining", 0))
         log.info(f"Fetched {len(data)} events | Credits remaining: {remaining}")
 
-        # Track API usage
+        # Track API usage. results_fetcher uses /scores endpoint; The Odds API bills
+        # scores at 1 credit (or 2 with days_from=historical scores). No region multiplier.
         try:
             from scripts.data.odds_fetcher import track_api_call
-            track_api_call(credits_used=2 if days_from else 1, credits_remaining=remaining)
+            est = 2 if days_from else 1
+            remaining_int = int(remaining) if remaining not in (None, "?") else None
+            track_api_call(
+                credits_remaining=remaining_int,
+                estimated_cost=est,
+                endpoint=f"scores_{'historical' if days_from else 'live'}",
+            )
         except ImportError:
             pass
 
@@ -568,9 +575,12 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
             profit = -stake
 
         # Record in history
+        # match_kickoff_at = actual kickoff time from Odds API (audit field for
+        # downstream sort: bets are grouped by match, not by grading batch).
+        commence_iso = result.get("commence_time", "")
         history_entry = {
             "match": match_key,
-            "date": result.get("commence_time", "")[:10],
+            "date": commence_iso[:10],
             "market": market,
             "selection": selection,
             "odds": odds,
@@ -579,6 +589,7 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
             "profit": round(profit, 2),
             "result": f"{result['home_score']}-{result['away_score']}",
             "settled_at": datetime.now().isoformat(),
+            "match_kickoff_at": commence_iso or None,
             "confidence": bet.get("confidence", "MEDIUM"),
             "value_pct": bet.get("value_pct", 0),
         }
@@ -592,6 +603,7 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
                     status=outcome,
                     result_score=f"{result['home_score']}-{result['away_score']}",
                     profit=round(profit, 2),
+                    match_kickoff_at=commence_iso or None,
                 )
             except Exception as e:
                 log.error("Failed to update journal for bet %s: %s", bet.get("_bet_id"), e)
@@ -612,17 +624,20 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
         log.info(f"  [{status_emoji}] {match_key} | {selection} @ {odds:.2f} | "
                 f"{'+'if profit > 0 else ''}{profit:.2f}")
 
-    # Save updates
-    _save_history(history)
-    # Rebuild bankroll from full history to prevent drift
-    _rebuild_bankroll_from_history()
-    # Also update journal-derived bankroll.json (authoritative source)
+    # Delegate ALL cache writes to the ledger — single source of truth.
+    # The ledger reads bet_journal.json (updated per-bet above via journal_settle)
+    # and atomically regenerates bankroll.json + history.json from it.
+    # This replaces the old triple-write path (history.append + _save_history
+    # + _rebuild_bankroll_from_history + bankroll_loader.update_bankroll_json)
+    # which was the root cause of bankroll.json drift.
     try:
-        from scripts.betting.bankroll_loader import compute_current_bankroll, update_bankroll_json
-        balance_info = compute_current_bankroll()
-        update_bankroll_json(balance_info)
+        from scripts.betting import ledger
+        ledger.rebuild_caches()
     except Exception as e:
-        log.warning("Failed to update journal-derived bankroll: %s", e)
+        log.error("ledger cache rebuild failed: %s", e)
+        # Fallback: preserve old behavior so we at least have *something*
+        _save_history(history)
+        _rebuild_bankroll_from_history()
     # Reload bankroll so summary has the rebuilt (accurate) balance
     bankroll = _load_bankroll()
 

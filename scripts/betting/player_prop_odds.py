@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 # ── config ────────────────────────────────────────────────────────────────────
 API_BASE_URL = "https://api.the-odds-api.com/v4"
 SERIE_A_KEY = "soccer_italy_serie_a"
-REGIONS = "eu,uk,us,au"
+REGIONS = "eu"  # EU only — see odds_fetcher.py for quota rationale
 ODDS_FORMAT = "decimal"
 
 PLAYER_PROP_MARKETS = {
@@ -79,8 +79,39 @@ from config.api_keys import get_odds_api_key
 # FETCHING
 # =============================================================================
 
-def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
-    """Fetch player prop odds for all upcoming Serie A matches.
+def _load_confirmed_matches() -> set:
+    """Read confirmed_lineups.json and return the set of match_keys with full lineups."""
+    path = OUTPUT_DIR / "confirmed_lineups.json"
+    if not path.exists():
+        return set()
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:
+        log.warning("Could not read confirmed_lineups.json: %s", e)
+        return set()
+    confirmed = set()
+    for mk, mdata in data.get("matches", {}).items():
+        home_xi = mdata.get("home_lineup", [])
+        away_xi = mdata.get("away_lineup", [])
+        if (isinstance(home_xi, list) and isinstance(away_xi, list)
+                and len(home_xi) >= 7 and len(away_xi) >= 7):
+            confirmed.add(mk)
+    return confirmed
+
+
+def fetch_player_prop_odds(use_cache: bool = True, league: str = "serie_a") -> Dict:
+    """Fetch player prop odds for upcoming matches — GATED on confirmed lineups.
+
+    Player-prop bets are worthless if the player doesn't start. This function
+    only fetches odds for matches whose lineups have been confirmed (≥7 players
+    each side in confirmed_lineups.json). Unconfirmed matches are skipped and
+    will be retried by the T-60 match-clock stage on the next tick.
+
+    Args:
+        use_cache: 15-min cache for idempotent callers
+        league: league identifier (default serie_a). EPL and others supported via
+                ODDS_API_LEAGUE_KEYS in odds_fetcher.py.
 
     Returns:
         Dict keyed by "Home vs Away" with player prop odds per market.
@@ -93,8 +124,25 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
         log.error("requests library required: pip install requests")
         return {}
 
+    # Resolve sport_key for the league (fall back to Serie A for back-compat)
+    try:
+        from scripts.data.odds_fetcher import _resolve_sport_key
+        sport_key = _resolve_sport_key(league)
+    except Exception:
+        sport_key = SERIE_A_KEY
+
+    # Quota circuit breaker — player props are non-critical by default
+    try:
+        from scripts.data.odds_fetcher import check_quota_budget
+        ok, msg = check_quota_budget(critical=False)
+        if not ok:
+            log.warning("player_prop_odds[%s]: quota breaker blocked — %s", league, msg)
+            return {}
+    except ImportError:
+        pass
+
     # Check cache
-    cache_path = CACHE_DIR / "player_props.json"
+    cache_path = CACHE_DIR / f"player_props_{league}.json"
     if use_cache and cache_path.exists():
         try:
             with open(cache_path) as f:
@@ -106,16 +154,33 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
         except Exception as e:
             log.debug(f"Failed to load cached player prop odds: {e}")
 
-    # Step 1: Get events
-    log.info("Fetching Serie A events for player props...")
+    # Lineup gate — load confirmed set once per call
+    confirmed_matches = _load_confirmed_matches()
+    if not confirmed_matches:
+        log.info("player_prop_odds[%s]: no confirmed lineups yet — nothing to fetch", league)
+        return {}
+
+    # Step 1: Get events (0 credits)
+    log.info("Fetching %s events for player props...", league)
     try:
         resp = requests.get(
-            f"{API_BASE_URL}/sports/{SERIE_A_KEY}/events",
+            f"{API_BASE_URL}/sports/{sport_key}/events",
             params={"apiKey": api_key},
             timeout=15,
         )
         resp.raise_for_status()
         events = resp.json()
+        # Track the (free) events call for visibility
+        try:
+            from scripts.data.odds_fetcher import track_api_call
+            remaining_hdr = resp.headers.get("x-requests-remaining")
+            track_api_call(
+                credits_remaining=int(remaining_hdr) if remaining_hdr is not None else None,
+                estimated_cost=0,
+                endpoint=f"props_events_{sport_key}",
+            )
+        except Exception:
+            pass
         log.info(f"Found {len(events)} upcoming events")
     except Exception as e:
         log.error(f"Failed to fetch events: {e}")
@@ -135,11 +200,16 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
         match_key = f"{home} vs {away}"
         commence = event.get("commence_time", "")
 
+        # ── Lineup gate ──────────────────────────────────────────────────
+        if match_key not in confirmed_matches:
+            log.info("  skipping %s — lineups not confirmed (will retry next tick)", match_key)
+            continue
+
         markets_csv = ",".join(PLAYER_PROP_MARKETS.keys())
 
         try:
             resp = requests.get(
-                f"{API_BASE_URL}/sports/{SERIE_A_KEY}/events/{event_id}/odds",
+                f"{API_BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
                 params={
                     "apiKey": api_key,
                     "regions": REGIONS,
@@ -151,6 +221,18 @@ def fetch_player_prop_odds(use_cache: bool = True) -> Dict:
             resp.raise_for_status()
             data = resp.json()
             credits_remaining = resp.headers.get("x-requests-remaining", "?")
+            # Real-cost accounting via odds_fetcher's header-delta tracker
+            try:
+                from scripts.data.odds_fetcher import track_api_call
+                remaining_int = int(credits_remaining) if credits_remaining not in (None, "?") else None
+                est = len(REGIONS.split(",")) * len(PLAYER_PROP_MARKETS)
+                track_api_call(
+                    credits_remaining=remaining_int,
+                    estimated_cost=est,
+                    endpoint=f"props_per_event_{sport_key}",
+                )
+            except Exception:
+                pass
         except Exception as e:
             log.warning(f"  Failed for {match_key}: {e}")
             time.sleep(0.3)

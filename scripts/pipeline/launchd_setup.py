@@ -45,19 +45,35 @@ JOBS = [
         "hour": 20,
         "minute": 0,
     },
-    {
-        "name": "odds-refresh",
-        "label": f"{LABEL_PREFIX}.odds-refresh",
-        "description": "Incremental odds + predictions refresh every 3 hours",
-        "mode": "refresh",
-        "interval_seconds": 10800,  # Every 3 hours (3 * 60 * 60)
-    },
+    # NOTE: The blunt "every-3h odds-refresh" job was REPLACED (2026-04-23) by the
+    # match-aware stages in pre-kickoff-monitor + hourly odds-line-movement. It
+    # fetched unconditionally regardless of whether any match was near, which was
+    # the largest single source of quota burn. Do NOT re-enable without first
+    # removing the T-X odds stages from MATCH_CLOCK_STAGES — they overlap.
+    # {
+    #     "name": "odds-refresh",
+    #     "label": f"{LABEL_PREFIX}.odds-refresh",
+    #     "description": "Incremental odds + predictions refresh every 3 hours",
+    #     "mode": "refresh",
+    #     "interval_seconds": 10800,
+    # },
     {
         "name": "pre-kickoff-monitor",
         "label": f"{LABEL_PREFIX}.pre-kickoff-monitor",
-        "description": "Smart pre-kickoff: checks actual match times every 30 min",
+        "description": (
+            "Match clock: lineup_fetch + prediction_update + settlement_check + "
+            "odds snapshots at T-72h/T-24h/T-6h/T-3h/T-5m + player_props at T-60 "
+            "(every 15 min so the 0-15m T-5m window is always caught)"
+        ),
         "mode": "pre-kickoff-monitor",
-        "interval_seconds": 1800,  # Every 30 minutes
+        "interval_seconds": 900,  # Every 15 minutes (was 30)
+    },
+    {
+        "name": "odds-line-movement",
+        "label": f"{LABEL_PREFIX}.odds-line-movement",
+        "description": "Hourly line-movement capture (h2h+totals+spreads) when matches within 72h",
+        "mode": "line-movement",
+        "interval_seconds": 3600,  # Every 60 minutes
     },
     {
         "name": "settlement",

@@ -444,6 +444,32 @@ def api_performance():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/quota")
+def api_quota():
+    """The Odds API quota snapshot: remaining credits, days to reset, undercount warnings.
+
+    Surfaces the authoritative header-derived numbers from odds_fetcher so the
+    dashboard never silently over-burns again. Frontend can poll this.
+    """
+    try:
+        from scripts.data.odds_fetcher import get_usage_summary
+        s = get_usage_summary()
+        # Derive a simple status for the UI card
+        remaining = s.get("api_remaining")
+        if remaining is None:
+            status = "unknown"
+        elif remaining < 500:
+            status = "hard_stop"
+        elif remaining < 2000:
+            status = "soft_stop"
+        else:
+            status = "ok"
+        s["status"] = status
+        return jsonify(s)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/system")
 def system():
     return render_template("system.html", active_page="system")
@@ -3110,7 +3136,7 @@ def api_live_trigger():
 
 _auto_poll_active = False
 _auto_poll_thread = None
-_auto_poll_interval = 60  # seconds (1 min default for matchday)
+_auto_poll_interval = 300  # seconds (5 min default — was 60s which burnt ~2880 Odds API calls/day)
 _auto_poll_next_at = 0.0  # timestamp of next poll
 
 def _auto_poll_loop():
@@ -3118,6 +3144,7 @@ def _auto_poll_loop():
     global _auto_poll_active, _auto_poll_next_at
     _auto_poll_active = True
     consecutive_no_live = 0
+    consecutive_auth_errors = 0
 
     log.info(f"Auto-poll thread started (every {_auto_poll_interval}s)")
 
@@ -3138,9 +3165,21 @@ def _auto_poll_loop():
                     break
             else:
                 consecutive_no_live = 0
+            consecutive_auth_errors = 0
 
         except Exception as e:
-            log.error(f"Auto-poll error: {e}")
+            msg = str(e)
+            if "401" in msg or "OUT_OF_USAGE_CREDITS" in msg or "Unauthorized" in msg:
+                consecutive_auth_errors += 1
+                if consecutive_auth_errors >= 3:
+                    log.warning(
+                        "Auto-poll: 3 consecutive auth/quota errors — stopping thread. "
+                        "Will restart on next match-day trigger."
+                    )
+                    break
+                log.warning(f"Auto-poll auth error ({consecutive_auth_errors}/3): {e}")
+            else:
+                log.error(f"Auto-poll error: {e}")
 
         # Sleep in 5s chunks for responsive stop and interval changes
         _auto_poll_next_at = _time.time() + _auto_poll_interval
