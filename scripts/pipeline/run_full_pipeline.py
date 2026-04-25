@@ -2008,23 +2008,62 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
 
     # =========================================================================
     # Step 24: Advanced Betting Engine
+    # When BETTING_DRY_RUN_FROM_MORNING=true, this step generates CANDIDATES
+    # only — no journal write, no archive. Bets commit at T-30 via
+    # run_pre_kickoff() so they price against fresh odds + confirmed lineups.
+    # See journal analysis 2026-04-25: 91% of bets were placed >24h before
+    # kickoff at -5% ROI; the few <24h bets ran +63% mean ROI on n=12.
     # =========================================================================
-    step(24, total_steps, "Running Advanced Multi-Market Engine")
+    candidate_only = os.environ.get("BETTING_DRY_RUN_FROM_MORNING", "false").lower() in ("1", "true", "yes")
+    step_label = "Generating Bet Candidates (T-30 will commit)" if candidate_only else "Running Advanced Multi-Market Engine"
+    step(24, total_steps, step_label)
     try:
         from scripts.betting.betting_unified import (
             generate_unified_report,
-            save_report
+            save_report,
+            BettingConfig,
+            UnifiedBettingEngine,
         )
 
-        report = generate_unified_report(bankroll)
-        save_report(report)
-        print(f"  Generated unified report with {report['summary']['total_bets']} optimized bets")
-        print(f"  Total stake: ${report['summary']['total_stake']:.2f}")
-        print(f"  Potential profit: ${report['summary']['total_potential_profit']:.2f}")
+        if candidate_only:
+            cfg = BettingConfig.from_config(bankroll_override=bankroll)
+            cfg.dry_run = True
+            engine = UnifiedBettingEngine(cfg)
+            slip, _ = engine.run()
+            n_candidates = len(slip.bets) if slip else 0
+            total_stake = sum(b.stake_amount for b in (slip.bets if slip else []))
+            print(f"  Generated {n_candidates} candidates (NOT journaled — T-30 will commit)")
+            print(f"  If committed: ${total_stake:.2f} total stake")
 
-        # Archive bets to persistent log so they survive report overwrites
-        if report.get("bets"):
-            _archive_bets(report["bets"], report.get("generated_at", ""))
+            # Persist candidates so the T-30 stage can re-evaluate them
+            import json
+            candidates_payload = {
+                "generated_at": datetime.now().isoformat(),
+                "candidates": [
+                    {
+                        "match": b.match, "date": b.date, "market": b.market,
+                        "selection": b.selection, "model_prob": b.model_prob,
+                        "best_odds": b.best_odds, "best_bookmaker": b.best_bookmaker,
+                        "edge_pct": b.edge_pct, "ev_per_unit": b.ev_per_unit,
+                        "stake_amount": b.stake_amount,
+                        "confidence_tier": b.confidence_tier,
+                    } for b in (slip.bets if slip else [])
+                ],
+            }
+            cand_path = Path("data/upcoming/betting_candidates.json")
+            cand_path.parent.mkdir(parents=True, exist_ok=True)
+            cand_path.write_text(json.dumps(candidates_payload, indent=2, default=str))
+            report = None  # downstream parlay/etc steps treat as no-op
+        else:
+            report = generate_unified_report(bankroll)
+            save_report(report)
+            print(f"  Generated unified report with {report['summary']['total_bets']} optimized bets")
+            print(f"  Total stake: ${report['summary']['total_stake']:.2f}")
+            print(f"  Potential profit: ${report['summary']['total_potential_profit']:.2f}")
+
+            # Archive bets to persistent log so they survive report overwrites
+            if report.get("bets"):
+                _archive_bets(report["bets"], report.get("generated_at", ""))
     except Exception as e:
         print(f"  Advanced engine warning: {e}")
         log.warning(f"Advanced engine error: {e}")
