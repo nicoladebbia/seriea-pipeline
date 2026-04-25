@@ -74,27 +74,46 @@ session. Worth doing only after measuring whether the current production
 model is well- or poorly-calibrated — same kind of A/B as the walkforward
 17pp finding, but on the right model.
 
-## Open questions for next session
+## Update — 2026-04-24 21:49 UTC: System B retrained under walkforward
+
+Open question #4 is resolved by action. `scripts/models/retrain_no_odds_catboost.py`
+gained five flags (`--walkforward-final`, `--include-new-features`, `--n-seeds`,
+`--fit-calibrator`, `--variant-suffix`) and was run with all of them. The
+phase5_v1 artifact saves the **last-fold model** (trained strictly before the
+held-out final season — no in-sample contamination on the most recent season)
+and a calibrator fit on the true held-out fold (ECE 0.043 vs prior in-sample
+0.31). Multi-seed mandate satisfied: 3 seeds tried, selected by median last-3
+log-loss.
+
+**Promoted to production 2026-04-24 21:49.** The previous model is archived at
+`data/models/universal/_archive_20260424T214905/`.
+
+CV-vs-CV comparison (the only honest one):
+
+| Metric (last-3 folds) | Prior prod (Apr 18) | Phase 5 v1 |
+|---|---:|---:|
+| Log-loss | 1.0066 | 1.0040 |
+| Accuracy | 49.65% | 51.38% |
+| Held-out ECE | 0.31 (in-sample) | 0.043 (clean) |
+
+Δlog-loss is below the methodology mandate threshold (−0.01), so the swap
+is **not** a measurable accuracy upgrade — it's a methodology / calibration
+upgrade. Live Kelly sizing should be more honest now that the calibrator
+isn't fit on memorized data.
+
+## Remaining open questions
 
 1. **Calibration on System B**: does `lean_calibrators.pkl` help or hurt
-   `catboost_no_odds`? Same A/B as walkforward, different model.
+   `catboost_no_odds`? Same A/B as walkforward, different model. (Now testable
+   with a clean held-out fold.)
 2. **Should the project unify on one system?** Two parallel 1X2 trainers
    + two parallel calibrators is duplication. Walkforward is methodologically
    cleaner (per-season holdout with strict no-leakage); catboost_no_odds is
    simpler and is what production actually serves. Unification is a multi-hour
    design decision, not an end-of-session call.
-3. **Multi-seed mandate on System B**: the methodology mandate (≥3 seeds,
-   thresholds above noise floor) applies to System A. System B currently
-   trains with one seed. Apply same mandate to weekly_retrain pipeline?
-4. **In-sample contamination on System B:** `catboost_no_odds.cbm` (April 18)
-   was trained on data through April 18, INCLUDING the 2022-2025 seasons we
-   use as eval in System A's walk-forward tests. Any backtest of this model
-   on those seasons is in-sample, not walk-forward — its 96.7% in-sample
-   accuracy (vs ~49% CV) confirms it saw the data. To measure cal-drop on
-   production properly, the model itself needs to be retrained per-season
-   under the walkforward protocol. This is really the same question as #2:
-   *the production model's training pipeline needs the same walk-forward
-   discipline the diagnostic models already have.*
+3. **Multi-seed mandate on weekly retrain**: the new flags exist, but
+   `scripts/pipeline/weekly_retrain.py` doesn't pass them yet. Next weekly
+   retrain will revert to single-seed in-sample contamination unless wired.
 
 ## What this changes about the session's other docs
 

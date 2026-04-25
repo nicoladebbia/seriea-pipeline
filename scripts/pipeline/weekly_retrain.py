@@ -303,13 +303,19 @@ def retrain_no_odds(dry_run: bool = False) -> dict:
     log.info("Retraining catboost_no_odds...")
 
     try:
-        cmd = [sys.executable, "-m", "scripts.models.retrain_no_odds_catboost"]
+        cmd = [
+            sys.executable, "-m", "scripts.models.retrain_no_odds_catboost",
+            "--walkforward-final",
+            "--include-new-features",
+            "--n-seeds", "3",
+            "--fit-calibrator",
+        ]
         if dry_run:
             cmd.append("--dry-run")
 
         proc = subprocess.run(
             cmd, cwd=str(PROJECT_ROOT),
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=2400,
         )
         result["returncode"] = proc.returncode
         if proc.returncode == 0:
@@ -320,7 +326,7 @@ def retrain_no_odds(dry_run: bool = False) -> dict:
             result["error"] = proc.stderr[-300:] if proc.stderr else "exit code non-zero"
 
     except subprocess.TimeoutExpired:
-        log.error("catboost_no_odds retrain timed out (10 min)")
+        log.error("catboost_no_odds retrain timed out (40 min)")
         result["error"] = "timeout"
     except Exception as e:
         log.error("catboost_no_odds retrain error: %s", e)
