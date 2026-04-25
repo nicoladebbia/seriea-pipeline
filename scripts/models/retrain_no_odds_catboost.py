@@ -6,6 +6,22 @@ only saves if performance is acceptable.
 
 Usage:
     python scripts/models/retrain_no_odds_catboost.py [--dry-run]
+
+2026-04-24 — Phase 5 additions (production hardening):
+    --walkforward-final  Save the LAST fold's model instead of training on all
+                         data. Eliminates in-sample contamination on eval seasons.
+    --include-new-features
+                         Extend feature_names with xi_quality + lineup_xg cols
+                         (only those that exist in features.parquet).
+    --n-seeds N          Repeat training N times with seeds 42, 43, 44, ...,
+                         pick the seed with the median CV log-loss. Defends
+                         against seed-luck.
+    --fit-calibrator     Fit per-class isotonic calibrator on the last
+                         walk-forward fold (leakage-safe), save to
+                         lean_calibrators.pkl alongside the model.
+    --variant-suffix S   Write to catboost_no_odds__{S}.cbm instead of
+                         catboost_no_odds.cbm. Lets you ship to a side dir
+                         for paper-trade / A-B testing.
 """
 
 from __future__ import annotations
@@ -78,8 +94,20 @@ def walk_forward_validate(
     y: pd.Series,
     y_str: pd.Series,  # Original string labels for compute_metrics
     params: dict,
-) -> pd.DataFrame:
-    """Run walk-forward cross-validation and return per-fold metrics."""
+    return_last_fold_model: bool = False,
+    return_last_fold_cal_data: bool = False,
+):
+    """Run walk-forward cross-validation and return per-fold metrics.
+
+    If `return_last_fold_model=True`, also returns the model trained on the
+    LAST fold's train data (which excluded the most recent test season).
+    That model has zero in-sample contamination on the most recent season —
+    suitable for production inference where we evaluate on currently-future
+    matches.
+
+    If `return_last_fold_cal_data=True`, also returns (proba_last, y_last_str)
+    for fitting an isotonic calibrator on the held-out test fold.
+    """
     config = ValidationConfig()
     splitter = TimeSeriesSplitter(config)
 
@@ -90,6 +118,9 @@ def walk_forward_validate(
     splits = splitter.generate_splits(X["_season"])
 
     fold_rows: list[dict] = []
+    last_fold_model = None
+    last_fold_proba = None
+    last_fold_y_str = None
     for fold_idx, (train_seasons, test_seasons) in enumerate(splits):
         train_mask = X["_season"].isin(train_seasons)
         test_mask = X["_season"].isin(test_seasons)
@@ -139,7 +170,82 @@ def walk_forward_validate(
             metrics["brier_score"], metrics["f1_D"],
         )
 
-    return pd.DataFrame(fold_rows)
+        # Capture the last fold's artifacts for production saving
+        if fold_idx == len(splits) - 1:
+            if return_last_fold_model:
+                last_fold_model = model
+            if return_last_fold_cal_data:
+                last_fold_proba = y_proba
+                last_fold_y_str = y_test_str.values
+
+    df = pd.DataFrame(fold_rows)
+    if return_last_fold_model or return_last_fold_cal_data:
+        return df, last_fold_model, last_fold_proba, last_fold_y_str
+    return df
+
+
+def fit_isotonic_calibrators(y_str: np.ndarray, y_proba: np.ndarray) -> dict:
+    """Fit per-class IsotonicRegression on held-out fold predictions.
+
+    Format matches what scripts/prediction/ensemble_prediction_engine.py expects
+    for lean_calibrators.pkl: dict[int -> IsotonicRegression].
+
+    The label map is H=0, D=1, A=2 (matches LABEL_MAP / catboost_no_odds classes).
+    """
+    from sklearn.isotonic import IsotonicRegression
+    label_to_idx = {"H": 0, "D": 1, "A": 2}
+    y_int = np.array([label_to_idx.get(str(yy), -1) for yy in y_str])
+    calibrators: dict = {}
+    for cls in range(3):
+        binary = (y_int == cls).astype(float)
+        # If a class is absent from this fold, fit an identity-ish mapping
+        if binary.sum() < 5:
+            log.warning("Class %d has only %d samples on cal fold — using identity calibrator",
+                        cls, int(binary.sum()))
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit([0.0, 1.0], [0.0, 1.0])
+        else:
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(y_proba[:, cls], binary)
+        calibrators[cls] = iso
+    log.info("Fit %d-class isotonic calibrators on %d held-out samples", 3, len(y_str))
+    return calibrators
+
+
+def expand_feature_set_with_new(features: list[str], df: pd.DataFrame) -> list[str]:
+    """Add available xi_quality + lineup_xg columns to the locked feature set.
+
+    Only adds columns that:
+      - Actually exist in `df`
+      - Have non-trivial fill rate (>20% on the rows we'll train on)
+      - Are NOT already in `features`
+      - Are NOT post-match leaky (lineup_xg_sum / rating_mean / xa_sum / rotation
+        ARE post-match — exclude them. xi_quality cols are pre-match — include.)
+    """
+    POST_MATCH_LEAKY = {
+        "home_lineup_xg_sum", "away_lineup_xg_sum", "lineup_xg_sum_diff",
+        "home_lineup_xa_sum", "away_lineup_xa_sum", "lineup_xa_sum_diff",
+        "home_lineup_rating_mean", "away_lineup_rating_mean",
+        "lineup_rating_mean_diff",
+        "home_lineup_rotation", "away_lineup_rotation",
+    }
+    candidates = [
+        c for c in df.columns
+        if (c.startswith("home_xi_") or c.startswith("away_xi_"))
+        and c not in features
+        and c not in POST_MATCH_LEAKY
+    ]
+    accepted = []
+    for c in candidates:
+        fill = df[c].notna().mean()
+        if fill >= 0.20:
+            accepted.append(c)
+            log.info("  + %s (fill=%.1f%%)", c, fill * 100)
+        else:
+            log.info("  - %s (fill=%.1f%% — too sparse, skipping)", c, fill * 100)
+    log.info("Extended feature set: %d -> %d (added %d xi_quality cols)",
+             len(features), len(features) + len(accepted), len(accepted))
+    return features + accepted
 
 
 def train_final_model(
@@ -158,10 +264,20 @@ def train_final_model(
     return model
 
 
-def main(dry_run: bool = False):
+def main(
+    dry_run: bool = False,
+    walkforward_final: bool = False,
+    include_new_features: bool = False,
+    n_seeds: int = 1,
+    fit_calibrator: bool = False,
+    variant_suffix: str = "",
+):
     """Main retrain workflow."""
     log.info("=" * 70)
     log.info("RETRAINING catboost_no_odds.cbm")
+    log.info("  walkforward_final=%s  include_new_features=%s  n_seeds=%d  fit_calibrator=%s  suffix=%s",
+             walkforward_final, include_new_features, n_seeds, fit_calibrator,
+             variant_suffix or "<none>")
     log.info("=" * 70)
 
     # Load feature set from metadata
@@ -234,13 +350,20 @@ def main(dry_run: bool = False):
                 df[indicator] = 0  # No-odds model
             log.info(f"Added {indicator} = {df[indicator].iloc[0]}")
 
+    # Optionally extend the locked feature set with new pre-match xi_quality cols
+    if include_new_features:
+        log.info("=" * 70)
+        log.info("EXPANDING FEATURE SET (Phase 5: new pre-match XI features)")
+        log.info("=" * 70)
+        feature_names = expand_feature_set_with_new(feature_names, df)
+
     # Select features + _season (for splitting)
     keep_cols = feature_names + ["_season"]
     X = df[[c for c in keep_cols if c in df.columns]].copy()
     log.info(f"Selected {len(X.columns)} columns (including _season)")
 
     # CatBoost hyperparameters (from current deployment)
-    params = {
+    base_params = {
         "iterations": 1000,
         "depth": 6,
         "learning_rate": 0.05,
@@ -252,11 +375,51 @@ def main(dry_run: bool = False):
         "thread_count": -1,
     }
 
-    # Walk-forward CV
+    # Walk-forward CV — optionally multi-seed for robustness
     log.info("=" * 70)
-    log.info("WALK-FORWARD CROSS-VALIDATION")
+    if n_seeds > 1:
+        log.info("MULTI-SEED WALK-FORWARD CROSS-VALIDATION (%d seeds)", n_seeds)
+    else:
+        log.info("WALK-FORWARD CROSS-VALIDATION")
     log.info("=" * 70)
-    cv_df = walk_forward_validate(X, y, y_str, params)
+
+    # Run CV per seed; remember each seed's last-fold artifacts
+    seed_results: list[dict] = []
+    seeds = [42 + i for i in range(n_seeds)]
+    for seed in seeds:
+        params = {**base_params, "random_seed": seed}
+        if n_seeds > 1:
+            log.info("--- Seed %d ---", seed)
+        result = walk_forward_validate(
+            X, y, y_str, params,
+            return_last_fold_model=walkforward_final,
+            return_last_fold_cal_data=fit_calibrator,
+        )
+        if walkforward_final or fit_calibrator:
+            cv_df_seed, last_model, last_proba, last_y_str = result
+        else:
+            cv_df_seed = result
+            last_model, last_proba, last_y_str = None, None, None
+        seed_results.append({
+            "seed": seed,
+            "cv": cv_df_seed,
+            "last_model": last_model,
+            "last_proba": last_proba,
+            "last_y_str": last_y_str,
+        })
+
+    # Aggregate across seeds (median of last-3 log-loss for the headline)
+    last3_lls = []
+    for r in seed_results:
+        last3 = r["cv"].tail(3)
+        last3_lls.append(last3["log_loss"].mean())
+    median_idx = int(np.argsort(last3_lls)[len(last3_lls) // 2])
+    selected = seed_results[median_idx]
+    cv_df = selected["cv"]
+    if n_seeds > 1:
+        log.info("Per-seed last-3 log-loss: %s", [round(x, 4) for x in last3_lls])
+        log.info("Selected median seed: %d (last-3 ll=%.4f)",
+                 selected["seed"], last3_lls[median_idx])
 
     # Compute summary metrics
     all_folds_acc = cv_df["accuracy"].mean()
@@ -304,30 +467,56 @@ def main(dry_run: bool = False):
         log.info("DRY RUN — not saving model")
         return
 
-    # Train final model on all data
-    log.info("")
-    log.info("=" * 70)
-    log.info("TRAINING FINAL MODEL ON ALL DATA")
-    log.info("=" * 70)
-    final_model = train_final_model(X, y, params)
+    # Train final model — either on all data (legacy) or use last-fold model
+    # (walkforward-final, no in-sample contamination on most recent season)
+    if walkforward_final:
+        log.info("")
+        log.info("=" * 70)
+        log.info("USING LAST WALK-FORWARD FOLD MODEL (no in-sample on recent season)")
+        log.info("=" * 70)
+        final_model = selected["last_model"]
+        if final_model is None:
+            log.error("walkforward_final requested but last_model not captured — bug")
+            sys.exit(1)
+        # Evaluate the last-fold model on its own held-out test season (which IS
+        # the most recent season — that's the whole point: it was held out from training).
+        last_season = sorted(df["_season"].unique())[-1]
+        last_mask = df["_season"] == last_season
+        X_last = _strip_meta(X[last_mask])
+        y_last_str = y_str[last_mask]
+        y_proba_last = final_model.predict_proba(X_last)
+        last_metrics = compute_metrics(y_last_str, y_proba_last)
+        log.info("Final (walkforward-last-fold) model on held-out %s:", last_season)
+        log.info("  acc=%.4f  logloss=%.4f  brier=%.4f",
+                 last_metrics["accuracy"], last_metrics["log_loss"], last_metrics["brier_score"])
+    else:
+        log.info("")
+        log.info("=" * 70)
+        log.info("TRAINING FINAL MODEL ON ALL DATA (legacy path; in-sample on eval seasons)")
+        log.info("=" * 70)
+        params = {**base_params, "random_seed": selected["seed"]}
+        final_model = train_final_model(X, y, params)
 
-    # Evaluate on last season as sanity check
-    last_season = sorted(df["_season"].unique())[-1]
-    last_mask = df["_season"] == last_season
-    X_last = _strip_meta(X[last_mask])
-    y_last_str = y_str[last_mask]
-    y_proba_last = final_model.predict_proba(X_last)
-    last_metrics = compute_metrics(y_last_str, y_proba_last)
-
-    log.info(f"Final model on last season ({last_season}):")
-    log.info(f"  acc={last_metrics['accuracy']:.4f}  logloss={last_metrics['log_loss']:.4f}  brier={last_metrics['brier_score']:.4f}")
+        # Evaluate on last season as sanity check (in-sample!)
+        last_season = sorted(df["_season"].unique())[-1]
+        last_mask = df["_season"] == last_season
+        X_last = _strip_meta(X[last_mask])
+        y_last_str = y_str[last_mask]
+        y_proba_last = final_model.predict_proba(X_last)
+        last_metrics = compute_metrics(y_last_str, y_proba_last)
+        log.info("Final model on last season (%s, IN-SAMPLE — not a real eval):",
+                 last_season)
+        log.info("  acc=%.4f  logloss=%.4f  brier=%.4f",
+                 last_metrics["accuracy"], last_metrics["log_loss"], last_metrics["brier_score"])
 
     # Save model
-    model_path = MODELS_DIR / "universal" / "catboost_no_odds.cbm"
-    backup_path = MODELS_DIR / "universal" / "catboost_no_odds.cbm.bak"
+    suffix_part = f"__{variant_suffix}" if variant_suffix else ""
+    model_path = MODELS_DIR / "universal" / f"catboost_no_odds{suffix_part}.cbm"
+    backup_path = MODELS_DIR / "universal" / f"catboost_no_odds{suffix_part}.cbm.bak"
 
-    # Backup existing model
-    if model_path.exists():
+    # Backup existing model only when overwriting prod (no suffix); for variant
+    # builds, just write the new file (no prior version to back up).
+    if not variant_suffix and model_path.exists():
         log.info(f"Backing up existing model to {backup_path}")
         import shutil
         shutil.copy2(model_path, backup_path)
@@ -335,19 +524,49 @@ def main(dry_run: bool = False):
     log.info(f"Saving model to {model_path}")
     final_model.save_model(str(model_path))
 
+    # Optionally fit + save isotonic calibrators (leakage-safe, last fold only)
+    if fit_calibrator:
+        cal_proba = selected["last_proba"]
+        cal_y_str = selected["last_y_str"]
+        if cal_proba is None or cal_y_str is None:
+            log.warning("fit_calibrator requested but cal data not captured — skipping")
+        else:
+            log.info("=" * 70)
+            log.info("FITTING ISOTONIC CALIBRATORS (last walk-forward fold)")
+            log.info("=" * 70)
+            calibrators = fit_isotonic_calibrators(cal_y_str, cal_proba)
+            cal_path = MODELS_DIR / "universal" / f"lean_calibrators{suffix_part}.pkl"
+            import pickle
+            with open(cal_path, "wb") as fh:
+                pickle.dump(calibrators, fh)
+            log.info("Saved calibrators to %s", cal_path)
+
     # Update metadata
-    metadata_path = MODELS_DIR / "universal" / "catboost_no_odds_metadata.json"
+    metadata_path = MODELS_DIR / "universal" / f"catboost_no_odds{suffix_part}_metadata.json"
     metadata = {
         "model_type": "catboost",
-        "variant": "universal/no_odds",
+        "variant": f"universal/no_odds{suffix_part}",
         "n_features": len(feature_names),
         "feature_names": feature_names,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"),
-        "training_method": "leakage_free_feature_selection",
+        "training_method": "walk_forward_last_fold" if walkforward_final else "all_data_in_sample",
         "feature_selection": {
-            "method": "walk_forward_importance_based",
-            "note": "Features locked from previous deployment — no re-selection",
+            "method": "walk_forward_importance_based" + (
+                " + xi_quality_extension" if include_new_features else ""
+            ),
+            "note": "Features locked from previous deployment" + (
+                " + extended with xi_quality cols (Phase 5)" if include_new_features else ""
+            ),
+        },
+        "phase5_config": {
+            "walkforward_final": walkforward_final,
+            "include_new_features": include_new_features,
+            "n_seeds": n_seeds,
+            "seeds_tried": seeds,
+            "selected_seed": selected["seed"],
+            "fit_calibrator": fit_calibrator,
+            "variant_suffix": variant_suffix or None,
         },
         "metrics": last_metrics,
         "cv_summary": {
@@ -369,15 +588,35 @@ def main(dry_run: bool = False):
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    # Update deployment_state.json
-    deploy_path = MODELS_DIR / "deployment_state.json"
+    # Update deployment_state.json — only when overwriting production
+    if variant_suffix:
+        log.info("Variant build — skipping deployment_state.json update")
+    else:
+        _update_deployment_state(MODELS_DIR / "deployment_state.json",
+                                 feature_names, last3_acc, last3_ll, last3_brier, cv_df)
+
+    log.info("")
+    log.info("=" * 70)
+    log.info("✓ RETRAIN COMPLETE")
+    log.info("=" * 70)
+    log.info(f"Model: {model_path}")
+    log.info(f"Metadata: {metadata_path}")
+    log.info("")
+    return  # exit main here; helper does the deploy state for legacy path
+
+
+def _update_deployment_state(deploy_path: Path, feature_names: list,
+                              last3_acc: float, last3_ll: float, last3_brier: float,
+                              cv_df: pd.DataFrame) -> None:
+    """Update deployment_state.json — kept as helper to declutter main()."""
     if deploy_path.exists():
         with open(deploy_path) as f:
             deploy_state = json.load(f)
     else:
         deploy_state = {}
 
-    # Track which model is the active production ML classifier
+    last3 = cv_df.tail(3)
+
     deploy_state["active_ml_model"] = {
         "name": "catboost_no_odds",
         "path": "universal/catboost_no_odds.cbm",
@@ -390,9 +629,9 @@ def main(dry_run: bool = False):
         "accuracy": round(last3_acc, 3),
         "log_loss": round(last3_ll, 4),
         "brier": round(last3_brier, 4),
-        "rps": round(last3["rps"].mean(), 4),
-        "ece": round(last3["ece"].mean(), 4),
-        "betting_yield": deploy_state.get("metrics", {}).get("betting_yield", 0.105),  # preserve existing
+        "rps": round(last3["rps"].mean(), 4) if "rps" in last3.columns else None,
+        "ece": round(last3["ece"].mean(), 4) if "ece" in last3.columns else None,
+        "betting_yield": deploy_state.get("metrics", {}).get("betting_yield", 0.105),
     }
 
     deploy_state["history"] = deploy_state.get("history", [])
@@ -405,33 +644,34 @@ def main(dry_run: bool = False):
             "accuracy": round(last3_acc, 4),
             "log_loss": round(last3_ll, 4),
             "brier": round(last3_brier, 4),
-            "cv_last3_accuracy": round(last3_acc, 4),
-            "cv_last3_logloss": round(last3_ll, 4),
         },
     })
 
     with open(deploy_path, "w") as f:
         json.dump(deploy_state, f, indent=2)
-
-    log.info("")
-    log.info("=" * 70)
-    log.info("✓ RETRAIN COMPLETE")
-    log.info("=" * 70)
-    log.info(f"Model: {model_path}")
-    log.info(f"Metadata: {metadata_path}")
-    log.info(f"Backup: {backup_path}")
-    log.info("")
-    log.info("Next steps:")
-    log.info("  1. Run backtest: python scripts/analysis/backtest_unified.py")
-    log.info("  2. Validate predictions: python scripts/prediction/predict_unified.py")
-    log.info("  3. If backtest passes, model is ready for production")
-    log.info("=" * 70)
+    log.info("Updated deployment_state.json")
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Retrain catboost_no_odds.cbm")
-    parser.add_argument("--dry-run", action="store_true", help="Run CV but don't save model")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run CV but don't save model")
+    parser.add_argument("--walkforward-final", action="store_true",
+                        help="Save the LAST walk-forward fold's model (no in-sample on most recent season)")
+    parser.add_argument("--include-new-features", action="store_true",
+                        help="Extend feature_names with available xi_quality cols")
+    parser.add_argument("--n-seeds", type=int, default=1,
+                        help="Train with N seeds 42, 43, ..., pick median by last-3 log-loss")
+    parser.add_argument("--fit-calibrator", action="store_true",
+                        help="Fit + save isotonic calibrator on last walk-forward fold")
+    parser.add_argument("--variant-suffix", default="",
+                        help="Save to catboost_no_odds__{suffix}.cbm instead of overwriting prod")
     args = parser.parse_args()
 
-    main(dry_run=args.dry_run)
+    main(dry_run=args.dry_run,
+         walkforward_final=args.walkforward_final,
+         include_new_features=args.include_new_features,
+         n_seeds=args.n_seeds,
+         fit_calibrator=args.fit_calibrator,
+         variant_suffix=args.variant_suffix)
