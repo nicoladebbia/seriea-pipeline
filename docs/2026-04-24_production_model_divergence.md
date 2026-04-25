@@ -86,6 +86,15 @@ model is well- or poorly-calibrated — same kind of A/B as the walkforward
 3. **Multi-seed mandate on System B**: the methodology mandate (≥3 seeds,
    thresholds above noise floor) applies to System A. System B currently
    trains with one seed. Apply same mandate to weekly_retrain pipeline?
+4. **In-sample contamination on System B:** `catboost_no_odds.cbm` (April 18)
+   was trained on data through April 18, INCLUDING the 2022-2025 seasons we
+   use as eval in System A's walk-forward tests. Any backtest of this model
+   on those seasons is in-sample, not walk-forward — its 96.7% in-sample
+   accuracy (vs ~49% CV) confirms it saw the data. To measure cal-drop on
+   production properly, the model itself needs to be retrained per-season
+   under the walkforward protocol. This is really the same question as #2:
+   *the production model's training pipeline needs the same walk-forward
+   discipline the diagnostic models already have.*
 
 ## What this changes about the session's other docs
 
