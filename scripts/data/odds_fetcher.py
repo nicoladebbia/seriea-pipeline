@@ -1634,7 +1634,38 @@ def fetch_and_save_odds(markets: List[str] = None, use_cache: bool = True, leagu
                 log.info(f"Extra market available: {EXTRA_MARKETS[market]}")
 
     if not raw_data:
-        log.warning("No odds data received")
+        # Fallback: API returned nothing (quota hard-stopped, network issue, key rotated, etc.)
+        # If we have a previously-saved odds_full*.json on disk, return it with a STALE warning
+        # so the upstream data gate doesn't abort the whole pipeline. Bets generated against
+        # this data must NOT auto-commit to the journal — handled upstream via
+        # BETTING_DRY_RUN_FROM_MORNING (candidate-mode).
+        try:
+            from pathlib import Path
+            output_dir = Path(__file__).resolve().parent.parent.parent / "data" / "upcoming"
+            _suffix = "" if league == "serie_a" else f"_{league}"
+            cache_path = output_dir / f"odds_full{_suffix}.json"
+            if cache_path.exists():
+                with open(cache_path) as fh:
+                    cached = json.load(fh)
+                fetched_at = cached.get("fetched_at", "?")
+                matches = cached.get("matches", {})
+                age_str = "?"
+                try:
+                    fetched_dt = datetime.fromisoformat(fetched_at)
+                    age_hours = (datetime.now() - fetched_dt).total_seconds() / 3600
+                    age_str = f"{age_hours:.1f}h"
+                except Exception:
+                    pass
+                log.warning(
+                    "STALE FALLBACK: API returned no data (likely quota hard-stop). "
+                    "Loaded %d cached matches from %s (age: %s). "
+                    "Upstream consumers MUST treat as candidate-only — do not commit bets at these prices.",
+                    len(matches), cache_path.name, age_str,
+                )
+                return matches
+        except Exception as e:
+            log.warning("Stale fallback failed: %s", e)
+        log.warning("No odds data received and no on-disk cache available")
         return {}
 
     # Process all markets
