@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- DRAFT — review before installing to ~/Library/LaunchAgents/ -->
+    <!-- Install: cp <thisfile without .draft> ~/Library/LaunchAgents/ && launchctl load ... -->
+    <!--
+         Heavy job: scrapes FBref EPL match reports for the current season.
+         Rate-limited to 8s/request; a full matchweek of new matches takes ~3-5 min.
+         Already-downloaded HTMLs are skipped, so successive runs are fast.
+    -->
+
+    <key>Label</key>
+    <string>com.seriea-pipeline.scrape_epl_current</string>
+
+    <!-- Weekly: Monday 02:00 (after weekend matches finish, before morning pipeline) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nicoladebbia/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>scripts.data.scrape_epl_match_reports</string>
+        <string>--season</string>
+        <string>2025-2026</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/nicoladebbia</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/scrape_epl_current.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/scrape_epl_current-err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>3600</integer>
+</dict>
+</plist>
