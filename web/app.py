@@ -284,7 +284,14 @@ def _read_parquet_cached(path, columns=None):
         return pd.DataFrame()
 
 def _load_json(path: Path, default=None):
-    """Safely load a JSON file with 60-second mtime-aware cache."""
+    """Safely load a JSON file with 60-second mtime-aware cache.
+
+    Returns a deep copy of cached data so callers can mutate freely without
+    poisoning the cache. The previous behaviour returned a shared reference,
+    which let one endpoint's mutation (e.g. merging EPL standings into SA)
+    leak into every subsequent caller.
+    """
+    import copy
     if default is None:
         default = {}
     key = str(path)
@@ -293,18 +300,18 @@ def _load_json(path: Path, default=None):
     if key in _json_cache:
         cached_mtime, cached_at, cached_data = _json_cache[key]
         if (now - cached_at) < _JSON_CACHE_TTL:
-            return cached_data
+            return copy.deepcopy(cached_data)
     try:
         if path.exists():
             mtime = path.stat().st_mtime
             # If file mtime matches cached mtime, refresh TTL without re-reading
             if key in _json_cache and _json_cache[key][0] == mtime:
                 _json_cache[key] = (mtime, now, _json_cache[key][2])
-                return _json_cache[key][2]
+                return copy.deepcopy(_json_cache[key][2])
             with open(path) as f:
                 data = json.load(f)
             _json_cache[key] = (mtime, now, data)
-            return data
+            return copy.deepcopy(data)
     except Exception as e:
         log.warning(f"Failed to load {path.name}: {e}")
     return default
@@ -516,11 +523,12 @@ def api_predictions_context():
     standings_raw = _load_json(UPCOMING_DIR / "standings.json")
     analysis = _load_json(FEEDBACK_DIR / "analysis.json")
 
-    # Build standings lookup keyed by team name
+    # Build standings lookup keyed by team name. Copy the inner dict — the
+    # cached _load_json reference must NOT be mutated by EPL merging below.
     standings_list = standings_raw.get("standings", {})
     standings_by_team = {}
     if isinstance(standings_list, dict):
-        standings_by_team = standings_list
+        standings_by_team = dict(standings_list)
     elif isinstance(standings_list, list):
         for entry in standings_list:
             if isinstance(entry, dict) and entry.get("team"):
