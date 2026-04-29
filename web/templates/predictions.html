@@ -175,8 +175,9 @@
     </div>
   </div>
   <div id="pred-empty" class="hidden" style="text-align:center;padding:var(--space-12) 0;">
-    <p class="text-section-title text-secondary" style="margin-bottom:var(--space-2);">No predictions available</p>
-    <p class="text-small text-tertiary">Run the pipeline first: <code style="background:var(--bg-tertiary);padding:2px 8px;border-radius:var(--radius-sm);font-family:var(--font-mono);">python3 run_full_pipeline.py</code></p>
+    <p class="text-section-title text-secondary" style="margin-bottom:var(--space-2);">No upcoming matches</p>
+    <p id="pred-empty-detail" class="text-small text-tertiary" style="margin-bottom:var(--space-3);">Latest data and next quota reset will appear here.</p>
+    <div id="pred-empty-recent" style="margin-top:var(--space-6);text-align:left;max-width:720px;margin-left:auto;margin-right:auto;"></div>
   </div>
 </div>
 {% endblock %}
@@ -517,7 +518,59 @@ async function loadPredictions() {
     _ctx = ctxData;
 
     if (!dashData.matches?.length) {
-      document.getElementById('pred-empty').classList.remove('hidden');
+      const empty = document.getElementById('pred-empty');
+      const detail = document.getElementById('pred-empty-detail');
+      const recent = document.getElementById('pred-empty-recent');
+      empty.classList.remove('hidden');
+
+      // Build honest detail message from real signals
+      const lines = [];
+      const fmtDate = ts => { try { return new Date(ts).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch { return ts; } };
+      const ageDays = ts => { try { return ((Date.now() - new Date(ts).getTime()) / 86400000); } catch { return null; } };
+      if (dashData.odds_fetched_at) {
+        const age = ageDays(dashData.odds_fetched_at);
+        const ageStr = age != null ? (age < 1 ? `${(age*24).toFixed(1)}h ago` : `${age.toFixed(1)}d ago`) : '';
+        lines.push(`Latest odds fetched: ${fmtDate(dashData.odds_fetched_at)} (${ageStr})`);
+      }
+      if (dashData.predictions_generated_at) {
+        lines.push(`Predictions generated: ${fmtDate(dashData.predictions_generated_at)}`);
+      }
+      // Quota
+      try {
+        const quota = await apiFetch('/api/quota').catch(() => null);
+        if (quota && (quota.api_remaining != null || quota.monthly_used != null)) {
+          const used = quota.monthly_used ?? '?';
+          const limit = quota.monthly_limit ?? '?';
+          const reset = quota.reset_at ? ` — resets ${fmtDate(quota.reset_at)}` : '';
+          const stuck = quota.status === 'hard_stop' ? ' (hard-stopped)' : '';
+          lines.push(`Odds API: ${used}/${limit} used${stuck}${reset}`);
+        }
+      } catch {}
+      detail.innerHTML = lines.length
+        ? lines.map(l => `<div style="margin:2px 0;">${l}</div>`).join('')
+        : 'No fresh fixtures available right now.';
+
+      // Show last 7 days of past matches as context, if any
+      const past = (dashData.all_matches || []).filter(m => m.status === 'completed');
+      if (past.length) {
+        past.sort((a,b) => (b.commence_time || b.date || '').localeCompare(a.commence_time || a.date || ''));
+        const sliced = past.slice(0, 8);
+        recent.innerHTML = `
+          <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:var(--space-2);">Recent matches in cache</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${sliced.map(m => {
+              const lg = m.league === 'premier_league' ? 'EPL' : (m.league === 'serie_a' ? 'SA' : '');
+              const lgColor = m.league === 'premier_league' ? '#a78bfa' : '#00c853';
+              const probs = m.probabilities || {};
+              const pred = m.predicted_outcome || '?';
+              const date = m.date || (m.commence_time ? m.commence_time.slice(0,10) : '');
+              return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg-secondary);border-radius:var(--radius-sm);">
+                <div><span style="font-size:9px;font-weight:700;color:${lgColor};margin-right:8px;">${lg}</span><span style="font-size:13px;color:var(--text-primary);">${m.home_team} vs ${m.away_team}</span></div>
+                <div style="font-size:11px;color:var(--text-tertiary);font-family:var(--font-mono);">${date} · pred: ${pred}</div>
+              </div>`;
+            }).join('')}
+          </div>`;
+      }
       return;
     }
 

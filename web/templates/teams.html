@@ -411,7 +411,7 @@ async function loadTeams() {
     if (_teamsData.length === 0) {
       document.getElementById('league-table-body').innerHTML = `<tr><td colspan="20" style="text-align:center;padding:var(--space-12) 0;color:var(--text-tertiary);">
         <div style="font-size:15px;font-weight:600;margin-bottom:var(--space-2);">${_leagueName} standings not yet available</div>
-        <div style="font-size:12px;">Run the pipeline for this league to generate standings data.</div>
+        <div style="font-size:12px;">Standings data not yet available for this league.</div>
       </td></tr>`;
     } else {
       renderTable();
