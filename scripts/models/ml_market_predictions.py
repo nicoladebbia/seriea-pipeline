@@ -37,27 +37,34 @@ def generate_ml_predictions() -> Dict:
     Returns dict keyed by match name with predict_all_markets() output.
     """
     from scripts.prediction.ensemble_prediction_engine import (
-        EnsemblePredictor, load_upcoming_matches,
+        EnsemblePredictor, _load_league_matches,
         calculate_all_forms, fetch_all_match_weather, analyze_referee_impact,
     )
     from scripts.models.comprehensive_markets import get_training_features, predict_all_markets
-    
+    from config.leagues import ACTIVE_LEAGUES, infer_league
+
     # Load training feature list
     df_hist = pd.read_parquet(DATA_DIR / "features" / "features.parquet")
     features = get_training_features(df_hist)
     log.info("ML market predictions: %d features required", len(features))
-    
+
     # Initialize ensemble (just for FeatureBuilder + odds injection)
     ensemble = EnsemblePredictor(live_mode=False)
     ensemble.initialize()
-    
-    # Load upcoming matches
-    matches = load_upcoming_matches()
+
+    # Load upcoming matches across all active leagues
+    matches: List[Dict] = []
+    for _league in ACTIVE_LEAGUES:
+        league_matches = _load_league_matches(_league)
+        for m in league_matches:
+            m.setdefault("league", _league)
+        matches.extend(league_matches)
+        log.info("Loaded %d upcoming matches for %s", len(league_matches), _league)
     if not matches:
         log.error("No upcoming matches found")
         return {}
-    
-    log.info("Found %d upcoming matches", len(matches))
+
+    log.info("Found %d upcoming matches across %d leagues", len(matches), len(ACTIVE_LEAGUES))
     
     # Load form data for feature building
     form_data = calculate_all_forms()
@@ -69,6 +76,7 @@ def generate_ml_predictions() -> Dict:
         away = match["away_team"]
         match_name = f"{home} vs {away}"
         date = match.get("date", "")
+        league = match.get("league") or infer_league(home, away)
         
         try:
             # Build feature row (same as ensemble prediction engine)
@@ -135,6 +143,7 @@ def generate_ml_predictions() -> Dict:
             preds["date"] = date
             preds["home_team"] = home
             preds["away_team"] = away
+            preds["league"] = league
             
             all_predictions[match_name] = preds
             log.info("  ✅ %s: xG=%.2f-%.2f, BTTS=%.0f%%, Cards=%.1f, Corners=%.1f",

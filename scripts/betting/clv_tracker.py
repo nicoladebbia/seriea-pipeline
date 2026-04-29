@@ -44,6 +44,25 @@ PLACED_BETS_FILE = DATA_DIR / "betting" / "placed_bets.json"
 SNAPSHOTS_DIR = DATA_DIR / "odds_snapshots"
 
 
+def _resolve_league(item: dict) -> str:
+    """Return league for a bet dict, inferring from team names if absent."""
+    lg = item.get("league")
+    if lg:
+        return lg
+    home = item.get("home_team")
+    away = item.get("away_team")
+    if (not home or not away) and item.get("match"):
+        try:
+            home, away = item["match"].split(" vs ", 1)
+        except ValueError:
+            pass
+    try:
+        from config.leagues import infer_league
+        return infer_league(home, away)
+    except Exception:
+        return "serie_a"
+
+
 def _load_clv_history() -> Dict:
     """Load existing CLV tracking data."""
     if CLV_HISTORY_FILE.exists():
@@ -114,7 +133,7 @@ def record_bet_placement(slip_path: Path = None) -> int:
         entry = {
             "match": bet.get("match", ""),
             "date": bet.get("date", ""),
-            "league": bet.get("league", "serie_a"),
+            "league": _resolve_league(bet),
             "market": bet.get("market", ""),
             "selection": bet.get("selection", ""),
             "best_odds": bet.get("best_odds", 0),
@@ -517,7 +536,7 @@ def track_clv_for_settled_bets(settled_bets: List[Dict]) -> Dict:
 
         clv_entry = {
             "match": match_key,
-            "league": bet.get("league", "serie_a"),
+            "league": _resolve_league(bet),
             "market": market,
             "selection": selection,
             "bet_odds": bet_odds,
@@ -595,7 +614,7 @@ def track_clv_from_slip(slip_path: Path = None) -> Dict:
     for b in bets:
         settled.append({
             "match": b.get("match", ""),
-            "league": b.get("league", "serie_a"),
+            "league": _resolve_league(b),
             "market": b.get("market", "1X2"),
             "selection": b.get("selection", ""),
             "odds": b.get("best_odds", 0),

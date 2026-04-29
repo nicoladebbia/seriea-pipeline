@@ -298,14 +298,52 @@ class BTTSCornersBet:
 # BTTS CALCULATIONS
 # =============================================================================
 
+_TEAM_RATES_CACHE: dict | None = None
+
+
+def _load_team_rates() -> dict:
+    """Lazy-load data/cache/team_rates.json once. Returns empty dict on failure."""
+    global _TEAM_RATES_CACHE
+    if _TEAM_RATES_CACHE is not None:
+        return _TEAM_RATES_CACHE
+    try:
+        cache_path = DATA_DIR / "cache" / "team_rates.json"
+        if cache_path.exists():
+            with open(cache_path) as f:
+                _TEAM_RATES_CACHE = json.load(f).get("teams", {})
+                log.info("Loaded team_rates.json: %d teams", len(_TEAM_RATES_CACHE))
+                return _TEAM_RATES_CACHE
+    except Exception as e:
+        log.warning("Failed to load team_rates.json: %s", e)
+    _TEAM_RATES_CACHE = {}
+    return _TEAM_RATES_CACHE
+
+
 def get_scoring_rate(team: str, location: str) -> float:
-    """Get team's scoring rate."""
+    """Get team's scoring rate.
+
+    Priority: data-derived cache (build_team_rates.py) → SA-only hardcoded
+    dict → 0.55 default. Cache covers both leagues with 3-season averages.
+    """
+    cache = _load_team_rates()
+    if team in cache:
+        venue = cache[team].get(location) or {}
+        if "scoring_rate" in venue:
+            return float(venue["scoring_rate"])
     rates = TEAM_SCORING_RATES.get(location, {})
     return rates.get(team, 0.55)
 
 
 def get_clean_sheet_rate(team: str, location: str) -> float:
-    """Get team's clean sheet rate."""
+    """Get team's clean sheet rate.
+
+    Priority: data-derived cache → SA-only hardcoded dict → 0.20 default.
+    """
+    cache = _load_team_rates()
+    if team in cache:
+        venue = cache[team].get(location) or {}
+        if "clean_sheet_rate" in venue:
+            return float(venue["clean_sheet_rate"])
     rates = TEAM_CLEAN_SHEET_RATES.get(location, {})
     return rates.get(team, 0.20)
 
