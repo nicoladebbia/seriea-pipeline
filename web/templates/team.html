@@ -363,6 +363,66 @@
         </div>
       </div>
 
+      <!-- Form Heatmap (last 20 matches) -->
+      <div id="form-heatmap-section" class="team-card mb-5" style="display:none;">
+        <div class="team-card__header">
+          <span class="team-card__title">Last 20 Matches</span>
+          <span id="form-heatmap-summary" class="text-xs text-muted"></span>
+        </div>
+        <div class="team-card__body">
+          <div id="form-heatmap" style="display:flex;flex-wrap:wrap;gap:4px;align-items:flex-end;"></div>
+          <div style="margin-top:8px;font-size:10px;color:var(--text-tertiary);display:flex;gap:12px;">
+            <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Win</span>
+            <span><span style="display:inline-block;width:10px;height:10px;background:#94a3b8;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Draw</span>
+            <span><span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Loss</span>
+            <span style="margin-left:auto;color:var(--text-tertiary);">↑ Home  ↓ Away</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- xG vs Goals scored chart -->
+      <div id="xg-chart-section" class="team-card mb-5" style="display:none;">
+        <div class="team-card__header">
+          <span class="team-card__title">xG vs Goals (Last 20)</span>
+          <span id="xg-chart-summary" class="text-xs text-muted"></span>
+        </div>
+        <div class="team-card__body">
+          <div id="xg-chart"></div>
+        </div>
+      </div>
+
+      <!-- Home vs Away comparison -->
+      <div id="home-away-section" class="team-card mb-5" style="display:none;">
+        <div class="team-card__header">
+          <span class="team-card__title">Home vs Away</span>
+        </div>
+        <div class="team-card__body">
+          <div id="home-away-bars"></div>
+        </div>
+      </div>
+
+      <!-- Upcoming opponent comparison -->
+      <div id="opponent-compare-section" class="team-card mb-5" style="display:none;">
+        <div class="team-card__header">
+          <span class="team-card__title">vs Next Opponent</span>
+          <span id="opponent-compare-name" class="text-xs text-muted"></span>
+        </div>
+        <div class="team-card__body">
+          <div id="opponent-compare"></div>
+        </div>
+      </div>
+
+      <!-- Squad leaders -->
+      <div id="squad-leaders-section" class="team-card mb-5" style="display:none;">
+        <div class="team-card__header">
+          <span class="team-card__title">Squad Leaders</span>
+          <span id="squad-leaders-summary" class="text-xs text-muted"></span>
+        </div>
+        <div class="team-card__body">
+          <div id="squad-leaders"></div>
+        </div>
+      </div>
+
       <!-- Predicted Formation -->
       <div id="overview-lineup" class="mb-5"></div>
 
@@ -637,6 +697,13 @@ function renderOverview(data) {
   if (stats.avg_possession != null) document.getElementById('stat-poss').textContent = stats.avg_possession.toFixed(1) + '%';
   if (stats.avg_pass_accuracy != null) document.getElementById('stat-pass').textContent = stats.avg_pass_accuracy.toFixed(1) + '%';
 
+  // New visualizations
+  renderFormHeatmap(data.match_history || []);
+  renderXgChart(data.match_history || []);
+  renderHomeAwayBars(data.form_stats || {}, data.overview || {});
+  renderOpponentCompare(data.upcoming || {}, data.h2h || {}, data.overview || {}, data.stats || {});
+  renderSquadLeaders(data.squad || {});
+
   // Season summaries
   renderSeasonSummaries(data.season_summaries || {});
 
@@ -648,6 +715,224 @@ function renderOverview(data) {
 
   // Recent form detail
   renderFormDetail(data.match_history || []);
+}
+
+// ──────────────────────────────────────────────────────────
+// C1: Form Heatmap — last 20 matches as colored squares
+// ──────────────────────────────────────────────────────────
+function renderFormHeatmap(history) {
+  const section = document.getElementById('form-heatmap-section');
+  const heat = document.getElementById('form-heatmap');
+  const summary = document.getElementById('form-heatmap-summary');
+  if (!history || !history.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  // Sort oldest first so newest is on the right
+  const matches = [...history].sort((a,b) => (a.match_date || '').localeCompare(b.match_date || ''));
+  const w = matches.filter(m => m.result === 'W').length;
+  const d = matches.filter(m => m.result === 'D').length;
+  const l = matches.filter(m => m.result === 'L').length;
+  summary.textContent = `${w}W ${d}D ${l}L · ${(w*3+d)/(w+d+l > 0 ? (w+d+l) : 1)*1 ? ((w*3+d)/Math.max(1,w+d+l)).toFixed(2) : '0.00'} PPG`;
+
+  const colorMap = { W: '#10b981', D: '#94a3b8', L: '#ef4444' };
+  heat.innerHTML = matches.map(m => {
+    const color = colorMap[m.result] || '#525252';
+    const ha = m.is_home ? '↑' : '↓';
+    const tip = `${m.match_date} · ${m.is_home ? 'vs' : '@'} ${m.opponent} · ${m.goals_scored}-${m.goals_conceded} (xG ${(m.xg||0).toFixed(2)}-${(m.xg_against||0).toFixed(2)})`;
+    return `<div title="${tip}" style="width:24px;height:32px;background:${color};border-radius:3px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:2px 0;cursor:default;">
+      <span style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.85);">${m.result}</span>
+      <span style="font-size:8px;color:rgba(255,255,255,0.6);">${ha}</span>
+    </div>`;
+  }).join('');
+}
+
+// ──────────────────────────────────────────────────────────
+// C2: xG vs Goals scored — twin-line SVG over last N matches
+// ──────────────────────────────────────────────────────────
+function renderXgChart(history) {
+  const section = document.getElementById('xg-chart-section');
+  const wrap = document.getElementById('xg-chart');
+  const summary = document.getElementById('xg-chart-summary');
+  if (!history || !history.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  const matches = [...history].sort((a,b) => (a.match_date || '').localeCompare(b.match_date || ''));
+  const xg = matches.map(m => Number(m.xg || 0));
+  const gf = matches.map(m => Number(m.goals_scored || 0));
+  const totalXg = xg.reduce((a,b)=>a+b, 0);
+  const totalG = gf.reduce((a,b)=>a+b, 0);
+  const diff = totalG - totalXg;
+  summary.textContent = `${totalG.toFixed(0)} goals vs ${totalXg.toFixed(1)} xG · ${diff >= 0 ? '+' : ''}${diff.toFixed(1)} ${diff >= 0 ? 'overperforming' : 'underperforming'}`;
+
+  const W = 600, H = 140, P = 24;
+  const max = Math.max(1, ...xg, ...gf) * 1.15;
+  const xStep = (W - 2*P) / Math.max(1, matches.length - 1);
+  const yScale = v => H - P - (v / max) * (H - 2*P);
+  const xPos = i => P + i * xStep;
+
+  // Smoothed area-under for diff
+  const xgPath = xg.map((v,i) => `${i === 0 ? 'M' : 'L'}${xPos(i).toFixed(1)},${yScale(v).toFixed(1)}`).join(' ');
+  const gfPath = gf.map((v,i) => `${i === 0 ? 'M' : 'L'}${xPos(i).toFixed(1)},${yScale(v).toFixed(1)}`).join(' ');
+
+  // Tooltips: invisible circles
+  const dots = matches.map((m,i) => `<circle cx="${xPos(i).toFixed(1)}" cy="${yScale(gf[i]).toFixed(1)}" r="3" fill="#10b981"><title>${m.match_date}: ${m.opponent} · ${gf[i]} goals (xG ${xg[i].toFixed(2)})</title></circle>`).join('');
+
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+      <line x1="${P}" y1="${H-P}" x2="${W-P}" y2="${H-P}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+      <path d="${xgPath}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="4,3" opacity="0.85"/>
+      <path d="${gfPath}" fill="none" stroke="#10b981" stroke-width="2.5"/>
+      ${dots}
+      <text x="${W-P}" y="${P-6}" text-anchor="end" fill="#10b981" font-size="10" font-weight="600">Goals</text>
+      <text x="${W-P}" y="${P+6}" text-anchor="end" fill="#a78bfa" font-size="10" font-weight="600">xG</text>
+    </svg>
+  `;
+}
+
+// ──────────────────────────────────────────────────────────
+// C3: Home vs Away PPG bars
+// ──────────────────────────────────────────────────────────
+function renderHomeAwayBars(formStats, overview) {
+  const section = document.getElementById('home-away-section');
+  const wrap = document.getElementById('home-away-bars');
+  // Form stats from /api/team has separate fields; we need home/away PPG.
+  // Form stats schema: home_form_status/away_form_status; alternative is overview.home/away
+  const home = (overview && overview.home) || {};
+  const away = (overview && overview.away) || {};
+  const homePpg = home.ppg != null ? Number(home.ppg) : null;
+  const awayPpg = away.ppg != null ? Number(away.ppg) : null;
+  if (homePpg == null && awayPpg == null) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  const max = Math.max(homePpg || 0, awayPpg || 0, 3);
+  const barW = pct => Math.max(2, Math.min(100, (pct / max) * 100));
+
+  const fmtRec = r => `${r.wins||0}W ${r.draws||0}D ${r.losses||0}L`;
+  wrap.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;color:var(--text-secondary);">
+          <span>Home <span style="color:var(--text-tertiary);font-size:11px;">(${fmtRec(home)})</span></span>
+          <span style="font-family:var(--font-mono);font-weight:600;">${homePpg != null ? homePpg.toFixed(2) : '-'} PPG</span>
+        </div>
+        <div style="height:10px;background:var(--bg-tertiary);border-radius:5px;overflow:hidden;"><div style="height:100%;width:${barW(homePpg||0)}%;background:linear-gradient(90deg, #10b981, #059669);"></div></div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px;color:var(--text-secondary);">
+          <span>Away <span style="color:var(--text-tertiary);font-size:11px;">(${fmtRec(away)})</span></span>
+          <span style="font-family:var(--font-mono);font-weight:600;">${awayPpg != null ? awayPpg.toFixed(2) : '-'} PPG</span>
+        </div>
+        <div style="height:10px;background:var(--bg-tertiary);border-radius:5px;overflow:hidden;"><div style="height:100%;width:${barW(awayPpg||0)}%;background:linear-gradient(90deg, #6366f1, #4f46e5);"></div></div>
+      </div>
+    </div>
+  `;
+}
+
+// ──────────────────────────────────────────────────────────
+// C4: Upcoming opponent comparison panel
+// ──────────────────────────────────────────────────────────
+function renderOpponentCompare(upcoming, h2h, overview, stats) {
+  const section = document.getElementById('opponent-compare-section');
+  const wrap = document.getElementById('opponent-compare');
+  const nameEl = document.getElementById('opponent-compare-name');
+  if (!upcoming || !upcoming.match) { section.style.display = 'none'; return; }
+  const isHome = !!upcoming.is_home;
+  const opponent = isHome
+    ? (upcoming.match.split(' vs ')[1] || '')
+    : (upcoming.match.split(' vs ')[0] || '');
+  if (!opponent) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  nameEl.textContent = `${isHome ? 'vs' : '@'} ${opponent}`;
+
+  const ovPos = overview.position || '-';
+  const ovPts = overview.points || 0;
+  const ovGf = overview.goals_for || 0;
+  const ovGa = overview.goals_against || 0;
+  const avgXg = stats.avg_goals_scored || stats.avg_xg || 0;
+
+  // H2H
+  const h2hMeetings = h2h.total_meetings || 0;
+  const h2hWins = (isHome ? h2h.home_wins : h2h.away_wins) || 0;
+  const h2hLosses = (isHome ? h2h.away_wins : h2h.home_wins) || 0;
+  const h2hDraws = h2h.draws || 0;
+  const h2hLast = h2h.last_score ? `${h2h.last_score} (${h2h.last_result || '?'})` : '—';
+
+  // Opponent overview is not in this payload; show only this team's metrics + h2h
+  wrap.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+      <div>
+        <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">This team</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Position</span><span style="font-weight:600;">${ovPos}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Points</span><span style="font-weight:600;">${ovPts}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Goals (F-A)</span><span style="font-weight:600;">${ovGf}-${ovGa}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Avg goals (last N)</span><span style="font-weight:600;">${(avgXg||0).toFixed(2)}</span></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">H2H vs ${opponent}</div>
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Meetings</span><span style="font-weight:600;">${h2hMeetings}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">W-D-L</span><span style="font-weight:600;"><span class="text-green">${h2hWins}</span>-<span class="text-amber">${h2hDraws}</span>-<span class="text-red">${h2hLosses}</span></span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color:var(--text-tertiary);">Last meeting</span><span style="font-weight:600;font-family:var(--font-mono);">${h2hLast}</span></div>
+        </div>
+      </div>
+    </div>
+    ${upcoming.predicted_outcome ? `
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border-secondary);font-size:12px;color:var(--text-secondary);">
+        Prediction: <strong style="color:var(--text-primary);">${upcoming.predicted_outcome}</strong>
+        ${upcoming.confidence ? `· ${upcoming.confidence}` : ''}
+        ${upcoming.probabilities ? ` · H ${((upcoming.probabilities.home||0)*100).toFixed(0)}% / D ${((upcoming.probabilities.draw||0)*100).toFixed(0)}% / A ${((upcoming.probabilities.away||0)*100).toFixed(0)}%` : ''}
+      </div>` : ''}
+  `;
+}
+
+// ──────────────────────────────────────────────────────────
+// C5: Squad leaders — top scorers + most-played
+// ──────────────────────────────────────────────────────────
+function renderSquadLeaders(squad) {
+  const section = document.getElementById('squad-leaders-section');
+  const wrap = document.getElementById('squad-leaders');
+  const summary = document.getElementById('squad-leaders-summary');
+  const players = (squad && squad.players) || [];
+  if (!players.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  const totalXg = squad.total_xg || 0;
+  const rating = squad.rating || 0;
+  summary.textContent = `${players.length} players · rating ${rating ? rating.toFixed(1) : '-'} · total xG ${totalXg.toFixed(1)}`;
+
+  const topScorers = squad.top_scorers || [];
+  const mostPlayed = squad.most_played || players.slice(0, 5);
+
+  const card = (p, type) => {
+    const stat = type === 'scorer' ? `${p.goals}G ${p.assists}A` : `${p.minutes} mins`;
+    const sub = type === 'scorer' ? `${(p.goals_per_90 || 0).toFixed(2)} G/90` : `${p.matches} matches`;
+    return `<div style="background:var(--bg-secondary);border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;">
+      <div style="min-width:0;flex:1;">
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.name}</div>
+        <div style="font-size:11px;color:var(--text-tertiary);">${p.position || '?'} · rating ${(p.rating || 0).toFixed(1)} · ${sub}</div>
+      </div>
+      <div style="text-align:right;font-family:var(--font-mono);font-weight:700;font-size:13px;color:${type === 'scorer' ? '#10b981' : '#a78bfa'};">${stat}</div>
+    </div>`;
+  };
+
+  wrap.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+      <div>
+        <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Top scorers</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${topScorers.length ? topScorers.map(p => card(p, 'scorer')).join('') : '<div style="font-size:12px;color:var(--text-tertiary);font-style:italic;">No goalscorers yet</div>'}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Most played</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${mostPlayed.map(p => card(p, 'played')).join('')}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ─── Position → Pitch Coordinates (vertical pitch, 0-100 scale) ──────
