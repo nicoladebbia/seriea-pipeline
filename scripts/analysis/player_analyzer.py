@@ -655,6 +655,48 @@ class PlayerDataScraper:
 # PLAYER ANALYSIS
 # =============================================================================
 
+_EPL_FULL_TO_SHORT = {
+    "Manchester City": "Man City",
+    "Manchester United": "Man United",
+    "Newcastle United": "Newcastle",
+    "Brighton and Hove Albion": "Brighton",
+    "Wolverhampton Wanderers": "Wolves",
+    "West Ham United": "West Ham",
+    "Tottenham Hotspur": "Tottenham",
+    "Leeds United": "Leeds",
+    "Ipswich Town": "Ipswich",
+    "Leicester City": "Leicester",
+    "Nottingham Forest": "Nottingham Forest",
+    "Nott'm Forest": "Nottingham Forest",
+}
+
+
+def _resolve_sofascore_source(team: str) -> tuple:
+    """Return (parquet_path, normalized_team_name) for a team.
+
+    Picks the SA parquet for Serie A teams and the EPL parquet for EPL teams,
+    based on infer_league(). Normalizes Odds-API full names like
+    'Manchester City' to Sofascore short names like 'Man City'.
+    """
+    from pathlib import Path
+    try:
+        from config.leagues import infer_league
+        league = infer_league(team)
+    except Exception:
+        league = "serie_a"
+
+    base = DATA_DIR / ".." / "data" / "external" / "sofascore"
+    if league == "premier_league":
+        path = base / "player_match_stats_premier_league.parquet"
+        normalized = _EPL_FULL_TO_SHORT.get(team, team)
+    else:
+        path = base / "player_match_stats.parquet"
+        normalized = team
+        if team == "Verona":
+            normalized = "Hellas Verona"  # Sofascore name; we'll fall back to "Verona" if not found
+    return Path(path), normalized
+
+
 class PlayerAnalyzer:
     """Analyzes players and generates insights."""
 
@@ -818,17 +860,16 @@ class PlayerAnalyzer:
         try:
             import pandas as pd
 
-            # --- Source 1: Sofascore match data ---
+            # --- Source 1: Sofascore match data (league-aware) ---
             sofascore_names = set()  # lowercase last names of players who played for this team
             sofascore_full = set()   # lowercase full names
-            sofascore_path = DATA_DIR / ".." / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+            sofascore_path, sofascore_team = _resolve_sofascore_source(team)
             if sofascore_path.exists():
                 pms = pd.read_parquet(sofascore_path)
                 current = pms[pms["season"] == "2025-2026"]
                 if not current.empty:
-                    sofascore_team = team
-                    if team == "Verona" and "Hellas Verona" in current["team"].unique():
-                        sofascore_team = "Hellas Verona"
+                    if sofascore_team not in current["team"].unique() and team in current["team"].unique():
+                        sofascore_team = team  # fall back to original if normalized name doesn't match
                     team_data = current[current["team"] == sofascore_team]
                     for name in team_data["player_name"].unique():
                         sofascore_full.add(name.lower().strip())
@@ -892,7 +933,7 @@ class PlayerAnalyzer:
         """
         try:
             import pandas as pd
-            sofascore_path = DATA_DIR / ".." / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+            sofascore_path, sofascore_team = _resolve_sofascore_source(team)
             if not sofascore_path.exists():
                 return []
 
@@ -901,10 +942,8 @@ class PlayerAnalyzer:
             if current.empty:
                 return []
 
-            # Map Sofascore team name
-            sofascore_team = team
-            if team == "Verona" and "Hellas Verona" in current["team"].unique():
-                sofascore_team = "Hellas Verona"
+            if sofascore_team not in current["team"].unique() and team in current["team"].unique():
+                sofascore_team = team
 
             team_data = current[current["team"] == sofascore_team]
             if team_data.empty:
@@ -1300,17 +1339,33 @@ CONCLUSION: {'Home advantage' if home_strength > away_strength else 'Away advant
 # =============================================================================
 
 def analyze_all_upcoming_matches() -> List[MatchPlayerAnalysis]:
-    """Analyze players for all upcoming matches."""
-    predictions_path = DATA_DIR / "upcoming" / "predictions.json"
+    """Analyze players for all upcoming matches across all active leagues."""
+    from config.leagues import ACTIVE_LEAGUES
 
-    if not predictions_path.exists():
-        log.error("No predictions file found")
+    matches: List[dict] = []
+    upcoming_dir = DATA_DIR / "upcoming"
+    for _league in ACTIVE_LEAGUES:
+        fname = "predictions.json" if _league == "serie_a" else f"predictions_{_league}.json"
+        path = upcoming_dir / fname
+        if not path.exists():
+            log.warning("No predictions file for %s at %s", _league, path)
+            continue
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            league_matches = data.get("predictions", []) if isinstance(data, dict) else data
+            for m in league_matches:
+                if isinstance(m, dict):
+                    m.setdefault("league", _league)
+            matches.extend(league_matches)
+            log.info("Loaded %d upcoming matches for %s", len(league_matches), _league)
+        except Exception as e:
+            log.warning("Failed to load %s: %s", path, e)
+
+    if not matches:
+        log.error("No predictions found across any league")
         return []
 
-    with open(predictions_path) as f:
-        data = json.load(f)
-
-    matches = data.get("predictions", [])
     analyzer = PlayerAnalyzer()
     results = []
 

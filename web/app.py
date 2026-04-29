@@ -365,6 +365,121 @@ def _get_betting_stats(league_filter: str = None):
     }
 
 
+_SQUAD_CACHE: dict = {}
+_SQUAD_CACHE_TTL = 300  # 5 minutes
+
+
+_EPL_TEAM_NAME_MAP = {
+    "Manchester City": "Man City",
+    "Manchester United": "Man United",
+    "Newcastle United": "Newcastle",
+    "Brighton and Hove Albion": "Brighton",
+    "Wolverhampton Wanderers": "Wolves",
+    "West Ham United": "West Ham",
+    "Tottenham Hotspur": "Tottenham",
+    "Leeds United": "Leeds",
+    "Ipswich Town": "Ipswich",
+    "Leicester City": "Leicester",
+    "Nott'm Forest": "Nottingham Forest",
+}
+
+
+def _load_team_squad_roster(team: str, current_season: str = "2025-2026", limit: int = 18) -> list:
+    """Aggregate per-player season stats for a team. Returns top N by minutes.
+
+    Reads the league-appropriate Sofascore parquet (SA or EPL). Computes per
+    player: minutes total, matches, goals, assists, xg, xa, average rating,
+    shots/match, key_passes/match, position. Used by /api/team/<name> to
+    populate squad.players.
+    """
+    cache_key = (team, current_season, limit)
+    now = _time.time()
+    if cache_key in _SQUAD_CACHE:
+        cached_at, cached_data = _SQUAD_CACHE[cache_key]
+        if (now - cached_at) < _SQUAD_CACHE_TTL:
+            return cached_data
+
+    try:
+        from config.leagues import infer_league
+        league = infer_league(team)
+    except Exception:
+        league = "serie_a"
+
+    if league == "premier_league":
+        path = DATA_DIR / "external" / "sofascore" / "player_match_stats_premier_league.parquet"
+        normalized_team = _EPL_TEAM_NAME_MAP.get(team, team)
+    else:
+        path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+        normalized_team = "Hellas Verona" if team == "Verona" else team
+
+    if not path.exists():
+        _SQUAD_CACHE[cache_key] = (now, [])
+        return []
+
+    try:
+        import pandas as pd
+        df = pd.read_parquet(path)
+        df = df[df["season"] == current_season]
+        if df.empty:
+            _SQUAD_CACHE[cache_key] = (now, [])
+            return []
+
+        # Try the normalized name first; fall back to team_name as-is.
+        team_data = df[df["team"] == normalized_team]
+        if team_data.empty and normalized_team != team:
+            team_data = df[df["team"] == team]
+        if team_data.empty:
+            _SQUAD_CACHE[cache_key] = (now, [])
+            return []
+
+        # Per-player aggregation
+        roster = []
+        for player_name, g in team_data.groupby("player_name"):
+            mins = int(g["minutes"].sum() or 0)
+            if mins < 90:  # less than one full match — exclude noise
+                continue
+            n_matches = int(len(g))
+            goals = int(g["goals"].sum() or 0)
+            assists = int(g["assists"].sum() or 0)
+            xg_total = float(g["xg"].sum() or 0)
+            xa_total = float(g["xa"].sum() or 0)
+            avg_rating = float(g["rating"].mean() or 0)
+            shots_per_match = float(g["total_shots"].mean() or 0)
+            kp_per_match = float(g["key_passes"].mean() or 0)
+            # Position: take the most common
+            try:
+                pos = g["position"].mode().iloc[0] if not g["position"].mode().empty else ""
+            except Exception:
+                pos = ""
+
+            roster.append({
+                "name": player_name,
+                "position": str(pos),
+                "minutes": mins,
+                "matches": n_matches,
+                "goals": goals,
+                "assists": assists,
+                "xg": round(xg_total, 2),
+                "xa": round(xa_total, 2),
+                "rating": round(avg_rating, 2),
+                "shots_per_match": round(shots_per_match, 1),
+                "key_passes_per_match": round(kp_per_match, 1),
+                "goals_per_90": round(goals / (mins / 90), 2) if mins > 0 else 0,
+                "assists_per_90": round(assists / (mins / 90), 2) if mins > 0 else 0,
+            })
+
+        # Top N by minutes
+        roster.sort(key=lambda p: p["minutes"], reverse=True)
+        roster = roster[:limit]
+
+        _SQUAD_CACHE[cache_key] = (now, roster)
+        return roster
+    except Exception as e:
+        log.warning("Failed to load squad roster for %s: %s", team, e)
+        _SQUAD_CACHE[cache_key] = (now, [])
+        return []
+
+
 def _index_list_by_match(items: list, home_key="home_team", away_key="away_team") -> dict:
     """Convert a list of match dicts into a dict keyed by 'Home vs Away'."""
     result = {}
@@ -5564,12 +5679,31 @@ def api_team(team_name):
                 "squad_depth": squad_data.get("squad_depth", 0),
                 "strengths": squad_data.get("strengths", []),
                 "weaknesses": squad_data.get("weaknesses", []),
-                "players": [{"name": p.get("name", ""), "position": p.get("position", ""),
-                             "rating": p.get("overall_rating", 0), "xg": p.get("xg", 0),
-                             "minutes": p.get("minutes", 0)}
-                            for p in squad_data.get("players", [])[:15]],
+                "players": [],  # filled below from league parquet
             }
             break
+
+    # Populate squad.players from the league-appropriate Sofascore parquet.
+    # Works for both leagues; player_analyzer.py doesn't serialize the player
+    # list itself, so we build it here from primary data.
+    _roster = _load_team_squad_roster(team)
+    if _roster:
+        if "squad" not in data or not isinstance(data.get("squad"), dict):
+            data["squad"] = {
+                "rating": 0, "key_players": {}, "total_xg": 0, "squad_depth": 0,
+                "strengths": [], "weaknesses": [], "players": [],
+            }
+        data["squad"]["players"] = _roster
+        data["squad"]["top_scorers"] = sorted(
+            [p for p in _roster if p.get("goals", 0) > 0],
+            key=lambda p: (p.get("goals", 0), p.get("assists", 0)),
+            reverse=True,
+        )[:5]
+        data["squad"]["most_played"] = sorted(
+            _roster, key=lambda p: p.get("minutes", 0), reverse=True
+        )[:5]
+        if not data["squad"].get("total_xg"):
+            data["squad"]["total_xg"] = round(sum(p.get("xg", 0) for p in _roster), 1)
 
     # ── 5. Upcoming prediction (all leagues) ──
     archive = _load_json(UPCOMING_DIR / "predictions_archive.json", {})
