@@ -151,85 +151,116 @@ def generate_ml_predictions() -> Dict:
     return all_predictions
 
 
+def _merge_predictions_by_match(existing_path, new_entries: list) -> list:
+    """Merge new entries (list of dicts with 'match' key) into the existing
+    file, preserving entries for matches not in the new batch. New entries
+    overwrite existing ones for the same match name.
+    """
+    merged = {}
+    if existing_path.exists():
+        try:
+            existing = json.load(open(existing_path))
+            existing_list = existing.get("predictions", existing) if isinstance(existing, dict) else existing
+            if isinstance(existing_list, list):
+                for e in existing_list:
+                    if isinstance(e, dict) and e.get("match"):
+                        merged[e["match"]] = e
+        except Exception:
+            pass
+    for e in new_entries:
+        if isinstance(e, dict) and e.get("match"):
+            merged[e["match"]] = e
+    return list(merged.values())
+
+
 def save_ml_predictions(all_preds: Dict):
-    """Save ML predictions to JSON files."""
+    """Save ML predictions to JSON files. Merges with existing per-league outputs
+    (which may have been written by the BTTS/corners model for the *other* league).
+    """
+    from config.leagues import infer_league
     out_dir = DATA_DIR / "upcoming"
     out_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Save comprehensive ML predictions
+
+    def _league_for(match_name: str) -> str:
+        try:
+            home, away = match_name.split(" vs ", 1)
+        except ValueError:
+            return "serie_a"
+        return infer_league(home, away)
+
+    # 1. Save comprehensive ML predictions (overwrite — this file is ML-only)
     ml_path = out_dir / "ml_predictions.json"
     with open(ml_path, "w") as f:
         json.dump(all_preds, f, indent=2, default=str)
     log.info("Saved comprehensive ML predictions to %s", ml_path)
-    
-    # 2. Update cards_predictions.json with ML-quality predictions
+
+    # 2. cards_predictions.json — merge per-match
     cards_preds = []
     for match_name, preds in all_preds.items():
         cards = preds.get("cards", {})
         if not cards:
             continue
-        
         entry = {
             "match": match_name,
+            "league": _league_for(match_name),
             "date": preds.get("date", ""),
             "expected_cards": cards.get("total_expected", 4.5),
             "expected_home_cards": cards.get("home_expected", 2.2),
             "expected_away_cards": cards.get("away_expected", 2.3),
             "source": "CatBoost ML",
         }
-        
-        # Add over/under probabilities
         for line in ["3.5", "4.5", "5.5"]:
             over_key = f"over_{line}"
             if over_key in cards:
                 entry[f"over_{line.replace('.', '_')}"] = cards[over_key].get("prob", 0)
-        
         cards_preds.append(entry)
-    
+
     if cards_preds:
         cards_path = out_dir / "cards_predictions.json"
+        merged = _merge_predictions_by_match(cards_path, cards_preds)
         with open(cards_path, "w") as f:
-            json.dump(cards_preds, f, indent=2)
-        log.info("Updated cards_predictions.json with %d ML predictions", len(cards_preds))
-    
-    # 3. Update corners_predictions.json with ML-quality predictions
+            json.dump({"predictions": merged}, f, indent=2)
+        log.info("Updated cards_predictions.json: %d ML + %d preserved = %d total",
+                 len(cards_preds), len(merged) - len(cards_preds), len(merged))
+
+    # 3. corners_predictions.json — merge per-match
     corners_preds = []
     for match_name, preds in all_preds.items():
         corners = preds.get("corners", {})
         if not corners:
             continue
-        
         entry = {
             "match": match_name,
+            "league": _league_for(match_name),
             "date": preds.get("date", ""),
             "expected_corners": corners.get("expected_total", 10.0),
             "expected_home_corners": corners.get("expected_home", 5.0),
             "expected_away_corners": corners.get("expected_away", 5.0),
             "source": "CatBoost ML",
         }
-        
         for line in ["8.5", "9.5", "10.5"]:
             over_key = f"over_{line}"
             if over_key in corners:
                 entry[f"over_{line.replace('.', '_')}"] = corners[over_key].get("prob", 0)
-        
         corners_preds.append(entry)
-    
+
     if corners_preds:
         corners_path = out_dir / "corners_predictions.json"
+        merged = _merge_predictions_by_match(corners_path, corners_preds)
         with open(corners_path, "w") as f:
-            json.dump(corners_preds, f, indent=2)
-        log.info("Updated corners_predictions.json with %d ML predictions", len(corners_preds))
-    
-    # 4. Update btts_predictions.json with ML-quality predictions
+            json.dump({"predictions": merged}, f, indent=2)
+        log.info("Updated corners_predictions.json: %d ML + %d preserved = %d total",
+                 len(corners_preds), len(merged) - len(corners_preds), len(merged))
+
+    # 4. btts_predictions.json — merge per-match
     btts_preds = []
     for match_name, preds in all_preds.items():
         btts = preds.get("btts", {})
         if not btts:
             continue
-        
         entry = {
             "match": match_name,
+            "league": _league_for(match_name),
             "date": preds.get("date", ""),
             "btts_yes": btts.get("yes", {}).get("prob", 0.5),
             "btts_no": btts.get("no", {}).get("prob", 0.5),
@@ -238,12 +269,14 @@ def save_ml_predictions(all_preds: Dict):
             "source": "CatBoost ML",
         }
         btts_preds.append(entry)
-    
+
     if btts_preds:
         btts_path = out_dir / "btts_predictions.json"
+        merged = _merge_predictions_by_match(btts_path, btts_preds)
         with open(btts_path, "w") as f:
-            json.dump(btts_preds, f, indent=2)
-        log.info("Updated btts_predictions.json with %d ML predictions", len(btts_preds))
+            json.dump({"predictions": merged}, f, indent=2)
+        log.info("Updated btts_predictions.json: %d ML + %d preserved = %d total",
+                 len(btts_preds), len(merged) - len(btts_preds), len(merged))
 
 
 def run():
