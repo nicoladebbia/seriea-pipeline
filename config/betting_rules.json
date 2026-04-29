@@ -1,0 +1,185 @@
+{
+  "_meta": {
+    "version": "2026-04-24-walkforward-validated",
+    "created_at": "2026-04-24",
+    "_PRODUCTION_AUTHORITY_NOTE": "This file is parallel infrastructure for the walkforward-validated betting flow. It is NOT currently consulted by run_full_pipeline.py — production live betting uses scripts/betting/betting_unified.py (UnifiedBettingEngine) which has its own defaults: kelly_fraction=0.05, min_edge_pct=3.0, max_edge_pct=7.0. When wiring this file into production, prefer config/betting_rules.py loader (which reads this file). Until then, edits here do NOT affect live behavior.",
+    "_disabled_2026_04_28": "EPL 1X2 disabled in markets/1X2/enabled_leagues per docs/2026-04-28_epl_subset_findings.md (live ROI -22.6% on holdout). The disable applies if/when this config is wired to production.",
+    "description": "Backtest-validated betting rules for the walk-forward CatBoost 1X2 models. Based on deep_backtest_1x2.py + deep_backtest_1x2_subset.py results on 2022-25 walk-forward data. NOTE: 2026-04-28 fresh-model holdout test showed the audit-validated subsets (mid_odds + mid_prob combined) FAIL on 2025-26 data. See docs/2026-04-28_fresh_model_test.md.",
+    "evidence": {
+      "backtest_window": "2022-2023, 2023-2024, 2024-2025",
+      "total_matches_per_league": 1140,
+      "validation_doc": "docs/2026-04-24_real_edge_found.md",
+      "key_metrics": {
+        "serie_a_marketmax_edge10_n": 904,
+        "serie_a_marketmax_edge10_clv_positive_rate": 0.66,
+        "serie_a_marketmax_edge10_clv_zscore": 10.51,
+        "epl_marketmax_edge7_n": 1000,
+        "epl_marketmax_edge7_clv_positive_rate": 0.64,
+        "epl_marketmax_edge7_clv_zscore": 8.92,
+        "epl_marketmax_edge7_flat_roi_pct": -0.39,
+        "epl_marketmax_edge7_flat_roi_ci_upper_pct": 12.01
+      }
+    },
+    "notes": [
+      "ROI point estimates are still slightly negative (-0.4% to -7% depending on filter), but CLV is statistically significant (z > 8) indicating real edge.",
+      "Only bets against Market Max (best-of-N bookmakers) — betting vs Pinnacle close loses -10% ROI reliably.",
+      "Only bet the filtered subset (mid-odds, mid-probability). Longshots and pure favorites are unprofitable.",
+      "100 live bets per league are required before scaling stakes. Until then: paper trade or 0.25% bankroll per bet max."
+    ]
+  },
+
+  "global": {
+    "preferred_odds_source": "market_max",
+    "fallback_odds_sources_ordered": ["pinnacle_open", "b365_open", "pinnacle_close", "b365_close"],
+    "reject_if_source_missing": false,
+    "_reject_comment": "If Market Max unavailable, fall through to next source but log a warning — betting vs a sharper source lowers expected edge.",
+
+    "staking": {
+      "scheme": "fractional_kelly",
+      "kelly_fraction": 0.25,
+      "max_bet_pct_of_bankroll": 0.02,
+      "min_bet_pct_of_bankroll": 0.001,
+      "min_bet_absolute_eur": 1.0
+    },
+
+    "paper_trade_gate": {
+      "enabled_by_default": true,
+      "require_n_live_bets_per_league_market": 100,
+      "_comment": "Until we have 100 live bets per (league, market) confirming backtest, all real stakes capped by this gate. The betting code should divide computed stake by 10 while in paper-trade mode."
+    }
+  },
+
+  "markets": {
+    "1X2": {
+      "enabled_leagues": ["serie_a"],
+      "_disabled_epl_2026_04_28": "EPL 1X2 disabled via B0 (2026-04-28). Empirical 2025-26 holdout ROI -22.6% with fresh model; no filter recovers (mid-odds -23.8%, matchweek-early -32.8%). See docs/2026-04-28_epl_subset_findings.md. Re-enable when: (a) live EPL ROI recovers >0% on a 100-bet rolling window, (b) BTTS or alt market shows positive backtest after Odds API May 1, OR (c) FBref EPL re-scrape with rich stats produces a 1100+ feature model with better holdout ROI.",
+      "_comment": "Only 1X2 has validated walk-forward edge above baseline. No other market has CLV > 0 in our tests yet. EPL TEMPORARILY DISABLED — see _disabled_epl_2026_04_28 above.",
+
+      "per_league": {
+        "serie_a": {
+          "min_edge_pct": 10.0,
+          "_edge_reason": "Serie A: 10% edge threshold on Market Max produces 904 bets, 66% CLV-positive, z=10.51. At 7% threshold ROI is -7.39% — the stricter filter helps.",
+          "allowed_classes": ["H", "D", "A"]
+        },
+        "premier_league": {
+          "min_edge_pct": 7.0,
+          "_edge_reason": "EPL: 7% edge threshold produces 1000 bets, 64% CLV-positive, z=8.92, flat_ROI -0.39% (CI upper +12%). This is the closest any config came to positive.",
+          "allowed_classes": ["H", "D", "A"]
+        }
+      },
+
+      "subset_filters": {
+        "_comment": "Deep subset analysis showed these filter bands are where the real ROI lives. Betting outside them is -30% to -50% ROI in the backtest.",
+        "odds_band": { "min": 2.20, "max": 4.00 },
+        "model_prob_band": { "min": 0.30, "max": 0.50 },
+        "_filter_evidence": {
+          "serie_a": {
+            "midodds_filter_roi_pct": 8.04,
+            "midodds_filter_n": 482,
+            "midprob_filter_roi_pct": 7.19,
+            "midprob_filter_n": 422,
+            "unfiltered_roi_pct": -7.09
+          },
+          "premier_league": {
+            "midodds_filter_roi_pct": 3.95,
+            "midodds_filter_n": 385,
+            "midprob_filter_roi_pct": 9.55,
+            "midprob_filter_n": 383,
+            "unfiltered_roi_pct": -0.40
+          }
+        }
+      },
+
+      "exclusion_filters": {
+        "longshot_odds_above": 7.0,
+        "_longshot_reason": "Odds > 7: SA -49% ROI, EPL -19% ROI. Sharp books price these correctly; no edge.",
+        "model_prob_below": 0.30,
+        "_lowprob_reason": "Model prob < 0.30: SA -35% ROI. The model is poor at predicting upsets from pre-match features.",
+        "model_prob_above_without_strong_edge": 0.70,
+        "_highprob_reason": "Model prob > 0.70 with edge < 10%: results are mixed. Only bet very-high-confidence picks if edge is also very high."
+      },
+
+      "class_overrides": {
+        "_comment": "Draw bets are the strongest validated sub-strategy in both leagues.",
+        "D": {
+          "edge_reduction_bonus_pct": -1.0,
+          "_reason": "Draw bets showed +7.98% ROI (SA) and +12.03% ROI (EPL) at Market Max edge>=7%. Worth a slightly easier edge threshold."
+        }
+      }
+    },
+
+    "O/U_2.5": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward accuracy 49.8% SA / 54.2% EPL — at or below naive-baseline. All backtest ROI configurations are -8% to -12% vs B365 close, no CLV edge found.",
+      "reenable_when": "After Odds API returns and closing-line odds from softer books (not just B365/Pinnacle) can be tested against. If Market Max O/U 2.5 data becomes available and CLV > 0, reconsider."
+    },
+
+    "O/U_1.5": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward accuracy matches the naive 'always-yes' baseline (74% in both leagues). No predictive edge above base rate — zero information content. Do not bet."
+    },
+
+    "O/U_3.5": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Same story as O/U 1.5. Naive baseline is always-no at 75%, model matches it. No edge."
+    },
+
+    "BTTS": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward accuracy 51.4% SA (base rate 51.4%), 50.4% EPL (base rate 56.8% — model is WORSE than naive). No predictive edge. Revisit after Odds API backfills BTTS closing odds and model is re-evaluated."
+    },
+
+    "Corners": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward corners_over_9_5 accuracy 47.9% vs base rate 46.9% (+1pp). corners_over_10_5 accuracy 55.5% vs naive baseline 64.6% (-9pp). Model has zero or negative edge on corner lines. Do not bet."
+    },
+
+    "Cards": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward cards_over_4_5 has +3.8pp edge over naive (weak signal). cards_over_3_5 and cards_over_5_5 have zero edge. Not enough signal for live betting. Consider re-enabling cards_over_4_5 after Odds API backfills card closing odds."
+    },
+
+    "AH": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Walk-forward models not trained for Asian Handicap markets. Closing odds available but no model trained. If ever re-enabled, would need its own walk-forward training + backtest first."
+    },
+
+    "DC": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Double Chance derived from 1X2 model. Not separately backtested. Logically should have similar edge to 1X2 Draw bets but against shorter odds — possibly a more stable strategy. Needs direct backtest before enabling."
+    },
+
+    "DNB": {
+      "enabled_leagues": [],
+      "_disabled_reason": "Draw No Bet derived from 1X2 model. Not separately backtested. Prior Feb 2026 live-bet result: 0/2 (100% loss, n=2). Needs own validation."
+    },
+
+    "Player_Props": {
+      "enabled_leagues": [],
+      "_disabled_reason": "No walk-forward model trained. Requires simulator + walk-forward xG regressors. Revisit after simulator foundation is rebuilt."
+    }
+  },
+
+  "monitoring": {
+    "_comment": "Metrics to track live to validate backtest extrapolation.",
+    "required_metrics": [
+      "rolling_100_bet_roi_pct",
+      "rolling_100_bet_clv_pct",
+      "rolling_100_bet_clv_positive_rate",
+      "rolling_100_bet_win_rate"
+    ],
+    "shutdown_triggers": {
+      "_comment": "Automatic strategy shutdown if live performance deviates badly from backtest.",
+      "clv_drops_below_pct": 1.0,
+      "clv_positive_rate_drops_below": 0.52,
+      "roi_drops_below_pct": -15.0,
+      "min_bets_before_shutdown": 50
+    },
+    "scale_up_triggers": {
+      "_comment": "When to scale stakes from 0.25x bankroll cap to full.",
+      "require_n_bets": 200,
+      "require_clv_positive_rate_above": 0.58,
+      "require_roi_ci_lower_above_pct": -3.0
+    }
+  }
+}
