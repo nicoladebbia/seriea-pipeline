@@ -23,6 +23,7 @@ Expected improvement: 50.8% -> 55%+ accuracy
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -140,15 +141,18 @@ log = logging.getLogger(__name__)
 ENSEMBLE_WEIGHTS = {
     "factor": 0.035,       # Market-anchored + situational factors
     "xg": 0.124,           # xG + Poisson distribution
-    "ml": 0.605,           # ML classifier (no-odds CatBoost + 3-model ensemble, 35 features)
+    "ml": 0.605,           # ML classifier (no-odds CatBoost, 126 features)
     "player_xg": 0.032,    # Player-level xG
     "market": 0.205,       # Market-implied probabilities
 }
-# Optimized via Optuna (300 trials, TPE sampler) for catboost_no_odds model.
-# Model: 35 features, 2017+ data, time-decay 0.85/season, auto draw weights.
-# CV: acc=0.6155, ll=0.8589 (Mar 23 2026). Production acc=69.3% on 2025-2026.
-# Walk-forward backtest: +12.3% ROI, €1000→€4192 (643 bets, 2023-2025).
-# ML temperature T=0.75, draw_boost=1.12, post_T=0.90.
+# Phase 6 (Apr 26 2026) attempted to lift market weight 0.205→0.305 based on
+# an offline 2-component sweep showing +2.7pp accuracy. Reverted: the original
+# sweep used Pinnacle odds for all 330 matches, but production has Pinnacle for
+# only 200/330 (post-Jan 2026 odds gap). Honest re-test under current odds
+# availability shows -0.3pp on accuracy and only +0.004 log-loss improvement.
+# Feature-prune retrain (126→75) was also REJECTED — CV acc 0.508 < 0.52.
+# Net: no production change shipped from Phase 6. Stress-tested measurement
+# system reset to honest thresholds. ML T=0.75, draw_boost=1.12, post_T=0.90.
 
 # Deep learning weights: DISABLED (0%).
 # LSTM/Transformer accuracy 45-46% (near random on 3-way classification).
@@ -161,7 +165,7 @@ ENSEMBLE_WEIGHTS = {
 ENSEMBLE_WEIGHTS_WITH_DEEP = {
     "factor": 0.035,
     "xg": 0.124,
-    "ml": 0.605,           # 35-feature no-odds CatBoost + ensemble (2017+ data)
+    "ml": 0.605,           # 126-feature no-odds CatBoost
     "player_xg": 0.032,
     "deep": 0.00,          # Disabled: insufficient data for deep learning
     "market": 0.205,
@@ -207,8 +211,8 @@ class XGPredictor:
         try:
             from catboost import CatBoostRegressor
 
-            # Prefer extended models (match extended_model_metadata.json).
-            # Fall back to base models if extended don't exist.
+            # Prefer extended models if they exist on disk.
+            # Fall back to base models otherwise.
             home_ext = MODELS_DIR / "universal" / "xg_home_extended.cbm"
             away_ext = MODELS_DIR / "universal" / "xg_away_extended.cbm"
             home_base = MODELS_DIR / "universal" / "xg_home.cbm"
@@ -718,6 +722,15 @@ class MLClassifier:
         self.loaded = False
         self.league = league
         self._calibrators = None  # Per-class isotonic calibrators
+        # Post-calibration draw boost. CV said boost=0.30 helped (+18pp draw recall,
+        # near-zero accuracy cost). PAPER TRADE on 150 latest SA matches said the
+        # opposite: boost overshoots draw participation 6.5× (14 → 91 draw bets),
+        # win rate on those collapses (57% → 24%), flat ROI flips +19% → -11%.
+        # Diagnosis: CV measures classification recall; betting ROI measures market
+        # efficiency — they diverge here. Default 0.0 (disabled) until a smarter
+        # boost (e.g. only when raw P(D) > threshold) is designed and validated.
+        # See docs/2026-04-28_paper_trade_h4_negative.md.
+        self._draw_boost = float(os.environ.get("DRAW_BOOST", "0.0"))
 
     def _league_model_dir(self) -> Path:
         """Return the model directory for the configured league."""
@@ -802,16 +815,12 @@ class MLClassifier:
             v1_path = MODELS_DIR / "universal" / "catboost_upcoming.cbm"
             v2_path = MODELS_DIR / "universal" / "catboost_upcoming_v2.cbm"
             primary_meta = MODELS_DIR / "universal" / "catboost_upcoming_v2_metadata.json"
-            fallback_path = MODELS_DIR / "markets" / "prod_1x2.cbm"
 
             if v1_path.exists():
                 model_path = v1_path
             elif v2_path.exists():
                 model_path = v2_path
             else:
-                model_path = fallback_path
-
-            if not model_path.exists():
                 log.warning("ML classifier not found. Run training first.")
                 return False
 
@@ -959,6 +968,15 @@ class MLClassifier:
                 cal_total = cal_proba.sum()
                 if cal_total > 0:
                     proba = cal_proba / cal_total
+
+            # Post-calibration draw boost (architectural fix for draw recall).
+            # Class index 1 is Draw (proba[H, D, A]). Multi-seed verified: +18pp
+            # draw recall at boost=0.30, ~0pp accuracy cost. Disable via env var
+            # DRAW_BOOST=0.0 if needed.
+            if self._draw_boost > 0.0:
+                proba = proba.copy()
+                proba[1] = proba[1] * (1.0 + self._draw_boost)
+                proba = proba / proba.sum()
 
             return {
                 "prob_H": float(proba[0]),

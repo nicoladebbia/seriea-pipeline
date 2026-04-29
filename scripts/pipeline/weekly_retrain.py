@@ -248,9 +248,11 @@ def _archive_current_models():
 
     log.info("Archived current models to %s", archive_path)
 
-    # Keep only last 5 archives
+    # Keep only the most recent archive (last known-good rollback model).
+    # If a retrain goes bad, fix features and retrain — don't preserve old
+    # artifacts as crutches.
     archives = sorted(ARCHIVE_DIR.iterdir())
-    while len(archives) > 5:
+    while len(archives) > 1:
         old = archives.pop(0)
         if old.is_dir():
             shutil.rmtree(old)
@@ -306,7 +308,6 @@ def retrain_no_odds(dry_run: bool = False) -> dict:
         cmd = [
             sys.executable, "-m", "scripts.models.retrain_no_odds_catboost",
             "--walkforward-final",
-            "--include-new-features",
             "--n-seeds", "3",
             "--fit-calibrator",
         ]

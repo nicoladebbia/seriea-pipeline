@@ -421,19 +421,14 @@ def factor_predict(
     n_factors = factors["n_home_factors"] + factors["n_away_factors"]
     if n_factors >= 5:
         confidence = "VERY HIGH"
-        expected_accuracy = 0.958
     elif n_factors >= 4:
         confidence = "HIGH"
-        expected_accuracy = 0.727
     elif n_factors >= 3:
         confidence = "MEDIUM-HIGH"
-        expected_accuracy = 0.647
     elif n_factors >= 2:
         confidence = "MEDIUM"
-        expected_accuracy = 0.55
     else:
         confidence = "LOW"
-        expected_accuracy = 0.488
 
     matchup = form_data.get("matchups", {}).get(key, {})
     home_form = matchup.get("home_form", {})
@@ -465,7 +460,6 @@ def factor_predict(
         },
         "confidence": max(home_prob, draw_prob, away_prob),
         "confidence_level": confidence,
-        "expected_accuracy": expected_accuracy,
         "n_factors": n_factors,
         "home_factors": factors["home_factors"],
         "away_factors": factors["away_factors"],

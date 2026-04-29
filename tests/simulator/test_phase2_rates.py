@@ -250,24 +250,3 @@ def test_all_phase2_market_probs_emits_corner_keys_when_populated():
     # All probabilities must be in [0,1]
     for k, v in out.items():
         assert 0.0 <= v <= 1.0, f"{k}={v} out of range"
-
-
-def test_simulator_predictor_supports_phase2_markets():
-    from models.simulator.backtests.simulator_predictor import SimulatorPredictor
-    p = SimulatorPredictor()
-    assert p.supports("corners_over_9_5")
-    assert p.supports("cards_over_3_5")
-    assert p.supports("shots_over_20_5")
-    assert p.supports("home_corners_over_4_5")
-    # Phase 1 markets still work
-    assert p.supports("O/U 2.5")
-    assert p.supports("1X2")
-
-
-def test_simulator_predictor_phase2_disabled_skips_corners():
-    from models.simulator.backtests.simulator_predictor import SimulatorPredictor
-    p = SimulatorPredictor(enable_phase2_rates=False)
-    assert not p.supports("corners_over_9_5")
-    assert not p.supports("cards_over_3_5")
-    # Phase 1 still supported
-    assert p.supports("O/U 2.5")

@@ -876,18 +876,6 @@ class UnifiedTrainer:
             model.save_model(str(self._model_dir / out_name))
             log.info("Saved %s to %s", out_name, self._model_dir)
 
-        metadata = {
-            "model_version": "unified_v1.0",
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "training_mode": "xg_only",
-            "n_features": len(features),
-            "feature_names": features,
-            "cv_metrics": xg_metrics,
-            "label_map": LABEL_MAP,
-        }
-        with open(self._model_dir / "xg_model_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-
         return {"mode": "xg_only", "xg_metrics": xg_metrics}
 
     # ---------------------------------------------------------------

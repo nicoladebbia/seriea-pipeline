@@ -56,10 +56,19 @@ LEAGUE_TO_FEATURES = {
 # a 2019+ window has only 2-3 prior seasons for the earliest eval season).
 MIN_TRAIN_SEASONS = 5
 
-# Evaluation target: only eval on the most recent 3 seasons to keep runs tractable
-# and focused on the current regime. These are the seasons that will have
-# approval-critical backtest numbers.
-DEFAULT_EVAL_SEASONS = ["2022-2023", "2023-2024", "2024-2025"]
+# Evaluation target: 6 most recent seasons (2020-2021 onward, including the
+# current 2025-2026 season). Skips 2019-2020 because COVID behind-closed-doors
+# matches from March 2020 onward introduce regime shift the model has no feature
+# to capture.
+#
+# 2025-2026 added 2026-04-28 (B1''): the staleness experiment showed that
+# scoring 2025-26 with a model that didn't include 2024-25 in training cost
+# ~5pp of holdout ROI (-5.98% → -1.20% baseline). Production retrains MUST
+# include the most recent completed season as eval so the next-season scoring
+# uses fresh training. See docs/2026-04-28_fresh_model_test.md.
+DEFAULT_EVAL_SEASONS = [
+    "2020-2021", "2021-2022", "2022-2023", "2023-2024", "2024-2025", "2025-2026",
+]
 
 # Columns that are always meta/target rather than features.
 META_COLUMNS = {
@@ -243,7 +252,7 @@ def _ece_multiclass(y_true: np.ndarray, proba: np.ndarray, bins: int = 10) -> fl
     return float(ece)
 
 
-def _select_features(df: pd.DataFrame) -> list[str]:
+def _select_features(df: pd.DataFrame, extra_excludes: set[str] | None = None) -> list[str]:
     """Features = everything except meta, target proxies, and raw odds.
 
     Excludes:
@@ -251,16 +260,19 @@ def _select_features(df: pd.DataFrame) -> list[str]:
       2. Private columns (leading underscore)
       3. Known post-match leakage columns (LEAKY_COLUMNS)
       4. Raw odds (via ml.feature_selection.exclude_odds, preserves disagreement features)
+      5. Optional: caller-provided extra_excludes (e.g. for ablation studies that
+         compare model performance with vs without a specific feature group).
 
     Then validates: no remaining feature has |corr| > 0.5 with either the
     over/under target or the home/draw/away flags — if one does, we refuse
     to train. Threshold 0.5 lets through natural quality→outcome signals
     like squad_value_diff (~0.4) but catches direct leakage (>0.5).
     """
+    extra = extra_excludes or set()
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     feature_names = [
         c for c in numeric_cols
-        if c not in META_COLUMNS and c not in LEAKY_COLUMNS and not c.startswith("_")
+        if c not in META_COLUMNS and c not in LEAKY_COLUMNS and c not in extra and not c.startswith("_")
     ]
     # Drop columns that are entirely null
     all_null = df[feature_names].isna().all(axis=0)
@@ -343,6 +355,8 @@ def walkforward_train_market(
     min_train_season: str | None = None,
     min_prior_seasons: int | None = None,
     output_suffix: str = "",
+    exclude_features: set[str] | None = None,
+    class_weights_override: tuple[float, ...] | None = None,
 ) -> dict:
     """Train one (league, market) pair with strict walk-forward CV.
 
@@ -373,7 +387,7 @@ def walkforward_train_market(
     df["_target"] = spec.target_builder(df).values
 
     all_seasons_sorted = sorted(df["season"].unique())
-    feature_names = _select_features(df)
+    feature_names = _select_features(df, extra_excludes=exclude_features)
     floor_season = min_train_season or ""
     prior_min = MIN_TRAIN_SEASONS if min_prior_seasons is None else int(min_prior_seasons)
     log.info("League=%s market=%s total_rows=%d feature_count=%d "
@@ -442,8 +456,8 @@ def walkforward_train_market(
         X_eval = df.loc[eval_mask, feature_names].copy()
         y_eval = df.loc[eval_mask, "_target"].to_numpy()
 
-        # Choose class weights: per-league override > market default > None.
-        effective_weights = (
+        # Choose class weights: CLI override > per-league override > market default > None.
+        effective_weights = class_weights_override or (
             (spec.per_league_weights or {}).get(league)
             if spec.per_league_weights
             else None
@@ -659,9 +673,22 @@ def main() -> int:
     ap.add_argument("--output-suffix", default="",
                     help="If set, artifacts go to {league}/{market}__{suffix}/ "
                          "so variants don't overwrite each other.")
+    ap.add_argument("--exclude-features", default="",
+                    help="Comma-separated feature names to exclude from training. "
+                         "Useful for ablation studies (compare model with vs without "
+                         "a feature group). E.g. xi_quality re-test: "
+                         "--exclude-features home_xi_avg_rating_last5,away_xi_avg_rating_last5,...")
+    ap.add_argument("--class-weights", default="",
+                    help="Comma-separated class weights override (e.g. '1.0,1.5,1.0' "
+                         "for 1X2 to up-weight draws). Overrides MarketSpec defaults. "
+                         "Useful for draw-recall ablation experiments.")
     args = ap.parse_args()
 
     eval_seasons = [s.strip() for s in args.eval_seasons.split(",") if s.strip()]
+    exclude_features = {s.strip() for s in args.exclude_features.split(",") if s.strip()}
+    class_weights_override = None
+    if args.class_weights:
+        class_weights_override = tuple(float(x.strip()) for x in args.class_weights.split(",") if x.strip())
 
     if args.all:
         combos: Iterable[tuple[str, str]] = [
@@ -683,6 +710,8 @@ def main() -> int:
             min_train_season=(args.min_train_season or None),
             min_prior_seasons=args.min_prior_seasons,
             output_suffix=args.output_suffix,
+            exclude_features=exclude_features or None,
+            class_weights_override=class_weights_override,
         )
         global_summary[f"{lg}__{mk}"] = s.get("overall", {})
 

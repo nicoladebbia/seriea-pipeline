@@ -430,7 +430,6 @@ def get_perfect_storm_matches(matches: List[Dict], form_data: Dict, referee_data
                 "match": key,
                 "factors": home_factors,
                 "n_factors": len(home_factors),
-                "expected_accuracy": 0.958 if len(home_factors) == 5 else 1.0,
                 "prediction": "STRONG HOME WIN",
                 "confidence": "VERY HIGH"
             })

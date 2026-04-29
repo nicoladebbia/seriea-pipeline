@@ -778,7 +778,7 @@ function renderBacktests(backtests) {
     for (const [, data] of seasons) {
       const m = data[key] || {};
       const acc = m.accuracy != null ? (m.accuracy * 100).toFixed(1) : '-';
-      const accColor = m.accuracy >= 0.55 ? 'var(--green)' : m.accuracy >= 0.50 ? 'var(--amber)' : 'var(--text-tertiary)';
+      const accColor = m.accuracy >= 0.53 ? 'var(--green)' : m.accuracy >= 0.50 ? 'var(--amber)' : 'var(--text-tertiary)';
       const ll = m.log_loss != null ? m.log_loss.toFixed(4) : '-';
       html += `<td class="mono" style="text-align:center;color:${accColor};">${acc}%</td>`;
       html += `<td class="mono" style="text-align:center;color:var(--text-tertiary);">${ll}</td>`;

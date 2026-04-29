@@ -291,6 +291,81 @@ def check_quota_budget(critical: bool = False) -> Tuple[bool, str]:
     return True, f"OK ({remaining} credits remaining)"
 
 
+# Priority hierarchy for pacing-based throttling.
+# Lower number = higher importance (kept longer when budget tightens).
+# Stages drop only when actual pacing exceeds the per-priority drop threshold.
+PRIORITY_CRITICAL    = 1   # T-5m closing line — never drops (critical=True)
+PRIORITY_EXTRAS      = 2   # T-6h / T-3h with extra markets — drops at 95% pacing
+PRIORITY_PROPS       = 3   # Player props (per-event sweep) — drops at 90% pacing
+PRIORITY_T24H        = 4   # T-24h h2h snapshot — drops at 80% pacing
+PRIORITY_T72H        = 5   # T-72h opening line — drops at 70% pacing
+PRIORITY_BACKFILL    = 6   # Historical backfill — drops at 60% pacing
+
+# Drop threshold per priority. Stage is allowed iff (used/budget) <= (time_elapsed/days_in_month) + tolerance,
+# where tolerance is per-priority. Higher tolerance = stage allowed to run further over expected pacing.
+# Critical (1) has no threshold — bypasses controller entirely.
+PRIORITY_TOLERANCE = {
+    PRIORITY_EXTRAS:    0.02,   # allow 2% over time-expected pacing — small slack to absorb burst
+    PRIORITY_PROPS:     0.00,   # exactly on pace
+    PRIORITY_T24H:     -0.05,   # cut if pacing > time - 5%
+    PRIORITY_T72H:     -0.10,
+    PRIORITY_BACKFILL: -0.20,
+}
+
+
+def check_budget_pacing(priority: int = PRIORITY_EXTRAS, critical: bool = False) -> Tuple[bool, str]:
+    """Adaptive controller: lands monthly spend at MONTHLY_LIMIT regardless of league count.
+
+    Logic:
+      pacing_ratio = (credits_used_this_month) / MONTHLY_LIMIT
+      time_ratio   = (day_of_month) / days_in_month
+      slack        = time_ratio - pacing_ratio
+      slack > 0  → under-spending vs schedule (allow everything)
+      slack < 0  → over-spending — drop priorities from the bottom up
+
+    Each non-critical priority gets its own tolerance. Higher-priority stages
+    survive longer over-pacing. Critical stages always pass.
+
+    Self-balancing: as ACTIVE_LEAGUES grows from 2→3→5, the per-stage cost rises,
+    pacing tightens earlier in the month, low-priority stages drop sooner — total
+    spend converges to MONTHLY_LIMIT.
+    """
+    if critical:
+        return True, "OK (critical=True bypasses pacing controller)"
+
+    # Hard quota first — if circuit breaker says no, no pacing math saves us.
+    ok, msg = check_quota_budget(critical=False)
+    if not ok:
+        return False, msg
+
+    usage = _load_usage()
+    now = datetime.now()
+    month_key = now.strftime("%Y-%m")
+    month_used = usage.get("monthly_calls", {}).get(month_key, 0)
+
+    # Compute pacing
+    import calendar as _cal
+    days_in_month = _cal.monthrange(now.year, now.month)[1]
+    time_ratio = now.day / days_in_month
+    pacing_ratio = month_used / MONTHLY_LIMIT if MONTHLY_LIMIT > 0 else 0.0
+    slack = time_ratio - pacing_ratio
+
+    # Tolerance for this priority
+    tol = PRIORITY_TOLERANCE.get(priority, 0.0)
+
+    if slack >= -tol:
+        return True, (
+            f"OK pacing={pacing_ratio:.1%} time={time_ratio:.1%} slack={slack:+.1%} "
+            f"priority={priority} tol={tol:+.1%}"
+        )
+
+    return False, (
+        f"PACING DROP: priority={priority}, pacing={pacing_ratio:.1%} ahead of "
+        f"time={time_ratio:.1%} (slack={slack:+.1%}, tol={tol:+.1%}). "
+        f"Spent {month_used:,} of {MONTHLY_LIMIT:,} this month."
+    )
+
+
 def check_rate_limit(critical: bool = False) -> Tuple[bool, str]:
     """Check per-minute rate limit + daily cap + quota circuit breaker.
 

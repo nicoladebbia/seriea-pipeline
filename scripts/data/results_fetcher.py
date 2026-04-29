@@ -215,7 +215,13 @@ def _load_history() -> List[Dict]:
 
 
 def _save_history(history: List[Dict]):
-    """Save bet history (atomic write to prevent corruption on crash)."""
+    """Save bet history (atomic write to prevent corruption on crash).
+
+    DEPRECATED (2026-04-23): history.json is now a derived cache regenerated
+    from the journal by scripts.betting.ledger.rebuild_caches(). This
+    function is kept only as a fallback if the ledger import fails mid-
+    settlement. Do not call directly — let _settle_bets_locked do it.
+    """
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = HISTORY_FILE.with_suffix(".tmp")
     with open(tmp, "w") as f:
@@ -254,7 +260,13 @@ def _load_bankroll() -> Dict:
 
 
 def _save_bankroll(bankroll: Dict):
-    """Save bankroll data (atomic write to prevent corruption on crash)."""
+    """Save bankroll data (atomic write to prevent corruption on crash).
+
+    DEPRECATED (2026-04-23): bankroll.json is derived from the journal by
+    scripts.betting.ledger.rebuild_caches(). This function is a fallback
+    only. The old `peak_balance/lowest_balance` mutations in callers were
+    the root cause of drift between journal and bankroll.
+    """
     bankroll["updated_at"] = datetime.now().isoformat()
     BANKROLL_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = BANKROLL_FILE.with_suffix(".tmp")
@@ -263,7 +275,12 @@ def _save_bankroll(bankroll: Dict):
     tmp.rename(BANKROLL_FILE)
 
 
-def _rebuild_bankroll_from_history():
+def _rebuild_bankroll_from_history():  # noqa: D401
+    # DEPRECATED (2026-04-23): bankroll.json is now regenerated from the
+    # journal via scripts.betting.ledger.rebuild_caches(). This function
+    # computes from history.json which is itself a derived cache, making it
+    # second-hand and drift-prone. Only called as a fallback if the ledger
+    # import fails.
     """Rebuild bankroll.json from history.json — the single source of truth.
 
     Replays all settled bets chronologically to compute correct balance,
@@ -577,10 +594,18 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
         # Record in history
         # match_kickoff_at = actual kickoff time from Odds API (audit field for
         # downstream sort: bets are grouped by match, not by grading batch).
-        commence_iso = result.get("commence_time", "")
+        # Delegated to ledger.validate_commence_time so every settler uses the
+        # same staleness guard (single place to tune the 365-day threshold).
+        from scripts.betting.ledger import validate_commence_time
+        raw_commence = result.get("commence_time", "")
+        date_for_history, commence_iso = validate_commence_time(
+            raw_commence, fallback_date=bet.get("date", "")
+        )
+        commence_iso = commence_iso or ""
+
         history_entry = {
             "match": match_key,
-            "date": commence_iso[:10],
+            "date": date_for_history,
             "market": market,
             "selection": selection,
             "odds": odds,

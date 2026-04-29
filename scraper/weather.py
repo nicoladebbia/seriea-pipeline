@@ -131,6 +131,42 @@ def _extract_city(venue: str) -> str | None:
     return None
 
 
+# Fallback when venue column is NaN — map home_team → city
+TEAM_TO_CITY: dict[str, str] = {
+    "Inter": "Milano", "Milan": "Milano", "AC Milan": "Milano",
+    "Juventus": "Torino", "Torino": "Torino",
+    "Lazio": "Roma", "Roma": "Roma",
+    "Napoli": "Napoli", "Fiorentina": "Firenze",
+    "Atalanta": "Bergamo", "Bologna": "Bologna",
+    "Genoa": "Genova", "Sampdoria": "Genova",
+    "Verona": "Verona", "Hellas Verona": "Verona",
+    "Cagliari": "Cagliari", "Sassuolo": "Sassuolo",
+    "Udinese": "Udine", "Lecce": "Lecce",
+    "Parma": "Parma", "Empoli": "Empoli",
+    "Como": "Como", "Monza": "Monza",
+    "Cremonese": "Cremona", "Pisa": "Pisa",
+    "Spezia": "La Spezia", "Salernitana": "Salerno",
+    "Frosinone": "Frosinone", "Venezia": "Venezia",
+    "Crotone": "Crotone", "Benevento": "Benevento",
+    "Brescia": "Brescia", "SPAL": "Ferrara",
+    "Chievo": "Verona", "Bari": "Bari",
+    "Palermo": "Palermo", "Catania": "Catania",
+    "Siena": "Siena", "Livorno": "Livorno",
+    "Reggina": "Reggio Calabria", "Cesena": "Cesena",
+    "Ascoli": "Ascoli Piceno", "Novara": "Novara",
+    "Pescara": "Pescara", "Carpi": "Carpi",
+}
+
+
+def _extract_city_from_team(home_team: str | None) -> str | None:
+    """Fallback: map home_team → city. Used when venue column is NaN."""
+    if not home_team or pd.isna(home_team):
+        return None
+    if home_team in VENUE_COORDS:
+        return home_team
+    return TEAM_TO_CITY.get(home_team)
+
+
 def _get_coords(city: str | None) -> tuple[float, float] | None:
     """Look up coordinates for a city."""
     if not city:
@@ -164,8 +200,17 @@ def fetch_weather_for_matches(matches: pd.DataFrame) -> pd.DataFrame:
     log.info("Fetching weather for %d new matches", len(needed))
 
     rows = []
-    # Group by (city, date) to batch requests
-    needed["_city"] = needed["venue"].apply(_extract_city)
+    # Group by (city, date) to batch requests.
+    # Primary: venue column ("Stadio Olimpico, Roma" → "Roma").
+    # Fallback: home_team → city mapping (for matches without venue, e.g. Sofascore-sourced).
+    if "venue" in needed.columns:
+        needed["_city"] = needed["venue"].apply(_extract_city)
+    else:
+        needed["_city"] = None
+    # Fill NaN cities using home_team fallback
+    if "home_team" in needed.columns:
+        missing_mask = needed["_city"].isna()
+        needed.loc[missing_mask, "_city"] = needed.loc[missing_mask, "home_team"].apply(_extract_city_from_team)
     needed["_date"] = pd.to_datetime(needed["match_date"], errors="coerce").dt.date
 
     # Deduplicate city+date pairs

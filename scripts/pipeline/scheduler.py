@@ -376,26 +376,28 @@ def _save_pre_kickoff_state(state: Dict):
 # kind missing         → existing in-code dispatch (lineup_fetch / prediction_update / settlement_check)
 MATCH_CLOCK_STAGES = [
     # --- Odds snapshots: bulk per league, cheap (1 credit per market, eu region) ---
+    # `priority` field gates dispatch through `check_budget_pacing` so spend self-balances
+    # to MONTHLY_LIMIT regardless of how many leagues are active. Lower number = higher priority.
     {"name": "odds_T72h", "minutes_before": 72*60, "window": (70*60, 74*60),
      "description": "Opening-line bulk snapshot",
-     "kind": "odds", "include_extra_markets": False, "critical": False},
+     "kind": "odds", "include_extra_markets": False, "critical": False, "priority": 5},
     {"name": "odds_T24h", "minutes_before": 24*60, "window": (22*60, 26*60),
      "description": "T-24h bulk snapshot",
-     "kind": "odds", "include_extra_markets": False, "critical": False},
+     "kind": "odds", "include_extra_markets": False, "critical": False, "priority": 4},
     {"name": "odds_T6h",  "minutes_before":  6*60, "window": (5*60, 7*60),
      "description": "T-6h bulk + extra markets",
-     "kind": "odds", "include_extra_markets": True, "critical": False},
+     "kind": "odds", "include_extra_markets": True, "critical": False, "priority": 2},
     {"name": "odds_T3h",  "minutes_before":  3*60, "window": (2*60+30, 3*60+30),
      "description": "T-3h bulk + extra markets",
-     "kind": "odds", "include_extra_markets": True, "critical": False},
+     "kind": "odds", "include_extra_markets": True, "critical": False, "priority": 2},
     {"name": "odds_T5m",  "minutes_before":        5, "window": (0, 15),
      "description": "Closing-line bulk (CRITICAL — bypasses soft quota cap)",
-     "kind": "odds", "include_extra_markets": False, "critical": True},
+     "kind": "odds", "include_extra_markets": False, "critical": True, "priority": 1},
 
     # --- Player props: only after confirmed_lineups.json has the match ---
     {"name": "player_props_T60", "minutes_before": 60, "window": (40, 70),
      "description": "Player-prop odds snapshot (lineup-gated)",
-     "kind": "player_props", "critical": False, "retry_if_empty": True},
+     "kind": "player_props", "critical": False, "retry_if_empty": True, "priority": 3},
 
     # --- Existing match-day stages (unchanged) ---
     {
@@ -435,10 +437,20 @@ def _dispatch_odds_stage(stage: Dict, matches: List[Dict]) -> bool:
         leagues_to_fetch = set(ACTIVE_LEAGUES)
 
     try:
-        from scripts.data.odds_fetcher import fetch_tagged_snapshot
+        from scripts.data.odds_fetcher import fetch_tagged_snapshot, check_budget_pacing
     except Exception as e:
         log.warning("odds stage %s: odds_fetcher unavailable — %s", stage["name"], e)
         return False
+
+    # Adaptive budget pacing: drop low-priority stages if monthly spend is ahead of schedule.
+    # Critical stages (T-5m closing line) bypass via critical=True.
+    priority = int(stage.get("priority", 5))
+    is_critical = bool(stage.get("critical"))
+    ok_pacing, pacing_msg = check_budget_pacing(priority=priority, critical=is_critical)
+    if not ok_pacing:
+        log.info("odds stage %s SKIPPED by budget controller: %s",
+                 stage["name"], pacing_msg)
+        return True  # Returning True so retry_if_empty doesn't fire forever
 
     ok_all = True
     for league in sorted(leagues_to_fetch):
@@ -446,7 +458,7 @@ def _dispatch_odds_stage(stage: Dict, matches: List[Dict]) -> bool:
             fetch_tagged_snapshot(
                 league=league,
                 include_extra_markets=bool(stage.get("include_extra_markets")),
-                critical=bool(stage.get("critical")),
+                critical=is_critical,
                 tag=stage["name"],
             )
         except Exception as e:
@@ -483,6 +495,17 @@ def _dispatch_player_props_stage(stage: Dict, matches: List[Dict]) -> bool:
                  len(skipped), ", ".join(skipped))
     if not gated:
         return False  # returning False keeps retry_if_empty alive
+
+    # Budget pacing: drop player-props if monthly spend is ahead of schedule.
+    try:
+        from scripts.data.odds_fetcher import check_budget_pacing
+        priority = int(stage.get("priority", 3))
+        ok_pacing, pacing_msg = check_budget_pacing(priority=priority, critical=False)
+        if not ok_pacing:
+            log.info("player_props stage SKIPPED by budget controller: %s", pacing_msg)
+            return True
+    except Exception as e:
+        log.debug("player_props stage: pacing check unavailable — %s", e)
 
     try:
         from scripts.betting.player_prop_odds import fetch_player_prop_odds
@@ -1636,12 +1659,11 @@ def run_daemon(bankroll: float = 0, leagues: list = None):
 
 
 def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
-    """Single pipeline run.
+    """Single pipeline run — morning or evening.
 
-    Args:
-        bankroll: Bankroll amount.
-        quick: Use cached data.
-        leagues: Active leagues. Defaults to ACTIVE_LEAGUES.
+    On success, calls notify_pipeline_run_with_picks which leads with the
+    actual value bets found (not run metadata). On failure, the standard
+    scheduler_run card fires with the error.
     """
     if leagues is None:
         leagues = ACTIVE_LEAGUES
@@ -1660,34 +1682,13 @@ def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
     else:
         sched_name = "morning" if hour < 5 else "evening"
 
-    league_label = " + ".join(l.replace("_", " ").title() for l in leagues)
-
-    # Pull predictions + bet count for the card
-    details = {"Leagues": league_label}
     try:
-        import json as _json
-        preds_path = PROJECT_ROOT / "data" / "upcoming" / "predictions.json"
-        if preds_path.exists():
-            raw = _json.loads(preds_path.read_text())
-            preds = raw.get("predictions", raw) if isinstance(raw, dict) else raw
-            if isinstance(preds, list):
-                details["Predictions"] = len(preds)
-        bets_path = PROJECT_ROOT / "data" / "betting" / "unified_report.json"
-        if bets_path.exists():
-            raw = _json.loads(bets_path.read_text())
-            bets = raw.get("bets", []) if isinstance(raw, dict) else []
-            details["Value bets"] = len(bets)
-    except Exception as e:
-        log.debug("Card enrichment failed: %s", e)
-
-    try:
-        from scripts.pipeline.notify import notify_scheduler_run
-        notify_scheduler_run(
+        from scripts.pipeline.notify import notify_pipeline_run_with_picks
+        notify_pipeline_run_with_picks(
             name=sched_name,
             status="success" if success else "fail",
             duration_sec=elapsed,
-            details=details,
-            error=None if success else "Pipeline failed after retries (see launchd err log)",
+            error=None if success else "Pipeline retries exhausted",
         )
     except Exception as e:
         log.error("Scheduler notification failed: %s", e)

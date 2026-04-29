@@ -183,16 +183,29 @@ def get_effective_bankroll() -> float:
 
 
 def update_bankroll_json(balance_info: Dict = None):
-    """Write derived state to data/betting/bankroll.json for dashboard consumers.
+    """Write derived state to data/betting/bankroll.json.
 
-    This is a DERIVED file — the journal is the source of truth.
+    DEPRECATED as the direct writer. As of 2026-04-23, bankroll.json is a pure
+    derived cache regenerated from the journal by scripts.betting.ledger.
+    This function now delegates to ledger.rebuild_caches() for a single source
+    of truth. The `balance_info` argument is ignored (was a source of drift —
+    callers could pass stale values that overwrote correct ones).
     """
+    try:
+        from scripts.betting import ledger
+        result = ledger.rebuild_caches()
+        log.info("Updated bankroll.json via ledger: €%.2f",
+                 result["bankroll"]["current_balance"])
+        return
+    except Exception as e:
+        log.error("ledger.rebuild_caches failed (%s), falling back to legacy writer", e)
+
+    # --- Legacy fallback: only reached if ledger import fails ---
     if balance_info is None:
         balance_info = compute_current_bankroll()
 
     from datetime import datetime
 
-    # Count pending bets from journal
     pending_count = 0
     if _JOURNAL_PATH.exists():
         try:
@@ -210,7 +223,7 @@ def update_bankroll_json(balance_info: Dict = None):
         "current_balance": balance_info["current_balance"],
         "available_balance": balance_info.get("available_balance", balance_info["current_balance"]),
         "peak_balance": balance_info["peak_balance"],
-        "lowest_balance": balance_info["initial_balance"],  # Not tracked here; kept for compat
+        "lowest_balance": balance_info["initial_balance"],
         "pending_bets": pending_count,
         "pending_stakes": balance_info["pending_stakes"],
         "updated_at": datetime.now().isoformat(),
@@ -218,5 +231,5 @@ def update_bankroll_json(balance_info: Dict = None):
 
     from config.settings import atomic_write_json
     atomic_write_json(_BANKROLL_JSON, bankroll_data)
-
-    log.info("Updated bankroll.json: €%.2f", balance_info["current_balance"])
+    log.warning("Updated bankroll.json via LEGACY path: €%.2f",
+                balance_info["current_balance"])

@@ -118,6 +118,23 @@ def _compute_advanced_team_metrics(player_stats: pd.DataFrame) -> pd.DataFrame:
     if "match_id" not in ps.columns or "team" not in ps.columns:
         return pd.DataFrame()
 
+    # Schema guard: this function expects the SA-rich FBref schema (~141 cols).
+    # EPL's player_stats parquet uses a sparser schema (~30 cols) that doesn't
+    # include the `passing_passes`, `possession_touches`, etc. columns referenced
+    # below. If those required columns are missing, return early with a warning
+    # rather than crashing. EPL ends up with zero advanced features until the
+    # FBref scraper backfills the rich schema.
+    required_cols = ["passing_passes", "possession_touches", "defense_tackles"]
+    missing_required = [c for c in required_cols if c not in ps.columns]
+    if missing_required:
+        log.warning(
+            "Advanced player features skipped — player_stats missing required "
+            "columns: %s. Likely EPL's sparser schema. Backfill FBref scraper "
+            "with rich stats to enable advanced features for this league.",
+            missing_required,
+        )
+        return pd.DataFrame()
+
     rows = []
     for (match_id, team), grp in ps.groupby(["match_id", "team"]):
         row: dict = {"match_id": match_id, "team": team}
@@ -424,17 +441,25 @@ def _compute_star_form(player_stats: pd.DataFrame) -> pd.DataFrame:
 # Public API: add_advanced_player_features
 # ---------------------------------------------------------------------------
 
-def add_advanced_player_features(matches: pd.DataFrame) -> pd.DataFrame:
+def add_advanced_player_features(matches: pd.DataFrame,
+                                 league: str | None = None) -> pd.DataFrame:
     """Add advanced player-level ratio and dependency features.
 
-    Uses player_stats.parquet to compute per-team-per-match tactical
-    ratios, then applies rolling 5-match averages (shifted).
+    Uses player_stats.parquet (or player_stats_epl.parquet for EPL) to
+    compute per-team-per-match tactical ratios, then applies rolling 5-match
+    averages (shifted).
+
+    `league` routes the player stats file — SA is `player_stats.parquet`,
+    EPL is `player_stats_epl.parquet`. Without `league`, falls back to SA.
 
     Columns added: home_adv_roll5_{stat}, away_adv_roll5_{stat} (~40 features per side).
     """
-    ps_path = parsed_path("player_stats")
+    if league == "premier_league":
+        ps_path = parsed_path("player_stats_epl")
+    else:
+        ps_path = parsed_path("player_stats")
     if not ps_path.exists():
-        log.warning("player_stats.parquet missing; skipping advanced player features")
+        log.warning("%s missing; skipping advanced player features", ps_path.name)
         return matches
 
     player_stats = pd.read_parquet(ps_path)

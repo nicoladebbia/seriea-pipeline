@@ -213,14 +213,14 @@ def fit_isotonic_calibrators(y_str: np.ndarray, y_proba: np.ndarray) -> dict:
 
 
 def expand_feature_set_with_new(features: list[str], df: pd.DataFrame) -> list[str]:
-    """Add available xi_quality + lineup_xg columns to the locked feature set.
+    """Add available xi_quality + missing_players columns to the locked feature set.
 
     Only adds columns that:
       - Actually exist in `df`
       - Have non-trivial fill rate (>20% on the rows we'll train on)
       - Are NOT already in `features`
       - Are NOT post-match leaky (lineup_xg_sum / rating_mean / xa_sum / rotation
-        ARE post-match — exclude them. xi_quality cols are pre-match — include.)
+        ARE post-match — exclude them. xi_quality + missing_players are pre-match.)
     """
     POST_MATCH_LEAKY = {
         "home_lineup_xg_sum", "away_lineup_xg_sum", "lineup_xg_sum_diff",
@@ -231,7 +231,11 @@ def expand_feature_set_with_new(features: list[str], df: pd.DataFrame) -> list[s
     }
     candidates = [
         c for c in df.columns
-        if (c.startswith("home_xi_") or c.startswith("away_xi_"))
+        if (
+            c.startswith("home_xi_") or c.startswith("away_xi_")
+            or "_missing_count" in c or "_missing_injury_count" in c
+            or "_missing_suspended_count" in c or "_missing_doubtful_count" in c
+        )
         and c not in features
         and c not in POST_MATCH_LEAKY
     ]
@@ -243,7 +247,7 @@ def expand_feature_set_with_new(features: list[str], df: pd.DataFrame) -> list[s
             log.info("  + %s (fill=%.1f%%)", c, fill * 100)
         else:
             log.info("  - %s (fill=%.1f%% — too sparse, skipping)", c, fill * 100)
-    log.info("Extended feature set: %d -> %d (added %d xi_quality cols)",
+    log.info("Extended feature set: %d -> %d (added %d new cols: xi_quality + missing_players)",
              len(features), len(features) + len(accepted), len(accepted))
     return features + accepted
 

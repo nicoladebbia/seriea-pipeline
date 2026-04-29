@@ -57,18 +57,20 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 log = logging.getLogger("monitor")
 log.setLevel(logging.INFO)
+log.propagate = False
 
-_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-_file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s"
-))
-log.addHandler(_file_handler)
+if not log.handlers:
+    _file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    ))
+    log.addHandler(_file_handler)
 
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s"
-))
-log.addHandler(_console_handler)
+    _console_handler = logging.StreamHandler()
+    _console_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    ))
+    log.addHandler(_console_handler)
 
 
 # ─── Helpers ───
@@ -111,9 +113,22 @@ def check_odds_api_key() -> Dict:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 remaining = resp.headers.get("x-requests-remaining", "?")
+                try:
+                    remaining_int = int(remaining)
+                except (TypeError, ValueError):
+                    remaining_int = None
+                if remaining_int is not None and remaining_int <= 0:
+                    status = "CRITICAL"
+                    detail = f"Odds API quota EXHAUSTED ({remaining} requests remaining)"
+                elif remaining_int is not None and remaining_int < 50:
+                    status = "WARNING"
+                    detail = f"Odds API quota low ({remaining} requests remaining)"
+                else:
+                    status = "OK"
+                    detail = f"Key valid, {remaining} requests remaining"
                 return {
-                    "status": "OK",
-                    "detail": f"Key valid, {remaining} requests remaining",
+                    "status": status,
+                    "detail": detail,
                     "requests_remaining": remaining,
                 }
             return {"status": "WARNING", "detail": f"HTTP {resp.status}"}
@@ -290,6 +305,41 @@ def check_pending_bets() -> Dict:
     return {"status": "OK", "detail": "All placed bets within settlement window", "stale_count": 0}
 
 
+
+def check_ledger_invariants() -> Dict:
+    """Ensure journal ↔ bankroll ↔ history agree. Drift = CRITICAL alert.
+
+    Detects silently-broken state from any code path that bypassed the ledger:
+    - direct writes to history.json/bankroll.json
+    - a new `void` (vs 'voided') status appearing
+    - superseded bets leaking into history
+    - settlement-cache bug recurrence (pre-2026 dates)
+    """
+    try:
+        from scripts.betting import ledger
+    except Exception as e:
+        return {"status": "WARNING", "detail": f"ledger import failed: {e}"}
+    try:
+        r = ledger.verify_invariants()
+    except Exception as e:
+        return {"status": "WARNING", "detail": f"verify_invariants crashed: {e}"}
+    if r["ok"]:
+        return {
+            "status": "OK",
+            "detail": (
+                f"Journal ↔ caches agree "
+                f"(balance €{r['journal']['current_balance']:.2f}, "
+                f"{r['journal']['settled_count']} settled)"
+            ),
+            "violations": 0,
+        }
+    return {
+        "status": "CRITICAL",
+        "detail": f"Ledger drift detected: {len(r['violations'])} violation(s)",
+        "violations": r["violations"][:5],  # cap for payload size
+    }
+
+
 # ─── Notification ───
 
 from scripts.pipeline.notify import notify as _unified_notify
@@ -405,6 +455,16 @@ def run_monitor() -> Dict:
         result["issues"].append((pending["status"], f"[pending_bets] {pending['detail']}"))
     log.info(f"  Pending bets: {pending['status']} — {pending['detail']}")
 
+    # 7. Ledger invariants — journal ↔ bankroll.json ↔ history.json agreement
+    log.info("Checking ledger invariants...")
+    inv = check_ledger_invariants()
+    result["checks"]["ledger_invariants"] = inv
+    if inv["status"] in ("CRITICAL", "WARNING"):
+        result["issues"].append((inv["status"], f"[ledger] {inv['detail']}"))
+        for v in inv.get("violations", []):
+            result["issues"].append(("WARNING", f"[ledger] {v}"))
+    log.info(f"  Ledger: {inv['status']} — {inv['detail']}")
+
     # ─── Auto-recovery: if pipeline stale >12h, try to run it ───
     if pipeline.get("status") == "CRITICAL":
         age = pipeline.get("age_hours", 0)
@@ -464,42 +524,22 @@ def run_monitor() -> Dict:
     with open(STATUS_FILE, "w") as f:
         json.dump(result, f, indent=2, default=str)
 
-    # ─── Notification on CRITICAL (deduped: max once per 6 hours) ───
-    if result["overall_status"] == "CRITICAL":
-        _dedup_path = DATA_DIR / ".monitor_alert_dedup.json"
-        should_notify = True
-        try:
-            if _dedup_path.exists():
-                with open(_dedup_path) as _f:
-                    _dedup = json.load(_f)
-                last_alert = _dedup.get("last_critical_alert", "")
-                if last_alert:
-                    from datetime import datetime as _dt
-                    hours_since = (
-                        _dt.now() - _dt.fromisoformat(last_alert)
-                    ).total_seconds() / 3600
-                    if hours_since < 6:
-                        should_notify = False
-                        log.info("Critical alert suppressed (last sent %.1fh ago)", hours_since)
-        except Exception:
-            pass
-
-        if should_notify:
-            critical_msgs = [msg for level, msg in result["issues"] if level == "CRITICAL"]
-            send_macos_notification(
-                "Serie A Pipeline CRITICAL",
-                "; ".join(critical_msgs[:3]),
-            )
-            try:
-                _dedup_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(_dedup_path, "w") as _f:
-                    json.dump({"last_critical_alert": datetime.now().isoformat()}, _f)
-            except Exception:
-                pass
+    # NOTE (2026-04-24): The old "Serie A Pipeline CRITICAL" macOS alert path
+    # was removed. It duplicated the far-better `notify_health_state_change`
+    # card (fires with proper issue-key dedup + flap suppression) and was
+    # causing redundant noise. State-change alerts are now handled exclusively
+    # by notify_health_state_change() below.
 
     log.info(f"Overall: {result['overall_status']} ({len(result['issues'])} issues)")
     log.info(f"Status written to {STATUS_FILE}")
     log.info("")
+
+    # Fire state-change alert (silent on first-run and on no-change)
+    try:
+        from scripts.pipeline.notify import notify_health_state_change
+        notify_health_state_change(result)
+    except Exception as e:
+        log.debug(f"Health state-change notify skipped: {e}")
 
     return result
 

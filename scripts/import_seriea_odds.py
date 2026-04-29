@@ -123,7 +123,25 @@ def load_all_odds_csvs() -> pd.DataFrame:
     return combined
 
 
+# Module-level state populated after a successful run, used by callers (e.g. pipeline)
+# that want to display coverage without re-reading the parquet.
+TOTAL_SA_ROWS: int = 0
+
+
+def update_parquet_with_odds() -> int:
+    """Run the full CSV→parquet odds merge. Returns the number of SA rows that
+    have B365 odds after the merge (the canonical "has odds" marker).
+
+    Idempotent: calling repeatedly with no new CSV data is a no-op for parquet
+    contents (overwrites with the same values).
+    """
+    main()
+    # main() saved a fresh parquet; report on it.
+    return TOTAL_SA_ROWS
+
+
 def main():
+    global TOTAL_SA_ROWS
     log.info("Loading matches.parquet from %s", PARQUET_PATH)
     matches = pd.read_parquet(PARQUET_PATH)
     log.info("Loaded %d matches total", len(matches))
@@ -207,6 +225,10 @@ def main():
     total_with_odds = matches[(matches["league"] == "serie_a") & (matches["odds_B365H"].notna())].shape[0]
     log.info("\nFinal: Serie A has odds for %d/%d matches (%.1f%%)",
              total_with_odds, total_sa, 100 * total_with_odds / total_sa if total_sa else 0)
+
+    # Expose to callers
+    global TOTAL_SA_ROWS
+    TOTAL_SA_ROWS = int(total_with_odds)
 
 
 if __name__ == "__main__":

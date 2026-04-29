@@ -219,6 +219,12 @@ class FeaturePlugin(ABC):
     version: str = "1.0"
     dependencies: List[str] = []
 
+    # Optional: list of file paths (relative to repo root) this plugin reads
+    # as data inputs. When set, the cache fingerprint includes mtime+size of
+    # each file, so data changes invalidate the cache automatically.
+    # Plugins that don't declare this fall back to source-only fingerprinting.
+    data_inputs: List[str] = []
+
     # If True, errors are caught and logged rather than raised.
     # Critical plugins (e.g. team_match_log, pivot) should set this to False.
     non_critical: bool = False
@@ -296,16 +302,38 @@ class FeaturePipeline:
         return self._cache_dir / f"{tag}.parquet"
 
     def _source_fingerprint(self, plugin: FeaturePlugin) -> str:
-        """Return a hash of the plugin's apply() source code.
+        """Return a hash combining the plugin's apply() source code AND any
+        declared data inputs (mtime+size manifest).
 
-        Used to detect if the plugin logic changed even without a
-        version bump.
+        Used to detect:
+          1. Plugin logic changes (source hash) — catches code edits without version bumps.
+          2. Data input changes (mtime+size manifest) — catches data backfills,
+             scrapes, and parquet rewrites without manual cache busts.
+
+        Plugins that don't declare `data_inputs` get source-only fingerprinting
+        (backward compatible). Plugins that DO declare them get full data-aware
+        invalidation.
         """
+        parts = []
         try:
-            src = inspect.getsource(plugin.apply)
-            return hashlib.md5(src.encode()).hexdigest()[:12]
+            parts.append(inspect.getsource(plugin.apply))
         except (OSError, TypeError):
-            return "unknown"
+            parts.append("source_unavailable")
+
+        # Build mtime+size manifest for declared data inputs.
+        # Missing files are recorded as "missing" — if a file later appears,
+        # the manifest changes and the cache is invalidated.
+        repo_root = Path(__file__).resolve().parent.parent
+        for rel_path in plugin.data_inputs:
+            full = repo_root / rel_path
+            try:
+                st = full.stat()
+                parts.append(f"{rel_path}:{int(st.st_mtime)}:{st.st_size}")
+            except FileNotFoundError:
+                parts.append(f"{rel_path}:missing")
+
+        combined = "\n".join(parts)
+        return hashlib.md5(combined.encode()).hexdigest()[:12]
 
     def _is_cache_valid(self, plugin: FeaturePlugin) -> bool:
         """Check if a cached result exists and is still valid.
@@ -633,6 +661,10 @@ class Step13Referee(FeaturePlugin):
     name = "referee"
     version = "1.0"
     dependencies = ["player_impact"]
+    data_inputs = [
+        "data/external/sofascore/all_shots_with_xg.parquet",
+        "data/external/sofascore/player_match_stats.parquet",
+    ]
     non_critical = False
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -682,15 +714,56 @@ class Step16ShotQuality(FeaturePlugin):
 class Step17AdvancedPlayer(FeaturePlugin):
     """Step 17: Advanced player-level ratio & dependency features."""
     name = "advanced_player"
-    version = "1.0"
+    version = "1.1"  # 2026-04-28: league-aware routing for EPL player_stats
     dependencies = ["shot_quality"]
+    data_inputs = [
+        "data/parsed/player_stats.parquet",
+        "data/parsed/player_stats_epl.parquet",
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+    ]
     non_critical = False
 
     def apply(self, state: FeatureState) -> FeatureState:
         _cols_before = set(state.feature_df.columns)
-        state.feature_df = add_advanced_player_features(state.feature_df)
+        state.feature_df = add_advanced_player_features(
+            state.feature_df, league=state.league
+        )
         _new_cols = set(state.feature_df.columns) - _cols_before
         log.info("  -> Advanced player: added %d columns", len(_new_cols))
+        return state
+
+
+class Step17bAdvancedPlayerSofascore(FeaturePlugin):
+    """Step 17b: Sofascore-based advanced player features (primarily for EPL).
+
+    Mirrors Step17AdvancedPlayer but uses Sofascore's 80-col schema instead
+    of FBref's 141-col schema. Designed for EPL where FBref serves only
+    summary tables (no rich passing/possession/defense detail). Adds ~25
+    rolling metrics × home/away + differentials = ~75 new features per
+    league. Non-critical: skipped if Sofascore data missing.
+    """
+    name = "advanced_player_sofascore"
+    version = "1.0"  # 2026-04-28
+    dependencies = ["advanced_player"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+    ]
+    non_critical = True
+
+    def apply(self, state: FeatureState) -> FeatureState:
+        try:
+            from features.advanced_player_sofascore import add_advanced_player_sofascore_features
+        except ImportError:
+            log.warning("advanced_player_sofascore module not available; skipping")
+            return state
+        _cols_before = set(state.feature_df.columns)
+        state.feature_df = add_advanced_player_sofascore_features(
+            state.feature_df, league=state.league
+        )
+        _new_cols = set(state.feature_df.columns) - _cols_before
+        log.info("  -> Sofascore advanced player: added %d columns", len(_new_cols))
         return state
 
 
@@ -699,6 +772,10 @@ class Step18AdvancedShots(FeaturePlugin):
     name = "advanced_shots"
     version = "1.0"
     dependencies = ["advanced_player"]
+    data_inputs = [
+        "data/external/sofascore/shotmap_stats.parquet",
+        "data/external/sofascore/shotmap_stats_premier_league.parquet",
+    ]
     non_critical = False
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -711,6 +788,12 @@ class Step19UnderstatXg(FeaturePlugin):
     name = "understat_xg"
     version = "1.0"
     dependencies = ["advanced_shots"]
+    data_inputs = [
+        "data/external/understat/serie_a_matches.parquet",
+        "data/external/understat/serie_a_shots.parquet",
+        "data/external/understat/premier_league_matches.parquet",
+        "data/external/understat/premier_league_shots.parquet",
+    ]
     non_critical = False
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -737,6 +820,14 @@ class Step19bSofascore(FeaturePlugin):
     name = "sofascore"
     version = "1.0"
     dependencies = ["understat_xg"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+        "data/external/sofascore/match_team_stats.parquet",
+        "data/external/sofascore/team_stats_premier_league.parquet",
+        "data/external/sofascore/shotmap_stats.parquet",
+        "data/external/sofascore/shotmap_stats_premier_league.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -755,6 +846,10 @@ class Step19b2SofascoreIndices(FeaturePlugin):
     name = "sofascore_indices"
     version = "1.0"
     dependencies = ["sofascore"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -773,6 +868,10 @@ class Step19cPlayerDepth(FeaturePlugin):
     name = "player_depth"
     version = "1.0"
     dependencies = ["sofascore"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -791,6 +890,12 @@ class Step19c2LineupXg(FeaturePlugin):
     name = "lineup_xg"
     version = "1.1"  # 2026-04-24: league-aware Sofascore file routing (Phase 2.1)
     dependencies = ["player_depth"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+        "data/external/understat/serie_a_shots.parquet",
+        "data/external/understat/premier_league_shots.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -815,6 +920,10 @@ class Step19c3XiQuality(FeaturePlugin):
     name = "xi_quality"
     version = "1.0"
     dependencies = ["lineup_xg"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/external/sofascore/player_match_stats_premier_league.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -835,6 +944,9 @@ class Step19dMatchPatterns(FeaturePlugin):
     name = "match_patterns"
     version = "1.0"
     dependencies = ["player_depth"]
+    data_inputs = [
+        "data/external/sofascore/all_shots_with_xg.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -889,6 +1001,9 @@ class Step19gCardTiming(FeaturePlugin):
     name = "card_timing"
     version = "1.0"
     dependencies = ["captain_features"]
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -1263,6 +1378,10 @@ class Step41MissingPlayers(FeaturePlugin):
     name = "missing_players_match_time"
     version = "1.0"
     dependencies = []
+    data_inputs = [
+        "data/external/sofascore/player_match_stats.parquet",
+        "data/parsed/match_id_mapping.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -1281,6 +1400,10 @@ class Step42FirstHalfSplits(FeaturePlugin):
     name = "first_half_splits"
     version = "1.0"
     dependencies = []
+    data_inputs = [
+        "data/external/sofascore/match_team_stats.parquet",
+        "data/parsed/match_id_mapping.parquet",
+    ]
     non_critical = True
 
     def apply(self, state: FeatureState) -> FeatureState:
@@ -1347,6 +1470,12 @@ def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
     pipeline.register(Step15GkQuality())
     pipeline.register(Step16ShotQuality())
     pipeline.register(Step17AdvancedPlayer())
+    # NOTE: Step17bAdvancedPlayerSofascore was registered 2026-04-28 but
+    # column-cleanup correctly identified its 87 outputs as duplicates of
+    # existing ss_roll_ features from the `sofascore` plugin (which is already
+    # league-aware and produces 270 rolling features for EPL at 99.6% fill on
+    # recent seasons). The new plugin is redundant. UNREGISTERED.
+    # Module kept at features/advanced_player_sofascore.py as reference.
     pipeline.register(Step18AdvancedShots())
     pipeline.register(Step19UnderstatXg())
     pipeline.register(Step19bSofascore())

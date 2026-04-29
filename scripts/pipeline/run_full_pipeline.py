@@ -230,31 +230,37 @@ def _archive_bets(bets: list, generated_at: str):
 
     # Also write to unified journal + mark stale bets from previous runs
     try:
-        from scripts.betting.bet_journal import add_bet as journal_add_bet, _load_journal, _save_journal
+        from scripts.betting.bet_journal import add_bet as journal_add_bet, _load_journal
+        from scripts.betting.bet_journal import _generate_bet_id
+        from scripts.betting import ledger as _ledger
 
-        # Mark all existing pending bets as stale BEFORE adding new ones
-        journal = _load_journal()
-        current_bet_ids = set()
+        # Compute logical-key -> new_bet_id for the supersede backlink
+        current_bet_ids: set = set()
+        logical_key_to_new_id: dict = {}
         for bet in bets:
-            from scripts.betting.bet_journal import _generate_bet_id
             bid = _generate_bet_id(bet.get("date", ""), bet.get("match", ""),
                                    bet.get("market", ""), bet.get("selection", ""))
             current_bet_ids.add(bid)
+            logical_key = (bet.get("date", ""), bet.get("match", ""),
+                           bet.get("market", ""), bet.get("selection", ""))
+            logical_key_to_new_id[logical_key] = bid
 
-        # Only supersede pending bets from the SAME matchday dates as the new bets
-        # (not ALL pending bets across all matchdays)
+        # Read-only snapshot to build the supersede list; the actual mutation
+        # is delegated to ledger.supersede_many which owns the lock + rebuild.
+        journal_snapshot = _load_journal()
         current_bet_dates = {bet.get("date", "") for bet in bets if bet.get("date")}
-        stale_count = 0
-        for bid, b in journal.get("bets", {}).items():
+        replacements: list = []
+        for bid, b in journal_snapshot.get("bets", {}).items():
             if (isinstance(b, dict) and b.get("status") == "pending"
                     and bid not in current_bet_ids
                     and b.get("date", "") in current_bet_dates):
-                b["pipeline_status"] = "stale"
-                b["status"] = "superseded"  # No longer active — replaced by new pipeline output
-                stale_count += 1
+                lk = (b.get("date", ""), b.get("match", ""),
+                      b.get("market", ""), b.get("selection", ""))
+                replacements.append((bid, logical_key_to_new_id.get(lk)))
 
-        if stale_count:
-            _save_journal(journal)
+        stale_count = _ledger.supersede_many(
+            replacements, reason="replaced_by_newer_pipeline_output"
+        )
 
         journal_count = 0
         for bet in bets:
@@ -691,10 +697,12 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
             print(f"  Injury refresh warning: {e}")
             log.warning(f"Incremental injury refresh: {e}")
 
-    # Features: rebuild if >3 days stale (local computation, 0 credits)
+    # Features: rebuild daily (local computation, 0 credits) so rolling windows
+    # stay fresh — was 72h, dropped to 24h after finding that 3-day stale rolling
+    # windows were a measurable accuracy tax on upcoming-match predictions.
     features_path = DATA_DIR / "features" / "features.parquet"
-    if _is_data_stale(features_path, max_age_hours=72.0):
-        print(f"  Auto-rebuilding stale features (>3d old)...")
+    if _is_data_stale(features_path, max_age_hours=24.0):
+        print(f"  Auto-rebuilding stale features (>24h old)...")
         try:
             from features.build import build_features
             build_features()
@@ -1305,6 +1313,42 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         except Exception as e:
             print(f"  Match sync warning: {e}")
             log.warning(f"Match sync error: {e}")
+
+        # Step 2b: Refresh historical (settled-match) odds in matches.parquet.
+        # The football-data.co.uk source went stale Feb 23 2026; backfill from
+        # Odds API historical endpoint runs weekly (Mondays) to keep CSVs fresh,
+        # then import_seriea_odds.py merges any new CSV rows into matches.parquet.
+        # The merge is idempotent so safe to run daily even when no new CSV data.
+        step(2.5, total_steps, "Refreshing Historical Odds (CSV → matches.parquet)")
+        try:
+            import datetime as _dt, subprocess as _sp
+            # Weekly backfill: only on Mondays AND only if Odds API quota allows.
+            # If quota burned out, skip silently — the daily import below still picks
+            # up whatever is already in the CSV from the last successful backfill.
+            if _dt.datetime.now().weekday() == 0:  # Monday
+                since = (_dt.date.today() - _dt.timedelta(days=10)).isoformat()
+                print(f"  Weekly backfill: Odds API since {since}...")
+                try:
+                    proc = _sp.run(
+                        [sys.executable, "-m", "scripts.data.backfill_historical_odds",
+                         "--league", "serie_a", "--since", since],
+                        cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=900,
+                    )
+                    if proc.returncode == 0:
+                        print(f"  Backfill OK")
+                    else:
+                        last = (proc.stderr or proc.stdout or "")[-200:]
+                        print(f"  Backfill warning: {last}")
+                except Exception as _e:
+                    print(f"  Backfill skipped: {_e}")
+
+            # Daily merge: CSV → matches.parquet (cheap, no API calls)
+            from scripts import import_seriea_odds as _isa
+            _matched = _isa.update_parquet_with_odds()
+            print(f"  Imported odds: {_matched}/{_isa.TOTAL_SA_ROWS or '?'} SA rows have odds")
+        except Exception as e:
+            print(f"  Historical odds refresh warning: {e}")
+            log.warning(f"Historical odds refresh error: {e}")
 
         step(3, total_steps, "Refreshing Squad Data")
         try:

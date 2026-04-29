@@ -518,8 +518,37 @@ def main():
         log.warning("No data parsed. Run without --parse-only first to download match reports.")
         sys.exit(1)
 
-    # Save
+    # Coerce numeric columns (FBref parser emits strings)
+    NUMERIC_COLS = [
+        "shirtnumber", "age", "minutes", "goals", "assists",
+        "pens_made", "pens_att", "shots", "shots_on_target",
+        "cards_yellow", "cards_red", "fouls", "fouled",
+        "offsides", "crosses", "tackles_won", "interceptions",
+        "own_goals", "pens_won", "pens_conceded",
+    ]
+    for _col in NUMERIC_COLS:
+        if _col in df.columns and df[_col].dtype == object:
+            df[_col] = pd.to_numeric(df[_col], errors="coerce")
+
+    # Merge with existing parquet: replace same-season rows, preserve others.
+    # Prevents `--season X` runs from wiping other seasons.
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if OUTPUT_PATH.exists():
+        try:
+            existing = pd.read_parquet(OUTPUT_PATH)
+            new_seasons = set(df["season"].unique()) if "season" in df.columns else set()
+            if new_seasons and "season" in existing.columns:
+                preserved = existing[~existing["season"].isin(new_seasons)]
+                log.info(
+                    "Merge: preserving %d rows from other seasons, replacing %d rows in %s",
+                    len(preserved),
+                    int(existing["season"].isin(new_seasons).sum()),
+                    sorted(new_seasons),
+                )
+                df = pd.concat([preserved, df], ignore_index=True)
+        except Exception as e:
+            log.warning("Merge with existing parquet failed (will overwrite): %s", e)
+
     df.to_parquet(OUTPUT_PATH, index=False)
 
     log.info(

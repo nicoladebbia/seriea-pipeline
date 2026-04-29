@@ -113,14 +113,24 @@ class BettingConfig:
     proportional_stake_pct: float = 2.0  # flat % when mode=proportional
 
     # -- Kelly fraction --
+    # AUTHORITATIVE FOR LIVE BETTING. This value (0.05) is what production
+    # actually uses, set by UnifiedBettingEngine and called from
+    # scripts/pipeline/run_full_pipeline.py. The 0.25 in config/betting_rules.json
+    # is parallel walkforward infrastructure NOT yet wired into production.
+    #
     # 5% Kelly: conservative sizing to reduce variance and drawdown.
     # At 5%, a bet with 5% edge gets ~0.25% of bankroll (EUR 2.50 on 1000).
     # At 5%, a bet with 10% edge gets ~0.75% (EUR 7.50). Scales naturally.
+    # Kept conservative at 0.05 given the 2026-04-28 finding of edge erosion
+    # on 2025-26 data — see docs/2026-04-28_subset_alpha_findings.md.
     kelly_fraction: float = 0.05
 
     # -- Edge thresholds (revised Apr 2026 — deep journal analysis, 153 bets) --
     # 3-5% edge = +113% ROI (70% WR). 5-7% = +2%. 7-10% = -1%. 10%+ = -13%.
     # Sweet spot is 3-7%. Anything above 7% is model overconfidence.
+    # AUTHORITATIVE FOR LIVE BETTING — the 10% (SA) / 7% (EPL) values in
+    # config/betting_rules.json are for the walkforward flow not yet in
+    # production.
     min_edge_pct: float = 3.0        # Lowered from 4.0 — 3-5% is the best bucket
     max_edge_pct: float = 7.0        # Lowered from 8.0 — 7-10% edges = -1% ROI
     max_edge_draw_pct: float = 6.0   # Tightened from 7.0
@@ -225,14 +235,16 @@ class BettingConfig:
         "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
         "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +14.4% ROI (78% WR, 32 bets). Crown jewel.
-                       "allowed_lines": [1.5], "kelly_fraction": 0.08},                 # No shrinkage needed — proven calibration
+                       "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.08,             # No shrinkage needed — proven calibration
+                       "line_min_edge": {2.5: 7.0}},                                    # O/U 2.5: re-enabled with higher threshold
         "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "DNB":        {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Alt_OU":     {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,
-                       "allowed_lines": [1.5]},                                         # No shrinkage — same proven O/U model
+                       "allowed_lines": [1.5, 2.5],                                     # No shrinkage — same proven O/U model
+                       "line_min_edge": {2.5: 7.0}},                                    # O/U 2.5: higher threshold
         "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
@@ -1022,7 +1034,8 @@ class UnifiedBettingEngine:
 
     def _make_bet(self, match, date, market, selection, model_p, sharp_p,
                   best_o, best_bk, avg_o, pin_o, count, confidence=0,
-                  max_edge_override=None, pred=None) -> Optional[ValueBet]:
+                  max_edge_override=None, min_edge_override=None,
+                  pred=None) -> Optional[ValueBet]:
         """Shared bet construction with mandatory +EV gate.
         Returns None if the bet is not +EV at best available odds.
         Uses per-market edge thresholds from BettingConfig.market_rules,
@@ -1038,7 +1051,7 @@ class UnifiedBettingEngine:
         if not rules.get("enabled", True):
             return None
 
-        min_edge = rules.get("min_edge_pct", cfg.min_edge_pct)
+        min_edge = min_edge_override if min_edge_override is not None else rules.get("min_edge_pct", cfg.min_edge_pct)
         max_edge = rules.get("max_edge_pct", cfg.max_edge_pct)
 
         # Apply situational adjustments (Phase 3 backtest-derived)
@@ -1286,6 +1299,8 @@ class UnifiedBettingEngine:
             ou_under_rules = self.cfg.market_rules.get("O/U_Under", {})
             allowed_lines_over = ou_over_rules.get("allowed_lines")  # None = all lines
             allowed_lines_under = ou_under_rules.get("allowed_lines")
+            line_min_edge_over = ou_over_rules.get("line_min_edge", {})
+            line_min_edge_under = ou_under_rules.get("line_min_edge", {})
 
             for total in totals:
                 line = total.get("line", 0)
@@ -1336,9 +1351,9 @@ class UnifiedBettingEngine:
                 true_probs = remove_overround([pin_over, pin_under])
 
                 match_pred = pred_by_match.get(match)
-                for side_idx, (sel_name, sel_key, model_p, allowed_lines) in enumerate([
-                    (f"Over {line}", "over", model_over, allowed_lines_over),
-                    (f"Under {line}", "under", model_under, allowed_lines_under),
+                for side_idx, (sel_name, sel_key, model_p, allowed_lines, lme) in enumerate([
+                    (f"Over {line}", "over", model_over, allowed_lines_over, line_min_edge_over),
+                    (f"Under {line}", "under", model_under, allowed_lines_under, line_min_edge_under),
                 ]):
                     # Skip lines not in allowed list (CLV-driven line filtering)
                     if allowed_lines is not None and line not in allowed_lines:
@@ -1351,10 +1366,12 @@ class UnifiedBettingEngine:
                     if real_count > count:
                         count = real_count
                     pin_o = [pin_over, pin_under][side_idx]
+                    # Per-line min_edge override (e.g., O/U 2.5 needs higher edge than 1.5)
+                    line_edge = lme.get(line) if lme else None
                     bet = self._make_bet(
                         match, date, f"O/U {line}", sel_name, model_p,
                         true_probs[side_idx], best_o, best_bk, avg_o, pin_o,
-                        count, pred=match_pred)
+                        count, min_edge_override=line_edge, pred=match_pred)
                     if bet:
                         bets.append(bet)
         return bets
@@ -1657,15 +1674,22 @@ class UnifiedBettingEngine:
                 model_under = 1 - model_over
                 true_probs = remove_overround([avg_over, avg_under])
 
+                alt_ou_rules = self.cfg.market_rules.get("Alt_OU", {})
                 for side_idx, (sel_name, model_p, best_o) in enumerate([
                     (f"Over {line_str}", model_over, best_over),
                     (f"Under {line_str}", model_under, best_under),
                 ]):
+                    # Respect allowed_lines for Alt_OU (same as main O/U)
+                    a_lines = alt_ou_rules.get("allowed_lines")
+                    if a_lines is not None and line not in a_lines:
+                        continue
                     avg_o = [avg_over, avg_under][side_idx]
+                    lme = alt_ou_rules.get("line_min_edge", {})
+                    line_edge = lme.get(line) if lme else None
                     bet = self._make_bet(
                         match_key, date, f"O/U {line_str}", sel_name, model_p,
                         true_probs[side_idx], best_o, "Alt totals book",
-                        avg_o, avg_o, n_books)
+                        avg_o, avg_o, n_books, min_edge_override=line_edge)
                     if bet:
                         bets.append(bet)
         return bets

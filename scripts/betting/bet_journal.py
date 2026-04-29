@@ -22,6 +22,7 @@ Usage:
     python scripts/bet_journal.py settle        # Fetch results + auto-settle
 """
 
+import contextlib
 import fcntl
 import json
 import logging
@@ -32,6 +33,16 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 log = logging.getLogger(__name__)
+
+# Canonical settled statuses. On-disk data uses "voided" (past tense); we
+# accept "void" as a legacy alias on write and canonicalize to "voided".
+_SETTLED_STATUSES = ("won", "lost", "push", "voided")
+_VALID_SETTLE_INPUTS = ("won", "lost", "push", "void", "voided")
+
+
+def _canon_settle_status(s: str) -> str:
+    """Normalize 'void' -> 'voided' so the journal has one spelling on disk."""
+    return "voided" if s == "void" else s
 
 # Resolve paths relative to project root
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -68,6 +79,23 @@ def _with_journal_lock(func):
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
     return wrapper
+
+
+
+@contextlib.contextmanager
+def journal_lock():
+    """Context-manager form of the journal lock. Use from external modules
+    (e.g. scripts.betting.ledger) that need to hold the lock across multiple
+    journal reads/writes without per-function-decorator granularity.
+    """
+    _JOURNAL_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(_JOURNAL_LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 # =============================================================================
@@ -440,7 +468,7 @@ def get_settled_bets() -> List[Dict]:
     journal = _load_journal()
     settled = []
     for bet in journal["bets"].values():
-        if bet.get("status") in ("won", "lost", "push", "void"):
+        if bet.get("status") in _SETTLED_STATUSES:
             settled.append(bet)
     return sorted(settled, key=lambda b: b.get("settled_at", ""))
 
@@ -463,9 +491,10 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
 
     Returns True if bet was found and updated, False otherwise.
     """
-    if status not in ("won", "lost", "push", "void"):
+    if status not in _VALID_SETTLE_INPUTS:
         log.error("Invalid status: %s", status)
         return False
+    status = _canon_settle_status(status)
 
     journal = _load_journal()
     if bet_id not in journal["bets"]:
@@ -483,7 +512,7 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
                 log.warning("Bet %s superseded_by %s but replacement not found in journal",
                             bet_id, replacement_id)
                 # Allow settling — replacement may have been deleted
-            elif replacement.get("status") in ("won", "lost", "push", "void"):
+            elif replacement.get("status") in _SETTLED_STATUSES:
                 log.debug("Bet %s superseded by %s (already settled) — skipping",
                           bet_id, replacement_id)
                 return False
@@ -695,7 +724,7 @@ def get_journal_stats() -> Dict:
         return {"total_bets": 0, "message": "No bets in journal"}
 
     pending = [b for b in bets if b.get("status") == "pending"]
-    settled = [b for b in bets if b.get("status") in ("won", "lost", "push", "void")]
+    settled = [b for b in bets if b.get("status") in _SETTLED_STATUSES]
     won = [b for b in settled if b["status"] == "won"]
     lost = [b for b in settled if b["status"] == "lost"]
     pushes = [b for b in settled if b["status"] == "push"]

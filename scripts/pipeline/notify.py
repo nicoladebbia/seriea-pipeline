@@ -555,13 +555,19 @@ _VALID_SOUNDS = {"Basso", "Glass", "Ping", "Pop", "Purr", "Sosumi", "Tink"}
 
 
 def _notify_macos(message: str, title: str) -> bool:
-    """Send a macOS notification via osascript. Returns True on success."""
+    """Send a macOS notification via osascript. Returns True on success.
+
+    Skips silently on empty message (caller's way of saying "Telegram only,
+    don't buzz the Mac"). Avoids the classic duplicate-buzz pattern where
+    routine events pop desktop banners.
+    """
+    if not message or not message.strip():
+        return False  # Telegram-only request from caller
     try:
         prefs = load_preferences()
         sound = prefs.get("sound", "Basso")
         if sound not in _VALID_SOUNDS:
             sound = "Basso"
-        # Escape for osascript: backslashes first, then double quotes
         safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')[:256]
         safe_title = title.replace("\\", "\\\\").replace('"', '\\"')[:64]
         script = (
@@ -571,9 +577,12 @@ def _notify_macos(message: str, title: str) -> bool:
         subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
-            timeout=5,
+            timeout=15,
         )
         return True
+    except subprocess.TimeoutExpired:
+        log.debug("macOS notification timed out (osascript slow); Telegram path still fires")
+        return False
     except Exception as e:
         log.warning("macOS notification failed: %s", e)
         return False
@@ -888,25 +897,43 @@ _FT_LOSS_OPENERS = [
 # ---------------------------------------------------------------------------
 
 def _get_bankroll_context() -> dict:
-    """Compute live bankroll state from bet_journal.json (source of truth).
+    """Return canonical bankroll state via scripts.betting.ledger.
 
-    Previously read from bankroll/state.json which was stale since March 1.
-    Now computes directly from settled bets in the journal.
+    The ledger is the single source of truth: it reads bet_journal.json
+    (authoritative) and computes balance / peak / lowest from active bets only
+    (superseded bets are excluded from P&L). Falls back to raw file reads if
+    the ledger import fails.
     """
+    try:
+        from scripts.betting import ledger
+        current = ledger.get_balance()
+        peak = ledger.get_peak()
+        lowest = ledger.get_lowest()
+        initial = ledger.get_initial_bankroll()
+        return {
+            "current": current,
+            "initial": initial,
+            "peak": peak,
+            "lowest": lowest,
+            "roi_pct": round((current - initial) / initial * 100, 1) if initial else 0,
+            "drawdown_pct": round((peak - current) / peak * 100, 1) if peak else 0,
+            "is_up": current > initial,
+            "is_at_peak": current >= peak * 0.98 if peak else True,
+        }
+    except Exception as e:
+        log.warning("ledger-based bankroll lookup failed, falling back: %s", e)
+    # Fallback: old behavior from journal directly
     try:
         journal_path = DATA_DIR / "betting" / "bet_journal.json"
         if journal_path.exists():
             with open(journal_path) as f:
                 journal = json.load(f)
-            # Journal uses dict keyed by bet_id, not a list
             bets_raw = journal.get("bets", {})
             bets = list(bets_raw.values()) if isinstance(bets_raw, dict) else bets_raw
             initial = journal.get("initial_bankroll", journal.get("metadata", {}).get("initial_bankroll", 1000))
-            # Sum profits from all settled bets
-            settled = [b for b in bets if b.get("status") in ("won", "lost", "push")]
+            settled = [b for b in bets if b.get("status") in ("won", "lost", "push", "voided")]
             total_profit = sum((b.get("profit") or 0) for b in settled)
             current = initial + total_profit
-            # Track peak by computing running balance chronologically
             peak = initial
             running = initial
             settled_sorted = sorted(settled, key=lambda b: b.get("settled_at", ""))
@@ -918,6 +945,7 @@ def _get_bankroll_context() -> dict:
                 "current": round(current, 2),
                 "initial": initial,
                 "peak": round(peak, 2),
+                "lowest": round(initial, 2),
                 "roi_pct": round((current - initial) / initial * 100, 1) if initial else 0,
                 "drawdown_pct": round((peak - current) / peak * 100, 1) if peak else 0,
                 "is_up": current > initial,
@@ -925,7 +953,7 @@ def _get_bankroll_context() -> dict:
             }
     except Exception:
         pass
-    return {"current": 0, "initial": 1000, "peak": 0, "roi_pct": 0,
+    return {"current": 0, "initial": 1000, "peak": 0, "lowest": 0, "roi_pct": 0,
             "drawdown_pct": 0, "is_up": False, "is_at_peak": False}
 
 
@@ -1130,6 +1158,151 @@ def _league_badge(match_or_bet: dict = None, match_key: str = "") -> str:
     if league:
         return "\U0001f1ee\U0001f1f9"
     return ""
+
+
+
+_LEAGUE_ORDER = ("serie_a", "premier_league")
+_LEAGUE_BADGE_MAP = {
+    "serie_a": "\U0001f1ee\U0001f1f9",  # 🇮🇹
+    "premier_league": "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f",  # 🏴󠁧󠁢󠁥󠁮󠁧󠁿
+}
+
+
+_KICKOFF_MAP_CACHE: dict = {"mtime": None, "data": None}
+
+
+def _load_kickoff_map() -> dict:
+    """Build {(home_team, away_team): commence_time_iso} from upcoming schedules.
+
+    Sources:
+      - upcoming/matches.json (Serie A schedule from Odds API — list form)
+      - upcoming/odds_full_premier_league.json.matches (EPL — dict form)
+
+    Cached by mtime so repeated digest renders don't re-parse.
+    """
+    sa_path = DATA_DIR / "upcoming" / "matches.json"
+    epl_path = DATA_DIR / "upcoming" / "odds_full_premier_league.json"
+
+    mtimes = []
+    for p in (sa_path, epl_path):
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except FileNotFoundError:
+            mtimes.append(0)
+    sig = tuple(mtimes)
+    if _KICKOFF_MAP_CACHE["mtime"] == sig and _KICKOFF_MAP_CACHE["data"] is not None:
+        return _KICKOFF_MAP_CACHE["data"]
+
+    kmap: dict = {}
+    try:
+        if sa_path.exists():
+            d = json.loads(sa_path.read_text())
+            rows = d if isinstance(d, list) else d.get("matches", [])
+            for mm in rows or []:
+                ct = mm.get("commence_time")
+                if ct:
+                    kmap[(mm.get("home_team", ""), mm.get("away_team", ""))] = ct
+    except Exception as e:
+        log.debug("kickoff-map SA load failed: %s", e)
+    try:
+        if epl_path.exists():
+            d = json.loads(epl_path.read_text())
+            for match_key, obj in (d.get("matches", {}) or {}).items():
+                if isinstance(obj, dict) and obj.get("commence_time"):
+                    h = obj.get("home_team") or (match_key.split(" vs ")[0] if " vs " in match_key else "")
+                    a = obj.get("away_team") or (match_key.split(" vs ")[1] if " vs " in match_key else "")
+                    if h and a:
+                        kmap[(h, a)] = obj["commence_time"]
+    except Exception as e:
+        log.debug("kickoff-map EPL load failed: %s", e)
+
+    _KICKOFF_MAP_CACHE["mtime"] = sig
+    _KICKOFF_MAP_CACHE["data"] = kmap
+    return kmap
+
+
+def _kickoff_display(commence_iso: str) -> str:
+    """Convert ISO UTC kickoff ('2026-04-24T18:45:00Z') to 'HH:MM' in Europe/Rome.
+
+    Falls back to UTC HH:MM if zoneinfo isn't available. Returns empty string
+    on parse failure.
+    """
+    if not commence_iso:
+        return ""
+    try:
+        raw = commence_iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo("Europe/Rome"))
+        except Exception:
+            # Fallback: no tz conversion, show UTC (rare on macOS/linux)
+            pass
+        return dt.strftime("%H:%M")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _render_matches_grouped_by_league(tg: "TgMsg", matches: list) -> None:
+    """Render matches in strict chronological order across leagues.
+
+    Each row keeps its league flag. Kickoff time resolved from:
+      1. The match dict's own `kickoff_time` field, if populated
+      2. The unified kickoff map (upcoming/matches.json +
+         odds_full_premier_league.json) looked up by (home_team, away_team)
+
+    Time is rendered in BOLD + monospace (<code>) inside square brackets and
+    non-breaking spaces so the time stays anchored to the match row, never
+    wrapping to a new line on narrow screens. Example: [ 20:45 ]   🇮🇹 …
+    """
+    if not matches:
+        return
+
+    kickoff_map = _load_kickoff_map()
+    NBSP = " "  # non-breaking space — Telegram won't break the line here
+
+    def _resolve_kickoff(p) -> str:
+        own = p.get("kickoff_time") or ""
+        if own and ("T" in str(own) or ":" in str(own)):
+            return str(own)
+        ht = p.get("home_team") or ""
+        at = p.get("away_team") or ""
+        return kickoff_map.get((ht, at), "")
+
+    def _sort_key(p):
+        k = _resolve_kickoff(p)
+        if "T" in k:
+            return (0, k)
+        if ":" in k:
+            return (0, k)
+        return (1, p.get("home_team", "") or "")
+
+    for p in sorted(matches, key=_sort_key):
+        ht = (
+            p.get("home_team")
+            or (p.get("match", "").split(" vs ")[0] if " vs " in (p.get("match") or "") else "?")
+        )
+        at = (
+            p.get("away_team")
+            or (p.get("match", "").split(" vs ")[1] if " vs " in (p.get("match") or "") else "?")
+        )
+        league = p.get("league", "") or ""
+        badge = _LEAGUE_BADGE_MAP.get(league, "")
+
+        kick_iso = _resolve_kickoff(p)
+        # Build a fixed-width bold prefix. Empty slot (for matches with no
+        # resolvable kickoff) preserves column alignment.
+        hhmm = ""
+        if kick_iso:
+            hhmm = _kickoff_display(kick_iso) or (kick_iso[:5] if ":" in kick_iso and "T" not in kick_iso else "")
+
+        if hhmm:
+            time_chip = f"<b>[{NBSP}{_html_escape(hhmm)}{NBSP}]</b>"
+        else:
+            # Keep column alignment when kickoff is unknown
+            time_chip = f"<b>[{NBSP}{NBSP}—{NBSP}{NBSP}{NBSP}{NBSP}]</b>"
+
+        tg.raw(f"  {time_chip}{NBSP}{NBSP}{badge}{NBSP}{_html_escape(ht)} – {_html_escape(at)}")
 
 
 def notify_value_bets(bets: list[dict]) -> dict:
@@ -1592,16 +1765,11 @@ def notify_retrain(mode: str, matchweek: int, promoted: bool,
 
 
 def notify_stale_data(source: str, age_hours: float, threshold_hours: float) -> dict:
-    """Send a coaching-style stale data alert."""
-    if age_hours < threshold_hours * 2:
-        msg = f"Heads up — {source} data is {age_hours:.0f}h old (threshold: {threshold_hours:.0f}h).\n"
-        msg += "Might want to refresh before placing any bets."
-        level = "warning"
-    else:
-        msg = f"The {source} data is seriously stale ({age_hours:.0f}h old).\n"
-        msg += "Don't trust the current predictions until this is refreshed."
-        level = "error"
-    return notify(msg, title=f"Stale: {source}", level=level, category="alert")
+    """DEPRECATED (2026-04-24): stale-data alerts are emitted by the
+    health-state change detector (with proper issue-key dedup). Silent.
+    """
+    log.debug("notify_stale_data: silent (deprecated) — %s aged %.1fh", source, age_hours)
+    return {}
 
 
 _DIGEST_POSITIVE_CLOSERS = [
@@ -1628,20 +1796,24 @@ _DIGEST_QUIET_CLOSERS = [
 def notify_daily_digest() -> dict:
     """Generate and send end-of-day betting summary.
 
-    Includes:
-    - Today's results: matches played, bets settled, P&L
-    - Bankroll status: current, ROI, drawdown
-    - Tomorrow's preview: upcoming matches, value bets count, best edge
-    - Streak info: current W/L streak
-
-    Returns:
-        Dict with channel results from notify().
+    Every datum is traced back to its authoritative source:
+      - Today's settled W/L/P&L  <- betting/history.json (list of settled bets)
+      - Bankroll current balance <- betting/bankroll.json (.current_balance)
+                                    Falls back to bet_journal running sum.
+      - Bankroll peak            <- betting/bankroll.json (.peak_balance)
+      - Per-day record + recent-days streak <- history.json grouped by date
+      - Rolling ROI (last 50 settled) <- history.json sorted by settled_at
+      - Tomorrow's matches       <- upcoming/predictions.json (Serie A)
+                                    + upcoming/predictions_premier_league.json
+      - Tomorrow's value bets    <- betting/betting_slip.json .recommended_singles
+      - Was today a match day?   <- parsed/matches.parquet + matches_epl.parquet
+      - Systems block            <- monitoring/scheduler_state.json,
+                                    monitoring/health_status.json
     """
     from datetime import timedelta as _td
-    today = datetime.now().strftime("%Y-%m-%d")
-    tomorrow = (datetime.now() + _td(days=1)).strftime("%Y-%m-%d")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    tomorrow_str = (datetime.now() + _td(days=1)).strftime("%Y-%m-%d")
 
-    # --- Load data files gracefully ---
     def _load_json(path: Path, default=None):
         try:
             if path.exists():
@@ -1651,166 +1823,359 @@ def notify_daily_digest() -> dict:
             log.debug("Digest: failed to load %s: %s", path, e)
         return default if default is not None else {}
 
-    history = _load_json(DATA_DIR / "betting" / "history.json", default=[])
-    journal_data = _load_json(DATA_DIR / "betting" / "bet_journal.json")
+    # ---------- Sources ----------
+    # History is now a derived view from the ledger — read through the ledger
+    # directly instead of the on-disk cache (which can temporarily lag).
+    try:
+        from scripts.betting import ledger
+        history = ledger.get_history_view()
+    except Exception as e:
+        log.warning("ledger.get_history_view failed, falling back to file: %s", e)
+        history = _load_json(DATA_DIR / "betting" / "history.json", default=[])
+    predictions_sa = _load_json(DATA_DIR / "upcoming" / "predictions.json")
+    predictions_epl = _load_json(DATA_DIR / "upcoming" / "predictions_premier_league.json")
+    slip = _load_json(DATA_DIR / "betting" / "betting_slip.json")
+
+    # ---------- Bankroll (ledger is the single source of truth) ----------
     _br = _get_bankroll_context()
-    bankroll = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
-                "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
-    predictions = _load_json(DATA_DIR / "upcoming" / "predictions.json")
-    bet_slip = _load_json(DATA_DIR / "upcoming" / "unified_bet_slip.json")
+    initial = _br["initial"]
+    current = _br["current"]
+    peak = _br["peak"]
+    lowest = _br.get("lowest", initial)
+    roi_alltime = _br["roi_pct"]
+    drawdown_pct = _br["drawdown_pct"]
 
-    # --- Today's results from history.json ---
-    today_bets = [b for b in history if b.get("settled_at", "").startswith(today)]
+    # ---------- Rolling ROI (last 50 settled bets via ledger) ----------
+    settled_wl = [b for b in history if b.get("status") in ("won", "lost", "push")]
+    settled_sorted = sorted(settled_wl, key=lambda b: b.get("settled_at", ""), reverse=True)
+    try:
+        from scripts.betting import ledger as _ledger
+        roi_rolling = _ledger.get_roi(window=50)
+        roll_n = min(50, len(settled_sorted))
+    except Exception:
+        roll_n = min(50, len(settled_sorted))
+        rolling_slice = settled_sorted[:roll_n]
+        roll_staked = sum(float(b.get("stake") or 0) for b in rolling_slice)
+        roll_profit = sum(float(b.get("profit") or 0) for b in rolling_slice)
+        roi_rolling = (roll_profit / roll_staked * 100) if roll_staked > 0 else None
 
-    # Also check bet_journal for today's settlements
-    if not today_bets and journal_data.get("bets"):
-        today_bets_journal = [
-            b for b in journal_data["bets"].values()
-            if (b.get("settled_at") or "").startswith(today) and b.get("status") in ("won", "lost", "push")
-        ]
-        # Convert journal format to history-like format
-        today_bets = []
-        for b in today_bets_journal:
-            today_bets.append({
-                "match": b.get("match", ""),
-                "selection": b.get("selection", ""),
-                "odds": b.get("odds", 0),
-                "status": b.get("status", ""),
-                "profit": b.get("profit", 0),
-                "settled_at": b.get("settled_at", ""),
-            })
+    # ---------- Today's results (from history.json) ----------
+    today_bets = [b for b in history if (b.get("settled_at") or "").startswith(today_str)]
+    won_today = sum(1 for b in today_bets if b.get("status") == "won")
+    lost_today = sum(1 for b in today_bets if b.get("status") == "lost")
+    push_today = sum(1 for b in today_bets if b.get("status") == "push")
+    total_today = won_today + lost_today + push_today
+    pnl_today = sum(float(b.get("profit") or 0) for b in today_bets)
 
-    won = sum(1 for b in today_bets if b.get("status") == "won")
-    lost = sum(1 for b in today_bets if b.get("status") == "lost")
-    push = sum(1 for b in today_bets if b.get("status") == "push")
-    total_settled = won + lost + push
-    day_pnl = sum(b.get("profit", 0) for b in today_bets)
+    # Was today a MATCH day? Check the FUTURE-fixtures sources:
+    #   - predictions.json (Serie A) + predictions_premier_league.json (EPL)
+    #   - upcoming/matches.json (raw Odds API schedule) as secondary
+    # NOT parsed/matches.parquet — that's PAST-only and lags by days.
+    today_matches: list[dict] = []
+    seen_keys: set = set()  # dedup across sources
+    for src, league_tag in (
+        (predictions_sa, "serie_a"),
+        (predictions_epl, "premier_league"),
+    ):
+        for p in (src.get("predictions", []) if isinstance(src, dict) else []):
+            if (p.get("date") or "").startswith(today_str):
+                key = (p.get("home_team", ""), p.get("away_team", ""))
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                today_matches.append({**p, "league": p.get("league", league_tag)})
+    # Fallback: upcoming/matches.json raw schedule (covers leagues without
+    # per-league prediction files)
+    try:
+        raw_schedule = _load_json(DATA_DIR / "upcoming" / "matches.json")
+        raw_matches = raw_schedule if isinstance(raw_schedule, list) else raw_schedule.get("matches", [])
+        for mm in raw_matches or []:
+            ct = mm.get("commence_time", "")
+            if ct.startswith(today_str):
+                home = mm.get("home_team", "")
+                away = mm.get("away_team", "")
+                key = (home, away)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                today_matches.append({
+                    "home_team": home,
+                    "away_team": away,
+                    "date": today_str,
+                    "kickoff_time": ct,
+                    "league": mm.get("league") or "unknown",
+                })
+    except Exception as e:
+        log.debug("Digest upcoming/matches.json lookup failed: %s", e)
+    matches_today_count = len(today_matches)
 
-    # Best pick today
     best_pick = None
     if today_bets:
-        winning_bets = [b for b in today_bets if b.get("status") == "won"]
-        if winning_bets:
-            best_pick = max(winning_bets, key=lambda b: b.get("profit", 0))
+        winners = [b for b in today_bets if b.get("status") == "won"]
+        if winners:
+            best_pick = max(winners, key=lambda b: float(b.get("profit") or 0))
 
-    # --- Bankroll status ---
-    current_bankroll = bankroll.get("current_bankroll", 0)
-    initial_bankroll = bankroll.get("initial_bankroll", 1000)
-    peak_bankroll = bankroll.get("peak_bankroll", current_bankroll)
-    roi = ((current_bankroll - initial_bankroll) / initial_bankroll * 100) if initial_bankroll else 0
-    drawdown_pct = ((peak_bankroll - current_bankroll) / peak_bankroll * 100) if peak_bankroll else 0
+    # ---------- Streak computed per-DAY (timestamps within a batch are tied) ----------
+    # A day "wins" if its net P&L is positive. This is a meaningful signal
+    # even though per-bet settled_at timestamps are batch-tied.
+    per_day: dict[str, dict] = {}
+    for b in settled_wl:
+        d = (b.get("settled_at") or "")[:10]
+        if not d:
+            continue
+        agg = per_day.setdefault(d, {"won": 0, "lost": 0, "push": 0, "pnl": 0.0, "n": 0})
+        s = b.get("status", "")
+        if s in ("won", "lost", "push"):
+            agg[s] += 1
+        agg["pnl"] += float(b.get("profit") or 0)
+        agg["n"] += 1
 
-    # --- Streak from bet_journal ---
-    streak = bankroll.get("current_streak", 0)
-    if not streak and journal_data.get("bets"):
-        # Calculate streak from journal
-        settled_bets = sorted(
-            [b for b in journal_data["bets"].values() if b.get("status") in ("won", "lost")],
-            key=lambda b: b.get("settled_at", ""),
-            reverse=True,
-        )
-        if settled_bets:
-            streak_status = settled_bets[0].get("status")
-            streak = 0
-            for b in settled_bets:
-                if b.get("status") == streak_status:
-                    streak += 1
+    day_dates_desc = sorted(per_day.keys(), reverse=True)
+    winning_days_streak = 0
+    losing_days_streak = 0
+    if day_dates_desc:
+        first_sign = per_day[day_dates_desc[0]]["pnl"]
+        if first_sign > 0:
+            for d in day_dates_desc:
+                if per_day[d]["pnl"] > 0:
+                    winning_days_streak += 1
                 else:
                     break
-            if streak_status == "lost":
-                streak = -streak
+        elif first_sign < 0:
+            for d in day_dates_desc:
+                if per_day[d]["pnl"] < 0:
+                    losing_days_streak += 1
+                else:
+                    break
+    # "day streak" int: positive = winning days, negative = losing days, 0 = flat/breakeven
+    day_streak = winning_days_streak if winning_days_streak else -losing_days_streak
 
-    # --- Tomorrow's preview ---
-    pred_list = predictions.get("predictions", [])
-    tomorrow_matches = [p for p in pred_list if p.get("date", "").startswith(tomorrow)]
+    # Last 7 betting days pattern (emoji strip: 🟢 🔴 ⚪)
+    last7 = []
+    for d in day_dates_desc[:7]:
+        p = per_day[d]["pnl"]
+        last7.append("\U0001f7e2" if p > 0 else "\U0001f534" if p < 0 else "⚪")
+    last7_str = " ".join(reversed(last7)) if last7 else ""
 
-    slip_bets = bet_slip.get("selected_bets", [])
-    tomorrow_value_bets = [b for b in slip_bets if b.get("date", "").startswith(tomorrow)]
-    if not tomorrow_value_bets:
-        # Show next available date's bets, not ALL bets
-        future_dates = sorted(set(
-            b.get("date", "") for b in slip_bets
-            if b.get("date", "") > tomorrow
-        ))
+    # ---------- Tomorrow's matches (SA + EPL merged) ----------
+    tomorrow_matches: list[dict] = []
+    for src, league_tag in ((predictions_sa, "serie_a"), (predictions_epl, "premier_league")):
+        for p in (src.get("predictions", []) if isinstance(src, dict) else []):
+            if (p.get("date") or "").startswith(tomorrow_str):
+                tomorrow_matches.append({**p, "league": p.get("league", league_tag)})
+
+    # Tomorrow's value bets from betting_slip.json (recommended_singles is authoritative)
+    slip_rec = slip.get("recommended_singles", []) if isinstance(slip, dict) else []
+    # Slip staleness: compute age of the last slip write. >48h = show warning
+    # instead of pretending entries are current (matters when the pipeline
+    # can't refresh, e.g. odds API quota exhausted).
+    slip_age_hours: float | None = None
+    slip_is_stale = False
+    gen_at = (slip.get("generated_at") if isinstance(slip, dict) else None) or ""
+    if gen_at:
+        try:
+            gen_dt = datetime.fromisoformat(gen_at)
+            slip_age_hours = (datetime.now() - gen_dt).total_seconds() / 3600
+            slip_is_stale = slip_age_hours > 48
+        except (ValueError, TypeError):
+            pass
+    tomorrow_value_bets = [
+        b for b in slip_rec if (b.get("date") or "").startswith(tomorrow_str)
+    ]
+    # Suppress stale slip entries entirely — they are lies, not data.
+    if slip_is_stale:
+        tomorrow_value_bets = []
+    slip_has_any_future = (not slip_is_stale) and any(
+        (b.get("date") or "") > today_str for b in slip_rec
+    )
+    next_bet_date = None
+    if not tomorrow_value_bets and slip_has_any_future:
+        future_dates = sorted({b.get("date") for b in slip_rec if (b.get("date") or "") > today_str})
         if future_dates:
-            next_date = future_dates[0]
-            tomorrow_value_bets = [b for b in slip_bets if b.get("date") == next_date]
+            next_bet_date = future_dates[0]
+            tomorrow_value_bets = [b for b in slip_rec if b.get("date") == next_bet_date]
 
-    # Skip digest on truly quiet days: nothing settled, nothing tomorrow
-    if total_settled == 0 and not tomorrow_matches and not slip_bets:
+    # Skip if literally nothing to report
+    if total_today == 0 and matches_today_count == 0 and not tomorrow_matches and not slip_rec:
         return {}
 
     best_edge_bet = None
     if tomorrow_value_bets:
-        best_edge_bet = max(tomorrow_value_bets, key=lambda b: b.get("edge_pct", 0))
+        def _edge(b):
+            return float(b.get("edge_pct") or b.get("value_pct") or 0)
+        best_edge_bet = max(tomorrow_value_bets, key=_edge)
 
-    # --- Compose the messages ---
-    level = "success" if day_pnl >= 0 else "warning" if total_settled > 0 else "info"
+    # ---------- Compose ----------
+    level = "success" if pnl_today > 0 else "warning" if pnl_today < 0 else "info"
 
-    # macOS: one-liner
-    if total_settled > 0:
-        sign = "+" if day_pnl >= 0 else ""
-        mac_msg = f"Daily: {won}W-{lost}L | {sign}\u20ac{day_pnl:.2f} | Balance: \u20ac{current_bankroll:,.0f}"
+    # macOS one-liner
+    if total_today > 0:
+        sign = "+" if pnl_today >= 0 else ""
+        mac_msg = (f"Daily: {won_today}W-{lost_today}L | {sign}€{pnl_today:.2f} "
+                   f"| Balance: €{current:,.0f}")
+    elif matches_today_count > 0:
+        mac_msg = (f"Daily: {matches_today_count} match(es) today, none settled yet. "
+                   f"Balance: €{current:,.0f}")
     else:
-        mac_msg = f"Daily: quiet day. Balance: \u20ac{current_bankroll:,.0f}"
+        mac_msg = f"Daily: no matches today. Balance: €{current:,.0f}"
 
-    # Telegram: structured visual card
     tg = TgMsg()
     tg.raw("<b>\U0001f4ca Daily Wrap-Up</b>")
+    tg.raw(f"<i>{_html_escape(today_str)}</i>")
     tg.sep()
 
-    # --- Today's Results ---
-    if total_settled > 0:
-        record = f"{won}W-{lost}L" + (f"-{push}P" if push else "")
+    # --- Today ---
+    if total_today > 0:
+        record = f"{won_today}W-{lost_today}L" + (f"-{push_today}P" if push_today else "")
         tg.raw(f"\n\U0001f3af <b>Today:</b> {_html_escape(record)}")
-        tg.progress_bar(won, total_settled)
-        tg.pnl(day_pnl, label="Day P&L")
+        tg.progress_bar(won_today, total_today)
+        tg.pnl(pnl_today, label="Day P&L")
         if best_pick:
             bp = best_pick
-            tg.raw(f"\u2b50 Best: {_html_escape(bp.get('match',''))} "
-                   f"{_html_escape(bp.get('selection',''))} (+\u20ac{bp.get('profit',0):.2f})")
+            tg.raw(
+                f"⭐ Best: {_html_escape(bp.get('match',''))} "
+                f"{_html_escape(bp.get('selection',''))} "
+                f"(+€{float(bp.get('profit') or 0):.2f})"
+            )
+    elif matches_today_count > 0:
+        tg.raw(
+            f"\n\U0001f3af <b>Today:</b> "
+            f"{matches_today_count} match{'es' if matches_today_count != 1 else ''} "
+            f"({_html_escape(today_str)})"
+        )
+        _render_matches_grouped_by_league(tg, today_matches)
     else:
-        tg.raw("\n\U0001f3af <b>Today:</b> No bets settled. Quiet day.")
+        tg.raw("\n\U0001f3af <b>Today:</b> No fixtures. Rest day.")
 
     # --- Bankroll ---
     tg.blank()
     tg.mini_sep()
-    tg.raw(f"\n\U0001f4b0 <b>Bankroll:</b> \u20ac{current_bankroll:,.2f}")
-    roi_str = f"{'+' if roi >= 0 else ''}{roi:.1f}%"
-    streak_str = ""
-    if streak > 0:
-        streak_str = f"\U0001f525 {streak}-win streak"
-    elif streak < 0:
-        streak_str = f"\u2744\ufe0f {abs(streak)}-loss streak"
-    tg.stat_row(("ROI", roi_str), ("Streak", streak_str or "flat"))
+    tg.raw(f"\n\U0001f4b0 <b>Bankroll:</b> €{current:,.2f}")
+
+    roi_alltime_str = f"{'+' if roi_alltime >= 0 else ''}{roi_alltime:.1f}%"
+    if roi_rolling is not None:
+        roi_roll_str = f"{'+' if roi_rolling >= 0 else ''}{roi_rolling:.1f}%"
+        tg.stat_row(
+            ("ROI all-time", roi_alltime_str),
+            (f"ROI last {roll_n}", roi_roll_str),
+        )
+    else:
+        tg.stat_row(("ROI all-time", roi_alltime_str))
+
+    # Day-streak (meaningful, timestamp-robust)
+    if day_streak > 1:
+        tg.raw(f"\U0001f525 <b>Winning days:</b> {day_streak} in a row")
+    elif day_streak < -1:
+        tg.raw(f"❄️ <b>Losing days:</b> {abs(day_streak)} in a row")
+    elif day_dates_desc:
+        last = per_day[day_dates_desc[0]]
+        sign_day = "+" if last["pnl"] >= 0 else ""
+        tg.raw(
+            f"\U0001f4c6 <b>Last betting day:</b> {day_dates_desc[0]} "
+            f"({last['won']}W-{last['lost']}L, {sign_day}€{last['pnl']:.2f})"
+        )
+    if last7_str:
+        tg.raw(f"  <i>Last {len(last7)} days:</i> {last7_str}")
 
     if drawdown_pct > 5:
-        tg.raw(f"  \u26a0\ufe0f Drawdown: {drawdown_pct:.0f}% from peak (\u20ac{peak_bankroll:,.0f})")
+        tg.raw(
+            f"  ⚠️ Drawdown: {drawdown_pct:.1f}% from peak "
+            f"(€{peak:,.0f})"
+        )
 
-    # --- Tomorrow's Preview ---
+    # --- Tomorrow ---
     tg.blank()
     tg.mini_sep()
     if tomorrow_matches:
-        tg.raw(f"\n\U0001f4c5 <b>Tomorrow:</b> {len(tomorrow_matches)} match{'es' if len(tomorrow_matches) > 1 else ''}")
+        n = len(tomorrow_matches)
+        tg.raw(
+            f"\n\U0001f4c5 <b>Tomorrow:</b> "
+            f"{n} match{'es' if n != 1 else ''} ({_html_escape(tomorrow_str)})"
+        )
+        _render_matches_grouped_by_league(tg, tomorrow_matches)
+
         if best_edge_bet:
-            tg.raw(f"\u26a1 Biggest edge: {_html_escape(best_edge_bet.get('match',''))} "
-                   f"{_html_escape(best_edge_bet.get('selection',''))} "
-                   f"@ {best_edge_bet.get('best_odds','?')} "
-                   f"(<b>{best_edge_bet.get('edge_pct',0):.0f}%</b>)")
+            be = best_edge_bet
+            edge = float(be.get("edge_pct") or be.get("value_pct") or 0)
+            odds_val = be.get("odds") or be.get("best_odds") or "?"
+            tg.raw(
+                f"⚡ <b>Best edge:</b> {_html_escape(be.get('match',''))} "
+                f"{_html_escape(be.get('selection',''))} "
+                f"@ {odds_val} (<b>{edge:.0f}%</b>)"
+            )
         if tomorrow_value_bets:
-            tg.raw(f"\U0001f4cb {len(tomorrow_value_bets)} value bet{'s' if len(tomorrow_value_bets) > 1 else ''} in the slip")
-    elif slip_bets:
-        next_date = min(b.get("date", "") for b in slip_bets if b.get("date", ""))
-        tg.raw(f"\n\U0001f4c5 <b>Next card:</b> {_html_escape(next_date)}")
-        tg.raw(f"\U0001f4cb {len(slip_bets)} value bet{'s' if len(slip_bets) > 1 else ''} queued")
+            tg.raw(
+                f"\U0001f4cb {len(tomorrow_value_bets)} value bet"
+                f"{'s' if len(tomorrow_value_bets) != 1 else ''} in the slip"
+            )
+    elif next_bet_date:
+        tg.raw(
+            f"\n\U0001f4c5 <b>Next card:</b> {_html_escape(next_bet_date)} "
+            f"({len(tomorrow_value_bets)} value bet{'s' if len(tomorrow_value_bets) != 1 else ''})"
+        )
+        for b in tomorrow_value_bets[:3]:
+            edge = float(b.get("edge_pct") or b.get("value_pct") or 0)
+            odds_val = b.get("odds") or b.get("best_odds") or "?"
+            tg.raw(
+                f"  ▪ {_html_escape(b.get('match',''))} "
+                f"{_html_escape(b.get('selection',''))} "
+                f"@ {odds_val} (<b>{edge:.0f}%</b>)"
+            )
+    elif slip_rec and not slip_is_stale:
+        tg.raw(f"\n\U0001f4c5 <b>Slip:</b> {len(slip_rec)} bet(s) queued (no upcoming date matched)")
     else:
-        tg.raw(f"\n\U0001f4c5 No upcoming matches on the radar.")
+        tg.raw("\n\U0001f4c5 No upcoming matches on the radar.")
+
+    # Slip staleness warning — surface it explicitly when the slip was last
+    # refreshed more than 48h ago. Tells you WHY there's no fresh pick.
+    if slip_is_stale and slip_age_hours is not None:
+        age_label = (
+            f"{slip_age_hours:.0f}h" if slip_age_hours < 72
+            else f"{slip_age_hours/24:.0f}d"
+        )
+        tg.raw(
+            f"  ⚠️ <i>Slip is stale: last refresh {age_label} ago. "
+            f"Pipeline may be blocked.</i>"
+        )
+
+    # --- Systems ---
+    try:
+        sched_state = _load_json_safe(DATA_DIR / "monitoring" / "scheduler_state.json", {})
+        health = _load_json_safe(DATA_DIR / "monitoring" / "health_status.json", {})
+        if sched_state or health:
+            tg.blank()
+            tg.mini_sep()
+            tg.raw("\n⚙️ <b>Systems</b>")
+
+            ran_today = [
+                (name, entry) for name, entry in sched_state.items()
+                if (entry.get("last_run") or "").startswith(today_str)
+            ]
+            if ran_today:
+                for name, entry in sorted(ran_today, key=lambda x: x[1].get("last_run", "")):
+                    emoji, label = _SCHEDULER_BADGE.get(name, ("⚙️", name))
+                    icon = _STATUS_ICON.get(entry.get("status", "ok"), "ℹ️")
+                    hhmm = (entry.get("last_run") or "")[11:16]
+                    tg.raw(f"  {icon} {emoji} {_html_escape(label)}  <i>{hhmm}</i>")
+            else:
+                tg.raw("  <i>No scheduler runs recorded today.</i>")
+
+            overall = health.get("overall_status")
+            if overall:
+                icon = {"HEALTHY": "✅", "OK": "✅",
+                        "WARNING": "⚠️",
+                        "CRITICAL": "\U0001f6a8"}.get(overall, "ℹ️")
+                n_issues = len(health.get("issues", []))
+                suffix = f" ({n_issues} issue{'s' if n_issues != 1 else ''})" if n_issues else ""
+                tg.raw(f"  {icon} <b>Health:</b> {_html_escape(overall)}{suffix}")
+    except Exception as e:
+        log.debug("Digest systems section failed: %s", e)
 
     # Closer
     tg.blank()
-    if total_settled > 0 and day_pnl >= 0:
+    if total_today > 0 and pnl_today >= 0:
         tg.italic(random.choice(_DIGEST_POSITIVE_CLOSERS))
-    elif total_settled > 0:
+    elif total_today > 0:
         tg.italic(random.choice(_DIGEST_NEGATIVE_CLOSERS))
     else:
         tg.italic(random.choice(_DIGEST_QUIET_CLOSERS))
@@ -1825,15 +2190,14 @@ def notify_daily_digest() -> dict:
 
 
 def notify_drawdown(current: float, peak: float, drawdown_pct: float) -> dict:
-    """Send a coaching-style drawdown warning."""
-    msg = f"Bankroll is \u20ac{current:,.2f}, down {drawdown_pct:.0f}% from the peak of \u20ac{peak:,.2f}.\n\n"
-    if drawdown_pct < 15:
-        msg += "Normal variance. Stay disciplined, stick to the model's edges."
-    elif drawdown_pct < 25:
-        msg += "Getting uncomfortable. Consider reducing stake sizes until momentum turns."
-    else:
-        msg += "This is a significant drawdown. Pause, review your recent bets, and only take high-confidence plays."
-    return notify(msg, title=f"Drawdown: {drawdown_pct:.0f}%", level="warning", category="alert")
+    """DEPRECATED (2026-04-24): drawdown is surfaced in the daily digest
+    bankroll section. Standalone alerts caused duplicate pings. Silent.
+    """
+    log.debug(
+        "notify_drawdown: silent (deprecated) — current=%s peak=%s dd=%.1f%%",
+        current, peak, drawdown_pct,
+    )
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -1848,147 +2212,13 @@ _MORNING_OPENERS = [
 
 
 def notify_morning_briefing() -> dict:
-    """Send a pre-match-day briefing: today's matches, active bets, bankroll.
-
-    Designed for the bettor checking their phone over morning coffee.
-    Should be triggered by scheduler ~2 hours before first kickoff.
+    """DEPRECATED (2026-04-24): Morning briefing was redundant with
+    notify_scheduler_run('morning') + notify_daily_digest. Converted to
+    silent no-op to stop double-pinging. Call sites kept for backward
+    compat.
     """
-    from datetime import timedelta as _td
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    def _load(path, default=None):
-        try:
-            if path.exists():
-                with open(path) as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return default if default is not None else {}
-
-    # Load data — predictions from ALL league files
-    all_predictions = []
-    for league_file in ["predictions.json", "predictions_premier_league.json"]:
-        path = DATA_DIR / "upcoming" / league_file
-        if path.exists():
-            data = _load(path)
-            preds = data.get("predictions", []) if isinstance(data, dict) else []
-            all_predictions.extend(preds)
-    bet_slip = _load(DATA_DIR / "upcoming" / "unified_bet_slip.json")
-    journal = _load(DATA_DIR / "betting" / "bet_journal.json")
-    _br = _get_bankroll_context()
-    bankroll_state = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
-                      "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
-    parlay_report = _load(DATA_DIR / "betting" / "parlay_report.json")
-    sentiment = _load(DATA_DIR / "upcoming" / "sentiment_analysis.json")
-
-    # Today's matches
-    pred_list = all_predictions
-    today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
-
-    # Active bets (pending from journal)
-    journal_bets = journal.get("bets", {})
-    if isinstance(journal_bets, dict):
-        journal_bets = list(journal_bets.values())
-    pending = [b for b in journal_bets if b.get("status") == "pending"]
-
-    # Value bets in slip
-    slip_bets = bet_slip.get("selected_bets", [])
-
-    # Bankroll
-    br = bankroll_state.get("current_bankroll", 0)
-    initial = bankroll_state.get("initial_bankroll", 1000)
-    roi = ((br - initial) / initial * 100) if initial else 0
-
-    # Top parlays
-    top_picks = parlay_report.get("top_picks", []) if parlay_report else []
-
-    # Injuries from sentiment
-    injury_alerts = []
-    sent_matches = sentiment.get("matches", [])
-    if isinstance(sent_matches, list):
-        for s in sent_matches:
-            if s.get("home_injury_impact", 0) < -40:
-                injury_alerts.append(f"{s.get('home_team', '?')}: major injury crisis")
-            if s.get("away_injury_impact", 0) < -40:
-                injury_alerts.append(f"{s.get('away_team', '?')}: major injury crisis")
-
-    # Don't send on no-match days with no active bets
-    n_matches = len(today_matches)
-    n_bets = len(pending)
-    if n_matches == 0 and n_bets == 0:
-        return {}
-
-    br_ctx = {"current": br, "initial": initial,
-              "peak": bankroll_state.get("peak_bankroll", br),
-              "roi_pct": roi,
-              "drawdown_pct": ((bankroll_state.get("peak_bankroll", br) - br) / bankroll_state.get("peak_bankroll", br) * 100) if bankroll_state.get("peak_bankroll", br) else 0,
-              "is_up": br > initial,
-              "is_at_peak": br >= bankroll_state.get("peak_bankroll", br) * 0.98}
-    streak = _get_streak()
-    opener = _smart_opener("morning", streak=streak, bankroll_ctx=br_ctx)
-
-    # macOS: one headline
-    mac_msg = f"{n_matches} games today, {n_bets} active bets. {_bankroll_in_context(br_ctx)}"
-
-    # Telegram: concise briefing - headline + key items + CTA
-    tg = TgMsg()
-    tg.raw(f"<b>{_html_escape(opener)}</b>")
-    tg.blank()
-
-    # Per-league breakdown of today's matches
-    matches_by_league: dict[str, int] = {}
-    for m in today_matches:
-        ln = _detect_league_name(m) or "Other"
-        matches_by_league[ln] = matches_by_league.get(ln, 0) + 1
-
-    # One-line summary
-    if len(matches_by_league) > 1:
-        league_parts = [f"{cnt} {_html_escape(name)}" for name, cnt in sorted(matches_by_league.items())]
-        tg.raw(f"{n_matches} matches today ({', '.join(league_parts)})  |  "
-               f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
-    else:
-        tg.raw(f"{n_matches} match{'es' if n_matches != 1 else ''} today  |  "
-               f"Balance: {_html_escape(_bankroll_in_context(br_ctx))}")
-
-    # Active bets - compact, max 3
-    if pending:
-        total_at_risk = sum(b.get("stake", 0) for b in pending)
-        tg.blank()
-        tg.raw(f"<b>{len(pending)} active bet{'s' if len(pending) > 1 else ''}</b> "
-               f"(\u20ac{total_at_risk:.0f} at risk)")
-        for b in pending[:3]:
-            tg.raw(f"  {_html_escape(b.get('match', '?'))} \u2014 "
-                   f"{_html_escape(b.get('selection', '?'))} @ {b.get('odds', 0):.2f}")
-        if len(pending) > 3:
-            tg.raw(f"  <i>+{len(pending) - 3} more</i>")
-
-    # Best edge - one line
-    if slip_bets:
-        best_edge = max(slip_bets, key=lambda b: b.get("edge_pct", 0))
-        edge_pct = best_edge.get("edge_pct", 0)
-        tg.blank()
-        tg.raw(f"Top edge: {_html_escape(best_edge.get('match', '?'))} "
-               f"{_html_escape(best_edge.get('selection', '?'))} "
-               f"@ {best_edge.get('best_odds', '?')} "
-               f"({_html_escape(_edge_label(edge_pct))})")
-
-    # Injury watch - only critical
-    if injury_alerts:
-        tg.blank()
-        for alert in injury_alerts[:2]:
-            tg.raw(f"\u26a0\ufe0f {_html_escape(alert)}")
-
-    # CTA
-    tg.blank()
-    tg.raw("<i>/bets for full list  |  /bankroll for details</i>")
-
-    return notify(
-        message=mac_msg,
-        title="\u2600\ufe0f Morning Briefing",
-        level="info",
-        category="betting",
-        tg_html=tg.build(),
-    )
+    log.debug("notify_morning_briefing: silent (deprecated)")
+    return {}
 
 
 
@@ -1997,83 +2227,11 @@ def notify_morning_briefing() -> dict:
 # ---------------------------------------------------------------------------
 
 def notify_matchday_update() -> dict:
-    """Send a periodic matchday summary: running P&L, active bets, parlay status.
-
-    Call every 90 minutes during match day, or at natural breaks (HT/FT of
-    last match). Quick at-a-glance "how's my day going" message.
+    """DEPRECATED (2026-04-24): matchday recap is covered by the daily-digest
+    + per-bet notify_settlement. Silent no-op; call sites kept for compat.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    def _load(path, default=None):
-        try:
-            if path.exists():
-                with open(path) as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return default if default is not None else {}
-
-    journal = _load(DATA_DIR / "betting" / "bet_journal.json")
-    _br = _get_bankroll_context()
-    bankroll_state = {"current_bankroll": _br["current"], "peak_bankroll": _br["peak"],
-                      "initial_bankroll": _br["initial"], "roi_pct": _br["roi_pct"]}
-
-    journal_bets = journal.get("bets", {})
-    if isinstance(journal_bets, dict):
-        journal_bets = list(journal_bets.values())
-
-    # Today's settled
-    settled_today = [b for b in journal_bets
-                     if b.get("status") in ("won", "lost", "push")
-                     and (b.get("settled_at") or "").startswith(today)]
-    pending = [b for b in journal_bets if b.get("status") == "pending"]
-
-    won = sum(1 for b in settled_today if b["status"] == "won")
-    lost = sum(1 for b in settled_today if b["status"] == "lost")
-    day_pnl = sum(b.get("profit", 0) for b in settled_today)
-    pending_risk = sum(b.get("stake", 0) for b in pending)
-
-    br = bankroll_state.get("current_bankroll", 0)
-
-    if not settled_today and not pending:
-        return {}  # Nothing to report
-
-    # macOS
-    record = f"{won}W-{lost}L" if settled_today else "0 settled"
-    sign = "+" if day_pnl >= 0 else ""
-    mac_msg = f"Matchday: {record} | {sign}\u20ac{day_pnl:.2f} | {len(pending)} bets in play"
-
-    # Telegram
-    tg = TgMsg()
-    tg.raw("<b>\U0001f4ca Matchday Update</b>")
-    tg.mini_sep()
-
-    if settled_today:
-        tg.raw(f"\n\u2705 Settled: <b>{won}W-{lost}L</b>")
-        tg.pnl(day_pnl, label="Running P&L")
-
-    if pending:
-        tg.blank()
-        tg.raw(f"\u23f3 <b>Still in play:</b> {len(pending)} bet{'s' if len(pending) > 1 else ''}")
-        for b in pending[:4]:
-            tg.raw(f"  \u2022 {_html_escape(b.get('match', '?'))} \u2014 "
-                   f"{_html_escape(b.get('selection', '?'))} "
-                   f"@ {b.get('odds', 0):.2f}")
-        if len(pending) > 4:
-            tg.raw(f"  <i>+{len(pending) - 4} more</i>")
-        tg.kv("At risk", f"\u20ac{pending_risk:.0f}")
-
-    tg.blank()
-    tg.raw(f"\U0001f4b0 Balance: \u20ac{br:,.2f}")
-
-    return notify(
-        message=mac_msg,
-        title="\U0001f4ca Matchday Update",
-        level="info",
-        category="betting",
-        priority=PRIORITY_LOW,
-        tg_html=tg.build(),
-    )
+    log.debug("notify_matchday_update: silent (deprecated)")
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -2155,18 +2313,15 @@ def notify_pipeline_start() -> dict:
 
 def notify_pipeline_done(n_predictions: int = 0, n_value_bets: int = 0,
                          elapsed_sec: float = 0) -> dict:
-    """Send a coaching-style notification when the pipeline finishes."""
-    opener = random.choice(_PIPELINE_DONE_OPENERS)
-    parts = []
-    if n_predictions:
-        parts.append(f"{n_predictions} predictions generated")
-    if n_value_bets:
-        parts.append(f"{n_value_bets} value bets found")
-    if elapsed_sec:
-        parts.append(f"completed in {elapsed_sec:.0f}s")
-    detail = ". ".join(parts) + "." if parts else ""
-    msg = f"{opener}\n\n{detail}"
-    return notify(msg, title="Pipeline Done", level="success", category="system")
+    """DEPRECATED (2026-04-24): pipeline completion is now surfaced by
+    notify_scheduler_run (morning/evening cards) with richer context.
+    Silent no-op; callers don't need to be updated.
+    """
+    log.debug(
+        "notify_pipeline_done: silent (deprecated) — %d preds, %d vbets, %.1fs",
+        n_predictions, n_value_bets, elapsed_sec,
+    )
+    return {}
 
 
 def notify_odds_snapshot(n_matches: int = 0, n_bookmakers: int = 0) -> dict:
@@ -2180,32 +2335,659 @@ def notify_odds_snapshot(n_matches: int = 0, n_bookmakers: int = 0) -> dict:
     return {}
 
 
+def _load_prediction_for(mk: str, home_team: str, away_team: str) -> dict | None:
+    """Find the prediction record for this match across both league files."""
+    for fname in ("predictions.json", "predictions_premier_league.json"):
+        p = DATA_DIR / "upcoming" / fname
+        if not p.exists():
+            continue
+        try:
+            data = json.loads(p.read_text())
+            for pred in data.get("predictions", []) or []:
+                if pred.get("match") == mk:
+                    return pred
+                if (pred.get("home_team", "").strip() == home_team.strip()
+                        and pred.get("away_team", "").strip() == away_team.strip()):
+                    return pred
+        except Exception:
+            pass
+    return None
+
+
+def _build_match_preview(pred: dict, home_team: str, away_team: str,
+                          home_xi: list[str], away_xi: list[str],
+                          fb_map: dict, us_map: dict, _tk, _team_match) -> str:
+    """Generate a pundit-style match preview in 2-4 sentences.
+
+    Uses prediction + form + injury + player-xG data to build coherent
+    narrative. Deterministic (no LLM) — rules-based with a priority list of
+    angles; picks the 2-3 most salient.
+    """
+    if not pred:
+        return ""
+
+    parts: list[str] = []
+
+    # --- 1. Model verdict ---
+    probs = pred.get("probabilities", {}) or {}
+    p_h = float(probs.get("home", 0))
+    p_d = float(probs.get("draw", 0))
+    p_a = float(probs.get("away", 0))
+    winner = None
+    if p_h > p_a + 0.10 and p_h > p_d + 0.05:
+        winner = "home"
+    elif p_a > p_h + 0.10 and p_a > p_d + 0.05:
+        winner = "away"
+    elif abs(p_h - p_a) < 0.08:
+        winner = "coinflip"
+
+    confidence = pred.get("confidence", 0)
+    if winner == "home":
+        parts.append(
+            f"Model favors <b>{_html_escape(home_team)}</b> at "
+            f"<b>{p_h*100:.0f}%</b> vs <b>{p_a*100:.0f}%</b>."
+        )
+    elif winner == "away":
+        parts.append(
+            f"Model favors <b>{_html_escape(away_team)}</b> at "
+            f"<b>{p_a*100:.0f}%</b> vs <b>{p_h*100:.0f}%</b>."
+        )
+    elif winner == "coinflip":
+        parts.append(
+            f"Tight call — {_html_escape(home_team)} {p_h*100:.0f}% vs "
+            f"{_html_escape(away_team)} {p_a*100:.0f}% "
+            f"(draw {p_d*100:.0f}%)."
+        )
+
+    # --- 2. Form contrast ---
+    hf = pred.get("home_form") or {}
+    af = pred.get("away_form") or {}
+    hf_ppg = hf.get("ppg")
+    af_ppg = af.get("ppg")
+    hf_status = hf.get("form_status", "normal")
+    af_status = af.get("form_status", "normal")
+    if hf_ppg is not None and af_ppg is not None and abs(hf_ppg - af_ppg) >= 0.6:
+        if hf_ppg > af_ppg:
+            parts.append(
+                f"Form swing: {_html_escape(home_team)} {hf_ppg:.1f} ppg "
+                f"vs {_html_escape(away_team)} {af_ppg:.1f} ppg "
+                f"in last 5."
+            )
+        else:
+            parts.append(
+                f"Form swing: {_html_escape(away_team)} {af_ppg:.1f} ppg "
+                f"vs {_html_escape(home_team)} {hf_ppg:.1f} ppg "
+                f"in last 5."
+            )
+    elif hf_status == "cold" and af_status == "hot":
+        parts.append(
+            f"<b>{_html_escape(away_team)}</b> on a hot run; "
+            f"<b>{_html_escape(home_team)}</b> cold."
+        )
+    elif hf_status == "hot" and af_status == "cold":
+        parts.append(
+            f"<b>{_html_escape(home_team)}</b> on a hot run; "
+            f"<b>{_html_escape(away_team)}</b> cold."
+        )
+
+    # --- 3. Defensive vulnerability (goals_conceded in last 5) ---
+    hf_gc = hf.get("goals_conceded")
+    af_gc = af.get("goals_conceded")
+    hf_games = hf.get("total_matches") or 5
+    af_games = af.get("total_matches") or 5
+    if hf_gc is not None and hf_games:
+        hf_gcpg = hf_gc / hf_games
+        if hf_gcpg >= 1.6:
+            parts.append(
+                f"<b>{_html_escape(home_team)}</b>'s defense leaky "
+                f"({hf_gc} goals in last {hf_games})."
+            )
+    if af_gc is not None and af_games:
+        af_gcpg = af_gc / af_games
+        if af_gcpg >= 1.6:
+            parts.append(
+                f"<b>{_html_escape(away_team)}</b>'s defense leaky "
+                f"({af_gc} goals in last {af_games})."
+            )
+
+    # --- 4. Key player in lineup — highest xG player on either side ---
+    def _top_xg_player(team: str, xi: list[str]) -> tuple[str, float] | None:
+        best_name = None
+        best_xg = 0.0
+        for name in xi:
+            # Use team-aware lookup (same logic as _lookup_xg)
+            tk = _tk(team); pk = name.strip()
+            xg = None
+            if (tk, pk) in us_map:
+                xg = us_map[(tk, pk)]["xg"]
+            else:
+                for (t, n), rec in us_map.items():
+                    if n == pk and _team_match(team, t):
+                        xg = rec["xg"]; break
+                else:
+                    surname = pk.split()[-1].lower()
+                    for (t, n), rec in us_map.items():
+                        if _team_match(team, t) and n.split()[-1].lower() == surname:
+                            xg = rec["xg"]; break
+            if xg and xg > best_xg:
+                best_xg = float(xg)
+                best_name = pk
+        return (best_name, best_xg) if best_name else None
+
+    home_star = _top_xg_player(home_team, home_xi)
+    away_star = _top_xg_player(away_team, away_xi)
+    if home_star and home_star[1] >= 3.0:
+        parts.append(
+            f"<b>{_html_escape(home_star[0])}</b> leads the home attack "
+            f"(xG {home_star[1]:.1f} season)."
+        )
+    if away_star and away_star[1] >= 3.0:
+        parts.append(
+            f"<b>{_html_escape(away_star[0])}</b> the away threat "
+            f"(xG {away_star[1]:.1f} season)."
+        )
+
+    # --- 5. Lineup xG edge (from player_xg component) ---
+    comp = pred.get("component_predictions", {}) or {}
+    plxg = comp.get("player_xg_details") or {}
+    home_lxg = plxg.get("home_lineup_xg")
+    away_lxg = plxg.get("away_lineup_xg")
+    if home_lxg is not None and away_lxg is not None:
+        diff = home_lxg - away_lxg
+        if abs(diff) >= 0.5:
+            stronger = home_team if diff > 0 else away_team
+            weaker = away_team if diff > 0 else home_team
+            strong_xg = home_lxg if diff > 0 else away_lxg
+            weak_xg = away_lxg if diff > 0 else home_lxg
+            parts.append(
+                f"Today's XI: <b>{_html_escape(stronger)}</b> "
+                f"{strong_xg:.2f} xG vs <b>{_html_escape(weaker)}</b> "
+                f"{weak_xg:.2f} xG."
+            )
+
+    # --- 6. Injuries — only mention key missing players ---
+    inj = pred.get("injury_adjustments") or {}
+    home_inj = inj.get("home_injured", []) or []
+    away_inj = inj.get("away_injured", []) or []
+    # Mention only if 3+ key missing
+    if len(home_inj) >= 3:
+        parts.append(
+            f"<b>{_html_escape(home_team)}</b> missing "
+            f"{len(home_inj)} starters: "
+            f"{_html_escape(', '.join(home_inj[:3]))}"
+            f"{'…' if len(home_inj) > 3 else ''}."
+        )
+    if len(away_inj) >= 3:
+        parts.append(
+            f"<b>{_html_escape(away_team)}</b> missing "
+            f"{len(away_inj)} starters: "
+            f"{_html_escape(', '.join(away_inj[:3]))}"
+            f"{'…' if len(away_inj) > 3 else ''}."
+        )
+
+    # --- 7. Referee bias ---
+    ref = pred.get("referee")
+    ref_bias = pred.get("referee_bias")
+    if ref and ref_bias and ref_bias in ("home_favoring", "away_favoring"):
+        bias_team = home_team if ref_bias == "home_favoring" else away_team
+        parts.append(f"Ref {_html_escape(str(ref))} slants toward <b>{_html_escape(bias_team)}</b>.")
+
+    # --- 8. Goals market lean (O/U 2.5) ---
+    ou = comp.get("over_under_ml") or {}
+    ou_25 = ou.get("2.5")
+    if ou_25 is not None:
+        if ou_25 >= 0.60:
+            parts.append(f"Model leans <b>OVER 2.5</b> ({ou_25*100:.0f}%).")
+        elif ou_25 <= 0.40:
+            parts.append(f"Model leans <b>UNDER 2.5</b> ({(1-ou_25)*100:.0f}%).")
+
+    # Truncate to top 4 bullets to keep the preview punchy
+    parts = parts[:4]
+
+    return "\n".join(f"  • {p}" for p in parts)
+
+
 def notify_lineups_confirmed(matches: str = "", changes: str = "") -> dict:
-    """Send a coaching-style notification when lineups are confirmed."""
-    # Dedup: don't send same lineup notification twice in a day
+    """Starting XIs confirmed — full lineups with shirt numbers, positions,
+    and current-season stats (TEAM-FILTERED to prevent cross-team pollution).
+
+    Sources:
+      - data/upcoming/confirmed_lineups.json       — authoritative XI names
+      - data/parsed/lineups.parquet                — shirt_number per (team, player)
+      - data/parsed/player_stats.parquet           — position + G/A (per team)
+      - data/parsed/understat_players.parquet      — xG (per team)
+      - data/betting/betting_slip.json             — active bet
+
+    `matches` / `changes` args accepted for backward compat; ignored.
+    """
     import hashlib as _hl
+
+    lineups_path = DATA_DIR / "upcoming" / "confirmed_lineups.json"
+    if not lineups_path.exists():
+        return {}
+    try:
+        data = json.loads(lineups_path.read_text())
+    except Exception as e:
+        log.warning("notify_lineups_confirmed: load failed: %s", e)
+        return {}
+
+    all_matches = data.get("matches", {}) if isinstance(data, dict) else {}
+    confirmed = [
+        (mk, md) for mk, md in all_matches.items()
+        if isinstance(md.get("home_lineup"), list) and isinstance(md.get("away_lineup"), list)
+        and len(md["home_lineup"]) >= 11 and len(md["away_lineup"]) >= 11
+    ]
+    if not confirmed:
+        return {}
+
+    # Dedup
+    sig_source = "|".join(
+        f"{mk}:{','.join(md.get('home_lineup', []))}:{','.join(md.get('away_lineup', []))}"
+        for mk, md in confirmed
+    )
+    msg_sig = _hl.md5(sig_source.encode()).hexdigest()[:12]
     today_str = datetime.now().strftime("%Y-%m-%d")
-    msg_sig = _hl.md5(f"{matches}|{changes}".encode()).hexdigest()[:12]
     _lineup_dedup_path = DATA_DIR / ".lineups_dedup.json"
     try:
         if _lineup_dedup_path.exists():
             with open(_lineup_dedup_path) as _f:
                 _dedup = json.load(_f)
             if _dedup.get("date") == today_str and _dedup.get("sig") == msg_sig:
-                log.info("Lineup notification skipped (already sent today)")
                 return {}
     except Exception:
         pass
 
-    opener = random.choice(_LINEUP_OPENERS)
-    msg = f"{opener}\n\n"
-    if matches:
-        msg += f"Confirmed for: {matches}"
-    if changes:
-        msg += f"\nKey changes: {changes}"
-    result = notify(msg, title="Lineups Confirmed", level="info", category="betting")
+    def _current_season() -> str:
+        y = datetime.now().year
+        return f"{y-1}-{y}" if datetime.now().month < 8 else f"{y}-{y+1}"
 
-    # Save dedup marker
+    season = _current_season()
+
+    # Build TEAM-KEYED enrichment tables.
+    # Key: (team_canonical, player_canonical) -> record dict
+    # team_canonical = team name lowercased; player_canonical = full name.
+    shirt_map: dict = {}  # (team, name) -> shirt_str; also (team, surname) as fallback
+    fb_map: dict = {}     # (team, name) -> {position, goals, assists, minutes}
+    fb_name_only: dict = {}  # name -> list of (team, record)  — for fuzzy
+    us_map: dict = {}     # (team, name) -> {xg}
+    us_name_only: dict = {}
+
+    def _tk(team: str) -> str:
+        return (team or "").strip().lower()
+
+    def _pk(name: str) -> str:
+        return (name or "").strip()
+
+    try:
+        import pandas as _pd
+        # ---- lineups.parquet → shirt numbers (STARTER + BENCH so subs are covered) ----
+        try:
+            lu = _pd.read_parquet(
+                DATA_DIR / "parsed" / "lineups.parquet",
+                columns=["season", "team", "player_name", "shirt_number", "role"],
+            )
+            cur_lu = lu[lu["season"] == season]
+            # Keep last-seen shirt per (team, player); order doesn't matter since
+            # shirt numbers are stable within a season
+            cur_lu = cur_lu.dropna(subset=["shirt_number"]).drop_duplicates(
+                subset=["team", "player_name"], keep="last"
+            )
+            for _, row in cur_lu.iterrows():
+                team = _tk(row["team"])
+                name = _pk(row["player_name"])
+                shirt = str(int(row["shirt_number"])) if _pd.notna(row["shirt_number"]) else None
+                if shirt:
+                    shirt_map[(team, name)] = shirt
+                    # Also index by surname for fuzzy
+                    surname = name.split()[-1].lower()
+                    shirt_map.setdefault((team, "_surname_" + surname), shirt)
+        except Exception as e:
+            log.debug("lineups.parquet failed: %s", e)
+
+        # ---- player_stats.parquet + player_stats_epl.parquet → fbref season aggregates PER TEAM ----
+        for _ps_file in ("player_stats.parquet", "player_stats_epl.parquet"):
+            try:
+                ps = _pd.read_parquet(
+                    DATA_DIR / "parsed" / _ps_file,
+                    columns=["season", "player", "team", "position", "goals", "assists", "minutes"],
+                )
+                # EPL parquet stores numeric columns as object/strings — coerce.
+                for _num_col in ("goals", "assists", "minutes"):
+                    if _num_col in ps.columns and ps[_num_col].dtype == object:
+                        ps[_num_col] = _pd.to_numeric(ps[_num_col], errors="coerce").fillna(0)
+                cur_ps = ps[ps["season"] == season]
+                if cur_ps.empty:
+                    continue
+                grouped = cur_ps.groupby(["team", "player"], as_index=False).agg(
+                    position=("position", lambda s: s.dropna().mode().iloc[0] if len(s.dropna()) else None),
+                    goals=("goals", "sum"),
+                    assists=("assists", "sum"),
+                    minutes=("minutes", "sum"),
+                )
+                for _, row in grouped.iterrows():
+                    team = _tk(row["team"])
+                    name = _pk(row["player"])
+                    rec = {
+                        "position": row["position"],
+                        "goals": int(row["goals"] or 0),
+                        "assists": int(row["assists"] or 0),
+                        "minutes": int(row["minutes"] or 0),
+                    }
+                    # Don't overwrite if existing record has more minutes (prefer richer source)
+                    existing = fb_map.get((team, name))
+                    if existing is None or rec["minutes"] >= (existing.get("minutes") or 0):
+                        fb_map[(team, name)] = rec
+                    fb_name_only.setdefault(name, []).append((team, rec))
+            except Exception as e:
+                log.debug("%s failed: %s", _ps_file, e)
+
+        # ---- understat_players.parquet → xG PER TEAM ----
+        try:
+            up = _pd.read_parquet(
+                DATA_DIR / "parsed" / "understat_players.parquet",
+                columns=["season", "team", "player", "xg"],
+            )
+            cur_up = up[up["season"] == season]
+            for _, row in cur_up.iterrows():
+                if _pd.isna(row["xg"]):
+                    continue
+                team = _tk(row["team"])
+                name = _pk(row["player"])
+                rec = {"xg": float(row["xg"])}
+                # Keep highest if duplicated
+                if (team, name) not in us_map or rec["xg"] > us_map[(team, name)]["xg"]:
+                    us_map[(team, name)] = rec
+                us_name_only.setdefault(name, []).append((team, rec))
+        except Exception as e:
+            log.debug("understat_players.parquet failed: %s", e)
+    except ImportError:
+        log.debug("pandas not available; enrichment skipped")
+
+    # ---- Team-normalization helper — lineup team might be "Lecce", fbref "Lecce" too,
+    # but fuzzy prefixes (e.g. "Manchester United" vs "Man United") happen.
+    def _team_match(lineup_team: str, source_team: str) -> bool:
+        lt = _tk(lineup_team)
+        st = _tk(source_team)
+        if lt == st:
+            return True
+        # Prefix / contains match
+        return lt in st or st in lt
+
+    def _lookup_shirt(team: str, name: str) -> str | None:
+        tk = _tk(team); pk = _pk(name)
+        if (tk, pk) in shirt_map:
+            return shirt_map[(tk, pk)]
+        surname = pk.split()[-1].lower()
+        key = (tk, "_surname_" + surname)
+        if key in shirt_map:
+            return shirt_map[key]
+        # Cross-team: any team that matches (handles "Nott'm Forest" vs "Nottingham Forest")
+        for (t, n), shirt in shirt_map.items():
+            if _team_match(team, t) and _pk(n).lower() == pk.lower():
+                return shirt
+        # Surname-only last resort
+        for (t, n), shirt in shirt_map.items():
+            if n.startswith("_surname_"):
+                continue
+            if _team_match(team, t) and _pk(n).split()[-1].lower() == surname:
+                return shirt
+        return None
+
+    def _lookup_fb(team: str, name: str) -> dict | None:
+        tk = _tk(team); pk = _pk(name)
+        if (tk, pk) in fb_map:
+            return fb_map[(tk, pk)]
+        # Exact-name match on any matching team (handles team alias)
+        for (t, n), rec in fb_map.items():
+            if n == pk and _team_match(team, t):
+                return rec
+        # Fuzzy: same surname + matching team
+        surname = pk.split()[-1].lower()
+        for (t, n), rec in fb_map.items():
+            if _team_match(team, t) and n.split()[-1].lower() == surname:
+                return rec
+        # Last resort: name match across ANY team (rare)
+        if pk in fb_name_only:
+            return fb_name_only[pk][0][1]
+        return None
+
+    def _lookup_xg(team: str, name: str) -> float:
+        tk = _tk(team); pk = _pk(name)
+        if (tk, pk) in us_map:
+            return us_map[(tk, pk)]["xg"]
+        for (t, n), rec in us_map.items():
+            if n == pk and _team_match(team, t):
+                return rec["xg"]
+        surname = pk.split()[-1].lower()
+        for (t, n), rec in us_map.items():
+            if _team_match(team, t) and n.split()[-1].lower() == surname:
+                return rec["xg"]
+        return 0.0
+
+    # ---- Auxiliary: kickoff map + active picks ----
+    try:
+        kickoff_map = _load_kickoff_map()
+    except Exception:
+        kickoff_map = {}
+
+    slip_path = DATA_DIR / "betting" / "betting_slip.json"
+    active_picks_by_match: dict = {}
+    try:
+        if slip_path.exists():
+            slip = json.loads(slip_path.read_text())
+            for pick in slip.get("recommended_singles", []) or []:
+                active_picks_by_match.setdefault(pick.get("match", ""), []).append(pick)
+    except Exception:
+        pass
+
+    def _resolve_kickoff(mk, md):
+        ct = md.get("commence_time") or md.get("kickoff_time")
+        if ct:
+            return str(ct)
+        home = md.get("home_team") or (mk.split(" vs ")[0] if " vs " in mk else "")
+        away = md.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+        return kickoff_map.get((home, away), "")
+
+    confirmed.sort(key=lambda pair: _resolve_kickoff(pair[0], pair[1]) or "z")
+
+    # ---- Detect EPL matches with degraded enrichment (honest-banner guard) ----
+    # Trigger if any EPL match in this batch has EITHER:
+    #   (a) >8/11 missing shirt numbers, OR
+    #   (b) zero G+A totals summed across all outfielders
+    # Empirical signals that player_stats_epl is backfill-pending for 2025-26
+    # and lineups.parquet has no EPL coverage yet.
+    def _is_epl_match(mk, md) -> bool:
+        ht = md.get("home_team") or (mk.split(" vs ")[0] if " vs " in mk else "")
+        at = md.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+        epl_path = DATA_DIR / "upcoming" / "odds_full_premier_league.json"
+        try:
+            if epl_path.exists():
+                epl = json.loads(epl_path.read_text())
+                epl_matches = epl.get("matches") or {}
+                if mk in epl_matches or f"{ht} vs {at}" in epl_matches:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    epl_data_gap = False
+    for mk, md in confirmed:
+        if not _is_epl_match(mk, md):
+            continue
+        ht = md.get("home_team") or (mk.split(" vs ")[0] if " vs " in mk else "")
+        at = md.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+        h_xi = list(md.get("home_lineup", []))[:11]
+        a_xi = list(md.get("away_lineup", []))[:11]
+        shirt_misses = 0
+        ga_total = 0
+        for team, xi in ((ht, h_xi), (at, a_xi)):
+            for name in xi:
+                if _lookup_shirt(team, name) is None:
+                    shirt_misses += 1
+                fb = _lookup_fb(team, name) or {}
+                pos = (fb.get("position") or "").upper()
+                if pos != "GK":
+                    ga_total += int(fb.get("goals") or 0) + int(fb.get("assists") or 0)
+        if shirt_misses > 8 or ga_total == 0:
+            epl_data_gap = True
+            break
+
+    NBSP = " "
+    now = datetime.now()
+    tg = TgMsg()
+    tg.raw(f"📋 <b>Lineups Confirmed</b>  <i>{now.strftime('%H:%M')}</i>")
+    if epl_data_gap:
+        tg.blank()
+        tg.raw(
+            "⚠️ <i>EPL player stats are backfill-pending for 2025-26 — "
+            "shirt numbers and season totals may be missing.</i>"
+        )
+
+    def _pos_glyph(position: str | None) -> str:
+        if not position:
+            return "  "
+        p = position.upper().split(",")[0]
+        if p == "GK":
+            return "🧤"
+        if p in ("FW", "ST", "W", "LW", "RW", "CF"):
+            return "⚽"
+        if p in ("DF", "CB", "LB", "RB", "FB", "WB", "LWB", "RWB"):
+            return "🛡️"
+        if p in ("MF", "CM", "DM", "AM", "LM", "RM", "CDM", "CAM"):
+            return "🎯"
+        return "  "
+
+    def _stat_line(name: str, team: str, position: str | None) -> str:
+        fb = _lookup_fb(team, name) or {}
+        goals = fb.get("goals") or 0
+        assists = fb.get("assists") or 0
+        xg = _lookup_xg(team, name)
+        p = (position or "").upper()
+
+        # GK: keep minimal — stats for GKs (e.g. clean sheets) aren't in scope
+        if p == "GK":
+            return ""
+
+        bits = []
+        if goals:
+            bits.append(f"⚽{goals}")
+        if assists:
+            bits.append(f"🅰{assists}")
+        # Always show xG when >= 0.5 (meaningful sample), for ALL outfield roles
+        if xg >= 0.5:
+            bits.append(f"xG {xg:.1f}")
+        return " ".join(bits)
+
+    def _render_xi(team: str, xi: list[str]):
+        for name in xi:
+            shirt = _lookup_shirt(team, name)
+            fb = _lookup_fb(team, name) or {}
+            position = fb.get("position")
+            glyph = _pos_glyph(position)
+            tail = _stat_line(name, team, position)
+
+            # Shirt in monospace for column alignment
+            shirt_cell = f"<code>{(shirt or '--'):>2}</code>"
+
+            # Single format (no position text — glyph already conveys role)
+            line = f"    {shirt_cell}{NBSP}{glyph}{NBSP}<b>{_html_escape(str(name))}</b>"
+            if tail:
+                line += f"  <i>{_html_escape(tail)}</i>"
+            tg.raw(line)
+
+    for mk, md in confirmed:
+        home_team = md.get("home_team") or (mk.split(" vs ")[0] if " vs " in mk else "?")
+        away_team = md.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "?")
+
+        kick_iso = _resolve_kickoff(mk, md)
+        hhmm = _kickoff_display(kick_iso) if kick_iso else ""
+        time_chip = (
+            f"<b>[{NBSP}{_html_escape(hhmm)}{NBSP}]</b>"
+            if hhmm else f"<b>[{NBSP}{NBSP}—{NBSP}{NBSP}{NBSP}{NBSP}]</b>"
+        )
+
+        # League badge
+        league_key = ""
+        epl_path = DATA_DIR / "upcoming" / "odds_full_premier_league.json"
+        try:
+            if epl_path.exists():
+                epl = json.loads(epl_path.read_text())
+                if mk in (epl.get("matches") or {}) or f"{home_team} vs {away_team}" in (epl.get("matches") or {}):
+                    league_key = "premier_league"
+        except Exception:
+            pass
+        if not league_key and kickoff_map.get((home_team, away_team)):
+            league_key = "serie_a"
+        badge = _LEAGUE_BADGE_MAP.get(league_key, "")
+
+        tg.blank()
+        tg.raw(
+            f"{time_chip}{NBSP}{NBSP}{badge}{NBSP}"
+            f"<b>{_html_escape(home_team)} – {_html_escape(away_team)}</b>"
+        )
+        home_fmt = md.get("home_formation") or ""
+        away_fmt = md.get("away_formation") or ""
+        if home_fmt or away_fmt:
+            tg.raw(f"  <i>{_html_escape(home_fmt or '?')}  vs  {_html_escape(away_fmt or '?')}</i>")
+
+        tg.blank()
+        tg.raw(f"  <b>🏠 {_html_escape(home_team)}</b>")
+        _render_xi(home_team, list(md.get("home_lineup", []))[:11])
+        tg.blank()
+        tg.raw(f"  <b>✈️ {_html_escape(away_team)}</b>")
+        _render_xi(away_team, list(md.get("away_lineup", []))[:11])
+
+        # ---- Match preview (pundit-style narrative) ----
+        try:
+            pred = _load_prediction_for(mk, home_team, away_team)
+            preview = _build_match_preview(
+                pred, home_team, away_team,
+                list(md.get("home_lineup", [])), list(md.get("away_lineup", [])),
+                fb_map, us_map, _tk, _team_match,
+            )
+            if preview:
+                tg.blank()
+                tg.raw("  <b>🧠 Preview</b>")
+                tg.raw(preview)
+        except Exception as e:
+            log.debug("match preview build failed: %s", e)
+
+        picks = active_picks_by_match.get(mk, []) or active_picks_by_match.get(
+            f"{home_team} vs {away_team}", []
+        )
+        for pick in picks:
+            sel = pick.get("selection") or pick.get("prediction") or ""
+            odds = pick.get("odds") or pick.get("best_odds")
+            edge = pick.get("value_pct") or pick.get("edge_pct") or 0
+            bits = []
+            if sel:
+                bits.append(f"<b>{_html_escape(str(sel))}</b>")
+            if odds:
+                try:
+                    bits.append(f"@{float(odds):.2f}")
+                except Exception:
+                    bits.append(f"@{odds}")
+            try:
+                edge_v = float(edge)
+                if edge_v:
+                    bits.append(f"<i>edge {'+' if edge_v >= 0 else ''}{edge_v:.0f}%</i>")
+            except Exception:
+                pass
+            tg.blank()
+            tg.raw(f"  🎯 <b>Active bet:</b> {' '.join(bits)}")
+
+    teams_text = ", ".join(
+        f"{md.get('home_team','?')}–{md.get('away_team','?')}" for _, md in confirmed
+    )
+    mac_msg = f"Lineups in: {teams_text}"[:200]
+
+    result = notify(
+        mac_msg,
+        title="📋 Lineups Confirmed",
+        level="info",
+        category="betting",
+        tg_html=tg.build(),
+    )
     try:
         with open(_lineup_dedup_path, "w") as _f:
             json.dump({"date": today_str, "sig": msg_sig}, _f)
@@ -2636,9 +3418,9 @@ def notify_weekly_accuracy(correct: int, total: int,
     if total == 0:
         return {}
 
-    if accuracy_pct >= 65:
+    if accuracy_pct >= 60:
         mood = "Excellent week. Model is sharp."
-    elif accuracy_pct >= 55:
+    elif accuracy_pct >= 51:
         mood = "Solid week. Edge is holding."
     elif accuracy_pct >= 45:
         mood = "Below average. Monitor for drift."
@@ -2667,7 +3449,7 @@ def notify_weekly_accuracy(correct: int, total: int,
     return notify(
         message=mac_msg,
         title=f"Weekly: {accuracy_pct:.0f}% accuracy",
-        level="success" if accuracy_pct >= 55 else "warning",
+        level="success" if accuracy_pct >= 51 else "warning",
         category="betting",
         tg_html=tg.build(),
     )
@@ -3014,6 +3796,552 @@ def notify_entry_timing(match: str, selection: str, action: str,
         category="betting",
         tg_html=tg.build(),
         priority=PRIORITY_NORMAL,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-run cards + health-state alerts
+# ---------------------------------------------------------------------------
+
+_SCHEDULER_STATE_PATH = DATA_DIR / "monitoring" / "scheduler_state.json"
+_HEALTH_STATE_PATH = DATA_DIR / "monitoring" / "health_state.json"
+
+_SCHEDULER_BADGE = {
+    "morning":              ("☀️", "Morning Pipeline"),
+    "evening":              ("\U0001f30c", "Evening Pipeline"),
+    "settlement":           ("\U0001f9fe", "Settlement Run"),
+    "odds-refresh":         ("\U0001f4b1", "Odds Refresh"),
+    "health-monitor":       ("\U0001fa7a", "Health Monitor"),
+    "pre-kickoff-monitor":  ("⏰", "Pre-Kickoff Watch"),
+    "weekly-data-refresh":  ("\U0001f4e6", "Weekly Data Refresh"),
+    "weekly-monitor":       ("\U0001f9ea", "Weekly Monitor"),
+    "matchweek-retrain":    ("\U0001f501", "Matchweek Retrain"),
+    "sunday-retrain":       ("\U0001f501", "Sunday Retrain"),
+    "monthly-retrain":      ("\U0001f3af", "Monthly Retrain"),
+    "daily-digest":         ("\U0001f4ca", "Daily Digest"),
+}
+
+_STATUS_ICON = {
+    "ok":      "✅",
+    "success": "✅",
+    "skipped": "⏩",
+    "warn":    "⚠️",
+    "warning": "⚠️",
+    "fail":    "❌",
+    "failed":  "❌",
+    "error":   "❌",
+}
+
+
+def _load_json_safe(path: Path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception as e:
+        log.debug("Failed to load %s: %s", path, e)
+    return default
+
+
+def _save_json_safe(path: Path, data) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, default=str))
+    except Exception as e:
+        log.warning("Failed to save %s: %s", path, e)
+
+
+def notify_pipeline_run_with_picks(
+    name: str,
+    status: str = "success",
+    duration_sec: float | None = None,
+    error: str | None = None,
+    max_picks: int = 6,
+) -> dict:
+    """Specialized morning/evening pipeline card — leads with the VALUE BETS,
+    not run metadata. Reads the current slip + predictions; shows up to
+    `max_picks` value bets with edge + kickoff, or a single dry line when
+    nothing was found.
+
+    Falls through to notify_scheduler_run on failure so the failure UI is
+    consistent with other schedulers.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    status_l = (status or "ok").lower()
+    is_failure = status_l in ("fail", "failed", "error")
+
+    # Failure path — use the standard scheduler card (with error)
+    if is_failure:
+        return notify_scheduler_run(
+            name=name,
+            status=status,
+            duration_sec=duration_sec,
+            details=None,
+            error=error,
+        )
+
+    # ---- Persist state so the digest's Systems block still shows the run ----
+    now = datetime.now()
+    state = _load_json_safe(_SCHEDULER_STATE_PATH, {})
+    state[name] = {
+        "status": status_l,
+        "last_run": now.isoformat(timespec="seconds"),
+        "duration_sec": round(duration_sec, 1) if duration_sec else None,
+        "details": {},
+        "error": None,
+    }
+    _save_json_safe(_SCHEDULER_STATE_PATH, state)
+
+    emoji, label = _SCHEDULER_BADGE.get(name, ("⚙️", name.replace("-", " ").title()))
+    when = now.strftime("%H:%M")
+
+    # ---- Read the current betting slip ----
+    slip_path = DATA_DIR / "betting" / "betting_slip.json"
+    slip: dict = {}
+    try:
+        if slip_path.exists():
+            slip = _json.loads(slip_path.read_text())
+    except Exception as e:
+        log.debug("pipeline card: slip load failed: %s", e)
+
+    picks = slip.get("recommended_singles", []) if isinstance(slip, dict) else []
+
+    # Slip staleness — if >24h old, don't pretend it's today's picks
+    slip_is_stale = False
+    try:
+        gen_at = slip.get("generated_at") if isinstance(slip, dict) else None
+        if gen_at:
+            gen_dt = datetime.fromisoformat(gen_at)
+            age_h = (now - gen_dt).total_seconds() / 3600
+            slip_is_stale = age_h > 24
+    except Exception:
+        pass
+
+    # Kickoff map (for picks that lack kickoff_time)
+    try:
+        kmap = _load_kickoff_map()
+    except Exception:
+        kmap = {}
+
+    # ---- Build the Telegram card ----
+    tg = TgMsg()
+    header = f"✅ <b>{_html_escape(label)}</b>  <i>{_html_escape(when)}</i>"
+    if duration_sec is not None and duration_sec > 900:  # only show duration if slow (>15m)
+        dur_str = f"{duration_sec/60:.0f}m"
+        header += f"  <i>⏱️ took {dur_str}</i>"
+    tg.raw(header)
+
+    if slip_is_stale:
+        tg.blank()
+        tg.raw("⚠️ <i>Slip is stale — pipeline couldn't refresh picks today.</i>")
+    elif not picks:
+        tg.blank()
+        tg.raw("<i>No value bets today.</i>")
+    else:
+        tg.blank()
+        n = len(picks)
+        shown = picks[:max_picks]
+        tg.raw(f"🎯 <b>{n} value bet{'s' if n != 1 else ''}</b>")
+
+        NBSP = " "
+
+        def _kickoff_for(pick):
+            kt = pick.get("kickoff_time") or ""
+            if kt and ("T" in str(kt) or ":" in str(kt)):
+                return str(kt)
+            m = pick.get("match") or ""
+            if " vs " in m:
+                h, a = m.split(" vs ", 1)
+                return kmap.get((h.strip(), a.strip()), "")
+            return ""
+
+        def _league_for(pick):
+            # Heuristic: if both teams are in matches_epl, tag EPL
+            m = pick.get("match") or ""
+            # Prefer explicit league tag; else look up from the pick
+            lg = pick.get("league") or ""
+            if lg:
+                return lg
+            # Fall back to kickoff map hit: we put EPL commence_time from the
+            # EPL odds file into kmap, so a hit from that source implies EPL.
+            # (This is a best-effort heuristic; the badge is cosmetic.)
+            return ""
+
+        def _sort_key(pick):
+            k = _kickoff_for(pick)
+            if "T" in k:
+                return (0, k)
+            return (1, pick.get("match", ""))
+
+        for pick in sorted(shown, key=_sort_key):
+            match = pick.get("match", "")
+            sel = pick.get("selection") or pick.get("prediction") or ""
+            odds = pick.get("odds") or pick.get("best_odds")
+            edge = pick.get("value_pct") or pick.get("edge_pct") or 0
+
+            kick_iso = _kickoff_for(pick)
+            hhmm = _kickoff_display(kick_iso) if kick_iso else ""
+            if hhmm:
+                time_chip = f"<b>[{NBSP}{_html_escape(hhmm)}{NBSP}]</b>"
+            else:
+                time_chip = f"<b>[{NBSP}{NBSP}—{NBSP}{NBSP}{NBSP}{NBSP}]</b>"
+
+            # Compact edge/odds line: "HOME @2.95 edge +18%"
+            bits = []
+            if sel:
+                bits.append(f"<b>{_html_escape(str(sel))}</b>")
+            if odds:
+                try:
+                    bits.append(f"@{float(odds):.2f}")
+                except (TypeError, ValueError):
+                    bits.append(f"@{odds}")
+            if edge:
+                try:
+                    edge_v = float(edge)
+                    sign = "+" if edge_v >= 0 else ""
+                    bits.append(f"<i>edge {sign}{edge_v:.0f}%</i>")
+                except (TypeError, ValueError):
+                    pass
+            pick_line = " ".join(bits)
+
+            tg.raw(f"  {time_chip}{NBSP}{NBSP}{_html_escape(match)} — {pick_line}")
+
+        if n > max_picks:
+            tg.raw(f"  <i>… and {n - max_picks} more</i>")
+
+    # ---- macOS (silent on success except when slow) ----
+    macos_msg = ""
+    if duration_sec is not None and duration_sec > 900:
+        macos_msg = f"{label}: done ({duration_sec/60:.0f}m)"
+    elif not picks and not slip_is_stale:
+        # Silent — nothing actionable
+        macos_msg = ""
+    # else: still silent; picks are in Telegram
+
+    return notify(
+        macos_msg,
+        title=label,
+        level="success",
+        category="system",
+        priority=PRIORITY_LOW,
+        tg_html=tg.build(),
+    )
+
+
+def notify_scheduler_run(
+    name: str,
+    status: str = "ok",
+    duration_sec: float | None = None,
+    details: dict | None = None,
+    error: str | None = None,
+) -> dict:
+    """Post a run card for a scheduled launchd job.
+
+    UI principles:
+      - ONE title line only (no echoed emoji+title in body)
+      - FAIL suppresses stale detail numbers (they lie on a failed run)
+      - Low-priority successful runs are silent on macOS (Telegram only)
+      - Errors shown without "see log" boilerplate
+    """
+    emoji, label = _SCHEDULER_BADGE.get(name, ("⚙️", name.replace("-", " ").title()))
+    status_l = (status or "ok").lower()
+    icon = _STATUS_ICON.get(status_l, "ℹ️")
+    is_failure = status_l in ("fail", "failed", "error")
+    is_success = status_l in ("ok", "success", "skipped")
+
+    level = {
+        "ok": "info", "success": "success", "skipped": "info",
+        "warn": "warning", "warning": "warning",
+        "fail": "error", "failed": "error", "error": "error",
+    }.get(status_l, "info")
+
+    now = datetime.now()
+    when = now.strftime("%H:%M")
+
+    # Persist last-run state (consumed by daily-digest Systems block)
+    state = _load_json_safe(_SCHEDULER_STATE_PATH, {})
+    state[name] = {
+        "status": status_l,
+        "last_run": now.isoformat(timespec="seconds"),
+        "duration_sec": round(duration_sec, 1) if duration_sec else None,
+        "details": details or {},
+        "error": error,
+    }
+    _save_json_safe(_SCHEDULER_STATE_PATH, state)
+
+    # Format duration compactly
+    dur_str = ""
+    if duration_sec is not None:
+        dur_str = f"{duration_sec:.0f}s" if duration_sec < 60 else f"{duration_sec/60:.1f}m"
+
+    # ---------- Telegram (rich, single title) ----------
+    tg = TgMsg()
+    # One header line: icon + label + status + time + duration
+    header_bits = [f"{icon} <b>{_html_escape(label)}</b>"]
+    if is_success and dur_str:
+        header_bits.append(f"<i>{_html_escape(when)}</i>")
+        header_bits.append(f"<i>{dur_str}</i>")
+    elif is_failure and dur_str:
+        header_bits.append(f"<i>{_html_escape(when)}</i>")
+        header_bits.append(f"<i>failed after {dur_str}</i>")
+    else:
+        header_bits.append(f"<i>{_html_escape(when)}</i>")
+        if dur_str:
+            header_bits.append(f"<i>{dur_str}</i>")
+    tg.raw("  ".join(header_bits))
+
+    # On FAIL, SUPPRESS stale detail numbers (they're leftover values from
+    # the previous successful run). Only show details on success/warn.
+    if details and not is_failure:
+        shown = [(k, v) for k, v in details.items() if v not in (None, "")]
+        if shown:
+            tg.blank()
+            for k, v in shown:
+                tg.kv(str(k), str(v))
+
+    # Error: just the message, no "see launchd err log" boilerplate
+    if error:
+        err_clean = error.replace(" (see launchd err log)", "").replace(
+            "Pipeline failed after retries", "Pipeline retries exhausted"
+        )
+        tg.blank().raw(f"⚠️ {_html_escape(err_clean[:250])}")
+
+    # ---------- macOS (plain text, ≤ 200 chars, one-liner) ----------
+    # Successful routine runs — macOS is silent (Telegram has the record)
+    macos_msg = ""
+    if not is_success:
+        parts = [f"{label}: {status_l}"]
+        if dur_str:
+            parts[-1] += f" ({dur_str})"
+        if error:
+            err_short = (error.replace(" (see launchd err log)", "")
+                         .replace("Pipeline failed after retries", "Pipeline retries exhausted"))
+            parts.append(err_short[:100])
+        macos_msg = " — ".join(parts)[:200]
+
+    # Priority tiers: routine → LOW (no phone buzz); fail → NORMAL
+    priority = PRIORITY_LOW if is_success else PRIORITY_NORMAL
+    # Category: alerts bypass system-category suppression
+    category = "alert" if is_failure else "system"
+
+    return notify(
+        macos_msg,  # empty string → macOS skipped via _notify_macos early-out
+        title=f"{label}",  # single emoji in tg body, not in title
+        level=level,
+        category=category,
+        priority=priority,
+        tg_html=tg.build(),
+    )
+
+
+def notify_health_state_change(current: dict) -> dict:
+    """Fire a Telegram+macOS alert only when health status MEANINGFULLY changes.
+
+    Dedup strategy (fixes the thrashing we saw on 2026-04-24 where the same
+    issue flapped between "7.5d ago" and "7.6d ago" every 30 min):
+
+      - Issue IDENTITY = the bracketed category prefix + stable suffix
+        (e.g. "[health_check] Data file stale: odds_data"), NOT the full
+        text. The "7.5d ago" part is stripped so natural staleness progression
+        doesn't trigger re-alerts.
+
+      - Transient-suppression: if an issue appears + disappears within
+        `_TRANSIENT_WINDOW_MIN` minutes (default 45), it is treated as noise
+        and no alert fires. Catches Gemini 503s, temporary timeouts, etc.
+
+      - Long-standing-issue silencing: if an issue has been present for more
+        than `_QUIET_AFTER_HOURS` (default 24), no further re-alerts — you
+        already know about it. Only new/resolved issues ping you.
+
+    Silent when nothing meaningful changed.
+    """
+    import re as _re
+    prev_state = _load_json_safe(_HEALTH_STATE_PATH, {})
+    is_first_run = not prev_state
+
+    _TRANSIENT_WINDOW_MIN = 45
+    _QUIET_AFTER_HOURS = 24
+    _NOW = datetime.now()
+
+    def _issue_key(level: str, msg: str) -> str:
+        """Stable identity for an issue: strip volatile suffixes like
+        "7.6d ago", "(0 requests remaining)", decimal-changing %."""
+        s = msg
+        # Strip "(N.Nd ago)" / "(N.Nh ago)" / "N.Nd ago" tails
+        s = _re.sub(r"\(\d+(?:\.\d+)?\s*[dh]\s*ago\)", "", s)
+        s = _re.sub(r"\d+(?:\.\d+)?\s*[dh]\s*ago", "", s)
+        # Strip floating-point numbers inside parens like "(0 requests)" etc.
+        s = _re.sub(r"\(\d+(?:\.\d+)?[^)]*\)", "", s)
+        # Strip percentages like "7.5% from peak"
+        s = _re.sub(r"\d+(?:\.\d+)?%", "N%", s)
+        # Strip trailing numeric counts like "11 issues"
+        s = _re.sub(r"\d+\s*(?:bets?|items?|entries?|matches?|issues?)", "N \\g<0>", s)
+        return f"{level}|{s.strip().rstrip(':').rstrip()}"
+
+    # Load previous key-indexed issue state
+    prev_keys: dict = prev_state.get("issue_keys", {})
+    # {key: {'first_seen': ISO, 'last_seen': ISO, 'level': str, 'message': str, 'flap_count': int}}
+
+    cur_issues_by_key: dict = {}
+    for entry in current.get("issues", []):
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            k = _issue_key(entry[0], entry[1])
+            cur_issues_by_key[k] = {"level": entry[0], "message": entry[1]}
+
+    # Update state
+    new_keys: dict = {}
+    now_iso = _NOW.isoformat(timespec="seconds")
+    truly_new: list[tuple[str, str]] = []  # (level, message) to announce
+    truly_resolved: list[tuple[str, str]] = []
+
+    # Handle newly-appeared keys
+    for k, payload in cur_issues_by_key.items():
+        if k in prev_keys:
+            prev_payload = prev_keys[k]
+            new_keys[k] = {
+                "first_seen": prev_payload.get("first_seen", now_iso),
+                "last_seen": now_iso,
+                "level": payload["level"],
+                "message": payload["message"],
+                "flap_count": prev_payload.get("flap_count", 0),
+            }
+        else:
+            # It wasn't there last time. Check if it existed recently (flap).
+            recently_resolved = prev_state.get("recently_resolved", {}) or {}
+            gone_at = recently_resolved.get(k)
+            flap = 0
+            if gone_at:
+                try:
+                    gone_dt = datetime.fromisoformat(gone_at)
+                    if (_NOW - gone_dt).total_seconds() / 60 < _TRANSIENT_WINDOW_MIN:
+                        flap = 1  # reappeared shortly after resolving
+                except Exception:
+                    pass
+            new_keys[k] = {
+                "first_seen": now_iso,
+                "last_seen": now_iso,
+                "level": payload["level"],
+                "message": payload["message"],
+                "flap_count": flap,
+            }
+            # Only announce if not a flap and not the first run
+            if not is_first_run and flap == 0:
+                truly_new.append((payload["level"], payload["message"]))
+
+    # Handle just-resolved keys
+    resolved_tracking: dict = dict(prev_state.get("recently_resolved", {}) or {})
+    for k, prev_payload in prev_keys.items():
+        if k not in cur_issues_by_key:
+            # Only announce resolution if issue had been present >_TRANSIENT_WINDOW_MIN
+            # (otherwise it was a transient and we didn't alert on it in the first
+            # place, so don't tell the user it "resolved").
+            try:
+                first_seen = datetime.fromisoformat(prev_payload.get("first_seen", now_iso))
+                age_min = (_NOW - first_seen).total_seconds() / 60
+            except Exception:
+                age_min = 0
+            if age_min >= _TRANSIENT_WINDOW_MIN and not is_first_run:
+                truly_resolved.append(
+                    (prev_payload.get("level", "?"), prev_payload.get("message", "?"))
+                )
+            # Track resolution timestamp for flap detection on next cycle
+            resolved_tracking[k] = now_iso
+
+    # Prune old resolved-tracking entries (>2h old)
+    trimmed = {}
+    for k, iso in resolved_tracking.items():
+        try:
+            if (_NOW - datetime.fromisoformat(iso)).total_seconds() / 3600 < 2:
+                trimmed[k] = iso
+        except Exception:
+            pass
+    resolved_tracking = trimmed
+
+    # Overall status — check for meaningful flips
+    odds_restored = (
+        (prev_state.get("odds_status") == "CRITICAL")
+        and ((current.get("checks", {}).get("odds_api_key", {}) or {}).get("status") == "OK")
+    )
+
+    # Persist new state
+    _save_json_safe(_HEALTH_STATE_PATH, {
+        "overall_status": current.get("overall_status"),
+        "odds_status": (current.get("checks", {}).get("odds_api_key", {}) or {}).get("status"),
+        "issue_keys": new_keys,
+        "recently_resolved": resolved_tracking,
+        "updated": now_iso,
+    })
+
+    # No alert if nothing meaningful to report
+    if not (truly_new or truly_resolved or odds_restored):
+        log.debug("Health unchanged (dedup by issue key) — no alert")
+        return {}
+
+    overall = current.get("overall_status", "UNKNOWN")
+    emoji = "\U0001f6a8" if overall == "CRITICAL" else "✅"
+    tg = TgMsg().title(f"Health  •  {_NOW.strftime('%H:%M')}", emoji=emoji)
+    tg.raw(f"<b>Overall:</b> {_html_escape(overall)}")
+    tg.blank()
+
+    if odds_restored:
+        tg.raw("\U0001f389 <b>Odds API quota RESTORED</b>")
+        tg.blank()
+
+    if truly_new:
+        tg.raw("\U0001f534 <b>New</b>")
+        for lvl, msg in sorted(truly_new):
+            tg.raw(f"  • <i>{_html_escape(lvl)}</i>  {_html_escape(msg[:140])}")
+        tg.blank()
+
+    if truly_resolved:
+        tg.raw("\U0001f7e2 <b>Resolved</b>")
+        for lvl, msg in sorted(truly_resolved):
+            tg.raw(f"  • <i>{_html_escape(lvl)}</i>  {_html_escape(msg[:140])}")
+        tg.blank()
+
+    # macOS one-liner
+    parts = []
+    if truly_new:
+        parts.append(f"{len(truly_new)} new")
+    if truly_resolved:
+        parts.append(f"{len(truly_resolved)} resolved")
+    if odds_restored:
+        parts.append("odds API back")
+    macos_msg = f"Health: {overall}" + (f" — {', '.join(parts)}" if parts else "")
+
+    # Only critical-level on NEW CRITICAL issues, not on resolutions
+    has_critical_new = any(lvl == "CRITICAL" for lvl, _ in truly_new)
+    level = (
+        "critical" if has_critical_new else
+        "success" if odds_restored or truly_resolved else
+        "warning"
+    )
+    priority = PRIORITY_URGENT if level == "critical" else PRIORITY_NORMAL
+
+    return notify(
+        macos_msg[:250],
+        title="\U0001fa7a Health",
+        level=level,
+        category="alert",
+        priority=priority,
+        tg_html=tg.build(),
+    )
+
+
+def notify_scheduler_failure(name: str, error: str, attempt: int | None = None,
+                             max_attempts: int | None = None) -> dict:
+    """Emit a failure card with retry context. Use when a scheduled job
+    errors out mid-run (before notify_scheduler_run can fire at the end).
+    """
+    details = {}
+    if attempt is not None and max_attempts is not None:
+        details["Attempt"] = f"{attempt}/{max_attempts}"
+    return notify_scheduler_run(
+        name=name,
+        status="fail",
+        details=details,
+        error=error,
     )
 
 

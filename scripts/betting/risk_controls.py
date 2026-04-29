@@ -69,8 +69,7 @@ class RiskConfig:
     market_kill_min_bets: int = 10       # Need 10+ bets before killing a market (was 15)
     market_kill_roi_threshold: float = -20.0  # Kill if live ROI < -20% (was -30%)
 
-    # Stake reduction under stress — SOFTENED from 0.5 to 0.80
-    # Data shows after 3+ loss streaks, next bet wins 64.7% (regression to mean).
+    # Stake reduction under stress: 0.80 multiplier during loss streaks.
     # Aggressive reduction hurts ROI by undersizing during recovery.
     stress_stake_multiplier: float = _YAML_DEFAULTS.get("stress_stake_multiplier", 0.80)
 
