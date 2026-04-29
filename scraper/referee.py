@@ -76,6 +76,14 @@ WF_SEASON_IDS_BY_LEAGUE: dict[str, dict[str, str]] = {
         "2024-2025": "se74735",
         "2025-2026": "se95481",
     },
+    # EPL season IDs to be backfilled. To find a season's ID:
+    #   1. Fetch https://www.worldfootball.net/all_matches/eng-premier-league-{season}/
+    #      where season is e.g. 2024-2025
+    #   2. Grep the response for `se\d{5,}` — the first match is the season ID.
+    #   3. Add the (season, id) here; the scraper will pick it up next run.
+    "premier_league": {
+        # TODO: backfill IDs by running scraper interactively when network is up.
+    },
 }
 
 # Backward-compatible alias for Serie A season IDs
@@ -207,6 +215,20 @@ def _fetch(url: str) -> requests.Response | None:
     return None
 
 
+def _discover_season_id(league_slug: str, season: str) -> str | None:
+    """Discover a worldfootball.net season ID at runtime by parsing the
+    schedule page. Slow, so callers should hardcode the result for repeated use.
+    Returns the first se##### token found, or None on failure.
+    """
+    import re
+    url = f"{WF_BASE}/all_matches/{league_slug}-{season}/"
+    resp = _fetch(url)
+    if not resp:
+        return None
+    m = re.search(r"se\d{5,}", resp.text)
+    return m.group(0) if m else None
+
+
 def get_season_referees(season: str, league: str = "serie_a") -> list[tuple[str, str, str]]:
     """Get list of referees for a league season.
 
@@ -220,8 +242,17 @@ def get_season_referees(season: str, league: str = "serie_a") -> list[tuple[str,
     league_slug, season_ids = _resolve_wf_league(league)
     season_id = season_ids.get(season)
     if not season_id:
-        log.warning("No season ID for %s (%s)", season, league)
-        return []
+        # Try auto-discovery from the schedule page (Cloudflare-bypassed via curl_cffi)
+        season_id = _discover_season_id(league_slug, season)
+        if not season_id:
+            log.warning(
+                "No season ID for %s (%s); auto-discovery failed. "
+                "Add it manually under WF_SEASON_IDS_BY_LEAGUE['%s']['%s'] in scraper/referee.py.",
+                season, league, league, season
+            )
+            return []
+        log.info("Discovered %s season ID: %s — consider hardcoding for speed",
+                 league, season_id)
 
     url = f"{WF_BASE}/referees/{league_slug}-{season}/"
     log.info("Fetching referee list for %s: %s", season, url)

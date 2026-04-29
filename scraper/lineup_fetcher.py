@@ -369,15 +369,24 @@ def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
     except ImportError:
         pass
 
-    # Load odds data if not provided
+    # Load odds data if not provided — merge across all active leagues
     if odds_data is None:
-        odds_path = DATA_DIR / "upcoming" / "odds_full.json"
-        if odds_path.exists():
-            with open(odds_path) as f:
-                full = json.load(f)
-            odds_data = full.get("matches", {})
-        else:
-            log.warning("No odds_full.json found, cannot determine match times")
+        from config.leagues import ACTIVE_LEAGUES
+        odds_data = {}
+        for _league in ACTIVE_LEAGUES:
+            fname = "odds_full.json" if _league == "serie_a" else f"odds_full_{_league}.json"
+            odds_path = DATA_DIR / "upcoming" / fname
+            if odds_path.exists():
+                try:
+                    with open(odds_path) as f:
+                        full = json.load(f)
+                    odds_data.update(full.get("matches", {}))
+                    log.info("Loaded %d %s matches from %s",
+                             len(full.get("matches", {})), _league, fname)
+                except Exception as e:
+                    log.warning("Failed to load %s: %s", fname, e)
+        if not odds_data:
+            log.warning("No odds_full*.json found across ACTIVE_LEAGUES")
             return {}
 
     confirmed = {}

@@ -90,6 +90,32 @@ def _fmt_hc(val: float) -> str:
 # =============================================================================
 # 1. CONFIGURATION — BettingConfig dataclass with ALL tunables
 # =============================================================================
+_LEAGUE_KELLY_DEFAULTS = {
+    "serie_a": 0.05,        # Live production — calibrated Apr 2026.
+    "premier_league": 0.04, # One notch tighter — pending 50+ EPL settled bets.
+}
+
+
+def _load_league_kelly_fraction(league: str, default: float = 0.05) -> float:
+    """Return Kelly fraction for *league*. Read order:
+
+      1. Per-league deployment_state.json[kelly_fraction] (if present)
+      2. _LEAGUE_KELLY_DEFAULTS[league]
+      3. caller's default
+    """
+    try:
+        state_path = MODELS_DIR / league / "deployment_state.json"
+        if state_path.exists():
+            import json
+            state = json.loads(state_path.read_text())
+            kf = state.get("kelly_fraction")
+            if kf is not None:
+                return float(kf)
+    except Exception:
+        pass
+    return _LEAGUE_KELLY_DEFAULTS.get(league, default)
+
+
 @dataclass
 class BettingConfig:
     """All configurable parameters for the unified betting system.
@@ -277,8 +303,9 @@ class BettingConfig:
     def for_league(cls, league: str = "serie_a") -> "BettingConfig":
         """Return a BettingConfig tuned for the given league.
 
-        Serie A is the default and fully calibrated. Other leagues get
-        conservative defaults until we have enough data to calibrate.
+        Serie A is the default and fully calibrated (0.05 Kelly per Apr 2026
+        edge-erosion finding). EPL gets a more conservative 0.04 Kelly
+        until 50+ EPL bets have settled and we can calibrate properly.
 
         Args:
             league: League identifier (e.g., "serie_a", "epl", "la_liga",
@@ -294,6 +321,12 @@ class BettingConfig:
             cfg.draw_stake_multiplier = min(0.90, max(0.50, _lcfg.draw_rate * 2.85)) if _lcfg else 0.70
         except Exception:
             cfg.draw_stake_multiplier = 0.70
+
+        # Per-league Kelly fraction: read from per-league deployment_state.json
+        # if present, else use league-conservative defaults. Serie A: 0.05 (live
+        # production, calibrated). EPL: 0.04 (one notch tighter pending data).
+        # TODO: re-evaluate EPL Kelly when 50+ EPL bets have settled.
+        cfg.kelly_fraction = _load_league_kelly_fraction(league_lower, default=cfg.kelly_fraction)
 
         # Situational adjustments: only apply for Serie A (calibrated data)
         if league_lower != "serie_a":
@@ -1145,6 +1178,13 @@ class UnifiedBettingEngine:
 
         # Per-market Kelly fraction (proven markets get higher fraction)
         market_kelly = rules.get("kelly_fraction", cfg.kelly_fraction)
+        # Per-league Kelly tightening: scale by league_kelly / cfg.kelly_fraction.
+        # SA stays at 1.0 (cfg default = SA value). EPL = 0.04/0.05 = 0.8x.
+        # TODO: re-evaluate EPL Kelly once 50+ EPL bets have settled.
+        _bet_league = pred.get("league", "serie_a") if pred else "serie_a"
+        _league_kelly = _load_league_kelly_fraction(_bet_league, default=cfg.kelly_fraction)
+        if cfg.kelly_fraction > 0 and _league_kelly != cfg.kelly_fraction:
+            market_kelly = market_kelly * (_league_kelly / cfg.kelly_fraction)
         kelly_raw = calculate_kelly(model_p, best_o, fraction=1.0)
         kelly_adj = calculate_kelly(model_p, best_o, fraction=market_kelly)
 
