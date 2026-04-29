@@ -322,7 +322,10 @@ class CrossMarketAnalyzer:
         """Analyze all matches."""
         results = {}
         for match_key in self.odds_data:
-            results[match_key] = self.analyze_match(match_key)
+            r = self.analyze_match(match_key)
+            if isinstance(r, dict):
+                r.setdefault("league", "serie_a")
+            results[match_key] = r
         return results
 
     def save(self, results: Dict, path: Path = None) -> Path:

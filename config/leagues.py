@@ -308,6 +308,48 @@ MATCHWEEKS_PER_SEASON: dict[str, int] = {
 DEFAULT_MATCHWEEKS = 38
 
 
+
+
+# ---------------------------------------------------------------------------
+# Team → league mapping (derived from current and recent rosters)
+# ---------------------------------------------------------------------------
+# Used to tag prediction/bet outputs with the correct league when the match
+# dict only carries home/away team names. Includes name variants seen in the
+# wild (Odds API full names, FBref short names). Add new teams here at season
+# start; missing teams fall back to "serie_a" (the historical default).
+
+_SERIE_A_TEAMS: frozenset[str] = frozenset({
+    "Atalanta", "Bologna", "Cagliari", "Como", "Cremonese", "Empoli",
+    "Fiorentina", "Genoa", "Inter", "Internazionale", "Juventus", "Lazio",
+    "Lecce", "Milan", "AC Milan", "Monza", "Napoli", "Parma", "Pisa",
+    "Roma", "AS Roma", "Sassuolo", "Torino", "Udinese", "Venezia", "Verona",
+    "Hellas Verona",
+})
+
+_PREMIER_LEAGUE_TEAMS: frozenset[str] = frozenset({
+    "Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton",
+    "Brighton and Hove Albion", "Burnley", "Chelsea", "Crystal Palace",
+    "Everton", "Fulham", "Ipswich", "Ipswich Town", "Leeds", "Leeds United",
+    "Leicester", "Leicester City", "Liverpool", "Man City", "Manchester City",
+    "Man United", "Manchester United", "Newcastle", "Newcastle United",
+    "Nottingham Forest", "Nott'm Forest", "Southampton", "Sunderland",
+    "Tottenham", "Tottenham Hotspur", "Spurs", "West Ham", "West Ham United",
+    "Wolves", "Wolverhampton Wanderers",
+})
+
+
+def infer_league(home_team: str | None = None, away_team: str | None = None) -> str:
+    """Return the league key implied by the team names. Defaults to serie_a."""
+    for t in (home_team, away_team):
+        if not t:
+            continue
+        if t in _PREMIER_LEAGUE_TEAMS:
+            return "premier_league"
+        if t in _SERIE_A_TEAMS:
+            return "serie_a"
+    return "serie_a"
+
+
 def get_matchweeks(league: str | None = None) -> int:
     """Return the number of matchweeks for *league*, defaulting to 38.
 

@@ -821,6 +821,7 @@ def generate_all_predictions() -> Tuple[List, List, List]:
 
 def save_predictions(btts_preds: List, corners_preds: List, bets: List):
     """Save all predictions."""
+    from config.leagues import infer_league
     output_dir = DATA_DIR / "upcoming"
 
     # BTTS predictions
@@ -830,6 +831,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
         "predictions": [
             {
                 "match": p.match,
+                "league": infer_league(p.home_team, p.away_team),
                 "date": p.date,
                 "btts_yes": p.btts_yes,
                 "btts_no": p.btts_no,
@@ -851,6 +853,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
         "predictions": [
             {
                 "match": p.match,
+                "league": infer_league(p.home_team, p.away_team),
                 "date": p.date,
                 "expected_total": p.expected_total_corners,
                 "home_corners": p.expected_home_corners,
@@ -870,6 +873,14 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
     recommended = [b for b in bets if b.recommendation == "BET"]
     consider = [b for b in bets if b.recommendation == "CONSIDER"]
 
+    def _bet_league(b) -> str:
+        # Bets carry "match" like "Home vs Away" — split to infer.
+        try:
+            home, away = b.match.split(" vs ", 1)
+        except ValueError:
+            return "serie_a"
+        return infer_league(home, away)
+
     bets_data = {
         "generated_at": datetime.now().isoformat(),
         "summary": {
@@ -881,6 +892,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
         "recommended": [
             {
                 "match": b.match,
+                "league": _bet_league(b),
                 "date": b.date,
                 "market": b.market,
                 "bet": f"{b.bet_type.upper()}" + (f" {b.line}" if b.line else ""),
@@ -893,6 +905,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
         "consider": [
             {
                 "match": b.match,
+                "league": _bet_league(b),
                 "bet": f"{b.market} {b.bet_type.upper()}" + (f" {b.line}" if b.line else ""),
                 "our_probability": b.our_probability,
                 "fair_odds": b.fair_odds

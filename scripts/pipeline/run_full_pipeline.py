@@ -1663,9 +1663,10 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 wrapper = {"predictions": predictions}
         except Exception:
             wrapper = {"predictions": predictions}
-        # Preserve league field through enrichment
+        # Preserve league field through enrichment (infer from team names when missing)
+        from config.leagues import infer_league as _infer_league
         for _p in predictions:
-            _p.setdefault("league", "serie_a")
+            _p.setdefault("league", _infer_league(_p.get("home_team"), _p.get("away_team")))
         from config.settings import atomic_write_json as _awj
         _awj(preds_path, wrapper, cls=_get_json_encoder())
         print(f"  Saved enriched predictions ({len(predictions)} matches)")
@@ -1826,9 +1827,11 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         if market_intel_count > 0:
             pred_data["intelligence_sources"].append("market_intelligence")
 
-        # Preserve league field through enrichment
+        # Preserve league field through enrichment (file-level league wins, then team inference)
+        from config.leagues import infer_league as _infer_league
+        _file_lg = pred_data.get("league")
         for _p in pred_data.get("predictions", []):
-            _p.setdefault("league", pred_data.get("league", "serie_a"))
+            _p.setdefault("league", _file_lg or _infer_league(_p.get("home_team"), _p.get("away_team")))
         from config.settings import atomic_write_json as _awj2
         _awj2(pred_path, pred_data, cls=_get_json_encoder())
 

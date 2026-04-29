@@ -358,7 +358,10 @@ class BookmakerAnalyzer:
         """Analyze all matches and return results."""
         results = {}
         for match_key in self.bookmaker_data:
-            results[match_key] = self.analyze_match(match_key)
+            r = self.analyze_match(match_key)
+            if isinstance(r, dict):
+                r.setdefault("league", "serie_a")
+            results[match_key] = r
 
         self.analysis = results
         return results

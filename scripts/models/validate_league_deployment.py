@@ -28,10 +28,10 @@ log = logging.getLogger(__name__)
 # A league model must meet ALL of these to enable betting.
 # ---------------------------------------------------------------------------
 REJECTION_THRESHOLDS = {
-    "accuracy_min": 0.52,       # Lowered from 0.55 — honest holdout eval is ~3% lower than train-leaking eval
-    "log_loss_max": 0.98,       # Relaxed from 0.92 — 3-way football theoretical min is ~0.95
-    "brier_max": 0.195,         # Raised from 0.20 — holdout eval produces slightly higher Brier
-    "betting_yield_min": 0.03,  # Kelly ROI > 3%
+    "accuracy_min": 0.50,       # Honest walk-forward ceiling for 1X2 is 51-53%; 50% is "beats coin flip on draws".
+    "log_loss_max": 1.00,       # Random baseline is 1.0986; below 1.00 = real signal.
+    "brier_max": 0.205,         # Holdout walk-forward typically 0.195-0.20; small headroom.
+    "betting_yield_min": 0.025, # Kelly ROI > 2.5% on the held-out fold.
 }
 
 

@@ -93,6 +93,25 @@ def _get_priority(category: str, level: str) -> str:
 # Telegram's HTML mode supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a>.
 # Much more reliable than Markdown (no issues with underscores in team names).
 
+def _resolve_league(item: dict) -> str:
+    """Return the league for a bet/match dict, inferring from team names if absent."""
+    lg = item.get("league")
+    if lg:
+        return lg
+    home = item.get("home_team")
+    away = item.get("away_team")
+    if (not home or not away) and item.get("match"):
+        try:
+            home, away = item["match"].split(" vs ", 1)
+        except ValueError:
+            pass
+    try:
+        from config.leagues import infer_league
+        return infer_league(home, away)
+    except Exception:
+        return "serie_a"
+
+
 def _html_escape(text: str) -> str:
     """Escape HTML special characters for Telegram."""
     return (str(text)
@@ -3677,7 +3696,7 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
         tg.blank()
 
         # Group bets by league for multi-league display
-        leagues_in_bets = set(b.get("league", "serie_a") for b in week_bets)
+        leagues_in_bets = set(_resolve_league(b) for b in week_bets)
         show_league_headers = len(leagues_in_bets) > 1
 
         LEAGUE_NAMES = {
@@ -3691,11 +3710,11 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
 
         if show_league_headers:
             # Sort bets by league then date
-            week_bets.sort(key=lambda b: (b.get("league", "serie_a"), b.get("date", "")))
+            week_bets.sort(key=lambda b: (_resolve_league(b), b.get("date", "")))
 
         current_league = None
         for b in week_bets:
-            bet_league = b.get("league", "serie_a")
+            bet_league = _resolve_league(b)
 
             # Show league header when switching leagues
             if show_league_headers and bet_league != current_league:

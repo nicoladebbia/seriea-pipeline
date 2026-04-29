@@ -122,14 +122,25 @@ def _save_json(path: Path, data: dict):
 
 
 def _merge_matches(existing_data: dict, new_matches: dict, timestamp_key: str = "analyzed_at") -> dict:
-    """Merge new EPL match data into existing file data (preserving Serie A)."""
+    """Merge new EPL match data into existing file data (preserving Serie A).
+
+    Tags every EPL entry with league=premier_league. Existing untagged entries
+    are assumed to be Serie A (the historical default) and tagged accordingly.
+    """
     if not existing_data:
         existing_data = {timestamp_key: datetime.now().isoformat(), "matches": {}}
 
     existing_matches = existing_data.get("matches", {})
     if isinstance(existing_matches, list):
-        # Convert list format to dict keyed by match name
         existing_matches = {m.get("match", ""): m for m in existing_matches if m.get("match")}
+
+    for k, v in existing_matches.items():
+        if isinstance(v, dict) and "league" not in v:
+            v["league"] = "serie_a"
+
+    for k, v in new_matches.items():
+        if isinstance(v, dict):
+            v["league"] = "premier_league"
 
     existing_matches.update(new_matches)
     existing_data["matches"] = existing_matches

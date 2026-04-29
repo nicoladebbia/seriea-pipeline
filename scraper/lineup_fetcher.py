@@ -38,6 +38,11 @@ log = logging.getLogger(__name__)
 API_BASE = "https://v3.football.api-sports.io"
 from config.settings import get_current_season
 SERIE_A_LEAGUE_ID = 135  # API-Football Serie A ID
+PREMIER_LEAGUE_LEAGUE_ID = 39  # API-Football Premier League ID
+_API_FOOTBALL_LEAGUE_IDS = {
+    "serie_a": SERIE_A_LEAGUE_ID,
+    "premier_league": PREMIER_LEAGUE_LEAGUE_ID,
+}
 SERIE_A_SEASON = int(get_current_season().split("-")[0])  # e.g., 2025 from "2025-2026"
 
 # Team name normalization is handled by config/team_names.py via
@@ -138,8 +143,12 @@ class LineupFetcher:
         if cache_key in self._fixture_cache:
             return self._fixture_cache[cache_key]
 
+        from config.leagues import infer_league
+        league_key = infer_league(home_team, away_team)
+        api_league_id = _API_FOOTBALL_LEAGUE_IDS.get(league_key, SERIE_A_LEAGUE_ID)
+
         data = self._api_get("fixtures", {
-            "league": SERIE_A_LEAGUE_ID,
+            "league": api_league_id,
             "season": SERIE_A_SEASON,
             "date": date,
         })
@@ -429,9 +438,17 @@ def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
 
     # ── Save merged results ───────────────────────────────────────────
     if confirmed:
+        from config.leagues import infer_league
         output_dir = DATA_DIR / "upcoming"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "confirmed_lineups.json"
+
+        # Tag each lineup with league
+        for lineup in confirmed.values():
+            if isinstance(lineup, dict) and "league" not in lineup:
+                lineup["league"] = infer_league(
+                    lineup.get("home_team"), lineup.get("away_team")
+                )
 
         # Determine primary source for metadata
         sources = set()

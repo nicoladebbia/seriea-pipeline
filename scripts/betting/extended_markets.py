@@ -835,8 +835,10 @@ def generate_extended_markets():
         def safe_odds(p):
             return round(1 / p, 2) if p > 0.001 else 99
 
+        from config.leagues import infer_league
         matches[match] = {
             "match": match,
+            "league": pred.get("league") or infer_league(home_team, away_team),
             "home_team": home_team,
             "away_team": away_team,
             "home_xg": home_xg,

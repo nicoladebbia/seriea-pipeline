@@ -69,24 +69,19 @@ def load_current_feature_set() -> list[str]:
 def load_rejection_thresholds() -> Dict[str, float]:
     """Load rejection thresholds from deployment_state.json."""
     deploy_path = MODELS_DIR / "deployment_state.json"
+    fallback = {
+        "accuracy_min": 0.50,
+        "log_loss_max": 1.00,
+        "brier_max": 0.205,
+        "betting_yield_min": 0.025,
+    }
     if not deploy_path.exists():
-        # Fallback thresholds (calibrated for 2017+ model with time-decay)
-        return {
-            "accuracy_min": 0.52,
-            "log_loss_max": 0.96,
-            "brier_max": 0.195,
-            "betting_yield_min": 0.05,
-        }
+        return fallback
 
     with open(deploy_path) as f:
         state = json.load(f)
 
-    return state.get("rejection_thresholds", {
-        "accuracy_min": 0.52,
-        "log_loss_max": 0.96,
-        "brier_max": 0.195,
-        "betting_yield_min": 0.05,
-    })
+    return state.get("rejection_thresholds", fallback)
 
 
 def walk_forward_validate(

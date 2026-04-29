@@ -111,11 +111,15 @@ def main() -> int:
             f"Parse {label}",
         )
 
-    # --- Step 4: Sofascore refresh ---
-    results["sofascore"] = run(
-        [py, "-m", "scripts.data.scrape_sofascore", "--league", "serie_a", "--season", CURRENT_SEASON],
-        "Sofascore refresh",
-    )
+    # --- Step 4: Sofascore refresh (per active league) ---
+    from config.leagues import ACTIVE_LEAGUES
+    sofascore_results = {}
+    for _league in ACTIVE_LEAGUES:
+        sofascore_results[_league] = run(
+            [py, "-m", "scripts.data.scrape_sofascore", "--league", _league, "--season", CURRENT_SEASON],
+            f"Sofascore refresh ({_league})",
+        )
+    results["sofascore"] = all(sofascore_results.values())
 
     # --- Step 5: Understat refresh (best-effort — scraper may fail on schema changes) ---
     try:
@@ -138,22 +142,31 @@ def main() -> int:
         log.error("  ✗ Understat: %s", e)
         results["understat"] = False
 
-    # --- Step 6: Referee refresh (remove cache to force re-scrape) ---
+    # --- Step 6: Referee refresh (per active league; SA has scraper, EPL falls back) ---
     try:
-        cache = PROJECT / "data" / "external" / "referee" / "referee_assignments_serie_a.parquet"
-        if cache.exists():
-            cache.unlink()
         from scraper.referee import scrape_all_referee_assignments
         import pandas as pd
-        new_df = scrape_all_referee_assignments(seasons=[CURRENT_SEASON], league="serie_a")
-        if len(new_df) > 0:
+        ref_dfs = []
+        for _league in ACTIVE_LEAGUES:
+            cache = PROJECT / "data" / "external" / "referee" / f"referee_assignments_{_league}.parquet"
+            if cache.exists():
+                cache.unlink()
+            try:
+                new_df = scrape_all_referee_assignments(seasons=[CURRENT_SEASON], league=_league)
+                if len(new_df) > 0:
+                    ref_dfs.append(new_df)
+                    log.info("  ✓ Referees (%s): %d rows", _league, len(new_df))
+            except Exception as e:
+                log.warning("  ✗ Referees (%s): %s", _league, e)
+        if ref_dfs:
             combined_path = PROJECT / "data" / "external" / "referee" / "referee_assignments.parquet"
+            new_combined = pd.concat(ref_dfs, ignore_index=True)
             if combined_path.exists():
                 old = pd.read_parquet(combined_path)
                 other = old[old["season"] != CURRENT_SEASON] if "season" in old.columns else old
-                combined = pd.concat([other, new_df], ignore_index=True)
+                combined = pd.concat([other, new_combined], ignore_index=True)
             else:
-                combined = new_df
+                combined = new_combined
             combined.to_parquet(combined_path, index=False)
             log.info("  ✓ Referees: %d rows total", len(combined))
             results["referees"] = True
@@ -168,7 +181,7 @@ def main() -> int:
         import pandas as pd
         from scraper.weather import fetch_weather_for_matches
         m = pd.read_parquet(PROJECT / "data" / "parsed" / "matches.parquet")
-        m = m[(m["league"] == "serie_a") & (m["season"] == CURRENT_SEASON)]
+        m = m[m["league"].isin(ACTIVE_LEAGUES) & (m["season"] == CURRENT_SEASON)]
         w_path = PROJECT / "data" / "external" / "weather.parquet"
         w = pd.read_parquet(w_path) if w_path.exists() else pd.DataFrame()
         existing_ids = set(w["match_id"]) if len(w) else set()

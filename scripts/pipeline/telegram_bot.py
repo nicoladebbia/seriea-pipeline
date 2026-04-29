@@ -939,7 +939,7 @@ def _handle_bets() -> str:
             return "\U0001f4ad No value bets right now. Market is efficient today."
 
         # Check if multiple leagues are present
-        leagues_in_bets = set(b.get("league", "serie_a") for b in bets)
+        leagues_in_bets = set(_resolve_league(b) for b in bets)
         multi_league = len(leagues_in_bets) > 1
 
         tg = TgMsg()
@@ -950,7 +950,7 @@ def _handle_bets() -> str:
             # Group bets by league
             bets_by_league = {}
             for b in bets:
-                league = b.get("league", "serie_a")
+                league = _resolve_league(b)
                 bets_by_league.setdefault(league, []).append(b)
 
             for league, league_bets in bets_by_league.items():
@@ -980,6 +980,25 @@ _BOOKMAKER_DISPLAY = {
     "DC bookmaker": "DC Book",
     "alt_totals": "Alt Totals",
 }
+
+
+def _resolve_league(item: dict) -> str:
+    """Return the league for a bet/match dict, inferring from team names if absent."""
+    lg = item.get("league")
+    if lg:
+        return lg
+    home = item.get("home_team")
+    away = item.get("away_team")
+    if (not home or not away) and item.get("match"):
+        try:
+            home, away = item["match"].split(" vs ", 1)
+        except ValueError:
+            pass
+    try:
+        from config.leagues import infer_league
+        return infer_league(home, away)
+    except Exception:
+        return "serie_a"
 
 
 def _format_bet_line(tg, b: dict, mkt_names: dict, escape_fn):
@@ -1567,7 +1586,7 @@ def _handle_today() -> str:
             with open(preds_path) as f:
                 preds = json.load(f)
             for p in preds.get("predictions", []):
-                p.setdefault("league", "serie_a")
+                p.setdefault("league", _resolve_league(p))
                 all_preds.append(p)
 
         # Load extra league predictions
@@ -1606,7 +1625,7 @@ def _handle_today() -> str:
         leagues_present = []
         matches_by_league = {}
         for m in today_matches:
-            league = m.get("league", "serie_a")
+            league = _resolve_league(m)
             matches_by_league.setdefault(league, []).append(m)
             if league not in leagues_present:
                 leagues_present.append(league)

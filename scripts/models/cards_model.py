@@ -527,8 +527,16 @@ def save_cards_predictions(
     bets: List[CardsBet]
 ):
     """Save predictions and bets to JSON files."""
+    from config.leagues import infer_league
 
     output_dir = DATA_DIR / "upcoming"
+
+    def _bet_league(b) -> str:
+        try:
+            home, away = b.match.split(" vs ", 1)
+        except (ValueError, AttributeError):
+            return "serie_a"
+        return infer_league(home, away)
 
     # Save predictions
     predictions_data = {
@@ -538,6 +546,7 @@ def save_cards_predictions(
         "predictions": [
             {
                 "match": p.match,
+                "league": infer_league(p.home_team, p.away_team),
                 "date": p.date,
                 "expected_cards": p.expected_cards,
                 "expected_yellows": p.expected_yellows,
@@ -577,6 +586,7 @@ def save_cards_predictions(
         "recommended": [
             {
                 "match": b.match,
+                "league": _bet_league(b),
                 "date": b.date,
                 "bet": f"{b.bet_type.upper()} {b.line}",
                 "our_probability": b.our_probability,
@@ -589,6 +599,7 @@ def save_cards_predictions(
         "consider": [
             {
                 "match": b.match,
+                "league": _bet_league(b),
                 "date": b.date,
                 "bet": f"{b.bet_type.upper()} {b.line}",
                 "our_probability": b.our_probability,
