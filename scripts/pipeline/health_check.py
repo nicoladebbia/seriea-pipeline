@@ -526,12 +526,31 @@ def check_feature_model_alignment() -> Dict:
 
             model_name = meta_path.stem.replace("_metadata", "")
             missing_in_data = model_features - feature_cols
+            # Lineup-dependent features cannot be produced at runtime without
+            # confirmed lineups (xi_quality plugin). CatBoost handles NaN; this
+            # is expected, not critical. Downgrade to WARNING when the only
+            # missing features are from this allowlist.
+            _LINEUP_OPTIONAL = {
+                "home_xi_minutes_continuity", "away_xi_minutes_continuity",
+                "home_xi_avg_minutes", "away_xi_avg_minutes",
+                "home_xi_quality_score", "away_xi_quality_score",
+            }
             if missing_in_data:
-                result["status"] = "CRITICAL"
-                result["issues"].append(
-                    f"{model_name}: {len(missing_in_data)} features missing in data: "
-                    f"{', '.join(sorted(missing_in_data)[:5])}"
-                )
+                if missing_in_data <= _LINEUP_OPTIONAL:
+                    # Only optional lineup features missing — informational.
+                    if result["status"] == "OK":
+                        result["status"] = "OK"  # don't downgrade
+                    result["issues"].append(
+                        f"{model_name}: {len(missing_in_data)} optional "
+                        f"lineup-dependent features unavailable (expected): "
+                        f"{', '.join(sorted(missing_in_data)[:5])}"
+                    )
+                else:
+                    result["status"] = "CRITICAL"
+                    result["issues"].append(
+                        f"{model_name}: {len(missing_in_data)} features missing in data: "
+                        f"{', '.join(sorted(missing_in_data)[:5])}"
+                    )
             result[f"{model_name}_features"] = len(model_features)
 
     except Exception as e:
@@ -609,11 +628,17 @@ def run_health_check() -> Dict:
         for lg in logs.get("large_logs", []):
             issues.append(("WARNING", f"Large log file: {lg['file']} ({lg['size_mb']} MB)"))
 
-    # Feature-model alignment issues
+    # Feature-model alignment issues. Optional lineup-dependent features
+    # missing is expected (handled at predict time as NaN); demote to INFO.
     alignment = result.get("feature_model_alignment", {})
-    if alignment.get("status") == "CRITICAL":
-        for iss in alignment.get("issues", []):
+    align_status = alignment.get("status", "OK")
+    for iss in alignment.get("issues", []):
+        if "optional lineup-dependent" in iss:
+            issues.append(("INFO", f"Feature note: {iss}"))
+        elif align_status == "CRITICAL":
             issues.append(("CRITICAL", f"Feature-model mismatch: {iss}"))
+        else:
+            issues.append(("WARNING", f"Feature-model mismatch: {iss}"))
 
     # Data quality issues
     dq = result.get("data_quality", {})
