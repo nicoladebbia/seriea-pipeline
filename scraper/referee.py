@@ -82,7 +82,9 @@ WF_SEASON_IDS_BY_LEAGUE: dict[str, dict[str, str]] = {
     #   2. Grep the response for `se\d{5,}` — the first match is the season ID.
     #   3. Add the (season, id) here; the scraper will pick it up next run.
     "premier_league": {
-        # TODO: backfill IDs by running scraper interactively when network is up.
+        # Discovered via _discover_season_id (worldfootball.net). Earlier seasons
+        # to be backfilled on first interactive run that has network access.
+        "2025-2026": "se74714",
     },
 }
 
@@ -103,6 +105,22 @@ def _resolve_wf_league(league: str) -> tuple[str, dict[str, str]]:
         )
     season_ids = WF_SEASON_IDS_BY_LEAGUE.get(league, {})
     return slug, season_ids
+
+
+def _get_season_id(league: str, season: str) -> str | None:
+    """Get the WF season ID for (league, season). Tries hardcoded map first;
+    falls back to runtime discovery and caches the result in WF_SEASON_IDS_BY_LEAGUE
+    so subsequent calls in the same process don't re-fetch."""
+    league_slug, season_ids = _resolve_wf_league(league)
+    if season in season_ids:
+        return season_ids[season]
+    discovered = _discover_season_id(league_slug, season)
+    if discovered:
+        WF_SEASON_IDS_BY_LEAGUE.setdefault(league, {})[season] = discovered
+        log.info("Discovered %s %s season ID: %s — consider hardcoding for speed",
+                 league, season, discovered)
+        return discovered
+    return None
 
 # Team name mapping: worldfootball.net name -> our internal name
 # This handles the most common variations
@@ -239,20 +257,15 @@ def get_season_referees(season: str, league: str = "serie_a") -> list[tuple[str,
 
     Returns list of (referee_name, person_id, slug).
     """
-    league_slug, season_ids = _resolve_wf_league(league)
-    season_id = season_ids.get(season)
+    league_slug, _ = _resolve_wf_league(league)
+    season_id = _get_season_id(league, season)
     if not season_id:
-        # Try auto-discovery from the schedule page (Cloudflare-bypassed via curl_cffi)
-        season_id = _discover_season_id(league_slug, season)
-        if not season_id:
-            log.warning(
-                "No season ID for %s (%s); auto-discovery failed. "
-                "Add it manually under WF_SEASON_IDS_BY_LEAGUE['%s']['%s'] in scraper/referee.py.",
-                season, league, league, season
-            )
-            return []
-        log.info("Discovered %s season ID: %s — consider hardcoding for speed",
-                 league, season_id)
+        log.warning(
+            "No season ID for %s (%s); auto-discovery failed. "
+            "Add it manually under WF_SEASON_IDS_BY_LEAGUE['%s']['%s'] in scraper/referee.py.",
+            season, league, league, season
+        )
+        return []
 
     url = f"{WF_BASE}/referees/{league_slug}-{season}/"
     log.info("Fetching referee list for %s: %s", season, url)
@@ -304,8 +317,8 @@ def scrape_referee_matches(
     Returns list of dicts with: match_date, home_team, away_team, referee,
     yellows, second_yellows, reds, matchweek.
     """
-    league_slug, season_ids = _resolve_wf_league(league)
-    season_id = season_ids.get(season)
+    league_slug, _ = _resolve_wf_league(league)
+    season_id = _get_season_id(league, season)
     if not season_id:
         return []
 
