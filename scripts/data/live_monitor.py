@@ -50,8 +50,14 @@ log = logging.getLogger(__name__)
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 API_BASE = "https://api.the-odds-api.com/v4"
-SPORT_KEY = "soccer_italy_serie_a"
+SPORT_KEY = "soccer_italy_serie_a"  # legacy default; prefer SPORT_KEYS_BY_LEAGUE
 POLL_INTERVAL_SECONDS = 15 * 60  # 15 minutes
+
+# Multi-league sport keys (all leagues we actively monitor for live events)
+SPORT_KEYS_BY_LEAGUE = {
+    "serie_a": "soccer_italy_serie_a",
+    "premier_league": "soccer_epl",
+}
 
 LIVE_DIR = DATA_DIR / "live"
 
@@ -76,28 +82,28 @@ def _track_credits(response, endpoint: str = "live_monitor"):
         log.debug(f"Failed to track API credits: {e}")
 
 
-def fetch_live_scores(api_key: str) -> List[Dict]:
+def fetch_live_scores(api_key: str, sport_key: str = SPORT_KEY) -> List[Dict]:
     """Call /scores endpoint. Returns list of events with scores.
 
-    Cost: 2 credits (with daysFrom).
+    Cost: 2 credits (with daysFrom). Per league.
     """
-    url = f"{API_BASE}/sports/{SPORT_KEY}/scores/"
+    url = f"{API_BASE}/sports/{sport_key}/scores/"
     params = {"apiKey": api_key, "daysFrom": 1}
 
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
-    _track_credits(resp)
+    _track_credits(resp, endpoint=f"live_monitor:{sport_key}:scores")
 
     return resp.json()
 
 
-def fetch_live_odds(api_key: str) -> List[Dict]:
+def fetch_live_odds(api_key: str, sport_key: str = SPORT_KEY) -> List[Dict]:
     """Call /odds endpoint for h2h,totals,spreads markets, eu region.
 
     Combines all three markets in a single API call for efficiency.
-    Cost: 1 credit.
+    Cost: 1 credit. Per league.
     """
-    url = f"{API_BASE}/sports/{SPORT_KEY}/odds/"
+    url = f"{API_BASE}/sports/{sport_key}/odds/"
     params = {
         "apiKey": api_key,
         "regions": "eu",
@@ -107,9 +113,91 @@ def fetch_live_odds(api_key: str) -> List[Dict]:
 
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
-    _track_credits(resp)
+    _track_credits(resp, endpoint=f"live_monitor:{sport_key}:odds")
 
     return resp.json()
+
+
+def _leagues_with_active_matches(window_min: int = 180) -> set[str]:
+    """Return set of leagues with a match in (kickoff - 30min, kickoff + 180min).
+
+    Used to skip API calls for leagues that have no relevant matches.
+    Reads fixtures_*.json (cheap, local).
+    """
+    from datetime import datetime, timezone
+    import json as _json
+    active = set()
+    fixture_paths = {
+        "serie_a": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026.json",
+        "premier_league": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026_premier_league.json",
+    }
+    now_ts = datetime.now(timezone.utc).timestamp()
+    for league, p in fixture_paths.items():
+        if league not in SPORT_KEYS_BY_LEAGUE or not p.exists():
+            continue
+        try:
+            fixtures = _json.loads(p.read_text())
+        except Exception:
+            continue
+        if not isinstance(fixtures, list):
+            continue
+        for fx in fixtures:
+            ts = fx.get("startTimestamp")
+            if not ts:
+                continue
+            elapsed_min = (now_ts - ts) / 60
+            if -30 <= elapsed_min <= window_min:
+                active.add(league)
+                break
+    return active
+
+
+def fetch_live_scores_all_leagues(api_key: str, leagues: set[str] | None = None) -> List[Dict]:
+    """Pull /scores for the active leagues. If `leagues` is None, only call
+    leagues that actually have a match in the live window — saves credits when
+    one league has no matches today.
+
+    Cost: 2 credits per league called.
+    """
+    target = leagues if leagues is not None else _leagues_with_active_matches()
+    if not target:
+        # No live matches anywhere — skip entirely
+        return []
+    out: List[Dict] = []
+    for league in target:
+        sport_key = SPORT_KEYS_BY_LEAGUE.get(league)
+        if not sport_key:
+            continue
+        try:
+            league_scores = fetch_live_scores(api_key, sport_key=sport_key)
+            for ev in league_scores:
+                ev["_league"] = league
+                ev["_sport_key"] = sport_key
+            out.extend(league_scores)
+        except Exception as e:
+            log.warning("fetch_live_scores(%s) failed: %s", league, e)
+    return out
+
+
+def fetch_live_odds_all_leagues(api_key: str, leagues: set[str] | None = None) -> List[Dict]:
+    """Pull /odds for active leagues only. Cost: 1 credit per league called."""
+    target = leagues if leagues is not None else _leagues_with_active_matches()
+    if not target:
+        return []
+    out: List[Dict] = []
+    for league in target:
+        sport_key = SPORT_KEYS_BY_LEAGUE.get(league)
+        if not sport_key:
+            continue
+        try:
+            league_odds = fetch_live_odds(api_key, sport_key=sport_key)
+            for ev in league_odds:
+                ev["_league"] = league
+                ev["_sport_key"] = sport_key
+            out.extend(league_odds)
+        except Exception as e:
+            log.warning("fetch_live_odds(%s) failed: %s", league, e)
+    return out
 
 
 # ─── Match State Logic ────────────────────────────────────────────────────────
@@ -652,12 +740,12 @@ def poll_once() -> Dict:
     today = now.strftime("%Y-%m-%d")
     matchday = load_matchday(today)
 
-    # ── API Call 1: Scores (Odds API — primary) ──
-    log.info("Fetching live scores...")
+    # ── API Call 1: Scores (Odds API — primary) for ALL active leagues ──
+    log.info("Fetching live scores (all leagues)...")
     scores_data = []
     odds_api_scores_failed = False
     try:
-        scores_data = fetch_live_scores(api_key)
+        scores_data = fetch_live_scores_all_leagues(api_key)
     except Exception as e:
         log.warning("Odds API scores fetch failed: %s", e)
         odds_api_scores_failed = True
@@ -689,12 +777,15 @@ def poll_once() -> Dict:
                 "_score_source": "football_data",
             })
 
-    # ── API Call 2: Odds (h2h + totals + spreads combined) ──
-    log.info("Fetching live odds (h2h,totals,spreads — eu)...")
-    odds_data = fetch_live_odds(api_key)
+    # ── API Call 2: Odds (h2h + totals + spreads combined) for active leagues only ──
+    active = _leagues_with_active_matches()
+    log.info("Fetching live odds (h2h,totals,spreads — eu); active leagues: %s",
+             sorted(active) or "none")
+    odds_data = fetch_live_odds_all_leagues(api_key, leagues=active)
 
     matchday["polls"] += 1
-    matchday["api_calls"] += 2
+    # 2 calls per league with an active match (scores + odds = 2 calls)
+    matchday["api_calls"] += 2 * len(active)
 
     # Build odds lookup: match_key → bookmaker odds (h2h + totals + spreads)
     odds_lookup: Dict[str, Dict] = {}
