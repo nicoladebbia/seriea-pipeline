@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unified Sofascore watcher. Runs every 10 minutes.
+         Refreshes standings on every tick (cheap HTML scrape).
+         Triggers full API refresh when:
+           - a match just ended (kickoff + 110-140min)
+           - a match kicks off soon (kickoff - 30 to -90min)
+           - every 18th tick (~3h periodic heartbeat)
+
+         Replaces:
+           com.seriea-pipeline.sofascore-refresh (every 3h)
+           com.seriea-pipeline.match-end-refresh (every 10m)
+
+         Install:
+             cp scripts/pipeline/com.seriea-pipeline.sofascore-watcher.plist \
+                ~/Library/LaunchAgents/
+             launchctl load ~/Library/LaunchAgents/com.seriea-pipeline.sofascore-watcher.plist
+    -->
+
+    <key>Label</key>
+    <string>com.seriea-pipeline.sofascore-watcher</string>
+
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nicoladebbia/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>scripts.data.sofascore_watcher</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/nicoladebbia</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/sofascore_watcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/sofascore_watcher-err.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+</dict>
+</plist>

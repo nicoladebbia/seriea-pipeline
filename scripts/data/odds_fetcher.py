@@ -1766,6 +1766,21 @@ def fetch_and_save_odds(markets: List[str] = None, use_cache: bool = True, leagu
     # Save (league-aware: non-serie_a writes to suffixed files)
     save_odds(unified_data, league=league)
 
+    # Update pipeline_state so health-monitor sees a recent fetch.
+    # Without this, the staleness check perpetually warns even when fetches succeed.
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        state_path = DATA_DIR / "pipeline_state.json"
+        state = {}
+        if state_path.exists():
+            with open(state_path) as fh:
+                state = json.load(fh) or {}
+        state["last_odds_fetch"] = _dt.now(_tz.utc).isoformat()
+        with open(state_path, "w") as fh:
+            json.dump(state, fh, indent=2)
+    except Exception as e:
+        log.debug(f"Failed to update last_odds_fetch state: {e}")
+
     # Fetch extra markets via per-event endpoint (btts, double_chance, team_totals, etc.)
     log.info("Fetching extra markets via per-event endpoint...")
     raw_extra = fetch_extra_markets_per_event(use_cache=use_cache, league=league)

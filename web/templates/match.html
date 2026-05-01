@@ -410,7 +410,10 @@ function renderTimeline(events, m) {
       text = `<strong>${e.player}</strong> <span class="text-tertiary">${e.card_type}</span>`;
     } else if (e._type === 'sub') {
       icon = '<div class="timeline-icon timeline-icon--sub">&#8644;</div>';
-      text = `<span class="text-red">${e.player_out || '?'}</span> &#8594; <span class="text-green">${e.player_in || '?'}</span>`;
+      const offPart = e.player_out
+        ? `<span class="text-red">${e.player_out}</span> &#8594; `
+        : '';
+      text = `${offPart}<span class="text-green">${e.player_in || ''}</span>`;
     }
 
     html += `<div class="timeline-event" style="${e.is_home ? '' : 'flex-direction: row-reverse; text-align: right;'}">

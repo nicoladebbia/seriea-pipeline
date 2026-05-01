@@ -158,10 +158,19 @@
   }
 </style>
 
-<!-- League Filter Tabs -->
-<div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);">
-  <a href="/teams?league=serie_a" class="zone-pill {{ 'zone-pill--active' if league_param == 'serie_a' else '' }}" style="text-decoration:none;">Serie A</a>
-  <a href="/teams?league=premier_league" class="zone-pill {{ 'zone-pill--active' if league_param == 'premier_league' else '' }}" style="text-decoration:none;">Premier League</a>
+<!-- League Switcher + Matchweek Banner -->
+<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:var(--space-4);flex-wrap:wrap;">
+  <div style="display:flex;align-items:center;gap:10px;">
+    <label for="league-select" style="font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-tertiary);font-weight:600;">League</label>
+    <select id="league-select" onchange="window.location.href='/standings?league='+this.value" style="padding:7px 28px 7px 14px;border-radius:99px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);color:#fff;font-size:13px;font-weight:600;cursor:pointer;">
+      <option value="serie_a" {% if league_param == 'serie_a' %}selected{% endif %}>Serie A</option>
+      <option value="premier_league" {% if league_param == 'premier_league' %}selected{% endif %}>Premier League</option>
+    </select>
+  </div>
+  <div id="matchweek-banner" style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:99px;background:linear-gradient(135deg,rgba(167,139,250,0.18),rgba(96,165,250,0.10));border:1px solid rgba(167,139,250,0.30);font-size:12px;font-weight:600;color:#c4a8ff;">
+    <span style="width:6px;height:6px;border-radius:50%;background:#a78bfa;box-shadow:0 0 6px #a78bfa;"></span>
+    <span>Matchweek <span id="current-matchweek" style="font-variant-numeric:tabular-nums;">—</span></span>
+  </div>
 </div>
 
 <!-- Compare Banner (hidden until 2 teams selected) -->
@@ -408,6 +417,9 @@ async function loadTeams() {
     } else {
       document.getElementById('table-season-title').textContent = _leagueName;
     }
+    // Matchweek banner
+    const mwEl = document.getElementById('current-matchweek');
+    if (mwEl) mwEl.textContent = data.current_matchweek || '—';
     if (_teamsData.length === 0) {
       document.getElementById('league-table-body').innerHTML = `<tr><td colspan="20" style="text-align:center;padding:var(--space-12) 0;color:var(--text-tertiary);">
         <div style="font-size:15px;font-weight:600;margin-bottom:var(--space-2);">${_leagueName} standings not yet available</div>

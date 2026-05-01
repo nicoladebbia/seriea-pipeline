@@ -2591,15 +2591,17 @@ function updatePollStatus(active, interval) {
   const dot = document.getElementById('poll-dot');
   const label = document.getElementById('poll-label');
   if (!wrapper) return;
-  wrapper.style.display = '';
+  // Hide entirely when not actively polling — avoids the stale "Live polling
+  // (5m)" / "Polling inactive" badge sitting on the page when there's nothing
+  // to track. We only want to surface the indicator while a match is being
+  // actively monitored.
   if (active) {
+    wrapper.style.display = '';
     dot.className = 'poll-dot active';
     label.textContent = `Live polling (${Math.round(interval/60)}m)`;
     label.style.color = 'var(--green)';
   } else {
-    dot.className = 'poll-dot inactive';
-    label.textContent = 'Polling inactive';
-    label.style.color = 'var(--text-tertiary)';
+    wrapper.style.display = 'none';
   }
 }
 

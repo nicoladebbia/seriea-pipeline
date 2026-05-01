@@ -317,6 +317,468 @@ def _load_json(path: Path, default=None):
     return default
 
 
+# ── Standings derived from Sofascore parquet (single source of truth) ──
+_standings_cache: dict[str, tuple[float, dict]] = {}  # league → (cached_at, payload)
+_STANDINGS_TTL = 60  # 60s — recomputes from parquet on each tab refresh
+
+_LEAGUE_PARQUET = {
+    "serie_a": "data/external/sofascore/player_match_stats.parquet",
+    "premier_league": "data/external/sofascore/player_match_stats_premier_league.parquet",
+}
+
+_LEAGUE_FIXTURES_FILE = {
+    "serie_a": "data/external/sofascore/fixtures_2025_2026.json",
+    "premier_league": "data/external/sofascore/fixtures_2025_2026_premier_league.json",
+}
+
+# Sofascore tournament SEO slugs (used for HTML scraping fallback when API blocked)
+_LEAGUE_SOFASCORE_PAGE = {
+    "serie_a": ("italy/serie-a", 23),
+    "premier_league": ("england/premier-league", 17),
+}
+
+# Live HTML standings cache (5min TTL on success; 30s on failure for fast retry)
+_html_standings_cache: dict[str, tuple[float, dict]] = {}
+_HTML_STANDINGS_TTL = 300
+
+# Sentinel teams — the league is broken if these don't appear
+_HTML_SENTINEL_TEAM = {
+    "serie_a": "Inter",
+    "premier_league": "Arsenal",
+}
+
+# Per-league HTML scrape health.
+# {league: {last_success_at, last_attempt_at, consecutive_failures, last_error}}
+_html_health: dict[str, dict] = {}
+_HTML_FAILURE_THRESHOLD = 3  # consecutive failures before "broken"
+
+
+def _html_health_now(league: str) -> dict:
+    """Return health entry for a league, creating it if missing."""
+    return _html_health.setdefault(league, {
+        "last_success_at": 0.0,
+        "last_attempt_at": 0.0,
+        "consecutive_failures": 0,
+        "last_error": "",
+        "schema_break": False,
+    })
+
+
+def _html_is_broken(league: str) -> bool:
+    """True if HTML scrape has been failing repeatedly OR schema-broke."""
+    h = _html_health_now(league)
+    return h["consecutive_failures"] >= _HTML_FAILURE_THRESHOLD or h["schema_break"]
+
+
+def _live_standings_via_html(league: str) -> dict:
+    """Scrape live standings from Sofascore tournament HTML page.
+
+    Self-instrumenting: tracks success/failure per league. Sentinel-checks the
+    parsed payload (must contain a known team) so silent schema breaks trip
+    the breaker. Returns {} on any failure — caller falls back to parquet.
+    """
+    import time as _t
+    now = _t.time()
+    h = _html_health_now(league)
+
+    # Cache hit on a recent successful payload — short-circuit
+    if league in _html_standings_cache:
+        cached_at, payload = _html_standings_cache[league]
+        if (now - cached_at) < _HTML_STANDINGS_TTL:
+            import copy
+            return copy.deepcopy(payload)
+
+    h["last_attempt_at"] = now
+    slug_info = _LEAGUE_SOFASCORE_PAGE.get(league)
+    if not slug_info:
+        h["last_error"] = "league not configured"
+        h["consecutive_failures"] += 1
+        return {}
+    slug, _tid = slug_info
+    url = f"https://www.sofascore.com/tournament/football/{slug}/{_tid}"
+
+    try:
+        from curl_cffi import requests as cffi  # type: ignore
+        s = cffi.Session(impersonate="chrome120")
+        s.headers.update({
+            "Referer": "https://www.google.com/",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        r = s.get(url, timeout=8)
+        if r.status_code != 200:
+            err = f"HTTP {r.status_code}"
+            log.warning("HTML standings %s: %s", league, err)
+            h["last_error"] = err
+            h["consecutive_failures"] += 1
+            return {}
+
+        import re as _re
+        m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
+        if not m:
+            err = "NEXT_DATA script not found"
+            log.error("HTML standings %s schema break: %s", league, err)
+            h["last_error"] = err
+            h["schema_break"] = True
+            h["consecutive_failures"] += 1
+            return {}
+
+        data = json.loads(m.group(1))
+        st_list = data.get("props", {}).get("pageProps", {}).get("initialProps", {}).get("standings", [])
+        if not st_list or not isinstance(st_list, list):
+            err = "standings list missing in NEXT_DATA"
+            log.error("HTML standings %s schema break: %s", league, err)
+            h["last_error"] = err
+            h["schema_break"] = True
+            h["consecutive_failures"] += 1
+            return {}
+
+        rows = st_list[0].get("rows", [])
+        if not rows:
+            err = "rows array empty"
+            log.error("HTML standings %s schema break: %s", league, err)
+            h["last_error"] = err
+            h["schema_break"] = True
+            h["consecutive_failures"] += 1
+            return {}
+
+        teams: dict[str, dict] = {}
+        for row in rows:
+            t = row.get("team", {})
+            tname = t.get("name", "")
+            if not tname:
+                continue
+            played = int(row.get("matches", 0) or 0)
+            wins = int(row.get("wins", 0) or 0)
+            draws = int(row.get("draws", 0) or 0)
+            losses = int(row.get("losses", 0) or 0)
+            gf = int(row.get("scoresFor", 0) or 0)
+            ga = int(row.get("scoresAgainst", 0) or 0)
+            teams[tname] = {
+                "team": tname,
+                "position": int(row.get("position", 0) or 0),
+                "played": played,
+                "wins": wins,
+                "draws": draws,
+                "losses": losses,
+                "gf": gf,
+                "ga": ga,
+                "gd": gf - ga,
+                "points": int(row.get("points", 0) or 0),
+                "form_last5": "",
+                "home": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
+                "away": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
+                "league": league,
+            }
+
+        # Sentinel: known team must be in the parsed standings.
+        sentinel = _HTML_SENTINEL_TEAM.get(league)
+        if sentinel and sentinel not in teams:
+            err = f"sentinel team {sentinel!r} missing — schema break"
+            log.error("HTML standings %s: %s. Found teams: %s",
+                      league, err, sorted(teams.keys())[:5])
+            h["last_error"] = err
+            h["schema_break"] = True
+            h["consecutive_failures"] += 1
+            return {}
+
+        max_played = max((t["played"] for t in teams.values()), default=0)
+        payload = {
+            "standings": teams,
+            "current_matchweek": max_played,
+            "season": get_current_season(),
+            "league": league,
+            "_source": "sofascore_html",
+            "_scraped_at": now,
+        }
+        _html_standings_cache[league] = (now, payload)
+
+        # Success — reset breaker
+        h["last_success_at"] = now
+        h["consecutive_failures"] = 0
+        h["schema_break"] = False
+        h["last_error"] = ""
+
+        log.info("HTML standings %s: %d teams, MW%d", league, len(teams), max_played)
+        import copy
+        return copy.deepcopy(payload)
+    except Exception as e:
+        err = f"{type(e).__name__}: {str(e)[:120]}"
+        log.warning("HTML standings %s failed: %s", league, err)
+        h["last_error"] = err
+        h["consecutive_failures"] += 1
+        return {}
+
+
+def _next_fixture_for_team(league: str, team: str) -> dict | None:
+    """Find the next not-yet-played fixture for a team from Sofascore fixtures.
+
+    Falls back gracefully when predictions.json is stale (Odds API outage).
+    Returns a normalized dict matching the predictions.json shape so consumers
+    don't need branching, or None if no upcoming fixture exists.
+    """
+    import json
+    from datetime import datetime, timezone
+    from config.settings import PROJECT_ROOT
+    from config.team_names import normalize_team
+
+    rel = _LEAGUE_FIXTURES_FILE.get(league)
+    if not rel:
+        return None
+    path = PROJECT_ROOT / rel
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            fixtures = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(fixtures, list):
+        return None
+
+    team_norm = normalize_team(team)
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    candidates = []
+    for fx in fixtures:
+        if not isinstance(fx, dict):
+            continue
+        st = fx.get("status", {}).get("type", "")
+        if st in ("finished", "canceled", "postponed"):
+            continue
+        ts = fx.get("startTimestamp")
+        if not ts or ts <= now_ts:
+            continue  # already kicked off or no time
+        ht = fx.get("homeTeam", {}).get("name", "")
+        at = fx.get("awayTeam", {}).get("name", "")
+        if normalize_team(ht) == team_norm or normalize_team(at) == team_norm:
+            candidates.append((ts, fx, ht, at))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    ts, fx, ht, at = candidates[0]
+    kickoff = datetime.fromtimestamp(ts, tz=timezone.utc)
+    is_home = normalize_team(ht) == team_norm
+    return {
+        "match": f"{ht} vs {at}",
+        "home_team": ht,
+        "away_team": at,
+        "date": kickoff.strftime("%Y-%m-%d"),
+        "commence_time": kickoff.isoformat(),
+        "venue": _HOME_VENUES.get(ht, "") if "_HOME_VENUES" in globals() else "",
+        "is_home": is_home,
+        "matchweek": fx.get("roundInfo", {}).get("round"),
+        "predicted_outcome": "",
+        "confidence": "",
+        "probabilities": {},
+        "betting_probabilities": {},
+        "source": "sofascore_fixtures",  # marker so UI can flag "no model output yet"
+    }
+
+
+def _compute_standings(league: str) -> dict:
+    """Compute live standings from the Sofascore parquet for a league.
+
+    Returns the same shape as standings.json:
+        {
+            "standings": { team_name: { position, team, played, wins, draws,
+                                        losses, gf, ga, gd, points, form_last5,
+                                        home: {...}, away: {...}, league } },
+            "current_matchweek": int,
+            "season": "2025-2026",
+            "league": "serie_a",
+        }
+
+    Cached for 60 seconds. Source files are the same parquets the Results page
+    reads, so standings can never disagree with results.
+    """
+    import pandas as pd
+    from config.settings import PROJECT_ROOT
+
+    now = _time.time()
+    if league in _standings_cache:
+        cached_at, payload = _standings_cache[league]
+        if (now - cached_at) < _STANDINGS_TTL:
+            import copy
+            return copy.deepcopy(payload)
+
+    rel = _LEAGUE_PARQUET.get(league)
+    if not rel:
+        return {"standings": {}, "current_matchweek": 0, "season": "", "league": league}
+
+    parquet_path = PROJECT_ROOT / rel
+    df = _read_parquet_cached(parquet_path)
+    if df is None or len(df) == 0:
+        return {"standings": {}, "current_matchweek": 0, "season": "", "league": league}
+
+    season = get_current_season()
+    df = df[df["season"] == season]
+    if len(df) == 0:
+        return {"standings": {}, "current_matchweek": 0, "season": season, "league": league}
+
+    # One row per match (parquet has one row per player; collapse to match-level)
+    matches = df[
+        ["match_id", "date", "round", "home_team", "away_team", "home_score", "away_score"]
+    ].drop_duplicates(subset=["match_id"])
+    matches = matches.dropna(subset=["home_score", "away_score"])
+    if len(matches) == 0:
+        return {"standings": {}, "current_matchweek": 0, "season": season, "league": league}
+
+    teams: dict[str, dict] = {}
+
+    def _row(t: str) -> dict:
+        if t not in teams:
+            teams[t] = {
+                "team": t,
+                "played": 0,
+                "wins": 0,
+                "draws": 0,
+                "losses": 0,
+                "gf": 0,
+                "ga": 0,
+                "gd": 0,
+                "points": 0,
+                "_form": [],  # list of (date, result) for form_last5
+                "home": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
+                "away": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
+                "league": league,
+            }
+        return teams[t]
+
+    matches_sorted = matches.sort_values("date")
+    for _, m in matches_sorted.iterrows():
+        ht, at = m["home_team"], m["away_team"]
+        hs, ascore = int(m["home_score"]), int(m["away_score"])
+        h, a = _row(ht), _row(at)
+
+        h["played"] += 1; a["played"] += 1
+        h["gf"] += hs; h["ga"] += ascore
+        a["gf"] += ascore; a["ga"] += hs
+        h["home"]["played"] += 1; a["away"]["played"] += 1
+        h["home"]["gf"] += hs; h["home"]["ga"] += ascore
+        a["away"]["gf"] += ascore; a["away"]["ga"] += hs
+
+        if hs > ascore:
+            h["wins"] += 1; h["points"] += 3; h["home"]["wins"] += 1
+            a["losses"] += 1; a["away"]["losses"] += 1
+            hr, ar = "W", "L"
+        elif hs < ascore:
+            a["wins"] += 1; a["points"] += 3; a["away"]["wins"] += 1
+            h["losses"] += 1; h["home"]["losses"] += 1
+            hr, ar = "L", "W"
+        else:
+            h["draws"] += 1; h["points"] += 1; h["home"]["draws"] += 1
+            a["draws"] += 1; a["points"] += 1; a["away"]["draws"] += 1
+            hr, ar = "D", "D"
+        h["_form"].append((m["date"], hr))
+        a["_form"].append((m["date"], ar))
+
+    # Finalize per-team derived fields
+    for t in teams.values():
+        t["gd"] = t["gf"] - t["ga"]
+        # form_last5: last 5 results in chronological order, oldest→newest
+        t["_form"].sort(key=lambda x: x[0])
+        t["form_last5"] = "".join(r for _, r in t["_form"][-5:])
+        del t["_form"]
+        # PPG home/away
+        hp = t["home"]["played"]
+        ap = t["away"]["played"]
+        if hp:
+            t["home"]["ppg"] = round((t["home"]["wins"] * 3 + t["home"]["draws"]) / hp, 2)
+        if ap:
+            t["away"]["ppg"] = round((t["away"]["wins"] * 3 + t["away"]["draws"]) / ap, 2)
+
+    # Rank by points (desc), then GD (desc), then GF (desc) — standard tie-break
+    ranked = sorted(teams.values(), key=lambda r: (-r["points"], -r["gd"], -r["gf"]))
+    for i, t in enumerate(ranked, 1):
+        t["position"] = i
+
+    standings_dict = {t["team"]: t for t in ranked}
+
+    payload = {
+        "standings": standings_dict,
+        "current_matchweek": int(matches["round"].max()),
+        "season": season,
+        "league": league,
+    }
+    _standings_cache[league] = (now, payload)
+    import copy
+    return copy.deepcopy(payload)
+
+
+def _get_standings(league: str) -> dict:
+    """Public accessor: live standings for a league.
+
+    Order of preference:
+      1. Sofascore HTML scrape (live, current; bypasses the API CF block)
+      2. Parquet-derived (fast but can lag if scraper hasn't run)
+      3. legacy standings.json on disk
+
+    HTML is preferred whenever it returns more `played` than the parquet —
+    that's the signal the parquet hasn't ingested the latest matchweek.
+    """
+    parquet_payload = _compute_standings(league)
+    parquet_max_played = 0
+    if parquet_payload.get("standings"):
+        parquet_max_played = max(
+            (t.get("played", 0) for t in parquet_payload["standings"].values()),
+            default=0,
+        )
+
+    html_payload = _live_standings_via_html(league)
+    html_max_played = 0
+    if html_payload.get("standings"):
+        html_max_played = max(
+            (t.get("played", 0) for t in html_payload["standings"].values()),
+            default=0,
+        )
+
+    # Prefer HTML when it's at least as fresh
+    if html_payload.get("standings") and html_max_played >= parquet_max_played:
+        # Splice form/home/away splits from parquet (HTML doesn't expose these).
+        # Sofascore HTML uses long names ("Manchester City") while the parquet
+        # often uses Sofascore short names ("Man City"). Normalize before lookup.
+        if parquet_payload.get("standings"):
+            try:
+                from config.team_names import normalize_team
+                pq_by_norm = {
+                    normalize_team(str(k)): v
+                    for k, v in parquet_payload["standings"].items()
+                }
+            except Exception:
+                pq_by_norm = parquet_payload["standings"]
+            for team_name, html_row in html_payload["standings"].items():
+                try:
+                    norm_key = normalize_team(team_name)
+                except Exception:
+                    norm_key = team_name
+                pq_row = pq_by_norm.get(norm_key) or parquet_payload["standings"].get(team_name)
+                if pq_row:
+                    # Form letters: always splice if available, regardless of MW gap
+                    if pq_row.get("form_last5"):
+                        html_row["form_last5"] = pq_row["form_last5"]
+                    # Home/away splits: only splice if MWs match (else stale splits would lie)
+                    if parquet_max_played == html_max_played:
+                        if pq_row.get("home"):
+                            html_row["home"] = pq_row["home"]
+                        if pq_row.get("away"):
+                            html_row["away"] = pq_row["away"]
+        return html_payload
+
+    if parquet_payload.get("standings"):
+        return parquet_payload
+
+    # Last resort: legacy standings.json
+    fname = "standings.json" if league == "serie_a" else f"standings_{league}.json"
+    raw = _load_json(UPCOMING_DIR / fname, {})
+    if isinstance(raw, dict) and raw.get("standings"):
+        return raw
+    return parquet_payload
+
+
+
 def _get_betting_stats(league_filter: str = None):
     """Aggregate wins/losses/pushes/ROI from history.json.
 
@@ -607,6 +1069,197 @@ def matches_page():
     return render_template("matches.html", active_page="matches")
 
 
+@app.route("/api/data-freshness")
+def api_data_freshness():
+    """Sofascore refresh freshness — used by the global staleness banner.
+
+    Reads data/external/sofascore/.last_refresh.json and compares to wall clock.
+    Returns:
+        {
+          "ok": bool,                 # green/red flag
+          "stale_hours": float,       # how long since last successful refresh
+          "last_refresh": iso str,
+          "last_success": iso str | null,
+          "any_failure": bool,
+          "leagues": {...}            # passthrough of heartbeat
+        }
+    """
+    from datetime import datetime, timezone
+    import json
+    from config.settings import DATA_DIR
+
+    hb_path = DATA_DIR / "external" / "sofascore" / ".last_refresh.json"
+    out: dict = {
+        "ok": False,
+        "stale_hours": 9999,
+        "last_refresh": None,
+        "last_success": None,
+        "any_failure": True,
+        "leagues": {},
+        "message": "",
+    }
+    if not hb_path.exists():
+        out["message"] = "No refresh has ever run. Cron may not be installed."
+        return jsonify(out)
+
+    try:
+        with open(hb_path) as f:
+            hb = json.load(f)
+    except Exception as e:
+        out["message"] = f"Heartbeat unreadable: {e}"
+        return jsonify(out)
+
+    out["last_refresh"] = hb.get("completed_at") or hb.get("started_at")
+    out["any_failure"] = bool(hb.get("any_failure"))
+    out["leagues"] = hb.get("leagues", {})
+
+    # Compute stale_hours from heartbeat completed_at
+    last = out["last_refresh"]
+    if last:
+        try:
+            t = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            delta = datetime.now(timezone.utc) - t
+            out["stale_hours"] = round(delta.total_seconds() / 3600, 1)
+        except Exception:
+            pass
+
+    # Also scan each fixtures file mtime — that's the real "data age" signal
+    fixtures_paths = {
+        "serie_a": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026.json",
+        "premier_league": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026_premier_league.json",
+    }
+    file_age = {}
+    max_file_hours = 0
+    for league, p in fixtures_paths.items():
+        if p.exists():
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            age_h = round((datetime.now(timezone.utc) - mtime).total_seconds() / 3600, 1)
+            file_age[league] = age_h
+            max_file_hours = max(max_file_hours, age_h)
+        else:
+            file_age[league] = None
+            max_file_hours = 9999
+    out["fixtures_age_hours"] = file_age
+    out["worst_fixture_age_hours"] = max_file_hours
+
+    # Per-league probe: live HTML scrape + parquet age
+    parquet_paths = {
+        "serie_a": DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet",
+        "premier_league": DATA_DIR / "external" / "sofascore" / "player_match_stats_premier_league.parquet",
+    }
+    league_health: dict = {}
+    any_html_ok = False
+    any_hard_fail = False
+    schema_break_seen = False
+
+    for lg in ("serie_a", "premier_league"):
+        # Trigger scrape (cached) to refresh health entry
+        html_payload = _live_standings_via_html(lg)
+        h = _html_health_now(lg)
+        broken = _html_is_broken(lg)
+        html_ok = bool(html_payload.get("standings")) and not broken
+
+        pq_path = parquet_paths.get(lg)
+        pq_age_h = None
+        if pq_path and pq_path.exists():
+            mt = datetime.fromtimestamp(pq_path.stat().st_mtime, tz=timezone.utc)
+            pq_age_h = round((datetime.now(timezone.utc) - mt).total_seconds() / 3600, 1)
+
+        last_success = h.get("last_success_at", 0)
+        last_success_iso = (
+            datetime.fromtimestamp(last_success, tz=timezone.utc).isoformat()
+            if last_success else None
+        )
+
+        league_health[lg] = {
+            "html_ok": html_ok,
+            "html_broken": broken,
+            "html_consecutive_failures": h.get("consecutive_failures", 0),
+            "html_schema_break": h.get("schema_break", False),
+            "html_last_error": h.get("last_error", ""),
+            "html_last_success": last_success_iso,
+            "parquet_age_hours": pq_age_h,
+            "parquet_too_old": (pq_age_h is not None and pq_age_h > 24 * 7),
+        }
+        if html_ok:
+            any_html_ok = True
+        if h.get("schema_break"):
+            schema_break_seen = True
+        # Hard fail: this league has no fresh source at all
+        league_hard = (not html_ok) and (
+            league_health[lg]["parquet_too_old"] or pq_age_h is None
+        )
+        if league_hard:
+            any_hard_fail = True
+
+    out["leagues_health"] = league_health
+    out["live_standings_ok"] = any_html_ok
+    out["schema_break"] = schema_break_seen
+
+    # Decision tree
+    if schema_break_seen:
+        out["severity"] = "schema_break"
+        out["ok"] = False
+        out["message"] = (
+            "Sofascore HTML schema changed — scrape is parsing but a sentinel "
+            "team is missing. Check _live_standings_via_html parsers and update "
+            "_HTML_SENTINEL_TEAM / NEXT_DATA paths."
+        )
+    elif any_hard_fail:
+        out["severity"] = "hard_fail"
+        out["ok"] = False
+        out["message"] = (
+            "BOTH live HTML scrape AND cached parquet are stale. User-facing "
+            "data is unreliable. Fix Sofascore access or restore parquet."
+        )
+    elif not any_html_ok:
+        # No HTML, but parquet within 7d — degraded but tolerable
+        out["severity"] = "degraded_parquet_only"
+        out["ok"] = False  # still surface the banner — we're not live
+        out["message"] = (
+            "Live HTML scrape failing — serving cached parquet data. "
+            f"Parquet ages: {league_health}"
+        )
+    elif max_file_hours >= 36:
+        out["severity"] = "fixtures_stale_html_ok"
+        out["ok"] = True  # standings are live, fixtures only used for next-match
+        out["message"] = (
+            f"Fixtures file {max_file_hours:.0f}h stale (Sofascore API blocked); "
+            "standings are live via HTML scrape"
+        )
+    else:
+        out["severity"] = "ok"
+        out["ok"] = True
+        out["message"] = "ok"
+
+    return jsonify(out)
+
+
+@app.route("/standings")
+def standings_page():
+    """Unified standings page (Serie A / Premier League / future leagues).
+
+    Reuses the teams.html template. League is chosen via ?league= query param
+    or the dropdown at the top of the page.
+    """
+    return render_template("teams.html", active_page="standings")
+
+
+@app.route("/api/standings/<league>")
+def api_standings(league):
+    """Live standings for a league, derived from Sofascore parquet."""
+    payload = _get_standings(league)
+    inner = payload.get("standings", {})
+    items = list(inner.values()) if isinstance(inner, dict) else (inner if isinstance(inner, list) else [])
+    items.sort(key=lambda r: r.get("position", 99))
+    return jsonify({
+        "league": league,
+        "season": payload.get("season", ""),
+        "current_matchweek": payload.get("current_matchweek", 0),
+        "standings": items,
+    })
+
+
 @app.route("/predictions")
 def predictions_page():
     return render_template("predictions.html", active_page="predictions")
@@ -635,43 +1288,33 @@ def api_predictions_context():
     metrics. Consumed by the predictions page alongside /api/dashboard.
     """
     h2h_raw = _load_json(UPCOMING_DIR / "h2h_upcoming.json")
-    standings_raw = _load_json(UPCOMING_DIR / "standings.json")
     analysis = _load_json(FEEDBACK_DIR / "analysis.json")
 
-    # Build standings lookup keyed by team name. Copy the inner dict — the
-    # cached _load_json reference must NOT be mutated by EPL merging below.
-    standings_list = standings_raw.get("standings", {})
-    standings_by_team = {}
-    if isinstance(standings_list, dict):
-        standings_by_team = dict(standings_list)
-    elif isinstance(standings_list, list):
-        for entry in standings_list:
-            if isinstance(entry, dict) and entry.get("team"):
-                standings_by_team[entry["team"]] = entry
+    # Build standings lookup keyed by team name. Live derivation from Sofascore
+    # parquet via _get_standings — same source as /matches, so they cannot drift.
+    standings_by_team: dict = {}
+    sa_payload = _get_standings("serie_a")
+    sa_dict = sa_payload.get("standings", {})
+    if isinstance(sa_dict, dict):
+        standings_by_team.update(sa_dict)
 
-    # Load EPL standings if available
-    # Full Odds API name → short Sofascore name mapping for team lookups
+    # Load EPL standings (live)
     _epl_full_to_short = {
         "Brighton and Hove Albion": "Brighton", "Manchester City": "Man City",
         "Manchester United": "Man United", "Newcastle United": "Newcastle",
         "Wolverhampton Wanderers": "Wolves", "West Ham United": "West Ham",
         "Tottenham Hotspur": "Tottenham", "Leeds United": "Leeds",
     }
-    epl_standings = _load_json(UPCOMING_DIR / "standings_premier_league.json")
-    if epl_standings:
-        epl_list = epl_standings.get("standings", {})
-        if isinstance(epl_list, dict):
-            standings_by_team.update(epl_list)
-            # Also add entries keyed by full Odds API names so JS lookups work
-            _short_to_full = {v: k for k, v in _epl_full_to_short.items()}
-            for short_name, entry in epl_list.items():
-                full_name = _short_to_full.get(short_name)
-                if full_name and full_name not in standings_by_team:
-                    standings_by_team[full_name] = entry
-        elif isinstance(epl_list, list):
-            for entry in epl_list:
-                if isinstance(entry, dict) and entry.get("team"):
-                    standings_by_team[entry["team"]] = entry
+    epl_payload = _get_standings("premier_league")
+    epl_dict = epl_payload.get("standings", {})
+    if isinstance(epl_dict, dict):
+        standings_by_team.update(epl_dict)
+        # Also add entries keyed by full Odds API names so JS lookups work
+        _short_to_full = {v: k for k, v in _epl_full_to_short.items()}
+        for short_name, entry in epl_dict.items():
+            full_name = _short_to_full.get(short_name)
+            if full_name and full_name not in standings_by_team:
+                standings_by_team[full_name] = entry
 
     # Compute H2H for EPL from matches.parquet if not in static file
     all_h2h = h2h_raw.get("h2h", {})
@@ -810,14 +1453,24 @@ def api_matches_seasons():
 
 
 def _api_matches_sofascore(season: str):
-    """Matches from Sofascore player_match_stats (rich per-player data)."""
+    """Matches from Sofascore player_match_stats (rich per-player data).
+
+    Loads BOTH leagues' parquets so Results page covers SA + EPL. Earlier
+    bug: only SA parquet was read, so /matches never showed EPL fixtures.
+    """
     import pandas as pd
     from config.team_names import normalize_team
 
     try:
-        pms = pd.read_parquet(
-            DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-        )
+        frames = []
+        for fname in ("player_match_stats.parquet",
+                      "player_match_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if p.exists():
+                frames.append(pd.read_parquet(p))
+        if not frames:
+            return jsonify({"error": "no sofascore data", "matchweeks": []})
+        pms = pd.concat(frames, ignore_index=True)
     except Exception as e:
         return jsonify({"error": str(e), "matchweeks": []})
 
@@ -2712,13 +3365,22 @@ def api_live():
     path = LIVE_DIR / f"{today}.json"
     data = _load_json(path, default=None)
 
-    # If auto-poll isn't running but it's a match day, start it
+    # If auto-poll isn't running, only start it when a match is IMMINENT
+    # (kicks off within next 30 min) or already live. Just being a "match day"
+    # is too lax — burns ~24 credits/hour for hours before kickoff.
     if not _auto_poll_active:
         try:
-            from scripts.pipeline.scheduler import is_match_day
-            if is_match_day():
+            from scripts.pipeline.scheduler import get_kickoff_times
+            from datetime import datetime as _dt, timezone as _tz
+            kickoffs = get_kickoff_times()
+            now = _dt.now(_tz.utc)
+            imminent = any(
+                -180 <= (k["kickoff_utc"] - now).total_seconds() / 60 <= 30
+                for k in kickoffs
+            )
+            if imminent:
                 _ensure_auto_poll()
-                log.info("Live poll auto-started from /api/live request")
+                log.info("Live poll auto-started — match imminent (within 30min) or live")
         except Exception:
             pass
     # Re-read file in case a poll just completed
@@ -3282,9 +3944,10 @@ def _auto_poll_loop():
 
             if not result.get("has_live_matches"):
                 consecutive_no_live += 1
-                log.info(f"Auto-poll: no live matches ({consecutive_no_live}/12)")
-                if consecutive_no_live >= 12:
-                    log.info("Auto-poll: stopping after 12 polls with no live matches")
+                log.info(f"Auto-poll: no live matches ({consecutive_no_live}/4)")
+                # Stop after 4 empty polls (20 min) instead of 12 (60 min) — saves ~16 credits per false start
+                if consecutive_no_live >= 4:
+                    log.info("Auto-poll: stopping after 4 polls with no live matches")
                     break
             else:
                 consecutive_no_live = 0
@@ -4990,29 +5653,19 @@ def api_teams_overview():
     if league_filter is None:
         league_filter = "serie_a"  # Default to Serie A for overview (needs standings data)
 
-    # 1. Standings — try league-specific file first, fall back to default only for serie_a
-    league_standings_path = UPCOMING_DIR / f"standings_{league_filter}.json"
-    if league_standings_path.exists():
-        standings_raw = _load_json(league_standings_path, {})
-    elif league_filter == "serie_a":
-        standings_raw = _load_json(UPCOMING_DIR / "standings.json", {})
-    else:
-        standings_raw = {}
+    # 1. Standings — live derivation from Sofascore parquet (single source of truth)
+    standings_payload = _get_standings(league_filter)
     standings_map = {}
     standings_list = []
-    if isinstance(standings_raw, dict):
-        inner = standings_raw.get("standings", standings_raw.get("table", {}))
-        if isinstance(inner, dict):
-            # Dict keyed by team name — inject "team" field into each entry
-            standings_list = []
-            for team_name, entry in inner.items():
-                if isinstance(entry, dict):
-                    entry["team"] = team_name
-                    standings_list.append(entry)
-        elif isinstance(inner, list):
-            standings_list = inner
-    elif isinstance(standings_raw, list):
-        standings_list = standings_raw
+    inner = standings_payload.get("standings", {})
+    if isinstance(inner, dict):
+        for team_name, entry in inner.items():
+            if isinstance(entry, dict):
+                entry["team"] = team_name
+                standings_list.append(entry)
+    elif isinstance(inner, list):
+        standings_list = inner
+    current_matchweek = standings_payload.get("current_matchweek", 0)
 
     for entry in standings_list:
         if isinstance(entry, dict) and entry.get("team"):
@@ -5175,8 +5828,10 @@ def api_teams_overview():
 
     return jsonify({
         "teams": teams,
-        "season": standings_raw.get("season", "") if isinstance(standings_raw, dict) else "",
-        "generated_at": standings_raw.get("generated_at", "") if isinstance(standings_raw, dict) else "",
+        "season": standings_payload.get("season", ""),
+        "current_matchweek": current_matchweek,
+        "league": league_filter,
+        "generated_at": "",
     })
 
 
@@ -5285,18 +5940,16 @@ def api_team(team_name):
     }
 
     # ── 1. Standings & position ──
-    # Load both Serie A and EPL standings
+    # Live derivation from Sofascore parquet (single source of truth).
     standings_entries = []
-    for standings_file in ["standings.json", "standings_premier_league.json"]:
-        standings_raw = _load_json(UPCOMING_DIR / standings_file, {})
-        if isinstance(standings_raw, list):
-            standings_entries.extend(standings_raw)
-        elif isinstance(standings_raw, dict):
-            inner = standings_raw.get("standings", standings_raw.get("table", {}))
-            if isinstance(inner, list):
-                standings_entries.extend(inner)
-            elif isinstance(inner, dict):
-                standings_entries.extend(inner.values())
+    for league_tag in ("serie_a", "premier_league"):
+        payload = _get_standings(league_tag)
+        inner = payload.get("standings", {})
+        items = list(inner.values()) if isinstance(inner, dict) else (inner if isinstance(inner, list) else [])
+        for it in items:
+            if isinstance(it, dict):
+                it.setdefault("league", league_tag)
+        standings_entries.extend(items)
 
     # Normalize team name for lookup (handles "Manchester City" → "Man City" etc.)
     from config.team_names import normalize_team
@@ -5317,6 +5970,7 @@ def api_team(team_name):
                 "home": entry.get("home", {}),
                 "away": entry.get("away", {}),
             }
+            data["league"] = entry.get("league", "serie_a")
             break
 
     # ── 2. Current form (all leagues) ──
@@ -5716,12 +6370,31 @@ def api_team(team_name):
         pred_list.extend(_pl)
 
     ct_map = _get_commence_times()
+    from datetime import datetime, timezone
+    _now_utc = datetime.now(timezone.utc)
+    _today_str = _now_utc.strftime("%Y-%m-%d")
     for pred in pred_list:
         if isinstance(pred, dict):
             if (pred.get("home_team", "").lower() == team.lower() or
                     pred.get("away_team", "").lower() == team.lower()):
                 match_key = pred.get("match", "")
                 ct = ct_map.get(match_key, pred.get("commence_time", ""))
+                # Skip predictions for matches that have already kicked off
+                # (predictions.json gets stale when Odds API quota stops feeding it)
+                _pred_date = pred.get("date", "")
+                _is_past = False
+                if ct:
+                    try:
+                        _kt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+                        if _kt.tzinfo is None:
+                            _kt = _kt.replace(tzinfo=timezone.utc)
+                        _is_past = _kt < _now_utc
+                    except Exception:
+                        pass
+                elif _pred_date and _pred_date < _today_str:
+                    _is_past = True
+                if _is_past:
+                    continue
                 data["upcoming"] = {
                     "match": match_key,
                     "date": pred.get("date", ""),
@@ -5778,6 +6451,20 @@ def api_team(team_name):
     if team_lineup:
         data["lineup_prediction"] = team_lineup
 
+    if not data.get("league"):
+        try:
+            from config.leagues import infer_league
+            data["league"] = infer_league(team, None)
+        except Exception:
+            data["league"] = "serie_a"
+
+    # Fallback: if predictions.json had nothing in the future for this team
+    # (Odds API outage), look up the next fixture from Sofascore fixtures file.
+    if not data.get("upcoming") or not data["upcoming"].get("match"):
+        next_fx = _next_fixture_for_team(data.get("league", "serie_a"), team)
+        if next_fx:
+            data["upcoming"] = next_fx
+
     return jsonify(data)
 
 
@@ -5827,20 +6514,24 @@ def api_lineup_assessment():
     if not confirmed_matches:
         return jsonify({"matches": {}, "message": "No confirmed lineups available yet"})
 
-    # Build player xG map from Sofascore stats (per-90 rates)
+    # Build player xG map from Sofascore stats (per-90 rates) — both leagues
     player_xg_map = {}
     try:
         import pandas as pd
-        pms = pd.read_parquet(
-            DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet",
-            columns=["player_name", "xg", "minutes"],
-        )
-        agg = pms.groupby("player_name").agg(
-            total_xg=("xg", "sum"), total_mins=("minutes", "sum"),
-        )
-        for name, row in agg.iterrows():
-            if row["total_mins"] > 0:
-                player_xg_map[name] = row["total_xg"] / row["total_mins"] * 90
+        frames = []
+        for fname in ("player_match_stats.parquet",
+                      "player_match_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if p.exists():
+                frames.append(pd.read_parquet(p, columns=["player_name", "xg", "minutes"]))
+        if frames:
+            pms = pd.concat(frames, ignore_index=True)
+            agg = pms.groupby("player_name").agg(
+                total_xg=("xg", "sum"), total_mins=("minutes", "sum"),
+            )
+            for name, row in agg.iterrows():
+                if row["total_mins"] > 0:
+                    player_xg_map[name] = row["total_xg"] / row["total_mins"] * 90
     except Exception:
         pass  # Assessment will work without xG data (overlap only)
 
@@ -5947,18 +6638,25 @@ def _get_sofascore_lookup():
             except Exception:
                 continue
 
-        # Source 2: player_match_stats.parquet (more precise dates, overwrites if conflicts)
+        # Source 2: player_match_stats.parquet — both leagues (overwrites fixture
+        # estimates with precise dates). Must include EPL parquet too, otherwise
+        # _get_sofascore_lookup misses EPL match IDs and downstream features
+        # (match-events, match-detail) silently 404 for EPL queries.
         try:
             import pandas as pd
-            pms = pd.read_parquet(
-                DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet",
-                columns=["match_id", "date", "home_team", "away_team"]
-            ).drop_duplicates(subset="match_id")
-            for _, row in pms.iterrows():
-                d = str(row["date"])[:10]
-                h = normalize_team(str(row["home_team"]))
-                a = normalize_team(str(row["away_team"]))
-                lookup[(d, h, a)] = int(row["match_id"])
+            for fname in ("player_match_stats.parquet",
+                          "player_match_stats_premier_league.parquet"):
+                p = DATA_DIR / "external" / "sofascore" / fname
+                if not p.exists():
+                    continue
+                pms = pd.read_parquet(
+                    p, columns=["match_id", "date", "home_team", "away_team"]
+                ).drop_duplicates(subset="match_id")
+                for _, row in pms.iterrows():
+                    d = str(row["date"])[:10]
+                    h = normalize_team(str(row["home_team"]))
+                    a = normalize_team(str(row["away_team"]))
+                    lookup[(d, h, a)] = int(row["match_id"])
         except Exception:
             pass
 
@@ -5999,15 +6697,546 @@ def _load_subbed_off_map(ss_match_id: int) -> dict:
     return result
 
 
+# ── Venue lookup (home stadiums for SA + EPL) ──────────────────────────
+_HOME_VENUES: dict[str, str] = {
+    # Serie A 2025-26
+    "Inter": "San Siro, Milan",
+    "Milan": "San Siro, Milan",
+    "Juventus": "Allianz Stadium, Turin",
+    "Napoli": "Diego Armando Maradona, Naples",
+    "Roma": "Stadio Olimpico, Rome",
+    "Lazio": "Stadio Olimpico, Rome",
+    "Atalanta": "Gewiss Stadium, Bergamo",
+    "Fiorentina": "Artemio Franchi, Florence",
+    "Bologna": "Renato Dall'Ara, Bologna",
+    "Torino": "Stadio Olimpico Grande Torino, Turin",
+    "Como": "Giuseppe Sinigaglia, Como",
+    "Genoa": "Luigi Ferraris, Genoa",
+    "Udinese": "Bluenergy Stadium, Udine",
+    "Cagliari": "Unipol Domus, Cagliari",
+    "Verona": "Marc'Antonio Bentegodi, Verona",
+    "Lecce": "Via del Mare, Lecce",
+    "Parma": "Ennio Tardini, Parma",
+    "Sassuolo": "Mapei Stadium, Reggio Emilia",
+    "Cremonese": "Giovanni Zini, Cremona",
+    "Pisa": "Arena Garibaldi, Pisa",
+    # Premier League 2025-26
+    "Liverpool": "Anfield, Liverpool",
+    "Arsenal": "Emirates Stadium, London",
+    "Man City": "Etihad Stadium, Manchester",
+    "Manchester City": "Etihad Stadium, Manchester",
+    "Man United": "Old Trafford, Manchester",
+    "Manchester United": "Old Trafford, Manchester",
+    "Chelsea": "Stamford Bridge, London",
+    "Tottenham": "Tottenham Hotspur Stadium, London",
+    "Tottenham Hotspur": "Tottenham Hotspur Stadium, London",
+    "Newcastle": "St James' Park, Newcastle",
+    "Newcastle United": "St James' Park, Newcastle",
+    "Aston Villa": "Villa Park, Birmingham",
+    "Brighton": "Amex Stadium, Brighton",
+    "Brighton and Hove Albion": "Amex Stadium, Brighton",
+    "West Ham": "London Stadium, London",
+    "West Ham United": "London Stadium, London",
+    "Crystal Palace": "Selhurst Park, London",
+    "Brentford": "Gtech Community Stadium, London",
+    "Fulham": "Craven Cottage, London",
+    "Wolves": "Molineux, Wolverhampton",
+    "Wolverhampton Wanderers": "Molineux, Wolverhampton",
+    "Bournemouth": "Vitality Stadium, Bournemouth",
+    "Everton": "Hill Dickinson Stadium, Liverpool",
+    "Nottingham Forest": "City Ground, Nottingham",
+    "Burnley": "Turf Moor, Burnley",
+    "Leeds": "Elland Road, Leeds",
+    "Leeds United": "Elland Road, Leeds",
+    "Sunderland": "Stadium of Light, Sunderland",
+}
+
+
+def _venue_for(home_team: str) -> str:
+    """Return home stadium name for a team, or empty string if unknown."""
+    return _HOME_VENUES.get(home_team, "")
+
+
+def _standings_as_of(league: str, cutoff_date: str) -> dict[str, dict]:
+    """Compute standings as they were BEFORE matches on `cutoff_date`.
+
+    Returns {team_name: {position, played, points, ...}} reflecting only
+    matches strictly before cutoff_date. Used for "table position at kickoff".
+    """
+    import pandas as pd
+    from config.settings import PROJECT_ROOT
+
+    rel = _LEAGUE_PARQUET.get(league)
+    if not rel:
+        return {}
+    parquet_path = PROJECT_ROOT / rel
+    df = _read_parquet_cached(parquet_path)
+    if df is None or len(df) == 0:
+        return {}
+
+    season = get_current_season()
+    df = df[df["season"] == season]
+    matches = df[
+        ["match_id", "date", "home_team", "away_team", "home_score", "away_score"]
+    ].drop_duplicates(subset=["match_id"]).dropna(subset=["home_score", "away_score"])
+    # Only matches strictly before cutoff
+    matches = matches[matches["date"].astype(str) < str(cutoff_date)]
+    if len(matches) == 0:
+        return {}
+
+    teams: dict[str, dict] = {}
+    def _row(t: str) -> dict:
+        if t not in teams:
+            teams[t] = {"team": t, "played": 0, "wins": 0, "draws": 0, "losses": 0,
+                        "gf": 0, "ga": 0, "gd": 0, "points": 0}
+        return teams[t]
+
+    for _, m in matches.iterrows():
+        ht, at = m["home_team"], m["away_team"]
+        hs, ascore = int(m["home_score"]), int(m["away_score"])
+        h, a = _row(ht), _row(at)
+        h["played"] += 1; a["played"] += 1
+        h["gf"] += hs; h["ga"] += ascore
+        a["gf"] += ascore; a["ga"] += hs
+        if hs > ascore:
+            h["wins"] += 1; h["points"] += 3
+            a["losses"] += 1
+        elif hs < ascore:
+            a["wins"] += 1; a["points"] += 3
+            h["losses"] += 1
+        else:
+            h["draws"] += 1; h["points"] += 1
+            a["draws"] += 1; a["points"] += 1
+
+    for t in teams.values():
+        t["gd"] = t["gf"] - t["ga"]
+
+    ranked = sorted(teams.values(), key=lambda r: (-r["points"], -r["gd"], -r["gf"]))
+    for i, t in enumerate(ranked, 1):
+        t["position"] = i
+    return {t["team"]: t for t in ranked}
+
+
+def _h2h_last_n(league: str, team_a: str, team_b: str, before_date: str, n: int = 5) -> list[dict]:
+    """Last N head-to-head meetings between two teams strictly before a date.
+
+    Source: Sofascore parquet (one row per match). Returns oldest→newest.
+    """
+    import pandas as pd
+    from config.settings import PROJECT_ROOT
+    from config.team_names import normalize_team
+
+    rel = _LEAGUE_PARQUET.get(league)
+    if not rel:
+        return []
+    df = _read_parquet_cached(PROJECT_ROOT / rel)
+    if df is None or len(df) == 0:
+        return []
+
+    a_norm = normalize_team(team_a)
+    b_norm = normalize_team(team_b)
+    matches = df[["match_id", "date", "round", "season", "home_team", "away_team",
+                  "home_score", "away_score"]].drop_duplicates(subset=["match_id"])
+    matches = matches.dropna(subset=["home_score", "away_score"])
+    # Filter to fixtures involving both teams
+    pairs = matches[
+        (
+            (matches["home_team"].apply(lambda t: normalize_team(str(t))) == a_norm) &
+            (matches["away_team"].apply(lambda t: normalize_team(str(t))) == b_norm)
+        ) | (
+            (matches["home_team"].apply(lambda t: normalize_team(str(t))) == b_norm) &
+            (matches["away_team"].apply(lambda t: normalize_team(str(t))) == a_norm)
+        )
+    ]
+    pairs = pairs[pairs["date"].astype(str) < str(before_date)]
+    pairs = pairs.sort_values("date", ascending=False).head(n)
+    pairs = pairs.sort_values("date")  # oldest → newest
+
+    out = []
+    for _, m in pairs.iterrows():
+        out.append({
+            "date": str(m["date"])[:10],
+            "season": str(m.get("season", "")),
+            "matchweek": int(m["round"]) if pd.notna(m.get("round")) else None,
+            "home_team": str(m["home_team"]),
+            "away_team": str(m["away_team"]),
+            "home_score": int(m["home_score"]),
+            "away_score": int(m["away_score"]),
+        })
+    return out
+
+
+def _weather_for_match(match_id: int, date: str = "", home: str = "", away: str = "") -> dict:
+    """Look up weather for a match.
+
+    weather.parquet has two ID formats living together:
+      - Legacy: '{date}_{home}_{away}' (used for SA + new EPL backfill)
+      - Sofascore numeric: e.g. 13980106
+    Try both — fall back to date+home+away derivation if numeric lookup misses.
+    """
+    import pandas as pd
+    from config.settings import PROJECT_ROOT
+    try:
+        w = _read_parquet_cached(PROJECT_ROOT / "data" / "external" / "weather.parquet")
+        if w is None or len(w) == 0:
+            return {}
+        # Try numeric match_id first
+        rows = w[w["match_id"].astype(str) == str(match_id)]
+        # Fallback: legacy "{date}_{home}_{away}" key (with both raw and underscore-sanitized variants)
+        if len(rows) == 0 and date and home and away:
+            for h_norm, a_norm in [(home, away), (home.replace(" ", "_"), away.replace(" ", "_"))]:
+                key = f"{str(date)[:10]}_{h_norm}_{a_norm}"
+                rows = w[w["match_id"].astype(str) == key]
+                if len(rows):
+                    break
+        if len(rows) == 0:
+            return {}
+        r = rows.iloc[0]
+        return {
+            "temp_mean": float(r["weather_temperature_2m_mean"]) if pd.notna(r.get("weather_temperature_2m_mean")) else None,
+            "temp_min": float(r["weather_temperature_2m_min"]) if pd.notna(r.get("weather_temperature_2m_min")) else None,
+            "temp_max": float(r["weather_temperature_2m_max"]) if pd.notna(r.get("weather_temperature_2m_max")) else None,
+            "precipitation_mm": float(r["weather_precipitation_sum"]) if pd.notna(r.get("weather_precipitation_sum")) else None,
+            "rain_mm": float(r["weather_rain_sum"]) if pd.notna(r.get("weather_rain_sum")) else None,
+            "wind_speed_kmh": float(r["weather_wind_speed_10m_max"]) if pd.notna(r.get("weather_wind_speed_10m_max")) else None,
+            "humidity_pct": float(r["weather_relative_humidity_2m_mean"]) if pd.notna(r.get("weather_relative_humidity_2m_mean")) else None,
+            "snowfall_cm": float(r["weather_snowfall_sum"]) if pd.notna(r.get("weather_snowfall_sum")) else None,
+        }
+    except Exception as e:
+        log.warning(f"weather lookup failed for {match_id}: {e}")
+        return {}
+
+
+def _referee_for_match(date: str, home: str, away: str) -> str:
+    """Resolve referee name from matches.parquet (or upcoming/referees.json)."""
+    import pandas as pd
+    from config.settings import PROJECT_ROOT
+    from config.team_names import normalize_team
+
+    try:
+        mp = _read_parquet_cached(PROJECT_ROOT / "data" / "parsed" / "matches.parquet")
+        if mp is not None and len(mp):
+            # match_date is datetime; cast to str for compare
+            d = str(date)[:10]
+            home_n = normalize_team(home)
+            away_n = normalize_team(away)
+            rows = mp[
+                (mp["match_date"].astype(str).str[:10] == d) &
+                (mp["home_team"].apply(lambda t: normalize_team(str(t))) == home_n) &
+                (mp["away_team"].apply(lambda t: normalize_team(str(t))) == away_n)
+            ]
+            if len(rows):
+                ref = str(rows.iloc[0].get("referee", "")).strip()
+                if ref and ref.lower() != "nan":
+                    return ref
+    except Exception:
+        pass
+
+    # Fallback: upcoming/referees.json (for scheduled matches)
+    refs = _load_json(UPCOMING_DIR / "referees.json", {})
+    if isinstance(refs, dict):
+        # Common formats: {date_home_away: {referee:...}} or {match: {...}}
+        key1 = f"{date}_{home}_{away}"
+        for k in (key1, f"{home} vs {away}"):
+            if k in refs and isinstance(refs[k], dict):
+                return refs[k].get("referee", refs[k].get("name", ""))
+    return ""
+
+
+def _build_match_context(match_id: int | None, date: str, home: str, away: str, league: str) -> dict:
+    """Assemble the match-context block: referee, venue, weather, table positions, h2h.
+
+    Live HTML scrape augments parquet/static lookups when those are missing
+    or stale (e.g. recent matchweeks not yet ingested by FBref).
+    """
+    referee = _referee_for_match(date, home, away)
+    venue = _venue_for_home(league, home)
+    stoppage_time: dict = {}
+    had_extra_time = False
+    attendance = None
+    # Augment from live match-page HTML when match_id is known. Always pull
+    # stoppage_time / extra_time / attendance — those don't exist in any
+    # local source. Only fetch HTML once (it's cached).
+    if match_id:
+        html_data = _scrape_match_html(match_id)
+        if not referee:
+            referee = html_data.get("referee", "")
+        if not venue:
+            venue = html_data.get("venue", venue)
+        stoppage_time = html_data.get("stoppage_time", {}) or {}
+        had_extra_time = bool(html_data.get("had_extra_time"))
+        attendance = html_data.get("attendance")
+    ctx: dict = {
+        "referee": referee,
+        "venue": venue,
+        "weather": _weather_for_match(match_id, date, home, away) if match_id else
+                   _weather_for_match(0, date, home, away) if (date and home and away) else {},
+        "league": league,
+        "stoppage_time": stoppage_time,
+        "had_extra_time": had_extra_time,
+        "attendance": attendance,
+    }
+    # Table positions as of the day before kickoff
+    standings = _standings_as_of(league, date)
+    home_row = standings.get(home, {})
+    away_row = standings.get(away, {})
+    if home_row:
+        ctx["home_position"] = {
+            "position": home_row.get("position"),
+            "played": home_row.get("played", 0),
+            "points": home_row.get("points", 0),
+            "gd": home_row.get("gd", 0),
+        }
+    if away_row:
+        ctx["away_position"] = {
+            "position": away_row.get("position"),
+            "played": away_row.get("played", 0),
+            "points": away_row.get("points", 0),
+            "gd": away_row.get("gd", 0),
+        }
+    # H2H last 5
+    ctx["h2h_last5"] = _h2h_last_n(league, home, away, date, n=5)
+    return ctx
+
+
+def _venue_for_home(league: str, home_team: str) -> str:
+    """Wrapper around _venue_for that respects league when names collide."""
+    return _HOME_VENUES.get(home_team, "")
+
+
+# ── Live Sofascore match-page HTML scraper ──────────────────────────────
+# Cloudflare blocks api.sofascore.com but allows www.sofascore.com HTML.
+# We use the embedded NEXT_DATA blob to recover incidents/venue/referee
+# for matches that are missing from the parquet OR that have empty
+# substitution OFF fields.
+_match_html_cache: dict[int, tuple[float, dict]] = {}
+_MATCH_HTML_TTL = 600  # 10min — match pages are heavy
+
+
+def _scrape_match_html(ss_match_id: int) -> dict:
+    """Fetch a Sofascore match page and parse its NEXT_DATA blob.
+
+    Returns:
+        {
+          "incidents": [...],   # raw list with 'incidentType', 'playerOut', etc.
+          "venue": str,         # "San Siro/Giuseppe Meazza, Milan"
+          "referee": str,       # "Simone Sozza"
+          "manager_home": str,
+          "manager_away": str,
+        }
+    Returns {} on failure (CF block, parse error, etc.).
+    """
+    import time as _t
+    now = _t.time()
+    if ss_match_id in _match_html_cache:
+        cached_at, payload = _match_html_cache[ss_match_id]
+        if (now - cached_at) < _MATCH_HTML_TTL:
+            import copy
+            return copy.deepcopy(payload)
+
+    try:
+        from curl_cffi import requests as cffi  # type: ignore
+        s = cffi.Session(impersonate="chrome120")
+        s.headers.update({
+            "Referer": "https://www.google.com/",
+            "Accept": "text/html",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        # /event/{id} redirects to the canonical /football/match/{slug}/{token}
+        r = s.get(f"https://www.sofascore.com/event/{ss_match_id}", timeout=5)
+        if r.status_code != 200:
+            log.warning("match HTML %d: HTTP %d", ss_match_id, r.status_code)
+            return {}
+
+        import re as _re
+        m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
+        if not m:
+            return {}
+        data = json.loads(m.group(1))
+        ip = data.get("props", {}).get("pageProps", {}).get("initialProps", {})
+        if not ip:
+            return {}
+        ev = ip.get("event", {}) or {}
+        venue_obj = ev.get("venue", {}) or {}
+        venue_name = venue_obj.get("name", "") or venue_obj.get("stadium", {}).get("name", "")
+        venue_city = (venue_obj.get("city", {}) or {}).get("name", "")
+        venue_str = f"{venue_name}, {venue_city}".strip(", ").strip() if venue_name or venue_city else ""
+
+        ref_obj = ev.get("referee", {}) or {}
+        ref_name = ref_obj.get("name", "")
+
+        home_mgr = ((ev.get("homeTeam") or {}).get("manager") or {}).get("name", "") if isinstance((ev.get("homeTeam") or {}).get("manager"), dict) else ""
+        away_mgr = ((ev.get("awayTeam") or {}).get("manager") or {}).get("name", "") if isinstance((ev.get("awayTeam") or {}).get("manager"), dict) else ""
+
+        # Stoppage / extra time per period.
+        # Sofascore exposes injuryTime1..4 on event.time:
+        #   injuryTime1 = added minutes at end of 1st half
+        #   injuryTime2 = added minutes at end of 2nd half
+        #   injuryTime3 = added minutes at end of 1st extra-time half
+        #   injuryTime4 = added minutes at end of 2nd extra-time half
+        # All optional. None means "didn't happen / not applicable".
+        et = ev.get("time", {}) or {}
+        def _injury(key):
+            v = et.get(key)
+            try:
+                v = int(v)
+                return v if v > 0 else None
+            except (TypeError, ValueError):
+                return None
+        stoppage_time = {
+            "first_half": _injury("injuryTime1"),
+            "second_half": _injury("injuryTime2"),
+            "extra_time_first_half": _injury("injuryTime3"),
+            "extra_time_second_half": _injury("injuryTime4"),
+        }
+        had_extra_time = stoppage_time["extra_time_first_half"] is not None or \
+                         stoppage_time["extra_time_second_half"] is not None
+
+        # Attendance, if reported
+        attendance = ev.get("attendance")
+
+        payload = {
+            "incidents": ip.get("incidents", []) or [],
+            "venue": venue_str,
+            "referee": ref_name,
+            "manager_home": home_mgr,
+            "manager_away": away_mgr,
+            "stoppage_time": stoppage_time,
+            "had_extra_time": had_extra_time,
+            "attendance": attendance,
+        }
+        _match_html_cache[ss_match_id] = (now, payload)
+        return payload
+    except Exception as e:
+        log.warning("match HTML %d failed: %s", ss_match_id, e)
+        return {}
+
+
+def _events_from_html_incidents(incidents: list) -> dict:
+    """Convert Sofascore raw incidents (from HTML) to our normalized shape."""
+    goals = []
+    cards = []
+    subs = []
+    for inc in incidents:
+        if not isinstance(inc, dict):
+            continue
+        itype = inc.get("incidentType", "")
+        minute = int(inc.get("time", 0) or 0)
+        added = int(inc.get("addedTime", 0) or 0)
+        is_home = bool(inc.get("isHome", False))
+        if itype == "goal":
+            player = (inc.get("player") or {}).get("name", "")
+            assist = (inc.get("assist1") or {}).get("name", "")
+            goals.append({
+                "player": player, "minute": minute, "added_time": added,
+                "is_home": is_home, "type": inc.get("incidentClass", "regular"),
+                "assist": assist,
+            })
+        elif itype == "card":
+            player = (inc.get("player") or {}).get("name", "")
+            cards.append({
+                "player": player, "minute": minute, "added_time": added,
+                "is_home": is_home, "card_type": inc.get("incidentClass", "yellow"),
+            })
+        elif itype == "substitution":
+            player_out = (inc.get("playerOut") or {}).get("name", "")
+            player_in = (inc.get("playerIn") or {}).get("name", "")
+            subs.append({
+                "player_out": player_out, "player_in": player_in,
+                "minute": minute, "added_time": added, "is_home": is_home,
+            })
+    return {
+        "goals": sorted(goals, key=lambda x: x["minute"]),
+        "cards": sorted(cards, key=lambda x: x["minute"]),
+        "substitutions": sorted(subs, key=lambda x: x["minute"]),
+    }
+
+
+def _load_match_team_stats(ss_match_id: int) -> dict:
+    """Load match team stats (possession, shots, xG, fouls, corners, ...).
+
+    Returns: {
+        "home": {ALL: {...}, "1ST": {...}, "2ND": {...}},
+        "away": {ALL: {...}, "1ST": {...}, "2ND": {...}}
+    }
+
+    Empty dicts for missing periods/teams.
+    """
+    out = {"home": {}, "away": {}}
+    try:
+        import pandas as pd
+        # Try SA file first, then EPL file. The match_id is unique across leagues
+        # so only one will have rows for any given ss_match_id.
+        df = None
+        for fname in ("match_team_stats.parquet",
+                      "match_team_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if not p.exists():
+                continue
+            cand = _read_parquet_cached(p)
+            cand = cand[cand["match_id"] == ss_match_id]
+            if not cand.empty:
+                df = cand
+                break
+        if df is None or df.empty:
+            return out
+        # Pick interesting columns; ignore rare/missing ones gracefully
+        keys = ("possession", "total_shots", "shots_on_target",
+                "shots_inside_box", "corners", "fouls", "offsides",
+                "xg", "accurate_passes", "total_passes",
+                "total_tackles", "interceptions", "clearances",
+                "duel_won_pct", "big_chances_scored", "big_chances_missed",
+                "gk_saves")
+        for _, row in df.iterrows():
+            side = "home" if bool(row.get("is_home", False)) else "away"
+            period = str(row.get("period", "ALL"))
+            blk = {}
+            for k in keys:
+                v = row.get(k)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    continue
+                blk[k] = float(v) if isinstance(v, (float, int)) else v
+            if blk:
+                out[side][period] = blk
+    except Exception as e:
+        log.warning("team stats load failed for %d: %s", ss_match_id, e)
+    return out
+
+
 def _load_match_events(ss_match_id: int) -> dict:
-    """Load events (goals, cards, subs) for a Sofascore match_id."""
+    """Load events (goals, cards, subs) for a Sofascore match_id.
+
+    Strategy:
+      1. Try parquet first (fast).
+      2. If parquet missing OR substitution OFF fields all empty (known scraper
+         bug), augment by scraping the live match-page HTML.
+    """
     try:
         import pandas as pd
         inc_path = DATA_DIR / "external" / "sofascore" / "match_incidents.parquet"
-        if not inc_path.exists():
-            return {"goals": [], "cards": [], "substitutions": []}
-        df = pd.read_parquet(inc_path)
-        df = df[df["match_id"] == ss_match_id]
+        df = None
+        if inc_path.exists():
+            df = pd.read_parquet(inc_path)
+            df = df[df["match_id"] == ss_match_id]
+
+        # Decide: do we need to fall back to HTML?
+        # — parquet has no rows for this match
+        # — OR all substitutions in parquet have empty player_name (the OFF bug)
+        needs_html = (df is None or df.empty)
+        if not needs_html:
+            sub_rows = df[df["incident_type"] == "substitution"]
+            if len(sub_rows) and (sub_rows["player_name"].fillna("").str.strip() == "").all():
+                needs_html = True
+
+        if needs_html:
+            html_data = _scrape_match_html(ss_match_id)
+            incidents = html_data.get("incidents") or []
+            if incidents:
+                return _events_from_html_incidents(incidents)
+            if df is None or df.empty:
+                return {"goals": [], "cards": [], "substitutions": []}
+
+        # Parquet path (existing logic below)
         if df.empty:
             return {"goals": [], "cards": [], "substitutions": []}
 
@@ -6193,31 +7422,39 @@ def _load_match_lineup(ss_match_id: int) -> dict:
     result = {"home": {"formation": "", "starters": [], "bench": []},
               "away": {"formation": "", "starters": [], "bench": []}}
     try:
-        # Try match JSON files
-        matches_dir = DATA_DIR / "external" / "sofascore" / "matches"
-        for season_dir in sorted(matches_dir.glob("*"), reverse=True):
-            match_file = season_dir / f"{ss_match_id}.json"
-            if match_file.exists():
-                with open(match_file) as f:
-                    mdata = json.load(f)
-                for side in ["home", "away"]:
-                    lineup = mdata.get(f"{side}_lineup", {})
-                    result[side]["formation"] = lineup.get("formation", "")
-                    for p in lineup.get("starters", []):
-                        player = p.get("player", {})
-                        result[side]["starters"].append({
-                            "name": player.get("name", ""),
-                            "position": p.get("position", ""),
-                            "shirt_number": p.get("shirtNumber", 0),
-                        })
-                    for p in lineup.get("substitutes", []):
-                        player = p.get("player", {})
-                        result[side]["bench"].append({
-                            "name": player.get("name", ""),
-                            "position": p.get("position", ""),
-                            "shirt_number": p.get("shirtNumber", 0),
-                        })
-                break  # Found the file
+        # Try match JSON files. EPL JSONs live in matches_premier_league/ alongside SA's matches/.
+        match_file = None
+        for league_dir_name in ("matches", "matches_premier_league"):
+            matches_dir = DATA_DIR / "external" / "sofascore" / league_dir_name
+            if not matches_dir.exists():
+                continue
+            for season_dir in sorted(matches_dir.glob("*"), reverse=True):
+                cand = season_dir / f"{ss_match_id}.json"
+                if cand.exists():
+                    match_file = cand
+                    break
+            if match_file:
+                break
+        if match_file:
+            with open(match_file) as f:
+                mdata = json.load(f)
+            for side in ["home", "away"]:
+                lineup = mdata.get(f"{side}_lineup", {})
+                result[side]["formation"] = lineup.get("formation", "")
+                for p in lineup.get("starters", []):
+                    player = p.get("player", {})
+                    result[side]["starters"].append({
+                        "name": player.get("name", ""),
+                        "position": p.get("position", ""),
+                        "shirt_number": p.get("shirtNumber", 0),
+                    })
+                for p in lineup.get("substitutes", []):
+                    player = p.get("player", {})
+                    result[side]["bench"].append({
+                        "name": player.get("name", ""),
+                        "position": p.get("position", ""),
+                        "shirt_number": p.get("shirtNumber", 0),
+                    })
     except Exception as e:
         log.warning(f"Error loading lineup for {ss_match_id}: {e}")
 
@@ -6264,6 +7501,15 @@ def api_match_events(date, home_team, away_team):
     lookup = _get_sofascore_lookup()
     ss_id = lookup.get((date, home, away))
 
+    # League inference (match parquet → fallback to team-name lookup)
+    try:
+        from config.leagues import infer_league
+        league_inferred = infer_league(home, away)
+    except Exception:
+        league_inferred = "serie_a"
+
+    context = _build_match_context(ss_id, date, home, away, league_inferred)
+
     if not ss_id:
         # Return empty events gracefully instead of 404
         # (match exists in features.parquet but not in Sofascore data)
@@ -6277,11 +7523,13 @@ def api_match_events(date, home_team, away_team):
             "goals": [],
             "cards": [],
             "substitutions": [],
+            "context": context,
             "no_detail": True,
         })
 
     events = _load_match_events(ss_id)
     lineup = _load_match_lineup(ss_id)
+    team_stats = _load_match_team_stats(ss_id)
 
     return jsonify({
         "match_id": ss_id,
@@ -6293,6 +7541,8 @@ def api_match_events(date, home_team, away_team):
         "goals": events["goals"],
         "cards": events["cards"],
         "substitutions": events["substitutions"],
+        "team_stats": team_stats,
+        "context": context,
     })
 
 
@@ -6310,12 +7560,19 @@ def api_team_match_history(team_name):
 
     try:
         import pandas as pd
-        pms = pd.read_parquet(
-            DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet",
-            columns=["match_id", "date", "home_team", "away_team",
-                      "home_score", "away_score", "season", "round",
-                      "is_home", "team"]
-        )
+        # Load both leagues' player_match_stats — historic bug was loading only SA
+        cols = ["match_id", "date", "home_team", "away_team",
+                "home_score", "away_score", "season", "round",
+                "is_home", "team"]
+        frames = []
+        for fname in ("player_match_stats.parquet",
+                      "player_match_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if p.exists():
+                frames.append(pd.read_parquet(p, columns=cols))
+        if not frames:
+            return jsonify({"team": team, "matches": []})
+        pms = pd.concat(frames, ignore_index=True)
         team_matches = pms[pms["team"].apply(
             lambda t: normalize_team(str(t)) == team
         )].drop_duplicates(subset="match_id")
@@ -6774,11 +8031,17 @@ def api_players():
 
     teams_data = []
 
-    # --- Primary: Sofascore player match stats (current season) ---
+    # --- Primary: Sofascore player match stats (current season, both leagues) ---
     try:
-        pms = pd.read_parquet(
-            DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-        )
+        frames = []
+        for fname in ("player_match_stats.parquet",
+                      "player_match_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if p.exists():
+                frames.append(pd.read_parquet(p))
+        if not frames:
+            return jsonify({"teams": []})
+        pms = pd.concat(frames, ignore_index=True)
         if "season" in pms.columns:
             pms = pms[pms["season"].astype(str).str.startswith(get_current_season())]
     except Exception:
@@ -6950,12 +8213,18 @@ def api_player_detail(team_name, player_name):
         "market_value_history": [],
     }
 
-    # --- Load Sofascore data (primary source) ---
+    # --- Load Sofascore data (primary source) — both leagues ---
     player_rows = pd.DataFrame()
     try:
-        pms = pd.read_parquet(
-            DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-        )
+        frames = []
+        for fname in ("player_match_stats.parquet",
+                      "player_match_stats_premier_league.parquet"):
+            p = DATA_DIR / "external" / "sofascore" / fname
+            if p.exists():
+                frames.append(pd.read_parquet(p))
+        if not frames:
+            raise FileNotFoundError("no player_match_stats parquets")
+        pms = pd.concat(frames, ignore_index=True)
         team_pms = pms[pms["team"].apply(lambda t: normalize_team(str(t)) == team)]
 
         # Try exact normalized match first

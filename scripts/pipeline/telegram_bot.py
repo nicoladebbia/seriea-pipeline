@@ -473,11 +473,13 @@ from web.advisor import (
     TOOL_HANDLERS,
     _build_system_prompt,
     _get_bankroll,
-    _load_json,
     _tool_get_value_bets,
     _tool_get_bankroll_status,
     _tool_get_live_matches,
 )
+# advisor.py uses load_json_safe; expose it under the legacy _load_json name
+# that telegram_bot was originally written against.
+from scripts.utils.json_utils import load_json_safe as _load_json
 
 
 # Telegram-specific system prompt extension

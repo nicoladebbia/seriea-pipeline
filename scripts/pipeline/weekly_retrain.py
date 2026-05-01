@@ -734,7 +734,13 @@ def full_retrain(dry_run: bool = False) -> dict:
         _notify(f"Full retrain rejected: {reason}", "Full Retrain REJECTED")
 
     # Save new features and params
-    result["n_features"] = train_results.get("n_features_selected")
+    # train_results was assigned earlier in quick_retrain but full_retrain has its
+    # own training path; pull the feature count from selected_features when available.
+    try:
+        sel = _load_selected_features() or []
+        result["n_features"] = len(sel) if sel else None
+    except Exception:
+        result["n_features"] = None
     _append_metrics_history(result)
     return result
 

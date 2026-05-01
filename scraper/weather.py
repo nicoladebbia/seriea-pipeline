@@ -133,6 +133,7 @@ def _extract_city(venue: str) -> str | None:
 
 # Fallback when venue column is NaN — map home_team → city
 TEAM_TO_CITY: dict[str, str] = {
+    # ── Serie A ──
     "Inter": "Milano", "Milan": "Milano", "AC Milan": "Milano",
     "Juventus": "Torino", "Torino": "Torino",
     "Lazio": "Roma", "Roma": "Roma",
@@ -155,6 +156,37 @@ TEAM_TO_CITY: dict[str, str] = {
     "Reggina": "Reggio Calabria", "Cesena": "Cesena",
     "Ascoli": "Ascoli Piceno", "Novara": "Novara",
     "Pescara": "Pescara", "Carpi": "Carpi",
+    # ── Premier League ──
+    "Arsenal": "London", "Chelsea": "London", "Tottenham": "London",
+    "Tottenham Hotspur": "London", "Spurs": "London",
+    "West Ham": "West Ham", "West Ham United": "West Ham",
+    "Crystal Palace": "London", "Brentford": "Brentford",
+    "Fulham": "Fulham", "Charlton": "London", "QPR": "London",
+    "Watford": "Watford",
+    "Liverpool": "Liverpool", "Everton": "Liverpool",
+    "Man City": "Manchester", "Manchester City": "Manchester",
+    "Man United": "Manchester", "Manchester United": "Manchester",
+    "Aston Villa": "Birmingham", "Birmingham": "Birmingham",
+    "West Bromwich Albion": "West Bromwich", "West Brom": "West Bromwich",
+    "Brighton": "Brighton", "Brighton & Hove Albion": "Brighton",
+    "Brighton and Hove Albion": "Brighton",
+    "Newcastle": "Newcastle", "Newcastle United": "Newcastle",
+    "Sunderland": "Sunderland", "Middlesbrough": "Middlesbrough",
+    "Leeds": "Leeds", "Leeds United": "Leeds",
+    "Sheffield United": "Sheffield", "Sheffield Wednesday": "Sheffield",
+    "Wolves": "Wolverhampton", "Wolverhampton": "Wolverhampton",
+    "Wolverhampton Wanderers": "Wolverhampton",
+    "Leicester": "Leicester", "Leicester City": "Leicester",
+    "Nottingham Forest": "Nottingham",
+    "Bournemouth": "Bournemouth", "AFC Bournemouth": "Bournemouth",
+    "Burnley": "Burnley", "Stoke": "Stoke", "Stoke City": "Stoke",
+    "Southampton": "Southampton", "Luton": "Luton", "Luton Town": "Luton",
+    "Norwich": "Norwich", "Norwich City": "Norwich",
+    "Swansea": "Swansea", "Swansea City": "Swansea",
+    "Huddersfield": "Huddersfield", "Huddersfield Town": "Huddersfield",
+    "Ipswich": "Ipswich", "Ipswich Town": "Ipswich",
+    "Cardiff": "London",  # No Cardiff coords; degrade to London
+    "Hull": "London", "Hull City": "London",  # No Hull coords; degrade
 }
 
 

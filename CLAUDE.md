@@ -106,3 +106,157 @@ Any question or task involving:
 Every time you **refresh, scrape, restructure, or backfill data**, update DATA_CATALOG.md so the catalog stays authoritative. The file is deliberately at project root (not `.plans/`) because it's permanent reference, not a plan artifact.
 
 **If I ask a data question and you don't cite DATA_CATALOG.md in your answer, you're breaking this rule.**
+
+## Operational Bug Catalogue (2026-05-01 deep-fix session)
+
+This section captures every real bug we found, why it existed, and the rule
+that prevents it from recurring. **Future Claude: when you see a symptom that
+matches one of these, the fix is documented; do not waste time re-diagnosing.**
+
+Organised by *symptom-first* so you can grep for what you're seeing:
+
+### Symptom: "All launchd plists in `~/Library/LaunchAgents/` look stripped (bare arrays, no schedule)"
+
+- **What you'll see**: `cat ~/Library/LaunchAgents/com.seriea-pipeline.X.plist` returns one line `["python3", "...path..."]` — no `<plist>`, no `Label`, no `StartInterval`.
+- **Why it happens**: Some macOS tool / linter / plutil-write rewrote them to compact form. Runtime keeps the schedule in launchd memory until reboot, then they're lost.
+- **Fix**: regenerate from a healthy XML template, preserving `ProgramArguments`. See `/tmp/regen_plists.py` history (it's been run; pattern is in this CLAUDE.md).
+- **Detection**: `for p in ~/Library/LaunchAgents/com.seriea-pipeline.*.plist; do head -c 1 "$p"; echo " $p"; done` — first char `<` = OK, `[` = stripped.
+- **Prevention rule**: **never `plutil -convert json` a launchd plist**. Always edit XML form, atomic-write via tmpfile.
+
+### Symptom: "Cron job exit code 1 with NameError"
+
+- **What you'll see**: `launchctl list | grep seriea-pipeline` shows a job with exit 1, log has `NameError: 'today_matches' is not defined` (or `train_results`, etc.).
+- **Why**: Variable scope mistake — function references a name that was defined in a sibling function (copy-paste rot).
+- **Fix**: rename to the local-scope variable that exists, or guard with `try/except NameError`.
+- **Affected this session**: `scheduler.run_pre_kickoff_monitor` (today_matches → horizon_matches), `weekly_retrain.full_retrain` (train_results → fallback to selected_features).
+- **Prevention rule**: when copying a function body, run `python3 -c "from X import Y; Y()"` to catch NameErrors before the cron does.
+
+### Symptom: "Telegram bot stopped 8 days ago, won't restart"
+
+- **What you'll see**: `ImportError: cannot import name '_load_json' from 'web.advisor'`.
+- **Why**: `advisor.py` was refactored to use `load_json_safe` from `scripts.utils.json_utils`, but `telegram_bot.py` still imported the old `_load_json` name.
+- **Fix**: alias the new function as the old name in `telegram_bot.py`:
+  ```python
+  from scripts.utils.json_utils import load_json_safe as _load_json
+  ```
+- **Prevention rule**: **when you remove or rename a function exported from a module, grep for its name across the project** before deleting:
+  ```
+  grep -rln "from web.advisor import.*_load_json" .
+  ```
+
+### Symptom: "`/api/data-freshness` says odds_fetch_staleness 179h but odds_full.json was just refreshed"
+
+- **What you'll see**: monitor reports odds stale, but `data/upcoming/odds_full.json` mtime is recent.
+- **Why**: `_iso_age_hours()` in `scripts/pipeline/monitor.py` mixed naive/aware datetimes:
+  - `datetime.fromisoformat("2026-05-01T04:30+00:00")` → tz-aware
+  - `datetime.now()` → tz-naive
+  - subtraction raised TypeError, caught, returned -1
+- **Fix**: normalize both to UTC-aware:
+  ```python
+  if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+  return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+  ```
+- **Prevention rule**: **all timestamps in this repo must be written as UTC-aware ISO strings**. Any reader that parses them must use `datetime.now(timezone.utc)` not `datetime.now()`.
+
+### Symptom: "`fetch_and_save_odds()` succeeds but health-monitor still reports staleness"
+
+- **Why**: the fetcher writes the cache files but doesn't update `data/pipeline_state.json:last_odds_fetch`. Monitor reads that field.
+- **Fix**: after `save_odds()`, write `state["last_odds_fetch"] = datetime.now(timezone.utc).isoformat()`.
+- **Prevention rule**: **whenever a write succeeds, bump the state field that tracks freshness**. State files exist precisely to drive monitors; not updating them means silent rot.
+
+### Symptom: "Bankroll says X, journal-derived says Y, drift > 0"
+
+- **What you'll see**: `data/monitoring/health_status.json` reports `ledger_invariants CRITICAL: Ledger drift detected`.
+- **Source of truth ranking**: `bet_journal.json` (immutable append-log) > `history.json` (settled-log cache) > `bankroll.json` (live snapshot).
+- **Fix**: recompute snapshot from journal:
+  ```python
+  d = json.load(open('bet_journal.json'))
+  settled = [b for b in d['bets'].values() if b['status'] in ('won','lost','push','void')]
+  total_profit = sum(float(b.get('profit', 0) or 0) for b in settled)
+  current_balance = 1000.0 + total_profit
+  ```
+  Then update `data/betting/bankroll.json` and (separately) append the new settlements to `data/betting/history.json` if they're missing.
+- **Prevention rule**: **never edit `bankroll.json` or `history.json` directly when settling bets**. Only edit `bet_journal.json`; the snapshots derive from it. If a snapshot drifts, recompute, don't patch the snapshot in place.
+
+### Symptom: "Auto-poll burning credits with no live matches"
+
+- **What you'll see**: `Auto-poll: no live matches (N/12)` in `launchd-web-dashboard-err.log`, but `is_match_day()` returned True hours before kickoff. Each poll = 2 Odds API credits.
+- **Why**: `is_match_day()` is too lax — returns True for the entire calendar day. Page visit triggered `_ensure_auto_poll()`.
+- **Fix**: only auto-start when a match is **imminent** (within 30 min of kickoff or already live). Bail out after 4 empty polls, not 12.
+- **Prevention rule**: **never auto-poll based on calendar day alone**. Always require a kickoff-time check. Default bail-out for empty polls = 4 (20 min), not 12 (60 min).
+
+### Symptom: "Sofascore API blocks (HTTP 403) but I need fresh data"
+
+- **What you'll see**: `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
+- **Why**: Cloudflare IP-fingerprint ban, often after heavy scraping. Lasts hours to days.
+- **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance are all in `props.pageProps.initialProps`.
+- **Sentinels**: SA standings page must contain `Inter`; EPL must contain `Arsenal`. If sentinel missing → schema break, log and trip breaker.
+- **Prevention rule**: **HTML scraping with breaker is the canonical fallback for Sofascore**. Never just retry the API in a loop when you get 403 — burn the cooldown, scrape the HTML.
+
+### Symptom: "EPL data missing where SA has it"
+
+Common causes and where they live:
+
+1. **Helper reads only the SA file**: e.g. `_load_match_team_stats` opened `match_team_stats.parquet`, missing `match_team_stats_premier_league.parquet`. **Rule**: every loader that takes a `match_id` must try BOTH parquet variants in fallback order.
+2. **Helper reads only the SA dir**: e.g. `_load_match_lineup` scanned `data/external/sofascore/matches/` only, missing `matches_premier_league/`. **Rule**: scan both directories.
+3. **Scraper iterates only SA match_ids**: `get_match_ids()` in `scraper/sofascore_events.py` was pulling from `player_match_stats.parquet` only. **Rule**: loaders that derive a master ID list must concat both league parquets.
+4. **Lookup table is SA-only**: `TEAM_TO_CITY` in `scraper/weather.py` had no EPL teams → 0 EPL weather rows. **Rule**: all team-keyed lookups (cities, venues, normaliser maps) must include both leagues.
+5. **Endpoint is single-league hardcoded**: `api_team_match_history` was hardcoded to SA parquet. **Rule**: any handler taking a team name must infer or accept league, then read the right source.
+
+**Prevention rule (umbrella)**: **whenever you write `data/external/sofascore/X.parquet`, immediately also handle `X_premier_league.parquet`** — and same for any other ACTIVE_LEAGUES file convention. Use this idiom:
+```python
+for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
+    p = DATA_DIR / "external" / "sofascore" / fname
+    if p.exists():
+        ...
+```
+
+### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
+
+- **Why**: `features_quality` check flags any column >90% NaN unless its prefix is in `SPARSE_PREFIXES`. New feature families (e.g. `home_fh_*` first-half rollups, `home_xg_share_*` zone xG) weren't allowlisted.
+- **Fix**: add the prefix to `SPARSE_PREFIXES` in `scripts/pipeline/health_check.py`.
+- **Prevention rule**: **when adding a feature family that's known to be partially populated** (recent seasons only, sub-set of leagues), add the prefix to `SPARSE_PREFIXES` in the same commit.
+
+### Symptom: "`/historical/` Odds API returns 422 INVALID_MARKET"
+
+- **What you'll see**: backfill script burns credits but writes 0 rows.
+- **Why**: `/historical/sports/<sport>/odds` only supports `h2h`, `totals`, `spreads`. **Not** `btts`, `double_chance`, `team_totals`, `draw_no_bet`, player props.
+- **Fix**: never request `btts` etc. on the historical endpoint. Use per-event `/events/{id}/odds/` for those — and only on live future events, never historical.
+- **Reference table** (memorise this):
+  | Endpoint | Markets allowed |
+  |---|---|
+  | `/odds/` (bulk) | h2h, totals, spreads |
+  | `/historical/sports/<s>/odds/` | h2h, totals, spreads |
+  | `/events/{id}/odds/` | btts, double_chance, draw_no_bet, team_totals, alternate_totals, alternate_spreads, all player_* |
+- **Prevention rule**: **invalid-market 422s STILL COST CREDITS**. Validate market×endpoint compatibility before sending.
+
+---
+
+## Restart procedure (when needed)
+
+```bash
+# 1. Snapshot current state
+launchctl list | grep "com.seriea-pipeline" | sort -k3
+ps aux | grep -E "scheduler.py|sofascore_watcher|telegram_bot|web/app.py" | grep -v grep
+
+# 2. Stop everything
+for plist in ~/Library/LaunchAgents/com.seriea-pipeline.*.plist; do
+  launchctl unload "$plist"
+done
+
+# 3. Verify nothing left
+ps aux | grep -E "scheduler.py|sofascore_watcher|telegram_bot|web/app.py" | grep "Projects/seriea-pipeline" | grep -v grep
+
+# 4. Reload
+for plist in ~/Library/LaunchAgents/com.seriea-pipeline.*.plist; do
+  launchctl load "$plist"
+done
+
+# 5. Wait + verify health
+sleep 8
+curl -s http://localhost:5001/api/data-freshness | python3 -m json.tool
+launchctl list | grep "com.seriea-pipeline" | awk '$2 != 0 && $2 != "-" {print}'
+```
+
+Healthy signal: `ok=True`, `severity=fixtures_stale_html_ok` (or `ok`), `live_standings_ok=true`. Exit codes other than `0` or `-15`/`-9` (running) on any job indicate a real failure to investigate.
+

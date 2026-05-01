@@ -859,7 +859,7 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     total_triggered = sum(len(v) for v in actions_needed.values())
     if total_triggered == 0:
         pending = []
-        for match in today_matches:
+        for match in horizon_matches:
             match_key = match["match"]
             mins = (match["kickoff_utc"] - now).total_seconds() / 60
             ms = processed.get(match_key, {}).get("stages", {})

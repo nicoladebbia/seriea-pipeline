@@ -86,12 +86,21 @@ def _load_env_key(name: str) -> str:
 
 
 def _iso_age_hours(iso_str: str) -> float:
-    """Return hours since an ISO timestamp, or -1 if unparseable."""
+    """Return hours since an ISO timestamp, or -1 if unparseable.
+
+    Handles both timezone-aware and timezone-naive ISO strings — naive ones
+    are treated as UTC, which is consistent with how the rest of the project
+    writes timestamps.
+    """
     if not iso_str:
         return -1
     try:
-        dt = datetime.fromisoformat(iso_str)
-        return (datetime.now() - dt).total_seconds() / 3600
+        from datetime import timezone as _tz
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        # Normalize: if naive, assume UTC; if aware, keep as is
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return (datetime.now(_tz.utc) - dt).total_seconds() / 3600
     except (ValueError, TypeError):
         return -1
 
@@ -368,13 +377,23 @@ def run_monitor() -> Dict:
     # 1. Run existing health_check
     try:
         hc = run_health_check()
+        # Build a one-line summary for the dashboard from the issue list, so
+        # the entry isn't shown as an empty WARNING.
+        issues_list = hc.get("issues", [])
+        summary_msgs = [m for lvl, m in issues_list if lvl in ("WARNING", "CRITICAL")]
+        detail = (
+            "; ".join(m[:80] for m in summary_msgs[:3])
+            if summary_msgs else "all data-quality checks passed"
+        )
         result["checks"]["health_check"] = {
             "status": hc["overall_status"],
-            "issues": hc.get("issues", []),
+            "detail": detail,
+            "issues": issues_list,
         }
-        # Propagate issues
-        for level, msg in hc.get("issues", []):
-            result["issues"].append((level, f"[health_check] {msg}"))
+        # Propagate issues — but skip INFO-level (they're not real problems)
+        for level, msg in issues_list:
+            if level in ("WARNING", "CRITICAL"):
+                result["issues"].append((level, f"[health_check] {msg}"))
     except Exception as e:
         log.error(f"health_check failed: {e}")
         result["checks"]["health_check"] = {"status": "ERROR", "detail": str(e)}

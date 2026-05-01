@@ -153,14 +153,20 @@ def _get_json(url: str, session=None) -> dict | None:
 def _parse_incidents(data: dict, match_id: int) -> list[dict]:
     """Parse incidents from Sofascore /incidents endpoint.
 
-    Actual API structure per incident:
+    API structure per incident:
       incidentType: 'card' | 'goal' | 'substitution' | 'period' | ...
       incidentClass: 'yellow' | 'red' | 'yellowRed' | 'regular' | 'penalty' | 'ownGoal' | 'injury' | ...
       time: int (minute)
       addedTime: int (stoppage time, optional)
       isHome: bool
-      player: {name, id, ...}
-      playerIn: {name, id, ...}  (for substitutions)
+      player: {name, id, ...}                (cards/goals: the subject)
+      playerOut: {name, id, ...}             (substitutions: player coming off)
+      playerIn:  {name, id, ...}             (substitutions: player coming on)
+
+    Schema convention: row['player_name'] always holds the "subject" of the
+    incident — for cards/goals that's `inc.player`; for substitutions that's
+    `inc.playerOut` (the player being replaced). row['player_in_name'] is only
+    populated for substitutions.
     """
     rows = []
     incidents = data.get("incidents", [])
@@ -177,9 +183,13 @@ def _parse_incidents(data: dict, match_id: int) -> list[dict]:
         is_home = inc.get("isHome")
         inc_class = inc.get("incidentClass", "")
 
-        player = inc.get("player", {}) or {}
-        player_name = player.get("name", "") or player.get("shortName", "")
-        player_id = player.get("id", "")
+        # Substitutions use playerOut for the subject; everything else uses player.
+        if inc_type == "substitution":
+            subject = inc.get("playerOut", {}) or {}
+        else:
+            subject = inc.get("player", {}) or {}
+        player_name = subject.get("name", "") or subject.get("shortName", "")
+        player_id = subject.get("id", "")
 
         row = {
             "match_id": match_id,
@@ -231,20 +241,33 @@ def _parse_captains(data: dict, match_id: int) -> list[dict]:
 
 
 def get_match_ids() -> list[int]:
-    """Get all match IDs from existing Sofascore data."""
-    stats_path = _SOFASCORE_DIR / "player_match_stats.parquet"
-    if stats_path.exists():
-        df = pd.read_parquet(stats_path, columns=["match_id"])
-        return sorted(df["match_id"].unique().tolist())
+    """Get all match IDs from existing Sofascore data across all leagues.
+
+    Pulls from BOTH player_match_stats.parquet (Serie A) and
+    player_match_stats_premier_league.parquet (EPL) so incidents/captains/etc.
+    cover the full multi-league scope. Pre-EPL versions of this function only
+    looked at the SA parquet, leaving 309 EPL matches unscraped.
+    """
+    ids = set()
+    for fname in ("player_match_stats.parquet",
+                  "player_match_stats_premier_league.parquet"):
+        p = _SOFASCORE_DIR / fname
+        if p.exists():
+            try:
+                df = pd.read_parquet(p, columns=["match_id"])
+                ids.update(df["match_id"].unique().tolist())
+            except Exception as e:
+                log.warning(f"get_match_ids: failed to read {fname}: {e}")
+    if ids:
+        return sorted(ids)
 
     # Fallback: from match JSONs
     match_dir = _SOFASCORE_DIR / "matches"
-    ids = []
     if match_dir.exists():
         for season_dir in match_dir.iterdir():
             for f in season_dir.glob("*.json"):
                 try:
-                    ids.append(int(f.stem))
+                    ids.add(int(f.stem))
                 except ValueError as e:
                     log.debug(f"Skipping non-numeric match file '{f.stem}': {e}")
     return sorted(ids)
@@ -524,6 +547,7 @@ if __name__ == "__main__":
     parser.add_argument("--incidents", action="store_true", help="Scrape incidents only")
     parser.add_argument("--captains", action="store_true", help="Scrape captains only")
     parser.add_argument("--limit", type=int, default=None, help="Max matches to scrape")
+    parser.add_argument("--force", action="store_true", help="Re-scrape matches even if already in parquet (used for backfill after schema fix)")
     args = parser.parse_args()
 
     ids = get_match_ids()
@@ -540,8 +564,8 @@ if __name__ == "__main__":
         if not captains.empty:
             print(captains.to_string())
     elif args.incidents:
-        scrape_incidents(max_matches=args.limit)
+        scrape_incidents(max_matches=args.limit, force=args.force)
     elif args.captains:
-        scrape_captains(max_matches=args.limit)
+        scrape_captains(max_matches=args.limit, force=args.force)
     else:
         scrape_all()

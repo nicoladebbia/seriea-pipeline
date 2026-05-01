@@ -337,6 +337,15 @@ def check_data_quality() -> Dict:
                 "home_cards", "away_cards", "home_corners_roll",
                 "away_corners_roll", "home_yellow_cards_roll",
                 "away_yellow_cards_roll",
+                # First-half rollups: only populated for matches with Sofascore
+                # half-by-half stats (recent seasons / specific leagues). >90% NaN
+                # across full history by design.
+                "home_fh_", "away_fh_",
+                # xG-share-by-zone rollups (open-play, penalty, counter, set-piece):
+                # only populated for Sofascore-shotmap matches (post-2017). Sparse
+                # by design across the full historical window.
+                "home_xg_share_", "away_xg_share_",
+                "home_xg_conceded_share_", "away_xg_conceded_share_",
             )
             dense_cols = [c for c in df.columns if not c.startswith(SPARSE_PREFIXES)]
             nan_rate = float(df[dense_cols].isna().mean().mean()) if dense_cols else 0.0
