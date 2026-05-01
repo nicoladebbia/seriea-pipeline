@@ -1193,17 +1193,20 @@ _KICKOFF_MAP_CACHE: dict = {"mtime": None, "data": None}
 def _load_kickoff_map() -> dict:
     """Build {(home_team, away_team): commence_time_iso} from upcoming schedules.
 
-    Sources:
-      - upcoming/matches.json (Serie A schedule from Odds API — list form)
-      - upcoming/odds_full_premier_league.json.matches (EPL — dict form)
+    Both SA and EPL come from the same shape (odds_full*.json) so they parse
+    identically. The legacy upcoming/matches.json was stale (MW24 matches from
+    April 17 stuck in the file long after they played) and produced wrong
+    kickoff times for SA in the digest.
 
     Cached by mtime so repeated digest renders don't re-parse.
     """
-    sa_path = DATA_DIR / "upcoming" / "matches.json"
-    epl_path = DATA_DIR / "upcoming" / "odds_full_premier_league.json"
+    sources = [
+        DATA_DIR / "upcoming" / "odds_full.json",
+        DATA_DIR / "upcoming" / "odds_full_premier_league.json",
+    ]
 
     mtimes = []
-    for p in (sa_path, epl_path):
+    for p in sources:
         try:
             mtimes.append(p.stat().st_mtime)
         except FileNotFoundError:
@@ -1213,27 +1216,19 @@ def _load_kickoff_map() -> dict:
         return _KICKOFF_MAP_CACHE["data"]
 
     kmap: dict = {}
-    try:
-        if sa_path.exists():
-            d = json.loads(sa_path.read_text())
-            rows = d if isinstance(d, list) else d.get("matches", [])
-            for mm in rows or []:
-                ct = mm.get("commence_time")
-                if ct:
-                    kmap[(mm.get("home_team", ""), mm.get("away_team", ""))] = ct
-    except Exception as e:
-        log.debug("kickoff-map SA load failed: %s", e)
-    try:
-        if epl_path.exists():
-            d = json.loads(epl_path.read_text())
+    for p in sources:
+        try:
+            if not p.exists():
+                continue
+            d = json.loads(p.read_text())
             for match_key, obj in (d.get("matches", {}) or {}).items():
                 if isinstance(obj, dict) and obj.get("commence_time"):
                     h = obj.get("home_team") or (match_key.split(" vs ")[0] if " vs " in match_key else "")
                     a = obj.get("away_team") or (match_key.split(" vs ")[1] if " vs " in match_key else "")
                     if h and a:
                         kmap[(h, a)] = obj["commence_time"]
-    except Exception as e:
-        log.debug("kickoff-map EPL load failed: %s", e)
+        except Exception as e:
+            log.debug("kickoff-map %s load failed: %s", p.name, e)
 
     _KICKOFF_MAP_CACHE["mtime"] = sig
     _KICKOFF_MAP_CACHE["data"] = kmap
@@ -1830,8 +1825,17 @@ def notify_daily_digest() -> dict:
                                     monitoring/health_status.json
     """
     from datetime import timedelta as _td
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    tomorrow_str = (datetime.now() + _td(days=1)).strftime("%Y-%m-%d")
+    # Use Europe/Rome local date — matches.parquet, predictions, and the user's
+    # mental model all live in Italy local time. Falling back to wall-clock
+    # naive datetime.now() works on a Rome-tz host, but if the host clock ever
+    # drifted to UTC the digest would mis-bucket midnight matches.
+    try:
+        from zoneinfo import ZoneInfo
+        _now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        _now_local = datetime.now()
+    today_str = _now_local.strftime("%Y-%m-%d")
+    tomorrow_str = (_now_local + _td(days=1)).strftime("%Y-%m-%d")
 
     def _load_json(path: Path, default=None):
         try:
@@ -1853,7 +1857,36 @@ def notify_daily_digest() -> dict:
         history = _load_json(DATA_DIR / "betting" / "history.json", default=[])
     predictions_sa = _load_json(DATA_DIR / "upcoming" / "predictions.json")
     predictions_epl = _load_json(DATA_DIR / "upcoming" / "predictions_premier_league.json")
-    slip = _load_json(DATA_DIR / "betting" / "betting_slip.json")
+    # Prefer the unified slip (refreshed every morning by the pipeline) over the
+    # legacy betting_slip.json which can sit stale for weeks. Normalize the
+    # picks list under `recommended_singles` so the rest of the digest works
+    # without further changes.
+    unified_slip_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
+    legacy_slip_path = DATA_DIR / "betting" / "betting_slip.json"
+    slip_unified = _load_json(unified_slip_path) if unified_slip_path.exists() else {}
+    slip_legacy = _load_json(legacy_slip_path) if legacy_slip_path.exists() else {}
+
+    def _slip_age_h(s):
+        gen = (s.get("generated_at") if isinstance(s, dict) else None) or ""
+        if not gen:
+            return float("inf")
+        try:
+            from datetime import timezone as _tz
+            dt = datetime.fromisoformat(str(gen).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz.utc)
+            return (datetime.now(_tz.utc) - dt).total_seconds() / 3600
+        except Exception:
+            return float("inf")
+
+    # Pick the freshest slip
+    if _slip_age_h(slip_unified) <= _slip_age_h(slip_legacy):
+        slip = dict(slip_unified)
+        # Unified file uses `selected_bets`; alias to `recommended_singles`
+        if "recommended_singles" not in slip and "selected_bets" in slip:
+            slip["recommended_singles"] = slip["selected_bets"]
+    else:
+        slip = slip_legacy
 
     # ---------- Bankroll (ledger is the single source of truth) ----------
     _br = _get_bankroll_context()
@@ -1879,7 +1912,14 @@ def notify_daily_digest() -> dict:
         roi_rolling = (roll_profit / roll_staked * 100) if roll_staked > 0 else None
 
     # ---------- Today's results (from history.json) ----------
-    today_bets = [b for b in history if (b.get("settled_at") or "").startswith(today_str)]
+    # Bucket by MATCH date, not settled_at. settled_at is UTC and can be filled
+    # asynchronously days after a match plays — using it caused yesterday's
+    # backfilled settlements to appear as "today" the morning after.
+    today_bets = [
+        b for b in history
+        if (b.get("date") or "").startswith(today_str)
+        and b.get("status") in ("won", "lost", "push", "void")
+    ]
     won_today = sum(1 for b in today_bets if b.get("status") == "won")
     lost_today = sum(1 for b in today_bets if b.get("status") == "lost")
     push_today = sum(1 for b in today_bets if b.get("status") == "push")
@@ -1935,11 +1975,13 @@ def notify_daily_digest() -> dict:
             best_pick = max(winners, key=lambda b: float(b.get("profit") or 0))
 
     # ---------- Streak computed per-DAY (timestamps within a batch are tied) ----------
-    # A day "wins" if its net P&L is positive. This is a meaningful signal
-    # even though per-bet settled_at timestamps are batch-tied.
+    # A day "wins" if its net P&L is positive. Key by MATCH date (when the bet
+    # was actually contested), not settled_at — settled_at can be filled
+    # asynchronously days later and would mis-attribute the bet to the wrong
+    # day in the streak chart.
     per_day: dict[str, dict] = {}
     for b in settled_wl:
-        d = (b.get("settled_at") or "")[:10]
+        d = (b.get("date") or b.get("settled_at") or "")[:10]
         if not d:
             continue
         agg = per_day.setdefault(d, {"won": 0, "lost": 0, "push": 0, "pnl": 0.0, "n": 0})
@@ -1993,8 +2035,11 @@ def notify_daily_digest() -> dict:
     gen_at = (slip.get("generated_at") if isinstance(slip, dict) else None) or ""
     if gen_at:
         try:
-            gen_dt = datetime.fromisoformat(gen_at)
-            slip_age_hours = (datetime.now() - gen_dt).total_seconds() / 3600
+            from datetime import timezone as _tz
+            gen_dt = datetime.fromisoformat(str(gen_at).replace("Z", "+00:00"))
+            if gen_dt.tzinfo is None:
+                gen_dt = gen_dt.replace(tzinfo=_tz.utc)
+            slip_age_hours = (datetime.now(_tz.utc) - gen_dt).total_seconds() / 3600
             slip_is_stale = slip_age_hours > 48
         except (ValueError, TypeError):
             pass
