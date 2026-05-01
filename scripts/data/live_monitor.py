@@ -943,6 +943,37 @@ def poll_once() -> Dict:
         match_entry["status"] = status
         match_entry["snapshots"].append(snapshot)
 
+        # ── Score-change goal alert (Odds-API-only fallback) ──
+        # When Sofascore is blocked we don't know who scored, but we DO know
+        # the score changed (Odds API /scores/ endpoint gives home_score and
+        # away_score). Send a basic "Pisa score!" notification with team name
+        # only — the rich Sofascore-based notification adds player+minute and
+        # supersedes this when Sofascore comes back.
+        if status in ("first_half", "second_half", "extra_time", "live"):
+            prev_h = match_entry.get("_last_home_score")
+            prev_a = match_entry.get("_last_away_score")
+            if prev_h is None or prev_a is None:
+                # First snapshot for this match — record baseline, don't alert
+                pass
+            else:
+                if home_score > prev_h or away_score > prev_a:
+                    scoring_team = home if home_score > prev_h else away
+                    try:
+                        from scripts.pipeline.notify import notify
+                        notify(
+                            f"⚽ <b>{scoring_team} scored!</b>\n"
+                            f"{home} {home_score}-{away_score} {away}"
+                            + (f"  ({minute}')" if minute else ""),
+                            title=f"GOAL {home_score}-{away_score}",
+                            level="info",
+                            category="live",
+                        )
+                    except Exception as e:
+                        log.debug("Score-change goal alert failed: %s", e)
+        # Update score baseline for next tick
+        match_entry["_last_home_score"] = home_score
+        match_entry["_last_away_score"] = away_score
+
         # ── Kickoff notification (transition into first_half) ──
         if status == "first_half" and prev_status in ("pre_match", None) and not match_entry.get("_kickoff_notified"):
             try:
