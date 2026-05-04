@@ -178,6 +178,16 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   Then update `data/betting/bankroll.json` and (separately) append the new settlements to `data/betting/history.json` if they're missing.
 - **Prevention rule**: **never edit `bankroll.json` or `history.json` directly when settling bets**. Only edit `bet_journal.json`; the snapshots derive from it. If a snapshot drifts, recompute, don't patch the snapshot in place.
 
+### Symptom: "Daily Odds API spend spikes after Mac wake/launchctl reload"
+
+- **What you'll see**: `logs/launchd-morning-err.log` and `logs/launchd-evening-err.log` both show `STARTING SCHEDULED PIPELINE RUN` at the same second, at a non-scheduled time (e.g. 00:24:18 right after a wake event). Each duplicate fires a full `fetch_and_save_odds` for SA + EPL costing ~226 cr — burned for nothing because the data hasn't moved.
+- **Why it happens**: Both `morning.plist` and `evening.plist` have `RunAtLoad: true`. When launchd re-loads jobs (Mac wake from sleep, `launchctl reload`, login), every `RunAtLoad` job fires immediately regardless of `StartCalendarInterval`. Two of them = duplicate pipeline run.
+- **Fix layered, in priority order**:
+  1. **`CACHE_DURATION_MINUTES = 60`** in `scripts/data/odds_fetcher.py` (was 10). Per-event extras and bulk markets don't move enough pre-kickoff to need a 10-min refresh. T-5min closing snapshots bypass cache via `critical=True` anyway.
+  2. **`use_cache=True`** on the non-critical `fetch_and_save_odds` callers in `run_full_pipeline.py` (the parallel path at ~988 and the sequential path at ~1282), and on `fetch_league_odds` at ~1590. The `run_incremental` path at line 616 already gates by `needs_odds_refresh(max_age_hours=4.0)` so leave that `use_cache=False`.
+  3. **Optional plist tweak** (only if (1)+(2) prove insufficient): drop `<key>RunAtLoad</key><true/>` from `morning.plist` + `evening.plist`. `StartCalendarInterval` still catches up on next wake if the scheduled time was missed during sleep.
+- **Prevention rule**: **all `fetch_and_save_odds` callers default to `use_cache=True` unless they have an upstream freshness check.** Same for `fetch_league_odds`. The cache exists precisely to absorb wake-storm duplicates.
+
 ### Symptom: "Auto-poll burning credits with no live matches"
 
 - **What you'll see**: `Auto-poll: no live matches (N/12)` in `launchd-web-dashboard-err.log`, but `is_match_day()` returned True hours before kickoff. Each poll = 2 Odds API credits.
@@ -229,6 +239,18 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
   | `/historical/sports/<s>/odds/` | h2h, totals, spreads |
   | `/events/{id}/odds/` | btts, double_chance, draw_no_bet, team_totals, alternate_totals, alternate_spreads, all player_* |
 - **Prevention rule**: **invalid-market 422s STILL COST CREDITS**. Validate market×endpoint compatibility before sending.
+
+### Symptom: "Match Intelligence shows corners=10.00 / cards=4.50 on every match"
+
+- **What you'll see**: Every Serie A and EPL match in the Match Intelligence card on the prediction-detail page reports identical `λ ≈ 10.00` corners and `λ ≈ 4.50` cards. Yellow-card eagerness shows N/A. Telegram digest shows nothing in the corners/cards lines.
+- **Why it happens**: The 2026-04-27 cleanup deleted `data/models/markets/*.cbm` (96 legacy market models). `scripts/models/comprehensive_markets.py:predict_all_markets()` wraps every model load in `try/except → log.debug` and falls back to literal constants `(2.1, 2.4)` cards = 4.5 total and `(5.4, 4.5)` corners ≈ 10. Step 22b (`ml_market_predictions.py`) writes those constants to `cards_predictions.json` and `corners_predictions.json` with `source: "CatBoost ML"`. The Flask API gates real-vs-fake on `source == "walkforward_catboost"`.
+- **Fix (already in place)**: Step 22b-2 in `run_full_pipeline.py` calls `predict_walkforward_markets.predict_walkforward_markets(league, fast_only=True)` AFTER Step 22b and overlays per-match real values for any Serie A fixture present in `features_serie_a.parquet`. Web API `web/app.py:api_match_intel` zeroes out values when `source != "walkforward_catboost"` so EPL and uncached SA matches show N/A instead of fake constants.
+- **What still doesn't work**:
+  - **EPL corners/cards** — no walkforward models exist under `data/models/walkforward/premier_league/{corners,cards}_over_*`. EPL match intel shows N/A until those are trained.
+  - **Cache miss for far-out SA fixtures** — `features_serie_a.parquet` is only refreshed nightly. Fixtures injected after the build (e.g. matchweek 38 fixtures landing 14 days out) won't be in the cache, so `fast_only=True` skips them. They show N/A until the next nightly build.
+  - **BTTS predictions are still constant** — `btts_predictions.json` is written by Step 22b which now produces `home_xg=1.4, away_xg=1.15, btts_yes=0.5148` for every match (same root cause as corners/cards). Walkforward HAS a BTTS model at `data/models/walkforward/serie_a/btts/season_2024-2025.cbm` but the walkforward script's `_load_market_models` hardcodes `{market}_over_{line}` directory naming and would need extending. Downstream consumers `scripts/betting/betting_unified.py:720` and `scripts/betting/parlay_generator.py:854` are sizing real bets on this constant. **Address in next session.**
+  - **Slow-path on-demand feature build is broken** — `features/build.py → features/derived.py:_add_opposition_adjusted_xg` raises `ValueError: Length of values (16300) does not match length of index (16012)` due to duplicate matches in the merge. Triggered when `predict_walkforward_markets` is called WITHOUT `fast_only=True` and the cache is incomplete. Production must always use `fast_only=True`.
+- **Prevention rule**: **never trust a `source` string alone — always have a fallback flag the API can check.** When a writer falls back to constants on model-load failure, it must mark the entry `_unavailable=True` or use a distinguishable source string. Silent fallback to literal numbers is the worst of both worlds.
 
 ---
 

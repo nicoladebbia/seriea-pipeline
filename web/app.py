@@ -1339,6 +1339,101 @@ def api_predictions_context():
     })
 
 
+
+@app.route("/api/match-intel/<match_slug>")
+def api_match_intel(match_slug):
+    """Per-match intelligence bundle for the prediction-detail page.
+
+    Returns the six fields required by the match-report goal:
+      corner_prob, pass_prob, yc_eagerness {home, away}, yc_count_pred,
+      scorer_suitability {home, away}, ai_reason.
+
+    Reads from the per-feature JSON files written by the model pipeline
+    (corners_predictions.json, cards_predictions.json,
+    scorers_predictions.json, match_reasoning.json). Anything not produced
+    by an existing model is returned as null with a `_unavailable` flag.
+    """
+    def _to_slug(s: str) -> str:
+        import re
+        return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+
+    corners_raw = _load_json(UPCOMING_DIR / "corners_predictions.json", default=[])
+    cards_raw = _load_json(UPCOMING_DIR / "cards_predictions.json", default=[])
+    scorers_raw = _load_json(UPCOMING_DIR / "scorers_predictions.json", default=[])
+    reasoning_raw = _load_json(UPCOMING_DIR / "match_reasoning.json", default=[])
+
+    def _list(d):
+        if isinstance(d, list):
+            return d
+        if isinstance(d, dict):
+            return d.get("predictions", []) or []
+        return []
+
+    def _find_by_slug(items):
+        for p in _list(items):
+            mk = p.get("match", "")
+            if _to_slug(mk) == match_slug:
+                return p
+        return None
+
+    corners = _find_by_slug(corners_raw)
+    cards = _find_by_slug(cards_raw)
+    scorers = _find_by_slug(scorers_raw)
+    reasoning = _find_by_slug(reasoning_raw)
+
+    # Only walkforward CatBoost entries are real per-match values. Legacy
+    # source="CatBoost ML" entries are silent fallbacks to constants
+    # (corners=10.0, cards=4.5) because data/models/markets/*.cbm were
+    # deleted in the 2026-04-27 cleanup. Flag those _unavailable so the UI
+    # shows N/A instead of fake numbers, and zero out the values too —
+    # otherwise the renderer reads expected_total even when _unavailable.
+    _corners_real = (corners or {}).get("source") == "walkforward_catboost"
+    _cards_real = (cards or {}).get("source") == "walkforward_catboost"
+    out = {
+        "match_slug": match_slug,
+        "corner_prob": {
+            "expected_total": (corners or {}).get("expected_corners") if _corners_real else None,
+            "over_8_5": (corners or {}).get("over_8_5") if _corners_real else None,
+            "over_9_5": (corners or {}).get("over_9_5") if _corners_real else None,
+            "over_10_5": (corners or {}).get("over_10_5") if _corners_real else None,
+            "source": (corners or {}).get("source"),
+            "_unavailable": not _corners_real,
+        },
+        # Pass probability has no trained model — explicit N/A.
+        "pass_prob": {
+            "value": None,
+            "source": None,
+            "_unavailable": True,
+            "_reason": "No pass-probability model trained. See MODEL_STATUS.md.",
+        },
+        "yc_eagerness": {
+            "home": (cards or {}).get("home_card_eagerness") if _cards_real else None,
+            "away": (cards or {}).get("away_card_eagerness") if _cards_real else None,
+            "source": (cards or {}).get("source"),
+            "_unavailable": not _cards_real,
+        },
+        "yc_count_pred": {
+            "expected_total": (cards or {}).get("expected_cards") if _cards_real else None,
+            "over_3_5": (cards or {}).get("over_3_5") if _cards_real else None,
+            "over_4_5": (cards or {}).get("over_4_5") if _cards_real else None,
+            "over_5_5": (cards or {}).get("over_5_5") if _cards_real else None,
+            "source": (cards or {}).get("source"),
+            "_unavailable": not _cards_real,
+        },
+        "scorer_suitability": {
+            "home_top": (scorers or {}).get("home_top_scorers", []),
+            "away_top": (scorers or {}).get("away_top_scorers", []),
+            "source": (scorers or {}).get("source"),
+            "_unavailable": scorers is None,
+        },
+        "ai_reason": {
+            "sentence": (reasoning or {}).get("reasoning"),
+            "_unavailable": reasoning is None,
+        },
+    }
+    return jsonify(out)
+
+
 def _compute_epl_h2h() -> dict:
     """Compute H2H stats for upcoming EPL matches from matches.parquet."""
     import pandas as pd

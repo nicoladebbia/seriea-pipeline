@@ -985,7 +985,7 @@ def _run_parallel_data_collection(quick: bool = False, total_steps: int = 32):
         ts_step(1, total_steps, "Fetching Multi-Market Odds")
         try:
             from scripts.data.odds_fetcher import fetch_and_save_odds, get_usage_summary
-            shared["odds"] = fetch_and_save_odds(use_cache=quick)
+            shared["odds"] = fetch_and_save_odds(use_cache=True)
             usage = get_usage_summary()
             ts_print(f"  Fetched odds for {len(shared['odds'])} matches")
             ts_print(f"  API credits: {usage.get('api_remaining', '?')} remaining")
@@ -1279,7 +1279,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         try:
             from scripts.data.odds_fetcher import fetch_and_save_odds, get_usage_summary
 
-            odds = fetch_and_save_odds(use_cache=quick)
+            odds = fetch_and_save_odds(use_cache=True)
             usage = get_usage_summary()
             print(f"  Fetched odds for {len(odds)} matches")
             print(f"  API credits: {usage.get('api_remaining', '?')} remaining")
@@ -1587,7 +1587,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             for league in extra_leagues:
                 display = LEAGUE_DISPLAY_NAMES.get(league, league)
                 try:
-                    league_odds = fetch_league_odds(league, use_cache=quick)
+                    league_odds = fetch_league_odds(league, use_cache=True)
                     print(f"    {display}: {len(league_odds)} matches")
                 except Exception as e:
                     print(f"    {display}: odds error: {e}")
@@ -1958,6 +1958,56 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     except Exception as e:
         print(f"  ML predictions warning: {e}")
         log.warning(f"ML predictions error: {e}")
+
+    # =========================================================================
+    # Step 22b-2: Walkforward overlay (Serie A corners + cards)
+    #
+    # Step 22b above relies on data/models/markets/*.cbm — all deleted in the
+    # 2026-04-27 cleanup. With those models gone, predict_all_markets() falls
+    # back to constants (corners=10.0, cards=4.5) for every match, feeding the
+    # Match Intelligence dashboard card and Telegram digest with fake values.
+    # The walkforward predictor uses real per-fixture CatBoost models in
+    # data/models/walkforward/serie_a/{corners,cards}_over_* and overlays the
+    # Serie A entries. EPL stays marked source="CatBoost ML" so the API flags
+    # it _unavailable until EPL walkforward training catches up.
+    # fast_only=True skips the on-demand build (currently broken — see
+    # derived.py length-mismatch in features/derived.py).
+    # =========================================================================
+    step(22, total_steps, "Walkforward overlay (Serie A corners + cards)")
+    try:
+        from scripts.models.predict_walkforward_markets import (
+            predict_walkforward_markets,
+            _merge_into_existing,
+            UPCOMING_DIR as _WF_UPCOMING_DIR,
+            LEAGUE_MARKETS as _WF_LEAGUE_MARKETS,
+        )
+        from datetime import datetime, timezone
+        import json as _json
+        wf_corners: list = []
+        wf_cards: list = []
+        for _league in _WF_LEAGUE_MARKETS:
+            _out = predict_walkforward_markets(_league, fast_only=True)
+            wf_corners.extend(_out.get("corners", []))
+            wf_cards.extend(_out.get("cards", []))
+        if wf_corners:
+            _p = _WF_UPCOMING_DIR / "corners_predictions.json"
+            _merged = _merge_into_existing(_p, wf_corners)
+            _p.write_text(_json.dumps({
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "predictions": _merged,
+            }, indent=2))
+            print(f"  Walkforward corners: {len(wf_corners)} fresh, {len(_merged)} total")
+        if wf_cards:
+            _p = _WF_UPCOMING_DIR / "cards_predictions.json"
+            _merged = _merge_into_existing(_p, wf_cards)
+            _p.write_text(_json.dumps({
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "predictions": _merged,
+            }, indent=2))
+            print(f"  Walkforward cards: {len(wf_cards)} fresh, {len(_merged)} total")
+    except Exception as e:
+        print(f"  Walkforward overlay warning: {e}")
+        log.warning(f"Walkforward overlay error: {e}")
 
     # =========================================================================
     # Step 22c: Player-Level Predictions (CatBoost per-player markets)
