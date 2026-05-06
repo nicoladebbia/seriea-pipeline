@@ -132,8 +132,8 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
     sentiment = load_json_safe(data_dir / "sentiment_analysis.json", default=None)
     standings_data = load_json_safe(data_dir / "standings.json", default=None)
     btts = load_json_safe(data_dir / "btts_predictions.json", default=None)
-    cards = load_json_safe(data_dir / "cards_predictions.json", default=None)
-    corners = load_json_safe(data_dir / "corners_predictions.json", default=None)
+    # cards + corners predictions DROPPED from report 2026-05-06 — backtest
+    # showed skill score ≤ 0. See CLAUDE.md.
 
     # ── Build match indexes ────────────────────────────────────────
     pred_index = _extract_matches(predictions, "predictions")
@@ -151,8 +151,6 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
     odds_index = _extract_matches(odds_full, "matches")
     sent_index = _extract_matches(sentiment, "matches")
     btts_index = _extract_matches(btts, "predictions") if isinstance(btts, dict) else _build_match_index_from_list(btts or [])
-    cards_index = _extract_matches(cards, "predictions") if isinstance(cards, dict) else _build_match_index_from_list(cards or [])
-    corners_index = _extract_matches(corners, "predictions") if isinstance(corners, dict) else _build_match_index_from_list(corners or [])
 
     # Referee data is keyed by match name directly
     ref_index = {}
@@ -178,7 +176,7 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
     for idx in [pred_index, player_index, form_index, h2h_index, intel_index,
                 weather_index, lineup_index, cross_index, book_index, goal_index,
                 margin_index, ext_index, odds_index, sent_index, btts_index,
-                cards_index, corners_index, ref_index]:
+                ref_index]:
         all_match_keys.update(idx.keys())
 
     log.info("Found %d unique matches across all data files", len(all_match_keys))
@@ -352,25 +350,10 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
                 "btts_no": bt.get("btts_no"),
             }
 
-        # ─ Cards ─
-        cd = cards_index.get(norm_key)
-        if cd and isinstance(cd, dict):
-            sources_used.add("cards")
-            match["cards"] = {
-                "expected_total": cd.get("expected_cards"),
-                "expected_home": cd.get("expected_home_cards"),
-                "expected_away": cd.get("expected_away_cards"),
-            }
-
-        # ─ Corners ─
-        co = corners_index.get(norm_key)
-        if co and isinstance(co, dict):
-            sources_used.add("corners")
-            match["corners"] = {
-                "expected_total": co.get("expected_corners"),
-                "expected_home": co.get("expected_home_corners"),
-                "expected_away": co.get("expected_away_corners"),
-            }
+        # ─ Cards + Corners DROPPED 2026-05-06 ─
+        # Held-out 2024-25 backtest showed walkforward corners + cards models
+        # have skill score ≤ 0 (worse than always-predict-base-rate).
+        # See CLAUDE.md "Match Intelligence shows corners/cards" block.
 
         # ─ Standings positions ─
         parts = display_name.split(" vs ")

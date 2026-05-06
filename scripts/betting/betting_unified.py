@@ -1569,41 +1569,23 @@ class UnifiedBettingEngine:
 
     def scan_btts_market(self, btts_preds: List[Dict],
                          extra_odds: Dict) -> List[ValueBet]:
-        """Scan BTTS market using model predictions + real bookmaker odds."""
-        bets = []
-        for bp in btts_preds:
-            match = bp["match"]
-            date = bp.get("date", "")
-            extra = extra_odds.get(match, {})
-            btts_odds = extra.get("btts", {})
-            if not btts_odds:
-                continue
+        """Scan BTTS market — DISABLED 2026-05-06.
 
-            for sel_name, model_p, odds_key, pin_key in [
-                ("BTTS Yes", bp.get("btts_yes", 0), "best_yes", "yes"),
-                ("BTTS No", bp.get("btts_no", 0), "best_no", "no"),
-            ]:
-                if model_p <= 0:
-                    continue
-                best_o = btts_odds.get(odds_key, 0)
-                avg_o = btts_odds.get(pin_key, 0)
-                n_books = btts_odds.get("bookmakers_count", 0)
-                if best_o <= 1 or avg_o <= 1:
-                    continue
+        btts_predictions.json is written by ml_market_predictions.py which
+        falls back to constants (btts_yes=0.5148 for every match) because
+        data/models/markets/*.cbm were deleted in the 2026-04-27 cleanup.
+        Comparing real bookmaker BTTS odds against a constant 51.48% model
+        probability generated bets with no real edge calculation.
 
-                yes_avg = btts_odds.get("yes", 0)
-                no_avg = btts_odds.get("no", 0)
-                if yes_avg <= 1 or no_avg <= 1:
-                    continue
-                true_probs = remove_overround([yes_avg, no_avg])
-                sharp_p = true_probs[0] if sel_name == "BTTS Yes" else true_probs[1]
+        Walkforward HAS a BTTS model at
+        data/models/walkforward/serie_a/btts/season_2024-2025.cbm but it
+        hasn't been backtested or wired in yet. Re-enable only after a
+        held-out backtest with skill_score > 0.02 AND ECE < 0.05.
 
-                bet = self._make_bet(
-                    match, date, "BTTS", sel_name, model_p, sharp_p,
-                    best_o, "Best BTTS book", avg_o, avg_o, n_books)
-                if bet:
-                    bets.append(bet)
-        return bets
+        See CLAUDE.md "Match Intelligence shows corners/cards" symptom block.
+        """
+        log.info("  BTTS: skipped (predictions are constants — see CLAUDE.md)")
+        return []
 
     def scan_dnb_market(self, predictions: List[Dict],
                         extra_odds: Dict) -> List[ValueBet]:

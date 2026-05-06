@@ -850,89 +850,33 @@ def load_all_value_legs():
                 "source": "btts_corners",
             })
 
-    # --- BTTS from btts_predictions (raw) — enhanced with real bookmaker odds ---
-    btts_raw = load_json_safe(UPCOMING_DIR / "btts_predictions.json")
-    # Handle both list and dict formats (file may be a plain list or {"predictions": [...]})
-    btts_preds = btts_raw if isinstance(btts_raw, list) else btts_raw.get("predictions", [])
-    for bp in btts_preds:
-        mk = bp.get("match", "")
-        ext_match = extra_odds.get(mk, {})
-        ext_btts = ext_match.get("btts", {})
-        for side_key, sel_label in [("btts_yes", "YES"), ("btts_no", "NO")]:
-            prob = bp.get(side_key, 0)
-            if prob > 0.50:
-                fair = round(1.0 / prob, 2) if prob > 0 else 99
-                # Use real bookmaker odds if available
-                bk_odds = ext_btts.get("best_yes" if sel_label == "YES" else "best_no", 0)
-                use_odds = bk_odds if bk_odds > 1 else fair
-                val = ((prob * use_odds) - 1) * 100 if bk_odds > 1 else 0
-                already = any(
-                    l["match"] == mk and l["market"] == "btts" and sel_label in l["selection"]
-                    for l in legs
-                )
-                if not already and use_odds > 1:
-                    legs.append({
-                        "match": mk,
-                        "date": bp.get("date", ""),
-                        "market": "btts",
-                        "selection": sel_label,
-                        "odds": round(use_odds, 2),
-                        "probability": round(prob, 4),
-                        "value_pct": round(max(val, 0), 1),
-                        "confidence": bp.get("confidence", "MEDIUM"),
-                        "factors": bp.get("factors", []),
-                        "source": "btts_predictions" + ("_live_odds" if bk_odds > 1 else ""),
-                    })
+    # --- BTTS: DISABLED 2026-05-06 ---
+    #
+    # btts_predictions.json is written by ml_market_predictions.py which
+    # falls back to constants (btts_yes=0.5148 every match) because
+    # data/models/markets/*.cbm were deleted in the 2026-04-27 cleanup.
+    # With prob > 0.50 always true, this block generated a "BTTS YES" leg
+    # for every match using the constant as both probability and edge basis.
+    # Re-enable only after walkforward BTTS is wired and backtested with
+    # skill_score > 0.02. See CLAUDE.md.
 
-    # --- Corners from corners_predictions ---
-    corners_raw = load_json_safe(UPCOMING_DIR / "corners_predictions.json")
-    corners_preds = corners_raw if isinstance(corners_raw, list) else corners_raw.get("predictions", [])
-    for cp in corners_preds:
-        mk = cp.get("match", "")
-        for line_key, sel_label in [("over_9_5", "OVER 9.5"), ("over_10_5", "OVER 10.5")]:
-            prob = cp.get(line_key, 0)
-            if prob > 0.50:
-                fair = round(1.0 / prob, 2) if prob > 0 else 99
-                already = any(
-                    l["match"] == mk and l["market"] == "corners" and sel_label in l["selection"]
-                    for l in legs
-                )
-                if not already and fair > 1:
-                    legs.append({
-                        "match": mk,
-                        "date": cp.get("date", ""),
-                        "market": "corners",
-                        "selection": sel_label,
-                        "odds": fair,
-                        "probability": round(prob, 4),
-                        "value_pct": 0,
-                        "confidence": cp.get("confidence", "MEDIUM"),
-                        "factors": cp.get("factors", []),
-                        "source": "corners_predictions",
-                    })
-
-    # --- Cards value bets ---
-    cards = load_json_safe(UPCOMING_DIR / "cards_bets.json")
-    for bet in cards.get("recommended", []) + cards.get("consider", []):
-        prob = bet.get("our_probability", 0) or 0
-        fair = bet.get("fair_odds", 0) or 0
-        odds = bet.get("odds", 0) or fair
-        if odds <= 1 and fair > 1:
-            odds = fair
-        val = ((prob * odds) - 1) * 100 if prob > 0 and odds > 1 else 0
-        if prob > 0 and odds > 1 and val >= MIN_LEG_VALUE_PCT:
-            legs.append({
-                "match": bet.get("match", ""),
-                "date": bet.get("date", ""),
-                "market": "cards",
-                "selection": bet.get("bet", ""),
-                "odds": round(odds, 2),
-                "probability": round(prob, 4),
-                "value_pct": round(val, 1),
-                "confidence": bet.get("confidence", "MEDIUM"),
-                "factors": bet.get("factors", []),
-                "source": "cards",
-            })
+    # --- Corners + Cards: DISABLED 2026-05-06 ---
+    #
+    # Held-out 2024-25 backtest on the walkforward corners + cards models
+    # (380 SA matches, all 6 lines: 8.5/9.5/10.5 corners, 3.5/4.5/5.5 cards)
+    # showed skill score ≤ 0 across the board — predictions don't beat
+    # "always predict the base rate." Brier ~ 0.249 vs baseline 0.246-0.249,
+    # AUC 0.51-0.60. Cards models also systematically over-predict "Over"
+    # by 11-14pp (calibration_gap > 0.09 post-isotonic).
+    #
+    # The separate cards_model.py writer that produces cards_bets.json
+    # has NOT been backtested. Until it is, we don't insert its bets
+    # into parlays either — same standard for both.
+    #
+    # Re-enabling requires: (a) a held-out backtest with skill > 0 and
+    # ECE < 0.05, AND (b) real bookmaker odds for the lines being bet
+    # (currently we only have h2h/totals/spreads odds, not corners/cards).
+    # See CLAUDE.md "Match Intelligence shows corners/cards" symptom block.
 
     # --- Extended markets (double chance, team totals, first half, multi-goal) ---
     # Now enhanced with real bookmaker odds from per-event endpoint

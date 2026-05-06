@@ -1960,54 +1960,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         log.warning(f"ML predictions error: {e}")
 
     # =========================================================================
-    # Step 22b-2: Walkforward overlay (Serie A corners + cards)
-    #
-    # Step 22b above relies on data/models/markets/*.cbm — all deleted in the
-    # 2026-04-27 cleanup. With those models gone, predict_all_markets() falls
-    # back to constants (corners=10.0, cards=4.5) for every match, feeding the
-    # Match Intelligence dashboard card and Telegram digest with fake values.
-    # The walkforward predictor uses real per-fixture CatBoost models in
-    # data/models/walkforward/serie_a/{corners,cards}_over_* and overlays the
-    # Serie A entries. EPL stays marked source="CatBoost ML" so the API flags
-    # it _unavailable until EPL walkforward training catches up.
-    # fast_only=True skips the on-demand build (currently broken — see
-    # derived.py length-mismatch in features/derived.py).
+    # Step 22b-2 (Walkforward overlay for SA corners + cards) was REMOVED
+    # 2026-05-06 after held-out 2024-25 backtest showed those models had
+    # skill score ≤ 0. See CLAUDE.md "Match Intelligence shows corners/cards"
+    # symptom block. The walkforward script (predict_walkforward_markets.py)
+    # is kept on disk for future re-enablement once models actually beat
+    # base rate on a held-out fold.
     # =========================================================================
-    step(22, total_steps, "Walkforward overlay (Serie A corners + cards)")
-    try:
-        from scripts.models.predict_walkforward_markets import (
-            predict_walkforward_markets,
-            _merge_into_existing,
-            UPCOMING_DIR as _WF_UPCOMING_DIR,
-            LEAGUE_MARKETS as _WF_LEAGUE_MARKETS,
-        )
-        from datetime import datetime, timezone
-        import json as _json
-        wf_corners: list = []
-        wf_cards: list = []
-        for _league in _WF_LEAGUE_MARKETS:
-            _out = predict_walkforward_markets(_league, fast_only=True)
-            wf_corners.extend(_out.get("corners", []))
-            wf_cards.extend(_out.get("cards", []))
-        if wf_corners:
-            _p = _WF_UPCOMING_DIR / "corners_predictions.json"
-            _merged = _merge_into_existing(_p, wf_corners)
-            _p.write_text(_json.dumps({
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "predictions": _merged,
-            }, indent=2))
-            print(f"  Walkforward corners: {len(wf_corners)} fresh, {len(_merged)} total")
-        if wf_cards:
-            _p = _WF_UPCOMING_DIR / "cards_predictions.json"
-            _merged = _merge_into_existing(_p, wf_cards)
-            _p.write_text(_json.dumps({
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "predictions": _merged,
-            }, indent=2))
-            print(f"  Walkforward cards: {len(wf_cards)} fresh, {len(_merged)} total")
-    except Exception as e:
-        print(f"  Walkforward overlay warning: {e}")
-        log.warning(f"Walkforward overlay error: {e}")
 
     # =========================================================================
     # Step 22c: Player-Level Predictions (CatBoost per-player markets)

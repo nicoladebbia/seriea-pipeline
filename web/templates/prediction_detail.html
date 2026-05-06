@@ -347,6 +347,20 @@
     </div>
   </div>
 
+  <!-- 1b. Match Intelligence (six-field bundle) -->
+  <div class="pd-grid" id="sec-match-intel-wrap">
+    <div class="pd-card pd-card--full" id="sec-match-intel">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Match Intelligence
+        </span>
+        <span id="intel-source-badge" class="text-small text-tertiary"></span>
+      </div>
+      <div class="pd-card__body" id="body-match-intel"></div>
+    </div>
+  </div>
+
   <!-- 2. Value Bets (full-width, highlighted) -->
   <div class="pd-grid" id="sec-value-bets-wrap">
     <div class="pd-card pd-card--full pd-card--value pd-card--glow" id="sec-value-bets">
@@ -658,6 +672,58 @@ function renderHero(m, ctx) {
         </div>
       </div>
     </div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER: Match Intelligence (six-field bundle)
+// ═══════════════════════════════════════════════════════════════
+function renderMatchIntel(intel, m) {
+  if (!intel) {
+    return '<div class="text-small text-tertiary">Match intelligence loading…</div>';
+  }
+  const home = m.home_team || 'Home';
+  const away = m.away_team || 'Away';
+  const fmtPct = v => (v == null ? '—' : (v * 100).toFixed(0) + '%');
+  const fmtNum = v => (v == null ? '—' : Number(v).toFixed(2));
+  const naBadge = '<span class="text-small text-tertiary" style="font-style:italic">N/A</span>';
+
+  // Corners, yellow-card count, yellow-card eagerness and pass-probability
+  // were dropped 2026-05-04 — held-out backtest on 2024-25 SA (380 matches)
+  // showed the corners/cards walkforward models had skill scores ≤ 0 and
+  // AUC ≈ 0.51-0.60. Predictions were base-rate ± noise. See CLAUDE.md
+  // "Match Intelligence shows corners/cards" symptom block.
+  const ss = intel.scorer_suitability || {};
+  const ai = intel.ai_reason || {};
+
+  // Top scorer chips per team
+  const renderScorers = list => {
+    if (!Array.isArray(list) || !list.length) return naBadge;
+    return list.slice(0, 3).map(p =>
+      `<span style="display:inline-block;background:var(--surface-2);border-radius:4px;padding:2px 6px;margin-right:4px;font-family:var(--font-mono);font-size:12px"><b>${p.player}</b> <span class="text-tertiary">(${p.position})</span> ${(p.goal_prob*100).toFixed(0)}%</span>`
+    ).join(' ');
+  };
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-3);margin-bottom:var(--space-3)">
+
+      <!-- Top scorer suitability per team -->
+      <div style="border:1px solid var(--border);border-radius:6px;padding:var(--space-2);grid-column:1/-1">
+        <div style="font-size:11px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:4px">Top scorer suitability</div>
+        <div style="margin-bottom:4px"><b style="color:var(--accent)">${home}:</b> ${renderScorers(ss.home_top)}</div>
+        <div><b style="color:var(--accent)">${away}:</b> ${renderScorers(ss.away_top)}</div>
+        ${ss._unavailable ? '<div style="margin-top:4px">' + naBadge + ' — run scorer pipeline.</div>' : ''}
+      </div>
+    </div>
+
+    <!-- AI reasoning -->
+    <div style="background:var(--surface-2);border-left:3px solid var(--accent);padding:var(--space-2) var(--space-3);border-radius:4px">
+      <div style="font-size:11px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:4px">AI reasoning</div>
+      <div style="font-style:italic">
+        ${ai.sentence || naBadge}
+      </div>
+    </div>
+  `;
 }
 
 
@@ -1636,6 +1702,23 @@ async function loadMatchDetail() {
 
     // Render all sections (new order)
     document.getElementById('body-verdict').innerHTML = renderVerdict(match);
+
+    // Fetch & render Match Intelligence section (six fields).
+    // Async — section shows a placeholder until the bundle resolves.
+    document.getElementById('body-match-intel').innerHTML =
+      '<div class="text-small text-tertiary">Loading match intelligence…</div>';
+    apiFetch(`/api/match-intel/${MATCH_SLUG}`)
+      .then(intel => {
+        document.getElementById('body-match-intel').innerHTML = renderMatchIntel(intel, match);
+        const hasScorers = intel?.scorer_suitability && !intel.scorer_suitability._unavailable;
+        document.getElementById('intel-source-badge').innerHTML = hasScorers
+          ? '<span style="color:var(--success)">scorer model live</span>'
+          : '<span style="color:var(--warning)">scorer model not yet run</span>';
+      })
+      .catch(e => {
+        document.getElementById('body-match-intel').innerHTML =
+          `<div class="text-small text-tertiary">Match intelligence unavailable: ${e.message || e}</div>`;
+      });
 
     // Match slip bets from unified_bet_slip to this match
     const matchKey = match.match || `${match.home_team} vs ${match.away_team}`;

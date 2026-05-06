@@ -240,17 +240,26 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
   | `/events/{id}/odds/` | btts, double_chance, draw_no_bet, team_totals, alternate_totals, alternate_spreads, all player_* |
 - **Prevention rule**: **invalid-market 422s STILL COST CREDITS**. Validate market×endpoint compatibility before sending.
 
-### Symptom: "Match Intelligence shows corners=10.00 / cards=4.50 on every match"
+### Symptom: "Match Intelligence shows corners/cards" (REMOVED 2026-05-06)
 
-- **What you'll see**: Every Serie A and EPL match in the Match Intelligence card on the prediction-detail page reports identical `λ ≈ 10.00` corners and `λ ≈ 4.50` cards. Yellow-card eagerness shows N/A. Telegram digest shows nothing in the corners/cards lines.
-- **Why it happens**: The 2026-04-27 cleanup deleted `data/models/markets/*.cbm` (96 legacy market models). `scripts/models/comprehensive_markets.py:predict_all_markets()` wraps every model load in `try/except → log.debug` and falls back to literal constants `(2.1, 2.4)` cards = 4.5 total and `(5.4, 4.5)` corners ≈ 10. Step 22b (`ml_market_predictions.py`) writes those constants to `cards_predictions.json` and `corners_predictions.json` with `source: "CatBoost ML"`. The Flask API gates real-vs-fake on `source == "walkforward_catboost"`.
-- **Fix (already in place)**: Step 22b-2 in `run_full_pipeline.py` calls `predict_walkforward_markets.predict_walkforward_markets(league, fast_only=True)` AFTER Step 22b and overlays per-match real values for any Serie A fixture present in `features_serie_a.parquet`. Web API `web/app.py:api_match_intel` zeroes out values when `source != "walkforward_catboost"` so EPL and uncached SA matches show N/A instead of fake constants.
-- **What still doesn't work**:
-  - **EPL corners/cards** — no walkforward models exist under `data/models/walkforward/premier_league/{corners,cards}_over_*`. EPL match intel shows N/A until those are trained.
-  - **Cache miss for far-out SA fixtures** — `features_serie_a.parquet` is only refreshed nightly. Fixtures injected after the build (e.g. matchweek 38 fixtures landing 14 days out) won't be in the cache, so `fast_only=True` skips them. They show N/A until the next nightly build.
-  - **BTTS predictions are still constant** — `btts_predictions.json` is written by Step 22b which now produces `home_xg=1.4, away_xg=1.15, btts_yes=0.5148` for every match (same root cause as corners/cards). Walkforward HAS a BTTS model at `data/models/walkforward/serie_a/btts/season_2024-2025.cbm` but the walkforward script's `_load_market_models` hardcodes `{market}_over_{line}` directory naming and would need extending. Downstream consumers `scripts/betting/betting_unified.py:720` and `scripts/betting/parlay_generator.py:854` are sizing real bets on this constant. **Address in next session.**
-  - **Slow-path on-demand feature build is broken** — `features/build.py → features/derived.py:_add_opposition_adjusted_xg` raises `ValueError: Length of values (16300) does not match length of index (16012)` due to duplicate matches in the merge. Triggered when `predict_walkforward_markets` is called WITHOUT `fast_only=True` and the cache is incomplete. Production must always use `fast_only=True`.
-- **Prevention rule**: **never trust a `source` string alone — always have a fallback flag the API can check.** When a writer falls back to constants on model-load failure, it must mark the entry `_unavailable=True` or use a distinguishable source string. Silent fallback to literal numbers is the worst of both worlds.
+- **History**: As of 2026-05-04 the dashboard Match Intelligence card showed `λ ≈ 10.00` corners and `λ ≈ 4.50` cards on every match — silent fallback to constants because the 2026-04-27 cleanup deleted `data/models/markets/*.cbm`. First fix wired the walkforward predictor (`predict_walkforward_markets.py`) to overlay real per-match values.
+- **Then 2026-05-06 we backtested** the walkforward corners + cards models against held-out 2024-25 SA (380 matches). Result: **all six lines (corners 8.5/9.5/10.5, cards 3.5/4.5/5.5) had skill score ≤ 0** — predictions were base-rate ± noise. AUC 0.51-0.60. Cards models also miscalibrated (over-predicted "Over" by 11-14pp, calibration_gap > 0.09 post-isotonic). The trainer's own `summary.json` confirms these numbers.
+- **Decision**: removed corners + cards predictions from every consumer:
+  - `web/templates/prediction_detail.html` — `renderMatchIntel` now shows scorers + AI reasoning only
+  - `web/app.py:api_match_intel` — returns scorer + reasoning only; corner/yc fields dropped
+  - `scripts/pipeline/telegram_bot.py:_handle_today` — corners + cards lines removed from digest; PNG attachment block removed
+  - `scripts/betting/parlay_generator.py:887` — corners + cards leg insertion blocks disabled
+  - `scripts/prediction/generate_unified_report.py` — `cards`/`corners` keys removed from per-match output
+  - `scripts/pipeline/run_full_pipeline.py` — Step 22b-2 walkforward overlay removed (was added 2026-05-04, removed 2026-05-06)
+- **What we kept**:
+  - `predict_walkforward_markets.py` itself (on disk, not wired into pipeline) — keep for future re-enablement when models earn it
+  - `data/models/walkforward/serie_a/{corners,cards}_over_*/` artifacts — same reason
+  - `cards_predictions.json` / `corners_predictions.json` files — `ml_market_predictions.py` still writes constants there. Nothing reads them anymore. Could be deleted but low priority.
+- **Re-enabling the predictions requires**:
+  1. A held-out backtest with skill_score > 0.02 AND ECE < 0.05 on a recent season the models didn't train on
+  2. Real bookmaker corners/cards odds from the per-event endpoint (currently we only have h2h/totals/spreads bulk)
+  3. Verification that the new predictions don't suffer the same systematic over-prediction bias seen in cards (post-isotonic calibration_gap > 0.09)
+- **Prevention rule**: **a model is not "production" because the trainer ran successfully — it's production after a held-out backtest beats the always-predict-base-rate baseline.** Skill score, not log-loss, is the right metric: `1 - brier/baseline_brier > 0` is the floor. Anything below should not be wired into a UI or a bet generator.
 
 ---
 

@@ -154,6 +154,10 @@ def _tg_send_message(token: str, chat_id: str, text: str,
     return True
 
 
+
+
+
+
 def _tg_send_typing(token: str, chat_id: str):
     """Send 'typing' action to show the bot is working."""
     _tg_request(token, "sendChatAction", {
@@ -1558,8 +1562,14 @@ def _handle_week_detail(week_key: str) -> str:
     return tg.build()
 
 
-def _handle_today() -> str:
-    """Handle /today — today's matches with predictions, grouped by league."""
+def _handle_today(token: str | None = None, chat_id: str | None = None) -> str:
+    """Handle /today — today's matches with predictions, grouped by league.
+
+    If `token` and `chat_id` are provided, also generate one Excel-style PNG
+    per Serie A match with walkforward intelligence and send it as a photo
+    attachment after the text digest. Silently degrades if Pillow is missing
+    or if a per-match render fails.
+    """
     from scripts.pipeline.notify import TgMsg, _html_escape
 
     CONF_EMOJI = {
@@ -1607,6 +1617,32 @@ def _handle_today() -> str:
                     pass
 
         today_matches = [p for p in all_preds if p.get("date", "").startswith(today)]
+
+        # Load supplementary intelligence files (corners, cards, scorers, reasoning).
+        # Indexed by (match, date) so per-match lookup is O(1). Missing files
+        # degrade gracefully — only the available fields render.
+        def _load_index(name: str) -> dict:
+            path = DATA_DIR / "upcoming" / name
+            if not path.exists():
+                return {}
+            try:
+                d = json.load(open(path))
+            except Exception:
+                return {}
+            preds = d.get("predictions", []) if isinstance(d, dict) else d
+            return {(p.get("match", ""), p.get("date", "")): p
+                    for p in preds if isinstance(p, dict)}
+        # corners_idx + cards_idx loads removed 2026-05-06 — backtest showed
+        # those models had skill score ≤ 0. See CLAUDE.md.
+        # scorers JSON often lacks a date — index by match name only as a
+        # second-tier lookup (covers stale-snapshot cases gracefully).
+        _scorers_raw = json.load(open(DATA_DIR / "upcoming" / "scorers_predictions.json")) \
+            if (DATA_DIR / "upcoming" / "scorers_predictions.json").exists() else {}
+        _scorers_list = (_scorers_raw.get("predictions", [])
+                         if isinstance(_scorers_raw, dict) else _scorers_raw) or []
+        scorers_idx = {p.get("match"): p for p in _scorers_list
+                       if isinstance(p, dict) and p.get("match")}
+        reasoning_idx = _load_index("match_reasoning.json")
 
         if not today_matches:
             future = sorted([p for p in all_preds if p.get("date", "") > today],
@@ -1666,10 +1702,40 @@ def _handle_today() -> str:
                     tg.raw(f"   Home {h:.0%} | Draw {d:.0%} | Away {a:.0%}")
                     if prediction:
                         tg.raw(f"   Prediction: <b>{_html_escape(prediction)}</b>")
+
+                # Match-intelligence bundle (scorers + reasoning only).
+                # Corners + cards walkforward predictions were dropped 2026-05-04
+                # after held-out 2024-25 backtest showed skill score ≤ 0 and
+                # AUC ≈ 0.51-0.60 for all six lines (8.5/9.5/10.5 corners,
+                # 3.5/4.5/5.5 cards). Predictions were base-rate ± noise,
+                # not worth showing in a "betting intelligence" feed.
+                key = (m.get("match", ""), m.get("date", ""))
+                sc = scorers_idx.get(m.get("match", "")) or {}
+                rs = reasoning_idx.get(key) or {}
+
+                home_top = sc.get("home_top_scorers") or []
+                away_top = sc.get("away_top_scorers") or []
+                if home_top:
+                    best = home_top[0]
+                    tg.raw(f"   Top home scorer: <b>{_html_escape(best['player'])}</b> ({best['goal_prob']:.0%})")
+                if away_top:
+                    best = away_top[0]
+                    tg.raw(f"   Top away scorer: <b>{_html_escape(best['player'])}</b> ({best['goal_prob']:.0%})")
+
+                if rs.get("reasoning"):
+                    tg.italic(f"   {_html_escape(rs['reasoning'])}")
+
                 tg.blank()
 
         tg.italic("Tap /match to analyze any match in detail.")
-        return tg.build()
+        digest_text = tg.build()
+
+        # PNG attachment path (corners/cards intel image) was removed
+        # 2026-05-04 — those models had skill score ≤ 0 on held-out 2024-25
+        # backtest, so the image had nothing real to show. Scorers + AI
+        # reasoning are in the text digest above.
+
+        return digest_text
     except Exception as e:
         log.warning("/today failed: %s", e)
         return f"Failed to load matches: {e}"
@@ -2470,7 +2536,7 @@ def run_bot():
                     response_text = _handle_bankroll()
                 elif cmd == "/today" or cmd == "/matches":
                     _tg_send_typing(token, chat_id)
-                    response_text = _handle_today()
+                    response_text = _handle_today(token=token, chat_id=chat_id)
                 elif cmd == "/match":
                     if _handle_match(token, chat_id):
                         continue  # Match selector sent via inline keyboard
