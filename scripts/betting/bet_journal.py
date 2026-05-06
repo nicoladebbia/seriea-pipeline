@@ -460,7 +460,7 @@ def get_pending_bets(match_date: str = None, include_superseded: bool = True) ->
         if match_date and bet.get("date") != match_date:
             continue
         pending.append(bet)
-    return sorted(pending, key=lambda b: (b.get("date", ""), b.get("match", "")))
+    return sorted(pending, key=lambda b: (b.get("date") or "", b.get("match") or ""))
 
 
 def get_settled_bets() -> List[Dict]:

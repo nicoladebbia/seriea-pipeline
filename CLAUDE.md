@@ -240,6 +240,17 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
   | `/events/{id}/odds/` | btts, double_chance, draw_no_bet, team_totals, alternate_totals, alternate_spreads, all player_* |
 - **Prevention rule**: **invalid-market 422s STILL COST CREDITS**. Validate market×endpoint compatibility before sending.
 
+### Symptom: "Groq bill is hundreds of dollars" (FIXED 2026-05-06)
+
+- **What you'll see**: Monthly Groq spend creeping into 3-figures. Audit dashboard shows `groq/compound` (compound-beta) line dominating costs — was $73/mo on its own across May 2026.
+- **Why**: `scripts/prediction/sentiment_analyzer.py` ran on every full pipeline AND every incremental refresh, making 5-15 web-search-augmented compound-beta calls per match × 41 matches × 3-5 builds/day. Default `GROQ_DAILY_LIMIT=800` was a per-call counter not a $-cap, so worst-case was $1000+/mo.
+- **Fix**: Two-layer:
+  1. **Default OFF**. Both pipeline call sites (`run_full_pipeline.py` Step 16 and the incremental path) gate behind `RUN_SENTIMENT=1` env var. Default is skip. Sentiment is a soft signal not used by any betting decision in this codebase, so the absence has zero downstream impact.
+  2. **Hard $/day cap** if re-enabled. `GROQ_DAILY_BUDGET_USD` env var (default `$1.00`) is converted to a call cap at client init: `GROQ_DAILY_LIMIT = budget / cost_per_call`. Even if `RUN_SENTIMENT=1`, monthly worst-case ≈ `$1 × 30 = $30`.
+- **Re-enabling sentiment**: requires evidence it's worth the cost. Backtest `sentiment_edge` as a binary feature against 1X2 outcomes, require skill_score > 0.02 over 200+ matches, before flipping `RUN_SENTIMENT=1`. Same standard as the corners/cards models we ripped out the day before.
+- **API key**: this project uses a dedicated key (`gsk_CNw...02yQ`, labeled "SerieA-Pipeline" in Groq console) separate from Pulse's keys. Bills are isolated.
+- **Prevention rule**: **any external-API caller must declare a $-budget cap in env, default-low.** A per-call counter is not a budget. Models that take a billable action per fixture × per build × per day need their cost computed against the call frequency before shipping.
+
 ### Symptom: "Match Intelligence shows corners/cards" (REMOVED 2026-05-06)
 
 - **History**: As of 2026-05-04 the dashboard Match Intelligence card showed `λ ≈ 10.00` corners and `λ ≈ 4.50` cards on every match — silent fallback to constants because the 2026-04-27 cleanup deleted `data/models/markets/*.cbm`. First fix wired the walkforward predictor (`predict_walkforward_markets.py`) to overlay real per-match values.

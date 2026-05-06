@@ -1682,7 +1682,7 @@ def generate_combinations(legs, max_legs=4):
     # C(25,4) = 12650 which is manageable; C(40,4) = 91390 which is slow
     max_valid = min(len(valid), 25)
     # Sort by quality, breaking ties with probability (high-prob legs make great parlay legs)
-    valid_sorted = sorted(valid, key=lambda l: (l.get("quality_score", 0), l.get("probability", 0)),
+    valid_sorted = sorted(valid, key=lambda l: (l.get("quality_score") or 0, l.get("probability") or 0),
                           reverse=True)[:max_valid]
 
     MAX_COMBOS_PER_SIZE = 200  # cap per leg count

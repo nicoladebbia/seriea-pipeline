@@ -327,7 +327,7 @@ def _compute_streaks(bets: List[Dict]) -> Dict:
 def _compute_best_worst(bets: List[Dict]) -> Dict:
     """Top 5 best and worst bets by profit."""
     valid = [b for b in bets if b.get("profit") is not None]
-    by_profit = sorted(valid, key=lambda b: b.get("profit", 0), reverse=True)
+    by_profit = sorted(valid, key=lambda b: b.get("profit") or 0, reverse=True)
 
     def _fmt(b):
         return {

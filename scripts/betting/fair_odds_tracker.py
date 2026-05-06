@@ -56,10 +56,12 @@ def record_predictions(predictions: List[Dict]) -> Dict:
         probs = p.get("probabilities", {})
         h2h = (p.get("odds", {}) or {}).get("h2h", {})
 
-        # Fair odds = 1/probability (no margin)
-        fair_home = round(1 / probs["home"], 3) if probs.get("home", 0) > 0.01 else None
-        fair_draw = round(1 / probs["draw"], 3) if probs.get("draw", 0) > 0.01 else None
-        fair_away = round(1 / probs["away"], 3) if probs.get("away", 0) > 0.01 else None
+        # Fair odds = 1/probability (no margin). Use `or 0` not `default=0`
+        # because probs.get("home", 0) returns None if the key is present
+        # with explicit-None value, then None > 0.01 raises TypeError.
+        fair_home = round(1 / probs["home"], 3) if (probs.get("home") or 0) > 0.01 else None
+        fair_draw = round(1 / probs["draw"], 3) if (probs.get("draw") or 0) > 0.01 else None
+        fair_away = round(1 / probs["away"], 3) if (probs.get("away") or 0) > 0.01 else None
 
         record = {
             "match": match,
@@ -70,9 +72,9 @@ def record_predictions(predictions: List[Dict]) -> Dict:
             "commence_time": p.get("commence_time", ""),
 
             # Model probabilities
-            "prob_home": round(probs.get("home", 0), 4),
-            "prob_draw": round(probs.get("draw", 0), 4),
-            "prob_away": round(probs.get("away", 0), 4),
+            "prob_home": round(probs.get("home") or 0, 4),
+            "prob_draw": round(probs.get("draw") or 0, 4),
+            "prob_away": round(probs.get("away") or 0, 4),
 
             # Fair odds (1/prob)
             "fair_home": fair_home,
@@ -256,7 +258,7 @@ def _update_summary(ledger: List[Dict]):
         value_bets["avg_edge"] = 0
 
     # Recent form (last 20 predictions)
-    recent = sorted(settled, key=lambda r: r.get("settled_at", ""), reverse=True)[:20]
+    recent = sorted(settled, key=lambda r: r.get("settled_at") or "", reverse=True)[:20]
     recent_correct = len([r for r in recent if r.get("prediction_correct")])
 
     summary = {

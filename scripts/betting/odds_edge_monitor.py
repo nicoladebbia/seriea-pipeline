@@ -345,7 +345,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
 
     return {
         "value_bets": sorted(value_bets, key=lambda x: x["edge_pct"], reverse=True),
-        "watchlist": sorted(watchlist, key=lambda x: x.get("gap_to_threshold", 99)),
+        "watchlist": sorted(watchlist, key=lambda x: x.get("gap_to_threshold") or 99),
         "scan_time": datetime.now().isoformat(),
         "matches_scanned": len(matches),
     }

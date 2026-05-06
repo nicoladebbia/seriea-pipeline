@@ -88,8 +88,15 @@ CACHE_DURATION_HOURS = 6  # Sentiment is time-sensitive
 # API Rate Limits (free tiers)
 # Gemini: 5,000 grounded queries/month free. Reserve 10% buffer.
 GEMINI_MONTHLY_LIMIT = 4500
-# Groq compound-beta: ~1,000 RPD free tier. Be conservative.
-GROQ_DAILY_LIMIT = 800
+# Groq compound-beta is ~$0.04/call w/ built-in web search. The May 2026
+# audit showed $73/mo from this single model line-item alone (Pulse + this
+# project combined). Cap is now a HARD $/day budget enforced before each
+# call. If you flip RUN_SENTIMENT=1, the cost can't exceed:
+#   GROQ_DAILY_BUDGET_USD × 30 ≈ monthly ceiling
+# Default: $1/day = $30/mo cap. If you need more, raise it knowingly.
+GROQ_DAILY_BUDGET_USD = float(os.environ.get("GROQ_DAILY_BUDGET_USD", "1.0"))
+GROQ_COST_PER_CALL_USD = 0.04   # rough avg for compound-beta + web search
+GROQ_DAILY_LIMIT = int(GROQ_DAILY_BUDGET_USD / GROQ_COST_PER_CALL_USD)
 # Usage tracking file
 API_USAGE_FILE = DATA_DIR / "cache" / "api_usage.json"
 

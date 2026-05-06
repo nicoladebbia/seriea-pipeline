@@ -457,17 +457,21 @@ def _run_supplementary_analysis(summary: dict):
         print(f"      Lineup predictions warning: {e}")
         log.debug(f"Incremental lineup predictions: {e}")
 
-    # Sentiment analysis (uses Perplexity API — skip if no API key configured)
-    print(f"    Sentiment...")
-    try:
-        from scripts.prediction.sentiment_analyzer import analyze_all_upcoming_matches as analyze_sentiment
-        results = analyze_sentiment()
-        if results:
-            print(f"      {len(results)} matches")
-            summary["sentiment_updated"] = True
-    except Exception as e:
-        print(f"      Sentiment warning: {e}")
-        log.debug(f"Incremental sentiment: {e}")
+    # Sentiment analysis — DISABLED 2026-05-06 unless RUN_SENTIMENT=1.
+    # See cost audit comment at Step 16 ($73/mo Groq compound-beta).
+    if os.environ.get("RUN_SENTIMENT") == "1":
+        print(f"    Sentiment...")
+        try:
+            from scripts.prediction.sentiment_analyzer import analyze_all_upcoming_matches as analyze_sentiment
+            results = analyze_sentiment()
+            if results:
+                print(f"      {len(results)} matches")
+                summary["sentiment_updated"] = True
+        except Exception as e:
+            print(f"      Sentiment warning: {e}")
+            log.debug(f"Incremental sentiment: {e}")
+    else:
+        print(f"    Sentiment SKIPPED (RUN_SENTIMENT≠1)")
 
 
 def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
@@ -1750,23 +1754,35 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         log.warning(f"Player props error: {e}")
 
     # =========================================================================
-    # Step 16: Sentiment Analysis (Perplexity AI)
+    # Step 16: Sentiment Analysis — DISABLED 2026-05-06
+    #
+    # Cost audit: Groq compound-beta sentiment was the single biggest line
+    # item on the Groq bill ($73 of $114 in last 30 days). The model makes
+    # 5-15 web-search-augmented calls per match × 41 matches × 3 builds/day,
+    # and the output ("Edge: home/away/neutral") is a soft signal not used
+    # by any betting decision in this codebase.
+    #
+    # Set RUN_SENTIMENT=1 to re-enable. Before doing so, prove the signal
+    # is worth its cost: backtest sentiment_edge as a binary feature against
+    # 1X2 outcomes, require skill score > 0.02 over 200+ matches.
     # =========================================================================
-    step(16, total_steps, "Running Sentiment Analysis (Perplexity AI)")
-    try:
-        from scripts.prediction.sentiment_analyzer import analyze_all_upcoming_matches
-
-        sentiment_results = analyze_all_upcoming_matches()
-        home_edge = sum(1 for s in sentiment_results if s.sentiment_edge == "home")
-        away_edge = sum(1 for s in sentiment_results if s.sentiment_edge == "away")
-        contrarian = sum(1 for s in sentiment_results if s.contrarian_opportunity)
-        print(f"  Analyzed sentiment for {len(sentiment_results)} matches")
-        print(f"  Edge: {home_edge} home, {away_edge} away")
-        if contrarian > 0:
-            print(f"  {contrarian} contrarian opportunities detected!")
-    except Exception as e:
-        print(f"  Sentiment analysis warning: {e}")
-        log.warning(f"Sentiment analysis error: {e}")
+    if os.environ.get("RUN_SENTIMENT") == "1":
+        step(16, total_steps, "Running Sentiment Analysis (opt-in)")
+        try:
+            from scripts.prediction.sentiment_analyzer import analyze_all_upcoming_matches
+            sentiment_results = analyze_all_upcoming_matches()
+            home_edge = sum(1 for s in sentiment_results if s.sentiment_edge == "home")
+            away_edge = sum(1 for s in sentiment_results if s.sentiment_edge == "away")
+            contrarian = sum(1 for s in sentiment_results if s.contrarian_opportunity)
+            print(f"  Analyzed sentiment for {len(sentiment_results)} matches")
+            print(f"  Edge: {home_edge} home, {away_edge} away")
+            if contrarian > 0:
+                print(f"  {contrarian} contrarian opportunities detected!")
+        except Exception as e:
+            print(f"  Sentiment analysis warning: {e}")
+            log.warning(f"Sentiment analysis error: {e}")
+    else:
+        print(f"[16/{total_steps}] Sentiment analysis SKIPPED (RUN_SENTIMENT≠1, see CLAUDE.md cost audit)")
 
     # =========================================================================
     # Step 17: Player Analysis

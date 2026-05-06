@@ -91,7 +91,7 @@ def _load_settled_bets() -> List[Dict]:
             b for b in bets.values()
             if isinstance(b, dict) and b.get("status") in ("won", "lost", "push", "void")
         ]
-        return sorted(settled, key=lambda b: b.get("settled_at", b.get("date", "")))
+        return sorted(settled, key=lambda b: b.get("settled_at") or b.get("date") or "")
     except Exception as e:
         log.warning("Failed to load journal: %s", e)
         return []

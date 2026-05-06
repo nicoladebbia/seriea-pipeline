@@ -423,7 +423,7 @@ def _print_summary(metrics: Dict, draw_pnl: Dict, scored: List[Dict]):
     print("\n" + "-" * 70)
     print("RECENT PREDICTIONS")
     print("-" * 70)
-    for s in sorted(scored, key=lambda x: x.get("match_date", ""))[-10:]:
+    for s in sorted(scored, key=lambda x: x.get("match_date") or "")[-10:]:
         status = "OK" if s["correct"] else "XX"
         print(f"  [{status}] {s['match_date']} {s['home_team']:15s} vs {s['away_team']:15s} "
               f"pred={s['predicted']:4s} actual={s['actual']:4s} "
@@ -463,7 +463,7 @@ def _print_full_history(scored: List[Dict], draw_pnl: Dict):
     print("FULL PREDICTION HISTORY")
     print("=" * 70)
 
-    for s in sorted(scored, key=lambda x: x.get("match_date", "")):
+    for s in sorted(scored, key=lambda x: x.get("match_date") or ""):
         status = "OK" if s["correct"] else "XX"
         print(f"  [{status}] {s['match_date']} {s['home_team']:15s} {s['home_score']}-{s['away_score']} "
               f"{s['away_team']:15s} pred={s['predicted']:4s} actual={s['actual']:4s} "

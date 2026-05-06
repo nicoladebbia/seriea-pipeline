@@ -955,7 +955,7 @@ def _get_bankroll_context() -> dict:
             current = initial + total_profit
             peak = initial
             running = initial
-            settled_sorted = sorted(settled, key=lambda b: b.get("settled_at", ""))
+            settled_sorted = sorted(settled, key=lambda b: b.get("settled_at") or "")
             for b in settled_sorted:
                 running += (b.get("profit") or 0)
                 if running > peak:
@@ -1341,7 +1341,7 @@ def notify_value_bets(bets: list[dict]) -> dict:
     except Exception:
         pass
 
-    sorted_bets = sorted(bets, key=lambda b: b.get("edge_pct", 0), reverse=True)
+    sorted_bets = sorted(bets, key=lambda b: b.get("edge_pct") or 0, reverse=True)
     best = sorted_bets[0]
     match = best.get("match", "?")
     best_edge = best.get("edge_pct", 0)
@@ -1899,7 +1899,7 @@ def notify_daily_digest() -> dict:
 
     # ---------- Rolling ROI (last 50 settled bets via ledger) ----------
     settled_wl = [b for b in history if b.get("status") in ("won", "lost", "push")]
-    settled_sorted = sorted(settled_wl, key=lambda b: b.get("settled_at", ""), reverse=True)
+    settled_sorted = sorted(settled_wl, key=lambda b: b.get("settled_at") or "", reverse=True)
     try:
         from scripts.betting import ledger as _ledger
         roi_rolling = _ledger.get_roi(window=50)
@@ -2216,7 +2216,7 @@ def notify_daily_digest() -> dict:
                 if (entry.get("last_run") or "").startswith(today_str)
             ]
             if ran_today:
-                for name, entry in sorted(ran_today, key=lambda x: x[1].get("last_run", "")):
+                for name, entry in sorted(ran_today, key=lambda x: x[1].get("last_run") or ""):
                     emoji, label = _SCHEDULER_BADGE.get(name, ("⚙️", name))
                     icon = _STATUS_ICON.get(entry.get("status", "ok"), "ℹ️")
                     hhmm = (entry.get("last_run") or "")[11:16]
