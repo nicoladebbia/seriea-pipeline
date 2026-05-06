@@ -159,6 +159,13 @@ def _rolling_per_team(per_match_team: pd.DataFrame) -> pd.DataFrame:
             for canonical in KEY_MAP.values():
                 rec[f"fh_{canonical}"] = row.get(f"{prefix}_fh_{canonical}")
             records.append(rec)
+    if not records:
+        # Empty input → return empty frame with the columns downstream expects
+        # rather than raising KeyError on sort_values.
+        cols = ["match_id", "match_date", "season", "league", "team", "is_home"]
+        cols += [f"fh_{c}" for c in KEY_MAP.values()]
+        cols += [f"fh_{c}_roll_{N}" for N in WINDOWS for c in KEY_MAP.values()]
+        return pd.DataFrame(columns=cols)
     df = pd.DataFrame(records).sort_values(["team", "match_date", "match_id"])
 
     for N in WINDOWS:
@@ -208,6 +215,12 @@ def add_first_half_splits_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     per_match = df_fh.merge(mapping, on="sofascore_id", how="inner")
     per_match = per_match.merge(feature_df[list(req)].drop_duplicates(subset=["match_id"]),
                                 on="match_id", how="inner")
+    if per_match.empty:
+        log.warning("First-half splits: no matches after mapping+features join "
+                    "(df_fh=%d, mapping=%d, features=%d). Cache may be stale or "
+                    "match_id_mapping doesn't cover recent fixtures yet.",
+                    len(df_fh), len(mapping), len(feature_df))
+        return feature_df
 
     rolled = _rolling_per_team(per_match)
     pivoted = _pivot_home_away(rolled)

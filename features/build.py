@@ -1583,19 +1583,35 @@ def _build_features_for_matches(matches: pd.DataFrame,
             log.info("  [high-null %.1f%%] %s", null_pct[col] * 100, col)
 
     # 4. Drop exact-duplicate columns (|r| >= 0.999)
+    #
+    # Sparse columns (e.g. xi_minutes_continuity, only populated for matches
+    # with lineup data) used to be dropped here as false-positive duplicates:
+    # pandas .corr() does pairwise complete-case analysis, so two columns that
+    # share only ~5 non-NaN rows and happen to be perfectly correlated on
+    # those 5 rows give |r|=1.0 — even though they're conceptually unrelated.
+    #
+    # Fix: require a minimum NON-NaN overlap of MIN_PAIR_OVERLAP rows before
+    # we trust the correlation enough to drop a column.
+    MIN_PAIR_OVERLAP = 200
     numeric_cols = [c for c in feature_df.columns
                     if feature_df[c].dtype in ("float64", "float32", "int64", "int32")]
     if len(numeric_cols) > 1:
         dup_to_drop = set()
-        # Use dropna instead of fillna(0) — filling NaN with 0 inflates
-        # correlations between columns with shared missingness patterns
+        # Use dropna so the all-pairs correlation is computed on the same
+        # complete-case sample. Filling NaN with 0 would inflate correlations
+        # between columns with shared missingness patterns.
         sample = feature_df[numeric_cols].dropna(axis=0, how="any")
         if len(sample) < 200:
-            # Not enough complete rows; fall back to pairwise correlation
+            # Not enough complete rows for a reliable matrix-wide correlation.
+            # Fall back to pairwise correlation but enforce per-pair overlap
+            # checks below to avoid the sparse-column false-positive bug.
             sample = feature_df[numeric_cols]
         if len(sample) > 2000:
             sample = sample.sample(2000, random_state=42)
         corr = sample.corr().abs()
+        # Per-pair non-NaN overlap (only meaningful when we used pairwise
+        # mode; on the dropna'd sample every pair has the full row count).
+        non_null_count = sample.notna().sum()
         for i in range(len(numeric_cols)):
             if numeric_cols[i] in dup_to_drop:
                 continue
@@ -1603,10 +1619,19 @@ def _build_features_for_matches(matches: pd.DataFrame,
                 if numeric_cols[j] in dup_to_drop:
                     continue
                 if corr.iloc[i, j] >= 0.999:
+                    # Estimate the pair's non-NaN overlap; if both columns
+                    # have many NaNs the actual overlap can be tiny even
+                    # when each individually has decent coverage.
+                    pair_overlap = min(
+                        non_null_count.iloc[i], non_null_count.iloc[j]
+                    )
+                    if pair_overlap < MIN_PAIR_OVERLAP:
+                        continue
                     dup_to_drop.add(numeric_cols[j])
         if dup_to_drop:
             feature_df = feature_df.drop(columns=list(dup_to_drop))
-            log.info("Dropped %d exact-duplicate columns (|r| >= 0.999):", len(dup_to_drop))
+            log.info("Dropped %d exact-duplicate columns (|r| >= 0.999, overlap >= %d):",
+                     len(dup_to_drop), MIN_PAIR_OVERLAP)
             for col in sorted(dup_to_drop)[:30]:
                 log.info("  [exact-dup] %s", col)
 
@@ -1726,6 +1751,102 @@ def build_features(season: str | None = None,
     )
 
     return feature_df
+
+
+
+
+
+def build_upcoming_features(
+    fixtures: pd.DataFrame,
+    league: str = "serie_a",
+) -> pd.DataFrame:
+    """Build feature rows for unplayed fixtures by running them through the
+    full 58-step pipeline alongside historical settled matches.
+
+    Plugins compute as-of-match-date rolling/H2H/strength stats from prior
+    matches, so feeding NaN-score fixture rows produces legitimate features
+    for them as long as their teams have appeared in `data/parsed/matches.parquet`.
+
+    Args:
+        fixtures: DataFrame with at least `home_team`, `away_team`, `match_date`,
+            `season` columns. Score columns (`home_score`, `away_score`) should
+            be NaN. Other columns are optional and will be NaN-filled.
+        league: League key (e.g. "serie_a"). Must match an entry in
+            `parsed/matches.parquet`.
+
+    Returns:
+        DataFrame with one row per fixture and the same columns the trained
+        walkforward models expect (read `feature_names` from the model
+        metadata to align). Rows are aligned by (home_team, away_team,
+        match_date) — caller is responsible for matching back to fixtures.
+
+    Raises:
+        FileNotFoundError if matches.parquet is missing.
+        ValueError if `fixtures` lacks required columns or no rows survive
+        the pipeline.
+
+    Caching: this helper deliberately runs with `use_cache=False`. The
+    pipeline cache key only hashes plugin source + declared external file
+    paths, NOT the input matches DF — so a cache hit returns the previous
+    historical-only output, which silently drops the fixture rows. Trade-off
+    accepted: ~5-15 minutes per call vs. silent wrong results.
+    """
+    required = {"home_team", "away_team", "match_date", "season"}
+    missing = required - set(fixtures.columns)
+    if missing:
+        raise ValueError(f"fixtures missing required columns: {sorted(missing)}")
+
+    matches_p = parsed_path("matches")
+    if not matches_p.exists():
+        raise FileNotFoundError(f"matches.parquet not found at {matches_p}")
+
+    historical = pd.read_parquet(matches_p)
+    historical = historical.drop_duplicates(
+        subset=["home_team", "away_team", "match_date", "season"], keep="first"
+    )
+    if "league" in historical.columns:
+        historical = historical[historical["league"] == league].copy()
+
+    fix = pd.DataFrame(index=fixtures.index)
+    for col in historical.columns:
+        if col in fixtures.columns:
+            fix[col] = fixtures[col]
+        else:
+            fix[col] = np.nan
+    fix["league"] = league
+    fix["league_name"] = (
+        historical["league_name"].iloc[0]
+        if "league_name" in historical.columns and len(historical)
+        else league
+    )
+    fix["home_score"] = np.nan
+    fix["away_score"] = np.nan
+    fix["match_date"] = pd.to_datetime(fix["match_date"])
+
+    combined = pd.concat([historical, fix], ignore_index=True).sort_values(
+        "match_date"
+    ).reset_index(drop=True)
+
+    feats = _build_features_for_matches(
+        combined, season=None, use_cache=False, league=league
+    )
+
+    feats["match_date"] = pd.to_datetime(feats["match_date"])
+    fix_keys = set(zip(fix["home_team"], fix["away_team"], fix["match_date"]))
+    upcoming_feats = feats[
+        feats[["home_team", "away_team", "match_date"]]
+        .apply(tuple, axis=1)
+        .isin(fix_keys)
+    ].copy()
+
+    if upcoming_feats.empty:
+        raise ValueError(
+            f"No fixture rows survived feature pipeline (started with "
+            f"{len(fixtures)} fixtures). Either teams are unknown to "
+            f"matches.parquet or a plugin silently dropped them."
+        )
+
+    return upcoming_feats.reset_index(drop=True)
 
 
 # ────────────────────────────────────────────────────────────────────────────

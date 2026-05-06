@@ -333,8 +333,26 @@ def main(
 
     missing = [f for f in core_features if f not in df.columns]
     if missing:
-        log.error(f"Missing {len(missing)} core features in features.parquet: {missing[:10]}")
-        sys.exit(1)
+        # Soft-fail: a feature being absent from features.parquet is usually
+        # a feature-pipeline change (column renamed, dedup'd, gated behind
+        # data we don't have yet). Hard-exiting blocks every retrain forever.
+        # Threshold: tolerate up to 5 missing features by zero-imputing them;
+        # bail only if we'd be retraining on a substantially different set.
+        if len(missing) <= 5:
+            log.warning(
+                "%d core feature(s) missing from features.parquet — zero-imputing "
+                "to keep retrain alive. Investigate the feature pipeline so this "
+                "doesn't drift further. Missing: %s",
+                len(missing), missing,
+            )
+            for f in missing:
+                df[f] = 0.0
+        else:
+            log.error(
+                f"Missing {len(missing)} core features (> 5 tolerance) in "
+                f"features.parquet: {missing[:10]}"
+            )
+            sys.exit(1)
 
     # Add _has_* indicators with default values
     for indicator in metadata_indicators:

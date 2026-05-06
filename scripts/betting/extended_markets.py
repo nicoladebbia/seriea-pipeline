@@ -827,10 +827,11 @@ def generate_extended_markets():
         exp_home_cards = total_cards * home_share
         exp_away_cards = total_cards * (1 - home_share)
 
-        # Team corners from corners model
+        # Team corners from corners model. Walkforward writes None for
+        # per-team values (total-only model) so we coerce to defaults.
         corner_pred = corners_data.get(match, {})
-        exp_home_corners = corner_pred.get("expected_home_corners", 5.0)
-        exp_away_corners = corner_pred.get("expected_away_corners", 4.8)
+        exp_home_corners = corner_pred.get("expected_home_corners") or 5.0
+        exp_away_corners = corner_pred.get("expected_away_corners") or 4.8
 
         def safe_odds(p):
             return round(1 / p, 2) if p > 0.001 else 99

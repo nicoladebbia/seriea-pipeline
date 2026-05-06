@@ -470,7 +470,10 @@ def get_settled_bets() -> List[Dict]:
     for bet in journal["bets"].values():
         if bet.get("status") in _SETTLED_STATUSES:
             settled.append(bet)
-    return sorted(settled, key=lambda b: b.get("settled_at", ""))
+    # `settled_at` may be None for legacy/manually-corrected entries —
+    # `or ""` coalesces to a sortable empty string instead of raising
+    # TypeError when sorting against str-typed entries.
+    return sorted(settled, key=lambda b: b.get("settled_at") or "")
 
 
 @_with_journal_lock
