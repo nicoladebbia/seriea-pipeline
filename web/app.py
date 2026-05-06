@@ -1506,24 +1506,44 @@ def api_matches_seasons():
         return jsonify({"seasons": [get_current_season()]})
 
 
+_matches_response_cache: dict[tuple, tuple[float, dict]] = {}  # key → (cached_at, payload)
+_MATCHES_RESPONSE_TTL = 300  # 5 minutes — short enough to feel live, long enough to cover bursty navigation
+
+
 def _api_matches_sofascore(season: str):
     """Matches from Sofascore player_match_stats (rich per-player data).
 
     Loads BOTH leagues' parquets so Results page covers SA + EPL. Earlier
     bug: only SA parquet was read, so /matches never showed EPL fixtures.
+
+    Response cached for up to _MATCHES_RESPONSE_TTL seconds AND auto-invalidated
+    on parquet mtime change. This route was the dashboard's slowest endpoint
+    (~11.5s cold) due to player-row groupby + iterrows over ~22K rows; the
+    finished payload is what actually changes (only after scrapes), so caching
+    the JSON response is the right granularity.
     """
     import pandas as pd
     from config.team_names import normalize_team
 
+    parquet_paths = [
+        DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet",
+        DATA_DIR / "external" / "sofascore" / "player_match_stats_premier_league.parquet",
+    ]
+    existing = [p for p in parquet_paths if p.exists()]
+    if not existing:
+        return jsonify({"error": "no sofascore data", "matchweeks": []})
+
+    # Cache key includes parquet mtimes — when scrapers rewrite, key flips
+    league_filter = _get_league_filter()
+    mtimes = tuple(p.stat().st_mtime for p in existing)
+    cache_key = (season, league_filter, mtimes)
+    now = _time.time()
+    cached = _matches_response_cache.get(cache_key)
+    if cached and (now - cached[0]) < _MATCHES_RESPONSE_TTL:
+        return jsonify(cached[1])
+
     try:
-        frames = []
-        for fname in ("player_match_stats.parquet",
-                      "player_match_stats_premier_league.parquet"):
-            p = DATA_DIR / "external" / "sofascore" / fname
-            if p.exists():
-                frames.append(pd.read_parquet(p))
-        if not frames:
-            return jsonify({"error": "no sofascore data", "matchweeks": []})
+        frames = [pd.read_parquet(p) for p in existing]
         pms = pd.concat(frames, ignore_index=True)
     except Exception as e:
         return jsonify({"error": str(e), "matchweeks": []})
@@ -1586,7 +1606,7 @@ def _api_matches_sofascore(season: str):
             } if top_away is not None and pd.notna(top_away.get("rating")) else None,
         })
 
-    league_filter = _get_league_filter()
+    # league_filter already resolved at function top for cache key
     if league_filter:
         matches = [m for m in matches if _team_belongs_to_league(m.get("home_team", ""), league_filter)]
 
@@ -1609,11 +1629,13 @@ def _api_matches_sofascore(season: str):
             "match_count": len(mw_matches),
         })
 
-    return jsonify({
+    payload = {
         "season": season,
         "total_matches": len(matches),
         "matchweeks": matchweeks,
-    })
+    }
+    _matches_response_cache[cache_key] = (now, payload)
+    return jsonify(payload)
 
 
 def _api_matches_features(season: str):
