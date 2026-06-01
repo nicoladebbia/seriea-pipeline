@@ -2229,9 +2229,27 @@ def notify_daily_digest() -> dict:
                 icon = {"HEALTHY": "✅", "OK": "✅",
                         "WARNING": "⚠️",
                         "CRITICAL": "\U0001f6a8"}.get(overall, "ℹ️")
-                n_issues = len(health.get("issues", []))
+                health_issues = health.get("issues", [])
+                n_issues = len(health_issues)
                 suffix = f" ({n_issues} issue{'s' if n_issues != 1 else ''})" if n_issues else ""
                 tg.raw(f"  {icon} <b>Health:</b> {_html_escape(overall)}{suffix}")
+                # List the actual CRITICAL/WARNING messages, not just the count —
+                # a bare "(6 issues)" let a standing CRITICAL (negative ROI) go
+                # unread for weeks. The 30-min change-alerter silences anything
+                # >24h old by design, so this daily digest is the one place a
+                # PERSISTENT issue must surface in full. CRITICAL first.
+                _lvl_rank = {"CRITICAL": 0, "WARNING": 1}
+                _lvl_icon = {"CRITICAL": "🚨", "WARNING": "⚠️"}
+                ranked = sorted(
+                    (i for i in health_issues
+                     if isinstance(i, (list, tuple)) and len(i) == 2
+                     and i[0] in ("CRITICAL", "WARNING")),
+                    key=lambda i: _lvl_rank.get(i[0], 9),
+                )
+                for lvl, msg in ranked[:8]:  # cap to keep the digest readable
+                    tg.raw(f"    {_lvl_icon.get(lvl, 'ℹ️')} {_html_escape(str(msg))}")
+                if len(ranked) > 8:
+                    tg.raw(f"    <i>…and {len(ranked) - 8} more</i>")
     except Exception as e:
         log.debug("Digest systems section failed: %s", e)
 

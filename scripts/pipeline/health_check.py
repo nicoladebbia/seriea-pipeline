@@ -457,6 +457,153 @@ def check_data_quality() -> Dict:
     return checks
 
 
+def check_silent_failures() -> Dict:
+    """Assert against the silent-failure classes found in the 2026-05-31 data-layer
+    diagnostic — failures that left every other health check GREEN while the
+    pipeline rotted. Each assertion here corresponds to a real failure observed:
+
+      - mapping sofascore_id 0 per league   -> EPL features silently dropped
+      - understat_id 0 (secondary canary)   -> builder read wrong columns
+      - odds-gate timestamp unparseable      -> tz bug, swallowed, wake-storm burn
+      - past-dated matches with null result  -> results pipeline silently stalled
+      - predictions not varying across slate  -> model fell back to constants
+
+    Severity rule (avoid alert fatigue): CRITICAL only for "the pipeline is
+    lying about working" (dead model / swallowed-error timestamp). Coverage and
+    staleness are WARNING (real but recoverable).
+    """
+    checks: Dict = {}
+
+    # --- 1. Cross-source mapping coverage (the load-bearing key is sofascore_id) ---
+    mapping_path = DATA_DIR / "parsed" / "match_id_mapping.parquet"
+    if mapping_path.exists():
+        try:
+            import pandas as pd
+            mp = pd.read_parquet(mapping_path)
+            issues = []
+            status = "OK"
+            detail = {}
+            leagues = mp["league"].unique() if "league" in mp.columns else ["(none)"]
+            for lg in leagues:
+                sub = mp[mp["league"] == lg] if "league" in mp.columns else mp
+                sofa = int(sub["sofascore_id"].notna().sum()) if "sofascore_id" in sub else 0
+                detail[f"{lg}_sofascore_id"] = sofa
+                # sofascore_id is what the 5 feature builders inner-join on; 0 = stranded.
+                if sofa == 0:
+                    status = "WARNING"
+                    issues.append(
+                        f"{lg}: sofascore_id is 0 — Sofascore-derived features (shot xG, "
+                        f"first-half, missing players) will silently drop on the inner join"
+                    )
+            # understat_id is a secondary canary (nothing joins on it yet, but 0 means
+            # the builder's understat discovery broke — the 2026-05-31 bug).
+            if "understat_id" in mp.columns and int(mp["understat_id"].notna().sum()) == 0:
+                if status == "OK":
+                    status = "WARNING"
+                issues.append("understat_id is 0 across all rows — mapping builder understat discovery may be broken")
+            checks["mapping_coverage"] = {"status": status, "issues": issues, **detail}
+        except Exception as e:
+            checks["mapping_coverage"] = {"status": "ERROR", "error": str(e), "issues": []}
+    else:
+        checks["mapping_coverage"] = {"status": "MISSING", "issues": ["match_id_mapping.parquet missing"]}
+
+    # --- 2. Odds-gate timestamp must PARSE and COMPARE (the swallowed tz bug) ---
+    # The tz regression made needs_odds_refresh() raise TypeError internally,
+    # get caught, and silently always-refresh. Assert the freshness math actually
+    # works rather than throwing — a populated timestamp must not render "unknown".
+    state_path = DATA_DIR / "pipeline_state.json"
+    if state_path.exists():
+        try:
+            from scripts.pipeline.pipeline_state import get_state_summary, needs_odds_refresh
+            with open(state_path) as f:
+                state = json.load(f)
+            summary = get_state_summary(state)
+            issues = []
+            status = "OK"
+            # A populated last_odds_fetch that summarizes to "unknown" == a parse/tz crash.
+            if state.get("last_odds_fetch") and summary.get("last_odds_fetch") == "unknown":
+                status = "CRITICAL"
+                issues.append(
+                    "last_odds_fetch is populated but un-summarizable — timestamp parse/tz "
+                    "comparison is crashing (the swallowed bug that burns Odds API credits)"
+                )
+            # Exercise the gate itself; a raised+swallowed error would surface as a crash here.
+            _ = needs_odds_refresh(state)
+            checks["odds_gate_timestamp"] = {"status": status, "issues": issues}
+        except Exception as e:
+            checks["odds_gate_timestamp"] = {
+                "status": "CRITICAL",
+                "issues": [f"odds-gate freshness math raised {type(e).__name__}: {e}"],
+            }
+
+    # --- 3. Results staleness, season-aware (past-dated match with no result) ---
+    # Calendar-age alarms fire every off-season; instead assert on the
+    # unambiguous signal: a match whose date is in the past but has no score.
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if matches_path.exists():
+        try:
+            import pandas as pd
+            m = pd.read_parquet(matches_path)
+            m["match_date"] = pd.to_datetime(m["match_date"], errors="coerce")
+            now = datetime.now()
+            issues = []
+            status = "OK"
+            detail = {}
+            leagues = m["league"].unique() if "league" in m.columns else ["(none)"]
+            for lg in leagues:
+                sub = m[m["league"] == lg] if "league" in m.columns else m
+                past_no_result = sub[
+                    (sub["match_date"] < now) & (sub["home_score"].isna())
+                ]
+                n = int(len(past_no_result))
+                detail[f"{lg}_past_unresulted"] = n
+                if n > 0:
+                    status = "WARNING"
+                    issues.append(
+                        f"{lg}: {n} past-dated matches with no result — results pipeline stalled "
+                        f"(latest missing: {past_no_result['match_date'].max().date() if n else '-'})"
+                    )
+            checks["results_staleness"] = {"status": status, "issues": issues, **detail}
+        except Exception as e:
+            checks["results_staleness"] = {"status": "ERROR", "error": str(e), "issues": []}
+
+    # --- 4. Predictions must VARY (constant fallback = dead model) ---
+    # prediction_probs already checks sums==1; a constant 0.33/0.33/0.33 fallback
+    # passes that. Assert dispersion across the slate instead.
+    preds_path = DATA_DIR / "upcoming" / "predictions.json"
+    if preds_path.exists():
+        try:
+            import statistics
+            with open(preds_path) as f:
+                preds = json.load(f)
+            pred_list = preds.get("predictions", []) if isinstance(preds, dict) else preds
+            home_probs = []
+            for p in pred_list:
+                if isinstance(p, dict):
+                    probs = p.get("probabilities", {}) if isinstance(p.get("probabilities"), dict) else {}
+                    h = probs.get("home") or p.get("prob_home") or p.get("prob_H")
+                    if h is not None:
+                        home_probs.append(float(h))
+            issues = []
+            status = "OK"
+            stdev = round(statistics.pstdev(home_probs), 4) if len(home_probs) > 1 else None
+            # Need at least 3 matches to judge dispersion; below that it's not conclusive.
+            if len(home_probs) >= 3 and stdev is not None and stdev < 0.01:
+                status = "CRITICAL"
+                issues.append(
+                    f"predictions show ~no variance across {len(home_probs)} matches "
+                    f"(home-prob stdev {stdev}) — model likely fell back to constants"
+                )
+            checks["predictions_vary"] = {
+                "status": status, "issues": issues,
+                "n": len(home_probs), "home_prob_stdev": stdev,
+            }
+        except Exception as e:
+            checks["predictions_vary"] = {"status": "ERROR", "error": str(e), "issues": []}
+
+    return checks
+
+
 def check_disk_space() -> Dict:
     """Check available disk space on the project partition."""
     import shutil
@@ -575,6 +722,7 @@ def run_health_check() -> Dict:
         "overall_status": "HEALTHY",
         "data_freshness": check_data_freshness(),
         "data_quality": check_data_quality(),
+        "silent_failures": check_silent_failures(),
         "disk_space": check_disk_space(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
@@ -655,6 +803,14 @@ def run_health_check() -> Dict:
         if isinstance(check_data, dict) and check_data.get("status") in ("WARNING", "CRITICAL"):
             for iss in check_data.get("issues", []):
                 issues.append((check_data["status"], f"Data quality ({check_name}): {iss}"))
+
+    # Silent-failure issues (the classes the 2026-05-31 diagnostic found —
+    # things that left every other check GREEN while the pipeline rotted).
+    sf = result.get("silent_failures", {})
+    for check_name, check_data in sf.items():
+        if isinstance(check_data, dict) and check_data.get("status") in ("WARNING", "CRITICAL"):
+            for iss in check_data.get("issues", []):
+                issues.append((check_data["status"], f"Silent failure ({check_name}): {iss}"))
 
     result["issues"] = issues
 
