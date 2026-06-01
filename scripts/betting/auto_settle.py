@@ -218,16 +218,38 @@ def check_performance_drift(rolling: Dict) -> List[Dict]:
         return alerts
 
     roi = rolling.get("roi_pct", 0)
+    # CLV is the leading edge indicator; ROI is the noisy lagging one. A negative
+    # rolling ROI WITH still-positive CLV is the signature of variance on intact
+    # edge (you're beating the close, results just haven't converged) — not edge
+    # decay. Only escalate ROI to CRITICAL when CLV confirms the edge is actually
+    # gone (CLV <= 0). Otherwise the alert fires on noise and trains us to ignore
+    # the whole health check. See 2026-05-31 ROI diagnosis.
+    _clv = rolling.get("avg_clv")
+    _clv_confirms_decay = (_clv is not None and _clv <= 0)
 
     # ROI drift
-    if roi < ROI_ALERT_THRESHOLD:
+    if roi < ROI_ALERT_THRESHOLD and _clv_confirms_decay:
         alerts.append({
             "level": "CRITICAL",
             "metric": "roi",
             "actual": roi,
             "baseline": BASELINE_ROI,
             "threshold": ROI_ALERT_THRESHOLD,
-            "message": f"Rolling ROI {roi:+.1f}% is NEGATIVE (baseline: {BASELINE_ROI}%)",
+            "message": f"Rolling ROI {roi:+.1f}% NEGATIVE and CLV {_clv:+.1f}% non-positive — edge likely gone (baseline: {BASELINE_ROI}%)",
+        })
+    elif roi < ROI_ALERT_THRESHOLD:
+        # Negative ROI but CLV still positive → variance, not decay. WARNING, not CRITICAL.
+        alerts.append({
+            "level": "WARNING",
+            "metric": "roi",
+            "actual": roi,
+            "baseline": BASELINE_ROI,
+            "threshold": ROI_ALERT_THRESHOLD,
+            "message": (
+                f"Rolling ROI {roi:+.1f}% negative but CLV "
+                f"{('%+.1f%%' % _clv) if _clv is not None else 'n/a'} still positive — "
+                f"variance on intact edge, monitor (baseline: {BASELINE_ROI}%)"
+            ),
         })
     elif roi < ROI_WARN_THRESHOLD:
         alerts.append({
