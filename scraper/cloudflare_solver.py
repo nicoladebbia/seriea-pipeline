@@ -13,10 +13,32 @@ Usage:
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+
+def _harden_isolation(options) -> None:
+    """Pin an isolated, throwaway Chrome profile so the browser never shares
+    state with — or hands its DevTools/inspector URL to — the user's default
+    browser (Arc). Without a dedicated --user-data-dir, the remote-debugging
+    endpoint (127.0.0.1:PORT/devtools/inspector.html) can get routed to the
+    default browser, which opens it as a tab; across many scraper runs this
+    accumulated into ~100 stray Arc tabs. Each call gets its own temp profile.
+    """
+    # Unique temp profile per driver — isolates cookies/state and the debug port.
+    profile_dir = tempfile.mkdtemp(prefix="seriea-chrome-")
+    options.add_argument(f"--user-data-dir={profile_dir}")
+    # Let Chrome pick a random debug port internally but do NOT advertise/hand
+    # the inspector URL to the OS default-browser handler.
+    options.add_argument("--remote-debugging-port=0")
+    # Suppress the "DevTools listening on ws://..." surfacing + first-run UI that
+    # can trigger the default-browser handoff.
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--disable-features=ChromeWhatsNewUI")
 
 # Browser User-Agent — must match between Selenium and requests
 CHROME_UA = (
@@ -110,6 +132,7 @@ def _create_driver(use_undetected: bool, headless: bool):
         # Clean profile — no ad blockers or other extensions that block page content
         options.add_argument("--disable-component-extensions-with-background-pages")
         options.add_argument("--disable-default-apps")
+        _harden_isolation(options)
         driver = uc.Chrome(options=options, version_main=144)
         log.info("Created undetected-chromedriver")
         return driver
@@ -135,6 +158,7 @@ def _create_selenium_driver(headless: bool):
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
+    _harden_isolation(options)
 
     driver = webdriver.Chrome(options=options)
     driver.execute_cdp_cmd(
