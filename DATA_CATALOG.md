@@ -494,6 +494,7 @@ launchctl kickstart gui/$(id -u)/com.seriea-pipeline.weekly-data-refresh
 - **weather 25%:** Open-Meteo timeouts leave ~25% of 2025-26 matches with NaN temp despite retries.
 - **features_serie_a.parquet:** No last-known-good fallback if `build_features()` crashes. A single bug in any of 38 plugins can wipe the parquet.
 - **No failure alerts:** If weekly refresh fails Monday 04:00, nothing tells you. Data rotted for 50 days before detected in the April audit.
+- **Corners odds not fetched:** A real Pinnacle corners market exists (`alternate_totals_corners`, lines 8.0–11.5) but `odds_fetcher.py` does not pull it — corners predictions are display-only, never bet. Cards have no market at all. See §11.10 "Odds API market availability" + [[project_jun01_betting_audit]].
 
 ### ✅ STRONG
 - **matches.parquet** (3-source failover)
@@ -636,6 +637,22 @@ Understat-specific xG metrics: `us_team_xg`, `us_team_npxg`, `us_team_xa`, `us_t
 
 **Source:** `features/odds.py` + `features/market.py` via `Step30Odds`, `Step30bDerivedOdds`, `Step31MarketData`.
 **Gap:** `odds_PS_close_*` and `odds_AH_line` are ~65% and ~28% filled all-time (only recent seasons).
+
+#### Odds API market availability (probed 2026-06-01 against historical SA events)
+
+What The Odds API actually offers for Serie A, by endpoint — **memorise this; invalid market×endpoint combos STILL cost credits (422 INVALID_MARKET)**:
+
+| Market | Endpoint | Books available | Status in this repo |
+|---|---|---|---|
+| `h2h` (1X2) | `/odds/` bulk + `/historical/.../odds/` | many (incl. Pinnacle) | Fetched, used |
+| `totals` (O/U goals) | bulk + historical | many | Fetched, used |
+| `spreads` (AH goals) | bulk + historical | many | Fetched, used |
+| `btts`, `double_chance`, `team_totals`, `draw_no_bet`, `alternate_totals/spreads` | `/events/{id}/odds/` per-event only | varies | Fetched (in `PER_EVENT_MARKETS`); only DC real-line is bet |
+| **`alternate_totals_corners`** | per-event + historical per-event | **Pinnacle ONLY (6/6 SA events), full line ladder 8.0–11.5** | **NOT fetched** by `odds_fetcher.py`. Real sharp market EXISTS. |
+| `totals_corners` (standard corner line) | — | — | **INVALID_MARKET (422)** — only the `alternate_` form works |
+| **`alternate_totals_cards` / `totals_cards`** | — | **0 books / INVALID_MARKET** | No card market exists for SA at all |
+
+**Implication for corners/cards models** (see [[project_jun01_betting_audit]] + CLAUDE.md "Match Intelligence shows corners/cards"): a real, *sharp* (Pinnacle) corners market exists and could be wired into `odds_fetcher.py` per-event, but a 2026-06-01 viability probe showed Pinnacle's corners line open→close move is ~half systematic drift (mean +0.065 toward Under) / half match-specific (std 0.066, ratio 1.02) — too thin an exploitable residual for the existing zero-skill corners model to beat. Corners build is **parked** (plan in `.plans/corners-model-plan.md`). **Cards are dead — no market to bet against.** The corners/cards prediction files (`data/upcoming/{corners,cards}_predictions.json`) are still written and feed the dashboard as *informational display only* — they are NOT bet on.
 
 ### 11.11 Weather (11 cols)
 
