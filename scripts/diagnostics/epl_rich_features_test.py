@@ -114,8 +114,8 @@ def step_4_train_fresh_epl_2025():
 def step_5_compute_holdout_roi():
     """Score 2025-26 EPL with rich-features model and compute paper-trade ROI.
 
-    Reuses the existing subset_alpha_fresh_epl.py logic but points at the
-    rich-features model instead of fresh_2025_seed42.
+    Mirrors subset_alpha_fresh.py --league premier_league logic but points at
+    the rich-features model instead of fresh_2025_seed42.
     """
     import pandas as pd
     import numpy as np

@@ -183,20 +183,22 @@ def slice_stats(df: pd.DataFrame, name: str) -> dict:
     }
 
 
-def main() -> int:
+def main(league: str = "serie_a") -> int:
     """The actual analysis.
 
     Strategy: load existing per-fold model artifacts to avoid re-training.
     Score every match in 2022-23 → 2025-26 using the appropriate fold model.
     Then split-analyze.
+
+    ``league`` selects the data/model source ("serie_a" or "premier_league").
     """
-    log.info("Loading matches + features...")
+    log.info("Loading matches + features for league=%s...", league)
     matches = pd.read_parquet(PROJECT_ROOT / "data" / "parsed" / "matches.parquet")
     matches["match_date"] = pd.to_datetime(matches["match_date"])
-    matches = matches[matches["league"] == "serie_a"].copy()
+    matches = matches[matches["league"] == league].copy()
     matches = matches.dropna(subset=["home_score", "away_score"]).copy()
 
-    feats = pd.read_parquet(PROJECT_ROOT / "data" / "features" / "features_serie_a.parquet")
+    feats = pd.read_parquet(PROJECT_ROOT / "data" / "features" / f"features_{league}.parquet")
     feats["match_date"] = pd.to_datetime(feats["match_date"])
 
     target_seasons = ["2022-2023", "2023-2024", "2024-2025", "2025-2026"]
@@ -235,7 +237,7 @@ def main() -> int:
         "2024-2025": ("1x2__5season_seed42", "season_2024-2025.cbm"),
         "2025-2026": ("1x2__fresh_2025_seed42", "season_2025-2026.cbm"),
     }
-    base_dir = PROJECT_ROOT / "data" / "models" / "walkforward" / "serie_a"
+    base_dir = PROJECT_ROOT / "data" / "models" / "walkforward" / league
 
     all_probs = []
     for season in target_seasons:
@@ -423,7 +425,7 @@ def main() -> int:
         findings.append(evaluate_slice(name, fn(discovery), fn(validation), fn(holdout)))
 
     # Save findings
-    out_path = PROJECT_ROOT / "data" / "diagnostics" / "subset_alpha_findings.json"
+    out_path = PROJECT_ROOT / "data" / "diagnostics" / f"subset_alpha_findings_{league}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(findings, f, indent=2, default=str)
@@ -449,4 +451,16 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Walk-forward subset-alpha analysis (per league)."
+    )
+    parser.add_argument(
+        "--league",
+        default="serie_a",
+        choices=["serie_a", "premier_league"],
+        help="League to analyze (default: serie_a).",
+    )
+    cli_args = parser.parse_args()
+    sys.exit(main(league=cli_args.league))
