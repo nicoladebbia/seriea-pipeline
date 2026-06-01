@@ -1097,11 +1097,24 @@ class TestEndToEnd:
                 f"Match ID duplicate rate {dup_rate:.1%} exceeds 1%"
             )
 
-        # 2. Result variable is clean
+        # 2. Result variable is clean. "U" (unknown) is the expected label for
+        # not-yet-played fixtures (NaN scores); only H/D/A are valid for
+        # played matches. So the value set may include U, but every U row must
+        # genuinely be unplayed — a played match tagged U is real corruption.
         result_vals = set(df["result"].dropna().unique())
-        assert result_vals.issubset({"H", "D", "A"}), (
-            f"Invalid result values: {result_vals - {'H', 'D', 'A'}}"
+        assert result_vals.issubset({"H", "D", "A", "U"}), (
+            f"Invalid result values: {result_vals - {'H', 'D', 'A', 'U'}}"
         )
+        if "U" in result_vals and {"home_score", "away_score"}.issubset(df.columns):
+            played_but_unknown = df[
+                (df["result"] == "U")
+                & df["home_score"].notna()
+                & df["away_score"].notna()
+            ]
+            assert played_but_unknown.empty, (
+                f"{len(played_but_unknown)} played match(es) have result='U' "
+                "(corrupt result label, not just unplayed fixtures)"
+            )
 
         # 3. Season distribution is reasonable
         if "season" in df.columns:
