@@ -89,3 +89,15 @@ The architecture-gap agent caught 4 dead orphans the file-narrators and the clea
 ### Flagged for review (NOT auto-deleted)
 - `scripts/diagnostics/subset_alpha_fresh.py` + `subset_alpha_fresh_epl.py` — differ by exactly 6 lines (league params). **Merge** into one `--league`-parametrized file. Left for you (it's an edit, not a delete).
 - `scripts/analysis/formation_analyzer.py` — superseded by `features/formation_analysis.py`, but `tests/test_pipeline.py` smoke-imports it. Deleting breaks the test. Decide: drop the test stanza + delete, or keep both.
+
+## 6. Merge surface (dedicated pass)
+
+Probed structurally (AST symbol-overlap within each module) + by name pattern, beyond what the audit agents returned (they proposed zero merges).
+
+| Candidate | Verdict | Evidence |
+|---|---|---|
+| `scripts/diagnostics/subset_alpha_fresh.py` + `subset_alpha_fresh_epl.py` | **MERGE** | Differ by exactly 6 lines, all league params. Collapse into one file with a `--league` arg. |
+| `models/simulator/base_rates/{card_rates,corner_rates,shot_generator}.py` | **DO NOT MERGE** | 57–80% method-name overlap is a shared `fit/is_fit/predict` *interface*, not duplicated logic — bodies differ. If anything, extract a `BaseRateEstimator` ABC to make the contract explicit. A refactor, not a merge. |
+| All other live files | No merge | No structural (≥50% symbol overlap) or name-pattern near-duplicates found. The 2026-04-27 cleanup that removed the `_v2`/`_hotfix` sprawl also eliminated the duplicate surface. |
+
+**Net: exactly 1 real merge** (`subset_alpha_fresh` pair). The repo is genuinely close to duplicate-free.
