@@ -260,9 +260,10 @@ class BettingConfig:
         "1X2":        {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
         "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
-        "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +14.4% ROI (78% WR, 32 bets). Crown jewel.
-                       "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.08,             # No shrinkage needed — proven calibration
-                       "line_min_edge": {2.5: 7.0}},                                    # O/U 2.5: re-enabled with higher threshold
+        "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +10.1% ROI (74% WR, 46 bets), realized CLV +2.5%.
+                       "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.08,             # 2026-06-01: PER-LINE shrinkage. 1.5 model claims ~8% edge but
+                       "line_shrinkage": {1.5: 0.6},                                     # CLV says ~2.5% (3x over-claim) → shrink 1.5 to size Kelly on the
+                       "line_min_edge": {2.5: 7.0}},                                    # deflated edge. 2.5 UNSHRUNK (best CLV +4.8%, already gated at 7.0).
         "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
@@ -1113,8 +1114,19 @@ class UnifiedBettingEngine:
 
         # Edge shrinkage: blend model toward market to combat overconfidence.
         # Per-market shrinkage factor (1.0 = trust model fully, 0.5 = blend 50/50).
-        # O/U_Over has proven calibration (14% ROI), other markets were overconfident.
+        # Other markets were overconfident (9.9% claimed → 1.8% actual).
+        # Per-line override (line_shrinkage) wins over the market-level value:
+        # e.g. O/U 1.5 over-claims edge ~3x (8% claimed vs +2.5% realized CLV) so
+        # it is shrunk, while O/U 2.5 (best CLV) stays unshrunk. The line is parsed
+        # from the market string ("O/U 1.5" → 1.5).
         shrinkage = rules.get("edge_shrinkage", 1.0)
+        line_shrinkage = rules.get("line_shrinkage")
+        if line_shrinkage:
+            try:
+                _line = float(str(market).split()[-1])
+                shrinkage = line_shrinkage.get(_line, shrinkage)
+            except (ValueError, IndexError):
+                pass
         effective_model_p = shrinkage * model_p + (1 - shrinkage) * sharp_p
 
         raw_edge = effective_model_p - sharp_p
