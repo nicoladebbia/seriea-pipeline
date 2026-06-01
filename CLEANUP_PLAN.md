@@ -101,3 +101,16 @@ Probed structurally (AST symbol-overlap within each module) + by name pattern, b
 | All other live files | No merge | No structural (≥50% symbol overlap) or name-pattern near-duplicates found. The 2026-04-27 cleanup that removed the `_v2`/`_hotfix` sprawl also eliminated the duplicate surface. |
 
 **Net: exactly 1 real merge** (`subset_alpha_fresh` pair). The repo is genuinely close to duplicate-free.
+
+## 7. Resolution log (2026-06-01)
+
+All actionable items closed:
+- **§1 + §5 deletions (16 files):** done.
+- **§6 merge (`subset_alpha_fresh`):** done — `--league` flag, `_epl` deleted, output-overwrite bug fixed.
+- **§6 simulator base_rates:** left untouched (interface, not duplicate) — correct.
+- **§4 D/F live files:** none existed (all F-grades were on the now-deleted dead files).
+- **`formation_analyzer.py`:** DELETED. Superseded by `features/formation_analysis.py` + `scripts/prediction/formation_predictor.py`. Removed its line from `tests/test_pipeline.py::test_imports`.
+
+**Bonus finding (smoke-test rot):** while removing the formation line, found `tests/test_pipeline.py::test_imports` was silently "failing" 4 imports for modules that no longer exist (`scripts.realtime_prediction_engine`, `scripts.betting_engine`, `scripts.advanced_betting_engine`, `scripts.live_betting` — all deleted in past cleanups, test never updated). The test swallows ImportError into `add_fail`, so these never surfaced. Removed all 4 dead entries. `test_imports` now passes green (13/13 modules import).
+
+**Open for owner (judgment, not cleanup):** none. CLEANUP_PLAN fully actioned.
