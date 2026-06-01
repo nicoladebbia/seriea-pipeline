@@ -19,6 +19,15 @@
 - **`tests/`** — Test suite
 - **`data/`** — Parquet files, trained models, cache (in .claudeignore — 5GB+)
 
+## Code Navigation — ARCHITECTURE_MAP.md — grep before code-reading
+
+**`ARCHITECTURE_MAP.md` at project root is the per-file navigability map for all CODE** (the data equivalent is DATA_CATALOG.md). Before you Grep/Read your way through the tree to find where something lives, **grep ARCHITECTURE_MAP.md first** — it has one entry per file with: what it does, what it imports / is imported by (which function does the talking), liveness (🟢 live / 🔧 one-shot / 🧪 test), a quality grade, and "to change X, the file is Y".
+
+- **When to consult it:** "where is X handled?", "what calls Y?", "is this file dead?", "what's the entry point for Z?", any orientation or refactor question.
+- **Companion `CLEANUP_PLAN.md`** holds the kill-list, keep-list (valid one-shots — do NOT delete), merge surface, and the rule that **zero importers ≠ dead** here (scripts/ are launchd/cron/subprocess-invoked).
+- **Entry points** are the 15 launchd plists + `web/app.py` + `cli.py` — listed in ARCHITECTURE_MAP.md's "Entry points" table. That table IS the command/subscription surface.
+- The import/liveness facts were derived mechanically (AST + plist scan), not narrated — trust them. If the map contradicts memory, trust the map. If a file moved/was deleted after the map was generated (2026-06-01), regenerate the relevant section.
+
 ## Commands
 ```bash
 python3 cli.py                # Main CLI
