@@ -1961,19 +1961,22 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         log.warning(f"BTTS/Corners model error: {e}")
 
     # =========================================================================
-    # Step 22b: ML Market Predictions (CatBoost — all markets)
+    # Step 22b: ML Market Predictions (CatBoost) was REMOVED 2026-05-31.
+    # ml_market_predictions.generate_ml_predictions() loaded a nonexistent
+    # `prod_1x2.cbm`, silently fell back to a 1X2 blend that was 55% raw
+    # Pinnacle market odds + 45% constant-xG (1.4/1.15) Poisson — contaminating
+    # its output with the very odds this project excludes as inputs.
+    #   - ml_predictions.json: its sole writer was this step, and NOTHING reads
+    #     it downstream (verified) — now an unwritten, unread file. Safe.
+    #   - cards/corners/btts_predictions.json: this step only MERGED ML rows
+    #     into them ("%d ML + %d preserved"). Their real writers survive — Step
+    #     22a save_predictions (btts_corners_model.py) + cards_model.py — so
+    #     readers (web/advisor, generate_unified_report, …) still get those
+    #     files, minus the odds-contaminated ML overlay. That removal is the goal.
+    # scripts/models/ml_market_predictions.py + comprehensive_markets.py are kept
+    # on disk for reference; re-wire only after a real prod_1x2.cbm exists and
+    # passes a held-out backtest (skill_score > 0.02). See CLAUDE.md.
     # =========================================================================
-    step(22, total_steps, "Running ML Market Predictions (CatBoost)")
-    try:
-        from scripts.models.ml_market_predictions import generate_ml_predictions, save_ml_predictions
-        ml_preds = generate_ml_predictions()
-        if ml_preds:
-            save_ml_predictions(ml_preds)
-            print(f"  Generated CatBoost ML predictions for {len(ml_preds)} matches")
-            print(f"  Markets: 1X2, O/U, BTTS, Cards, Corners, HT, DC, Exact Score")
-    except Exception as e:
-        print(f"  ML predictions warning: {e}")
-        log.warning(f"ML predictions error: {e}")
 
     # =========================================================================
     # Step 22b-2 (Walkforward overlay for SA corners + cards) was REMOVED

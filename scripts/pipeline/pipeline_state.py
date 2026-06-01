@@ -10,7 +10,7 @@ Depends on: config.settings (DATA_DIR)
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -119,7 +119,13 @@ def needs_odds_refresh(state: Dict, max_age_hours: float = 6.0) -> bool:
         return True
     try:
         last_dt = datetime.fromisoformat(last_fetch)
-        age = datetime.now() - last_dt
+        # Normalize to UTC-aware: last_odds_fetch is written tz-aware by
+        # odds_fetcher.py but tz-naive by update_timestamp(); compare both
+        # against a UTC-aware now so the subtraction never raises (the bug
+        # that made this gate always return True → wake-storm credit burn).
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - last_dt
         return age > timedelta(hours=max_age_hours)
     except (ValueError, TypeError):
         return True
@@ -175,19 +181,23 @@ def update_timestamp(state: Dict, field: str) -> Dict:
     Returns:
         Updated state
     """
-    state[field] = datetime.now().isoformat()
+    # UTC-aware to match odds_fetcher.py's writer — all timestamps in this repo
+    # are UTC-aware ISO strings (CLAUDE.md prevention rule).
+    state[field] = datetime.now(timezone.utc).isoformat()
     return state
 
 
 def get_state_summary(state: Dict) -> Dict:
     """Get a human-readable summary of pipeline state."""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     def _age_str(iso_str):
         if not iso_str:
             return "never"
         try:
             dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             delta = now - dt
             if delta.total_seconds() < 60:
                 return "just now"

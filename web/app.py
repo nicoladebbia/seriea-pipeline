@@ -8060,11 +8060,22 @@ def api_match_detail(date, home_team, away_team):
     # --- Score from Sofascore team stats if not from features ---
     if ss_id and "home_score" not in result["match"]:
         try:
-            mts = pd.read_parquet(
-                DATA_DIR / "external" / "sofascore" / "match_team_stats.parquet"
-            )
-            row = mts[(mts["match_id"] == ss_id) & (mts["is_home"] == True)]
-            if not row.empty:
+            # Try SA file first, then EPL — match_id is unique across leagues,
+            # so only one parquet has rows for any given ss_id. (Mirrors the
+            # dual-league idiom in _load_match_team_stats; EPL match-detail
+            # pages showed no score before this.)
+            row = None
+            for _fname in ("match_team_stats.parquet",
+                           "match_team_stats_premier_league.parquet"):
+                _p = DATA_DIR / "external" / "sofascore" / _fname
+                if not _p.exists():
+                    continue
+                mts = _read_parquet_cached(_p)
+                cand = mts[(mts["match_id"] == ss_id) & (mts["is_home"] == True)]
+                if not cand.empty:
+                    row = cand
+                    break
+            if row is not None and not row.empty:
                 r = row.iloc[0]
                 result["match"]["home_score"] = int(r["home_score"]) if pd.notna(r.get("home_score")) else None
                 result["match"]["away_score"] = int(r["away_score"]) if pd.notna(r.get("away_score")) else None
