@@ -14,6 +14,12 @@
              border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
   .pj-note b { color: var(--text-secondary); }
 
+  .pj-day { margin-bottom: 22px; }
+  .pj-day__header { font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: capitalize;
+                    padding: 6px 2px 10px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 12px;
+                    display: flex; align-items: baseline; gap: 10px; }
+  .pj-day__count { font-size: 10px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+
   .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
               margin-bottom: 16px; overflow: hidden; }
   .pj-match__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
@@ -168,10 +174,24 @@ fetch('/api/projections')
       _pjC.innerHTML = '<div class="pj-empty">No upcoming matches with projections.<br><span style="font-size:11px;">Projections appear when predictions.json has matches (off-season: empty until fixtures resume).</span></div>';
       return;
     }
-    // render each match independently so one bad market can't blank the page
-    const html = proj.map((m, i) => {
-      try { return renderMatch(m); }
-      catch (err) { return '<div class="pj-match" style="padding:12px;color:#f87171;">⚠ ' + (m.home_team||'?') + ' vs ' + (m.away_team||'?') + ' failed to render: ' + err.message + '</div>'; }
+    // group matches by date (like the homepage), then render each day section
+    const fmtDay = d => {
+      try { return new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); }
+      catch { return d || 'Undated'; }
+    };
+    const byDate = {};
+    proj.forEach(m => { (byDate[m.date || ''] = byDate[m.date || ''] || []).push(m); });
+    const dates = Object.keys(byDate).sort();
+
+    const html = dates.map(date => {
+      const matches = byDate[date].map(m => {
+        try { return renderMatch(m); }
+        catch (err) { return '<div class="pj-match" style="padding:12px;color:#f87171;">⚠ ' + (m.home_team||'?') + ' vs ' + (m.away_team||'?') + ' failed: ' + err.message + '</div>'; }
+      }).join('');
+      return `<div class="pj-day">
+        <div class="pj-day__header">${fmtDay(date)} <span class="pj-day__count">${byDate[date].length} ${byDate[date].length === 1 ? 'match' : 'matches'}</span></div>
+        ${matches}
+      </div>`;
     }).join('');
     _pjC.innerHTML = html;
     const first = _pjC.querySelector('.pj-body');
