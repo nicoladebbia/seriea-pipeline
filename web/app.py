@@ -1172,6 +1172,7 @@ def _build_score_range_projection(pred: dict) -> dict | None:
         "somma_goal": em.compute_somma_goal(hxg, axg),
         "team_odd_even": em.compute_team_odd_even(hxg, axg),
         "ribaltone": em.compute_ribaltone(hxg, axg),
+        "combos": em.compute_combos(hxg, axg),
     }
 
 

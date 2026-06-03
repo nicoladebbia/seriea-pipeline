@@ -152,6 +152,15 @@ function renderMatch(m) {
     card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' })),
     card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' })),
     card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' })),
+    card('Combo: 1X2 + O/U 2.5', fromDict(m.combos, {
+      '1_over': '1 & Over', '1_under': '1 & Under', 'X_over': 'X & Over', 'X_under': 'X & Under',
+      '2_over': '2 & Over', '2_under': '2 & Under' }, true), false),
+    card('Combo: result + Goal', fromDict(m.combos, {
+      '1_gg': '1 & GG', '1_ng': '1 & NG', '2_gg': '2 & GG', '2_ng': '2 & NG',
+      '1X_gg': '1X & GG', 'X2_gg': 'X2 & GG' }, true), false),
+    card('Combo Chance (either)', fromDict(m.combos, {
+      '1_or_gg': '1 or GG', '1_or_over': '1 or Over', '2_or_gg': '2 or GG',
+      'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false),
   ].filter(Boolean).join('');
 
   // comparative team-stat markets (who makes more corners/fouls/cards)

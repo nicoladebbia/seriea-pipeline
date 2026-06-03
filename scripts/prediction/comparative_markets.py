@@ -122,6 +122,10 @@ def compute_expected_counts(home_team: str, away_team: str, matches_df,
         against = [x for x in against if pd.notna(x)]
         return (np.mean(fors) if fors else None, np.mean(against) if against else None)
 
+    # empirical first-half share of each stat (corners/fouls/cards mostly even
+    # across halves; ~0.46 reflects slightly fewer events in the opening period)
+    HALF_SHARE = 0.46
+
     out = {}
     for stat in stats:
         hcol, acol = f"home_{stat}", f"away_{stat}"
@@ -137,6 +141,9 @@ def compute_expected_counts(home_team: str, away_team: str, matches_df,
         exp_h = L * (hf / L) * (aa / L)
         exp_a = L * (af / L) * (ha / L)
         out[stat] = (float(exp_h), float(exp_a))
+        # first-half variant (only for stats where it's a real Sisal market — corners)
+        if stat == "corners":
+            out[f"{stat}_1h"] = (float(exp_h * HALF_SHARE), float(exp_a * HALF_SHARE))
     return out
 
 

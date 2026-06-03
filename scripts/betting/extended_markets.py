@@ -1017,5 +1017,55 @@ def compute_ribaltone(home_xg: float, away_xg: float) -> dict:
     }
 
 
+def compute_combos(home_xg: float, away_xg: float) -> dict:
+    """Combo markets — JOINT probabilities from the score matrix.
+
+    Combos are NOT products of marginals (1X2 and O/U are correlated, e.g.
+    P(home AND over) != P(home)*P(over)). Every joint is summed over the score
+    grid so correlation is captured exactly. Covers the common Sisal combos:
+    1X2+U/O 2.5, DC+GG, 1X2+GG, GG+U/O, DC+U/O, and the "Combo Chance" OR markets.
+    """
+    mat = score_matrix(home_xg, away_xg, max_goals=8)
+
+    def jp(cond):
+        return round(sum(p for (h, a), p in mat.items() if cond(h, a)), 4)
+
+    res = (lambda h, a: "H" if h > a else ("A" if a > h else "D"))
+    over = lambda h, a, line=2.5: (h + a) > line
+    gg = lambda h, a: h > 0 and a > 0
+
+    combos = {
+        # 1X2 + Over/Under 2.5
+        "1_over": jp(lambda h, a: res(h, a) == "H" and over(h, a)),
+        "1_under": jp(lambda h, a: res(h, a) == "H" and not over(h, a)),
+        "X_over": jp(lambda h, a: res(h, a) == "D" and over(h, a)),
+        "X_under": jp(lambda h, a: res(h, a) == "D" and not over(h, a)),
+        "2_over": jp(lambda h, a: res(h, a) == "A" and over(h, a)),
+        "2_under": jp(lambda h, a: res(h, a) == "A" and not over(h, a)),
+        # 1X2 + GG/NG
+        "1_gg": jp(lambda h, a: res(h, a) == "H" and gg(h, a)),
+        "1_ng": jp(lambda h, a: res(h, a) == "H" and not gg(h, a)),
+        "2_gg": jp(lambda h, a: res(h, a) == "A" and gg(h, a)),
+        "2_ng": jp(lambda h, a: res(h, a) == "A" and not gg(h, a)),
+        # Double chance + GG/NG
+        "1X_gg": jp(lambda h, a: res(h, a) in ("H", "D") and gg(h, a)),
+        "X2_gg": jp(lambda h, a: res(h, a) in ("D", "A") and gg(h, a)),
+        # GG + Over/Under
+        "gg_over": jp(lambda h, a: gg(h, a) and over(h, a)),
+        "gg_under": jp(lambda h, a: gg(h, a) and not over(h, a)),
+        # Double chance + Over
+        "1X_over": jp(lambda h, a: res(h, a) in ("H", "D") and over(h, a)),
+        "X2_over": jp(lambda h, a: res(h, a) in ("D", "A") and over(h, a)),
+        # "Combo Chance" OR markets (either condition true)
+        "1_or_gg": jp(lambda h, a: res(h, a) == "H" or gg(h, a)),
+        "1_or_over": jp(lambda h, a: res(h, a) == "H" or over(h, a)),
+        "2_or_gg": jp(lambda h, a: res(h, a) == "A" or gg(h, a)),
+        "X_or_gg": jp(lambda h, a: res(h, a) == "D" or gg(h, a)),
+        "gg_or_over": jp(lambda h, a: gg(h, a) or over(h, a)),
+    }
+    return {k: {"prob": v, "fair_odds": round(1 / v, 2) if v > 0.001 else 99}
+            for k, v in combos.items()}
+
+
 if __name__ == "__main__":
     generate_extended_markets()
