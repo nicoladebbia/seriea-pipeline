@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Projections — SerieAI{% endblock %}
+{% block page_title %}Score-Range Projections{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Model probabilities from the calibrated xG model · insight only, not bets
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  .pj-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent);
+             border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
+  .pj-note b { color: var(--text-secondary); }
+
+  .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+              margin-bottom: 16px; overflow: hidden; }
+  .pj-match__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
+                    background: var(--bg-tertiary, rgba(255,255,255,0.02)); border-bottom: 1px solid var(--border-subtle);
+                    cursor: pointer; user-select: none; }
+  .pj-match__teams { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+  .pj-match__meta { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); display:flex; gap:14px; align-items:center; }
+  .pj-xg { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 700; }
+  .pj-chevron { transition: transform 0.3s; color: var(--text-tertiary); }
+  .pj-chevron.open { transform: rotate(180deg); }
+
+  .pj-body { max-height: 0; overflow: hidden; transition: max-height 0.45s ease; }
+  .pj-body.open { max-height: 6000px; }
+  .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 14px 16px; }
+
+  .pj-card { background: var(--bg-primary, rgba(0,0,0,0.15)); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; }
+  .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary);
+                    margin-bottom: 8px; font-weight: 700; }
+  .pj-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 2px 0; }
+  .pj-row__label { color: var(--text-secondary); }
+  .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
+  .pj-row__odds { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; min-width: 38px; text-align: right; }
+  /* probability heat: stronger = brighter */
+  .pj-bar { height: 3px; border-radius: 2px; background: var(--accent); opacity: 0.35; margin-top: 1px; }
+
+  .pj-empty { padding: 40px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+  .pj-top { background: rgba(74,222,128,0.08); border-radius: 3px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pj-note">
+  <b>What this is:</b> every goal-derived market for each upcoming match — multigol, correct score, half-time/full-time,
+  BTTS, double chance, team totals, winning margin and more — computed from the same calibrated xG model that drives the
+  1X2 predictions. These are <b>honest model probabilities and fair odds</b>, shown as insight. They are <b>not bets</b>:
+  betting on these markets is gated on the Betfair odds layer and per-market validation.
+</div>
+
+<div id="pj-container"><div class="pj-empty">Loading projections…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// IIFE-scoped: app.js defines globals like pct()/oddsFmt() — wrapping isolates
+// our locals so a const redeclaration can't throw and kill the whole script.
+(function () {
+const pct = p => (p * 100).toFixed(0) + '%';
+const fmtOdds = o => (o && o < 99) ? o.toFixed(2) : '—';
+
+// Render a list of {label, prob, fair_odds} rows, sorted desc, marking the top
+function rows(items, topHighlight = true) {
+  const sorted = [...items].sort((a, b) => b.prob - a.prob);
+  return sorted.map((r, i) => `
+    <div class="pj-row ${topHighlight && i === 0 ? 'pj-top' : ''}" style="flex-wrap:wrap;">
+      <span class="pj-row__label">${r.label}</span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <span class="pj-row__prob">${pct(r.prob)}</span>
+        <span class="pj-row__odds">${fmtOdds(r.fair_odds)}</span>
+      </span>
+      <div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div>
+    </div>`).join('');
+}
+
+function card(title, items, topHighlight = true) {
+  if (!items || !items.length) return '';
+  return `<div class="pj-card"><div class="pj-card__title">${title}</div>${rows(items, topHighlight)}</div>`;
+}
+
+// adapters: turn each market's shape into [{label, prob, fair_odds}]
+function fromList(list, labelKey) {
+  return (list || []).map(x => ({ label: x[labelKey], prob: x.prob, fair_odds: x.fair_odds }));
+}
+function fromDict(obj, labelMap) {
+  if (!obj) return [];
+  return Object.entries(obj)
+    .filter(([k, v]) => v && typeof v === 'object' && 'prob' in v)
+    .map(([k, v]) => ({ label: (labelMap && labelMap[k]) || k, prob: v.prob, fair_odds: v.fair_odds }));
+}
+
+function renderMatch(m) {
+  const H = m.home_team, A = m.away_team;
+  const tt = m.team_totals || {};
+  // team-totals: spell out side + line, e.g. "Milan over 1.5"
+  const totLabel = (side, k) => `${side} ${k.replace('_', ' ')}`;
+  const homeTot = fromDict(tt.home, null).map(r => ({ ...r, label: totLabel(H, r.label) }));
+  const awayTot = fromDict(tt.away, null).map(r => ({ ...r, label: totLabel(A, r.label) }));
+
+  // HT/FT combos → readable (H/H = "Home / Home")
+  const sideWord = { H: 'Home', D: 'Draw', A: 'Away' };
+  const htft = fromList(m.htft, 'combo').map(r => ({
+    ...r, label: r.label.split('/').map(s => sideWord[s] || s).join(' / ')
+  }));
+
+  // Winning margin: home_by_1 → "Home by 1", away_by_3_plus → "Away by 3+"
+  const marginLabel = {
+    draw: 'Draw',
+    home_by_1: `${H} by 1`, home_by_2: `${H} by 2`, home_by_3_plus: `${H} by 3+`,
+    away_by_1: `${A} by 1`, away_by_2: `${A} by 2`, away_by_3_plus: `${A} by 3+`,
+  };
+
+  const cards = [
+    card('Most likely scores', fromList(m.exact_score, 'score')),
+    card('Multigol · total goals (independent ranges)', fromList(m.multi_goal, 'range'), false),
+    card('Half-time / Full-time', htft),
+    card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' })),
+    card('Double chance', fromDict(m.double_chance, { '1X': `${H} or Draw`, 'X2': 'Draw or ' + A, '12': `${H} or ${A}` })),
+    card('Winning margin', fromDict(m.winning_margin, marginLabel)),
+    card('Team totals', [...homeTot, ...awayTot], false),
+    card('Goal in both halves', fromDict(m.goal_both_halves, {
+      goal_both_halves_yes: 'Yes', goal_both_halves_no: 'No',
+      home_scores_both_halves: `${H} both halves`, away_scores_both_halves: `${A} both halves`,
+    })),
+    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' })),
+    card('Win to nil', fromDict(m.win_to_nil, {
+      home_win_to_nil: `${H} win to nil`, away_win_to_nil: `${A} win to nil`,
+      home_clean_sheet: `${H} clean sheet`, away_clean_sheet: `${A} clean sheet`,
+    })),
+    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A })),
+    card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A })),
+    card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' })),
+  ].filter(Boolean).join('');
+
+  return `
+  <div class="pj-match">
+    <div class="pj-match__head" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
+      <div>
+        <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team}</div>
+        <div class="pj-match__meta">
+          <span>${m.date || ''} ${m.time || ''}</span>
+          <span class="pj-xg">xG ${m.home_xg} – ${m.away_xg}</span>
+          <span>1X2 ${pct(m.probabilities.home)}/${pct(m.probabilities.draw)}/${pct(m.probabilities.away)}</span>
+        </div>
+      </div>
+      <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="pj-body"><div class="pj-grid">${cards}</div></div>
+  </div>`;
+}
+
+const _pjC = document.getElementById('pj-container');
+_pjC.innerHTML = '<div class="pj-empty">Fetching /api/projections …</div>';
+
+fetch('/api/projections')
+  .then(r => {
+    _pjC.innerHTML = '<div class="pj-empty">Got HTTP ' + r.status + ', parsing…</div>';
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  })
+  .then(data => {
+    const proj = data.projections || [];
+    if (!proj.length) {
+      _pjC.innerHTML = '<div class="pj-empty">No upcoming matches with projections.<br><span style="font-size:11px;">Projections appear when predictions.json has matches (off-season: empty until fixtures resume).</span></div>';
+      return;
+    }
+    // render each match independently so one bad market can't blank the page
+    const html = proj.map((m, i) => {
+      try { return renderMatch(m); }
+      catch (err) { return '<div class="pj-match" style="padding:12px;color:#f87171;">⚠ ' + (m.home_team||'?') + ' vs ' + (m.away_team||'?') + ' failed to render: ' + err.message + '</div>'; }
+    }).join('');
+    _pjC.innerHTML = html;
+    const first = _pjC.querySelector('.pj-body');
+    if (first) { first.classList.add('open'); first.previousElementSibling.querySelector('.pj-chevron').classList.add('open'); }
+  })
+  .catch(e => {
+    _pjC.innerHTML = '<div class="pj-empty" style="color:#f87171;">Failed to load: ' + e.message + '<br><span style="font-size:11px;">(check the browser console — Cmd+Option+J)</span></div>';
+  });
+})();
+</script>
+{% endblock %}

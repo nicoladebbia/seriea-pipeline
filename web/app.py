@@ -1069,6 +1069,118 @@ def matches_page():
     return render_template("matches.html", active_page="matches")
 
 
+@app.route("/projections")
+@app.route("/proj")
+@app.route("/score-projections")
+def projections_page():
+    # no-cache so the browser never serves a stale version of this evolving page
+    resp = app.make_response(render_template("projections.html", active_page="projections"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+def _build_score_range_projection(pred: dict) -> dict | None:
+    """Derive the full score-range market family for one match from its xG.
+
+    Everything here rides the existing calibrated goal/xG Poisson model — the
+    only inputs are home_xg / away_xg (already in predictions.json) plus the
+    1X2 probabilities. No new model; we read a model that works. All math lives
+    in scripts.betting.extended_markets (tested), this just wires it per-match.
+    """
+    from scripts.betting import extended_markets as em
+
+    hxg = pred.get("home_xg")
+    axg = pred.get("away_xg")
+    if hxg is None or axg is None:
+        return None
+    try:
+        hxg = float(hxg)
+        axg = float(axg)
+    except (TypeError, ValueError):
+        return None
+    if hxg <= 0 or axg <= 0:
+        return None
+
+    probs = pred.get("probabilities") or {}
+    # normalise 1X2 prob keys (predictions.json uses home/draw/away)
+    p1x2 = {
+        "home": probs.get("home", probs.get("H", 0.0)),
+        "draw": probs.get("draw", probs.get("D", 0.0)),
+        "away": probs.get("away", probs.get("A", 0.0)),
+    }
+
+    # BTTS (Goal/No Goal) — Poisson: P(both score) = (1-P(home=0))*(1-P(away=0)).
+    # Independence is the standard approximation; the rho-correlated matrix is
+    # used for score-grid markets above where it matters more.
+    import math as _math
+    btts_yes = (1 - _math.exp(-hxg)) * (1 - _math.exp(-axg))
+    btts_yes = max(0.0, min(1.0, btts_yes))
+    btts = {
+        "yes": {"prob": round(btts_yes, 4),
+                "fair_odds": round(1 / btts_yes, 2) if btts_yes > 0.001 else 99},
+        "no": {"prob": round(1 - btts_yes, 4),
+               "fair_odds": round(1 / (1 - btts_yes), 2) if (1 - btts_yes) > 0.001 else 99},
+    }
+
+    return {
+        "match": pred.get("match"),
+        "home_team": pred.get("home_team"),
+        "away_team": pred.get("away_team"),
+        "date": pred.get("date", ""),
+        "time": pred.get("time", ""),
+        "home_xg": round(hxg, 2),
+        "away_xg": round(axg, 2),
+        "predicted_outcome": pred.get("predicted_outcome"),
+        "probabilities": p1x2,
+        # The full tipster market menu, all Poisson-derived:
+        "btts": btts,
+        "double_chance": em.compute_double_chance(p1x2),
+        "multi_goal": em.compute_multi_goal(hxg, axg),
+        "exact_score": em.compute_exact_score_top10(hxg, axg),
+        "htft": em.compute_htft(hxg, axg),
+        "first_half": em.compute_first_half(hxg, axg),
+        "second_half": em.compute_second_half_result(hxg, axg),
+        "team_totals": em.compute_team_totals(hxg, axg),
+        "winning_margin": em.compute_winning_margin(hxg, axg),
+        "odd_even": em.compute_odd_even(hxg, axg),
+        "goal_both_halves": em.compute_goal_in_both_halves(hxg, axg),
+        "team_to_score_first": em.compute_team_to_score_first(hxg, axg),
+        "win_to_nil": em.compute_win_to_nil(hxg, axg, p1x2),
+        "european_handicap": em.compute_european_handicap(hxg, axg),
+    }
+
+
+@app.route("/api/projections")
+def api_projections():
+    """Score-range projection family for every upcoming match.
+
+    Display-only insight (NOT betting) — derived from the calibrated goal model.
+    Betting on these markets is gated on the Betfair odds layer + per-market
+    validation (see .plans/prop-projection-product-plan.md). These are honest
+    model probabilities, not edges.
+    """
+    predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
+    if isinstance(predictions_raw, dict):
+        preds = predictions_raw.get("predictions", [])
+        generated_at = predictions_raw.get("generated_at", "")
+    else:
+        preds = predictions_raw or []
+        generated_at = ""
+
+    projections = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is not None:
+            projections.append(proj)
+
+    return jsonify({
+        "generated_at": generated_at,
+        "count": len(projections),
+        "projections": projections,
+    })
+
+
 @app.route("/api/data-freshness")
 def api_data_freshness():
     """Sofascore refresh freshness — used by the global staleness banner.
