@@ -1169,6 +1169,9 @@ def _build_score_range_projection(pred: dict) -> dict | None:
         "team_to_score_first": em.compute_team_to_score_first(hxg, axg),
         "win_to_nil": em.compute_win_to_nil(hxg, axg, p1x2),
         "european_handicap": em.compute_european_handicap(hxg, axg),
+        "somma_goal": em.compute_somma_goal(hxg, axg),
+        "team_odd_even": em.compute_team_odd_even(hxg, axg),
+        "ribaltone": em.compute_ribaltone(hxg, axg),
     }
 
 

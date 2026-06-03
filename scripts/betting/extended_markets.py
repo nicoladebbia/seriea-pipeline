@@ -959,5 +959,63 @@ def _compute_booking_points_ranges(expected_cards: float) -> dict:
     return ranges
 
 
+def compute_somma_goal(home_xg: float, away_xg: float) -> list:
+    """Somma Goal Finale — probability of each exact TOTAL goal count (0,1,2,3,4,5+)."""
+    total = home_xg + away_xg
+    out = []
+    cum = 0.0
+    for k in range(5):
+        p = poisson_pmf(k, total)
+        cum += p
+        out.append({"total": str(k), "prob": round(p, 4),
+                    "fair_odds": round(1 / p, 2) if p > 0.001 else 99})
+    p5 = max(0.0, 1 - cum)
+    out.append({"total": "5+", "prob": round(p5, 4),
+                "fair_odds": round(1 / p5, 2) if p5 > 0.001 else 99})
+    return out
+
+
+def compute_team_odd_even(home_xg: float, away_xg: float) -> dict:
+    """Pari/Dispari per team — P(home goals odd) and P(away goals odd)."""
+    def odd_prob(xg, max_goals=12):
+        return sum(poisson_pmf(k, xg) for k in range(1, max_goals, 2))
+    result = {}
+    for side, xg in (("home", home_xg), ("away", away_xg)):
+        po = min(1.0, odd_prob(xg))
+        result[side] = {
+            "odd": {"prob": round(po, 4), "fair_odds": round(1 / po, 2) if po > 0.001 else 99},
+            "even": {"prob": round(1 - po, 4), "fair_odds": round(1 / (1 - po), 2) if (1 - po) > 0.001 else 99},
+        }
+    return result
+
+
+def compute_ribaltone(home_xg: float, away_xg: float) -> dict:
+    """Ribaltone (comeback) — P(a team trails at HT but does NOT lose at FT).
+
+    Uses the same 0.43 first-half goal share as the HT/FT model. Approximate:
+    sums over (HT score, 2nd-half score) where a team behind at HT ends level/ahead.
+    """
+    fh_h, fh_a = home_xg * 0.43, away_xg * 0.43
+    sh_h, sh_a = home_xg * 0.57, away_xg * 0.57
+    fh = score_matrix(fh_h, fh_a, max_goals=5)
+    sh = score_matrix(sh_h, sh_a, max_goals=5)
+    p_comeback = 0.0
+    for (h1, a1), p1 in fh.items():
+        for (h2, a2), p2 in sh.items():
+            ht_lead = h1 - a1
+            ft_h, ft_a = h1 + h2, a1 + a2
+            ft_lead = ft_h - ft_a
+            # a team was behind at HT (ht_lead != 0) and the trailing team ends >= level
+            if ht_lead < 0 and ft_h >= ft_a:        # home behind at HT, level/ahead at FT
+                p_comeback += p1 * p2
+            elif ht_lead > 0 and ft_a >= ft_h:      # away behind at HT, level/ahead at FT
+                p_comeback += p1 * p2
+    p_comeback = min(1.0, p_comeback)
+    return {
+        "yes": {"prob": round(p_comeback, 4), "fair_odds": round(1 / p_comeback, 2) if p_comeback > 0.001 else 99},
+        "no": {"prob": round(1 - p_comeback, 4), "fair_odds": round(1 / (1 - p_comeback), 2) if (1 - p_comeback) > 0.001 else 99},
+    }
+
+
 if __name__ == "__main__":
     generate_extended_markets()

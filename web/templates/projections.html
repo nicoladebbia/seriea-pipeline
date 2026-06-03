@@ -148,6 +148,10 @@ function renderMatch(m) {
     card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A })),
     card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A })),
     card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' })),
+    card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false),
+    card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' })),
+    card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' })),
+    card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' })),
   ].filter(Boolean).join('');
 
   // comparative team-stat markets (who makes more corners/fouls/cards)
