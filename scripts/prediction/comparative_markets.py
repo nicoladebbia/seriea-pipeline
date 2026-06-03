@@ -94,6 +94,64 @@ def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
     }
 
 
+def ref_stat_avg(referee: str, matches_df, stat: str, min_games: int = 15):
+    """Referee's historical average TOTAL of a stat per match (None if too few).
+
+    Works for any stat with home_/away_ columns. For fouls/cards the referee is
+    a strong predictor of the total (permutation-validated 2026-06-03).
+    """
+    if not referee or "referee" not in matches_df.columns:
+        return None
+    hc, ac = f"home_{stat}", f"away_{stat}"
+    if hc not in matches_df.columns or ac not in matches_df.columns:
+        return None
+    g = matches_df[matches_df["referee"] == referee].dropna(subset=[hc, ac])
+    if len(g) < min_games:
+        return None
+    return float((g[hc] + g[ac]).mean())
+
+
+def team_stat_rate(team: str, matches_df, stat: str, window: int = 10):
+    """Team's recent average of a stat (own, last N games). None if too few."""
+    import pandas as pd
+    df = matches_df.sort_values("match_date")
+    hc, ac = f"home_{stat}", f"away_{stat}"
+    if hc not in df.columns or ac not in df.columns:
+        return None
+    g = df[(df["home_team"] == team) | (df["away_team"] == team)].tail(window)
+    if len(g) < 3:
+        return None
+    vals = [r[hc] if r["home_team"] == team else r[ac] for _, r in g.iterrows()]
+    vals = [v for v in vals if pd.notna(v)]
+    return float(sum(vals) / len(vals)) if vals else None
+
+
+def total_fouls_over_under(ref_avg_fouls, home_foul_rate, away_foul_rate,
+                           lines=(25.5, 27.5)) -> dict | None:
+    """Total-fouls Over/Under — referee-aware, second validated signal market.
+
+    Same pattern as cards: referee sets the foul level (permutation-validated:
+    real refs beat shuffled), teams modulate.
+      lambda = 0.5*ref_avg_fouls + 0.5*(home_rate + away_rate)
+    Held-out (2026-06-03): Over 27.5 skill +0.035 ECE 0.025 (calibrated);
+    Over 25.5 skill +0.031 ECE 0.039. Lines below 25.5 are marginal — omitted.
+    NOTE: ref_avg_fouls is already TOTAL scale (~28), not per-team.
+    """
+    from scipy.stats import poisson
+    if None in (ref_avg_fouls, home_foul_rate, away_foul_rate):
+        return None
+    lam = max(1.0, 0.5 * ref_avg_fouls + 0.5 * (home_foul_rate + away_foul_rate))
+    out = {"expected_total": round(lam, 1), "confidence": "signal",
+           "ref_avg": round(ref_avg_fouls, 1), "lines": {}}
+    for line in lines:
+        over = 1 - poisson.cdf(int(line), lam)
+        out["lines"][str(line)] = {
+            "over": round(over, 4), "under": round(1 - over, 4),
+            "over_fair": round(1 / over, 2) if over > 0.001 else 99,
+        }
+    return out
+
+
 def ref_card_avg(referee: str, matches_df, min_games: int = 15):
     """Referee's historical average total yellow cards per match (None if too few)."""
     import pandas as pd

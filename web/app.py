@@ -1204,7 +1204,8 @@ def api_projections():
     try:
         from scripts.prediction.comparative_markets import (
             compute_expected_counts, all_comparative_markets,
-            total_cards_over_under, ref_card_avg, team_card_rate)
+            total_cards_over_under, ref_card_avg, team_card_rate,
+            total_fouls_over_under, ref_stat_avg, team_stat_rate)
         _matches = _comparative_matches_df()   # cached read (see helper)
         # predictions.json carries the assigned referee per match
         ref_by_match = {p.get("match"): p.get("referee")
@@ -1223,6 +1224,14 @@ def api_projections():
                 if tc:
                     tc["referee"] = ref
                     proj["total_cards"] = tc
+                # referee-aware total-fouls O/U (second validated signal market)
+                rfa = ref_stat_avg(ref, _matches, "fouls") if ref else None
+                hfr = team_stat_rate(proj.get("home_team"), _matches, "fouls")
+                afr = team_stat_rate(proj.get("away_team"), _matches, "fouls")
+                tf = total_fouls_over_under(rfa, hfr, afr)
+                if tf:
+                    tf["referee"] = ref
+                    proj["total_fouls"] = tf
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 
