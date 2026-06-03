@@ -1174,10 +1174,82 @@ def api_projections():
         if proj is not None:
             projections.append(proj)
 
+    # Attach odds-edge comparison when a book's odds are available.
+    # comparison_odds.json is written by the Betfair client (or a sample);
+    # format {match: {market: {outcome: price}}}. The engine is source-agnostic.
+    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
+    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
+    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+    if book_odds_by_match:
+        from scripts.betting.odds_comparison import compare_match, best_value_bets
+        for proj in projections:
+            mo = book_odds_by_match.get(proj.get("match"))
+            if not mo:
+                continue
+            results = compare_match(proj, mo, book=book_name)
+            proj["odds_book"] = book_name
+            proj["edges"] = [r.to_dict() for r in results]
+            proj["value_bets"] = [r.to_dict() for r in best_value_bets(results)]
+
     return jsonify({
         "generated_at": generated_at,
         "count": len(projections),
+        "odds_source": book_name,
         "projections": projections,
+    })
+
+
+@app.route("/value-bets")
+@app.route("/value")
+def value_bets_page():
+    resp = app.make_response(render_template("value_bets.html", active_page="value_bets"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/api/value-bets")
+def api_value_bets():
+    """All value bets across all matches, sorted by edge — the bet-slip view.
+
+    Reads predictions.json + comparison_odds.json, runs the comparison engine,
+    flattens every flagged value bet with its match context. Separates 'skill'
+    (trusted) from 'noise' (model-unreliable) so the UI can warn appropriately.
+    """
+    predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
+    preds = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else (predictions_raw or [])
+    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
+    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
+    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+
+    if not book_odds_by_match:
+        return jsonify({"odds_source": "", "value_bets": [], "count": 0,
+                        "message": "No book odds loaded — wire Betfair/Sisal odds to comparison_odds.json"})
+
+    from scripts.betting.odds_comparison import compare_match, best_value_bets
+
+    all_bets = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is None:
+            continue
+        mo = book_odds_by_match.get(proj.get("match"))
+        if not mo:
+            continue
+        for r in best_value_bets(compare_match(proj, mo, book=book_name), top_n=99):
+            bet = r.to_dict()
+            bet["match"] = proj.get("match")
+            bet["home_team"] = proj.get("home_team")
+            bet["away_team"] = proj.get("away_team")
+            bet["date"] = proj.get("date", "")
+            bet["time"] = proj.get("time", "")
+            all_bets.append(bet)
+
+    all_bets.sort(key=lambda b: -b["edge_pct"])
+    return jsonify({
+        "odds_source": book_name,
+        "count": len(all_bets),
+        "trusted_count": sum(1 for b in all_bets if b["trust"] == "skill"),
+        "value_bets": all_bets,
     })
 
 

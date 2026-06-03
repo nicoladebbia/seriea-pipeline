@@ -22,6 +22,14 @@
 
   .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
               margin-bottom: 16px; overflow: hidden; }
+  .pj-vb-count { font-size: 9px; font-weight: 700; color: var(--green, #4ade80); background: rgba(74,222,128,0.12);
+                 border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+  .pj-vb-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px;
+                  background: rgba(74,222,128,0.06); border-top: 1px solid rgba(74,222,128,0.15); }
+  .pj-vb-label { font-size: 9px; font-weight: 700; color: var(--green, #4ade80); text-transform: uppercase; letter-spacing: 0.5px; }
+  .pj-vb-pill { font-size: 11px; color: var(--text-secondary); background: var(--bg-primary, rgba(0,0,0,0.2));
+                border: 1px solid rgba(74,222,128,0.25); border-radius: 4px; padding: 2px 8px; font-family: var(--font-mono); }
+  .pj-vb-pill b { color: var(--green, #4ade80); }
   .pj-match__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
                     background: var(--bg-tertiary, rgba(255,255,255,0.02)); border-bottom: 1px solid var(--border-subtle);
                     cursor: pointer; user-select: none; }
@@ -142,11 +150,23 @@ function renderMatch(m) {
     card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' })),
   ].filter(Boolean).join('');
 
+  // value-bets banner (only when a book's odds are attached)
+  const vbs = m.value_bets || [];
+  const mktLabel = { '1x2': '1X2', 'double_chance': 'DC', 'btts': 'BTTS', 'over_under': 'O/U' };
+  const vbBadge = vbs.length
+    ? `<span class="pj-vb-count">${vbs.length} value</span>` : '';
+  const vbBanner = vbs.length ? `
+    <div class="pj-vb-banner">
+      <span class="pj-vb-label">VALUE vs ${m.odds_book || 'book'}:</span>
+      ${vbs.map(v => `<span class="pj-vb-pill" title="model ${pct(v.model_prob)} · fair ${v.fair_odds} · EV ${v.ev > 0 ? '+' : ''}${v.ev.toFixed(2)}">
+        ${(mktLabel[v.market] || v.market)} ${v.outcome} @ ${v.book_odds} <b>+${v.edge_pct.toFixed(1)}pp</b></span>`).join('')}
+    </div>` : '';
+
   return `
   <div class="pj-match">
     <div class="pj-match__head" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
       <div>
-        <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team}</div>
+        <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team} ${vbBadge}</div>
         <div class="pj-match__meta">
           <span>${m.date || ''} ${m.time || ''}</span>
           <span class="pj-xg">xG ${m.home_xg} – ${m.away_xg}</span>
@@ -155,6 +175,7 @@ function renderMatch(m) {
       </div>
       <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </div>
+    ${vbBanner}
     <div class="pj-body"><div class="pj-grid">${cards}</div></div>
   </div>`;
 }
