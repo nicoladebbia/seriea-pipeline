@@ -23,12 +23,21 @@ from scipy.stats import skellam
 
 # Validated per-stat: does the opponent-adjusted model beat the base rate?
 # (skill > 0.01 on the 2026-06-03 walk-forward backtest). If not → show base rate.
+# confidence modes:
+#   "signal"   → show the full opponent-adjusted model %
+#   "shrunk"   → shrink the model % toward base rate by `shrink` (combats
+#                overconfidence while keeping real per-match signal)
+#   "low_diff" → show the base rate (model worse than base even shrunk)
 STAT_CONFIG = {
-    "fouls":        {"confidence": "signal",   "skill": 0.016},
-    "corners":      {"confidence": "low_diff",  "skill": -0.052, "base_home_more": 0.554, "base_tie": 0.091},
-    "yellow_cards": {"confidence": "low_diff",  "skill": -0.072, "base_home_more": 0.32, "base_tie": 0.18},
+    "fouls":        {"confidence": "signal", "skill": 0.016},
+    # corners: full model is overconfident (ECE 0.098) but the per-match signal is
+    # REAL (permutation-confirmed). Shrinking 0.3 toward base → skill +0.038, ECE
+    # 0.079 (held-out 2026-06-03). NOT low_diff — it differentiates per match.
+    "corners":      {"confidence": "shrunk", "skill": 0.038, "shrink": 0.3,
+                     "base_home_more": 0.554, "base_tie": 0.091},
+    "yellow_cards": {"confidence": "low_diff", "skill": -0.072, "base_home_more": 0.32, "base_tie": 0.18},
     "shots_on_target_count": {"confidence": "low_diff", "skill": 0.0, "base_home_more": 0.55, "base_tie": 0.08},
-    "shots_total":  {"confidence": "low_diff",  "skill": 0.0, "base_home_more": 0.56, "base_tie": 0.05},
+    "shots_total":  {"confidence": "low_diff", "skill": 0.0, "base_home_more": 0.56, "base_tie": 0.05},
 }
 
 # Friendly market labels (Italian/tipster style)
@@ -68,6 +77,19 @@ def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
     if conf == "signal":
         o = _skellam_outcomes(exp_home, exp_away)
         source = "model"
+    elif conf == "shrunk":
+        # real per-match signal but the raw model is overconfident → shrink toward
+        # base rate (validated: corners shrink 0.3 → skill +0.038, ECE 0.079)
+        w = cfg.get("shrink", 0.3)
+        bhm = cfg.get("base_home_more", 0.50)
+        bt = cfg.get("base_tie", 0.08)
+        raw = _skellam_outcomes(exp_home, exp_away)
+        hm = w * raw["home_more"] + (1 - w) * bhm
+        tie = w * raw["tie"] + (1 - w) * bt
+        am = w * raw["away_more"] + (1 - w) * max(0.0, 1 - bhm - bt)
+        s = hm + tie + am
+        o = {"home_more": hm / s, "tie": tie / s, "away_more": am / s}
+        source = "model_shrunk"
     else:
         # low differentiation → honest base rate (model per-match was worse than base)
         bhm = cfg.get("base_home_more", 0.50)
