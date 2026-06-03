@@ -1080,6 +1080,27 @@ def projections_page():
     return resp
 
 
+_COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
+
+
+def _comparative_matches_df():
+    """Cached read of matches.parquet for comparative markets (re-reads if file changes)."""
+    import pandas as pd
+    path = DATA_DIR / "parsed" / "matches.parquet"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if _COMPARATIVE_CACHE["df"] is None or _COMPARATIVE_CACHE["mtime"] != mtime:
+        cols = ["match_date", "home_team", "away_team",
+                "home_corners", "away_corners", "home_fouls", "away_fouls",
+                "home_yellow_cards", "away_yellow_cards"]
+        df = pd.read_parquet(path, columns=[c for c in cols if c])
+        _COMPARATIVE_CACHE["df"] = df
+        _COMPARATIVE_CACHE["mtime"] = mtime
+    return _COMPARATIVE_CACHE["df"]
+
+
 def _build_score_range_projection(pred: dict) -> dict | None:
     """Derive the full score-range market family for one match from its xG.
 
@@ -1173,6 +1194,20 @@ def api_projections():
         proj = _build_score_range_projection(p)
         if proj is not None:
             projections.append(proj)
+
+    # Attach comparative team-stat markets (who makes more corners/fouls/cards).
+    # Opponent-adjusted; fouls has real signal, corners/cards fall back to base rate.
+    try:
+        from scripts.prediction.comparative_markets import (
+            compute_expected_counts, all_comparative_markets)
+        _matches = _comparative_matches_df()   # cached read (see helper)
+        if _matches is not None:
+            for proj in projections:
+                exp = compute_expected_counts(proj.get("home_team"), proj.get("away_team"), _matches)
+                if exp:
+                    proj["comparative"] = all_comparative_markets(exp)
+    except Exception as e:
+        log.warning("comparative markets skipped: %s", e)
 
     # Attach odds-edge comparison when a book's odds are available.
     # comparison_odds.json is written by the Betfair client (or a sample);
