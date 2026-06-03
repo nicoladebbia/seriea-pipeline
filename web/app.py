@@ -1092,7 +1092,7 @@ def _comparative_matches_df():
     except OSError:
         return None
     if _COMPARATIVE_CACHE["df"] is None or _COMPARATIVE_CACHE["mtime"] != mtime:
-        cols = ["match_date", "home_team", "away_team",
+        cols = ["match_date", "home_team", "away_team", "referee",
                 "home_corners", "away_corners", "home_fouls", "away_fouls",
                 "home_yellow_cards", "away_yellow_cards"]
         df = pd.read_parquet(path, columns=[c for c in cols if c])
@@ -1203,13 +1203,26 @@ def api_projections():
     # Opponent-adjusted; fouls has real signal, corners/cards fall back to base rate.
     try:
         from scripts.prediction.comparative_markets import (
-            compute_expected_counts, all_comparative_markets)
+            compute_expected_counts, all_comparative_markets,
+            total_cards_over_under, ref_card_avg, team_card_rate)
         _matches = _comparative_matches_df()   # cached read (see helper)
+        # predictions.json carries the assigned referee per match
+        ref_by_match = {p.get("match"): p.get("referee")
+                        for p in (preds if isinstance(preds, list) else [])}
         if _matches is not None:
             for proj in projections:
                 exp = compute_expected_counts(proj.get("home_team"), proj.get("away_team"), _matches)
                 if exp:
                     proj["comparative"] = all_comparative_markets(exp)
+                # referee-aware total-cards O/U (the validated signal market)
+                ref = ref_by_match.get(proj.get("match"))
+                ra = ref_card_avg(ref, _matches) if ref else None
+                hcr = team_card_rate(proj.get("home_team"), _matches)
+                acr = team_card_rate(proj.get("away_team"), _matches)
+                tc = total_cards_over_under(ra, hcr, acr)
+                if tc:
+                    tc["referee"] = ref
+                    proj["total_cards"] = tc
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 

@@ -163,6 +163,19 @@ function renderMatch(m) {
       'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false),
   ].filter(Boolean).join('');
 
+  // referee-aware total-cards O/U (validated signal market)
+  let totalCardsCard = '';
+  if (m.total_cards) {
+    const tc = m.total_cards;
+    const lineRows = Object.entries(tc.lines).map(([ln, v]) => ({ label: `Over ${ln}`, prob: v.over }))
+      .concat(Object.entries(tc.lines).map(([ln, v]) => ({ label: `Under ${ln}`, prob: v.under })));
+    totalCardsCard = `<div class="pj-card" style="border-color:rgba(74,222,128,0.25);">
+      <div class="pj-card__title">Cartellini totali O/U <span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;">signal</span></div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">ref ${tc.referee||'?'} · attesi ${tc.expected_total}</div>
+      ${lineRows.map(r=>`<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div></div>`).join('')}
+    </div>`;
+  }
+
   // comparative team-stat markets (who makes more corners/fouls/cards)
   const comp = m.comparative || [];
   const compCards = comp.map(c => {
@@ -212,7 +225,7 @@ function renderMatch(m) {
       <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </div>
     ${vbBanner}
-    <div class="pj-body"><div class="pj-grid">${cards}${compCards}</div></div>
+    <div class="pj-body"><div class="pj-grid">${cards}${totalCardsCard}${compCards}</div></div>
   </div>`;
 }
 

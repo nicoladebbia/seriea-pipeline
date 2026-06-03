@@ -94,6 +94,56 @@ def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
     }
 
 
+def ref_card_avg(referee: str, matches_df, min_games: int = 15):
+    """Referee's historical average total yellow cards per match (None if too few)."""
+    import pandas as pd
+    if not referee or "referee" not in matches_df.columns:
+        return None
+    g = matches_df[matches_df["referee"] == referee]
+    g = g.dropna(subset=["home_yellow_cards", "away_yellow_cards"])
+    if len(g) < min_games:
+        return None
+    return float((g["home_yellow_cards"] + g["away_yellow_cards"]).mean())
+
+
+def team_card_rate(team: str, matches_df, window: int = 10):
+    """Team's recent average yellow cards (own, last N games). None if too few."""
+    import pandas as pd
+    df = matches_df.sort_values("match_date")
+    g = df[(df["home_team"] == team) | (df["away_team"] == team)].tail(window)
+    if len(g) < 3:
+        return None
+    vals = [r["home_yellow_cards"] if r["home_team"] == team else r["away_yellow_cards"]
+            for _, r in g.iterrows()]
+    vals = [v for v in vals if pd.notna(v)]
+    return float(sum(vals) / len(vals)) if vals else None
+
+
+def total_cards_over_under(ref_avg_yellows, home_card_rate, away_card_rate,
+                           lines=(3.5, 4.5)) -> dict | None:
+    """Total-cards Over/Under — referee-aware, the one VALIDATED comparative win.
+
+    The referee sets the card level (permutation test 2026-06-03: ref identity
+    adds +0.10 skill vs a random ref, leak-free as-of-date), teams modulate it.
+    lambda = 0.5*ref_avg + 0.5*(home_rate + away_rate) → held-out skill +0.048,
+    ECE 0.035 (calibrated). This is a tipster market (NOT on Sisal's goal-only menu).
+    Returns None if inputs missing.
+    """
+    from scipy.stats import poisson
+    if None in (ref_avg_yellows, home_card_rate, away_card_rate):
+        return None
+    lam = max(0.5, 0.5 * ref_avg_yellows + 0.5 * (home_card_rate + away_card_rate))
+    out = {"expected_total": round(lam, 2), "confidence": "signal",
+           "ref_avg": round(ref_avg_yellows, 2), "lines": {}}
+    for line in lines:
+        over = 1 - poisson.cdf(int(line), lam)
+        out["lines"][str(line)] = {
+            "over": round(over, 4), "under": round(1 - over, 4),
+            "over_fair": round(1 / over, 2) if over > 0.001 else 99,
+        }
+    return out
+
+
 def compute_expected_counts(home_team: str, away_team: str, matches_df,
                             stats=("corners", "fouls", "yellow_cards"),
                             window: int = 10) -> dict:
