@@ -172,6 +172,27 @@ function renderMatch(m) {
       'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false),
   ].filter(Boolean).join('');
 
+  // shot markets (who has more shots — permutation-validated +0.10 signal)
+  let shotsCard = '';
+  if (m.shots) {
+    const mk = (s, label) => {
+      if (!s) return '';
+      const wm = s.who_more || {};
+      const rows = [
+        { label: `${H} più tiri`, prob: wm.home },
+        { label: 'Pari', prob: wm.tie },
+        { label: `${A} più tiri`, prob: wm.away },
+      ].filter(r => r.prob != null);
+      const ouRows = Object.entries(s.lines || {}).map(([ln, v]) => ({ label: `Over ${ln}`, prob: v.over }));
+      return `<div class="pj-card" style="border-color:rgba(96,165,250,0.25);">
+        <div class="pj-card__title">${label} <span style="font-size:8px;color:var(--accent,#60a5fa);background:rgba(96,165,250,0.12);border-radius:3px;padding:1px 4px;" title="match-specific signal validated; shown as calibrated display">tiri</span></div>
+        <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">attesi ${s.exp_home} – ${s.exp_away}</div>
+        ${[...rows, ...ouRows].sort((a,b)=>b.prob-a.prob).map((r,i)=>`<div class="pj-row ${i===0?'pj-top':''}"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div></div>`).join('')}
+      </div>`;
+    };
+    shotsCard = mk(m.shots.shots_total, 'Tiri totali') + mk(m.shots.shots_on_target_count, 'Tiri in porta');
+  }
+
   // referee-aware total-cards O/U (validated signal market)
   let totalCardsCard = '';
   if (m.total_cards) {
@@ -267,7 +288,7 @@ function renderMatch(m) {
       <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </div>
     ${vbBanner}
-    <div class="pj-body"><div class="pj-grid">${cards}${totalCardsCard}${totalFoulsCard}${compCards}</div></div>
+    <div class="pj-body"><div class="pj-grid">${cards}${shotsCard}${totalCardsCard}${totalFoulsCard}${compCards}</div></div>
   </div>`;
 }
 

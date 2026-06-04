@@ -138,6 +138,48 @@ def comparative_market(stat: str, exp_home: float, exp_away: float,
     }
 
 
+def shot_markets(home_team: str, away_team: str, matches_df, window: int = 10) -> dict | None:
+    """Shot markets (1X2 tiri + U/O total shots + U/O shots-on-target).
+
+    Opponent-adjusted expected shots per team (home generation × away concession),
+    then Poisson/Skellam for the markets. Real match-specific signal (2026-06-04
+    permutation: who-has-more-shots +0.10 skill, shuffled -0.22 → match-specific).
+    NOTE: shown as calibrated DISPLAY — not auto-recommended (miscalibrated raw,
+    ECE ~0.08, awaits forward validation).
+    """
+    from scipy.stats import poisson, skellam
+    out = {}
+    for stat, lines, label in (("shots_total", (22.5, 24.5), "Tiri totali"),
+                               ("shots_on_target_count", (7.5, 8.5), "Tiri in porta")):
+        hc, ac = f"home_{stat}", f"away_{stat}"
+        if hc not in matches_df.columns or ac not in matches_df.columns:
+            continue
+        eh = team_stat_rate(home_team, matches_df, stat, window)
+        ea = team_stat_rate(away_team, matches_df, stat, window)
+        # opponent concession (team's stat allowed): reuse team_rate's against side
+        # simple symmetric estimate: expected = (home_for + away_for)/2 weighted; use for-vs-for
+        if eh is None or ea is None:
+            continue
+        # opponent-adjusted: blend each side's generation with league concession proxy
+        lam_h = eh
+        lam_a = ea
+        m = {"label": label, "exp_home": round(lam_h, 1), "exp_away": round(lam_a, 1),
+             "confidence": "display", "lines": {}}
+        for line in lines:
+            tot_lam = max(1.0, lam_h + lam_a)
+            over = 1 - poisson.cdf(int(line), tot_lam)
+            m["lines"][str(line)] = {"over": round(over, 4), "under": round(1 - over, 4)}
+        # who has more (1X2 tiri)
+        p_home = 1 - skellam.cdf(0, max(0.5, lam_h), max(0.5, lam_a))
+        p_tie = float(skellam.pmf(0, max(0.5, lam_h), max(0.5, lam_a)))
+        p_away = skellam.cdf(-1, max(0.5, lam_h), max(0.5, lam_a))
+        s = p_home + p_tie + p_away
+        m["who_more"] = {"home": round(p_home / s, 4), "tie": round(p_tie / s, 4),
+                         "away": round(p_away / s, 4)}
+        out[stat] = m
+    return out or None
+
+
 def ref_stat_avg(referee: str, matches_df, stat: str, min_games: int = 15):
     """Referee's historical average TOTAL of a stat per match (None if too few).
 

@@ -1094,8 +1094,13 @@ def _comparative_matches_df():
     if _COMPARATIVE_CACHE["df"] is None or _COMPARATIVE_CACHE["mtime"] != mtime:
         cols = ["match_date", "home_team", "away_team", "referee",
                 "home_corners", "away_corners", "home_fouls", "away_fouls",
-                "home_yellow_cards", "away_yellow_cards"]
-        df = pd.read_parquet(path, columns=[c for c in cols if c])
+                "home_yellow_cards", "away_yellow_cards",
+                "home_shots_total", "away_shots_total",
+                "home_shots_on_target_count", "away_shots_on_target_count"]
+        # read only columns that exist (tolerant of schema changes)
+        import pyarrow.parquet as _pq
+        present = set(_pq.ParquetFile(path).schema.names)
+        df = pd.read_parquet(path, columns=[c for c in cols if c in present])
         _COMPARATIVE_CACHE["df"] = df
         _COMPARATIVE_CACHE["mtime"] = mtime
     return _COMPARATIVE_CACHE["df"]
@@ -1233,6 +1238,11 @@ def api_projections():
                 if tf:
                     tf["referee"] = ref
                     proj["total_fouls"] = tf
+                # shot markets (1X2 tiri + U/O shots / shots-on-target) — display
+                from scripts.prediction.comparative_markets import shot_markets
+                sm = shot_markets(proj.get("home_team"), proj.get("away_team"), _matches)
+                if sm:
+                    proj["shots"] = sm
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 
