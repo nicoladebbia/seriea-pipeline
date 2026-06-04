@@ -202,6 +202,59 @@ def compute_position_base_rates(pms_feat: pd.DataFrame) -> dict[str, dict[str, f
 
 
 # =============================================================================
+# CALIBRATION — light isotonic on the markets the ECE diagnostic flags as off
+# =============================================================================
+# Measured 2026-06-04: 6/9 floor markets already empirically calibrated (ECE
+# <0.03) — fitting isotonic on those adds noise. Only the low "at least one"
+# bars over-predict slightly (Poisson zero-inflation: 1-exp(-λ) overstates
+# "≥1" when real counts have more zeros than Poisson). We fit maps for ALL
+# markets out-of-fold but only APPLY where the raw ECE warrants it; markets
+# already OK get an identity-ish map so the round-trip is a no-op.
+_CALIB_CACHE: dict = {"maps": None, "mtime": 0.0}
+# Markets whose RAW prob the ECE diagnostic flagged (>0.03). Others pass through.
+_CALIBRATE_MARKETS = {"shots_o05", "fouls_o05", "fouled_o05"}
+
+
+def _build_floor_calibration(pms_feat) -> dict:
+    """Fit a per-market isotonic map (raw Poisson prob -> empirical hit rate).
+
+    Out-of-fold by construction: priors are leak-free (prior-only), so the raw
+    prob never saw the current match's outcome. Fitted only for the flagged
+    markets; returns {market_key: IsotonicRegression}.
+    """
+    from sklearn.isotonic import IsotonicRegression
+
+    m = pms_feat[(pms_feat["prior_n"] >= MIN_PRIOR_MATCHES)
+                 & pms_feat["min_prior"].notna()]
+    maps: dict = {}
+    for key in _CALIBRATE_MARKETS:
+        cfg = TARGETS[key]
+        col, line = cfg["col"], cfg["line"]
+        k = line + 1
+        lam = (m[f"{col}_p90_prior"].fillna(0).to_numpy()
+               * m["min_prior"].to_numpy() / 90.0)
+        raw = np.array([_poisson_tail(float(x), k) for x in lam])
+        hit = (m[col] >= k).astype(int).to_numpy()
+        iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+        iso.fit(raw, hit)
+        maps[key] = iso
+    return maps
+
+
+def _get_floor_calibration(pms_feat) -> dict:
+    """Cached calibration maps, rebuilt only when the data changes."""
+    path = SS_DIR / "player_match_stats.parquet"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _CALIB_CACHE["maps"] is None or _CALIB_CACHE["mtime"] != mtime:
+        _CALIB_CACHE["maps"] = _build_floor_calibration(pms_feat)
+        _CALIB_CACHE["mtime"] = mtime
+    return _CALIB_CACHE["maps"]
+
+
+# =============================================================================
 # PREDICTION
 # =============================================================================
 
@@ -211,18 +264,29 @@ def _player_market_probs(
     position: str,
     prior_n: int,
     base_rates: dict[str, dict[str, float]],
+    calib: dict | None = None,
 ) -> dict[str, dict]:
-    """Compute every market's prob for one player from their priors."""
+    """Compute every market's prob for one player from their priors.
+
+    calib: optional {market_key: IsotonicRegression} from _get_floor_calibration.
+    Applied only to player-rate probs on the flagged markets (the low "≥1" bars
+    that over-predict). Position-fallback probs aren't calibrated (different
+    process; they already shrink for minutes).
+    """
     markets: dict[str, dict] = {}
     proj_minutes = float(max(0.0, min(98.0, proj_minutes)))
     for key, cfg in TARGETS.items():
         col, line, label = cfg["col"], cfg["line"], cfg["label"]
         k = line + 1
         rate = p90_priors.get(col)
+        calibrated = False
         if prior_n >= MIN_PRIOR_MATCHES and rate is not None and not math.isnan(rate):
             lam = rate * proj_minutes / 90.0
             prob = _poisson_tail(lam, k)
             src = "player"
+            if calib and key in calib:
+                prob = float(calib[key].predict([prob])[0])
+                calibrated = True
         else:
             # Fallback: position base rate (scaled toward proj minutes for subs)
             pos_rate = base_rates.get(key, {}).get(str(position))
@@ -237,6 +301,7 @@ def _player_market_probs(
             "prob": round(prob, 4),
             "odds_implied": round(1.0 / max(prob, 0.01), 2),
             "source": src,
+            "calibrated": calibrated,
         }
     return markets
 
@@ -252,6 +317,7 @@ def predict_player_markets(
     proj_minutes: float | None = None,
     pms: pd.DataFrame | None = None,
     base_rates: dict | None = None,
+    calib: dict | None = None,
 ) -> dict:
     """Predict all floor markets for a single player in an upcoming match.
 
@@ -263,6 +329,8 @@ def predict_player_markets(
         pms = build_player_features(load_player_data())
     if base_rates is None:
         base_rates = compute_position_base_rates(pms)
+    if calib is None:
+        calib = _get_floor_calibration(pms)
 
     # Resolve player by id; fall back to exact name match (lineup_predictions.json
     # carries names but no ids — SA names match the pms 100%, see plan).
@@ -287,7 +355,7 @@ def predict_player_markets(
     if proj_minutes is None:
         proj_minutes = min_prior
 
-    markets = _player_market_probs(priors, proj_minutes, position, prior_n, base_rates)
+    markets = _player_market_probs(priors, proj_minutes, position, prior_n, base_rates, calib)
     return {
         "player_name": player_name,
         "player_id": player_id,
@@ -318,6 +386,7 @@ def predict_match_players(
         pms = build_player_features(load_player_data())
     if base_rates is None:
         base_rates = compute_position_base_rates(pms)
+    calib = _get_floor_calibration(pms)
 
     def _side(lineup, team, opponent, is_home):
         out = []
@@ -333,6 +402,7 @@ def predict_match_players(
                 proj_minutes=pl.get("proj_minutes"),
                 pms=pms,
                 base_rates=base_rates,
+                calib=calib,
             )
             if pred and pred.get("markets"):
                 out.append(pred)
