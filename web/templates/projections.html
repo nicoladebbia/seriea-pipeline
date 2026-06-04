@@ -62,30 +62,46 @@
 
   .pj-body { max-height: 0; overflow: hidden; transition: max-height 0.45s ease; }
   .pj-body.open { max-height: 6000px; }
-  .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 14px 16px; }
+  .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-3); padding: var(--space-4); }
   .pj-noise { margin: 0 16px 14px; border-top: 1px dashed var(--border-subtle); }
   .pj-noise > summary { cursor: pointer; padding: 10px 0 4px; font-size: 11px; color: var(--text-tertiary);
                         list-style: none; user-select: none; }
   .pj-noise > summary:hover { color: var(--text-secondary); }
   .pj-noise[open] > summary { color: var(--text-secondary); }
 
-  .pj-card { background: var(--bg-primary, rgba(0,0,0,0.15)); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; }
-  .pj-card--dim { opacity: 0.74; }
+  .pj-card { background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+             padding: var(--space-3) var(--space-4); transition: border-color 0.15s, transform 0.15s; }
+  .pj-card:hover { border-color: var(--border-default); }
+  .pj-card--dim { opacity: 0.62; }
   .pj-card--dim:hover { opacity: 1; }
-  .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary);
-                    margin-bottom: 8px; font-weight: 700; }
-  .pj-trust { font-size: 8px; text-transform: none; letter-spacing: 0; border-radius: 3px; padding: 1px 4px; font-weight: 600; }
-  .pj-trust--ok { color: var(--green, #4ade80); background: rgba(74,222,128,0.12); }
-  .pj-trust--no { color: var(--text-tertiary, #888); background: rgba(148,163,184,0.12); }
-  .pj-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 2px 0; }
-  .pj-row__label { color: var(--text-secondary); }
-  .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
-  .pj-row__odds { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; min-width: 38px; text-align: right; }
-  /* probability heat: stronger = brighter */
-  .pj-bar { height: 3px; border-radius: 2px; background: var(--accent); opacity: 0.35; margin-top: 1px; }
+  .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-tertiary);
+                    margin-bottom: var(--space-3); font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .pj-trust { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 4px; padding: 2px 5px; font-weight: 700; }
+  .pj-trust--ok { color: var(--green); background: var(--green-muted); }
+  .pj-trust--no { color: var(--text-tertiary); background: rgba(113,113,122,0.12); }
 
-  .pj-empty { padding: 40px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
-  .pj-top { background: rgba(74,222,128,0.08); border-radius: 3px; }
+  /* ── readable probability rows: the bar is now a BACKGROUND FILL behind the
+        row, not an invisible 3px line. You read the whole card at a glance. ── */
+  .pj-row { position: relative; display: flex; justify-content: space-between; align-items: center;
+            font-size: 12.5px; padding: 5px 8px; border-radius: 5px; margin: 1px 0; overflow: hidden; z-index: 0; }
+  .pj-row__label { color: var(--text-secondary); position: relative; z-index: 1; }
+  .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; position: relative; z-index: 1; }
+  .pj-row__odds { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; min-width: 38px; text-align: right; position: relative; z-index: 1; }
+  /* bar = horizontal fill behind the row, width set inline; subtle by default */
+  .pj-bar { position: absolute; left: 0; top: 0; bottom: 0; height: auto !important; margin: 0 !important;
+            border-radius: 5px; background: var(--accent); opacity: 0.16; z-index: 0; transition: opacity 0.15s; }
+  .pj-row:hover .pj-bar { opacity: 0.24; }
+  /* the model's single most-likely outcome in a card */
+  .pj-top { font-weight: 600; }
+  .pj-top .pj-bar { opacity: 0.30; background: var(--emerald); }
+  .pj-top .pj-row__label { color: var(--text-primary); }
+
+  .pj-empty { padding: 48px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+
+  /* player floor breakdown — clean nested rows */
+  .pj-player { border-radius: 6px; }
+  .pj-player[open] { background: rgba(129,140,248,0.04); }
+  .pj-player > summary::-webkit-details-marker { display: none; }
 </style>
 {% endblock %}
 
