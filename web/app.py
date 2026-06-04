@@ -1236,6 +1236,16 @@ def api_projections():
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 
+    # Best-bets: per match, the strongest plays from backtest-trusted markets only.
+    try:
+        from scripts.prediction.best_bets import rank_bets
+        for proj in projections:
+            proj["best_bets"] = rank_bets(
+                proj, proj.get("comparative"),
+                proj.get("total_cards"), proj.get("total_fouls"))
+    except Exception as e:
+        log.warning("best-bets skipped: %s", e)
+
     # Attach odds-edge comparison when a book's odds are available.
     # comparison_odds.json is written by the Betfair client (or a sample);
     # format {match: {market: {outcome: price}}}. The engine is source-agnostic.

@@ -22,6 +22,15 @@
 
   .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
               margin-bottom: 16px; overflow: hidden; }
+  .pj-bb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 16px;
+               background: linear-gradient(90deg, rgba(250,204,21,0.10), rgba(250,204,21,0.02));
+               border-bottom: 1px solid rgba(250,204,21,0.25); }
+  .pj-bb-label { font-size: 10px; font-weight: 800; color: #facc15; letter-spacing: 0.5px; }
+  .pj-bb-single { font-size: 13px; color: var(--text-primary); }
+  .pj-bb-single b { color: #facc15; }
+  .pj-bb-lift { font-size: 10px; color: var(--green,#4ade80); font-family: var(--font-mono); }
+  .pj-bb-combo { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono);
+                 background: rgba(0,0,0,0.2); border-radius: 4px; padding: 2px 8px; }
   .pj-vb-count { font-size: 9px; font-weight: 700; color: var(--green, #4ade80); background: rgba(74,222,128,0.12);
                  border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
   .pj-vb-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px;
@@ -226,8 +235,26 @@ function renderMatch(m) {
         ${(mktLabel[v.market] || v.market)} ${v.outcome} @ ${v.book_odds} <b>+${v.edge_pct.toFixed(1)}pp</b></span>`).join('')}
     </div>` : '';
 
+  // best bets banner (top recommendation + combo)
+  const bb = m.best_bets || {};
+  const bs = bb.best_single;
+  const bc = bb.best_combo;
+  let bestBetsBar = '';
+  if (bs) {
+    let combo = '';
+    if (bc) {
+      combo = `<span class="pj-bb-combo">COMBO ${pct(bc.joint_prob)} @ ${bc.fair_odds}: ${bc.legs.map(l => `${l.pick}`).join(' + ')}</span>`;
+    }
+    bestBetsBar = `<div class="pj-bb-bar">
+      <span class="pj-bb-label">⭐ BEST</span>
+      <span class="pj-bb-single">${bs.market}: <b>${bs.pick}</b> ${pct(bs.prob)} <span class="pj-bb-lift">+${(bs.lift*100).toFixed(0)}pp vs base</span></span>
+      ${combo}
+    </div>`;
+  }
+
   return `
   <div class="pj-match">
+    ${bestBetsBar}
     <div class="pj-match__head" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
       <div>
         <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team} ${vbBadge}</div>
