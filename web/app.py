@@ -1081,6 +1081,134 @@ def projections_page():
 
 
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
+_PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
+
+# Markets shown on the page, in display order. Goalscorer last (weakest, +6.9%).
+_FLOOR_DISPLAY_MARKETS = [
+    "shots_o15", "sot_o05", "shots_o05", "shots_o25",
+    "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
+]
+
+
+def _player_engine():
+    """Cached (pms-with-priors, base_rates) for the player floor engine.
+
+    Rebuilds only when the underlying parquet changes. Building priors over
+    100k rows is ~1s, so we never want to do it per request.
+    """
+    path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None, None
+    if _PLAYER_ENGINE_CACHE["pms"] is None or _PLAYER_ENGINE_CACHE["mtime"] != mtime:
+        from scripts.betting.player_predictions import (
+            load_player_data, build_player_features, compute_position_base_rates,
+        )
+        pms = build_player_features(load_player_data("serie_a"))
+        _PLAYER_ENGINE_CACHE["pms"] = pms
+        _PLAYER_ENGINE_CACHE["base_rates"] = compute_position_base_rates(pms)
+        _PLAYER_ENGINE_CACHE["mtime"] = mtime
+    return _PLAYER_ENGINE_CACHE["pms"], _PLAYER_ENGINE_CACHE["base_rates"]
+
+
+def _lineup_entries(side_lineup: dict) -> list:
+    """Flatten a lineup_predictions side into [{player_name, player_id, position,
+    proj_minutes, is_starter}], using start_pct * avg_minutes for projected mins.
+    """
+    out = []
+    for grp, starter in (("predicted_xi", True), ("bench", False)):
+        for p in side_lineup.get(grp, []) or []:
+            avg_min = float(p.get("avg_minutes") or (82.0 if starter else 20.0))
+            start_pct = float(p.get("start_pct") or (100.0 if starter else 0.0))
+            proj_min = avg_min if starter else avg_min * (start_pct / 100.0)
+            out.append({
+                "player_name": p.get("name") or p.get("player_name", ""),
+                "player_id": p.get("player_id"),
+                "position": p.get("position", "M"),
+                "proj_minutes": proj_min,
+                "is_starter": starter,
+            })
+    return out
+
+
+def _attach_player_floors(proj_by_match: dict) -> None:
+    """Attach top player floor markets to each projection (display only).
+
+    For each match with a predicted lineup, predicts every player's floor
+    markets and keeps, per side, the players with the strongest single floor —
+    so the page shows "who's most likely to shoot / be fouled / score".
+    """
+    pms, base_rates = _player_engine()
+    if pms is None:
+        return
+    from scripts.betting.player_predictions import predict_match_players
+
+    lineups = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
+    lp_matches = lineups.get("matches", {}) if isinstance(lineups, dict) else {}
+
+    def _recent_xi(team):
+        """Fallback likely-XI: the team's most-recent match starters from pms.
+
+        Used when lineup_predictions has no matching entry (off-season / stale
+        lineup file). Names + ids come straight from sofascore so they resolve.
+        """
+        tdf = pms[pms["team"] == team]
+        if not len(tdf):
+            return []
+        last_date = tdf["date"].max()
+        last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
+        return [{
+            "player_name": r["player_name"], "player_id": r["player_id"],
+            "position": r["position"], "is_starter": True,
+            "proj_minutes": None,  # engine uses the player's leak-free min_prior
+        } for _, r in last.iterrows()]
+
+    for match_key, proj in proj_by_match.items():
+        lp = lp_matches.get(match_key)
+        if lp:
+            home_xi = _lineup_entries(lp.get("home_lineup", {}))
+            away_xi = _lineup_entries(lp.get("away_lineup", {}))
+        else:
+            home_xi = _recent_xi(proj.get("home_team", ""))
+            away_xi = _recent_xi(proj.get("away_team", ""))
+        if not home_xi and not away_xi:
+            continue
+        result = predict_match_players(
+            proj.get("home_team", ""), proj.get("away_team", ""),
+            home_xi, away_xi, pms=pms, base_rates=base_rates,
+        )
+
+        def _trim(players):
+            rows = []
+            for pl in players:
+                mk = pl.get("markets", {})
+                # headline = the player's most-confident displayable floor
+                best = max(
+                    (mk[k] for k in _FLOOR_DISPLAY_MARKETS if k in mk),
+                    key=lambda m: m["prob"], default=None,
+                )
+                if not best or best["prob"] < 0.30:
+                    continue
+                rows.append({
+                    "name": pl["player_name"],
+                    "position": pl["position"],
+                    "proj_minutes": pl["proj_minutes"],
+                    "prior_matches": pl.get("prior_matches", 0),
+                    "headline": {"label": best["label"], "prob": best["prob"]},
+                    "markets": {k: {"label": mk[k]["label"], "prob": mk[k]["prob"]}
+                                for k in _FLOOR_DISPLAY_MARKETS if k in mk},
+                })
+            rows.sort(key=lambda r: r["headline"]["prob"], reverse=True)
+            return rows[:6]
+
+        src = "predicted XI" if lp else "last XI (lineup TBD)"
+        proj["player_floors"] = {
+            "home": _trim(result.get("home_players", [])),
+            "away": _trim(result.get("away_players", [])),
+            "lineup_source": src,
+            "note": f"Validated leak-free model · {src}. Display only — betting gated.",
+        }
 
 
 def _comparative_matches_df():
@@ -1282,6 +1410,14 @@ def api_projections():
                     proj["shots"] = sm
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
+
+    # Player floor markets (shots / SoT / fouls O-U per likely starter).
+    # Validated leak-free engine (see .plans/player-props-deep-plan.md): every
+    # market beats base rate on walk-forward Brier. DISPLAY only — betting gated.
+    try:
+        _attach_player_floors({p.get("match"): p for p in projections})
+    except Exception as e:
+        log.warning("player floors skipped: %s", e)
 
     # Calibrate the overclaiming markets so the displayed % = real hit rate
     # (live isotonic maps from 2017+ history; away-win/O-U overclaim otherwise).

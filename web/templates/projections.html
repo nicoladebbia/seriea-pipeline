@@ -234,6 +234,37 @@ function renderMatch(m) {
     </div>`;
   }
 
+  // player floor markets (shots / SoT / fouls O-U per likely starter)
+  // Validated leak-free model — DISPLAY only, betting gated.
+  let playerFloorsCard = '';
+  if (m.player_floors && ((m.player_floors.home||[]).length || (m.player_floors.away||[]).length)) {
+    const pf = m.player_floors;
+    const side = (players, teamName) => {
+      if (!players || !players.length) return '';
+      const rows = players.map(p => {
+        const n = (p.prior_matches || 0);
+        const sub = (p.proj_minutes < 70)
+          ? ` <span style="font-size:8px;color:var(--text-tertiary);">~${Math.round(p.proj_minutes)}'</span>` : '';
+        return `<div class="pj-row" title="${p.position} · ${n} prior matches · proj ${Math.round(p.proj_minutes)} min">
+          <span class="pj-row__label">${p.name}${sub}</span>
+          <span class="pj-row__prob">${p.headline.prob>=0.5?'':''}${pct(p.headline.prob)}</span>
+          <div class="pj-bar" style="width:${Math.max(2,p.headline.prob*100)}%;"></div>
+          <span style="font-size:8px;color:var(--text-tertiary);display:block;margin-top:-2px;">${p.headline.label}</span>
+        </div>`;
+      }).join('');
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:4px 0 2px;font-weight:600;">${teamName}</div>${rows}`;
+    };
+    playerFloorsCard = `<div class="pj-card" style="border-color:rgba(168,85,247,0.25);grid-column:1/-1;">
+      <div class="pj-card__title">Giocatori — floor markets
+        <span style="font-size:8px;color:#a855f7;background:rgba(168,85,247,0.12);border-radius:3px;padding:1px 4px;" title="per-player validated leak-free model; display only, betting gated">players</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <div>${side(pf.home, m.home_team)}</div>
+        <div>${side(pf.away, m.away_team)}</div>
+      </div>
+      <div style="font-size:8px;color:var(--text-tertiary);margin-top:6px;">${pf.note||''}</div>
+    </div>`;
+  }
+
   // comparative team-stat markets (who makes more corners/fouls/cards)
   const comp = m.comparative || [];
   const compCards = comp.map(c => {
@@ -327,7 +358,7 @@ function renderMatch(m) {
       <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </div>
     ${vbBanner}
-    <div class="pj-body"><div class="pj-grid">${cards}${shotsCard}${totalCardsCard}${totalFoulsCard}${compCards}</div></div>
+    <div class="pj-body"><div class="pj-grid">${cards}${shotsCard}${totalCardsCard}${totalFoulsCard}${compCards}${playerFloorsCard}</div></div>
   </div>`;
 }
 
