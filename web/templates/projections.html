@@ -270,19 +270,30 @@ function renderMatch(m) {
           ? ` <span style="font-size:8px;color:var(--text-tertiary);">~${Math.round(p.proj_minutes)}'</span>` : '';
         // full 8-market breakdown, ordered, with calibrated flag where set
         const mk = p.markets || {};
+        // grade chip: HIT/MISS only when hit is true/false (≥55% call);
+        // neutral occurred/didn't otherwise; nothing if match not played
+        const gradeChip = (v) => {
+          if (v.hit === true)  return ` <span style="color:#4ade80;font-size:9px;" title="had ${v.actual}">✅ HIT</span>`;
+          if (v.hit === false) return ` <span style="color:#f87171;font-size:9px;" title="had ${v.actual}">❌ MISS</span>`;
+          if (v.occurred === true)  return ` <span style="color:var(--text-tertiary);font-size:9px;" title="had ${v.actual} — sub-55% call, shown neutral">✓ ${v.actual}</span>`;
+          if (v.occurred === false) return ` <span style="color:var(--text-tertiary);font-size:9px;" title="had ${v.actual}">· ${v.actual}</span>`;
+          return '';
+        };
         const breakdown = MK_ORDER.filter(k => mk[k]).map(k => {
           const v = mk[k];
           const cal = v.calibrated ? ' <span style="color:#4ade80;" title="isotonic-calibrated">✓</span>' : '';
           return `<div class="pj-row" style="font-size:11px;padding:1px 0;">
-            <span class="pj-row__label" style="font-size:10px;">${v.label}${cal}</span>
+            <span class="pj-row__label" style="font-size:10px;">${v.label}${cal}${gradeChip(v)}</span>
             <span class="pj-row__prob" style="font-size:10px;">${pct(v.prob)}</span>
             <div class="pj-bar" style="width:${Math.max(2,v.prob*100)}%;opacity:0.6;"></div>
           </div>`;
         }).join('');
+        const hHit = p.headline.hit === true ? ' <span style="color:#4ade80;font-size:9px;">✅</span>'
+                   : p.headline.hit === false ? ' <span style="color:#f87171;font-size:9px;">❌</span>' : '';
         return `<details class="pj-player" title="${p.position} · ${n} prior matches · proj ${Math.round(p.proj_minutes)} min">
           <summary class="pj-row" style="cursor:pointer;list-style:none;">
             <span class="pj-row__label">${p.name}${sub} <span style="font-size:8px;color:var(--text-tertiary);">${p.position}·${n}m</span></span>
-            <span class="pj-row__prob">${pct(p.headline.prob)}</span>
+            <span class="pj-row__prob">${pct(p.headline.prob)}${hHit}</span>
             <div class="pj-bar" style="width:${Math.max(2,p.headline.prob*100)}%;"></div>
             <span style="font-size:8px;color:var(--text-tertiary);display:block;margin-top:-2px;">${p.headline.label} ▸</span>
           </summary>

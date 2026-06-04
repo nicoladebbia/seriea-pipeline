@@ -1164,9 +1164,33 @@ def _attach_player_floors(proj_by_match: dict) -> None:
             "proj_minutes": None,  # engine uses the player's leak-free min_prior
         } for _, r in last.iterrows()]
 
+    from scripts.betting.player_predictions import TARGETS as _FLOOR_TARGETS
+    # Only grade HIT/MISS above this confidence — a 17% goal call that doesn't
+    # hit is the model being RIGHT, not a miss (advisor). Below threshold we
+    # show the neutral outcome (occurred / didn't), never a red ❌.
+    _GRADE_MIN_PROB = 0.55
+
+    def _actual_xi(home, away):
+        """For a PAST match: the actual starters + their actual stats, joined on
+        date+teams (not teams alone — double fixtures would mis-grade). Returns
+        ({name: actual_row}, match_date) or ({}, None) if the match hasn't been
+        played / isn't in pms.
+        """
+        mrows = pms[((pms["team"] == home) & (pms["opponent"] == away))
+                    | ((pms["team"] == away) & (pms["opponent"] == home))]
+        if not len(mrows):
+            return {}, None
+        last_date = mrows["date"].max()
+        played = mrows[(mrows["date"] == last_date) & (mrows["is_starter"] == True)]  # noqa: E712
+        return {r["player_name"]: r for _, r in played.iterrows()}, last_date
+
     for match_key, proj in proj_by_match.items():
         lp = lp_matches.get(match_key)
-        if lp:
+        # For a PAST match, prefer the ACTUAL starters (so display + grading show
+        # the same real XI). Detect "past" = we have the played row in pms.
+        actual_by_name, _ = _actual_xi(proj.get("home_team", ""), proj.get("away_team", ""))
+        is_past = bool(actual_by_name)
+        if lp and not is_past:
             home_xi = _lineup_entries(lp.get("home_lineup", {}))
             away_xi = _lineup_entries(lp.get("away_lineup", {}))
         else:
@@ -1179,6 +1203,23 @@ def _attach_player_floors(proj_by_match: dict) -> None:
             home_xi, away_xi, pms=pms, base_rates=base_rates,
         )
 
+        def _grade(name, market_key, prob):
+            """Grade one player market vs actual. Returns dict or None.
+            hit: True/False only when prob>=threshold; else outcome shown neutral."""
+            row = actual_by_name.get(name)
+            if row is None:
+                return None
+            cfg = _FLOOR_TARGETS.get(market_key)
+            if not cfg:
+                return None
+            occurred = bool(row[cfg["col"]] >= cfg["line"] + 1)
+            graded = prob >= _GRADE_MIN_PROB
+            return {
+                "occurred": occurred,
+                "actual": int(row[cfg["col"]]),
+                "hit": occurred if graded else None,  # None = neutral (sub-threshold)
+            }
+
         def _trim(players):
             rows = []
             for pl in players:
@@ -1190,25 +1231,45 @@ def _attach_player_floors(proj_by_match: dict) -> None:
                 )
                 if not best or best["prob"] < 0.30:
                     continue
+                nm = pl["player_name"]
+                # grade each displayed market vs actual (past matches only)
+                markets = {}
+                for k in _FLOOR_DISPLAY_MARKETS:
+                    if k not in mk:
+                        continue
+                    cell = {"label": mk[k]["label"], "prob": mk[k]["prob"],
+                            "calibrated": mk[k].get("calibrated", False)}
+                    g = _grade(nm, k, mk[k]["prob"]) if is_past else None
+                    if g:
+                        cell.update(g)
+                    markets[k] = cell
+                # headline carries the best market's grade for the collapsed row
+                best_key = next((k for k in _FLOOR_DISPLAY_MARKETS
+                                 if k in mk and mk[k] is best), None)
+                hg = _grade(nm, best_key, best["prob"]) if (is_past and best_key) else None
                 rows.append({
-                    "name": pl["player_name"],
+                    "name": nm,
                     "position": pl["position"],
                     "proj_minutes": pl["proj_minutes"],
                     "prior_matches": pl.get("prior_matches", 0),
-                    "headline": {"label": best["label"], "prob": best["prob"]},
-                    "markets": {k: {"label": mk[k]["label"], "prob": mk[k]["prob"],
-                                    "calibrated": mk[k].get("calibrated", False)}
-                                for k in _FLOOR_DISPLAY_MARKETS if k in mk},
+                    "headline": {"label": best["label"], "prob": best["prob"],
+                                 **({"hit": hg["hit"], "actual": hg["actual"]} if hg else {})},
+                    "markets": markets,
                 })
             rows.sort(key=lambda r: r["headline"]["prob"], reverse=True)
             return rows[:6]
 
-        src = "predicted XI" if lp else "last XI (lineup TBD)"
+        src = "actual XI (graded vs result)" if is_past else (
+            "predicted XI" if lp else "last XI (lineup TBD)")
         proj["player_floors"] = {
             "home": _trim(result.get("home_players", [])),
             "away": _trim(result.get("away_players", [])),
             "lineup_source": src,
-            "note": f"Validated leak-free model · {src}. Display only — betting gated.",
+            "is_past": is_past,
+            "note": (f"Leak-free predictions vs ACTUAL result · {src}. "
+                     "HIT/MISS only on ≥55% calls (a 17% call not hitting is correct, not a miss)."
+                     if is_past else
+                     f"Validated leak-free model · {src}. Display only — betting gated."),
         }
 
 
