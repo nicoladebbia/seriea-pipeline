@@ -63,6 +63,11 @@
   .pj-body { max-height: 0; overflow: hidden; transition: max-height 0.45s ease; }
   .pj-body.open { max-height: 6000px; }
   .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 14px 16px; }
+  .pj-noise { margin: 0 16px 14px; border-top: 1px dashed var(--border-subtle); }
+  .pj-noise > summary { cursor: pointer; padding: 10px 0 4px; font-size: 11px; color: var(--text-tertiary);
+                        list-style: none; user-select: none; }
+  .pj-noise > summary:hover { color: var(--text-secondary); }
+  .pj-noise[open] > summary { color: var(--text-secondary); }
 
   .pj-card { background: var(--bg-primary, rgba(0,0,0,0.15)); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; }
   .pj-card--dim { opacity: 0.74; }
@@ -127,10 +132,12 @@ function trustBadge(trust) {
   return '';
 }
 
+// Returns {html, trust} so the caller can group signal vs noise. Empty -> null.
 function card(title, items, topHighlight = true, trust = '') {
-  if (!items || !items.length) return '';
+  if (!items || !items.length) return null;
   const cls = trust === 'unvalidated' ? ' pj-card--dim' : '';
-  return `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
+  const html = `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
+  return { html, trust };
 }
 
 // adapters: turn each market's shape into [{label, prob, fair_odds}]
@@ -196,6 +203,9 @@ function renderMatch(m) {
     card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' }), true, U),
     card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' }), true, U),
     card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' }), true, U),
+  ].filter(Boolean);
+  // Combos are the noisiest, bulkiest cards (3 × ~20 rows) — own collapsed group.
+  const comboCards = [
     card('Combo: 1X2 + O/U 2.5', fromDict(m.combos, {
       '1_over': '1 & Over', '1_under': '1 & Under', 'X_over': 'X & Over', 'X_under': 'X & Under',
       '2_over': '2 & Over', '2_under': '2 & Under' }, true), false, U),
@@ -205,7 +215,7 @@ function renderMatch(m) {
     card('Combo Chance (either)', fromDict(m.combos, {
       '1_or_gg': '1 or GG', '1_or_over': '1 or Over', '2_or_gg': '2 or GG',
       'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false, U),
-  ].filter(Boolean).join('');
+  ].filter(Boolean);
 
   // shot markets (who has more shots — permutation-validated +0.10 signal)
   let shotsCard = '';
@@ -406,7 +416,20 @@ function renderMatch(m) {
       <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
     </div>
     ${vbBanner}
-    <div class="pj-body"><div class="pj-grid">${cards}${shotsCard}${totalCardsCard}${totalFoulsCard}${compCards}${playerFloorsCard}</div></div>
+    <div class="pj-body">${(() => {
+      // SIGNAL on top (always visible): validated team markets + shots + ref
+      // cards/fouls + comparative + players. NOISE collapsed (goal-quantity props
+      // + combos) — present for completeness, one click away, never buried-but-equal.
+      const signalHtml = cards.filter(c => c.trust === 'signal').map(c => c.html).join('')
+        + shotsCard + totalCardsCard + totalFoulsCard + compCards + playerFloorsCard;
+      const noiseCards = cards.filter(c => c.trust !== 'signal');
+      const noiseHtml = noiseCards.map(c => c.html).join('');
+      const comboHtml = comboCards.map(c => c.html).join('');
+      const nNoise = noiseCards.length + comboCards.length;
+      return `<div class="pj-grid">${signalHtml}</div>`
+        + (nNoise ? `<details class="pj-noise"><summary>▾ ${nNoise} model-probability markets (goal-quantity + combos · display only, not validated)</summary>
+            <div class="pj-grid" style="padding-top:8px;">${noiseHtml}${comboHtml}</div></details>` : '');
+    })()}</div>
   </div>`;
 }
 
