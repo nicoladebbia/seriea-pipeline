@@ -1017,6 +1017,46 @@ def compute_ribaltone(home_xg: float, away_xg: float) -> dict:
     }
 
 
+def compute_team_win_to_nil(home_xg: float, away_xg: float) -> dict:
+    """Casa/Ospite vince a 0 — P(team wins AND keeps a clean sheet)."""
+    mat = score_matrix(home_xg, away_xg, max_goals=8)
+    p_home = sum(p for (h, a), p in mat.items() if h > a and a == 0)
+    p_away = sum(p for (h, a), p in mat.items() if a > h and h == 0)
+    return {
+        "home_win_to_nil": {"prob": round(p_home, 4),
+                            "fair_odds": round(1 / p_home, 2) if p_home > 0.001 else 99},
+        "away_win_to_nil": {"prob": round(p_away, 4),
+                            "fair_odds": round(1 / p_away, 2) if p_away > 0.001 else 99},
+    }
+
+
+def compute_half_goals_ou(home_xg: float, away_xg: float) -> dict:
+    """Somma goal tempo + U/O per half — total goals O/U for each half.
+
+    Uses the standard 0.43 first-half share (same as the HT/FT model).
+    """
+    out = {}
+    for half, share in (("first", 0.43), ("second", 0.57)):
+        lam = (home_xg + away_xg) * share
+        lines = {}
+        for line in (0.5, 1.5, 2.5):
+            over = 1 - poisson_cdf(int(line), lam)
+            lines[f"over_{line}"] = {"prob": round(over, 4),
+                                     "fair_odds": round(1 / over, 2) if over > 0.001 else 99}
+            lines[f"under_{line}"] = {"prob": round(1 - over, 4),
+                                      "fair_odds": round(1 / (1 - over), 2) if (1 - over) > 0.001 else 99}
+        # exact total goals in the half (somma goal tempo)
+        exact = {}
+        cum = 0.0
+        for k in range(4):
+            pk = poisson_pmf(k, lam)
+            cum += pk
+            exact[str(k)] = round(pk, 4)
+        exact["4+"] = round(max(0.0, 1 - cum), 4)
+        out[half] = {"expected": round(lam, 2), "over_under": lines, "exact": exact}
+    return out
+
+
 def compute_combos(home_xg: float, away_xg: float) -> dict:
     """Combo markets — JOINT probabilities from the score matrix.
 

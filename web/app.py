@@ -1213,6 +1213,8 @@ def _build_score_range_projection(pred: dict) -> dict | None:
         "team_odd_even": em.compute_team_odd_even(hxg, axg),
         "ribaltone": em.compute_ribaltone(hxg, axg),
         "combos": em.compute_combos(hxg, axg),
+        "team_win_to_nil": em.compute_team_win_to_nil(hxg, axg),
+        "half_goals": em.compute_half_goals_ou(hxg, axg),
     }
 
 
