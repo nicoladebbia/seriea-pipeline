@@ -1093,6 +1093,7 @@ def _comparative_matches_df():
         return None
     if _COMPARATIVE_CACHE["df"] is None or _COMPARATIVE_CACHE["mtime"] != mtime:
         cols = ["match_date", "home_team", "away_team", "referee",
+                "home_score", "away_score",
                 "home_corners", "away_corners", "home_fouls", "away_fouls",
                 "home_yellow_cards", "away_yellow_cards",
                 "home_shots_total", "away_shots_total",
@@ -1104,6 +1105,29 @@ def _comparative_matches_df():
         _COMPARATIVE_CACHE["df"] = df
         _COMPARATIVE_CACHE["mtime"] = mtime
     return _COMPARATIVE_CACHE["df"]
+
+
+def _grade_pick(pick: dict, actual: dict) -> bool | None:
+    """Did a best-bet pick hit, given the actual result? None if not gradable."""
+    key = pick.get("key", "")
+    sel = (pick.get("pick") or "").lower()
+    if key == "1x2_home":
+        return actual["result"] == "home"
+    if key == "1x2_away":
+        return actual["result"] == "away"
+    if key == "1x2_draw":
+        return actual["result"] == "draw"
+    if key == "ou_2.5":
+        return (actual["total_goals"] > 2.5) if "over" in sel else (actual["total_goals"] < 2.5)
+    if key == "btts":
+        return actual["btts"] if ("goal" in sel or "yes" in sel) else not actual["btts"]
+    if key.startswith("ref_cards"):
+        ln = float(key.split("_o")[-1])
+        return (actual["total_cards"] > ln) if "over" in sel else (actual["total_cards"] < ln)
+    if key.startswith("ref_fouls"):
+        ln = float(key.split("_o")[-1])
+        return (actual["total_fouls"] > ln) if "over" in sel else (actual["total_fouls"] < ln)
+    return None
 
 
 def _build_score_range_projection(pred: dict) -> dict | None:
@@ -1275,6 +1299,35 @@ def api_projections():
                 proj.get("total_cards"), proj.get("total_fouls"))
     except Exception as e:
         log.warning("best-bets skipped: %s", e)
+
+    # Results grading: for COMPLETED matches, attach the actual result and grade
+    # whether the ⭐ best-bet hit. Lets the user see if the predictions came true.
+    try:
+        import pandas as pd
+        _m = _comparative_matches_df()
+        if _m is not None and "home_score" in _m.columns:
+            for proj in projections:
+                row = _m[(_m["home_team"] == proj.get("home_team")) &
+                         (_m["away_team"] == proj.get("away_team"))].sort_values("match_date").tail(1)
+                if not len(row) or pd.isna(row.iloc[0].get("home_score")):
+                    continue
+                r = row.iloc[0]
+                hs, as_ = int(r["home_score"]), int(r["away_score"])
+                actual = {
+                    "score": f"{hs}-{as_}",
+                    "result": "home" if hs > as_ else ("away" if as_ > hs else "draw"),
+                    "total_goals": hs + as_,
+                    "total_cards": int((r.get("home_yellow_cards") or 0) + (r.get("away_yellow_cards") or 0)),
+                    "total_fouls": int((r.get("home_fouls") or 0) + (r.get("away_fouls") or 0)),
+                    "btts": hs > 0 and as_ > 0,
+                }
+                proj["actual"] = actual
+                # grade the best single bet
+                bs = (proj.get("best_bets") or {}).get("best_single")
+                if bs:
+                    proj["best_bets"]["best_single"]["hit"] = _grade_pick(bs, actual)
+    except Exception as e:
+        log.warning("results grading skipped: %s", e)
 
     # Attach odds-edge comparison when a book's odds are available.
     # comparison_odds.json is written by the Betfair client (or a sample);
