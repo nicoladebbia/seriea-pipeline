@@ -1108,15 +1108,23 @@ def _comparative_matches_df():
 
 
 def _grade_pick(pick: dict, actual: dict) -> bool | None:
-    """Did a best-bet pick hit, given the actual result? None if not gradable."""
+    """Did a pick hit, given the actual result? None if not gradable."""
     key = pick.get("key", "")
     sel = (pick.get("pick") or "").lower()
+    res = actual["result"]
     if key == "1x2_home":
-        return actual["result"] == "home"
+        return res == "home"
     if key == "1x2_away":
-        return actual["result"] == "away"
+        return res == "away"
     if key == "1x2_draw":
-        return actual["result"] == "draw"
+        return res == "draw"
+    if key == "double_chance":
+        if "1x" in sel or "or draw" in sel:
+            return res in ("home", "draw")
+        if "x2" in sel:
+            return res in ("draw", "away")
+        if "12" in sel:
+            return res in ("home", "away")
     if key == "ou_2.5":
         return (actual["total_goals"] > 2.5) if "over" in sel else (actual["total_goals"] < 2.5)
     if key == "btts":
@@ -1127,6 +1135,9 @@ def _grade_pick(pick: dict, actual: dict) -> bool | None:
     if key.startswith("ref_fouls"):
         ln = float(key.split("_o")[-1])
         return (actual["total_fouls"] > ln) if "over" in sel else (actual["total_fouls"] < ln)
+    if key == "corners_more":
+        # graded only if we have corner data on the actual row (handled by caller)
+        return None
     return None
 
 
@@ -1321,11 +1332,50 @@ def api_projections():
                     "total_fouls": int((r.get("home_fouls") or 0) + (r.get("away_fouls") or 0)),
                     "btts": hs > 0 and as_ > 0,
                 }
+                # add corners to actual for grading the corners-more market
+                actual["home_corners"] = int(r.get("home_corners") or 0)
+                actual["away_corners"] = int(r.get("away_corners") or 0)
                 proj["actual"] = actual
-                # grade the best single bet
+
+                # grade EVERY ranked candidate (all markets the engine considered)
+                ranked = (proj.get("best_bets") or {}).get("all_ranked", [])
+                graded = []
+                for c in ranked:
+                    hit = _grade_pick(c, actual)
+                    if c.get("key") == "corners_more" and actual.get("home_corners") is not None:
+                        hc, ac = actual["home_corners"], actual["away_corners"]
+                        sel = (c.get("pick") or "")
+                        if "+" in sel and proj.get("home_team", "") in sel:
+                            hit = hc > ac
+                        elif "+" in sel and proj.get("away_team", "") in sel:
+                            hit = ac > hc
+                        elif "pari" in sel.lower():
+                            hit = hc == ac
+                    if hit is None:
+                        continue
+                    graded.append({**c, "hit": bool(hit)})
+
+                # insights: what we recommended vs what actually won
+                rec_hit = [g for g in graded if g["recommended"] and g["hit"]]
+                rec_miss = [g for g in graded if g["recommended"] and not g["hit"]]
+                # MISSED OPPORTUNITY: high-confidence, hit, but NOT recommended (trust gate kept it off)
+                missed_opp = [g for g in graded if not g["recommended"] and g["hit"]
+                              and g["prob"] >= 0.60 and g["lift"] >= 0.08]
+                # GOOD SKIP: not recommended AND correctly didn't hit
+                good_skip = [g for g in graded if not g["recommended"] and not g["hit"]
+                             and g["prob"] >= 0.55]
                 bs = (proj.get("best_bets") or {}).get("best_single")
                 if bs:
                     proj["best_bets"]["best_single"]["hit"] = _grade_pick(bs, actual)
+                proj["grading"] = {
+                    "n_recommended_hit": len(rec_hit),
+                    "n_recommended_miss": len(rec_miss),
+                    "recommended": [{"market": g["market"], "pick": g["pick"],
+                                     "prob": g["prob"], "hit": g["hit"]} for g in (rec_hit + rec_miss)],
+                    "missed_opportunities": [{"market": g["market"], "pick": g["pick"],
+                                              "prob": g["prob"]} for g in missed_opp[:3]],
+                    "good_skips": [{"market": g["market"], "pick": g["pick"]} for g in good_skip[:3]],
+                }
     except Exception as e:
         log.warning("results grading skipped: %s", e)
 
