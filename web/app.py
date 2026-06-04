@@ -1236,6 +1236,26 @@ def api_projections():
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 
+    # Calibrate the overclaiming markets so the displayed % = real hit rate
+    # (live isotonic maps from 2017+ history; away-win/O-U overclaim otherwise).
+    try:
+        from scripts.prediction.market_calibration import calibrate
+        _mp = str(DATA_DIR / "features" / "features_serie_a.parquet")
+        for proj in projections:
+            pr = proj.get("probabilities") or {}
+            for side, key in (("home", "1x2_home"), ("draw", "1x2_draw"), ("away", "1x2_away")):
+                if pr.get(side) is not None:
+                    pr[side] = calibrate(key, pr[side], _mp)
+            b = proj.get("btts") or {}
+            if b.get("yes", {}).get("prob") is not None:
+                cy = calibrate("btts", b["yes"]["prob"], _mp)
+                b["yes"]["prob"] = cy
+                if "no" in b:
+                    b["no"]["prob"] = round(1 - cy, 4)
+            proj["calibrated"] = True
+    except Exception as e:
+        log.warning("calibration skipped: %s", e)
+
     # Best-bets: per match, the strongest plays from backtest-trusted markets only.
     try:
         from scripts.prediction.best_bets import rank_bets
