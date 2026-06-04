@@ -40,27 +40,19 @@ from typing import Optional
 # Who-wins family showed real skill (+0.010 held-out); goal-quantity markets were
 # at the noise floor — a flagged edge there is more likely model error than real value,
 # so they get a high bar AND a 'noise' warning the UI surfaces.
-MARKET_CONFIG = {
-    "1x2":            {"min_edge": 3.0, "trust": "skill"},
-    "double_chance":  {"min_edge": 3.0, "trust": "skill"},
-    "winning_margin": {"min_edge": 6.0, "trust": "noise"},   # direction has weak skill; magnitude noisy
-    "htft":           {"min_edge": 6.0, "trust": "noise"},
-    "over_under":     {"min_edge": 6.0, "trust": "noise"},   # goal-quantity = noise floor
-    "btts":           {"min_edge": 7.0, "trust": "noise"},
-    "multigol":       {"min_edge": 7.0, "trust": "noise"},
-    "team_totals":    {"min_edge": 7.0, "trust": "noise"},
-    "exact_score":    {"min_edge": 9.0, "trust": "noise"},   # high variance
-    "odd_even":       {"min_edge": 99.0, "trust": "noise"},  # coinflip → effectively off
-}
-GLOBAL_MIN_EDGE = 5.0
-MIN_ODDS = 1.20
-MAX_ODDS = 15.0
+# All thresholds + Kelly caps load from config/comparative_markets.json
+# (centralized, editable — mirror production betting_unified.py values).
+from config import comparative_markets as _cfg_loader  # noqa: E402
 
-# Staking — mirrors production betting_unified.py caps.
-KELLY_FRACTION = 0.05      # fractional Kelly (production default)
-MAX_STAKE_PCT = 2.5        # max single bet as % of bankroll
-MIN_STAKE_PCT = 0.20       # below this, edge too thin → no stake
-NOISE_KELLY_MULT = 0.5     # halve the stake on 'noise'-trust markets (less model trust)
+_OC = _cfg_loader.odds_comparison()
+MARKET_CONFIG = _OC.get("market_config", {})
+GLOBAL_MIN_EDGE = _OC.get("global_min_edge", 5.0)
+MIN_ODDS = _OC.get("min_odds", 1.20)
+MAX_ODDS = _OC.get("max_odds", 15.0)
+KELLY_FRACTION = _OC.get("kelly_fraction", 0.05)
+MAX_STAKE_PCT = _OC.get("max_stake_pct", 2.5)
+MIN_STAKE_PCT = _OC.get("min_stake_pct", 0.20)
+NOISE_KELLY_MULT = _OC.get("noise_kelly_mult", 0.5)
 
 
 def kelly_stake_pct(model_prob: float, odds: float, trust: str = "skill") -> float:

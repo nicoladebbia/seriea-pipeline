@@ -1203,10 +1203,11 @@ def api_projections():
     # Opponent-adjusted; fouls has real signal, corners/cards fall back to base rate.
     try:
         from scripts.prediction.comparative_markets import (
-            compute_expected_counts, all_comparative_markets,
+            compute_expected_counts, all_comparative_markets, compute_base_rates,
             total_cards_over_under, ref_card_avg, team_card_rate,
             total_fouls_over_under, ref_stat_avg, team_stat_rate)
         _matches = _comparative_matches_df()   # cached read (see helper)
+        _base_rates = compute_base_rates(_matches) if _matches is not None else {}
         # predictions.json carries the assigned referee per match
         ref_by_match = {p.get("match"): p.get("referee")
                         for p in (preds if isinstance(preds, list) else [])}
@@ -1214,7 +1215,7 @@ def api_projections():
             for proj in projections:
                 exp = compute_expected_counts(proj.get("home_team"), proj.get("away_team"), _matches)
                 if exp:
-                    proj["comparative"] = all_comparative_markets(exp)
+                    proj["comparative"] = all_comparative_markets(exp, base_rates=_base_rates)
                 # referee-aware total-cards O/U (the validated signal market)
                 ref = ref_by_match.get(proj.get("match"))
                 ra = ref_card_avg(ref, _matches) if ref else None

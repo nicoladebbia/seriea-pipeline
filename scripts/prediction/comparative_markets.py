@@ -23,22 +23,13 @@ from scipy.stats import skellam
 
 # Validated per-stat: does the opponent-adjusted model beat the base rate?
 # (skill > 0.01 on the 2026-06-03 walk-forward backtest). If not → show base rate.
-# confidence modes:
-#   "signal"   → show the full opponent-adjusted model %
-#   "shrunk"   → shrink the model % toward base rate by `shrink` (combats
-#                overconfidence while keeping real per-match signal)
-#   "low_diff" → show the base rate (model worse than base even shrunk)
-STAT_CONFIG = {
-    "fouls":        {"confidence": "signal", "skill": 0.016},
-    # corners: full model is overconfident (ECE 0.098) but the per-match signal is
-    # REAL (permutation-confirmed). Shrinking 0.3 toward base → skill +0.038, ECE
-    # 0.079 (held-out 2026-06-03). NOT low_diff — it differentiates per match.
-    "corners":      {"confidence": "shrunk", "skill": 0.038, "shrink": 0.3,
-                     "base_home_more": 0.554, "base_tie": 0.091},
-    "yellow_cards": {"confidence": "low_diff", "skill": -0.072, "base_home_more": 0.32, "base_tie": 0.18},
-    "shots_on_target_count": {"confidence": "low_diff", "skill": 0.0, "base_home_more": 0.55, "base_tie": 0.08},
-    "shots_total":  {"confidence": "low_diff", "skill": 0.0, "base_home_more": 0.56, "base_tie": 0.05},
-}
+# Confidence modes + the shrink coefficient are loaded from
+# config/comparative_markets.json (validated model hyperparameters, centralized
+# and editable). NO base rates here — those are computed live via
+# compute_base_rates(). Modes: signal | shrunk (toward live base rate) | low_diff.
+from config import comparative_markets as _cfg_loader  # noqa: E402
+
+STAT_CONFIG = _cfg_loader.comparative_stats()
 
 # Friendly market labels (Italian/tipster style)
 STAT_LABELS = {
@@ -63,16 +54,51 @@ def _skellam_outcomes(exp_home: float, exp_away: float) -> dict:
     return {"home_more": p_home_more, "tie": p_tie, "away_more": p_away_more}
 
 
-def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
+def compute_base_rates(matches_df, stats=("corners", "yellow_cards",
+                       "shots_on_target_count", "shots_total")) -> dict:
+    """Compute who-makes-more base rates LIVE from history (no hardcoding).
+
+    Returns {stat: {"home_more": p, "tie": p}}. Computed from all matches with the
+    stat, so it self-updates as data grows — never goes stale. The API computes
+    this once per request from the cached matches df and passes it in.
+    """
+    import pandas as pd
+    out = {}
+    for stat in stats:
+        hc, ac = f"home_{stat}", f"away_{stat}"
+        if hc not in matches_df.columns or ac not in matches_df.columns:
+            continue
+        d = matches_df.dropna(subset=[hc, ac])
+        if len(d) < 200:
+            continue
+        out[stat] = {
+            "home_more": float((d[hc] > d[ac]).mean()),
+            "tie": float((d[hc] == d[ac]).mean()),
+        }
+    return out
+
+
+def comparative_market(stat: str, exp_home: float, exp_away: float,
+                       base_rates: dict | None = None) -> dict:
     """One comparative market with confidence handling.
 
     exp_home/exp_away: opponent-adjusted expected counts for this match.
-    Returns probabilities + the derived 1X/X2/12 (DC-style) for the stat, plus a
-    confidence flag. For 'low_diff' stats, falls back to the validated base rate so
-    we never show a per-match number that's worse than guessing.
+    base_rates: live-computed {stat: {home_more, tie}} from compute_base_rates().
+    If absent, falls back to STAT_CONFIG values (kept only as a last resort).
+    Returns probabilities + the derived 1X/X2/12 (DC-style) + a confidence flag.
     """
     cfg = STAT_CONFIG.get(stat, {"confidence": "low_diff"})
     conf = cfg["confidence"]
+
+    # base rate: LIVE-computed only (no hardcoded fallback). If absent and the mode
+    # needs it (shrunk/low_diff), fall back to the model's own raw outcome rather
+    # than inventing a number.
+    br = (base_rates or {}).get(stat)
+    if br is None and conf in ("shrunk", "low_diff"):
+        # no live base rate available → use the raw model (honest, no hardcoding)
+        conf = "signal"
+    bhm = br.get("home_more") if br else None
+    bt = br.get("tie") if br else None
 
     if conf == "signal":
         o = _skellam_outcomes(exp_home, exp_away)
@@ -81,8 +107,6 @@ def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
         # real per-match signal but the raw model is overconfident → shrink toward
         # base rate (validated: corners shrink 0.3 → skill +0.038, ECE 0.079)
         w = cfg.get("shrink", 0.3)
-        bhm = cfg.get("base_home_more", 0.50)
-        bt = cfg.get("base_tie", 0.08)
         raw = _skellam_outcomes(exp_home, exp_away)
         hm = w * raw["home_more"] + (1 - w) * bhm
         tie = w * raw["tie"] + (1 - w) * bt
@@ -91,9 +115,7 @@ def comparative_market(stat: str, exp_home: float, exp_away: float) -> dict:
         o = {"home_more": hm / s, "tie": tie / s, "away_more": am / s}
         source = "model_shrunk"
     else:
-        # low differentiation → honest base rate (model per-match was worse than base)
-        bhm = cfg.get("base_home_more", 0.50)
-        bt = cfg.get("base_tie", 0.08)
+        # low differentiation → honest LIVE base rate
         o = {"home_more": bhm, "tie": bt, "away_more": max(0.0, 1 - bhm - bt)}
         source = "base_rate"
 
@@ -149,20 +171,25 @@ def team_stat_rate(team: str, matches_df, stat: str, window: int = 10):
 
 
 def total_fouls_over_under(ref_avg_fouls, home_foul_rate, away_foul_rate,
-                           lines=(25.5, 27.5)) -> dict | None:
+                           lines=None) -> dict | None:
     """Total-fouls Over/Under — referee-aware, second validated signal market.
 
     Same pattern as cards: referee sets the foul level (permutation-validated:
     real refs beat shuffled), teams modulate.
-      lambda = 0.5*ref_avg_fouls + 0.5*(home_rate + away_rate)
+      lambda = ref_weight*ref_avg + (1-ref_weight)*(home_rate + away_rate)
     Held-out (2026-06-03): Over 27.5 skill +0.035 ECE 0.025 (calibrated);
-    Over 25.5 skill +0.031 ECE 0.039. Lines below 25.5 are marginal — omitted.
+    Over 25.5 skill +0.031 ECE 0.039. ref_weight + lines from config.
     NOTE: ref_avg_fouls is already TOTAL scale (~28), not per-team.
     """
     from scipy.stats import poisson
+    from config import comparative_markets as _cfg
     if None in (ref_avg_fouls, home_foul_rate, away_foul_rate):
         return None
-    lam = max(1.0, 0.5 * ref_avg_fouls + 0.5 * (home_foul_rate + away_foul_rate))
+    rt = _cfg.referee_total_markets()
+    w = rt.get("ref_weight", 0.5)
+    if lines is None:
+        lines = rt.get("fouls", {}).get("lines", [25.5, 27.5])
+    lam = max(1.0, w * ref_avg_fouls + (1 - w) * (home_foul_rate + away_foul_rate))
     out = {"expected_total": round(lam, 1), "confidence": "signal",
            "ref_avg": round(ref_avg_fouls, 1), "lines": {}}
     for line in lines:
@@ -200,7 +227,7 @@ def team_card_rate(team: str, matches_df, window: int = 10):
 
 
 def total_cards_over_under(ref_avg_yellows, home_card_rate, away_card_rate,
-                           lines=(3.5, 4.5)) -> dict | None:
+                           lines=None) -> dict | None:
     """Total-cards Over/Under — referee-aware, the one VALIDATED comparative win.
 
     The referee sets the card level (permutation test 2026-06-03: ref identity
@@ -210,9 +237,14 @@ def total_cards_over_under(ref_avg_yellows, home_card_rate, away_card_rate,
     Returns None if inputs missing.
     """
     from scipy.stats import poisson
+    from config import comparative_markets as _cfg
     if None in (ref_avg_yellows, home_card_rate, away_card_rate):
         return None
-    lam = max(0.5, 0.5 * ref_avg_yellows + 0.5 * (home_card_rate + away_card_rate))
+    rt = _cfg.referee_total_markets()
+    w = rt.get("ref_weight", 0.5)
+    if lines is None:
+        lines = rt.get("cards", {}).get("lines", [3.5, 4.5])
+    lam = max(0.5, w * ref_avg_yellows + (1 - w) * (home_card_rate + away_card_rate))
     out = {"expected_total": round(lam, 2), "confidence": "signal",
            "ref_avg": round(ref_avg_yellows, 2), "lines": {}}
     for line in lines:
@@ -252,10 +284,6 @@ def compute_expected_counts(home_team: str, away_team: str, matches_df,
         against = [x for x in against if pd.notna(x)]
         return (np.mean(fors) if fors else None, np.mean(against) if against else None)
 
-    # empirical first-half share of each stat (corners/fouls/cards mostly even
-    # across halves; ~0.46 reflects slightly fewer events in the opening period)
-    HALF_SHARE = 0.46
-
     out = {}
     for stat in stats:
         hcol, acol = f"home_{stat}", f"away_{stat}"
@@ -271,16 +299,17 @@ def compute_expected_counts(home_team: str, away_team: str, matches_df,
         exp_h = L * (hf / L) * (aa / L)
         exp_a = L * (af / L) * (ha / L)
         out[stat] = (float(exp_h), float(exp_a))
-        # first-half variant (only for stats where it's a real Sisal market — corners)
-        if stat == "corners":
-            out[f"{stat}_1h"] = (float(exp_h * HALF_SHARE), float(exp_a * HALF_SHARE))
+        # NOTE: no first-half comparative — there is no first-half corner/foul/card
+        # data in the repo, so a 1H split would require an invented share constant.
+        # Dropped rather than fabricate a number.
     return out
 
 
-def all_comparative_markets(expected: dict) -> list:
+def all_comparative_markets(expected: dict, base_rates: dict | None = None) -> list:
     """All comparative markets for a match.
 
     expected: {stat: (exp_home, exp_away)} opponent-adjusted expectations.
+    base_rates: live-computed base rates from compute_base_rates() (no hardcoding).
     Returns a list of comparative_market dicts (full-match). First-half variants
     can be added by passing half-scaled expectations under e.g. 'corners_1h'.
     """
@@ -289,7 +318,7 @@ def all_comparative_markets(expected: dict) -> list:
         base = stat.replace("_1h", "")
         if base not in STAT_CONFIG:
             continue
-        m = comparative_market(base, eh, ea)
+        m = comparative_market(base, eh, ea, base_rates=base_rates)
         if stat.endswith("_1h"):
             m["period"] = "1h"
             m["label"] += " (1° tempo)"
