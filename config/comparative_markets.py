@@ -32,3 +32,11 @@ def referee_total_markets() -> dict:
 
 def odds_comparison() -> dict:
     return load().get("odds_comparison", {})
+
+
+def market_trust() -> dict:
+    return load().get("market_trust", {})
+
+
+def best_bets_cfg() -> dict:
+    return load().get("best_bets", {})

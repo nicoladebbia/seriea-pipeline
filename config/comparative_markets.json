@@ -19,6 +19,30 @@
     "fouls": { "lines": [25.5, 27.5] }
   },
 
+  "market_trust": {
+    "_comment": "Trust verdict per market from the 2026-06-03 harsh walk-forward backtest (2017+, FDR-corrected). 'trust' markets are recommended for best-bets; 'noise' are shown but never recommended. base_rate = the market's empirical home/over rate, used to compute confidence-above-base (lift). Edit when re-backtested.",
+    "1x2_home":        { "trust": "trust", "base_rate": 0.40 },
+    "1x2_away":        { "trust": "weak",  "base_rate": 0.32 },
+    "1x2_draw":        { "trust": "noise", "base_rate": 0.28 },
+    "ref_cards_o3.5":  { "trust": "weak",  "base_rate": 0.61 },
+    "ref_cards_o4.5":  { "trust": "trust", "base_rate": 0.41 },
+    "ref_fouls_o25.5": { "trust": "trust", "base_rate": 0.46 },
+    "ref_fouls_o27.5": { "trust": "trust", "base_rate": 0.32 },
+    "corners_more":    { "trust": "trust", "base_rate": 0.54 },
+    "ou_2.5":          { "trust": "ensemble_only", "base_rate": 0.48, "note": "Poisson-only backtest negative, but production ensemble O/U is CLV+ profitable" },
+    "btts":            { "trust": "noise", "base_rate": 0.51 },
+    "compare_fouls":   { "trust": "noise", "base_rate": 0.44 },
+    "compare_cards":   { "trust": "noise", "base_rate": 0.31 }
+  },
+
+  "best_bets": {
+    "_comment": "Best-bets engine settings. min_lift = min confidence-above-base to recommend. combo_max_legs = max combo size. Only 'trust' (+ ensemble_only for O/U) markets are recommended.",
+    "min_lift": 0.06,
+    "min_confidence": 0.55,
+    "combo_max_legs": 3,
+    "combo_min_joint": 0.30
+  },
+
   "odds_comparison": {
     "_comment": "Edge thresholds + Kelly caps. Mirror production betting_unified.py. min_edge per market from the calibration backtest (who-wins=low bar, goal-quantity=high bar).",
     "global_min_edge": 5.0,
