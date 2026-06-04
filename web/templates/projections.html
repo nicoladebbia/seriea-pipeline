@@ -276,7 +276,7 @@ function renderMatch(m) {
   return `
   <div class="pj-match">
     ${bestBetsBar}
-    <div class="pj-match__head" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
+    <div class="pj-match__head" onclick="const mm=this.closest('.pj-match');mm.querySelector('.pj-body').classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
       <div>
         <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team} ${vbBadge}</div>
         <div class="pj-match__meta">
@@ -328,7 +328,11 @@ fetch('/api/projections')
     }).join('');
     _pjC.innerHTML = html;
     const first = _pjC.querySelector('.pj-body');
-    if (first) { first.classList.add('open'); first.previousElementSibling.querySelector('.pj-chevron').classList.add('open'); }
+    if (first) {
+      first.classList.add('open');
+      const ch = first.closest('.pj-match').querySelector('.pj-chevron');
+      if (ch) ch.classList.add('open');
+    }
   })
   .catch(e => {
     _pjC.innerHTML = '<div class="pj-empty" style="color:#f87171;">Failed to load: ' + e.message + '<br><span style="font-size:11px;">(check the browser console — Cmd+Option+J)</span></div>';
