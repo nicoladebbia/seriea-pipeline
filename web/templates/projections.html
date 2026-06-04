@@ -65,8 +65,13 @@
   .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 14px 16px; }
 
   .pj-card { background: var(--bg-primary, rgba(0,0,0,0.15)); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 12px; }
+  .pj-card--dim { opacity: 0.74; }
+  .pj-card--dim:hover { opacity: 1; }
   .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary);
                     margin-bottom: 8px; font-weight: 700; }
+  .pj-trust { font-size: 8px; text-transform: none; letter-spacing: 0; border-radius: 3px; padding: 1px 4px; font-weight: 600; }
+  .pj-trust--ok { color: var(--green, #4ade80); background: rgba(74,222,128,0.12); }
+  .pj-trust--no { color: var(--text-tertiary, #888); background: rgba(148,163,184,0.12); }
   .pj-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 2px 0; }
   .pj-row__label { color: var(--text-secondary); }
   .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
@@ -112,9 +117,20 @@ function rows(items, topHighlight = true) {
     </div>`).join('');
 }
 
-function card(title, items, topHighlight = true) {
+// trust badge: 'signal' = validated (beats base / permutation), 'unvalidated' =
+// honest model probability with no proven edge (goal-quantity props are noise).
+function trustBadge(trust) {
+  if (trust === 'signal')
+    return ' <span class="pj-trust pj-trust--ok" title="validated: beats base rate / permutation-tested">signal</span>';
+  if (trust === 'unvalidated')
+    return ' <span class="pj-trust pj-trust--no" title="honest model probability — NOT validated, no proven edge (goal-quantity props tested as noise)">display</span>';
+  return '';
+}
+
+function card(title, items, topHighlight = true, trust = '') {
   if (!items || !items.length) return '';
-  return `<div class="pj-card"><div class="pj-card__title">${title}</div>${rows(items, topHighlight)}</div>`;
+  const cls = trust === 'unvalidated' ? ' pj-card--dim' : '';
+  return `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
 }
 
 // adapters: turn each market's shape into [{label, prob, fair_odds}]
@@ -149,42 +165,46 @@ function renderMatch(m) {
     away_by_1: `${A} by 1`, away_by_2: `${A} by 2`, away_by_3_plus: `${A} by 3+`,
   };
 
+  // Trust tier per card (user choice: all visible, badge tells trust).
+  // 'signal' = who-wins markets (1X2/DC, validated this session); 'unvalidated'
+  // = goal-quantity props (backtested as noise — honest display, no proven edge).
+  const S = 'signal', U = 'unvalidated';
   const cards = [
-    card('Most likely scores', fromList(m.exact_score, 'score')),
-    card('Multigol · total goals (independent ranges)', fromList(m.multi_goal, 'range'), false),
-    card('Half-time / Full-time', htft),
-    card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' })),
-    card('Double chance', fromDict(m.double_chance, { '1X': `${H} or Draw`, 'X2': 'Draw or ' + A, '12': `${H} or ${A}` })),
-    card('Winning margin', fromDict(m.winning_margin, marginLabel)),
-    card('Team totals', [...homeTot, ...awayTot], false),
+    card('Double chance', fromDict(m.double_chance, { '1X': `${H} or Draw`, 'X2': 'Draw or ' + A, '12': `${H} or ${A}` }), true, S),
+    card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' }), true, U),
+    card('Most likely scores', fromList(m.exact_score, 'score'), true, U),
+    card('Multigol · total goals (independent ranges)', fromList(m.multi_goal, 'range'), false, U),
+    card('Half-time / Full-time', htft, true, U),
+    card('Winning margin', fromDict(m.winning_margin, marginLabel), true, U),
+    card('Team totals', [...homeTot, ...awayTot], false, U),
     card('Goal in both halves', fromDict(m.goal_both_halves, {
       goal_both_halves_yes: 'Yes', goal_both_halves_no: 'No',
       home_scores_both_halves: `${H} both halves`, away_scores_both_halves: `${A} both halves`,
-    })),
-    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' })),
+    }), true, U),
+    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' }), true, U),
     card('Win to nil', fromDict(m.win_to_nil, {
       home_win_to_nil: `${H} win to nil`, away_win_to_nil: `${A} win to nil`,
       home_clean_sheet: `${H} clean sheet`, away_clean_sheet: `${A} clean sheet`,
-    })),
-    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A })),
-    card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A })),
-    card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' })),
-    card('Vince a 0 (win to nil)', fromDict(m.team_win_to_nil, { home_win_to_nil: `${H} a 0`, away_win_to_nil: `${A} a 0` })),
-    card('U/O 1° tempo', fromDict((m.half_goals||{}).first?.over_under, null), false),
-    card('U/O 2° tempo', fromDict((m.half_goals||{}).second?.over_under, null), false),
-    card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false),
-    card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' })),
-    card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' })),
-    card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' })),
+    }), true, U),
+    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A }), true, U),
+    card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A }), true, U),
+    card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' }), true, U),
+    card('Vince a 0 (win to nil)', fromDict(m.team_win_to_nil, { home_win_to_nil: `${H} a 0`, away_win_to_nil: `${A} a 0` }), true, U),
+    card('U/O 1° tempo', fromDict((m.half_goals||{}).first?.over_under, null), false, U),
+    card('U/O 2° tempo', fromDict((m.half_goals||{}).second?.over_under, null), false, U),
+    card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false, U),
+    card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' }), true, U),
+    card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' }), true, U),
+    card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' }), true, U),
     card('Combo: 1X2 + O/U 2.5', fromDict(m.combos, {
       '1_over': '1 & Over', '1_under': '1 & Under', 'X_over': 'X & Over', 'X_under': 'X & Under',
-      '2_over': '2 & Over', '2_under': '2 & Under' }, true), false),
+      '2_over': '2 & Over', '2_under': '2 & Under' }, true), false, U),
     card('Combo: result + Goal', fromDict(m.combos, {
       '1_gg': '1 & GG', '1_ng': '1 & NG', '2_gg': '2 & GG', '2_ng': '2 & NG',
-      '1X_gg': '1X & GG', 'X2_gg': 'X2 & GG' }, true), false),
+      '1X_gg': '1X & GG', 'X2_gg': 'X2 & GG' }, true), false, U),
     card('Combo Chance (either)', fromDict(m.combos, {
       '1_or_gg': '1 or GG', '1_or_over': '1 or Over', '2_or_gg': '2 or GG',
-      'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false),
+      'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false, U),
   ].filter(Boolean).join('');
 
   // shot markets (who has more shots — permutation-validated +0.10 signal)
@@ -239,18 +259,35 @@ function renderMatch(m) {
   let playerFloorsCard = '';
   if (m.player_floors && ((m.player_floors.home||[]).length || (m.player_floors.away||[]).length)) {
     const pf = m.player_floors;
+    // ORDER markets within a player's expanded breakdown, strongest signal first.
+    const MK_ORDER = ['shots_o15','shots_o05','shots_o25','sot_o05','sot_o15',
+                      'fouls_o05','fouls_o15','fouled_o05','goalscorer'];
     const side = (players, teamName) => {
       if (!players || !players.length) return '';
       const rows = players.map(p => {
         const n = (p.prior_matches || 0);
         const sub = (p.proj_minutes < 70)
           ? ` <span style="font-size:8px;color:var(--text-tertiary);">~${Math.round(p.proj_minutes)}'</span>` : '';
-        return `<div class="pj-row" title="${p.position} · ${n} prior matches · proj ${Math.round(p.proj_minutes)} min">
-          <span class="pj-row__label">${p.name}${sub}</span>
-          <span class="pj-row__prob">${p.headline.prob>=0.5?'':''}${pct(p.headline.prob)}</span>
-          <div class="pj-bar" style="width:${Math.max(2,p.headline.prob*100)}%;"></div>
-          <span style="font-size:8px;color:var(--text-tertiary);display:block;margin-top:-2px;">${p.headline.label}</span>
-        </div>`;
+        // full 8-market breakdown, ordered, with calibrated flag where set
+        const mk = p.markets || {};
+        const breakdown = MK_ORDER.filter(k => mk[k]).map(k => {
+          const v = mk[k];
+          const cal = v.calibrated ? ' <span style="color:#4ade80;" title="isotonic-calibrated">✓</span>' : '';
+          return `<div class="pj-row" style="font-size:11px;padding:1px 0;">
+            <span class="pj-row__label" style="font-size:10px;">${v.label}${cal}</span>
+            <span class="pj-row__prob" style="font-size:10px;">${pct(v.prob)}</span>
+            <div class="pj-bar" style="width:${Math.max(2,v.prob*100)}%;opacity:0.6;"></div>
+          </div>`;
+        }).join('');
+        return `<details class="pj-player" title="${p.position} · ${n} prior matches · proj ${Math.round(p.proj_minutes)} min">
+          <summary class="pj-row" style="cursor:pointer;list-style:none;">
+            <span class="pj-row__label">${p.name}${sub} <span style="font-size:8px;color:var(--text-tertiary);">${p.position}·${n}m</span></span>
+            <span class="pj-row__prob">${pct(p.headline.prob)}</span>
+            <div class="pj-bar" style="width:${Math.max(2,p.headline.prob*100)}%;"></div>
+            <span style="font-size:8px;color:var(--text-tertiary);display:block;margin-top:-2px;">${p.headline.label} ▸</span>
+          </summary>
+          <div style="padding:3px 0 5px 8px;border-left:1px solid rgba(168,85,247,0.3);margin:2px 0 4px;">${breakdown}</div>
+        </details>`;
       }).join('');
       return `<div style="font-size:9px;color:var(--text-tertiary);margin:4px 0 2px;font-weight:600;">${teamName}</div>${rows}`;
     };

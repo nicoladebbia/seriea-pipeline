@@ -1196,7 +1196,8 @@ def _attach_player_floors(proj_by_match: dict) -> None:
                     "proj_minutes": pl["proj_minutes"],
                     "prior_matches": pl.get("prior_matches", 0),
                     "headline": {"label": best["label"], "prob": best["prob"]},
-                    "markets": {k: {"label": mk[k]["label"], "prob": mk[k]["prob"]}
+                    "markets": {k: {"label": mk[k]["label"], "prob": mk[k]["prob"],
+                                    "calibrated": mk[k].get("calibrated", False)}
                                 for k in _FLOOR_DISPLAY_MARKETS if k in mk},
                 })
             rows.sort(key=lambda r: r["headline"]["prob"], reverse=True)
