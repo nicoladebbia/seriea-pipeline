@@ -1525,6 +1525,24 @@ def api_projections():
                     cp = calibrate("multigol_2_3", cell["prob"], _mp)
                     cell["prob"] = round(cp, 4)
                     cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+            # european handicap — home outcome at +1/+2 was miscalibrated (held-out
+            # 0.075 -> 0.034); calibrate the home leg + keep draw/away renormalized.
+            eh = proj.get("european_handicap") or {}
+            for lk, key in (("home_+1", "eh_home_+1"), ("home_+2", "eh_home_+2")):
+                line = eh.get(lk)
+                if isinstance(line, dict) and (line.get("home") or {}).get("prob") is not None:
+                    cp = calibrate(key, line["home"]["prob"], _mp)
+                    old = line["home"]["prob"]
+                    line["home"]["prob"] = round(cp, 4)
+                    line["home"]["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+                    # renormalize draw/away to keep the 3 outcomes summing to 1
+                    rem = max(0.0, 1.0 - cp)
+                    dr, aw = line.get("draw") or {}, line.get("away") or {}
+                    base = (dr.get("prob", 0) + aw.get("prob", 0)) or 1.0
+                    for cell in (dr, aw):
+                        if cell.get("prob") is not None:
+                            cell["prob"] = round(rem * cell["prob"] / base, 4)
+                            cell["fair_odds"] = round(1.0 / max(cell["prob"], 0.01), 2)
             proj["calibrated"] = True
     except Exception as e:
         log.warning("calibration skipped: %s", e)

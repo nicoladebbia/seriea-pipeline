@@ -280,6 +280,35 @@ function renderMatch(m) {
     </div>`;
   }
 
+  // European handicap (who-wins with a goal head-start — inherits 1X2, validated
+  // ECE 0.035). Shows the handicap lines with team names + 3 outcomes each.
+  let ehCard = '';
+  if (m.european_handicap && Object.keys(m.european_handicap).length) {
+    const eh = m.european_handicap;
+    // friendly line label: home_-1 = "Milan -1", home_+1 = "Milan +1"
+    const lineLabel = (k) => {
+      const sign = k.includes('-') ? '−' : '+';
+      const n = k.replace(/\D/g, '');
+      return `${H} ${sign}${n}`;
+    };
+    // show the two most common lines (-1 and +1) if present, else whatever exists
+    const order = ['home_-1', 'home_+1', 'home_-2', 'home_+2'].filter(k => eh[k]);
+    const blocks = order.slice(0, 2).map(k => {
+      const o = eh[k];
+      const outs = [
+        { label: H, prob: (o.home || {}).prob },
+        { label: 'Draw', prob: (o.draw || {}).prob },
+        { label: A, prob: (o.away || {}).prob },
+      ].filter(r => r.prob != null);
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:5px 0 2px;font-weight:600;">${lineLabel(k)}</div>`
+        + outs.map(r => `<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div></div>`).join('');
+    }).join('');
+    ehCard = `<div class="pj-card">
+      <div class="pj-card__title">Handicap europeo <span class="pj-trust pj-trust--ok" title="who-wins market, inherits validated 1X2 (ECE 0.035)">signal</span></div>
+      ${blocks}
+    </div>`;
+  }
+
   // player floor markets (shots / SoT / fouls O-U per likely starter)
   // Validated leak-free model — DISPLAY only, betting gated.
   let playerFloorsCard = '';
@@ -437,7 +466,7 @@ function renderMatch(m) {
       // cards/fouls + comparative + players. NOISE collapsed (goal-quantity props
       // + combos) — present for completeness, one click away, never buried-but-equal.
       const signalHtml = cards.filter(c => c.trust === 'signal').map(c => c.html).join('')
-        + shotsCard + totalCardsCard + totalFoulsCard + compCards + playerFloorsCard;
+        + shotsCard + totalCardsCard + totalFoulsCard + ehCard + compCards + playerFloorsCard;
       const noiseCards = cards.filter(c => c.trust !== 'signal');
       const noiseHtml = noiseCards.map(c => c.html).join('');
       const comboHtml = comboCards.map(c => c.html).join('');

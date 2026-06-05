@@ -21,6 +21,24 @@ import numpy as np
 _CACHE: dict = {"maps": None, "mtime": 0.0}
 
 
+def _eh_home_cover(d, line):
+    """Raw P(home covers a +line European handicap) per match, from the production
+    compute_european_handicap function — so the calibration map is fit on the same
+    probability the live API serves."""
+    from scripts.betting import extended_markets as EM
+    key = f"home_{'+' if line > 0 else ''}{line}"
+    out = []
+    hxg = d["poisson_home_xg"].values
+    axg = d["poisson_away_xg"].values
+    for i in range(len(d)):
+        try:
+            eh = EM.compute_european_handicap(max(.05, hxg[i]), max(.05, axg[i]))
+            out.append((eh.get(key, {}).get("home", {}) or {}).get("prob", float("nan")))
+        except Exception:
+            out.append(float("nan"))
+    return np.array(out, dtype=float)
+
+
 def _build_maps(matches_path):
     """Fit an isotonic calibration map per market from 2017+ history."""
     import pandas as pd
@@ -62,6 +80,11 @@ def _build_maps(matches_path):
         "tt_away_o1.5": (1 - poisson.cdf(1, d["poisson_away_xg"].values), (as_ > 1.5).astype(float)),
         "tt_away_o2.5": (1 - poisson.cdf(2, d["poisson_away_xg"].values), (as_ > 2.5).astype(float)),
         "multigol_2_3": (1 - poisson.cdf(1, lam) - (1 - poisson.cdf(3, lam)), ((tot >= 2) & (tot <= 3)).astype(float)),
+        # european handicap (home outcome at +1/+2 lines) — sweep found home_+1
+        # miscalibrated (held-out ECE 0.075 -> 0.034); -1/-2 lines were already fine.
+        # raw prob = P(home covers): derived from the same Poisson score grid.
+        "eh_home_+1": (_eh_home_cover(d, +1), ((hs - as_ + 1) > 0).astype(float)),
+        "eh_home_+2": (_eh_home_cover(d, +2), ((hs - as_ + 2) > 0).astype(float)),
     }
     maps = {}
     for key, (raw, y) in series.items():
