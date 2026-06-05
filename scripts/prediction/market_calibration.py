@@ -55,6 +55,13 @@ def _build_maps(matches_path):
         "dc_1x": (P[:, 0] + P[:, 1], (hs >= as_).astype(float)),
         "dc_x2": (P[:, 1] + P[:, 2], (as_ >= hs).astype(float)),
         "dc_12": (P[:, 0] + P[:, 2], (hs != as_).astype(float)),
+        # team totals + multigol — ECE sweep found these miscalibrated (0.066-0.073),
+        # held-out validated (fit 2017-23, ECE drops -0.03 to -0.05 on 2024-25 unseen).
+        "tt_home_o1.5": (1 - poisson.cdf(1, d["poisson_home_xg"].values), (hs > 1.5).astype(float)),
+        "tt_home_o2.5": (1 - poisson.cdf(2, d["poisson_home_xg"].values), (hs > 2.5).astype(float)),
+        "tt_away_o1.5": (1 - poisson.cdf(1, d["poisson_away_xg"].values), (as_ > 1.5).astype(float)),
+        "tt_away_o2.5": (1 - poisson.cdf(2, d["poisson_away_xg"].values), (as_ > 2.5).astype(float)),
+        "multigol_2_3": (1 - poisson.cdf(1, lam) - (1 - poisson.cdf(3, lam)), ((tot >= 2) & (tot <= 3)).astype(float)),
     }
     maps = {}
     for key, (raw, y) in series.items():

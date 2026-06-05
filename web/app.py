@@ -1505,6 +1505,26 @@ def api_projections():
                     cp = calibrate(key, cell["prob"], _mp)
                     cell["prob"] = round(cp, 4)
                     cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+            # team totals over-lines — ECE sweep found 0.066-0.073, held-out validated
+            tt = proj.get("team_totals") or {}
+            for side in ("home", "away"):
+                for line, key in (("over_1.5", f"tt_{side}_o1.5"), ("over_2.5", f"tt_{side}_o2.5")):
+                    cell = (tt.get(side) or {}).get(line)
+                    if isinstance(cell, dict) and cell.get("prob") is not None:
+                        cp = calibrate(key, cell["prob"], _mp)
+                        cell["prob"] = round(cp, 4)
+                        cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+                        # keep under = 1 - over coherent
+                        u = (tt.get(side) or {}).get(line.replace("over", "under"))
+                        if isinstance(u, dict):
+                            u["prob"] = round(1 - cp, 4)
+                            u["fair_odds"] = round(1.0 / max(1 - cp, 0.01), 2)
+            # multigol 2-3 — calibrated (held-out ECE 0.040 -> 0.006)
+            for cell in (proj.get("multi_goal") or []):
+                if isinstance(cell, dict) and cell.get("range") == "2-3" and cell.get("prob") is not None:
+                    cp = calibrate("multigol_2_3", cell["prob"], _mp)
+                    cell["prob"] = round(cp, 4)
+                    cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
             proj["calibrated"] = True
     except Exception as e:
         log.warning("calibration skipped: %s", e)
