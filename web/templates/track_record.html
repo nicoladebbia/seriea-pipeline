@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Track Record — SerieAI{% endblock %}
+{% block page_title %}Track Record{% endblock %}
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  What we predicted before each match vs what actually happened · ranked by edge over the base rate
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  .tr-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent);
+             border-radius: var(--radius-md); padding: 12px 16px; margin-bottom: 20px; font-size: 12px; color: var(--text-tertiary); }
+  .tr-note b { color: var(--text-secondary); }
+
+  .tr-summary { display: flex; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-6); }
+  .tr-stat { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+             padding: var(--space-4) var(--space-5); min-width: 140px; }
+  .tr-stat__value { font-size: 26px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); }
+  .tr-stat__label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-tertiary); margin-top: 2px; }
+
+  /* per-market scorecard rows */
+  .tr-market { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+               margin-bottom: var(--space-3); overflow: hidden; }
+  .tr-market > summary { list-style: none; cursor: pointer; padding: var(--space-4) var(--space-5);
+                         display: grid; grid-template-columns: 180px 1fr 110px 90px; gap: var(--space-4);
+                         align-items: center; user-select: none; }
+  .tr-market > summary::-webkit-details-marker { display: none; }
+  .tr-market[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+  .tr-market__name { font-size: 14px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+  .tr-market__name .chev { color: var(--text-tertiary); transition: transform 0.2s; font-size: 10px; }
+  .tr-market[open] .tr-market__name .chev { transform: rotate(90deg); }
+
+  /* the bar: hit rate fill + base-rate marker */
+  .tr-bar { position: relative; height: 22px; background: var(--bg-tertiary); border-radius: 6px; overflow: hidden; }
+  .tr-bar__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; }
+  .tr-bar__base { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-secondary); z-index: 2; }
+  .tr-bar__base::after { content: 'base'; position: absolute; top: -12px; left: -10px; font-size: 7px; color: var(--text-tertiary); white-space: nowrap; }
+  .tr-bar__label { position: absolute; left: 8px; top: 0; bottom: 0; display: flex; align-items: center;
+                   font-size: 12px; font-family: var(--font-mono); font-weight: 700; color: #fff; z-index: 3; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+
+  .tr-edge { text-align: right; font-family: var(--font-mono); font-weight: 700; font-size: 15px; }
+  .tr-edge--pos { color: var(--green); }
+  .tr-edge--neg { color: var(--red); }
+  .tr-edge__label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); font-weight: 600; }
+  .tr-record { text-align: right; font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
+  .tr-untrusted { font-size: 8px; color: var(--amber); background: var(--amber-muted); border-radius: 3px; padding: 1px 5px; }
+
+  /* match drill-down */
+  .tr-matches { padding: var(--space-3) var(--space-5) var(--space-4); }
+  .tr-match { display: grid; grid-template-columns: 1fr 70px 90px 40px; gap: var(--space-3); align-items: center;
+              padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+  .tr-match:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .tr-match__teams { color: var(--text-secondary); }
+  .tr-match__score { font-family: var(--font-mono); color: var(--accent); font-weight: 700; text-align: center; }
+  .tr-match__pick { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 11px; }
+  .tr-match__verdict { text-align: center; font-weight: 700; font-size: 13px; }
+  .tr-hit { color: var(--green); }
+  .tr-miss { color: var(--red); }
+  .tr-matches__head { display: grid; grid-template-columns: 1fr 70px 90px 40px; gap: var(--space-3);
+                      padding: 0 8px 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
+
+  .tr-empty { padding: 48px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="tr-note">
+  <b>What this is:</b> every prediction below was archived <b>before kickoff</b> (genuine pre-match snapshot,
+  zero hindsight), then graded against the actual result. The <b>edge</b> column is what matters — hit rate minus
+  the base rate (the best you'd do always picking the most common outcome). A market only has real skill if its
+  edge is positive. Goal-quantity markets (BTTS, O/U) show negative edge — exactly as the backtests predicted.
+</div>
+
+<div id="tr-container"><div class="tr-empty">Loading track record…</div></div>
+
+<script>
+(function () {
+  const C = document.getElementById('tr-container');
+  const pct = (x) => (x * 100).toFixed(1) + '%';
+  const signed = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1);
+
+  fetch('/api/track-record')
+    .then(r => r.json())
+    .then(d => {
+      const mkts = d.markets || [];
+      if (!mkts.length) { C.innerHTML = '<div class="tr-empty">No graded predictions yet.</div>'; return; }
+
+      // summary stats across all markets
+      const totalCalls = mkts.reduce((s, m) => s + m.n, 0);
+      const positiveEdge = mkts.filter(m => m.edge > 0).length;
+
+      const summary = `<div class="tr-summary">
+        <div class="tr-stat"><div class="tr-stat__value">${d.n_matches}</div><div class="tr-stat__label">matches graded</div></div>
+        <div class="tr-stat"><div class="tr-stat__value">${mkts.length}</div><div class="tr-stat__label">markets tracked</div></div>
+        <div class="tr-stat"><div class="tr-stat__value" style="color:var(--green);">${positiveEdge}</div><div class="tr-stat__label">beat the base rate</div></div>
+      </div>`;
+
+      const rows = mkts.map(m => {
+        const edgeCls = m.edge >= 0 ? 'tr-edge--pos' : 'tr-edge--neg';
+        const fillColor = m.edge >= 0.02 ? 'var(--green)' : (m.edge >= -0.02 ? 'var(--text-tertiary)' : 'var(--red)');
+        const basePos = (m.base_rate * 100).toFixed(1);
+        const fillW = Math.max(2, m.hit_rate * 100);
+        const untrusted = m.trusted ? '' : `<span class="tr-untrusted" title="n=${m.n} — small sample">small n</span>`;
+
+        const matchRows = (m.matches || []).map(x => `
+          <div class="tr-match">
+            <span class="tr-match__teams">${x.match}</span>
+            <span class="tr-match__score">${x.score}</span>
+            <span class="tr-match__pick">${x.pick} · ${pct(x.prob)}</span>
+            <span class="tr-match__verdict ${x.hit ? 'tr-hit' : 'tr-miss'}">${x.hit ? '✓' : '✗'}</span>
+          </div>`).join('');
+
+        return `<details class="tr-market">
+          <summary>
+            <span class="tr-market__name"><span class="chev">▶</span>${m.market} ${untrusted}</span>
+            <div class="tr-bar">
+              <div class="tr-bar__fill" style="width:${fillW}%;background:${fillColor};opacity:0.7;"></div>
+              <div class="tr-bar__base" style="left:${basePos}%;" title="base rate ${pct(m.base_rate)}"></div>
+              <span class="tr-bar__label">${pct(m.hit_rate)}</span>
+            </div>
+            <div class="tr-edge ${edgeCls}">${signed(m.edge)}<div class="tr-edge__label">edge vs base</div></div>
+            <div class="tr-record">${m.hits}/${m.n}<br><span style="font-size:9px;">base ${pct(m.base_rate)}</span></div>
+          </summary>
+          <div class="tr-matches">
+            <div class="tr-matches__head"><span>match</span><span style="text-align:center;">score</span><span>our call</span><span style="text-align:center;">hit</span></div>
+            ${matchRows}
+          </div>
+        </details>`;
+      }).join('');
+
+      C.innerHTML = summary + rows;
+    })
+    .catch(e => { C.innerHTML = '<div class="tr-empty" style="color:var(--red);">Failed to load: ' + e.message + '</div>'; });
+})();
+</script>
+{% endblock %}

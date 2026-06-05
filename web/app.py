@@ -1080,6 +1080,14 @@ def projections_page():
     return resp
 
 
+@app.route("/track-record")
+@app.route("/track")
+def track_record_page():
+    resp = app.make_response(render_template("track_record.html", active_page="track_record"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
 _PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
 
@@ -1406,6 +1414,129 @@ def _build_score_range_projection(pred: dict) -> dict | None:
         "team_win_to_nil": em.compute_team_win_to_nil(hxg, axg),
         "half_goals": em.compute_half_goals_ou(hxg, axg),
     }
+
+
+_TRACKREC_CACHE: dict = {"data": None, "mtime": 0.0}
+
+
+def _build_track_record():
+    """Grade every ARCHIVED pre-match prediction against the actual result.
+
+    Honest track record (advisor): predictions_archive.json holds genuine
+    pre-kickoff snapshots (archived_at < kickoff) — zero leak, unlike
+    regenerating with the trained model. Rolls up per-market hit rate WITH
+    base rate + n so a high hit-rate can't masquerade as skill when the base
+    is already high. ~134 matches join to an actual result.
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import poisson
+
+    arch = _load_json(UPCOMING_DIR / "predictions_archive.json", {})
+    if not isinstance(arch, dict) or not arch:
+        return {"markets": [], "n_matches": 0}
+    mpath = DATA_DIR / "parsed" / "matches.parquet"
+    try:
+        m = pd.read_parquet(mpath, columns=["match_date", "home_team", "away_team",
+                                            "home_score", "away_score"])
+    except Exception:
+        return {"markets": [], "n_matches": 0}
+    m = m.dropna(subset=["home_score", "away_score"]).copy()
+    m["key"] = (m["home_team"] + " vs " + m["away_team"] + "_"
+                + pd.to_datetime(m["match_date"]).dt.strftime("%Y-%m-%d"))
+    res = {r["key"]: r for _, r in m.iterrows()}
+
+    # market -> {n, hits, outcomes (count of each actual outcome for base rate), matches[]}
+    # base rate = best fixed-pick strategy on the SAME matches (max outcome frequency),
+    # so "DC 77.6%" is judged against "always pick 1X ~73%" — the structural floor.
+    mk: dict = {}
+
+    def add(name, pick, hit, prob, actual_outcome, match, score, dt):
+        d = mk.setdefault(name, {"n": 0, "hits": 0, "outcomes": {}, "matches": []})
+        d["n"] += 1
+        d["hits"] += int(hit)
+        d["outcomes"][actual_outcome] = d["outcomes"].get(actual_outcome, 0) + 1
+        d["matches"].append({"match": match, "date": dt, "score": score,
+                             "pick": pick, "hit": bool(hit), "prob": round(float(prob), 3)})
+
+    n_matches = 0
+    for k, p in arch.items():
+        if k not in res:
+            continue
+        r = res[k]
+        hs, as_ = int(r["home_score"]), int(r["away_score"])
+        tot = hs + as_
+        pr = p.get("probabilities") or {}
+        hxg, axg = p.get("home_xg"), p.get("away_xg")
+        if not pr:
+            continue
+        n_matches += 1
+        match = p.get("match", k.rsplit("_", 1)[0])
+        dt = p.get("date", "")
+        score = f"{hs}-{as_}"
+        act = "home" if hs > as_ else ("away" if as_ > hs else "draw")
+        # 1X2 — our call is the top outcome; base outcome = the actual result
+        call = max(pr, key=pr.get)
+        add("1X2", call.upper(), call == act, pr[call], act, match, score, dt)
+        # Double chance — two-way cover; base outcome = which DC class the result falls in.
+        # For base rate we record ALL covering classes? No — record the single class our
+        # framing tracks: the actual result maps to whichever DC pick would've covered it.
+        dcp = "1X" if call in ("home", "draw") else "X2"
+        dch = (act in ("home", "draw")) if dcp == "1X" else (act in ("draw", "away"))
+        dcprob = (pr.get("home", 0) + pr.get("draw", 0)) if dcp == "1X" else (pr.get("draw", 0) + pr.get("away", 0))
+        # base outcome for DC = the most-frequent DC class: '1X' covers home+draw, 'X2'
+        # covers draw+away. We tag by the result so the rollup's max-freq = best fixed DC.
+        dc_class = "1X" if act in ("home", "draw") else "X2"
+        add("Double Chance", dcp, dch, dcprob, dc_class, match, score, dt)
+        # goal markets from xg (Poisson)
+        if hxg and axg:
+            lam = hxg + axg
+            pov = 1 - poisson.cdf(2, lam)
+            cou = "Over 2.5" if pov >= 0.5 else "Under 2.5"
+            add("O/U 2.5", cou, (tot > 2.5) == (pov >= 0.5), max(pov, 1 - pov),
+                "Over" if tot > 2.5 else "Under", match, score, dt)
+            pb = (1 - np.exp(-hxg)) * (1 - np.exp(-axg))
+            cb = "Yes" if pb >= 0.5 else "No"
+            add("BTTS", cb, ((hs > 0 and as_ > 0)) == (pb >= 0.5), max(pb, 1 - pb),
+                "Yes" if (hs > 0 and as_ > 0) else "No", match, score, dt)
+
+    # roll up — base rate = best fixed-pick strategy on the SAME matches (max outcome
+    # frequency). edge = hit_rate - base_rate is what actually shows skill (advisor:
+    # DC 77.6% vs ~73% base = +4.6 edge, NOT a 77% genius bar). Rank by EDGE.
+    MIN_N = 20
+    markets = []
+    for name, d in mk.items():
+        if d["n"] == 0:
+            continue
+        rate = d["hits"] / d["n"]
+        base = max(d["outcomes"].values()) / d["n"] if d["outcomes"] else 0.0
+        markets.append({
+            "market": name,
+            "hit_rate": round(rate, 4),
+            "base_rate": round(base, 4),
+            "edge": round(rate - base, 4),
+            "hits": d["hits"],
+            "n": d["n"],
+            "trusted": d["n"] >= MIN_N,
+            "matches": sorted(d["matches"], key=lambda x: x["date"], reverse=True),
+        })
+    markets.sort(key=lambda x: -x["edge"])
+    return {"markets": markets, "n_matches": n_matches,
+            "source": "predictions_archive (pre-kickoff snapshots) — ranked by edge over best fixed pick"}
+
+
+@app.route("/api/track-record")
+def api_track_record():
+    """Per-market hit rate from archived pre-match predictions (cached)."""
+    arch_path = UPCOMING_DIR / "predictions_archive.json"
+    try:
+        mtime = arch_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _TRACKREC_CACHE["data"] is None or _TRACKREC_CACHE["mtime"] != mtime:
+        _TRACKREC_CACHE["data"] = _build_track_record()
+        _TRACKREC_CACHE["mtime"] = mtime
+    return jsonify(_TRACKREC_CACHE["data"])
 
 
 @app.route("/api/projections")
