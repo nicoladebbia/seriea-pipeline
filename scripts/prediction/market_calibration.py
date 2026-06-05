@@ -50,6 +50,11 @@ def _build_maps(matches_path):
         "ou_3.5": (1 - poisson.cdf(3, lam), (tot > 3.5).astype(float)),
         "btts": ((1 - np.exp(-d["poisson_home_xg"].values)) * (1 - np.exp(-d["poisson_away_xg"].values)),
                  ((hs > 0) & (as_ > 0)).astype(float)),
+        # double chance — sums of the 1X2 Poisson outcomes; backtest showed ECE 0.075
+        # (inherits real 1X2 skill but the displayed % was off). Calibrate each leg.
+        "dc_1x": (P[:, 0] + P[:, 1], (hs >= as_).astype(float)),
+        "dc_x2": (P[:, 1] + P[:, 2], (as_ >= hs).astype(float)),
+        "dc_12": (P[:, 0] + P[:, 2], (hs != as_).astype(float)),
     }
     maps = {}
     for key, (raw, y) in series.items():

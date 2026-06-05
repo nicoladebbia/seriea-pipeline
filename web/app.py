@@ -1497,6 +1497,14 @@ def api_projections():
                 b["yes"]["prob"] = cy
                 if "no" in b:
                     b["no"]["prob"] = round(1 - cy, 4)
+            # double chance — backtest showed ECE 0.075 (miscalibrated); calibrate each leg
+            dc = proj.get("double_chance") or {}
+            for leg, key in (("1X", "dc_1x"), ("X2", "dc_x2"), ("12", "dc_12")):
+                cell = dc.get(leg)
+                if isinstance(cell, dict) and cell.get("prob") is not None:
+                    cp = calibrate(key, cell["prob"], _mp)
+                    cell["prob"] = round(cp, 4)
+                    cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
             proj["calibrated"] = True
     except Exception as e:
         log.warning("calibration skipped: %s", e)
