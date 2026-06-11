@@ -2664,16 +2664,21 @@ def _wc_ladder_legs(p: dict) -> list[tuple[float, str]]:
     return legs
 
 
-# Ladder leg selection band: floor 0.55 (no coin-flip rungs), cap 0.85
-# (shorter than ~1.18 fair odds compounds too slowly to be worth a rung).
-WC_LADDER_BAND = (0.55, 0.85)
+# Ladder tiers. "safe" takes the HIGHEST-prob leg inside its band (steady
+# compounding); "risk" takes the LOWEST-prob leg inside its band — longest
+# odds that still clear the 40% floor, so each rung roughly doubles. Same
+# honest math either way: min-odds gate + cumulative survival shown.
+WC_LADDER_TIERS = {
+    "safe": {"band": (0.55, 0.85), "pick": "safest", "title": "🪜 Safe ladder"},
+    "risk": {"band": (0.40, 0.70), "pick": "longest", "title": "🎲 Risk ladder"},
+}
 
 
-def _build_daily_ladder(stake: float = 10.0) -> str:
-    """Kickoff-ordered ladder over today's slate: one best-band leg per match,
-    each rung staking the full return of the previous one. All payouts shown
-    at OUR FAIR ODDS (= 1/prob): that is the MINIMUM SISAL price to accept —
-    if the book pays less than the rung's 'min odds', skip the rung."""
+def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
+    """Kickoff-ordered ladder over today's slate: one band-qualifying leg per
+    match, each rung staking the full return of the previous one. All payouts
+    shown at OUR FAIR ODDS (= 1/prob): that is the MINIMUM SISAL price to
+    accept — if the book pays less than the rung's 'min odds', skip the rung."""
     import json as _json
     from zoneinfo import ZoneInfo
 
@@ -2698,15 +2703,17 @@ def _build_daily_ladder(stake: float = 10.0) -> str:
     if not slate:
         return "🪜 No remaining fixtures today — ladder starts with tomorrow's slate."
 
-    lo, hi = WC_LADDER_BAND
-    lines = [f"🪜 <b>Ladder — {today.strftime('%A %d %B')}</b> (start €{stake:.0f}, "
+    cfg = WC_LADDER_TIERS.get(tier, WC_LADDER_TIERS["safe"])
+    lo, hi = cfg["band"]
+    lines = [f"{cfg['title']} — <b>{today.strftime('%A %d %B')}</b> (start €{stake:.0f}, "
              "each rung bets the previous return)", ""]
     bank = stake
     surv = 1.0
     rung = 0
     for ko, p in slate:
-        legs = _wc_ladder_legs(p)
-        pick = next((leg for leg in legs if lo <= leg[0] <= hi), None)
+        in_band = [leg for leg in _wc_ladder_legs(p) if lo <= leg[0] <= hi]
+        # safest = highest prob in band; longest = lowest prob in band
+        pick = (in_band[0] if cfg["pick"] == "safest" else in_band[-1]) if in_band else None
         ko_txt = ko.astimezone(rome).strftime("%H:%M")
         match = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
         if not pick:
@@ -2725,7 +2732,8 @@ def _build_daily_ladder(stake: float = 10.0) -> str:
         )
         bank = ret
     if rung == 0:
-        return "🪜 Nothing in the confidence band today — no ladder, that's the discipline."
+        return (f"{cfg['title']}: nothing in the {lo:.0%}–{hi:.0%} band today — "
+                "no ladder, that's the discipline.")
     lines += [
         "",
         f"💰 Full ladder at min odds: €{stake:.0f} → €{bank:.2f} "
@@ -2735,6 +2743,8 @@ def _build_daily_ladder(stake: float = 10.0) -> str:
         "above min raise the payout. Stop any time; banking a rung is always "
         "allowed; never chase a broken ladder.",
     ]
+    if tier == "safe":
+        lines.append("🎲 Spicier version: /ladder risk")
     return "\n".join(lines)
 
 
@@ -2778,7 +2788,8 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                 from zoneinfo import ZoneInfo
                 day_key = f"ladder_{now.astimezone(ZoneInfo('Europe/Rome')).date()}"
                 if day_key not in sent:
-                    _tg_send_message(token, chat_id, _build_daily_ladder())
+                    _tg_send_message(token, chat_id, _build_daily_ladder(tier="safe"))
+                    _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
                     sent[day_key] = now.isoformat()
         if changed:
             WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
@@ -2959,7 +2970,8 @@ def run_bot():
                     response_text = _handle_worldcup()
                 elif cmd in ("/ladder", "/scala"):
                     _tg_send_typing(token, chat_id)
-                    response_text = _build_daily_ladder()
+                    _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
+                    response_text = _build_daily_ladder(tier=_tier)
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
