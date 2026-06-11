@@ -2717,7 +2717,7 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
     from zoneinfo import ZoneInfo
 
     try:
-        doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "predictions.json").read_text())
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
     except (OSError, ValueError):
         return "🪜 No predictions on disk."
     preds = doc.get("predictions", []) if isinstance(doc, dict) else []
@@ -2816,7 +2816,7 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
         return
     _WC_ALERT_LAST_CHECK["t"] = now_ts
     try:
-        doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "predictions.json").read_text())
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
         preds = doc.get("predictions", []) if isinstance(doc, dict) else []
         if not preds:
             return
