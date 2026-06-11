@@ -2574,7 +2574,8 @@ def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
         f"X {probs.get('draw', 0):.0%} / {away} {probs.get('away', 0):.0%}",
     ]
     if fam:
-        ts = " · ".join(f"{h}-{a} {pr:.0%}" for (h, a), pr in fam["top_scores"])
+        ts = " · ".join(f"{h}-{a} {pr:.0%} (min {1 / pr:.1f})"
+                        for (h, a), pr in fam["top_scores"] if pr > 0)
         lines.append(f"📊 Top scores: {ts}")
         lines.append(
             f"⚽ BTTS No {fam['btts_no']:.0%} · Over 2.5: {fam['over25']:.0%}"
@@ -2745,6 +2746,31 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
     ]
     if tier == "safe":
         lines.append("🎲 Spicier version: /ladder risk")
+    if tier == "risk":
+        # Score shot of the day: the slate's strongest exact-score conviction.
+        # SINGLE bet, not a rung — laddering 14% legs is a lottery (2% over two
+        # rungs); a top-conviction score at min odds is a longshot WITH a thesis.
+        best = None
+        for _ko, p in slate:
+            lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+            if not (lh and la):
+                continue
+            g = _wc_grid(lh, la)
+            (h, a), pr = max(g.items(), key=lambda kv: kv[1])
+            if best is None or pr > best[0]:
+                nxt = sorted(g.items(), key=lambda kv: -kv[1])[1]
+                best = (pr, h, a, nxt, p)
+        if best:
+            pr, h, a, ((h2, a2), pr2), p = best
+            m = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
+            lines += [
+                "",
+                f"🎯 <b>Score shot of the day</b>: {m} → <b>{h}-{a}</b> "
+                f"(our {pr:.0%}, <b>min odds {1 / pr:.1f}</b>)",
+                f"   cover: add {h2}-{a2} ({pr2:.0%}, min {1 / pr2:.1f}) — "
+                f"together {pr + pr2:.0%} that one of the two lands",
+                "   single bet, flat stake — exact scores do NOT ladder.",
+            ]
     return "\n".join(lines)
 
 
