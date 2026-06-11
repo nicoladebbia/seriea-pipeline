@@ -8,7 +8,13 @@ dist/
 build/
 config/api_keys.json
 *.log
+logs/
+*.pid
 .DS_Store
+
+# Local agent/tool state (per-machine, never shared)
+.claude/
+.serena/
 
 # CatBoost training artifacts
 catboost_info/
