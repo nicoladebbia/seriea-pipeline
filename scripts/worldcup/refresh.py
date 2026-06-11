@@ -121,9 +121,18 @@ def main() -> None:
     _run("scripts.worldcup.sofascore_fetch", "--lineups")
     _run("scripts.worldcup.sofascore_fetch", "--refresh-stats")
     _run("scripts.worldcup.availability")
+    _run("scripts.worldcup.knockout")
     _run("scripts.worldcup.generate_predictions", "--sims", "10000")
     _run("scripts.worldcup.players")
     _run("scripts.worldcup.grading")
+    _run("scripts.worldcup.combos")
+
+    # Morning Telegram digest (slate + best combos): once per UTC day, not
+    # before 07:00 UTC (09:00 Italy) — a post-midnight tick must not ping.
+    today = datetime.now(UTC).date().isoformat()
+    if state.get("last_wc_digest") != today and datetime.now(UTC).hour >= 7:
+        if _run("scripts.pipeline.telegram_bot", "--wc-digest", timeout=120):
+            state["last_wc_digest"] = today
 
     r = subprocess.run(  # noqa: S603 — fixed argv, absolute path
         ["/bin/launchctl", "kickstart", "-k",

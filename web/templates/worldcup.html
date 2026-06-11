@@ -107,6 +107,77 @@
   .wc-road-group { font-size: 10px; font-weight: 800; color: var(--accent); padding: 12px 6px 4px; text-transform: uppercase; letter-spacing: 0.6px; }
   .wc-tdetail { display: none; padding: 6px 6px 12px; }
   .wc-tdetail.open { display: block; }
+
+  /* Predicted tournament — pannable bracket + all-matches table (.wcb-*) */
+  .wcb-toggle { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+  .wcb-toggle button { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 5px; cursor: pointer;
+                       border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-tertiary); }
+  .wcb-toggle button.active { color: var(--accent); border-color: var(--accent); background: rgba(96,165,250,0.10); }
+  .wcb-hint { font-size: 9px; color: var(--text-tertiary); align-self: center; }
+
+  .wcb-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 6px; padding-top: 8px; }
+  .wcb-group { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 7px 9px; }
+  .wcb-group__title { font-size: 9px; font-weight: 800; color: var(--accent); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
+  .wcb-group .row { display: flex; justify-content: space-between; gap: 6px; font-size: 10.5px; padding: 1.5px 0; color: var(--text-secondary); }
+  .wcb-group .row b { color: var(--text-primary); font-weight: 600; }
+  .wcb-group .row.out { opacity: 0.45; }
+  .wcb-group .adv { font-family: var(--font-mono); font-size: 9px; color: var(--text-tertiary); }
+  .wcb-pos { display: inline-block; min-width: 26px; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 8.5px; }
+
+  .wcb-wrap { position: relative; overflow: auto; max-height: 80vh; border: 1px solid var(--border-subtle);
+              border-radius: var(--radius-lg); background: var(--bg-primary); cursor: grab; user-select: none; }
+  .wcb-wrap.panning { cursor: grabbing; }
+  .wcb-inner { position: relative; display: flex; gap: 28px; padding: 16px 22px; width: max-content; }
+  .wcb-svg { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+  .wcb-colwrap { display: flex; flex-direction: column; width: 200px; z-index: 1; }
+  .wcb-col__head { text-align: center; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px;
+                   color: var(--text-tertiary); padding-bottom: 10px; }
+  .wcb-col { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 8px; }
+
+  .wcb-match { position: relative; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 8px;
+               padding: 6px 8px; font-size: 11px; z-index: 1; transition: border-color 0.15s, box-shadow 0.15s; }
+  .wcb-match:hover { border-color: var(--accent); }
+  .wcb-match--champ { border-color: rgba(250,204,21,0.45); box-shadow: 0 0 14px rgba(250,204,21,0.07); }
+  .wcb-match__meta { display: flex; justify-content: space-between; gap: 6px; font-size: 8px; color: var(--text-tertiary);
+                     font-family: var(--font-mono); margin-bottom: 4px; white-space: nowrap; overflow: hidden; }
+  .wcb-pair { color: #facc15; flex-shrink: 0; }
+  .wcb-team { display: flex; align-items: center; gap: 5px; padding: 2.5px 5px; border-radius: 4px; color: var(--text-secondary);
+              position: relative; overflow: hidden; }
+  .wcb-team .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; position: relative; z-index: 1; }
+  .wcb-team .fl, .wcb-team .adv { position: relative; z-index: 1; }
+  .wcb-team .adv { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-tertiary); }
+  .wcb-team--adv { color: var(--text-primary); }
+  .wcb-team--adv .adv { color: var(--green, #4ade80); font-weight: 700; }
+  .wcb-team--out { opacity: 0.55; }
+  .wcb-team .bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: 0.10; z-index: 0; }
+  .wcb-team--adv .bar { background: var(--green, #4ade80); opacity: 0.13; }
+  .wcb-score { text-align: center; font-family: var(--font-mono); font-size: 10px; color: var(--accent); font-weight: 700; padding: 1px 0; }
+  .wcb-score .et { color: var(--text-tertiary); font-weight: 400; font-size: 8px; }
+
+  .wcb-center { display: flex; flex-direction: column; justify-content: center; gap: 14px; }
+  .wcb-champ { text-align: center; background: linear-gradient(180deg, rgba(250,204,21,0.10), transparent);
+               border: 1px solid rgba(250,204,21,0.45); border-radius: 10px; padding: 12px 8px; }
+  .wcb-champ .cup { font-size: 26px; line-height: 1.2; }
+  .wcb-champ .who { font-size: 15px; font-weight: 800; color: var(--text-primary); margin: 2px 0; }
+  .wcb-champ .odds { font-size: 9.5px; color: var(--text-tertiary); font-family: var(--font-mono); }
+
+  .wcb-tablewrap { overflow: auto; max-height: 74vh; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+  .wcb-table { width: 100%; border-collapse: collapse; font-size: 11.5px; min-width: 860px; }
+  .wcb-table th { position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; font-size: 9px; text-transform: uppercase;
+                  letter-spacing: 0.5px; color: var(--text-tertiary); text-align: left; padding: 8px 10px;
+                  border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.12)); white-space: nowrap; }
+  .wcb-table th.sortable { cursor: pointer; user-select: none; }
+  .wcb-table th.sortable:hover, .wcb-table th.sorted { color: var(--accent); }
+  .wcb-table td { padding: 6px 10px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); white-space: nowrap; }
+  .wcb-table tr:hover td { background: rgba(255,255,255,0.025); }
+  .wcb-table tr.clickable { cursor: pointer; }
+  .wcb-table .score { font-family: var(--font-mono); color: var(--accent); font-weight: 700; text-align: center; }
+  .wcb-table .num { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; }
+  .wcb-table .pick { font-weight: 700; color: var(--text-primary); }
+  .wcb-tri { display: flex; width: 110px; height: 6px; border-radius: 3px; overflow: hidden;
+             background: var(--bg-tertiary, rgba(255,255,255,0.04)); }
+  .wcb-tri span { height: 100%; }
+  .wcb-ko-chip { font-size: 8px; color: #facc15; background: rgba(250,204,21,0.10); border-radius: 3px; padding: 1px 4px; }
 </style>
 {% endblock %}
 
@@ -128,6 +199,17 @@
 <div class="wc-section" id="wc-combo-section" style="display:none;">
   <div class="wc-section__title">🎯 Best combos to play — next 48h</div>
   <div id="wc-combos"></div>
+</div>
+
+<div class="wc-section">
+  <div class="wc-section__title">🗺️ Predicted tournament — every match, every score</div>
+  <div class="wcb-toggle" id="wcb-toggle">
+    <button data-v="bracket" class="active">🏟 Bracket</button>
+    <button data-v="table">📋 All 104 matches</button>
+    <span class="wcb-hint" id="wcb-hint"></span>
+  </div>
+  <div id="wcb-bracket"><div class="pj-empty">Loading bracket…</div></div>
+  <div id="wcb-table" style="display:none;"></div>
 </div>
 
 <div class="wc-section">
@@ -213,8 +295,30 @@ function renderModelLine(model, playerModel) {
 }
 
 // ---------------------------------------------------------------- record --
+function comboRecordCard(cr) {
+  // Settled combo tickets vs what we promised (scripts/worldcup/combos.py).
+  if (!cr || !cr.n_graded) return '';
+  const icons = { safe: '🔒', favorites: '⭐', value: '💎' };
+  const tierRows = Object.entries(cr.tiers || {}).map(([k, t]) => `
+    <div class="pj-row">
+      <span class="pj-row__label">${icons[k] || '🎯'} <b>${k}</b>
+        <span class="wc-combo-leg-meta">${t.n} ${t.n === 1 ? 'ticket' : 'tickets'} settled · promised ${t.expected_hit_rate != null ? (t.expected_hit_rate * 100).toFixed(0) + '%' : '—'} hit rate</span></span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <span class="pj-row__odds">${t.roi != null ? 'ROI ' + (t.roi >= 0 ? '+' : '') + (t.roi * 100).toFixed(0) + '%' : 'unpriced'}</span>
+        <span class="pj-row__prob">${t.hits}/${t.n} hit</span>
+      </span>
+    </div>`).join('');
+  return `
+    <div class="pj-card" style="max-width:560px;margin-top:10px;">
+      <div class="pj-card__title">🎯 Combo tickets — settled vs promised</div>
+      ${tierRows}
+      <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;">Each ticket = a combo shown on this page, frozen at the last refresh before its first leg kicked off, graded only when every leg settled. "Promised" = mean combined probability (the calibration bar). ROI = flat 1-unit stakes at the archived Sofascore-proxy odds.</div>
+    </div>`;
+}
+
 function renderRecord(rec) {
-  if (!rec || !rec.n_graded) return;  // section stays hidden until reality arrives
+  const combosGraded = rec && rec.combos && rec.combos.n_graded;
+  if (!rec || (!rec.n_graded && !combosGraded)) return;  // hidden until reality arrives
   const sec = document.getElementById('wc-record-section');
   const c = document.getElementById('wc-record');
   const signed = (a, b) => a == null || b == null ? '' :
@@ -228,7 +332,7 @@ function renderRecord(rec) {
       </div>
       <div style="font-size:9px;color:var(--text-tertiary);">"System" = the deployed 0.4 model / 0.6 market blend, frozen at the last refresh before each kickoff and immutable after. Knockouts graded on the reconstructed 90-minute result. Lower Brier is better; small samples swing wildly — judge after 20+ matches.</div>
     </div>`;
-  const rows = rec.matches.slice(-12).reverse().map(m => `
+  const rows = (rec.matches || []).slice(-12).reverse().map(m => `
     <div class="pj-row" title="system Brier ${m.brier_system}${m.brier_market != null ? ' · market ' + m.brier_market : ''} · base ${m.brier_base}">
       <span class="pj-row__label">${m.date} · ${m.match} <b>${m.score}</b></span>
       <span style="display:flex;gap:8px;align-items:center;">
@@ -236,7 +340,8 @@ function renderRecord(rec) {
         <span class="pj-row__prob">${m.hit ? '✅' : '❌'}</span>
       </span>
     </div>`).join('');
-  c.innerHTML = headline + `<div class="pj-card" style="max-width:560px;">${rows}</div>`;
+  c.innerHTML = (rec.n_graded ? headline + `<div class="pj-card" style="max-width:560px;">${rows}</div>` : '')
+    + comboRecordCard(rec.combos);
   sec.style.display = '';
 }
 
@@ -459,6 +564,333 @@ function renderRoad(sim) {
     b.addEventListener('click', () => { roadView = b.dataset.view; renderRoad(sim); }));
 }
 
+// ---------------------------------------------------- predicted tournament --
+// Bracket data comes from simulation.json:bracket — the single most-likely
+// tournament (greedy standings + Annex C + engine advance probs), with
+// P(this exact pairing) on every card so the display stays honest.
+const FLAG_ISO = {
+  'Algeria': 'DZ', 'Argentina': 'AR', 'Australia': 'AU', 'Austria': 'AT', 'Belgium': 'BE',
+  'Bosnia and Herzegovina': 'BA', 'Brazil': 'BR', 'Cabo Verde': 'CV', 'Canada': 'CA',
+  'Colombia': 'CO', 'Congo DR': 'CD', 'Croatia': 'HR', 'Curaçao': 'CW', 'Czechia': 'CZ',
+  "Côte d'Ivoire": 'CI', 'Ecuador': 'EC', 'Egypt': 'EG', 'France': 'FR', 'Germany': 'DE',
+  'Ghana': 'GH', 'Haiti': 'HT', 'IR Iran': 'IR', 'Iraq': 'IQ', 'Japan': 'JP', 'Jordan': 'JO',
+  'Korea Republic': 'KR', 'Mexico': 'MX', 'Morocco': 'MA', 'Netherlands': 'NL',
+  'New Zealand': 'NZ', 'Norway': 'NO', 'Panama': 'PA', 'Paraguay': 'PY', 'Portugal': 'PT',
+  'Qatar': 'QA', 'Saudi Arabia': 'SA', 'Senegal': 'SN', 'South Africa': 'ZA', 'Spain': 'ES',
+  'Sweden': 'SE', 'Switzerland': 'CH', 'Tunisia': 'TN', 'Türkiye': 'TR', 'USA': 'US',
+  'Uruguay': 'UY', 'Uzbekistan': 'UZ',
+};
+function flag(team) {
+  if (team === 'England') return '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}';
+  if (team === 'Scotland') return '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
+  const iso = FLAG_ISO[team];
+  if (!iso) return '🏳️';
+  return String.fromCodePoint(...[...iso].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+}
+
+const STAGE_SHORT = { group: 'Group', round_of_32: 'R32', round_of_16: 'R16',
+                      quarter_final: 'QF', semi_final: 'SF', third_place: '3rd place', final: 'Final' };
+let _wcbDraw = null;  // redraw closure (resize / view toggle)
+
+function renderBracket(br, sim, el) {
+  const byN = {};
+  br.matches.forEach(m => { byN[m.match_number] = m; });
+  const final = br.matches.find(m => m.stage === 'final');
+  const third = br.matches.find(m => m.stage === 'third_place');
+  if (!final || !final.home_source || !final.away_source) {
+    el.innerHTML = '<div class="pj-empty">Bracket data incomplete — regenerate the simulation.</div>';
+    return;
+  }
+
+  // Champion's predicted run — these cards and edges go gold.
+  const champPath = new Set();
+  let cur = final;
+  while (cur) {
+    champPath.add(cur.match_number);
+    const nh = cur.home_source && byN[cur.home_source];
+    const na = cur.away_source && byN[cur.away_source];
+    cur = (nh && nh.advances === br.champion) ? nh
+        : (na && na.advances === br.champion) ? na : null;
+  }
+
+  // Halves of the tree by source recursion (order preserves adjacency).
+  const expand = root => {
+    const levels = [[root]];
+    for (;;) {
+      const next = [];
+      for (const m of levels[levels.length - 1]) {
+        if (m.home_source && byN[m.home_source]) next.push(byN[m.home_source]);
+        if (m.away_source && byN[m.away_source]) next.push(byN[m.away_source]);
+      }
+      if (!next.length) break;
+      levels.push(next);
+    }
+    return levels;  // [SF], [QF×2], [R16×4], [R32×8]
+  };
+  const left = expand(byN[final.home_source]);
+  const right = expand(byN[final.away_source]);
+
+  const teamRow = (m, side) => {
+    const t = m[side];
+    const adv = m.prediction.advance[side];
+    const cls = m.advances === t ? 'wcb-team--adv' : 'wcb-team--out';
+    return '<div class="wcb-team ' + cls + '">'
+      + '<span class="fl">' + flag(t) + '</span><span class="nm">' + t + '</span>'
+      + '<span class="adv">' + pct(adv) + '</span>'
+      + '<div class="bar" style="width:' + Math.max(3, adv * 100) + '%;"></div></div>';
+  };
+  const scoreLine = m => {
+    const p = m.prediction;
+    const parts = p.predicted_score.split('-');
+    const drawish = parts[0] === parts[1];
+    const et = drawish
+      ? ' <span class="et">→ ' + m.advances + ' in ET/pens</span>' : '';
+    return '<div class="wcb-score">' + parts[0] + ' – ' + parts[1] + et + '</div>';
+  };
+  const tip = m => {
+    const p = m.prediction;
+    const lines = [
+      'Match ' + m.match_number + ' · ' + m.city + ' · ' + m.date + ' · slots ' + m.slots,
+      m.resolved ? 'Teams confirmed.'
+        : 'This exact tie happens in ' + (m.pairing_prob * 100).toFixed(1) + '% of sims.',
+    ];
+    const alts = (m.alt_pairings || []).map(x => x.teams + ' ' + (x.prob * 100).toFixed(0) + '%').join(' · ');
+    if (alts && !m.resolved) lines.push('Likeliest ties here: ' + alts);
+    const wins = (m.win_slot || []).map(x => x.team + ' ' + (x.prob * 100).toFixed(0) + '%').join(' · ');
+    if (wins) lines.push('Most likely to win this slot: ' + wins);
+    lines.push('90′: ' + m.home + ' ' + pct(p.probs.home) + ' · draw ' + pct(p.probs.draw)
+      + ' · ' + m.away + ' ' + pct(p.probs.away));
+    lines.push('Top scores: ' + p.top_scores.map(s => s.score + ' ' + (s.prob * 100).toFixed(0) + '%').join(' · '));
+    return lines.join('\n');
+  };
+  const matchCard = m => {
+    const champCls = champPath.has(m.match_number) ? ' wcb-match--champ' : '';
+    const pairChip = m.resolved
+      ? '<span class="wcb-pair" title="teams confirmed">✓ set</span>'
+      : '<span class="wcb-pair" title="probability this exact tie happens">' + (m.pairing_prob * 100).toFixed(0) + '%</span>';
+    return '<div class="wcb-match' + champCls + '" data-mn="' + m.match_number + '" title="' + tip(m) + '">'
+      + '<div class="wcb-match__meta"><span>' + STAGE_SHORT[m.stage] + ' · ' + (m.date || '').slice(5)
+      + ' · ' + m.city + '</span>' + pairChip + '</div>'
+      + teamRow(m, 'home') + scoreLine(m) + teamRow(m, 'away') + '</div>';
+  };
+  const colWrap = (title, ms) => '<div class="wcb-colwrap"><div class="wcb-col__head">' + title
+    + '</div><div class="wcb-col">' + (ms || []).map(matchCard).join('') + '</div></div>';
+
+  // Champion banner — and the honest footnote when the single most-likely
+  // bracket crowns someone other than the highest marginal title chance.
+  const teamsSorted = sim.teams || [];
+  const champStat = teamsSorted.find(t => t.team === br.champion) || {};
+  const topMarginal = teamsSorted[0] || {};
+  const caveat = (topMarginal.team && topMarginal.team !== br.champion)
+    ? '<div class="odds" style="margin-top:3px;">highest overall title chance is '
+      + topMarginal.team + ' ' + pct1(topMarginal.champion) + ' — this is the single most-likely bracket, not the marginal</div>'
+    : '';
+  const center = '<div class="wcb-colwrap"><div class="wcb-col__head">Final · ' + ((final.date || '')) + '</div>'
+    + '<div class="wcb-center">'
+    + '<div class="wcb-champ"><div class="cup">🏆</div><div class="who">' + flag(br.champion) + ' ' + br.champion + '</div>'
+    + '<div class="odds">predicted champion · lifts it in ' + pct1(champStat.champion || 0) + ' of sims</div>' + caveat + '</div>'
+    + matchCard(final)
+    + (third ? matchCard(third) : '')
+    + '</div></div>';
+
+  el.innerHTML = groupStrip(br, sim)
+    + '<div class="wcb-wrap" id="wcb-pan"><div class="wcb-inner" id="wcb-canvas">'
+    + '<svg class="wcb-svg" id="wcb-svg" xmlns="http://www.w3.org/2000/svg"></svg>'
+    + colWrap('Round of 32', left[3]) + colWrap('Round of 16', left[2])
+    + colWrap('Quarter-finals', left[1]) + colWrap('Semi-final', left[0])
+    + center
+    + colWrap('Semi-final', right[0]) + colWrap('Quarter-finals', right[1])
+    + colWrap('Round of 16', right[2]) + colWrap('Round of 32', right[3])
+    + '</div></div>';
+
+  // Connector elbows, gold along the champion's run. Drawn after layout.
+  const drawConnectors = () => {
+    const svg = document.getElementById('wcb-svg');
+    const inner = document.getElementById('wcb-canvas');
+    if (!svg || !inner || !inner.offsetParent) return;
+    const ir = inner.getBoundingClientRect();
+    svg.setAttribute('width', inner.scrollWidth);
+    svg.setAttribute('height', inner.scrollHeight);
+    svg.setAttribute('viewBox', '0 0 ' + inner.scrollWidth + ' ' + inner.scrollHeight);
+    const pos = {};
+    inner.querySelectorAll('.wcb-match').forEach(c => {
+      const r = c.getBoundingClientRect();
+      pos[c.dataset.mn] = { left: r.left - ir.left, right: r.right - ir.left,
+                            y: r.top - ir.top + r.height / 2, cx: r.left - ir.left + r.width / 2 };
+    });
+    let paths = '';
+    br.matches.forEach(m => {
+      if (m.stage === 'third_place') return;  // SF losers — not a flow line
+      ['home_source', 'away_source'].forEach(k => {
+        const src = m[k];
+        const a = src && pos[src], b = pos[m.match_number];
+        if (!a || !b) return;
+        const fromLeft = a.cx < b.cx;
+        const x1 = fromLeft ? a.right : a.left;
+        const x2 = fromLeft ? b.left : b.right;
+        const midX = (x1 + x2) / 2;
+        const gold = champPath.has(m.match_number) && champPath.has(src);
+        paths += '<path d="M ' + x1 + ' ' + a.y + ' H ' + midX + ' V ' + b.y + ' H ' + x2
+          + '" fill="none" stroke="' + (gold ? 'rgba(250,204,21,0.75)' : 'rgba(148,163,184,0.28)')
+          + '" stroke-width="' + (gold ? 2 : 1.2) + '"/>';
+      });
+    });
+    svg.innerHTML = paths;
+  };
+  _wcbDraw = drawConnectors;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    drawConnectors();
+    const wrap = document.getElementById('wcb-pan');
+    if (wrap) wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2;  // open on the final
+  }));
+
+  // Drag to pan (mouse/pen; touch keeps native scroll).
+  const wrap = document.getElementById('wcb-pan');
+  let pan = null;
+  wrap.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch') return;
+    pan = { x: e.clientX, y: e.clientY, l: wrap.scrollLeft, t: wrap.scrollTop };
+    wrap.classList.add('panning');
+    wrap.setPointerCapture(e.pointerId);
+  });
+  wrap.addEventListener('pointermove', e => {
+    if (!pan) return;
+    wrap.scrollLeft = pan.l - (e.clientX - pan.x);
+    wrap.scrollTop = pan.t - (e.clientY - pan.y);
+  });
+  ['pointerup', 'pointercancel'].forEach(ev =>
+    wrap.addEventListener(ev, () => { pan = null; wrap.classList.remove('panning'); }));
+}
+
+function groupStrip(br, sim) {
+  const st = br.standings || {};
+  const advOf = {};
+  Object.values((sim || {}).groups || {}).forEach(rs => rs.forEach(r => { advOf[r.team] = r.advance; }));
+  const cards = Object.keys(st).sort().map(L => {
+    const o = st[L];
+    const rows = o.order.map((t, i) => {
+      const through = i < 2 || (i === 2 && o.third_qualifies);
+      const tag = i === 0 ? '1st' : i === 1 ? '2nd' : i === 2 ? (o.third_qualifies ? '3rd✓' : '3rd✗') : '4th';
+      return '<div class="row' + (through ? '' : ' out') + '" title="advances in ' + pct(advOf[t] || 0) + ' of sims">'
+        + '<span><span class="wcb-pos">' + tag + '</span>' + flag(t) + ' <b>' + t + '</b></span>'
+        + '<span class="adv">' + pct(advOf[t] || 0) + '</span></div>';
+    }).join('');
+    return '<div class="wcb-group"><div class="wcb-group__title">Group ' + L + '</div>' + rows + '</div>';
+  }).join('');
+  return '<details style="margin-bottom:10px;"><summary style="cursor:pointer;font-size:10px;color:var(--text-tertiary);user-select:none;padding:2px 0 4px;">'
+    + '▸ Predicted group finishes — who feeds this bracket (greedy most-likely order · % = advance chance)</summary>'
+    + '<div class="wcb-groups">' + cards + '</div></details>';
+}
+
+function renderAllMatches(br, projections, el) {
+  const rows = [];
+  projections.forEach(m => {
+    const conf = Math.max(m.probabilities.home, m.probabilities.draw, m.probabilities.away);
+    rows.push({
+      mn: m.match_number, date: (m.date || '') + ' ' + (m.time || ''), sortKey: m.kickoff_utc || m.date || '',
+      stage: m.stage === 'group' ? 'group' : m.stage,
+      stageTxt: m.stage === 'group' ? 'Group ' + (m.group || '') : (STAGE_SHORT[m.stage] || m.stage),
+      home: m.home_team, away: m.away_team,
+      score: ((m.exact_score || [])[0] || {}).score || '—',
+      probs: m.probabilities, conf,
+      pick: conf === m.probabilities.home ? m.home_team : conf === m.probabilities.away ? m.away_team : 'Draw',
+      link: true, pairing: null,
+    });
+  });
+  const seen = new Set(rows.map(r => r.mn));
+  (br.matches || []).forEach(m => {
+    if (seen.has(m.match_number)) return;  // resolved KOs already have real projections
+    const p = m.prediction;
+    const conf = Math.max(p.advance.home, p.advance.away);
+    rows.push({
+      mn: m.match_number, date: m.date, sortKey: m.date + 'T99', stage: m.stage,
+      stageTxt: STAGE_SHORT[m.stage] || m.stage, home: m.home, away: m.away,
+      score: p.predicted_score, probs: p.probs, conf, pick: m.advances,
+      link: false, pairing: m.resolved ? null : m.pairing_prob,
+    });
+  });
+
+  const state = { sort: 'date', dir: 1, filter: 'all' };
+  const tri = p => {
+    const t = 'H ' + pct(p.home) + ' · D ' + pct(p.draw) + ' · A ' + pct(p.away);
+    return '<div class="wcb-tri" title="' + t + '">'
+      + '<span style="width:' + (p.home * 100) + '%;background:var(--green,#4ade80);opacity:0.65;"></span>'
+      + '<span style="width:' + (p.draw * 100) + '%;background:#94a3b8;opacity:0.40;"></span>'
+      + '<span style="width:' + (p.away * 100) + '%;background:#f87171;opacity:0.55;"></span></div>';
+  };
+  const draw = () => {
+    let view = rows.filter(r => state.filter === 'all'
+      || (state.filter === 'group' ? r.stage === 'group' : r.stage !== 'group'));
+    view = view.sort((a, b) => state.sort === 'conf'
+      ? state.dir * (b.conf - a.conf)
+      : state.dir * String(a.sortKey).localeCompare(String(b.sortKey)) || a.mn - b.mn);
+    const body = view.map(r => {
+      const pairing = r.pairing != null
+        ? ' <span class="wcb-ko-chip" title="probability this exact tie happens — knockout pairings are projections until the groups resolve">if tie · ' + (r.pairing * 100).toFixed(0) + '%</span>' : '';
+      return '<tr class="' + (r.link ? 'clickable' : '') + '"' + (r.link ? ' data-link="' + r.mn + '"' : '')
+        + ' title="' + (r.link ? 'click for the full market card' : 'projected knockout — appears in match projections once teams are set') + '">'
+        + '<td class="num">' + r.mn + '</td>'
+        + '<td class="num">' + r.date + '</td>'
+        + '<td>' + r.stageTxt + pairing + '</td>'
+        + '<td style="text-align:right;">' + flag(r.home) + ' ' + r.home + '</td>'
+        + '<td class="score">' + r.score.replace('-', ' – ') + '</td>'
+        + '<td>' + r.away + ' ' + flag(r.away) + '</td>'
+        + '<td>' + tri(r.probs) + '</td>'
+        + '<td><span class="pick">' + r.pick + '</span> <span class="num">' + pct(r.conf) + '</span></td></tr>';
+    }).join('');
+    el.innerHTML =
+      '<div class="wcb-toggle" style="margin-bottom:8px;">'
+      + ['all', 'group', 'knockout'].map(f => '<button data-f="' + f + '" class="' + (state.filter === f ? 'active' : '') + '">'
+          + (f === 'all' ? 'All' : f === 'group' ? 'Group stage' : 'Knockout') + '</button>').join('')
+      + '<span class="wcb-hint">predicted score = most likely scoreline · pick % = ' + 'model confidence (knockouts: chance to advance)</span></div>'
+      + '<div class="wcb-tablewrap"><table class="wcb-table"><thead><tr>'
+      + '<th>#</th><th class="sortable' + (state.sort === 'date' ? ' sorted' : '') + '" data-s="date">Kick-off (UTC) ' + (state.sort === 'date' ? (state.dir > 0 ? '↑' : '↓') : '') + '</th>'
+      + '<th>Stage</th><th style="text-align:right;">Home</th><th>Score</th><th>Away</th><th>H · D · A</th>'
+      + '<th class="sortable' + (state.sort === 'conf' ? ' sorted' : '') + '" data-s="conf">Model pick ' + (state.sort === 'conf' ? (state.dir > 0 ? '↓' : '↑') : '') + '</th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    el.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => {
+      state.filter = b.dataset.f; draw();
+    }));
+    el.querySelectorAll('th.sortable').forEach(h => h.addEventListener('click', () => {
+      if (state.sort === h.dataset.s) state.dir = -state.dir; else { state.sort = h.dataset.s; state.dir = 1; }
+      draw();
+    }));
+    el.querySelectorAll('tr[data-link]').forEach(tr => tr.addEventListener('click', () => {
+      const t = document.getElementById('wcm-' + tr.dataset.link);
+      if (!t) return;
+      t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const bd = t.querySelector('.pj-body'), ch = t.querySelector('.pj-chevron');
+      if (bd && !bd.classList.contains('open')) { bd.classList.add('open'); if (ch) ch.classList.add('open'); }
+    }));
+  };
+  draw();
+}
+
+function renderTournament(sim, projections) {
+  const bEl = document.getElementById('wcb-bracket');
+  const tEl = document.getElementById('wcb-table');
+  const hint = document.getElementById('wcb-hint');
+  const br = (sim || {}).bracket;
+  if (!br || !br.matches || !br.matches.length) {
+    bEl.innerHTML = '<div class="pj-empty">No bracket in simulation.json — run scripts.worldcup.generate_predictions.</div>';
+    return;
+  }
+  const HINT_B = 'drag to pan · hover a match for the likeliest ties + scores · gold path = predicted champion’s run';
+  const HINT_T = 'sortable + filterable · click a group-stage row to jump to its full market card';
+  renderBracket(br, sim, bEl);
+  renderAllMatches(br, projections || [], tEl);
+  hint.textContent = HINT_B;
+  document.querySelectorAll('#wcb-toggle button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('#wcb-toggle button').forEach(x => x.classList.toggle('active', x === b));
+    const showBracket = b.dataset.v === 'bracket';
+    bEl.style.display = showBracket ? '' : 'none';
+    tEl.style.display = showBracket ? 'none' : '';
+    hint.textContent = showBracket ? HINT_B : HINT_T;
+    if (showBracket && _wcbDraw) requestAnimationFrame(_wcbDraw);
+  }));
+  window.addEventListener('resize', () => { if (_wcbDraw) _wcbDraw(); });
+}
+
 // --------------------------------------------------------------- matches --
 function renderMatch(m) {
   const H = m.home_team, A = m.away_team;
@@ -662,7 +1094,7 @@ function renderMatch(m) {
     ? `<span title="${nOut} reported absence${nOut > 1 ? 's' : ''} — open for team news" style="margin-left:6px;font-size:10px;">🩹</span>` : '';
 
   return `
-  <div class="pj-match">
+  <div class="pj-match" id="wcm-${m.match_number}">
     <div class="pj-match__head" onclick="const mm=this.closest('.pj-match');mm.querySelector('.pj-body').classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
       <div>
         <div class="pj-match__teams">${H} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${A}${groupChip}${confChip}${absChip}</div>
@@ -731,6 +1163,11 @@ Promise.all([
   renderModelLine(api.model || {}, api.player_model || {});
   renderRecord(rec);
   renderCombos(api.best_combos);
+  try { renderTournament(sim, api.projections || []); }
+  catch (err) {
+    document.getElementById('wcb-bracket').innerHTML =
+      '<div class="pj-empty">⚠ Bracket failed: ' + err.message + '</div>';
+  }
   renderSim(sim, api.golden_boot || []);
   renderRoad(sim);
   renderMatches(api.projections);
@@ -739,6 +1176,7 @@ Promise.all([
   document.getElementById('wc-matches').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
   document.getElementById('wc-sim').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
   document.getElementById('wc-road').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
+  document.getElementById('wcb-bracket').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
 });
 })();
 </script>

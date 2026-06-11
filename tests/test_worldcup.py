@@ -186,7 +186,7 @@ class TestSlotParsing:
 
     def test_unparseable_raises(self) -> None:
         with pytest.raises(ValueError):
-            parse_slot("L101")  # loser refs are not simulated
+            parse_slot("Mexico")  # a real team name is not a slot
 
 
 class TestHostCities:
@@ -687,6 +687,172 @@ class TestRealArtifacts:
         finalists = sum(s["reach_final"] for s in sim.team_stats.values())
         assert finalists == pytest.approx(2.0, abs=1e-9)
 
+        # Per-knockout-match distributions: every KO match tracked (third
+        # place included), each a proper probability distribution.
+        ko_numbers = sorted(
+            int(f["match_number"]) for f in fixtures if f["stage"] != "group"
+        )
+        assert sorted(sim.ko_matchup_probs) == ko_numbers
+        assert sorted(sim.ko_win_probs) == ko_numbers
+        for mn in ko_numbers:
+            assert sum(sim.ko_matchup_probs[mn].values()) == pytest.approx(1.0)
+            assert sum(sim.ko_win_probs[mn].values()) == pytest.approx(1.0)
+            for (a, b), p in sim.ko_matchup_probs[mn].items():
+                assert a <= b and 0.0 < p <= 1.0
+        # r32 back-compat view unchanged in shape
+        assert len(sim.r32_matchup_probs) == 16
+
+        # The predicted bracket built on the same engine + sim is coherent.
+        from scripts.worldcup.generate_predictions import build_bracket
+
+        bracket = build_bracket(engine, fixtures, sim, spec)
+        teams_48 = {
+            t for f in fixtures if f["stage"] == "group"
+            for t in (str(f["home"]), str(f["away"]))
+        }
+        assert bracket["champion"] in teams_48
+        assert bracket["third_place_winner"] in teams_48
+        assert len(bracket["matches"]) == 32
+        for m in bracket["matches"]:
+            assert m["pairing_prob"] >= 0.0
+            adv = m["prediction"]["advance"]
+            assert adv["home"] + adv["away"] == pytest.approx(1.0, abs=1e-3)
+
+        # The simulator must survive knockout.py-resolved fixtures (real
+        # names in home/away, original W-refs preserved in slot_home/away) —
+        # it replays the whole tournament from the original refs.
+        filled = [dict(f) for f in fixtures]
+        m_r16 = next(f for f in filled if f["stage"] == "round_of_16")
+        m_r16["slot_home"], m_r16["slot_away"] = m_r16["home"], m_r16["away"]
+        m_r16["home"], m_r16["away"] = "Spain", "Japan"
+        sim_filled = TournamentSimulator(
+            engine, filled, spec, rng=np.random.default_rng(11)
+        ).run(n_sims=5)
+        assert sim_filled.n_sims == 5  # no parse_slot crash on real names
+
+    @staticmethod
+    def _stub_engine_and_stats(fixtures: list) -> tuple:
+        """Deterministic engine stub + sim marginals for bracket tests that
+        must not pay the real engine build."""
+        from scripts.worldcup.simulate import SimResult
+
+        class _StubEngine:
+            def lambdas(
+                self,
+                home: str,
+                away: str,
+                home_at_home: bool = False,
+                away_at_home: bool = False,
+            ) -> tuple[float, float]:
+                # Varies by name so advance probs differ; deterministic.
+                return (
+                    1.0 + (len(home) % 4) * 0.25 + (0.3 if home_at_home else 0.0),
+                    0.8 + (len(away) % 3) * 0.25 + (0.3 if away_at_home else 0.0),
+                )
+
+        groups: dict[str, list[str]] = {}
+        for f in fixtures:
+            if f["stage"] != "group":
+                continue
+            for t in (str(f["home"]), str(f["away"])):
+                if t not in groups.setdefault(str(f["group"]), []):
+                    groups[str(f["group"])].append(t)
+        team_stats: dict[str, dict[str, float]] = {}
+        for letter, teams in groups.items():
+            for i, t in enumerate(sorted(teams)):
+                team_stats[t] = {
+                    "group_winner": 0.6 - 0.15 * i,
+                    "group_runner_up": 0.4 - 0.05 * i,
+                    "third_qualified": 0.22 - 0.04 * i
+                    + 0.001 * (ord(letter) - 65),
+                }
+        sim = SimResult(
+            n_sims=0, team_stats=team_stats, r32_matchup_probs={},
+            ko_matchup_probs={}, ko_win_probs={},
+        )
+        return _StubEngine(), sim
+
+    def test_bracket_coherent_without_real_engine(
+        self, fixtures: list, spec: dict
+    ) -> None:
+        import re as _re
+        from collections import Counter
+
+        from scripts.worldcup.generate_predictions import build_bracket
+
+        engine, sim = self._stub_engine_and_stats(fixtures)
+        bracket = build_bracket(engine, fixtures, sim, spec)  # type: ignore[arg-type]
+
+        stage_sizes = Counter(m["stage"] for m in bracket["matches"])
+        assert stage_sizes == {
+            "round_of_32": 16, "round_of_16": 8, "quarter_final": 4,
+            "semi_final": 2, "third_place": 1, "final": 1,
+        }
+        # Coherence: no team occupies two slots in the same round.
+        by_stage: dict[str, list[str]] = {}
+        for m in bracket["matches"]:
+            by_stage.setdefault(m["stage"], []).extend([m["home"], m["away"]])
+        for stage, occupants in by_stage.items():
+            assert len(occupants) == len(set(occupants)), stage
+        # Standings: 12 groups × 4 teams, exactly 8 qualifying thirds.
+        assert len(bracket["standings"]) == 12
+        assert all(len(s["order"]) == 4 for s in bracket["standings"].values())
+        assert sum(s["third_qualifies"] for s in bracket["standings"].values()) == 8
+        # Every match advances one of its own sides with a real scoreline.
+        for m in bracket["matches"]:
+            assert m["advances"] in (m["home"], m["away"])
+            assert _re.fullmatch(r"\d+-\d+", m["prediction"]["predicted_score"])
+        # The final's winner is the champion; SF losers play the 3rd-place game.
+        final = next(m for m in bracket["matches"] if m["stage"] == "final")
+        assert bracket["champion"] == final["advances"]
+        sfs = [m for m in bracket["matches"] if m["stage"] == "semi_final"]
+        sf_losers = {
+            m["away"] if m["advances"] == m["home"] else m["home"] for m in sfs
+        }
+        third = next(m for m in bracket["matches"] if m["stage"] == "third_place")
+        assert {third["home"], third["away"]} == sf_losers
+
+    def test_bracket_resolved_fixture_override(
+        self, fixtures: list, spec: dict
+    ) -> None:
+        from scripts.worldcup.generate_predictions import build_bracket
+
+        engine, sim = self._stub_engine_and_stats(fixtures)
+        resolved = [dict(f) for f in fixtures]
+        m73 = next(f for f in resolved if int(f["match_number"]) == 73)
+        # Mirror scripts.worldcup.knockout's fill: original label preserved.
+        m73["slot_home"], m73["slot_away"] = m73["home"], m73["away"]
+        m73["home"], m73["away"] = "Mexico", "France"  # reality beat the model
+        bracket = build_bracket(engine, resolved, sim, spec)  # type: ignore[arg-type]
+
+        b73 = next(m for m in bracket["matches"] if m["match_number"] == 73)
+        assert (b73["home"], b73["away"]) == ("Mexico", "France")
+        assert b73["resolved"] is True
+        assert b73["pairing_prob"] == 1.0
+        assert b73["slots"] == "2A vs 2B"  # display keeps the original slots
+        # The R16 match fed by 73 must receive 73's advancing team.
+        feeder = next(
+            m for m in bracket["matches"]
+            if 73 in (m["home_source"], m["away_source"])
+        )
+        side = "home" if feeder["home_source"] == 73 else "away"
+        assert feeder[side] == b73["advances"]
+
+        # A filled W-ref round keeps its tree links: resolve an R16 fixture
+        # the way knockout.py writes it and the sources must survive.
+        m89 = next(f for f in resolved if f["stage"] == "round_of_16")
+        m89["slot_home"], m89["slot_away"] = m89["home"], m89["away"]
+        m89["home"], m89["away"] = "Spain", "Japan"
+        bracket2 = build_bracket(engine, resolved, sim, spec)  # type: ignore[arg-type]
+        b89 = next(
+            m for m in bracket2["matches"]
+            if m["match_number"] == int(m89["match_number"])
+        )
+        assert (b89["home"], b89["away"]) == ("Spain", "Japan")
+        assert b89["resolved"] is True
+        assert b89["home_source"] is not None  # tree link parsed from slot_home
+        assert b89["away_source"] is not None
+
 
 class TestAvailability:
     """Player-availability layer: name keys, impact math, lineup overrides."""
@@ -903,7 +1069,7 @@ class TestAvailability:
 
 
 class TestBestCombos:
-    """Serve-time accumulator builder (web.app._build_wc_best_combos)."""
+    """Accumulator builder (scripts.worldcup.combos.build_best_combos)."""
 
     NOW = None  # set in _build to keep datetime import local
 
@@ -947,10 +1113,10 @@ class TestBestCombos:
     def _build(self, preds, market):
         from datetime import UTC, datetime
 
-        from web.app import _build_wc_best_combos
+        from scripts.worldcup.combos import build_best_combos
 
         now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
-        return _build_wc_best_combos(preds, market, now=now)
+        return build_best_combos(preds, market, now=now)
 
     def test_only_upcoming_window_enters(self) -> None:
         out = self._build(self._slate(), self._market())
@@ -1007,3 +1173,331 @@ class TestBestCombos:
                   self._pred(8, "A", "B", 0.0, 0.0, 0.0, "2026-06-16T18:00:00+00:00", "2026-06-16")]
         out = self._build(broken, {})
         assert out["combos"] == [] and out["n_matches"] == 0
+
+    def test_value_scan_finds_non_favorite_edge(self) -> None:
+        # Model loves the DRAW (34% vs implied 26%) while home is the
+        # favorite — the value leg must be the draw framing, which the old
+        # favorite-only scan could never produce.
+        draw_edge = self._pred(6, "Japan", "Senegal", 0.40, 0.34, 0.26,
+                               "2026-06-16T15:00:00+00:00", "2026-06-16")
+        market = dict(self._market())
+        market["6"] = {"odds": {"home": 2.1, "draw": 3.9, "away": 3.4},
+                       "implied": {"home": 0.45, "draw": 0.26, "away": 0.29}}
+        out = self._build([self._slate()[0], draw_edge], market)
+        val = next(c for c in out["combos"] if c["key"] == "value")
+        jpn = next(leg for leg in val["legs"] if leg["match"] == "Japan vs Senegal")
+        assert jpn["market"] == "1X2" and jpn["pick"] == "X"
+        assert jpn["pick_label"] == "Draw"
+        assert jpn["ev"] == pytest.approx(0.34 * 3.9 - 1, abs=1e-3)
+
+    def test_value_floor_excludes_lottery_legs(self) -> None:
+        # 15% away pick has +5pp edge AND +EV at 8.0 — still excluded:
+        # a recommended combo never carries a sub-20% leg. No other framing
+        # of this match clears the gates either.
+        longshot = self._pred(7, "Egypt", "Iceland", 0.60, 0.25, 0.15,
+                              "2026-06-16T15:00:00+00:00", "2026-06-16")
+        market = dict(self._market())
+        market["7"] = {"odds": {"home": 1.55, "draw": 3.55, "away": 8.0},
+                       "implied": {"home": 0.62, "draw": 0.28, "away": 0.10}}
+        out = self._build(self._slate()[:2] + [longshot], market)
+        val = next(c for c in out["combos"] if c["key"] == "value")
+        assert {leg["pick_label"] for leg in val["legs"]} == {"Mexico", "Canada"}
+
+    def test_legs_carry_grading_fields(self) -> None:
+        # The archive grades tickets cold — every leg must be self-contained.
+        out = self._build(self._slate(), self._market())
+        for c in out["combos"]:
+            for leg in c["legs"]:
+                assert leg["home_team"] and leg["away_team"]
+                assert leg["stage"] == "group" and leg["kickoff_utc"]
+
+
+class TestComboArchive:
+    """Ticket snapshots: last write before first kickoff wins, then frozen."""
+
+    @staticmethod
+    def _best(prob=0.63):
+        leg1 = {"match": "A vs B", "home_team": "A", "away_team": "B",
+                "stage": "group", "date": "2026-06-15", "time": "18:00",
+                "kickoff_utc": "2026-06-15T18:00:00+00:00", "match_number": 1,
+                "market": "Double Chance", "pick": "1X", "pick_label": "A or draw",
+                "prob": 0.9, "fair_odds": 1.11, "market_odds": 1.1,
+                "edge": 0.01, "ev": -0.01}
+        leg2 = {"match": "C vs D", "home_team": "C", "away_team": "D",
+                "stage": "group", "date": "2026-06-15", "time": "21:00",
+                "kickoff_utc": "2026-06-15T21:00:00+00:00", "match_number": 2,
+                "market": "1X2", "pick": "1", "pick_label": "C",
+                "prob": 0.7, "fair_odds": 1.43, "market_odds": 1.8,
+                "edge": 0.05, "ev": 0.26}
+        return {"combos": [{"key": "safe", "title": "Safe", "note": "",
+                            "legs": [leg1, leg2],
+                            "combined": {"prob": prob, "fair_odds": 1.59,
+                                         "market_odds": 1.98, "ev": 0.25}}]}
+
+    def test_last_write_before_first_kickoff_wins(self, tmp_path, monkeypatch) -> None:
+        import json
+
+        import scripts.worldcup.combos as cb
+
+        monkeypatch.setattr(cb, "COMBO_ARCHIVE_JSON", tmp_path / "arch.json")
+        key = "safe|2026-06-15T18:00:00+00:00"
+        assert cb.merge_combo_archive(self._best(0.63), "2026-06-15T10:00:00+00:00") == 1
+        assert cb.merge_combo_archive(self._best(0.55), "2026-06-15T14:00:00+00:00") == 1
+        arch = json.loads((tmp_path / "arch.json").read_text())
+        assert arch[key]["combined"]["prob"] == 0.55  # last pre-kickoff write
+        assert arch[key]["first_archived_at"] == "2026-06-15T10:00:00+00:00"
+        assert arch[key]["archived_at"] == "2026-06-15T14:00:00+00:00"
+
+    def test_post_kickoff_write_refused(self, tmp_path, monkeypatch) -> None:
+        import json
+
+        import scripts.worldcup.combos as cb
+
+        monkeypatch.setattr(cb, "COMBO_ARCHIVE_JSON", tmp_path / "arch.json")
+        key = "safe|2026-06-15T18:00:00+00:00"
+        assert cb.merge_combo_archive(self._best(0.63), "2026-06-15T10:00:00+00:00") == 1
+        # at first-leg kickoff (and any time after) the ticket is frozen
+        assert cb.merge_combo_archive(self._best(0.10), "2026-06-15T18:00:00+00:00") == 0
+        arch = json.loads((tmp_path / "arch.json").read_text())
+        assert arch[key]["combined"]["prob"] == 0.63
+
+
+class TestComboRecord:
+    """Grading settled tickets vs 90' outcomes, ROI at archived odds."""
+
+    @staticmethod
+    def _ticket(tier, legs, prob, market_odds, archived="2026-06-15T10:00:00+00:00",
+                first_ko="2026-06-15T18:00:00+00:00"):
+        combined = {"prob": prob, "fair_odds": round(1 / prob, 2)}
+        if market_odds:
+            combined["market_odds"] = market_odds
+        return {"tier": tier, "title": tier, "legs": legs, "combined": combined,
+                "first_kickoff_utc": first_ko, "first_archived_at": archived,
+                "archived_at": archived}
+
+    @staticmethod
+    def _leg(home, away, market, pick):
+        return {"match": f"{home} vs {away}", "home_team": home, "away_team": away,
+                "stage": "group", "date": "2026-06-15", "time": "18:00",
+                "kickoff_utc": "2026-06-15T18:00:00+00:00", "match_number": 1,
+                "market": market, "pick": pick, "pick_label": pick,
+                "prob": 0.7, "fair_odds": 1.43, "market_odds": 1.5,
+                "edge": 0.03, "ev": 0.05}
+
+    def _run(self, archive, outcomes, tmp_path, monkeypatch):
+        import json
+
+        import scripts.worldcup.combos as cb
+
+        monkeypatch.setattr(cb, "COMBO_ARCHIVE_JSON", tmp_path / "arch.json")
+        monkeypatch.setattr(cb, "COMBO_RECORD_JSON", tmp_path / "rec.json")
+        (tmp_path / "arch.json").write_text(json.dumps(archive))
+        return cb.build_combo_record(
+            resolve=lambda h, a, d, s: outcomes.get((h, a)))
+
+    def test_hit_miss_roi_and_pending(self, tmp_path, monkeypatch) -> None:
+        archive = {
+            # both legs hit -> profit = odds - 1
+            "safe|k1": self._ticket("safe", [self._leg("A", "B", "Double Chance", "1X"),
+                                             self._leg("C", "D", "1X2", "1")],
+                                    prob=0.6, market_odds=2.0),
+            # one leg misses -> ticket lost, -1 unit
+            "favorites|k1": self._ticket("favorites",
+                                         [self._leg("A", "B", "1X2", "2"),
+                                          self._leg("C", "D", "1X2", "1")],
+                                         prob=0.3, market_odds=4.0),
+            # a leg unresolved -> ticket pending, not graded
+            "value|k1": self._ticket("value", [self._leg("A", "B", "1X2", "1"),
+                                               self._leg("E", "F", "1X2", "1")],
+                                     prob=0.4, market_odds=3.0),
+        }
+        outcomes = {("A", "B"): "draw", ("C", "D"): "home"}
+        rec = self._run(archive, outcomes, tmp_path, monkeypatch)
+        assert rec["n_graded"] == 2
+        safe = rec["tiers"]["safe"]
+        assert (safe["hits"], safe["n"]) == (1, 1)
+        assert safe["profit"] == pytest.approx(1.0)   # 2.0 odds, 1u stake
+        assert safe["expected_hit_rate"] == pytest.approx(0.6)
+        fav = rec["tiers"]["favorites"]
+        assert (fav["hits"], fav["n"]) == (0, 1)
+        assert fav["roi"] == pytest.approx(-1.0)
+        assert "value" not in rec["tiers"]  # pending, not graded as a miss
+
+    def test_post_kickoff_stamped_ticket_never_grades(self, tmp_path, monkeypatch) -> None:
+        archive = {"safe|k1": self._ticket(
+            "safe", [self._leg("A", "B", "1X2", "1"), self._leg("C", "D", "1X2", "1")],
+            prob=0.5, market_odds=2.5,
+            archived="2026-06-15T18:00:00+00:00",  # stamped AT kickoff
+        )}
+        rec = self._run(archive, {("A", "B"): "home", ("C", "D"): "home"},
+                        tmp_path, monkeypatch)
+        assert rec["n_graded"] == 0
+
+    def test_leg_hit_matrix(self) -> None:
+        from scripts.worldcup.combos import _leg_hit
+
+        assert _leg_hit("1X2", "1", "home") and not _leg_hit("1X2", "1", "draw")
+        assert _leg_hit("1X2", "X", "draw") and _leg_hit("1X2", "2", "away")
+        assert _leg_hit("Double Chance", "1X", "draw")
+        assert _leg_hit("Double Chance", "X2", "away")
+        assert not _leg_hit("Double Chance", "X2", "home")
+        assert _leg_hit("Double Chance", "12", "home")
+        assert not _leg_hit("Double Chance", "12", "draw")
+
+
+class TestKnockoutFill:
+    """Real-results bracket fill (scripts.worldcup.knockout) — injected lookups."""
+
+    A_TEAMS = ["Alpha", "Beta", "Gamma", "Delta"]
+
+    @staticmethod
+    def _round_robin(letter: str, teams: list[str], start_mn: int) -> list[dict]:
+        out, mn = [], start_mn
+        for i in range(len(teams)):
+            for j in range(i + 1, len(teams)):
+                out.append({"match_number": mn, "stage": "group", "group": letter,
+                            "date_utc": "2026-06-20T18:00:00Z",
+                            "home": teams[i], "away": teams[j]})
+                mn += 1
+        return out
+
+    def test_complete_group_fills_rank_slots_partial_group_waits(self) -> None:
+        from scripts.worldcup import knockout as ko
+
+        fx = self._round_robin("A", self.A_TEAMS, 1) + \
+            self._round_robin("B", ["E1", "E2", "E3", "E4"], 7)
+        results = {
+            ("Alpha", "Beta"): (2, 0), ("Alpha", "Gamma"): (1, 0),
+            ("Alpha", "Delta"): (3, 1), ("Beta", "Gamma"): (2, 1),
+            ("Beta", "Delta"): (1, 0), ("Gamma", "Delta"): (1, 0),
+            ("E1", "E2"): (1, 0),  # group B: 1 of 6 played
+        }
+        tables = ko.group_tables(fx, lambda h, a, d: results.get((h, a)))
+        assert tables["A"]["complete"] and not tables["B"]["complete"]
+        elo = {t: 1500.0 for t in self.A_TEAMS}
+        rankings = ko.rank_complete_groups(tables, elo)
+        assert rankings["A"] == ["Alpha", "Beta", "Gamma", "Delta"]
+        assert "B" not in rankings  # partial groups never rank
+
+        r32 = [{"match_number": 73, "stage": "round_of_32",
+                "date_utc": "2026-06-28T19:00:00Z", "home": "1A", "away": "2B"},
+               {"match_number": 74, "stage": "round_of_32",
+                "date_utc": "2026-06-28T22:00:00Z", "home": "2A", "away": "1B"}]
+        changes = ko.resolve_slots(r32, rankings, None, lambda mn: None)
+        filled = {(c["match_number"], c["side"]): c["team"]
+                  for c in changes if "team" in c}
+        assert filled == {(73, "home"): "Alpha", (74, "home"): "Beta"}
+        assert r32[0]["home"] == "Alpha" and r32[0]["slot_home"] == "1A"
+        assert r32[0]["away"] == "2B"  # group B must wait
+
+    def test_winner_and_loser_slots_with_shootout(self) -> None:
+        from scripts.worldcup import knockout as ko
+
+        sf = [{"match_number": 101, "stage": "semi_final",
+               "date_utc": "2026-07-14T19:00:00Z", "home": "USA", "away": "Mexico"},
+              {"match_number": 102, "stage": "semi_final",
+               "date_utc": "2026-07-15T19:00:00Z", "home": "Spain", "away": "France"}]
+        finals = [{"match_number": 103, "stage": "third_place",
+                   "date_utc": "2026-07-18T19:00:00Z", "home": "L101", "away": "L102"},
+                  {"match_number": 104, "stage": "final",
+                   "date_utc": "2026-07-19T19:00:00Z", "home": "W101", "away": "W102"}]
+        results = {("USA", "Mexico"): (1, 1),    # level FT+ET -> penalties
+                   ("Spain", "France"): (2, 1)}  # decided on the score
+        decided = ko.make_match_resolver(
+            {f["match_number"]: f for f in sf + finals},
+            lambda h, a, d: results.get((h, a)),
+            # shootouts.csv speaks CANON names — resolver must map back
+            lambda h, a, d: "United States" if (h, a) == ("USA", "Mexico") else None)
+        ko.resolve_slots(finals, {}, None, decided)
+        assert finals[1]["home"] == "USA" and finals[1]["away"] == "Spain"
+        assert finals[0]["home"] == "Mexico" and finals[0]["away"] == "France"
+        assert finals[0]["slot_home"] == "L101"
+
+    def test_level_feeder_without_shootout_row_stays_open(self) -> None:
+        from scripts.worldcup import knockout as ko
+
+        sf = {"match_number": 101, "stage": "semi_final",
+              "date_utc": "2026-07-14T19:00:00Z", "home": "USA", "away": "Mexico"}
+        final = [{"match_number": 104, "stage": "final",
+                  "date_utc": "2026-07-19T19:00:00Z", "home": "W101", "away": "W102"}]
+        decided = ko.make_match_resolver(
+            {101: sf}, lambda h, a, d: (0, 0), lambda h, a, d: None)
+        changes = ko.resolve_slots(final, {}, None, decided)
+        assert changes == [] and final[0]["home"] == "W101"
+
+    def test_filled_slot_is_frozen(self) -> None:
+        from scripts.worldcup import knockout as ko
+
+        fx = [{"match_number": 73, "stage": "round_of_32",
+               "date_utc": "2026-06-28T19:00:00Z",
+               "home": "Alpha", "slot_home": "1A", "away": "2B"}]
+        # New (different!) rankings must not touch the already-filled side.
+        changes = ko.resolve_slots(fx, {"A": ["Zeta", "Eta", "Theta", "Iota"]},
+                                   None, lambda mn: None)
+        assert changes == [] and fx[0]["home"] == "Alpha"
+
+    def test_third_slot_respects_annex_pool(self) -> None:
+        from scripts.worldcup import knockout as ko
+
+        rankings = {"A": ["Alpha", "Beta", "Gamma", "Delta"]}
+        fx = [{"match_number": 74, "stage": "round_of_32",
+               "date_utc": "2026-06-29T19:00:00Z", "home": "1E", "away": "3ABCDF"}]
+        # Annex C assigns group A's third here, A is in the slot pool -> fills
+        changes = ko.resolve_slots(fx, rankings, {74: "A"}, lambda mn: None)
+        assert fx[0]["away"] == "Gamma"
+        assert any(c.get("team") == "Gamma" for c in changes)
+        # A letter OUTSIDE the slot pool is a config bug -> loud error, no fill
+        fx2 = [{"match_number": 74, "stage": "round_of_32",
+                "date_utc": "2026-06-29T19:00:00Z", "home": "1E", "away": "3ABCDF"}]
+        changes2 = ko.resolve_slots(fx2, {"G": ["X1", "X2", "X3", "X4"]},
+                                    {74: "G"}, lambda mn: None)
+        assert fx2[0]["away"] == "3ABCDF"
+        assert any("error" in c for c in changes2)
+
+    def test_loser_label_parses(self) -> None:
+        ref = parse_slot("L101")
+        assert ref.kind == "loser" and ref.match_number == 101
+        ref2 = parse_slot("Loser of Match 102")
+        assert ref2.kind == "loser" and ref2.match_number == 102
+
+
+class TestWorldCupDigest:
+    """Telegram /wc digest (telegram_bot._handle_worldcup) — injected files."""
+
+    def test_digest_renders_slate_and_combos(self, tmp_path, monkeypatch) -> None:
+        import json
+        from datetime import UTC, datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        import scripts.worldcup.combos as cb
+        from scripts.pipeline.telegram_bot import _handle_worldcup
+
+        now = datetime.now(UTC)
+        k1 = (now + timedelta(minutes=30)).replace(microsecond=0)
+        k2 = (now + timedelta(hours=30)).replace(microsecond=0)
+
+        def pred(n, home, away, ko):
+            return {"match_number": n, "match": f"{home} vs {away}",
+                    "home_team": home, "away_team": away,
+                    "date": ko.date().isoformat(),
+                    "time": ko.strftime("%H:%M"),
+                    "kickoff_utc": ko.isoformat(),
+                    "probabilities": {"home": 0.6, "draw": 0.25, "away": 0.15}}
+
+        (tmp_path / "preds.json").write_text(json.dumps(
+            {"predictions": [pred(1, "Foo", "Bar", k1), pred(2, "Baz", "Qux", k2)]}))
+        (tmp_path / "odds.json").write_text(json.dumps({}))
+        monkeypatch.setattr(cb, "PREDICTIONS_JSON", tmp_path / "preds.json")
+        monkeypatch.setattr(cb, "MARKET_ODDS_JSON", tmp_path / "odds.json")
+
+        text = _handle_worldcup()
+        assert "World Cup 2026" in text
+        assert "Best combos" in text
+        # both matches are inside the 48h combo window -> legs reference them
+        assert "Foo or draw" in text and "Baz or draw" in text
+        # today-section content mirrors the Rome-date check the digest uses
+        rome = ZoneInfo("Europe/Rome")
+        if k1.astimezone(rome).date() == now.astimezone(rome).date():
+            assert "Foo–Bar" in text
+        else:
+            assert "No matches today" in text

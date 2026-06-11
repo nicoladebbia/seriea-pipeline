@@ -12,8 +12,9 @@ of 8-from-12 advancing groups) from format_spec.json, with a backtracking
 matching as a defensive fallback.
 
 Knockouts: 90' Poisson, extra time at 1/3 rate, penalties as a coin flip
-(penalty skill is ~noise; documented). The third-place playoff is not
-simulated — it affects no advancement statistic.
+(penalty skill is ~noise; documented). The third-place playoff is simulated
+last (it affects no advancement statistic) so its matchup/winner
+distributions can feed the predicted-bracket view.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -90,9 +91,9 @@ def load_format_spec(path: Path = FORMAT_SPEC_JSON) -> dict[str, Any]:
 @dataclass
 class SlotRef:
     """A parsed bracket slot: group rank ('1A'), third-place pool ('3ABCDF'),
-    or match-winner reference ('W74')."""
+    or match-winner/loser reference ('W74' / 'L101')."""
 
-    kind: str  # 'rank' | 'third' | 'winner'
+    kind: str  # 'rank' | 'third' | 'winner' | 'loser'
     rank: int = 0
     groups: tuple[str, ...] = ()
     match_number: int = 0
@@ -100,6 +101,7 @@ class SlotRef:
 
 _RANK_RE = re.compile(r"^([12])([A-L])$")
 _WINNER_RE = re.compile(r"^W(\d+)$|^Winner\s*(?:of\s*)?(?:Match\s*)?(\d+)$", re.I)
+_LOSER_RE = re.compile(r"^L(\d+)$|^Loser\s*(?:of\s*)?(?:Match\s*)?(\d+)$", re.I)
 
 
 def parse_slot(label: str) -> SlotRef:
@@ -111,10 +113,31 @@ def parse_slot(label: str) -> SlotRef:
     m = _WINNER_RE.match(s)
     if m:
         return SlotRef(kind="winner", match_number=int(m.group(1) or m.group(2)))
+    m = _LOSER_RE.match(s)
+    if m:  # third-place playoff: 'L101' = loser of semi-final 101
+        return SlotRef(kind="loser", match_number=int(m.group(1) or m.group(2)))
     groups = tuple(re.findall(r"[A-L]", s.upper().replace("3RD", "")))
     if s.upper().lstrip().startswith("3") and groups:
         return SlotRef(kind="third", rank=3, groups=groups)
     raise ValueError(f"Unparseable bracket slot label: {label!r}")
+
+
+def load_third_alloc(spec: dict[str, Any]) -> dict[frozenset[str], dict[int, str]]:
+    """FIFA Annex C table: qualified-thirds set -> {R32 match_number: group}.
+
+    Shared by the simulator (simulated standings) and scripts.worldcup.knockout
+    (real standings) — one parse, one source of truth.
+    """
+    alloc_spec = spec["third_place_allocation"]
+    slot_to_mn: dict[str, int] = alloc_spec["slot_to_match_number"]
+    out: dict[frozenset[str], dict[int, str]] = {}
+    for combo in alloc_spec["combinations"]:
+        key = frozenset(combo["advancing_third_place_groups"])
+        out[key] = {
+            slot_to_mn[slot]: group.lstrip("3")
+            for slot, group in combo["allocation"].items()
+        }
+    return out
 
 
 @dataclass
@@ -122,6 +145,14 @@ class SimResult:
     n_sims: int
     team_stats: dict[str, dict[str, float]]
     r32_matchup_probs: dict[int, list[tuple[str, str, float]]]
+    # Full per-knockout-match distributions, third place included.
+    # match_number -> {(team_lo, team_hi): P(this pairing)} — pair sorted so
+    # mirror orientations merge; and match_number -> {team: P(wins match)},
+    # a marginal over all sims (appearing AND winning).
+    ko_matchup_probs: dict[int, dict[tuple[str, str], float]] = field(
+        default_factory=dict
+    )
+    ko_win_probs: dict[int, dict[str, float]] = field(default_factory=dict)
 
 
 def _rank_group_2026(
@@ -262,15 +293,7 @@ class TournamentSimulator:
         }
 
         # FIFA Annex C: exact third-place allocation table.
-        alloc_spec = spec["third_place_allocation"]
-        self.third_alloc: dict[frozenset[str], dict[int, str]] = {}
-        slot_to_mn: dict[str, int] = alloc_spec["slot_to_match_number"]
-        for combo in alloc_spec["combinations"]:
-            key = frozenset(combo["advancing_third_place_groups"])
-            self.third_alloc[key] = {
-                slot_to_mn[slot]: group.lstrip("3")
-                for slot, group in combo["allocation"].items()
-            }
+        self.third_alloc = load_third_alloc(spec)
 
     # ---------------------------------------------------------------- sim --
 
@@ -380,7 +403,18 @@ class TournamentSimulator:
                 "champion",
             )
         }
-        r32_counts: dict[int, Counter[tuple[str, str]]] = defaultdict(Counter)
+        # Per-knockout-match occupancy + winner marginals (every KO match,
+        # third place included) — the data behind the predicted bracket.
+        ko_counts: dict[int, Counter[tuple[str, str]]] = defaultdict(Counter)
+        ko_win_counts: dict[int, Counter[str]] = defaultdict(Counter)
+        third_fixture = next(
+            (
+                f
+                for f in self.fixture_by_number.values()
+                if f.get("stage") == "third_place"
+            ),
+            None,
+        )
 
         # Pre-sample all group-game scores, vectorized across sims.
         sampled: dict[int, np.ndarray] = {}
@@ -438,18 +472,27 @@ class TournamentSimulator:
 
             # Play the knockout rounds.
             winners: dict[int, str] = {}
+            sf_losers: dict[int, str] = {}
             for mn, entry in sorted(r32_entrants.items()):
                 counters["reach_r32"][entry["home"]] += 1
                 counters["reach_r32"][entry["away"]] += 1
                 pair = (entry["home"], entry["away"])
                 lo, hi = sorted(pair)
-                r32_counts[mn][(lo, hi)] += 1
+                ko_counts[mn][(lo, hi)] += 1
                 city = self.fixture_by_number.get(mn, {}).get("city", "")
                 winners[mn] = self._sim_knockout_match(*pair, city)
+                ko_win_counts[mn][winners[mn]] += 1
 
             for stage in KO_ROUND_ORDER[1:]:
                 for f in self.ko_progression[stage]:
-                    refs = (parse_slot(f["home"]), parse_slot(f["away"]))
+                    # knockout.py fills real names into home/away as rounds
+                    # resolve, preserving the original W-ref in slot_home/
+                    # slot_away — parse the original so the sim (which always
+                    # replays the whole tournament) survives resolution.
+                    refs = (
+                        parse_slot(str(f.get("slot_home") or f["home"])),
+                        parse_slot(str(f.get("slot_away") or f["away"])),
+                    )
                     if any(r.kind != "winner" for r in refs):
                         raise ValueError(
                             f"Knockout fixture {f['match_number']} has "
@@ -460,24 +503,66 @@ class TournamentSimulator:
                     key = STAGE_COUNTER_KEY[stage]
                     counters[key][th] += 1
                     counters[key][ta] += 1
-                    winners[f["match_number"]] = self._sim_knockout_match(
-                        th, ta, f.get("city", "")
-                    )
+                    fmn = int(f["match_number"])
+                    lo, hi = sorted((th, ta))
+                    ko_counts[fmn][(lo, hi)] += 1
+                    winners[fmn] = self._sim_knockout_match(th, ta, f.get("city", ""))
+                    ko_win_counts[fmn][winners[fmn]] += 1
+                    if stage == "semi_final":
+                        sf_losers[fmn] = ta if winners[fmn] == th else th
                     if stage == "final":
-                        counters["champion"][winners[f["match_number"]]] += 1
+                        counters["champion"][winners[fmn]] += 1
+
+            # Third-place playoff: SF losers per the fixture's L-refs. Played
+            # AFTER the final so the RNG stream for every other match is
+            # unchanged relative to the pre-bracket version of this sim.
+            if third_fixture is not None and len(sf_losers) == 2:
+                ref_nums = [
+                    int(m.group(0))
+                    for m in (
+                        re.search(
+                            r"\d+",
+                            str(third_fixture.get("slot_home") or third_fixture["home"]),
+                        ),
+                        re.search(
+                            r"\d+",
+                            str(third_fixture.get("slot_away") or third_fixture["away"]),
+                        ),
+                    )
+                    if m
+                ]
+                if len(ref_nums) == 2 and all(r in sf_losers for r in ref_nums):
+                    tp_mn = int(third_fixture["match_number"])
+                    th3, ta3 = sf_losers[ref_nums[0]], sf_losers[ref_nums[1]]
+                    lo3, hi3 = sorted((th3, ta3))
+                    ko_counts[tp_mn][(lo3, hi3)] += 1
+                    w3 = self._sim_knockout_match(
+                        th3, ta3, third_fixture.get("city", "")
+                    )
+                    ko_win_counts[tp_mn][w3] += 1
 
         team_stats = {
             t: {key: counters[key][t] / n_sims for key in counters} for t in teams
         }
+        ko_matchup_probs = {
+            mn: {pair: count / n_sims for pair, count in counter.items()}
+            for mn, counter in ko_counts.items()
+        }
+        ko_win_probs = {
+            mn: {team: count / n_sims for team, count in counter.items()}
+            for mn, counter in ko_win_counts.items()
+        }
         r32_matchup_probs = {
             mn: [
                 (a, b, count / n_sims)
-                for (a, b), count in counter.most_common(5)
+                for (a, b), count in ko_counts[mn].most_common(5)
             ]
-            for mn, counter in r32_counts.items()
+            for mn in (int(p["match_number"]) for p in self.r32_pairings)
         }
         return SimResult(
             n_sims=n_sims,
             team_stats=team_stats,
             r32_matchup_probs=r32_matchup_probs,
+            ko_matchup_probs=ko_matchup_probs,
+            ko_win_probs=ko_win_probs,
         )

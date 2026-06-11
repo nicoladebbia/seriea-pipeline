@@ -427,6 +427,7 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "🏆 Parlays": "/parlays",
     "📋 Summary": "/summary",
     "📰 Digest": "/digest",
+    "🌍 World Cup": "/wc",
 }
 
 
@@ -436,7 +437,7 @@ def _reply_keyboard() -> dict:
         "keyboard": [
             [{"text": "💰 Bets"}, {"text": "📊 Bankroll"}, {"text": "⚽ Today"}],
             [{"text": "🔴 Live"}, {"text": "🎯 Match"}, {"text": "🏆 Parlays"}],
-            [{"text": "📋 Summary"}, {"text": "📰 Digest"}],
+            [{"text": "📋 Summary"}, {"text": "📰 Digest"}, {"text": "🌍 World Cup"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -1754,6 +1755,104 @@ def _handle_digest() -> str:
         return f"Failed to generate digest: {e}"
 
 
+def _handle_worldcup() -> str:
+    """World Cup digest: today's slate + the three best-combo tiers.
+
+    Same sources as /worldcup on the dashboard (predictions.json +
+    market_odds.json via scripts.worldcup.combos — who-wins markets only).
+    Times shown in Italy time.
+    """
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from scripts.worldcup.combos import (
+        MARKET_ODDS_JSON,
+        PREDICTIONS_JSON,
+        build_best_combos,
+    )
+    from scripts.worldcup.engine import read_json_safe
+
+    rome = ZoneInfo("Europe/Rome")
+    now = datetime.now(UTC)
+    doc = read_json_safe(PREDICTIONS_JSON, {})
+    preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+    if not preds:
+        return "🌍 No World Cup predictions on disk — run scripts.worldcup.refresh."
+    market = dict(read_json_safe(MARKET_ODDS_JSON, {}))
+
+    pick_sym = {"home": "1", "draw": "X", "away": "2"}
+    today_rome = now.astimezone(rome).date()
+    todays = []
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p.get("kickoff_utc") or "")
+        except (TypeError, ValueError):
+            continue
+        if ko.astimezone(rome).date() == today_rome:
+            todays.append((ko, p))
+    todays.sort(key=lambda x: x[0])
+
+    lines = [f"🌍 <b>World Cup 2026 — {today_rome.strftime('%A %d %B')}</b>", ""]
+    if todays:
+        lines.append("⚽ <b>Today</b> (Italy time)")
+        for ko, p in todays:
+            probs = p.get("probabilities") or {}
+            pick = max(probs, key=probs.get) if probs else None
+            played = ko <= now
+            mark = "✔️ played" if played else (
+                f"<b>{pick_sym.get(pick, '?')}</b> {probs.get(pick, 0) * 100:.0f}%")
+            lines.append(
+                f"{ko.astimezone(rome).strftime('%H:%M')}  "
+                f"{p.get('home_team', '?')}–{p.get('away_team', '?')} — {mark}")
+        lines.append("")
+    else:
+        lines.append("⚽ No matches today.")
+        lines.append("")
+
+    best = build_best_combos(preds, market)
+    icons = {"safe": "🔒", "favorites": "⭐", "value": "💎"}
+    if best.get("combos"):
+        lines.append("🎯 <b>Best combos — next 48h</b>")
+        for c in best["combos"]:
+            cm = c["combined"]
+            head = (f"{icons.get(c['key'], '🎯')} <b>{c['key'].capitalize()}</b> — "
+                    f"{cm['prob'] * 100:.0f}%")
+            if cm.get("market_odds"):
+                ev = cm.get("ev")
+                head += (f" @ {cm['market_odds']:.2f}"
+                         f" (EV {'+' if ev >= 0 else ''}{ev * 100:.0f}%)")
+            lines.append(head)
+            for leg in c["legs"]:
+                odds = f" @ {leg['market_odds']:.2f}" if leg.get("market_odds") else ""
+                lines.append(f" • {leg['pick_label']} ({leg['prob'] * 100:.0f}%{odds})"
+                             f" — {leg['match']}")
+            lines.append("")
+    else:
+        lines.append("🎯 No combos — no upcoming matches in the next 48h.")
+        lines.append("")
+    lines.append("<i>Model probabilities, Sofascore-proxy prices — insight, not bets.</i>")
+    return "\n".join(lines)
+
+
+def send_worldcup_digest() -> bool:
+    """One-shot morning push (refresh loop runs `--wc-digest`); independent
+    of the polling loop — no lock, no signal handlers, send and exit."""
+    token = _get_env("TELEGRAM_BOT_TOKEN")
+    chat_id = _get_env("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        log.error("wc-digest: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
+        return False
+    text = _handle_worldcup()
+    result = _tg_request(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    })
+    ok = result is not None
+    log.info("wc-digest: %s", "sent" if ok else "send FAILED")
+    return ok
+
+
 def _handle_league(args: str, conversation: ConversationManager) -> str:
     """Handle /league — show, set, or clear league filter.
 
@@ -1872,6 +1971,7 @@ def _handle_help() -> str:
     tg.blank()
     tg.raw("<b>Reports:</b>")
     tg.raw("  /digest \u2014 daily summary")
+    tg.raw("  /wc — World Cup: today's slate + best combos")
     tg.blank()
     tg.raw("<b>Session:</b>")
     tg.raw("  /clear \u2014 reset conversation")
@@ -2547,6 +2647,9 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
+                elif cmd in ("/wc", "/worldcup"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _handle_worldcup()
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
@@ -2603,4 +2706,6 @@ def run_bot():
 
 
 if __name__ == "__main__":
+    if "--wc-digest" in sys.argv:
+        sys.exit(0 if send_worldcup_digest() else 1)
     run_bot()
