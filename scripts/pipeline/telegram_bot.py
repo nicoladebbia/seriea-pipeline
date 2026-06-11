@@ -428,6 +428,7 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "📋 Summary": "/summary",
     "📰 Digest": "/digest",
     "🌍 World Cup": "/wc",
+    "🪜 Ladder": "/ladder",
 }
 
 
@@ -2497,8 +2498,10 @@ WC_ALERT_WINDOW_MIN = (20, 150)       # alert when kickoff is 20–150 min away
 _WC_ALERT_LAST_CHECK = {"t": 0.0}
 
 
-def _wc_poisson_family(lh: float, la: float) -> dict:
-    """Score grid markets from the two lambdas (mirrors the /worldcup page)."""
+def _wc_grid(lh: float, la: float) -> dict:
+    """Joint score grid P(h, a) from the two lambdas — the base object every
+    derived market (and every same-match COMBO leg) is computed from, so
+    correlated legs get their TRUE joint probability, never a naive product."""
     import math
 
     def P(lam: float, k: int) -> float:
@@ -2506,7 +2509,12 @@ def _wc_poisson_family(lh: float, la: float) -> dict:
 
     ph = [P(lh, k) for k in range(9)]
     pa = [P(la, k) for k in range(9)]
-    grid = {(h, a): ph[h] * pa[a] for h in range(9) for a in range(9)}
+    return {(h, a): ph[h] * pa[a] for h in range(9) for a in range(9)}
+
+
+def _wc_poisson_family(lh: float, la: float) -> dict:
+    """Score grid markets from the two lambdas (mirrors the /worldcup page)."""
+    grid = _wc_grid(lh, la)
     top = sorted(grid.items(), key=lambda kv: -kv[1])[:3]
     btts_no = sum(p for (h, a), p in grid.items() if h == 0 or a == 0)
     o25 = sum(p for (h, a), p in grid.items() if h + a > 2.5)
@@ -2619,6 +2627,117 @@ def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
     return "\n".join(lines)
 
 
+def _wc_ladder_legs(p: dict) -> list[tuple[float, str]]:
+    """Candidate legs for one match across the WHOLE market family.
+
+    Returns [(prob, label)] sorted by prob desc. Who-wins legs use the
+    deployed (market-informed) probabilities; totals/joints come from the
+    score grid. SISAL-style combo legs (e.g. "1 + Under 3.5") are exact
+    joint probabilities from the grid.
+    """
+    probs = p.get("probabilities") or {}
+    home, away = p.get("home_team", "?"), p.get("away_team", "?")
+    lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+    legs: list[tuple[float, str]] = []
+    if probs:
+        ph, pd, pa = probs.get("home", 0), probs.get("draw", 0), probs.get("away", 0)
+        legs += [(ph, f"1 ({home} win)"), (pa, f"2 ({away} win)")]
+        legs += [(ph + pd, f"1X ({home} or draw)"), (pa + pd, f"X2 ({away} or draw)"),
+                 (ph + pa, "12 (no draw)")]
+    if lh and la:
+        g = _wc_grid(lh, la)
+        tot = lambda f: sum(v for (h, a), v in g.items() if f(h, a))  # noqa: E731
+        legs += [
+            (tot(lambda h, a: h + a > 1.5), "Over 1.5"),
+            (tot(lambda h, a: h + a < 2.5), "Under 2.5"),
+            (tot(lambda h, a: h + a > 2.5), "Over 2.5"),
+            (tot(lambda h, a: h + a < 3.5), "Under 3.5"),
+            (tot(lambda h, a: h > 0 and a > 0), "BTTS Yes"),
+            (tot(lambda h, a: h == 0 or a == 0), "BTTS No"),
+            # SISAL "Combo" markets — exact joints, correlation priced in
+            (tot(lambda h, a: h > a and h + a < 3.5), f"1 + Under 3.5 ({home})"),
+            (tot(lambda h, a: h > a and h + a > 1.5), f"1 + Over 1.5 ({home})"),
+            (tot(lambda h, a: a > h and h + a < 3.5), f"2 + Under 3.5 ({away})"),
+            (tot(lambda h, a: h > a or h + a > 2.5), f"1 or Over 2.5 ({home})"),
+        ]
+    legs.sort(reverse=True)
+    return legs
+
+
+# Ladder leg selection band: floor 0.55 (no coin-flip rungs), cap 0.85
+# (shorter than ~1.18 fair odds compounds too slowly to be worth a rung).
+WC_LADDER_BAND = (0.55, 0.85)
+
+
+def _build_daily_ladder(stake: float = 10.0) -> str:
+    """Kickoff-ordered ladder over today's slate: one best-band leg per match,
+    each rung staking the full return of the previous one. All payouts shown
+    at OUR FAIR ODDS (= 1/prob): that is the MINIMUM SISAL price to accept —
+    if the book pays less than the rung's 'min odds', skip the rung."""
+    import json as _json
+    from zoneinfo import ZoneInfo
+
+    try:
+        doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "predictions.json").read_text())
+    except (OSError, ValueError):
+        return "🪜 No predictions on disk."
+    preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+    rome = ZoneInfo("Europe/Rome")
+    now = datetime.now(UTC)
+    today = now.astimezone(rome).date()
+
+    slate = []
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if ko.astimezone(rome).date() == today and ko > now:
+            slate.append((ko, p))
+    slate.sort(key=lambda x: x[0])
+    if not slate:
+        return "🪜 No remaining fixtures today — ladder starts with tomorrow's slate."
+
+    lo, hi = WC_LADDER_BAND
+    lines = [f"🪜 <b>Ladder — {today.strftime('%A %d %B')}</b> (start €{stake:.0f}, "
+             "each rung bets the previous return)", ""]
+    bank = stake
+    surv = 1.0
+    rung = 0
+    for ko, p in slate:
+        legs = _wc_ladder_legs(p)
+        pick = next((leg for leg in legs if lo <= leg[0] <= hi), None)
+        ko_txt = ko.astimezone(rome).strftime("%H:%M")
+        match = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
+        if not pick:
+            lines.append(f"⏭ {ko_txt} {match}: no leg in the {lo:.0%}–{hi:.0%} band — skip")
+            continue
+        prob, label = pick
+        rung += 1
+        fair = 1.0 / prob
+        ret = bank * fair
+        surv *= prob
+        lines.append(
+            f"<b>Rung {rung}</b> · {ko_txt} {match}\n"
+            f"   {label} — our {prob:.0%} · <b>min odds {fair:.2f}</b>\n"
+            f"   stake €{bank:.2f} → €{ret:.2f} if it lands "
+            f"(survival so far {surv:.0%})"
+        )
+        bank = ret
+    if rung == 0:
+        return "🪜 Nothing in the confidence band today — no ladder, that's the discipline."
+    lines += [
+        "",
+        f"💰 Full ladder at min odds: €{stake:.0f} → €{bank:.2f} "
+        f"(x{bank / stake:.1f}) with {surv:.0%} survival",
+        "⚠️ Rules: take a rung ONLY if SISAL pays ≥ the min odds (that's our "
+        "fair price — below it the rung is -EV by our model). Real book odds "
+        "above min raise the payout. Stop any time; banking a rung is always "
+        "allowed; never chase a broken ladder.",
+    ]
+    return "\n".join(lines)
+
+
 def _check_prematch_alerts(token: str, chat_id: str) -> None:
     """Fire pre-kickoff briefings for fixtures entering the alert window."""
     import json as _json
@@ -2655,6 +2774,12 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                 changed = True
                 log.info("Pre-match alert sent: %s vs %s (T-%dmin)",
                          p.get("home_team"), p.get("away_team"), int(mins))
+                # First alert of the (Rome) day also carries the day's ladder
+                from zoneinfo import ZoneInfo
+                day_key = f"ladder_{now.astimezone(ZoneInfo('Europe/Rome')).date()}"
+                if day_key not in sent:
+                    _tg_send_message(token, chat_id, _build_daily_ladder())
+                    sent[day_key] = now.isoformat()
         if changed:
             WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
     except Exception as e:  # noqa: BLE001 — alerts must never kill the bot loop
@@ -2832,6 +2957,9 @@ def run_bot():
                 elif cmd in ("/wc", "/worldcup"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_worldcup()
+                elif cmd in ("/ladder", "/scala"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _build_daily_ladder()
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
