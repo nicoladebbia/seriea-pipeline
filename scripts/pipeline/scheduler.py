@@ -854,6 +854,15 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                 )
         except Exception as e:
             log.warning("Settlement check failed: %s", e)
+        # Player prop outcomes settle on the same clock (forward sample for the
+        # Player_Props betting gate — predictions are useless evidence unsettled)
+        try:
+            from scripts.betting.prop_tracker import settle_props
+            prop_result = settle_props()
+            if prop_result.get("total_settled", 0):
+                log.info("Prop settlement: %s props settled", prop_result["total_settled"])
+        except Exception as e:
+            log.warning("Prop settlement failed (non-fatal): %s", e)
 
     # Log summary
     total_triggered = sum(len(v) for v in actions_needed.values())

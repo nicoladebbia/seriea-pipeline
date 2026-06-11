@@ -630,6 +630,41 @@ def track_clv_from_slip(slip_path: Path = None) -> Dict:
 # CLV REPORTING
 # =============================================================================
 
+# ── CLV kill-switch (added 2026-06-11) ───────────────────────────────────────
+# CLV+ is the project's only rock-solid edge signal. A market whose rolling
+# CLV goes negative has stopped beating the close — it gets no new bets until
+# the rolling window recovers. Self-policing; no human in the loop.
+CLV_GATE_WINDOW = 50      # rolling bets per (market, league)
+CLV_GATE_MIN_BETS = 50    # below this sample the gate stays open (no verdict)
+
+
+def get_market_clv_gate(market: str, league: str = None) -> Dict:
+    """Rolling per-market CLV gate.
+
+    blocked=True iff the last CLV_GATE_WINDOW tracked bets on this market
+    (optionally league-scoped) average NEGATIVE CLV on a full sample. An
+    insufficient sample never blocks — new markets must be allowed to build
+    the record that judges them.
+    """
+    history = _load_clv_history()
+    recs = [
+        b for b in history.get("bets", [])
+        if b.get("market") == market
+        and (league is None or b.get("league") == league)
+        and b.get("clv") is not None
+    ]
+    recs.sort(key=lambda b: b.get("tracked_at") or b.get("placed_at") or "")
+    window = recs[-CLV_GATE_WINDOW:]
+    if len(window) < CLV_GATE_MIN_BETS:
+        return {"market": market, "league": league, "n": len(window),
+                "clv_mean": None, "blocked": False,
+                "reason": f"insufficient CLV sample ({len(window)}/{CLV_GATE_MIN_BETS})"}
+    mean = sum(float(b["clv"]) for b in window) / len(window)
+    return {"market": market, "league": league, "n": len(window),
+            "clv_mean": round(mean, 4), "blocked": mean < 0,
+            "reason": f"rolling {len(window)}-bet CLV {mean*100:+.2f}%"}
+
+
 def get_clv_summary() -> Dict:
     """Get CLV tracking summary."""
     history = _load_clv_history()

@@ -1857,15 +1857,32 @@ class UnifiedBettingEngine:
                                    bookmaker_analysis: Dict) -> List[ValueBet]:
         """Apply market intelligence to adjust bet confidence and filter bad bets.
 
-        Two signals:
-        1. STEAM MOVES: If sharp money moves against our bet -> penalize heavily
-        2. SHARP/SOFT DIVERGENCE: If sharps agree with us -> boost; disagree -> penalize
+        Three signals:
+        1. CLV KILL-SWITCH: a market whose rolling 50-bet CLV is negative has
+           stopped beating the close — no new bets until the window recovers
+        2. STEAM MOVES: If sharp money moves against our bet -> penalize heavily
+        3. SHARP/SOFT DIVERGENCE: If sharps agree with us -> boost; disagree -> penalize
 
-        (Preserved from ultimate_betting_system.apply_intelligence_filters)
+        (Steam/divergence preserved from ultimate_betting_system; CLV gate 2026-06-11)
         """
+        from scripts.betting.clv_tracker import get_market_clv_gate
+
         filtered = []
+        clv_gates: Dict[tuple, Dict] = {}  # (market, league) -> gate, one read per run
 
         for bet in all_bets:
+            gate_key = (bet.market, bet.league)
+            if gate_key not in clv_gates:
+                try:
+                    clv_gates[gate_key] = get_market_clv_gate(bet.market, bet.league)
+                except Exception as e:  # gate must never break bet generation
+                    clv_gates[gate_key] = {"blocked": False, "reason": f"gate error: {e}"}
+            gate = clv_gates[gate_key]
+            if gate.get("blocked"):
+                print(f"  CLV KILL-SWITCH: skipping {bet.market} {bet.selection} "
+                      f"({bet.match}) — {gate['reason']}")
+                continue
+
             match = bet.match
             penalty = 1.0
             intel_notes = []
