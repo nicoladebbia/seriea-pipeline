@@ -27,13 +27,13 @@ log = logging.getLogger(__name__)
 CURRENT_SEASON = "2025-2026"  # Update this at start of each new season
 
 
-def run(cmd: list[str], step: str) -> bool:
+def run(cmd: list[str], step: str, timeout: int = 3600) -> bool:
     """Run a subprocess; log on success/failure; return True if exit 0."""
     log.info("=== %s ===", step)
     log.info("  cmd: %s", " ".join(cmd))
     try:
         result = subprocess.run(
-            cmd, cwd=str(PROJECT), capture_output=True, text=True, timeout=3600,
+            cmd, cwd=str(PROJECT), capture_output=True, text=True, timeout=timeout,
         )
         if result.returncode == 0:
             # Print last few lines of stdout for context
@@ -93,9 +93,13 @@ def main() -> int:
     results["fbref_fixtures"] = step_refresh_fbref_fixtures()
 
     # --- Step 2: Download any new FBref match HTMLs (headless) ---
+    # 300s, not the default 3600: FBref is Cloudflare-blocked weekly and this
+    # step otherwise hangs the full hour for nothing — the Sofascore fallback
+    # (step below) covers the data either way. Fail fast, move on.
     results["fbref_htmls"] = run(
         [py, "-m", "scripts.data.scrape_fbref_missing", "--season", CURRENT_SEASON, "--headless"],
         "FBref match HTML download",
+        timeout=300,
     )
 
     # --- Step 3: Re-parse FBref into 5 parquets (all append current season) ---

@@ -638,7 +638,7 @@ CLV_GATE_WINDOW = 50      # rolling bets per (market, league)
 CLV_GATE_MIN_BETS = 50    # below this sample the gate stays open (no verdict)
 
 
-def get_market_clv_gate(market: str, league: str = None) -> Dict:
+def get_market_clv_gate(market: str, league: str = None) -> dict:
     """Rolling per-market CLV gate.
 
     blocked=True iff the last CLV_GATE_WINDOW tracked bets on this market
