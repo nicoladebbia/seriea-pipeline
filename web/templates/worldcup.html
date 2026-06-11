@@ -1,0 +1,687 @@
+{% extends "base.html" %}
+{% block title %}World Cup 2026 — SerieAI{% endblock %}
+{% block page_title %}World Cup 2026{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Elo + Poisson engine on 150 years of internationals · backtested on 5 held-out tournaments · insight only, not bets
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  /* Shared visual language with /projections (.pj-*); WC-specific bits are .wc-* */
+  .pj-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent);
+             border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
+  .pj-note b { color: var(--text-secondary); }
+
+  .pj-day { margin-bottom: 22px; }
+  .pj-day__header { font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: capitalize;
+                    padding: 6px 2px 10px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 12px;
+                    display: flex; align-items: baseline; gap: 10px; }
+  .pj-day__count { font-size: 10px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+              margin-bottom: 16px; overflow: hidden; }
+  .pj-match__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
+                    background: var(--bg-tertiary, rgba(255,255,255,0.02)); border-bottom: 1px solid var(--border-subtle);
+                    cursor: pointer; user-select: none; }
+  .pj-match__teams { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+  .pj-match__meta { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .pj-xg { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 700; }
+  .pj-chevron { transition: transform 0.3s; color: var(--text-tertiary); }
+  .pj-chevron.open { transform: rotate(180deg); }
+  .pj-body { max-height: 0; overflow: hidden; transition: max-height 0.45s ease; }
+  .pj-body.open { max-height: 6000px; }
+  .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-3); padding: var(--space-4); }
+  .pj-noise { margin: 0 16px 14px; border-top: 1px dashed var(--border-subtle); }
+  .pj-noise > summary { cursor: pointer; padding: 10px 0 4px; font-size: 11px; color: var(--text-tertiary); list-style: none; user-select: none; }
+  .pj-noise > summary:hover { color: var(--text-secondary); }
+  .pj-noise[open] > summary { color: var(--text-secondary); }
+
+  .pj-card { background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+             padding: var(--space-3) var(--space-4); transition: border-color 0.15s; }
+  .pj-card:hover { border-color: var(--border-default); }
+  .pj-card--dim { opacity: 0.62; }
+  .pj-card--dim:hover { opacity: 1; }
+  .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-tertiary);
+                    margin-bottom: var(--space-3); font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .pj-trust { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 4px; padding: 2px 5px; font-weight: 700; }
+  .pj-trust--ok { color: var(--green); background: var(--green-muted); }
+  .pj-trust--no { color: var(--text-tertiary); background: rgba(113,113,122,0.12); }
+
+  .pj-row { position: relative; display: flex; justify-content: space-between; align-items: center;
+            font-size: 12.5px; padding: 5px 8px; border-radius: 5px; margin: 1px 0; overflow: hidden; z-index: 0; }
+  .pj-row__label { color: var(--text-secondary); position: relative; z-index: 1; }
+  .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; position: relative; z-index: 1; }
+  .pj-row__odds { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; min-width: 38px; text-align: right; position: relative; z-index: 1; }
+  .pj-bar { position: absolute; left: 0; top: 0; bottom: 0; height: auto !important; margin: 0 !important;
+            border-radius: 5px; background: var(--accent); opacity: 0.16; z-index: 0; transition: opacity 0.15s; }
+  .pj-row:hover .pj-bar { opacity: 0.24; }
+  .pj-top { font-weight: 600; }
+  .pj-top .pj-bar { opacity: 0.30; background: var(--emerald); }
+  .pj-top .pj-row__label { color: var(--text-primary); }
+  .pj-empty { padding: 48px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+
+  /* WC-specific */
+  .wc-section { margin-bottom: 28px; }
+  .wc-section__title { font-size: 13px; font-weight: 700; color: var(--text-primary); padding: 6px 2px 10px;
+                       border-bottom: 1px solid var(--border-subtle); margin-bottom: 12px; }
+  .wc-champ-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: var(--space-3); }
+  .wc-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: var(--space-3); }
+  .wc-group-chip { font-size: 9px; font-weight: 800; color: var(--accent); background: rgba(96,165,250,0.12);
+                   border-radius: 4px; padding: 2px 7px; margin-left: 8px; vertical-align: middle; }
+  .wc-stage-chip { font-size: 9px; font-weight: 800; color: #facc15; background: rgba(250,204,21,0.10);
+                   border-radius: 4px; padding: 2px 7px; margin-left: 8px; vertical-align: middle; }
+  .wc-model-line { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 6px; }
+
+  /* Road to the final — team × round probability matrix */
+  .wc-road-wrap { overflow-x: auto; }
+  .wc-road-grid { min-width: 580px; max-width: 780px; }
+  .wc-road-sort { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .wc-road-sort button { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 5px; cursor: pointer;
+                         border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-tertiary); }
+  .wc-road-sort button.active { color: var(--accent); border-color: var(--accent); background: rgba(96,165,250,0.10); }
+  .wc-road-head, .wc-trow { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(6, 62px); gap: 3px; align-items: center; }
+  .wc-road-head { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary);
+                  font-weight: 700; padding: 2px 6px 6px; }
+  .wc-road-head span { text-align: center; }
+  .wc-trow { cursor: pointer; padding: 2px 6px; border-radius: 6px; user-select: none; }
+  .wc-trow:hover { background: rgba(255,255,255,0.03); }
+  .wc-trow.open { background: rgba(96,165,250,0.07); }
+  .wc-trow__team { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wc-trow__rank { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; margin-right: 6px; }
+  .wc-cell { font-family: var(--font-mono); font-size: 10.5px; text-align: center; padding: 5px 0; border-radius: 4px; color: var(--text-primary); }
+  .wc-road-group { font-size: 10px; font-weight: 800; color: var(--accent); padding: 12px 6px 4px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .wc-tdetail { display: none; padding: 6px 6px 12px; }
+  .wc-tdetail.open { display: block; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pj-note">
+  <b>What this is:</b> model-calculated probabilities for every 2026 World Cup match — 1X2, double chance, handicap,
+  plus the full goal-derived market menu — from a dedicated international engine (Elo ratings over the full history of
+  internationals → Poisson goal model), <b>not</b> the Serie A club model. Tournament odds come from a Monte
+  Carlo simulation implementing the official 2026 format (12 groups, head-to-head-first tiebreakers, exact FIFA Annex C
+  third-place allocation). These are <b>honest model probabilities</b>, shown as insight — they are <b>not bets</b>.
+  <div class="wc-model-line" id="wc-model-line">Loading backtest metadata…</div>
+</div>
+
+<div class="wc-section" id="wc-record-section" style="display:none;">
+  <div class="wc-section__title">📊 Record so far — graded vs reality</div>
+  <div id="wc-record"></div>
+</div>
+
+<div class="wc-section">
+  <div class="wc-section__title">🏆 Tournament simulation</div>
+  <div id="wc-sim"><div class="pj-empty">Loading simulation…</div></div>
+</div>
+
+<div class="wc-section">
+  <div class="wc-section__title">🛣️ Road to the final — every team, round by round</div>
+  <div id="wc-road"><div class="pj-empty">Loading simulation…</div></div>
+</div>
+
+<div class="wc-section">
+  <div class="wc-section__title">📅 Match projections</div>
+  <div id="wc-matches"><div class="pj-empty">Loading projections…</div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// IIFE-scoped: app.js defines globals like pct()/oddsFmt() — wrapping isolates
+// our locals so a const redeclaration can't throw and kill the whole script.
+(function () {
+const pct = p => (p * 100).toFixed(0) + '%';
+const pct1 = p => (p * 100).toFixed(1) + '%';
+const fmtOdds = o => (o && o < 99) ? o.toFixed(2) : '—';
+
+function rows(items, topHighlight = true) {
+  const sorted = [...items].sort((a, b) => b.prob - a.prob);
+  return sorted.map((r, i) => `
+    <div class="pj-row ${topHighlight && i === 0 ? 'pj-top' : ''}" style="flex-wrap:wrap;">
+      <span class="pj-row__label">${r.label}</span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <span class="pj-row__prob">${pct(r.prob)}</span>
+        <span class="pj-row__odds">${fmtOdds(r.fair_odds)}</span>
+      </span>
+      <div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div>
+    </div>`).join('');
+}
+
+function trustBadge(trust) {
+  if (trust === 'signal')
+    return ' <span class="pj-trust pj-trust--ok" title="who-wins family: beats base rate on held-out tournament group matches (live numbers in the header)">signal</span>';
+  if (trust === 'unvalidated')
+    return ' <span class="pj-trust pj-trust--no" title="honest model probability — goal-quantity props backtested as noise on internationals (O/U 2.5 skill ≈ 0)">display</span>';
+  return '';
+}
+
+function card(title, items, topHighlight = true, trust = '') {
+  if (!items || !items.length) return null;
+  const cls = trust === 'unvalidated' ? ' pj-card--dim' : '';
+  const html = `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
+  return { html, trust };
+}
+
+function fromList(list, labelKey) {
+  return (list || []).map(x => ({ label: x[labelKey], prob: x.prob, fair_odds: x.fair_odds }));
+}
+function fromDict(obj, labelMap) {
+  if (!obj) return [];
+  return Object.entries(obj)
+    .filter(([k, v]) => v && typeof v === 'object' && 'prob' in v)
+    .map(([k, v]) => ({ label: (labelMap && labelMap[k]) || k, prob: v.prob, fair_odds: v.fair_odds }));
+}
+
+// ---------------------------------------------------------------- header --
+function renderModelLine(model, playerModel) {
+  const o = model.overall || {};
+  const el = document.getElementById('wc-model-line');
+  if (!o.n_matches) { el.textContent = 'Backtest metadata unavailable — run scripts.worldcup.backtest'; return; }
+  const gate = (model.gate || {}).passed ? '✅ gate passed' : '⚠ gate FAILED';
+  const signed = s => (s >= 0 ? '+' : '') + (s * 100).toFixed(1) + '%';
+  const scope = model.n_tournaments ? `, ${model.n_tournaments} held-out tournaments` : '';
+  const pGate = (playerModel || {}).gate || {};
+  const playerLine = pGate.rule
+    ? ` · Scorers: ${pGate.passed ? '✅ beats equal-share baseline on held-out tournaments' : '⚠ gate FAILED — player cards hidden'}`
+    : '';
+  el.innerHTML =
+    `Backtest (${o.n_matches} group matches${scope}): ` +
+    `1X2 accuracy <b>${pct1(o.accuracy)}</b> vs ${pct1(o.accuracy_base_rate)} base · ` +
+    `Brier skill <b>${signed(o.skill_score)}</b> · ECE ${o.ece_1x2} · ` +
+    `O/U 2.5 skill ${signed(o.ou25_skill)} (noise → goal props are display-only) · ${gate}${playerLine}`;
+}
+
+// ---------------------------------------------------------------- record --
+function renderRecord(rec) {
+  if (!rec || !rec.n_graded) return;  // section stays hidden until reality arrives
+  const sec = document.getElementById('wc-record-section');
+  const c = document.getElementById('wc-record');
+  const signed = (a, b) => a == null || b == null ? '' :
+    (a < b ? `<span style="color:var(--green,#4ade80);">beating</span>` : `<span style="color:#f87171;">trailing</span>`);
+  const headline = `
+    <div class="pj-card" style="max-width:560px;margin-bottom:10px;">
+      <div class="pj-card__title">After ${rec.n_graded} graded ${rec.n_graded === 1 ? 'match' : 'matches'}</div>
+      <div style="font-size:13px;color:var(--text-primary);padding:4px 0;">
+        Picks: <b>${rec.hits}/${rec.n_graded}</b> (${(rec.hit_rate * 100).toFixed(0)}%) ·
+        Brier: system <b>${rec.brier_system}</b> vs base ${rec.brier_base}${rec.brier_market != null ? ` · same-subset (n=${rec.n_with_market}): system <b>${rec.brier_system_market_subset}</b> ` + signed(rec.brier_system_market_subset, rec.brier_market) + ` market ${rec.brier_market}` : ''}
+      </div>
+      <div style="font-size:9px;color:var(--text-tertiary);">"System" = the deployed 0.4 model / 0.6 market blend, frozen at the last refresh before each kickoff and immutable after. Knockouts graded on the reconstructed 90-minute result. Lower Brier is better; small samples swing wildly — judge after 20+ matches.</div>
+    </div>`;
+  const rows = rec.matches.slice(-12).reverse().map(m => `
+    <div class="pj-row" title="system Brier ${m.brier_system}${m.brier_market != null ? ' · market ' + m.brier_market : ''} · base ${m.brier_base}">
+      <span class="pj-row__label">${m.date} · ${m.match} <b>${m.score}</b></span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <span class="pj-row__odds">pick ${m.pick} ${pct(m.pick_prob)}</span>
+        <span class="pj-row__prob">${m.hit ? '✅' : '❌'}</span>
+      </span>
+    </div>`).join('');
+  c.innerHTML = headline + `<div class="pj-card" style="max-width:560px;">${rows}</div>`;
+  sec.style.display = '';
+}
+
+// ------------------------------------------------------------------- sim --
+function renderSim(sim, goldenBoot) {
+  const c = document.getElementById('wc-sim');
+  if (!sim || !sim.teams || !sim.teams.length) {
+    c.innerHTML = '<div class="pj-empty">No simulation file. Run scripts.worldcup.generate_predictions.</div>';
+    return;
+  }
+  const top = sim.teams.slice(0, 12);
+  const maxP = top[0].champion || 1;
+  const champRows = top.map((t, i) => `
+    <div class="pj-row ${i === 0 ? 'pj-top' : ''}">
+      <span class="pj-row__label">${i + 1}. ${t.team}</span>
+      <span style="display:flex;gap:10px;align-items:center;">
+        <span class="pj-row__odds" title="reach final">F ${pct(t.reach_final)}</span>
+        <span class="pj-row__prob">${pct1(t.champion)}</span>
+      </span>
+      <div class="pj-bar" style="width:${Math.max(2, t.champion / maxP * 100)}%;"></div>
+    </div>`).join('');
+
+  const groups = sim.groups || {};
+  const ctx = sim.team_context || {};
+  const ctxTip = t => {
+    const c = ctx[t] || {};
+    const bits = [];
+    if (c.squad_value_eur) bits.push(`squad €${(c.squad_value_eur / 1e9).toFixed(2)}bn`);
+    if (c.mean_club_elo) bits.push(`mean club Elo ${c.mean_club_elo} (${c.club_elo_coverage_pct}% cov)`);
+    return bits.length ? ' · ' + bits.join(' · ') : '';
+  };
+  const groupCards = Object.keys(groups).sort().map(letter => {
+    const teamRows = groups[letter].map((r, i) => `
+      <div class="pj-row ${i === 0 ? 'pj-top' : ''}" title="win group ${pct(r.win_group)} · runner-up ${pct(r.runner_up)} · best-3rd ${pct(r.third_qualified)}${ctxTip(r.team)}">
+        <span class="pj-row__label">${r.team}</span>
+        <span style="display:flex;gap:8px;align-items:center;">
+          <span class="pj-row__odds" title="win group">W ${pct(r.win_group)}</span>
+          <span class="pj-row__prob">${pct(r.advance)}</span>
+        </span>
+        <div class="pj-bar" style="width:${Math.max(2, r.advance * 100)}%;"></div>
+      </div>`).join('');
+    return `<div class="pj-card"><div class="pj-card__title">Group ${letter} <span style="font-weight:400;text-transform:none;letter-spacing:0;">· advance %</span></div>${teamRows}</div>`;
+  }).join('');
+
+  // Golden-boot watch: expected tournament goals = scorer share × E[team goals]
+  let bootCard = '';
+  if (goldenBoot && goldenBoot.length) {
+    const maxG = goldenBoot[0].expected_goals || 1;
+    const bootRows = goldenBoot.slice(0, 12).map((r, i) => `
+      <div class="pj-row ${i === 0 ? 'pj-top' : ''}" title="${r.position} · expected goals incl. likely knockout run">
+        <span class="pj-row__label">${i + 1}. ${r.name} <span style="font-size:8px;color:var(--text-tertiary);">${r.team}</span></span>
+        <span class="pj-row__prob">${(r.expected_goals || 0).toFixed(2)}</span>
+        <div class="pj-bar" style="width:${Math.max(2, r.expected_goals / maxG * 100)}%;opacity:0.25;background:#a855f7;"></div>
+      </div>`).join('');
+    bootCard = `
+      <div class="pj-card" style="max-width:560px;border-color:rgba(168,85,247,0.25);">
+        <div class="pj-card__title">Golden-boot watch — expected goals
+          <span style="font-size:8px;color:#a855f7;background:rgba(168,85,247,0.12);border-radius:3px;padding:1px 4px;" title="decayed goal share × expected team tournament goals (knockout run weighted by advancement probabilities) — display only">players</span></div>
+        ${bootRows}
+      </div>`;
+  }
+
+  c.innerHTML = `
+    <div class="wc-champ-grid" style="margin-bottom:14px;">
+      <div class="pj-card" style="max-width:560px;">
+        <div class="pj-card__title">Champion probability — top 12 <span class="pj-trust pj-trust--ok" title="Monte Carlo tournament simulation, official 2026 format">${(sim.n_sims || 0).toLocaleString()} sims</span></div>
+        ${champRows}
+      </div>
+      ${bootCard}
+    </div>
+    <div class="wc-groups">${groupCards}</div>`;
+}
+
+// ------------------------------------------------------------------ road --
+// Team × round matrix over simulation.json: cumulative probability of
+// reaching each round, left to right. Every team clickable → full path,
+// group-finish distribution, squad context. Pure view, no new backend.
+const ROAD_STAGES = [
+  ['reach_r32', 'R32', 'Last 32'],
+  ['reach_r16', 'R16', 'Last 16'],
+  ['reach_qf', 'QF', 'Quarter-final'],
+  ['reach_sf', 'SF', 'Semi-final'],
+  ['reach_final', 'Final', 'Reach the final'],
+  ['champion', '🏆', 'Champion'],
+];
+
+function roadDetail(t, group, tctx) {
+  const fair = p => p > 1e-4 ? ((1 / p) < 100 ? (1 / p).toFixed(2) : String(Math.round(1 / p))) : '—';
+  let prev = 1;
+  const pathRows = ROAD_STAGES.map(([k, , label]) => {
+    const p = t[k] || 0;
+    const cond = prev > 1e-4 ? Math.min(1, p / prev) : 0;
+    prev = p;
+    return `
+      <div class="pj-row" title="fair odds ${fair(p)} · survives this round in ${pct(cond)} of the sims where they arrive">
+        <span class="pj-row__label">${label}</span>
+        <span style="display:flex;gap:8px;align-items:center;">
+          <span class="pj-row__odds">${fair(p)}</span>
+          <span class="pj-row__prob">${pct1(p)}</span>
+        </span>
+        <div class="pj-bar" style="width:${Math.max(2, p * 100)}%;"></div>
+      </div>`;
+  }).join('');
+
+  const finish = [
+    { label: `Win group ${group}`, prob: t.group_winner || 0 },
+    { label: 'Group runner-up', prob: t.group_runner_up || 0 },
+    { label: 'Qualify as best third', prob: t.third_qualified || 0 },
+    { label: 'Out at the group stage', prob: Math.max(0, 1 - (t.reach_r32 || 0)) },
+  ];
+  const finishRows = finish.map(r => `
+    <div class="pj-row">
+      <span class="pj-row__label">${r.label}</span>
+      <span class="pj-row__prob">${pct1(r.prob)}</span>
+      <div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div>
+    </div>`).join('');
+
+  const bits = [];
+  if (tctx.squad_value_eur) bits.push(`Squad value €${(tctx.squad_value_eur / 1e9).toFixed(2)}bn`);
+  if (tctx.mean_club_elo) bits.push(`mean club Elo ${tctx.mean_club_elo} (${tctx.club_elo_coverage_pct}% coverage)`);
+  const ctxLine = bits.length
+    ? `<div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;">${bits.join(' · ')} — display context, not a model input.</div>` : '';
+
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3);">
+      <div class="pj-card"><div class="pj-card__title">Tournament path — ${t.team} <span class="pj-row__odds" style="text-transform:none;letter-spacing:0;">prob · fair odds</span></div>${pathRows}</div>
+      <div class="pj-card"><div class="pj-card__title">Group ${group} finish</div>${finishRows}</div>
+    </div>${ctxLine}`;
+}
+
+let roadView = 'odds';
+function renderRoad(sim) {
+  const c = document.getElementById('wc-road');
+  if (!sim || !sim.teams || !sim.teams.length) {
+    c.innerHTML = '<div class="pj-empty">No simulation file. Run scripts.worldcup.generate_predictions.</div>';
+    return;
+  }
+  const groupOf = {};
+  Object.entries(sim.groups || {}).forEach(([g, rs]) => rs.forEach(r => { groupOf[r.team] = g; }));
+  const ctx = sim.team_context || {};
+
+  // Heat shading: opacity tracks the probability so the table reads as a
+  // gradient from locks (bright) to longshots (near-transparent).
+  const heat = (p, gold) => `background:rgba(${gold ? '250,204,21' : '96,165,250'},${Math.min(0.55, p * 0.5).toFixed(3)});`;
+  const row = (t, rank) => {
+    const g = groupOf[t.team] || '?';
+    const cells = ROAD_STAGES.map(([k]) =>
+      `<span class="wc-cell" style="${heat(t[k] || 0, k === 'champion')}">${k === 'champion' ? pct1(t[k] || 0) : pct(t[k] || 0)}</span>`).join('');
+    return `
+      <div class="wc-trow" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open');">
+        <span class="wc-trow__team">${rank ? `<span class="wc-trow__rank">${rank}</span>` : ''}${t.team}<span class="wc-group-chip">${g}</span></span>
+        ${cells}
+      </div>
+      <div class="wc-tdetail">${roadDetail(t, g, ctx[t.team] || {})}</div>`;
+  };
+  const head = `<div class="wc-road-head"><span style="text-align:left;">Team</span>${ROAD_STAGES.map(([, s]) => `<span>${s}</span>`).join('')}</div>`;
+
+  let body;
+  if (roadView === 'group') {
+    const byName = {};
+    sim.teams.forEach(t => { byName[t.team] = t; });
+    body = Object.keys(sim.groups || {}).sort().map(letter =>
+      `<div class="wc-road-group">Group ${letter}</div>` +
+      sim.groups[letter].map(r => byName[r.team] ? row(byName[r.team], 0) : '').join('')
+    ).join('');
+  } else {
+    const sorted = [...sim.teams].sort((a, b) =>
+      (b.champion - a.champion) || (b.reach_final - a.reach_final) || (b.reach_r32 - a.reach_r32));
+    body = sorted.map((t, i) => row(t, i + 1)).join('');
+  }
+
+  c.innerHTML = `
+    <div class="wc-road-sort">
+      <button data-view="odds" class="${roadView === 'odds' ? 'active' : ''}">By title chance</button>
+      <button data-view="group" class="${roadView === 'group' ? 'active' : ''}">By group</button>
+      <span style="font-size:9px;color:var(--text-tertiary);align-self:center;">Cumulative chance of reaching each round, from the same ${(sim.n_sims || 0).toLocaleString()}-sim Monte Carlo · click a team for its full path</span>
+    </div>
+    <div class="wc-road-wrap"><div class="wc-road-grid">${head}${body}</div></div>`;
+  c.querySelectorAll('.wc-road-sort button').forEach(b =>
+    b.addEventListener('click', () => { roadView = b.dataset.view; renderRoad(sim); }));
+}
+
+// --------------------------------------------------------------- matches --
+function renderMatch(m) {
+  const H = m.home_team, A = m.away_team;
+  const fair = p => p > 0.001 ? +(1 / p).toFixed(2) : 99;
+  const oneXtwo = [
+    { label: H, prob: m.probabilities.home, fair_odds: fair(m.probabilities.home) },
+    { label: 'Draw', prob: m.probabilities.draw, fair_odds: fair(m.probabilities.draw) },
+    { label: A, prob: m.probabilities.away, fair_odds: fair(m.probabilities.away) },
+  ];
+
+  // Market comparison (display only — never blended): book 1X2 next to ours.
+  let marketCard = '';
+  if (m.market && m.market.implied) {
+    const mi = m.market.implied, mo = m.market.odds || {};
+    const sides = [
+      { label: H, model: m.probabilities.home, mkt: mi.home, odds: mo.home },
+      { label: 'Draw', model: m.probabilities.draw, mkt: mi.draw, odds: mo.draw },
+      { label: A, model: m.probabilities.away, mkt: mi.away, odds: mo.away },
+    ];
+    const maxGap = Math.max(...sides.map(s => Math.abs(s.model - s.mkt)));
+    const gapFlag = maxGap >= 0.08
+      ? `<span style="font-size:8px;color:#facc15;background:rgba(250,204,21,0.10);border-radius:3px;padding:1px 4px;" title="model and market differ by ${(maxGap * 100).toFixed(0)}pp on at least one outcome — one of us is wrong">▲ ${(maxGap * 100).toFixed(0)}pp gap</span>`
+      : `<span style="font-size:8px;color:var(--text-tertiary);" title="model within 8pp of the de-vigged market on every outcome">≈ market</span>`;
+    const rowsHtml = sides.map(s => {
+      const d = s.model - s.mkt;
+      return `<div class="pj-row" title="book odds ${s.odds || '—'} · de-vigged implied ${pct(s.mkt)} · model ${pct(s.model)}">
+        <span class="pj-row__label">${s.label}</span>
+        <span style="display:flex;gap:10px;align-items:center;">
+          <span class="pj-row__odds" title="model">us ${pct(s.model)}</span>
+          <span class="pj-row__prob" title="market implied">${pct(s.mkt)}</span>
+          <span class="pj-row__odds" style="color:${Math.abs(d) >= 0.08 ? '#facc15' : 'var(--text-tertiary)'};">${d >= 0 ? '+' : ''}${(d * 100).toFixed(0)}</span>
+        </span>
+        <div class="pj-bar" style="width:${Math.max(2, s.mkt * 100)}%;opacity:0.18;"></div>
+      </div>`;
+    }).join('');
+    marketCard = `<div class="pj-card">
+      <div class="pj-card__title">Market check (book 1X2) ${gapFlag}</div>
+      ${rowsHtml}
+      <div style="font-size:8px;color:var(--text-tertiary);margin-top:5px;">De-vigged book probabilities vs our deployed (market-blended) probabilities — overlap is expected since the blend is 60% market. Column: us · market · gap (pp).</div>
+    </div>`;
+  }
+
+  const sideWord = { H: 'Home', D: 'Draw', A: 'Away' };
+  const htft = fromList(m.htft, 'combo').map(r => ({
+    ...r, label: r.label.split('/').map(s => sideWord[s] || s).join(' / ')
+  }));
+  const marginLabel = {
+    draw: 'Draw',
+    home_by_1: `${H} by 1`, home_by_2: `${H} by 2`, home_by_3_plus: `${H} by 3+`,
+    away_by_1: `${A} by 1`, away_by_2: `${A} by 2`, away_by_3_plus: `${A} by 3+`,
+  };
+  const tt = m.team_totals || {};
+  const totLabel = (side, k) => `${side} ${k.replace('_', ' ')}`;
+  const homeTot = fromDict(tt.home, null).map(r => ({ ...r, label: totLabel(H, r.label) }));
+  const awayTot = fromDict(tt.away, null).map(r => ({ ...r, label: totLabel(A, r.label) }));
+
+  const S = 'signal', U = 'unvalidated';
+  const mkBadge = m.market_informed
+    ? ' <span class="pj-trust pj-trust--ok" title="blended with the bookmaker market (validated weight 0.4 model / 0.6 market, beats pure model on untouched finals) — all derived markets share this view">market-informed</span>'
+    : '';
+  const tnBadge = m.availability_adjusted
+    ? ' <span class="pj-trust" style="color:#fb923c;background:rgba(251,146,60,0.12);" title="model xG adjusted for reported absences (market-value share of the expected XI, clamped ±15%) before any market blend — see the Team news card">team-news</span>'
+    : '';
+  const signalCards = [
+    card('Match result (1X2)' + mkBadge + tnBadge, oneXtwo, true, S),
+    card('Double chance', fromDict(m.double_chance, { '1X': `${H} or Draw`, 'X2': 'Draw or ' + A, '12': `${H} or ${A}` }), true, S),
+  ].filter(Boolean);
+
+  // European handicap (who-wins family, inherits 1X2 signal)
+  let ehCard = '';
+  if (m.european_handicap && Object.keys(m.european_handicap).length) {
+    const eh = m.european_handicap;
+    const lineLabel = k => `${H} ${k.includes('-') ? '−' : '+'}${k.replace(/\D/g, '')}`;
+    const order = ['home_-1', 'home_+1', 'home_-2', 'home_+2'].filter(k => eh[k]);
+    const blocks = order.slice(0, 2).map(k => {
+      const o = eh[k];
+      const outs = [
+        { label: H, prob: (o.home || {}).prob },
+        { label: 'Draw', prob: (o.draw || {}).prob },
+        { label: A, prob: (o.away || {}).prob },
+      ].filter(r => r.prob != null);
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:5px 0 2px;font-weight:600;">${lineLabel(k)}</div>`
+        + outs.map(r => `<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div></div>`).join('');
+    }).join('');
+    ehCard = `<div class="pj-card"><div class="pj-card__title">European handicap${trustBadge('signal')}</div>${blocks}</div>`;
+  }
+
+  const noiseCards = [
+    card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' }), true, U),
+    card('Most likely scores', fromList(m.exact_score, 'score'), true, U),
+    card('Multigol · total goals', fromList(m.multi_goal, 'range'), false, U),
+    card('Half-time / Full-time', htft, true, U),
+    card('Winning margin', fromDict(m.winning_margin, marginLabel), true, U),
+    card('Team totals', [...homeTot, ...awayTot], false, U),
+    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' }), true, U),
+    card('Win to nil', fromDict(m.win_to_nil, {
+      home_win_to_nil: `${H} win to nil`, away_win_to_nil: `${A} win to nil`,
+      home_clean_sheet: `${H} clean sheet`, away_clean_sheet: `${A} clean sheet`,
+    }), true, U),
+    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A }), true, U),
+    card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A }), true, U),
+    card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' }), true, U),
+    card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false, U),
+    card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' }), true, U),
+  ].filter(Boolean);
+
+  // Anytime-goalscorer candidates — gate-passed share model (display only).
+  // Mirrors the Serie A player-floors card: purple chip, full-width, two columns.
+  let scorersCard = '';
+  if (m.goalscorers && ((m.goalscorers.home || []).length || (m.goalscorers.away || []).length)) {
+    const side = (players, teamName) => {
+      if (!players || !players.length) return '';
+      const rowsHtml = players.map(p => {
+        const r = p.recent;
+        const xiChip = p.confirmed_xi === true
+          ? ' <span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;" title="confirmed in the starting XI">XI</span>'
+          : p.confirmed_xi === false
+          ? ' <span style="font-size:8px;color:var(--text-tertiary);" title="confirmed lineup published — not starting">bench</span>' : '';
+        const startChip = xiChip || (r
+          ? ` <span style="font-size:8px;color:${r.starts >= r.matches - 1 ? 'var(--green,#4ade80)' : 'var(--text-tertiary)'};" title="started ${r.starts} of the last ${r.matches} internationals · avg ${r.avg_min}'">${r.starts}/${r.matches} st</span>`
+          : ' <span style="font-size:8px;color:#facc15;" title="no appearance in the last 5 internationals — share dampened">no recent</span>');
+        const valChip = p.value_eur
+          ? ` <span style="font-size:8px;color:var(--text-tertiary);" title="Transfermarkt market value">€${(p.value_eur / 1e6).toFixed(0)}m</span>` : '';
+        return `
+        <div class="pj-row" title="${p.position} · ${p.window_goals} decay-weighted intl goals · fair ${p.fair_odds}">
+          <span class="pj-row__label">${p.name} <span style="font-size:8px;color:var(--text-tertiary);">${p.position}·${p.window_goals}g</span>${startChip}${valChip}</span>
+          <span style="display:flex;gap:8px;align-items:center;">
+            <span class="pj-row__prob">${pct(p.prob)}</span>
+            <span class="pj-row__odds">${(p.fair_odds || 0).toFixed(2)}</span>
+          </span>
+          <div class="pj-bar" style="width:${Math.max(2, p.prob * 100)}%;opacity:0.25;background:#a855f7;"></div>
+        </div>`;
+      }).join('');
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:4px 0 2px;font-weight:600;">${teamName}</div>${rowsHtml}`;
+    };
+    scorersCard = `<div class="pj-card" style="border-color:rgba(168,85,247,0.25);grid-column:1/-1;">
+      <div class="pj-card__title">Anytime goalscorer — top candidates
+        <span style="font-size:8px;color:#a855f7;background:rgba(168,85,247,0.12);border-radius:3px;padding:1px 4px;" title="decayed international goal share × team xG; beats equal-share baseline on held-out tournaments — display only, betting gated">players</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <div>${side(m.goalscorers.home, H)}</div>
+        <div>${side(m.goalscorers.away, A)}</div>
+      </div>
+      <div style="font-size:8px;color:var(--text-tertiary);margin-top:6px;">Scorer history is a sample — recent debutants without recorded international goals are not listed. Shares are dampened for players without recent minutes (validated +3.3% on the scraped window).</div>
+    </div>`;
+  }
+
+  // Team news — expected/confirmed XI + out/doubtful lists (availability.py).
+  // The lambda factors shown here were already applied to the model xG
+  // upstream (pre-market-blend); this card explains WHY the numbers moved.
+  let newsCard = '';
+  if (m.team_news && (m.team_news.home || m.team_news.away)) {
+    const imp = m.availability_impact || {};
+    const reasonColor = r => r === 'Suspension' ? '#f87171' : r === 'Injury' ? '#fb923c' : 'var(--text-tertiary)';
+    const sideNews = (tn, teamName) => {
+      if (!tn) return '';
+      const statusChip = tn.lineup_status === 'confirmed'
+        ? '<span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;" title="starting XI published by the broadcaster feed">XI confirmed</span>'
+        : tn.lineup_status === 'caps_fallback'
+        ? '<span style="font-size:8px;color:var(--text-tertiary);" title="no recent scraped minutes — XI guessed from caps">projected (weak)</span>'
+        : '<span style="font-size:8px;color:#60a5fa;background:rgba(96,165,250,0.10);border-radius:3px;padding:1px 4px;" title="who people expect to start — top 11 by starts over the last 5 internationals">projected XI</span>';
+      const eur = v => v ? ` · €${(v / 1e6).toFixed(0)}m` : '';
+      const absRow = (p, tag) => `
+        <div style="font-size:9px;margin:2px 0;color:${reasonColor(p.reason)};">
+          <strong>${tag}</strong> ${p.name} <span style="color:var(--text-tertiary);">${p.position || ''} · ${p.reason}${p.in_expected_xi ? ' · expected starter' : ''}${eur(p.value_eur)}</span>
+        </div>`;
+      const outRows = (tn.out || []).map(p => absRow(p, 'OUT')).join('');
+      const doubtRows = (tn.doubtful || []).map(p => absRow(p, '50/50')).join('');
+      const noNews = !outRows && !doubtRows
+        ? '<div style="font-size:9px;color:var(--text-tertiary);margin:2px 0;">No reported absences</div>' : '';
+      const xiNames = (tn.xi || []).map(p =>
+        `<span title="${p.position || '?'} · started ${p.starts}/${p.recent_matches} recent internationals${p.value_eur ? ' · €' + (p.value_eur / 1e6).toFixed(0) + 'm' : ''}">${p.name}</span>`
+      ).join(', ');
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:4px 0 2px;font-weight:600;">${teamName} ${statusChip}</div>
+        ${outRows}${doubtRows}${noNews}
+        <div style="font-size:8px;color:var(--text-tertiary);margin-top:3px;line-height:1.5;">${xiNames}</div>`;
+    };
+    const adjLine = m.availability_adjusted && imp.home_factor
+      ? `<div style="font-size:8px;color:#fb923c;margin-top:6px;">Model xG adjusted for absences before the market blend: ${H} ×${imp.home_factor.toFixed(2)} · ${A} ×${imp.away_factor.toFixed(2)}</div>`
+      : '';
+    newsCard = `<div class="pj-card" style="border-color:rgba(96,165,250,0.25);grid-column:1/-1;">
+      <div class="pj-card__title">Team news — who plays
+        <span style="font-size:8px;color:#60a5fa;background:rgba(96,165,250,0.10);border-radius:3px;padding:1px 4px;" title="projected XI = top 11 by recent starts; out/doubtful from the Sofascore missing-player feed; xG impact = market-value share of absent expected starters (mechanical, clamped ±15%) — see availability_study.json for the honesty numbers">availability</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <div>${sideNews(m.team_news.home, H)}</div>
+        <div>${sideNews(m.team_news.away, A)}</div>
+      </div>
+      ${adjLine}
+      <div style="font-size:8px;color:var(--text-tertiary);margin-top:6px;">Hover a name for position, recent starts and market value. Absence lists update with the lineup feed (~48h pre-kickoff, confirmed ~1h before).</div>
+    </div>`;
+  }
+
+  const groupChip = m.group ? `<span class="wc-group-chip">Group ${m.group}</span>`
+    : m.stage ? `<span class="wc-stage-chip">${String(m.stage).replace(/_/g, ' ')}</span>` : '';
+  const favProb = Math.max(m.probabilities.home, m.probabilities.draw, m.probabilities.away);
+  const confChip = favProb >= 0.6
+    ? `<span title="the model's favorite is a ≥60% call in this match" style="margin-left:6px;">⭐</span>` : '';
+  const nOut = m.team_news
+    ? (((m.team_news.home || {}).out || []).length + ((m.team_news.away || {}).out || []).length)
+    : 0;
+  const absChip = nOut
+    ? `<span title="${nOut} reported absence${nOut > 1 ? 's' : ''} — open for team news" style="margin-left:6px;font-size:10px;">🩹</span>` : '';
+
+  return `
+  <div class="pj-match">
+    <div class="pj-match__head" onclick="const mm=this.closest('.pj-match');mm.querySelector('.pj-body').classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
+      <div>
+        <div class="pj-match__teams">${H} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${A}${groupChip}${confChip}${absChip}</div>
+        <div class="pj-match__meta">
+          <span>${m.date || ''} ${m.time || ''} UTC</span>
+          <span>${m.city || ''}</span>
+          <span class="pj-xg">xG ${m.home_xg} – ${m.away_xg}</span>
+          <span>1X2 ${pct(m.probabilities.home)}/${pct(m.probabilities.draw)}/${pct(m.probabilities.away)}</span>
+          <span title="World Football Elo">Elo ${Math.round(m.elo_home || 0)} – ${Math.round(m.elo_away || 0)}</span>
+        </div>
+      </div>
+      <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="pj-body">
+      <div class="pj-grid">${signalCards.map(c => c.html).join('')}${marketCard}${ehCard}${newsCard}${scorersCard}</div>
+      <details class="pj-noise"><summary>▾ ${noiseCards.length} model-probability markets (goal-quantity · display only, not validated)</summary>
+        <div class="pj-grid" style="padding-top:8px;">${noiseCards.map(c => c.html).join('')}</div></details>
+    </div>
+  </div>`;
+}
+
+function renderMatches(projections) {
+  const c = document.getElementById('wc-matches');
+  if (!projections || !projections.length) {
+    c.innerHTML = '<div class="pj-empty">No predictions. Run scripts.worldcup.generate_predictions.</div>';
+    return;
+  }
+  // Honest expectation line: a calibrated model's expected accuracy IS its
+  // mean favorite probability — the number is set by the schedule's
+  // lopsidedness, not by model bravado.
+  const favs = projections.map(m => Math.max(m.probabilities.home, m.probabilities.draw, m.probabilities.away));
+  const expAcc = favs.reduce((a, b) => a + b, 0) / favs.length;
+  const confident = favs.filter(f => f >= 0.6).length;
+  const el = document.getElementById('wc-model-line');
+  if (el) el.innerHTML += ` · This schedule: expected pick accuracy <b>${pct1(expAcc)}</b>, ${confident}/${projections.length} matches are ≥60% calls ⭐`;
+  const fmtDay = d => {
+    try { return new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); }
+    catch { return d || 'Undated'; }
+  };
+  const byDate = {};
+  projections.forEach(m => { (byDate[m.date || ''] = byDate[m.date || ''] || []).push(m); });
+  const dates = Object.keys(byDate).sort();
+  c.innerHTML = dates.map(date => {
+    const matches = byDate[date].map(m => {
+      try { return renderMatch(m); }
+      catch (err) { return '<div class="pj-match" style="padding:12px;color:#f87171;">⚠ ' + (m.home_team || '?') + ' vs ' + (m.away_team || '?') + ' failed: ' + err.message + '</div>'; }
+    }).join('');
+    return `<div class="pj-day">
+      <div class="pj-day__header">${fmtDay(date)} <span class="pj-day__count">${byDate[date].length} ${byDate[date].length === 1 ? 'match' : 'matches'}</span></div>
+      ${matches}
+    </div>`;
+  }).join('');
+  const first = c.querySelector('.pj-body');
+  if (first) {
+    first.classList.add('open');
+    const ch = first.closest('.pj-match').querySelector('.pj-chevron');
+    if (ch) ch.classList.add('open');
+  }
+}
+
+Promise.all([
+  fetch('/api/worldcup').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+  fetch('/api/worldcup/simulation').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+  fetch('/api/worldcup/record').then(r => r.ok ? r.json() : { n_graded: 0 }).catch(() => ({ n_graded: 0 })),
+]).then(([api, sim, rec]) => {
+  renderModelLine(api.model || {}, api.player_model || {});
+  renderRecord(rec);
+  renderSim(sim, api.golden_boot || []);
+  renderRoad(sim);
+  renderMatches(api.projections);
+}).catch(err => {
+  document.getElementById('wc-model-line').textContent = 'Backtest metadata unavailable: ' + err.message;
+  document.getElementById('wc-matches').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
+  document.getElementById('wc-sim').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
+  document.getElementById('wc-road').innerHTML = '<div class="pj-empty">⚠ Failed to load: ' + err.message + '</div>';
+});
+})();
+</script>
+{% endblock %}

@@ -9,6 +9,7 @@ import sys
 import threading
 import time as _time
 from collections import defaultdict
+from typing import Any
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -340,6 +341,7 @@ _LEAGUE_SOFASCORE_PAGE = {
 # Live HTML standings cache (5min TTL on success; 30s on failure for fast retry)
 _html_standings_cache: dict[str, tuple[float, dict]] = {}
 _HTML_STANDINGS_TTL = 300
+_HTML_FAILURE_TTL = 30  # negative-cache TTL: empty payload = recent failure marker
 
 # Sentinel teams — the league is broken if these don't appear
 _HTML_SENTINEL_TEAM = {
@@ -370,6 +372,30 @@ def _html_is_broken(league: str) -> bool:
     return h["consecutive_failures"] >= _HTML_FAILURE_THRESHOLD or h["schema_break"]
 
 
+def _sofascore_get_retry(s: Any, url: str, timeout: int = 10, attempts: int = 3) -> tuple[Any, str]:
+    """GET with in-call retry on transient transport errors.
+
+    Retries connect failures, timeouts, and Cloudflare-mood statuses (403/429/5xx)
+    with 1s/2s backoff so a single blip never reaches the failure breaker.
+    Returns (response, "") on success or hard status (404 etc.); (None, err) when
+    all attempts were transient failures.
+    """
+    err = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            r = s.get(url, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 — transport errors vary by curl_cffi backend
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+        else:
+            if r.status_code in (403, 429) or r.status_code >= 500:
+                err = f"HTTP {r.status_code}"
+            else:
+                return r, ""
+        if attempt < attempts:
+            _time.sleep(attempt)
+    return None, f"transport ({attempts} attempts): {err}"
+
+
 def _live_standings_via_html(league: str) -> dict:
     """Scrape live standings from Sofascore tournament HTML page.
 
@@ -381,12 +407,23 @@ def _live_standings_via_html(league: str) -> dict:
     now = _t.time()
     h = _html_health_now(league)
 
-    # Cache hit on a recent successful payload — short-circuit
+    # Cache hit — success payloads live 5min; failure markers ({}) 30s, so a
+    # flaky Sofascore isn't re-hammered by every caller
     if league in _html_standings_cache:
         cached_at, payload = _html_standings_cache[league]
-        if (now - cached_at) < _HTML_STANDINGS_TTL:
+        ttl = _HTML_STANDINGS_TTL if payload else _HTML_FAILURE_TTL
+        if (now - cached_at) < ttl:
             import copy
             return copy.deepcopy(payload)
+
+    def _fail(err: str, *, schema: bool = False) -> dict:
+        (log.error if schema else log.warning)("HTML standings %s: %s", league, err)
+        h["last_error"] = err
+        if schema:
+            h["schema_break"] = True
+        h["consecutive_failures"] += 1
+        _html_standings_cache[league] = (now, {})
+        return {}
 
     h["last_attempt_at"] = now
     slug_info = _LEAGUE_SOFASCORE_PAGE.get(league)
@@ -405,42 +442,27 @@ def _live_standings_via_html(league: str) -> dict:
             "Accept": "text/html,application/xhtml+xml",
             "Accept-Language": "en-US,en;q=0.9",
         })
-        r = s.get(url, timeout=8)
+        r, terr = _sofascore_get_retry(s, url, timeout=10)
+        if r is None:
+            return _fail(terr)
         if r.status_code != 200:
-            err = f"HTTP {r.status_code}"
-            log.warning("HTML standings %s: %s", league, err)
-            h["last_error"] = err
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail(f"HTTP {r.status_code}")
 
         import re as _re
         m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
         if not m:
-            err = "NEXT_DATA script not found"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("NEXT_DATA script not found", schema=True)
 
         data = json.loads(m.group(1))
-        st_list = data.get("props", {}).get("pageProps", {}).get("initialProps", {}).get("standings", [])
+        pp = data.get("props", {}).get("pageProps", {})
+        # 2026-06: Sofascore hoisted initialProps.* directly onto pageProps — support both
+        st_list = pp.get("standings") or (pp.get("initialProps") or {}).get("standings", [])
         if not st_list or not isinstance(st_list, list):
-            err = "standings list missing in NEXT_DATA"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("standings list missing in NEXT_DATA", schema=True)
 
         rows = st_list[0].get("rows", [])
         if not rows:
-            err = "rows array empty"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("rows array empty", schema=True)
 
         teams: dict[str, dict] = {}
         for row in rows:
@@ -474,13 +496,9 @@ def _live_standings_via_html(league: str) -> dict:
         # Sentinel: known team must be in the parsed standings.
         sentinel = _HTML_SENTINEL_TEAM.get(league)
         if sentinel and sentinel not in teams:
-            err = f"sentinel team {sentinel!r} missing — schema break"
-            log.error("HTML standings %s: %s. Found teams: %s",
-                      league, err, sorted(teams.keys())[:5])
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            log.error("HTML standings %s: sentinel %r missing. Found teams: %s",
+                      league, sentinel, sorted(teams.keys())[:5])
+            return _fail(f"sentinel team {sentinel!r} missing — schema break", schema=True)
 
         max_played = max((t["played"] for t in teams.values()), default=0)
         payload = {
@@ -503,11 +521,7 @@ def _live_standings_via_html(league: str) -> dict:
         import copy
         return copy.deepcopy(payload)
     except Exception as e:
-        err = f"{type(e).__name__}: {str(e)[:120]}"
-        log.warning("HTML standings %s failed: %s", league, err)
-        h["last_error"] = err
-        h["consecutive_failures"] += 1
-        return {}
+        return _fail(f"{type(e).__name__}: {str(e)[:120]}")
 
 
 def _next_fixture_for_team(league: str, team: str) -> dict | None:
@@ -1086,6 +1100,111 @@ def track_record_page():
     resp = app.make_response(render_template("track_record.html", active_page="track_record"))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
+
+
+# ---------------------------------------------------------------------------
+# World Cup 2026 — Elo+Poisson engine (scripts/worldcup/), artifacts in
+# data/worldcup/. Markets derived at serve time exactly like /projections.
+# ---------------------------------------------------------------------------
+
+WORLDCUP_DIR = DATA_DIR / "worldcup"
+
+
+@app.route("/worldcup")
+@app.route("/wc")
+def worldcup_page():
+    resp = app.make_response(render_template("worldcup.html", active_page="worldcup"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/api/worldcup")
+def api_worldcup():
+    """Per-match World Cup projections (full market family per fixture).
+
+    Display-only insight, NOT bets. 1X2/DC/handicap inherit the backtested
+    who-wins skill (see model_metadata.json); goal-quantity props tested as
+    noise on internationals too and are badged display-grade.
+    """
+    data = _load_json(WORLDCUP_DIR / "predictions.json", {})
+    preds = data.get("predictions", []) if isinstance(data, dict) else []
+
+    # Player layer: anytime-goalscorer candidates (scripts/worldcup/players.py),
+    # gate-checked like everything else. Absent file -> no cards, no error.
+    players = _load_json(WORLDCUP_DIR / "player_predictions.json", {})
+    players_by_match = players.get("per_match", {}) if isinstance(players, dict) else {}
+    # Market odds (Sofascore proxy, scripts/worldcup/sofascore_fetch.py):
+    # shown per match for transparency; the same odds also feed the
+    # VALIDATED 0.4/0.6 blend at generation (model_metadata.json market_blend).
+    market = _load_json(WORLDCUP_DIR / "market_odds.json", {})
+    # Team news (scripts/worldcup/availability.py): expected/confirmed XI,
+    # out/doubtful lists, and the lambda factors already applied upstream.
+    availability = _load_json(WORLDCUP_DIR / "player_availability.json", {})
+    av_matches = availability.get("matches", {}) if isinstance(availability, dict) else {}
+
+    projections = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is None:
+            continue
+        for key in ("stage", "group", "venue", "city", "match_number",
+                    "elo_home", "elo_away", "market_informed",
+                    "availability_adjusted", "availability_impact"):
+            proj[key] = p.get(key)
+        news = av_matches.get(str(p.get("match_number")))
+        if isinstance(news, dict):
+            proj["team_news"] = news
+        scorers = players_by_match.get(str(p.get("match_number")))
+        if scorers and (scorers.get("home") or scorers.get("away")):
+            proj["goalscorers"] = scorers
+        mk = market.get(str(p.get("match_number"))) if isinstance(market, dict) else None
+        if isinstance(mk, dict) and mk.get("implied"):
+            proj["market"] = {
+                "odds": mk.get("odds", {}),
+                "implied": mk["implied"],
+                "fetched_at": mk.get("fetched_at", ""),
+            }
+        projections.append(proj)
+
+    meta = _load_json(WORLDCUP_DIR / "model_metadata.json", {})
+    return jsonify({
+        "generated_at": data.get("generated_at", "") if isinstance(data, dict) else "",
+        "fitted_through": data.get("fitted_through", "") if isinstance(data, dict) else "",
+        "count": len(projections),
+        "model": {
+            "overall": meta.get("overall", {}),
+            "gate": meta.get("gate", {}),
+            "holdout_scope": meta.get("holdout_scope", ""),
+            "n_tournaments": len(meta.get("per_tournament", [])),
+        },
+        "player_model": {
+            "gate": players.get("gate", {}),
+            "method": players.get("method", ""),
+            "coverage_note": players.get("coverage_note", ""),
+        } if isinstance(players, dict) else {},
+        "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
+        "projections": projections,
+    })
+
+
+@app.route("/api/worldcup/record")
+def api_worldcup_record():
+    """Live predicted-vs-actual scoreboard (model vs market vs base rate),
+    graded from immutable pre-kickoff snapshots."""
+    return jsonify(_load_json(WORLDCUP_DIR / "track_record.json", {"n_graded": 0}))
+
+
+@app.route("/api/worldcup/simulation")
+def api_worldcup_simulation():
+    """Monte Carlo tournament simulation: advancement + champion probabilities.
+
+    Enriched with display-only team context (squad market value, mean club
+    Elo where coverage >= 50%) from the scraped sources when present."""
+    sim = _load_json(WORLDCUP_DIR / "simulation.json", {})
+    context = _load_json(WORLDCUP_DIR / "team_context.json", {})
+    if isinstance(sim, dict) and context:
+        sim["team_context"] = context
+    return jsonify(sim)
 
 
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
@@ -1966,10 +2085,14 @@ def api_data_freshness():
     if schema_break_seen:
         out["severity"] = "schema_break"
         out["ok"] = False
+        errs = "; ".join(
+            f"{lg}: {league_health[lg].get('html_last_error', '?')}"
+            for lg in league_health
+            if league_health[lg].get("html_schema_break")
+        )
         out["message"] = (
-            "Sofascore HTML schema changed — scrape is parsing but a sentinel "
-            "team is missing. Check _live_standings_via_html parsers and update "
-            "_HTML_SENTINEL_TEAM / NEXT_DATA paths."
+            f"Sofascore HTML schema break ({errs}). Check the NEXT_DATA paths in "
+            "_live_standings_via_html / _scrape_match_html (web/app.py)."
         )
     elif any_hard_fail:
         out["severity"] = "hard_fail"
@@ -7872,7 +7995,8 @@ def _scrape_match_html(ss_match_id: int) -> dict:
     now = _t.time()
     if ss_match_id in _match_html_cache:
         cached_at, payload = _match_html_cache[ss_match_id]
-        if (now - cached_at) < _MATCH_HTML_TTL:
+        ttl = _MATCH_HTML_TTL if payload else _HTML_FAILURE_TTL
+        if (now - cached_at) < ttl:
             import copy
             return copy.deepcopy(payload)
 
@@ -7885,18 +8009,27 @@ def _scrape_match_html(ss_match_id: int) -> dict:
             "Accept-Language": "en-US,en;q=0.9",
         })
         # /event/{id} redirects to the canonical /football/match/{slug}/{token}
-        r = s.get(f"https://www.sofascore.com/event/{ss_match_id}", timeout=5)
+        r, terr = _sofascore_get_retry(s, f"https://www.sofascore.com/event/{ss_match_id}", timeout=10)
+        if r is None:
+            log.warning("match HTML %d: %s", ss_match_id, terr)
+            _match_html_cache[ss_match_id] = (now, {})
+            return {}
         if r.status_code != 200:
             log.warning("match HTML %d: HTTP %d", ss_match_id, r.status_code)
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
 
         import re as _re
         m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
         if not m:
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
         data = json.loads(m.group(1))
-        ip = data.get("props", {}).get("pageProps", {}).get("initialProps", {})
+        pp = data.get("props", {}).get("pageProps", {})
+        # 2026-06: Sofascore hoisted initialProps.* directly onto pageProps — support both
+        ip = pp.get("initialProps") or pp
         if not ip:
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
         ev = ip.get("event", {}) or {}
         venue_obj = ev.get("venue", {}) or {}
@@ -7951,6 +8084,7 @@ def _scrape_match_html(ss_match_id: int) -> dict:
         return payload
     except Exception as e:
         log.warning("match HTML %d failed: %s", ss_match_id, e)
+        _match_html_cache[ss_match_id] = (now, {})
         return {}
 
 

@@ -208,7 +208,7 @@ Organised by *symptom-first* so you can grep for what you're seeing:
 
 - **What you'll see**: `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
 - **Why**: Cloudflare IP-fingerprint ban, often after heavy scraping. Lasts hours to days.
-- **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance are all in `props.pageProps.initialProps`.
+- **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance live directly under `props.pageProps` (since ~2026-06; previously nested in `props.pageProps.initialProps` — the web/app.py parsers support both paths).
 - **Sentinels**: SA standings page must contain `Inter`; EPL must contain `Arsenal`. If sentinel missing → schema break, log and trip breaker.
 - **Prevention rule**: **HTML scraping with breaker is the canonical fallback for Sofascore**. Never just retry the API in a loop when you get 403 — burn the cooldown, scrape the HTML.
 
