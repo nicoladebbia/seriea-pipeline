@@ -25,7 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -2482,6 +2482,185 @@ def _release_lock():
         pass
 
 
+# =============================================================================
+# WORLD CUP PRE-MATCH ALERTS (proactive, added 2026-06-11)
+# =============================================================================
+# Unprompted Telegram message when a WC fixture is WC_ALERT_WINDOW minutes
+# from kickoff: our call, the market family derived from the lambdas, lineup
+# status, scorer propensities (labeled lower-confidence), and the WHY (Elo
+# gap, model-vs-market agreement, availability). One alert per match, state
+# on disk so restarts don't re-send. Reads the same artifacts as /worldcup —
+# never edits anything under scripts/worldcup/.
+
+WC_ALERT_STATE = PROJECT_ROOT / "data" / "worldcup" / "prematch_alerts_sent.json"
+WC_ALERT_WINDOW_MIN = (20, 150)       # alert when kickoff is 20–150 min away
+_WC_ALERT_LAST_CHECK = {"t": 0.0}
+
+
+def _wc_poisson_family(lh: float, la: float) -> dict:
+    """Score grid markets from the two lambdas (mirrors the /worldcup page)."""
+    import math
+
+    def P(lam: float, k: int) -> float:
+        return math.exp(-lam) * lam ** k / math.factorial(k)
+
+    ph = [P(lh, k) for k in range(9)]
+    pa = [P(la, k) for k in range(9)]
+    grid = {(h, a): ph[h] * pa[a] for h in range(9) for a in range(9)}
+    top = sorted(grid.items(), key=lambda kv: -kv[1])[:3]
+    btts_no = sum(p for (h, a), p in grid.items() if h == 0 or a == 0)
+    o25 = sum(p for (h, a), p in grid.items() if h + a > 2.5)
+    margins = {
+        "home by 1": sum(p for (h, a), p in grid.items() if h - a == 1),
+        "home by 2+": sum(p for (h, a), p in grid.items() if h - a >= 2),
+        "away by 1": sum(p for (h, a), p in grid.items() if a - h == 1),
+        "away by 2+": sum(p for (h, a), p in grid.items() if a - h >= 2),
+    }
+    return {"top_scores": top, "btts_no": btts_no, "over25": o25, "margins": margins}
+
+
+def _wc_scorer_shortlist(players_doc: dict, match_number) -> list[str]:
+    """Top anytime-scorer propensities for one match.
+
+    per_match shape: {match_number: {"home": [{name, prob, fair_odds, ...}],
+    "away": [...]}} — names + our prob + our fair odds, so the user can spot
+    when a book price is above/below our number.
+    """
+    entry = ((players_doc or {}).get("per_match") or {}).get(str(match_number)) or {}
+    out = []
+    for side in ("home", "away"):
+        for r in entry.get(side, []) or []:
+            prob = r.get("prob")
+            if prob:
+                out.append((float(prob),
+                            f"{r.get('name', '?')} {float(prob):.0%}"
+                            f" (fair {r.get('fair_odds', '?')})"))
+    out.sort(reverse=True)
+    return [s for _, s in out[:3]]
+
+
+def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
+    """One match's pre-kickoff briefing (Telegram HTML)."""
+    import json as _json
+    from zoneinfo import ZoneInfo
+
+    home, away = p.get("home_team", "?"), p.get("away_team", "?")
+    probs = p.get("probabilities") or {}
+    pure = p.get("probabilities_pure_model") or {}
+    lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+    ko_rome = ""
+    try:
+        ko = datetime.fromisoformat(p["kickoff_utc"])
+        ko_rome = ko.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M")
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    pick = max(probs, key=probs.get) if probs else "?"
+    sym = {"home": "1", "draw": "X", "away": "2"}.get(pick, "?")
+    fam = _wc_poisson_family(lh, la) if lh and la else None
+
+    lines = [
+        f"⏰ <b>{home} vs {away}</b> — kickoff ~{int(minutes_to_ko)} min ({ko_rome} IT)",
+        "",
+        f"🎯 <b>Our call: {sym}</b> — {home} {probs.get('home', 0):.0%} / "
+        f"X {probs.get('draw', 0):.0%} / {away} {probs.get('away', 0):.0%}",
+    ]
+    if fam:
+        ts = " · ".join(f"{h}-{a} {pr:.0%}" for (h, a), pr in fam["top_scores"])
+        lines.append(f"📊 Top scores: {ts}")
+        lines.append(
+            f"⚽ BTTS No {fam['btts_no']:.0%} · Over 2.5: {fam['over25']:.0%}"
+            + ("  ⚠️ coin-flip" if 0.45 <= fam["over25"] <= 0.55 else "")
+        )
+        best_margin = max(fam["margins"], key=fam["margins"].get)
+        lines.append(f"📏 Margin lean: {best_margin.replace('home', home).replace('away', away)} "
+                     f"{fam['margins'][best_margin]:.0%}")
+
+    # WHY — elo gap, model vs market agreement, availability
+    why = []
+    eh, ea = p.get("elo_home"), p.get("elo_away")
+    if eh and ea:
+        why.append(f"Elo {eh:.0f} vs {ea:.0f} ({'+' if eh >= ea else '−'}{abs(eh - ea):.0f})")
+    if pure and probs:
+        d = abs(pure.get(pick, 0) - probs.get(pick, 0))
+        if p.get("market_informed"):
+            why.append(f"market {'agrees' if d < 0.05 else 'tempers us'} "
+                       f"(pure model {pure.get(pick, 0):.0%})")
+    if p.get("availability_adjusted"):
+        why.append("λ adjusted for team news")
+    if why:
+        lines.append(f"🧠 Why: {'; '.join(why)}")
+
+    # Lineups — confirmed or not (status honesty)
+    try:
+        cl = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "confirmed_lineups.json").read_text())
+        entry = cl.get(str(p.get("match_number"))) or {}
+        if entry.get("confirmed"):
+            miss = entry.get("missing") or []
+            mtxt = f" · out: {', '.join(m.get('name', '?') for m in miss[:4])}" if miss else ""
+            lines.append(f"📋 Lineups CONFIRMED{mtxt}")
+        else:
+            lines.append("📋 Lineups not confirmed yet — based on expected XI")
+    except (OSError, ValueError):
+        pass
+
+    # Scorer propensities — honest label, this family is NOT betting-validated
+    try:
+        players_doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "player_predictions.json").read_text())
+        sc = _wc_scorer_shortlist(players_doc, p.get("match_number"))
+        if sc:
+            lines.append(f"👟 Scorer propensity (lower confidence): {' · '.join(sc)}")
+    except (OSError, ValueError):
+        pass
+
+    lines.append("")
+    lines.append("ℹ️ Who-wins markets are the validated family. Same-match combos: "
+                 "books price correlation — the odds product overstates real payout.")
+    return "\n".join(lines)
+
+
+def _check_prematch_alerts(token: str, chat_id: str) -> None:
+    """Fire pre-kickoff briefings for fixtures entering the alert window."""
+    import json as _json
+
+    now_ts = time.time()
+    if now_ts - _WC_ALERT_LAST_CHECK["t"] < 120:    # throttle: every 2 min
+        return
+    _WC_ALERT_LAST_CHECK["t"] = now_ts
+    try:
+        doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "predictions.json").read_text())
+        preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+        if not preds:
+            return
+        try:
+            sent = _json.loads(WC_ALERT_STATE.read_text())
+        except (OSError, ValueError):
+            sent = {}
+        now = datetime.now(UTC)
+        lo, hi = WC_ALERT_WINDOW_MIN
+        changed = False
+        for p in preds:
+            mn = str(p.get("match_number"))
+            if mn in sent:
+                continue
+            try:
+                ko = datetime.fromisoformat(p["kickoff_utc"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            mins = (ko - now).total_seconds() / 60
+            if lo <= mins <= hi:
+                msg = _build_prematch_alert(p, mins)
+                _tg_send_message(token, chat_id, msg)
+                sent[mn] = now.isoformat()
+                changed = True
+                log.info("Pre-match alert sent: %s vs %s (T-%dmin)",
+                         p.get("home_team"), p.get("away_team"), int(mins))
+        if changed:
+            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+    except Exception as e:  # noqa: BLE001 — alerts must never kill the bot loop
+        log.warning("prematch alert check failed: %s", e)
+
+
 def run_bot():
     """Main bot loop — long-polls Telegram for messages."""
     global _running
@@ -2554,6 +2733,9 @@ def run_bot():
 
             # Reset backoff on success
             backoff = 1
+
+            # Proactive WC pre-match briefings (throttled internally)
+            _check_prematch_alerts(token, chat_id)
 
             for update in updates:
                 update_id = update.get("update_id", 0)
