@@ -78,7 +78,16 @@ After the first 2-3 matchweeks:
 the EXCLUDED 24% of bets turn out to be systematic winners (settle them on
 paper and check).
 
-## 6. Scanner + monitors back on
+## 6. Scanner + monitors back on (+ Betfair first contact)
+
+- **Betfair feed first contact**: put `app_key` + `session_token` under
+  `"betfair"` in `config/api_keys.json` (login at identitysso.betfair.it),
+  then `python3 -m scripts.data.betfair_feed --probe`. The module was built
+  2026-06-11 against the documented API-NG contract but NEVER live-tested —
+  the probe IS the contract verification. It also prints the real Serie A
+  competition id; if ≠ 81, fix SERIE_A_COMPETITION_ID. Only after the probe
+  passes: schedule `--fetch` snapshots (toward-the-close history per match →
+  the sharpest CLV benchmark we can get).
 
 - `odds_edge_monitor.py` (soft lines, CLV-validated) — confirm its schedule
   fires; it also runs `scan_arbitrage` (cross-book arbs) for free.

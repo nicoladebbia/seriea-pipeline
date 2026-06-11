@@ -604,6 +604,74 @@ def check_silent_failures() -> Dict:
     return checks
 
 
+def check_calibration_drift() -> Dict:
+    """Rolling live-calibration check on archived pre-kickoff 1X2 predictions.
+
+    Computes 10-bin confidence-ECE over the most recent CALIB_WINDOW archived
+    predictions that joined to a real result (same leak-free join the Track
+    Record page uses: archived_at < kickoff snapshots only). A model can stay
+    accurate while its probabilities drift — this catches the drift between
+    retrains. Thresholds: ECE > 0.10 CRITICAL, > 0.06 WARNING. Fewer than
+    CALIB_MIN_N graded predictions = SKIP (off-season, early season).
+    """
+    CALIB_WINDOW = 100
+    CALIB_MIN_N = 60
+    out: dict = {"status": "SKIP", "n": 0, "ece": None, "window": CALIB_WINDOW}
+    try:
+        import pandas as pd
+
+        arch_path = DATA_DIR / "upcoming" / "predictions_archive.json"
+        if not arch_path.exists():
+            out["reason"] = "no predictions archive"
+            return {"calibration_1x2": out}
+        with open(arch_path) as f:
+            arch = json.load(f)
+        m = pd.read_parquet(
+            DATA_DIR / "parsed" / "matches.parquet",
+            columns=["match_date", "home_team", "away_team", "home_score", "away_score"],
+        ).dropna(subset=["home_score", "away_score"])
+        m["key"] = (m["home_team"] + " vs " + m["away_team"] + "_"
+                    + pd.to_datetime(m["match_date"]).dt.strftime("%Y-%m-%d"))
+        res = {r["key"]: (int(r["home_score"]), int(r["away_score"]))
+               for _, r in m.iterrows()}
+
+        graded = []
+        for k, p in (arch or {}).items():
+            pr = p.get("probabilities") or {}
+            if k not in res or not pr:
+                continue
+            hs, as_ = res[k]
+            act = "home" if hs > as_ else ("away" if as_ > hs else "draw")
+            call = max(pr, key=pr.get)
+            graded.append((p.get("archived_at", ""), float(pr[call]), int(call == act)))
+        graded.sort()
+        window = graded[-CALIB_WINDOW:]
+        out["n"] = len(window)
+        if len(window) < CALIB_MIN_N:
+            out["reason"] = f"only {len(window)} graded predictions (< {CALIB_MIN_N})"
+            return {"calibration_1x2": out}
+
+        probs = [w[1] for w in window]
+        hits = [w[2] for w in window]
+        ece, bins_used = 0.0, 0
+        for b in range(10):
+            sel = [i for i, q in enumerate(probs) if int(min(q, 0.999) * 10) == b]
+            if len(sel) < 5:
+                continue
+            bins_used += 1
+            conf = sum(probs[i] for i in sel) / len(sel)
+            acc = sum(hits[i] for i in sel) / len(sel)
+            ece += abs(conf - acc) * len(sel) / len(window)
+        out["ece"] = round(ece, 4)
+        out["bins_used"] = bins_used
+        out["status"] = ("CRITICAL" if ece > 0.10 else
+                         "WARNING" if ece > 0.06 else "OK")
+    except Exception as e:
+        out["status"] = "SKIP"
+        out["reason"] = f"check failed: {e}"
+    return {"calibration_1x2": out}
+
+
 def check_disk_space() -> Dict:
     """Check available disk space on the project partition."""
     import shutil
@@ -728,6 +796,7 @@ def run_health_check() -> Dict:
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
         "model_consistency": check_model_metadata_consistency(),
+        "calibration_drift": check_calibration_drift(),
         "betting_health": check_betting_health(),
         "system_integrity": check_system_integrity(),
         "issues": [],
@@ -767,6 +836,13 @@ def run_health_check() -> Dict:
         drift_alerts = result["betting_health"]["details"].get("drift", {}).get("alerts", [])
         for a in drift_alerts:
             issues.append(("WARNING", a["message"]))
+
+    # Live calibration drift (rolling ECE on archived 1X2 predictions)
+    calib = result.get("calibration_drift", {}).get("calibration_1x2", {})
+    if calib.get("status") in ("WARNING", "CRITICAL"):
+        issues.append((calib["status"],
+                       f"1X2 calibration drift: rolling-{calib.get('n')} ECE "
+                       f"{calib.get('ece')} (warn >0.06, crit >0.10)"))
 
     # System issues
     if not result["system_integrity"].get("imports_ok", True):
