@@ -31,6 +31,7 @@ from scripts.worldcup.engine import (
     score_matrix,
     tilt_lambdas,
 )
+from scripts.worldcup.knockout import collect_played_results
 from scripts.worldcup.simulate import (
     DATA_DIR,
     EXTRA_TIME_FACTOR,
@@ -239,6 +240,7 @@ def build_bracket(
     fixtures: list[dict[str, Any]],
     sim: SimResult,
     spec: dict[str, Any],
+    played: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The single most-likely tournament, played out match by match.
 
@@ -253,7 +255,12 @@ def build_bracket(
 
     Fixtures whose home/away are real team names (refresh resolves them as
     the tournament progresses) override the projection with pairing_prob 1.
+    Played knockout matches (`played`, from collect_played_results) override
+    the engine pick with the ACTUAL winner and carry the actual score —
+    the bracket walks forward from reality, predicting only the future.
     """
+    played_scores: dict[int, tuple[int, int]] = (played or {}).get("scores", {})
+    played_winners: dict[int, str] = (played or {}).get("winners", {})
     group_teams: dict[str, list[str]] = {}
     team_set: set[str] = set()
     for f in fixtures:
@@ -360,6 +367,10 @@ def build_bracket(
         resolved = str(f["home"]) in team_set and str(f["away"]) in team_set
         pred = _ko_match_prediction(engine, home, away, str(f.get("city", "")))
         advances = home if pred["advance"]["home"] >= pred["advance"]["away"] else away
+        actual = played_scores.get(mn)
+        real_winner = played_winners.get(mn)
+        if real_winner is not None and real_winner in (home, away):
+            advances = real_winner  # reality outranks the engine pick
         winner_of[mn] = advances
         loser_of[mn] = away if advances == home else home
 
@@ -388,6 +399,15 @@ def build_bracket(
                 "away": away,
                 "pairing_prob": round(pair_prob, 4),
                 "advances": advances,
+                **(
+                    {
+                        "played": True,
+                        # ET-inclusive, as in the source results data
+                        "actual_score": f"{actual[0]}-{actual[1]}",
+                    }
+                    if actual is not None
+                    else {}
+                ),
                 "alt_pairings": [
                     {"teams": f"{a} vs {b}", "prob": round(p, 4)}
                     for (a, b), p in alt
@@ -514,9 +534,21 @@ def main() -> None:
         for p in preds
         if p.get("market_informed") or p.get("availability_adjusted")
     }
-    sim = TournamentSimulator(engine, fixtures, spec, lambda_overrides=overrides).run(
-        args.sims
+    # Condition the Monte Carlo on reality: played group matches keep their
+    # actual score in every sim, decided knockouts keep their real winner.
+    played = collect_played_results(fixtures)
+    stage_of = {int(f["match_number"]): str(f["stage"]) for f in fixtures}
+    n_group_pinned = sum(
+        1 for mn in played["scores"] if stage_of.get(mn) == "group"
     )
+    sim = TournamentSimulator(
+        engine,
+        fixtures,
+        spec,
+        lambda_overrides=overrides,
+        pinned_scores=played["scores"],
+        pinned_winners=played["winners"],
+    ).run(args.sims)
     groups: dict[str, list[str]] = {}
     for f in fixtures:
         if f["stage"] == "group":
@@ -570,7 +602,7 @@ def main() -> None:
             }
         )
 
-    bracket = build_bracket(engine, fixtures, sim, spec)
+    bracket = build_bracket(engine, fixtures, sim, spec, played=played)
 
     SIMULATION_JSON.write_text(
         json.dumps(
@@ -578,6 +610,14 @@ def main() -> None:
                 "generated_at": now_iso,
                 "n_sims": sim.n_sims,
                 "fitted_through": engine.fitted_through,
+                "conditioned_on": {
+                    "group_results_pinned": n_group_pinned,
+                    "knockout_winners_pinned": len(played["winners"]),
+                },
+                "results": {
+                    str(mn): f"{h}-{a}"
+                    for mn, (h, a) in sorted(played["scores"].items())
+                },
                 "teams": teams_out,
                 "groups": groups_out,
                 "r32_most_likely": r32_out,
@@ -591,6 +631,10 @@ def main() -> None:
 
     print(f"predictions: {len(preds)} matches -> {PREDICTIONS_JSON}")
     print(f"simulation : {sim.n_sims} sims -> {SIMULATION_JSON}")
+    print(
+        f"conditioned: {n_group_pinned} group results pinned, "
+        f"{len(played['winners'])} knockout winners pinned"
+    )
     print(
         f"bracket    : champion {bracket['champion']}, "
         f"third place {bracket['third_place_winner']}"

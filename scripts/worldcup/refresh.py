@@ -120,6 +120,9 @@ def main() -> None:
 
     _run("scripts.worldcup.sofascore_fetch", "--lineups")
     _run("scripts.worldcup.sofascore_fetch", "--refresh-stats")
+    # Same-night final scores — bridges martj42's publish lag so the
+    # knockout fill and the result-pinned simulation see reality first.
+    _run("scripts.worldcup.sofascore_fetch", "--results")
     _run("scripts.worldcup.availability")
     _run("scripts.worldcup.knockout")
     _run("scripts.worldcup.generate_predictions", "--sims", "10000")

@@ -20,6 +20,7 @@ performance number shown anywhere (never quote numbers from docs).
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -29,6 +30,8 @@ import pandas as pd
 
 from scripts.worldcup.engine import (
     DATA_DIR,
+    PRODUCTION_DC_REG,
+    PRODUCTION_WEIGHT_GLM,
     TRAIN_START,
     DCModel,
     GoalModel,
@@ -44,6 +47,10 @@ from scripts.worldcup.engine import (
 
 METADATA_JSON = DATA_DIR / "model_metadata.json"
 HISTORICAL_ODDS_JSON = DATA_DIR / "historical_odds.json"
+CLUBELO_HISTORY_JSON = DATA_DIR / "clubelo_history.json"
+SQUAD_STUDY_JSON = DATA_DIR / "squad_strength_study.json"
+# Elo points added per unit of coverage-weighted squad-strength z-score.
+SQUAD_K_GRID = (0.0, 10.0, 20.0, 35.0, 50.0, 75.0, 100.0)
 
 # (label, tournament string in dataset, group-stage window [start, end])
 DEV_TOURNAMENTS: list[tuple[str, str, str, str]] = [
@@ -439,7 +446,206 @@ def run_backtest() -> dict[str, Any]:
     return metadata
 
 
+def _squad_adjustments(
+    squad_history: dict[str, Any], label: str
+) -> dict[str, float]:
+    """team -> coverage-weighted z-score of squad mean club Elo, within one
+    tournament's participants.
+
+    Teams whose squads have no club-Elo data (non-European leagues) get NO
+    adjustment rather than a fabricated one; partially covered squads are
+    shrunk toward zero by their coverage share.
+    """
+    rows = {
+        t: v
+        for t, v in squad_history.get(label, {}).items()
+        if isinstance(v, dict) and not t.startswith("_")
+    }
+    xs = {
+        t: float(v["mean_club_elo"])
+        for t, v in rows.items()
+        if v.get("mean_club_elo") is not None
+    }
+    if len(xs) < 8:
+        return {}
+    vals = np.array(list(xs.values()))
+    sd = float(vals.std())
+    if sd < 1e-9:
+        return {}
+    mu = float(vals.mean())
+    return {
+        t: ((x - mu) / sd) * (float(rows[t].get("coverage_pct", 0.0)) / 100.0)
+        for t, x in xs.items()
+    }
+
+
+def run_squad_strength_study() -> dict[str, Any]:
+    """Does club-based squad strength add signal on top of international Elo?
+
+    One new dial on a FIXED model family (the production variant: geometric
+    ensemble, w=PRODUCTION_WEIGHT_GLM on GLM-major, DC reg=PRODUCTION_DC_REG):
+    the GLM leg's Elo inputs become elo_pre + k * z(squad club Elo) * coverage,
+    from data/worldcup/clubelo_history.json (scripts.worldcup.squad_history).
+    The DC leg is team-name based and unchanged.
+
+    k is selected on the DEV tournaments only; the verdict compares the
+    selected k against k=0 (= production) on the UNTOUCHED finals. This
+    writes a study file, NOT model metadata — deployment is a separate,
+    human decision.
+    """
+    df = load_results()
+    hist, _ = elo_history(df)
+    squad_history = json.loads(CLUBELO_HISTORY_JSON.read_text())
+
+    def predictors_for(label: str, start: str) -> dict[float, PredictFn]:
+        glm = fit_goal_model(hist, train_start=TRAIN_START, train_end=start)
+        dc = fit_dc_model(
+            hist, train_start=TRAIN_START, train_end=start, reg=PRODUCTION_DC_REG
+        )
+        adj = _squad_adjustments(squad_history, label)
+
+        def make(k: float) -> PredictFn:
+            def fn(row: Any) -> tuple[float, float]:
+                ah = k * adj.get(row.home_team, 0.0)
+                aa = k * adj.get(row.away_team, 0.0)
+                at_home = not row.neutral
+                gh = glm.lam(
+                    row.elo_home_pre + ah, row.elo_away_pre + aa,
+                    at_home=at_home, major=True,
+                )
+                ga = glm.lam(
+                    row.elo_away_pre + aa, row.elo_home_pre + ah,
+                    at_home=False, major=True,
+                )
+                dh = dc.lam(row.home_team, row.away_team, at_home=at_home)
+                da = dc.lam(row.away_team, row.home_team, at_home=False)
+                lam_h = blend_lambdas(gh, dh, PRODUCTION_WEIGHT_GLM)
+                lam_a = blend_lambdas(ga, da, PRODUCTION_WEIGHT_GLM)
+                return lam_h, lam_a
+
+            return fn
+
+        return {k: make(k) for k in SQUAD_K_GRID}
+
+    dev_rows: dict[float, list[dict[str, Any]]] = {k: [] for k in SQUAD_K_GRID}
+    adj_stats: dict[str, dict[str, Any]] = {}
+    for label, _tournament, _start, _end in DEV_TOURNAMENTS + FINAL_TOURNAMENTS:
+        adj = _squad_adjustments(squad_history, label)
+        adj_stats[label] = {
+            "teams_with_signal": len(adj),
+            "mean_abs_z_weighted": round(
+                float(np.mean(np.abs(list(adj.values())))), 3
+            ) if adj else 0.0,
+        }
+    for label, tournament, start, end in DEV_TOURNAMENTS:
+        train = hist[hist["date"] < pd.Timestamp(start)]
+        fns = predictors_for(label, start)
+        for k, fn in fns.items():
+            r = _evaluate(hist, label, tournament, start, end, fn, train)
+            if r is not None:
+                dev_rows[k].append(r)
+    dev_summary = {
+        f"k{k:g}": _weighted(rows, _SUMMARY_KEYS) for k, rows in dev_rows.items()
+    }
+    k_best = min(SQUAD_K_GRID, key=lambda k: dev_summary[f"k{k:g}"]["brier"])
+
+    final_ks = sorted({k_best, 0.0})
+    final_rows: dict[float, list[dict[str, Any]]] = {k: [] for k in final_ks}
+    for label, tournament, start, end in FINAL_TOURNAMENTS:
+        train = hist[hist["date"] < pd.Timestamp(start)]
+        fns = predictors_for(label, start)
+        for k in final_rows:
+            r = _evaluate(hist, label, tournament, start, end, fns[k], train)
+            if r is not None:
+                final_rows[k].append(r)
+
+    overall_best = _weighted(final_rows[k_best], _SUMMARY_KEYS)
+    overall_prod = _weighted(final_rows[0.0], _SUMMARY_KEYS)
+    improves = bool(
+        k_best != 0.0 and overall_best["brier"] < overall_prod["brier"]
+    )
+
+    study = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "data_through": str(df["date"].max().date()),
+        "design": (
+            "Fixed production variant (ens geometric, "
+            f"w={PRODUCTION_WEIGHT_GLM} GLM-major, DC reg={PRODUCTION_DC_REG}); "
+            "GLM Elo inputs += k * z(squad mean club Elo) * coverage. "
+            "k selected on DEV (WC18+Euro20) by Brier; verdict = selected k "
+            "vs k=0 on the untouched finals (WC22+Euro24+Copa24)."
+        ),
+        "squad_signal": adj_stats,
+        "dev_summary": dev_summary,
+        "selected_k": k_best,
+        "final_selected": overall_best,
+        "final_production_k0": overall_prod,
+        "final_per_tournament": {
+            f"k{k:g}": rows for k, rows in final_rows.items()
+        },
+        "delta": {
+            "brier": round(overall_best["brier"] - overall_prod["brier"], 4),
+            "skill_score": round(
+                overall_best["skill_score"] - overall_prod["skill_score"], 4
+            ),
+            "accuracy": round(
+                overall_best["accuracy"] - overall_prod["accuracy"], 4
+            ),
+            "ece_1x2": round(
+                overall_best["ece_1x2"] - overall_prod["ece_1x2"], 4
+            ),
+        },
+        "verdict": {
+            "improves_on_untouched_finals": improves,
+            "note": (
+                "Study only — nothing deploys from this file. Deployment "
+                "would additionally need a 2026 wiring decision (engine "
+                "rating adjustment at predict time) and a re-run of the "
+                "full backtest gate."
+            ),
+        },
+    }
+    SQUAD_STUDY_JSON.write_text(json.dumps(study, indent=2))
+    return study
+
+
+def _print_squad_study(study: dict[str, Any]) -> None:
+    print(f"Squad-strength study · data through {study['data_through']}")
+    print("\nDEV k-grid (WC18 + Euro20), sorted by Brier:")
+    print(f"{'k':>6}{'n':>5}{'acc':>8}{'brier':>9}{'skill':>8}{'ece':>7}")
+    for name, s in sorted(study["dev_summary"].items(), key=lambda kv: kv[1]["brier"]):
+        marker = " <== selected" if name == f"k{study['selected_k']:g}" else ""
+        print(
+            f"{name:>6}{s['n_matches']:>5}{s['accuracy']:>8.3f}"
+            f"{s['brier']:>9.4f}{s['skill_score']:>8.3f}{s['ece_1x2']:>7.3f}{marker}"
+        )
+    b, p = study["final_selected"], study["final_production_k0"]
+    print("\nFINAL (untouched WC22 + Euro24 + Copa24):")
+    print(f"{'variant':<22}{'n':>5}{'acc':>8}{'brier':>9}{'skill':>8}{'ece':>7}")
+    print(
+        f"{'k=' + format(study['selected_k'], 'g') + ' (selected)':<22}"
+        f"{b['n_matches']:>5}{b['accuracy']:>8.3f}{b['brier']:>9.4f}"
+        f"{b['skill_score']:>8.3f}{b['ece_1x2']:>7.3f}"
+    )
+    print(
+        f"{'k=0 (production)':<22}{p['n_matches']:>5}{p['accuracy']:>8.3f}"
+        f"{p['brier']:>9.4f}{p['skill_score']:>8.3f}{p['ece_1x2']:>7.3f}"
+    )
+    d = study["delta"]
+    print(
+        f"\ndelta (selected - production): brier {d['brier']:+.4f} · "
+        f"skill {d['skill_score']:+.4f} · acc {d['accuracy']:+.4f} · "
+        f"ece {d['ece_1x2']:+.4f}"
+    )
+    print(f"improves on untouched finals: "
+          f"{study['verdict']['improves_on_untouched_finals']}")
+    print(f"wrote {SQUAD_STUDY_JSON}")
+
+
 def main() -> None:
+    if "--squad-study" in sys.argv:
+        _print_squad_study(run_squad_strength_study())
+        return
     md = run_backtest()
     print(f"Data through: {md['data_through']}")
     print("\nDEV selection (WC 2018 + Euro 2020), sorted by Brier:")

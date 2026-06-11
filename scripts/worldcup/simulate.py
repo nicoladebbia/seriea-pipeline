@@ -250,14 +250,26 @@ class TournamentSimulator:
         spec: dict[str, Any],
         rng: np.random.Generator | None = None,
         lambda_overrides: dict[int, tuple[float, float]] | None = None,
+        pinned_scores: dict[int, tuple[int, int]] | None = None,
+        pinned_winners: dict[int, str] | None = None,
     ) -> None:
         """lambda_overrides: match_number -> (lam_home, lam_away), used to
         keep the simulation coherent with market-tilted group-game lambdas
-        (knockouts have no odds and stay pure model)."""
+        (knockouts have no odds and stay pure model).
+
+        pinned_scores: match_number -> ACTUAL (home, away) goals for played
+        group matches — those matches keep their real score in every sim,
+        so advancement odds bank real points instead of re-simulating the
+        past. pinned_winners: match_number -> actual advancing team for
+        decided knockout matches (applied only when that team is one of the
+        simulated entrants — a mismatching pin is ignored, not forced).
+        Both come from scripts.worldcup.knockout.collect_played_results."""
         self.engine = engine
         self.spec = spec
         self.rng = rng if rng is not None else np.random.default_rng(42)
         self.lambda_overrides = lambda_overrides or {}
+        self.pinned_scores = {int(k): v for k, v in (pinned_scores or {}).items()}
+        self.pinned_winners = {int(k): v for k, v in (pinned_winners or {}).items()}
 
         self.group_fixtures = [f for f in fixtures if f["stage"] == "group"]
         self.groups: dict[str, list[str]] = defaultdict(list)
@@ -416,15 +428,23 @@ class TournamentSimulator:
             None,
         )
 
-        # Pre-sample all group-game scores, vectorized across sims.
+        # Pre-sample all group-game scores, vectorized across sims. Played
+        # matches are PINNED to their actual score in every sim — the only
+        # uncertainty left in a played match is none at all.
         sampled: dict[int, np.ndarray] = {}
         for g in self.group_games:
-            sampled[g["match_number"]] = np.column_stack(
-                [
-                    self.rng.poisson(g["lam_home"], size=n_sims),
-                    self.rng.poisson(g["lam_away"], size=n_sims),
-                ]
-            )
+            pin = self.pinned_scores.get(int(g["match_number"]))
+            if pin is not None:
+                sampled[g["match_number"]] = np.tile(
+                    np.asarray(pin, dtype=np.int64), (n_sims, 1)
+                )
+            else:
+                sampled[g["match_number"]] = np.column_stack(
+                    [
+                        self.rng.poisson(g["lam_home"], size=n_sims),
+                        self.rng.poisson(g["lam_away"], size=n_sims),
+                    ]
+                )
 
         for s in range(n_sims):
             scores = {
@@ -479,8 +499,12 @@ class TournamentSimulator:
                 pair = (entry["home"], entry["away"])
                 lo, hi = sorted(pair)
                 ko_counts[mn][(lo, hi)] += 1
-                city = self.fixture_by_number.get(mn, {}).get("city", "")
-                winners[mn] = self._sim_knockout_match(*pair, city)
+                pinned = self.pinned_winners.get(mn)
+                if pinned is not None and pinned in pair:
+                    winners[mn] = pinned
+                else:
+                    city = self.fixture_by_number.get(mn, {}).get("city", "")
+                    winners[mn] = self._sim_knockout_match(*pair, city)
                 ko_win_counts[mn][winners[mn]] += 1
 
             for stage in KO_ROUND_ORDER[1:]:
@@ -506,7 +530,13 @@ class TournamentSimulator:
                     fmn = int(f["match_number"])
                     lo, hi = sorted((th, ta))
                     ko_counts[fmn][(lo, hi)] += 1
-                    winners[fmn] = self._sim_knockout_match(th, ta, f.get("city", ""))
+                    pinned = self.pinned_winners.get(fmn)
+                    if pinned is not None and pinned in (th, ta):
+                        winners[fmn] = pinned
+                    else:
+                        winners[fmn] = self._sim_knockout_match(
+                            th, ta, f.get("city", "")
+                        )
                     ko_win_counts[fmn][winners[fmn]] += 1
                     if stage == "semi_final":
                         sf_losers[fmn] = ta if winners[fmn] == th else th
@@ -536,9 +566,13 @@ class TournamentSimulator:
                     th3, ta3 = sf_losers[ref_nums[0]], sf_losers[ref_nums[1]]
                     lo3, hi3 = sorted((th3, ta3))
                     ko_counts[tp_mn][(lo3, hi3)] += 1
-                    w3 = self._sim_knockout_match(
-                        th3, ta3, third_fixture.get("city", "")
-                    )
+                    pinned3 = self.pinned_winners.get(tp_mn)
+                    if pinned3 is not None and pinned3 in (th3, ta3):
+                        w3 = pinned3
+                    else:
+                        w3 = self._sim_knockout_match(
+                            th3, ta3, third_fixture.get("city", "")
+                        )
                     ko_win_counts[tp_mn][w3] += 1
 
         team_stats = {

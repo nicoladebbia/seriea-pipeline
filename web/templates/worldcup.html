@@ -640,6 +640,10 @@ function renderBracket(br, sim, el) {
       + '<div class="bar" style="width:' + Math.max(3, adv * 100) + '%;"></div></div>';
   };
   const scoreLine = m => {
+    if (m.played && m.actual_score) {
+      const fp = m.actual_score.split('-');
+      return '<div class="wcb-score" style="color:var(--text-primary);" title="final score (ET-inclusive) · model predicted ' + m.prediction.predicted_score + '">FT ' + fp[0] + ' – ' + fp[1] + '</div>';
+    }
     const p = m.prediction;
     const parts = p.predicted_score.split('-');
     const drawish = parts[0] === parts[1];
@@ -665,7 +669,9 @@ function renderBracket(br, sim, el) {
   };
   const matchCard = m => {
     const champCls = champPath.has(m.match_number) ? ' wcb-match--champ' : '';
-    const pairChip = m.resolved
+    const pairChip = m.played
+      ? '<span class="wcb-pair" style="color:var(--green,#4ade80);" title="match played — bracket continues from the real result">FT</span>'
+      : m.resolved
       ? '<span class="wcb-pair" title="teams confirmed">✓ set</span>'
       : '<span class="wcb-pair" title="probability this exact tie happens">' + (m.pairing_prob * 100).toFixed(0) + '%</span>';
     return '<div class="wcb-match' + champCls + '" data-mn="' + m.match_number + '" title="' + tip(m) + '">'
@@ -777,12 +783,18 @@ function groupStrip(br, sim) {
     }).join('');
     return '<div class="wcb-group"><div class="wcb-group__title">Group ' + L + '</div>' + rows + '</div>';
   }).join('');
+  const co = (sim || {}).conditioned_on || {};
+  const nPinned = (co.group_results_pinned || 0) + (co.knockout_winners_pinned || 0);
+  const condNote = nPinned
+    ? ' · <span style="color:var(--green,#4ade80);">conditioned on ' + nPinned + ' played result' + (nPinned > 1 ? 's' : '') + '</span>'
+    : '';
   return '<details style="margin-bottom:10px;"><summary style="cursor:pointer;font-size:10px;color:var(--text-tertiary);user-select:none;padding:2px 0 4px;">'
-    + '▸ Predicted group finishes — who feeds this bracket (greedy most-likely order · % = advance chance)</summary>'
+    + '▸ Predicted group finishes — who feeds this bracket (greedy most-likely order · % = advance chance)' + condNote + '</summary>'
     + '<div class="wcb-groups">' + cards + '</div></details>';
 }
 
-function renderAllMatches(br, projections, el) {
+function renderAllMatches(br, projections, el, results) {
+  const actualOf = results || {};
   const rows = [];
   projections.forEach(m => {
     const conf = Math.max(m.probabilities.home, m.probabilities.draw, m.probabilities.away);
@@ -792,6 +804,7 @@ function renderAllMatches(br, projections, el) {
       stageTxt: m.stage === 'group' ? 'Group ' + (m.group || '') : (STAGE_SHORT[m.stage] || m.stage),
       home: m.home_team, away: m.away_team,
       score: ((m.exact_score || [])[0] || {}).score || '—',
+      actual: actualOf[m.match_number] || null,
       probs: m.probabilities, conf,
       pick: conf === m.probabilities.home ? m.home_team : conf === m.probabilities.away ? m.away_team : 'Draw',
       link: true, pairing: null,
@@ -806,6 +819,7 @@ function renderAllMatches(br, projections, el) {
       mn: m.match_number, date: m.date, sortKey: m.date + 'T99', stage: m.stage,
       stageTxt: STAGE_SHORT[m.stage] || m.stage, home: m.home, away: m.away,
       score: p.predicted_score, probs: p.probs, conf, pick: m.advances,
+      actual: m.actual_score || actualOf[m.match_number] || null,
       link: false, pairing: m.resolved ? null : m.pairing_prob,
     });
   });
@@ -827,13 +841,18 @@ function renderAllMatches(br, projections, el) {
     const body = view.map(r => {
       const pairing = r.pairing != null
         ? ' <span class="wcb-ko-chip" title="probability this exact tie happens — knockout pairings are projections until the groups resolve">if tie · ' + (r.pairing * 100).toFixed(0) + '%</span>' : '';
+      const ftChip = r.actual
+        ? ' <span class="wcb-ko-chip" style="color:var(--green,#4ade80);background:rgba(74,222,128,0.10);" title="played — predictions for other matches are re-fit on this result; the honest pre-kickoff grading lives in the 📊 Record section">FT</span>' : '';
+      const scoreCell = r.actual
+        ? '<td class="score" title="final score · model had predicted ' + r.score + '"><span style="color:var(--text-primary);">' + r.actual.replace('-', ' – ') + '</span> <span style="font-size:8px;color:var(--text-tertiary);font-weight:400;">pred ' + r.score + '</span></td>'
+        : '<td class="score">' + r.score.replace('-', ' – ') + '</td>';
       return '<tr class="' + (r.link ? 'clickable' : '') + '"' + (r.link ? ' data-link="' + r.mn + '"' : '')
         + ' title="' + (r.link ? 'click for the full market card' : 'projected knockout — appears in match projections once teams are set') + '">'
         + '<td class="num">' + r.mn + '</td>'
         + '<td class="num">' + r.date + '</td>'
-        + '<td>' + r.stageTxt + pairing + '</td>'
+        + '<td>' + r.stageTxt + pairing + ftChip + '</td>'
         + '<td style="text-align:right;">' + flag(r.home) + ' ' + r.home + '</td>'
-        + '<td class="score">' + r.score.replace('-', ' – ') + '</td>'
+        + scoreCell
         + '<td>' + r.away + ' ' + flag(r.away) + '</td>'
         + '<td>' + tri(r.probs) + '</td>'
         + '<td><span class="pick">' + r.pick + '</span> <span class="num">' + pct(r.conf) + '</span></td></tr>';
@@ -878,7 +897,7 @@ function renderTournament(sim, projections) {
   const HINT_B = 'drag to pan · hover a match for the likeliest ties + scores · gold path = predicted champion’s run';
   const HINT_T = 'sortable + filterable · click a group-stage row to jump to its full market card';
   renderBracket(br, sim, bEl);
-  renderAllMatches(br, projections || [], tEl);
+  renderAllMatches(br, projections || [], tEl, sim.results || {});
   hint.textContent = HINT_B;
   document.querySelectorAll('#wcb-toggle button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#wcb-toggle button').forEach(x => x.classList.toggle('active', x === b));

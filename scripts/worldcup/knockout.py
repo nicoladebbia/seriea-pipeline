@@ -161,6 +161,50 @@ def make_match_resolver(fixture_by_number: dict[int, dict[str, Any]],
     return decided_of
 
 
+def collect_played_results(
+    fixtures: list[dict[str, Any]],
+    result_of: ResultFn | None = None,
+    shootout_winner: Callable[[str, str, str], str | None] | None = None,
+) -> dict[str, Any]:
+    """Everything downstream needs to condition on reality:
+
+    - "scores":  match_number -> (home_goals, away_goals) for every fixture
+      whose sides are real team names and whose result is in results.csv
+      (knockout scores are ET-inclusive, as in the source data);
+    - "winners": match_number -> advancing team, for decided knockout
+      matches only (level scores resolve via shootouts.csv; a missing
+      shootout row means no winner is pinned — refused, never guessed).
+
+    Consumed by generate_predictions: group scores pin the simulator's
+    sampled scores so advancement odds bank real points instead of
+    re-simulating played matches; knockout winners short-circuit the
+    simulated tie. Same result join as the slot filler, so the simulation,
+    the bracket and fixtures.json can never disagree about reality.
+    """
+    result_fn = result_of if result_of is not None else _merged_result_lookup()
+    shootout_fn = (
+        shootout_winner if shootout_winner is not None else _merged_shootout_lookup()
+    )
+    fixture_by_number = {int(f["match_number"]): f for f in fixtures}
+    decided_of = make_match_resolver(fixture_by_number, result_fn, shootout_fn)
+
+    scores: dict[int, tuple[int, int]] = {}
+    winners: dict[int, str] = {}
+    for mn, f in sorted(fixture_by_number.items()):
+        home, away = str(f["home"]), str(f["away"])
+        if _is_slot(home) or _is_slot(away):
+            continue
+        res = result_fn(home, away, str(f.get("date_utc", ""))[:10])
+        if res is None:
+            continue
+        scores[mn] = (int(res[0]), int(res[1]))
+        if f.get("stage") != "group":
+            dec = decided_of(mn)
+            if dec is not None:
+                winners[mn] = dec[0]
+    return {"scores": scores, "winners": winners}
+
+
 def resolve_slots(fixtures: list[dict[str, Any]],
                   rankings: dict[str, list[str]],
                   third_by_match: dict[int, str] | None,
@@ -237,6 +281,67 @@ def _real_shootout_lookup() -> Callable[[str, str, str], str | None]:
     return shootout_winner
 
 
+SOFA_RESULTS_JSON = DATA_DIR / "sofascore_results.json"
+
+
+def _sofa_results_index(
+    path: Any = None,
+) -> dict[tuple[frozenset[str], str], dict[str, Any]]:
+    """(teams-set, date) -> scraped final-score record, orientation kept in
+    the record. Source: sofascore_fetch --results (finished events only)."""
+    blob = read_json_safe(path or SOFA_RESULTS_JSON, {})
+    out: dict[tuple[frozenset[str], str], dict[str, Any]] = {}
+    for r in blob.get("results", []) if isinstance(blob, dict) else []:
+        try:
+            key = (frozenset((str(r["home"]), str(r["away"]))), str(r["date"]))
+            out[key] = r
+        except (KeyError, TypeError):
+            continue  # malformed row — skip, never crash the fill
+    return out
+
+
+def _merged_result_lookup(sofa_path: Any = None) -> ResultFn:
+    """results.csv first (canonical), Sofascore scrape second (same-night
+    bridge until martj42 publishes). Both report ET-inclusive knockout
+    scores, so callers cannot tell the sources apart — by design."""
+    csv_fn = _real_result_lookup()
+    idx = _sofa_results_index(sofa_path)
+
+    def result_of(home: str, away: str, date: str) -> tuple[int, int] | None:
+        res = csv_fn(home, away, date)
+        if res is not None:
+            return res
+        rec = idx.get((frozenset((home, away)), date))
+        if rec is None:
+            return None
+        if str(rec["home"]) == home:
+            return int(rec["home_score"]), int(rec["away_score"])
+        return int(rec["away_score"]), int(rec["home_score"])
+
+    return result_of
+
+
+def _merged_shootout_lookup(
+    sofa_path: Any = None,
+) -> Callable[[str, str, str], str | None]:
+    """shootouts.csv first, Sofascore winnerCode second (PEN-decided events
+    carry the advancing side even when the ET score is level). Returns the
+    winner in canonical name space, like the CSV lookup."""
+    csv_fn = _real_shootout_lookup()
+    idx = _sofa_results_index(sofa_path)
+
+    def shootout_winner(home: str, away: str, date: str) -> str | None:
+        w = csv_fn(home, away, date)
+        if w is not None:
+            return w
+        rec = idx.get((frozenset((home, away)), date))
+        if rec and rec.get("winner") and rec.get("decided_by") == "PEN":
+            return canon_team(str(rec["winner"]))
+        return None
+
+    return shootout_winner
+
+
 def fill_knockout_slots(write: bool = True) -> dict[str, Any]:
     """Resolve every slot the data allows; atomic write only on change."""
     fixtures: list[dict[str, Any]] = list(read_json_safe(FIXTURES_JSON, []))  # type: ignore[arg-type]
@@ -248,7 +353,7 @@ def fill_knockout_slots(write: bool = True) -> dict[str, Any]:
         return {"changes": [], "groups_complete": [], "open_slots": 0,
                 "note": "nothing to fill"}
 
-    result_of = _real_result_lookup()
+    result_of = _merged_result_lookup()
     group_fx = [f for f in fixtures if f.get("stage") == "group"]
     tables = group_tables(group_fx, result_of)
     complete = sorted(letter for letter, t in tables.items() if t["complete"])
@@ -268,7 +373,7 @@ def fill_knockout_slots(write: bool = True) -> dict[str, Any]:
             third_by_match = load_third_alloc(load_format_spec()).get(frozenset(best8))
 
     decided_of = make_match_resolver({int(f["match_number"]): f for f in fixtures},
-                                     result_of, _real_shootout_lookup())
+                                     result_of, _merged_shootout_lookup())
     changes = resolve_slots(fixtures, rankings, third_by_match, decided_of)
     filled = [c for c in changes if "team" in c]
     if filled and write:

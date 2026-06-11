@@ -854,6 +854,280 @@ class TestRealArtifacts:
         assert b89["away_source"] is not None
 
 
+class TestResultConditioning:
+    """Played results pin the sim (scores), the knockouts (winners) and the
+    bracket (reality outranks the engine pick)."""
+
+    @pytest.fixture()
+    def fixtures(self) -> list:
+        from scripts.worldcup.simulate import FIXTURES_JSON, load_fixtures
+
+        if not FIXTURES_JSON.exists():
+            pytest.skip("fixtures.json not present")
+        return load_fixtures()
+
+    @pytest.fixture()
+    def spec(self) -> dict:
+        from scripts.worldcup.simulate import FORMAT_SPEC_JSON, load_format_spec
+
+        if not FORMAT_SPEC_JSON.exists():
+            pytest.skip("format_spec.json not present")
+        return load_format_spec()
+
+    def test_collect_played_results(self) -> None:
+        from scripts.worldcup.knockout import collect_played_results
+
+        fixtures = [
+            {"match_number": 1, "stage": "group", "home": "Mexico",
+             "away": "South Africa", "date_utc": "2026-06-11T19:00:00Z"},
+            {"match_number": 73, "stage": "round_of_32", "home": "2A",
+             "away": "2B", "date_utc": "2026-06-28T19:00:00Z"},  # unfilled
+            {"match_number": 74, "stage": "round_of_32", "home": "Spain",
+             "away": "Japan", "date_utc": "2026-06-28T22:00:00Z"},
+            {"match_number": 75, "stage": "round_of_32", "home": "France",
+             "away": "Brazil", "date_utc": "2026-06-29T19:00:00Z"},
+            {"match_number": 76, "stage": "round_of_32", "home": "England",
+             "away": "Ghana", "date_utc": "2026-06-29T22:00:00Z"},
+        ]
+        results = {
+            ("Mexico", "South Africa"): (0, 5),
+            ("Spain", "Japan"): (2, 1),
+            ("France", "Brazil"): (1, 1),   # level → shootout decides
+            ("England", "Ghana"): (0, 0),   # level, shootout row missing
+        }
+        played = collect_played_results(
+            fixtures,
+            result_of=lambda h, a, d: results.get((h, a)),
+            shootout_winner=lambda h, a, d: "France" if h == "France" else None,
+        )
+        assert played["scores"] == {1: (0, 5), 74: (2, 1), 75: (1, 1), 76: (0, 0)}
+        assert played["winners"] == {74: "Spain", 75: "France"}  # 76 refused
+
+    class _FlatEngine:
+        """Every team equal — only pinned reality can separate them."""
+
+        def elo(self, team: str) -> float:
+            return 1800.0
+
+        def lambdas(self, home: str, away: str, home_at_home: bool = False,
+                    away_at_home: bool = False) -> tuple[float, float]:
+            return (1.2, 1.2)
+
+    def test_pinned_group_score_banks_real_points(
+        self, fixtures: list, spec: dict
+    ) -> None:
+        from scripts.worldcup.simulate import TournamentSimulator
+
+        m1 = next(f for f in fixtures if int(f["match_number"]) == 1)
+        loser, winner = str(m1["home"]), str(m1["away"])  # pin an away rout
+        sim = TournamentSimulator(
+            self._FlatEngine(), fixtures, spec,  # type: ignore[arg-type]
+            rng=np.random.default_rng(3),
+            pinned_scores={1: (0, 5)},
+        ).run(n_sims=200)
+        s_w, s_l = sim.team_stats[winner], sim.team_stats[loser]
+        # 3 banked points + GD+5 vs 0 must dominate flat-strength teammates.
+        assert s_w["group_winner"] > s_l["group_winner"] + 0.2
+        assert s_w["reach_r32"] > s_l["reach_r32"]
+        # Invariants survive conditioning.
+        assert sum(t["champion"] for t in sim.team_stats.values()) == pytest.approx(1.0, abs=1e-9)
+        assert sum(t["reach_r32"] for t in sim.team_stats.values()) == pytest.approx(32.0, abs=1e-9)
+
+    def test_bogus_pinned_winner_is_ignored(
+        self, fixtures: list, spec: dict
+    ) -> None:
+        from scripts.worldcup.simulate import TournamentSimulator
+
+        sim = TournamentSimulator(
+            self._FlatEngine(), fixtures, spec,  # type: ignore[arg-type]
+            rng=np.random.default_rng(4),
+            pinned_winners={73: "Atlantis"},  # never an entrant
+        ).run(n_sims=50)
+        assert "Atlantis" not in sim.ko_win_probs[73]
+        assert sum(sim.ko_win_probs[73].values()) == pytest.approx(1.0)
+
+    def test_merged_lookups_csv_first_sofascore_bridge(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import json as _json
+
+        from scripts.worldcup import knockout as ko
+
+        store = tmp_path / "sofa.json"
+        store.write_text(_json.dumps({"results": [
+            {"event_id": 1, "date": "2026-06-11", "home": "Mexico",
+             "away": "South Africa", "home_score": 2, "away_score": 1,
+             "winner": "Mexico", "decided_by": "FT", "penalties": None},
+            {"event_id": 2, "date": "2026-07-05", "home": "Spain",
+             "away": "Japan", "home_score": 1, "away_score": 1,
+             "winner": "Japan", "decided_by": "PEN", "penalties": [3, 4]},
+        ]}))
+        # CSV empty → the scrape bridges, in both orientations, exact date.
+        monkeypatch.setattr(ko, "_real_result_lookup",
+                            lambda: (lambda h, a, d: None))
+        monkeypatch.setattr(ko, "_real_shootout_lookup",
+                            lambda: (lambda h, a, d: None))
+        rfn = ko._merged_result_lookup(sofa_path=store)
+        assert rfn("Mexico", "South Africa", "2026-06-11") == (2, 1)
+        assert rfn("South Africa", "Mexico", "2026-06-11") == (1, 2)
+        assert rfn("Mexico", "South Africa", "2026-06-12") is None
+        sfn = ko._merged_shootout_lookup(sofa_path=store)
+        assert sfn("Spain", "Japan", "2026-07-05") == "Japan"  # PEN winner
+        assert sfn("Mexico", "South Africa", "2026-06-11") is None  # FT: none
+        # The canonical CSV always outranks the scrape.
+        monkeypatch.setattr(ko, "_real_result_lookup",
+                            lambda: (lambda h, a, d: (9, 9)))
+        assert ko._merged_result_lookup(sofa_path=store)(
+            "Mexico", "South Africa", "2026-06-11"
+        ) == (9, 9)
+        # Malformed rows are skipped, never crash the fill.
+        store.write_text(_json.dumps({"results": [{"date": "x"}, 42]}))
+        assert ko._sofa_results_index(store) == {}
+
+    def test_event_to_result_filters(self) -> None:
+        from scripts.worldcup.sofascore_fetch import _event_to_result
+
+        ids = {100: "Mexico", 200: "South Africa"}
+        base = {
+            "id": 7, "startTimestamp": 1781204400,  # 2026-06-11 19:00 UTC
+            "tournament": {"name": "FIFA World Cup 2026, Group A"},
+            "status": {"type": "finished"},
+            "homeTeam": {"id": 100}, "awayTeam": {"id": 200},
+            "homeScore": {"current": 2}, "awayScore": {"current": 1},
+            "winnerCode": 1,
+        }
+        rec = _event_to_result(base, ids, "2026-06-11")
+        assert rec == {
+            "event_id": 7, "date": "2026-06-11", "home": "Mexico",
+            "away": "South Africa", "home_score": 2, "away_score": 1,
+            "winner": "Mexico", "decided_by": "FT", "penalties": None,
+        }
+        # Rejection matrix: live score, wrong tournament, unmapped id,
+        # missing score, pre-tournament date.
+        assert _event_to_result({**base, "status": {"type": "inprogress"}}, ids, "2026-06-11") is None
+        assert _event_to_result({**base, "tournament": {"name": "Friendly"}}, ids, "2026-06-11") is None
+        assert _event_to_result({**base, "homeTeam": {"id": 999}}, ids, "2026-06-11") is None
+        assert _event_to_result({**base, "homeScore": {}}, ids, "2026-06-11") is None
+        assert _event_to_result(base, ids, "2026-06-12") is None
+        # Penalties: winner from winnerCode even when the ET score is level.
+        pens = {**base, "homeScore": {"current": 1, "penalties": 3},
+                "awayScore": {"current": 1, "penalties": 4}, "winnerCode": 2}
+        rec2 = _event_to_result(pens, ids, "2026-06-11")
+        assert rec2 is not None
+        assert (rec2["winner"], rec2["decided_by"], rec2["penalties"]) == (
+            "South Africa", "PEN", [3, 4])
+
+    def test_events_from_next_data_shape_walk(self) -> None:
+        import json as _json
+
+        from scripts.worldcup.sofascore_fetch import _events_from_next_data
+
+        ev = {"id": 1, "homeTeam": {"id": 100}, "awayTeam": {"id": 200},
+              "status": {"type": "finished"}, "homeScore": {"current": 2},
+              "awayScore": {"current": 0}, "tournament": {"name": "X"}}
+        blob = {"props": {"pageProps": {"deeply": [{"nested": {"events": [ev]}}]}}}
+        html = ('<html><script id="__NEXT_DATA__" type="application/json">'
+                + _json.dumps(blob) + "</script></html>")
+        found = _events_from_next_data(html)
+        assert len(found) == 1 and found[0]["id"] == 1  # found by shape
+        assert _events_from_next_data("<html>no blob</html>") == []
+        assert _events_from_next_data(
+            '<script id="__NEXT_DATA__">not json</script>') == []
+
+    def test_bracket_played_match_uses_real_winner(
+        self, fixtures: list, spec: dict
+    ) -> None:
+        from scripts.worldcup.generate_predictions import build_bracket
+
+        engine, sim = TestRealArtifacts._stub_engine_and_stats(fixtures)
+        resolved = [dict(f) for f in fixtures]
+        m73 = next(f for f in resolved if int(f["match_number"]) == 73)
+        m73["slot_home"], m73["slot_away"] = m73["home"], m73["away"]
+        m73["home"], m73["away"] = "Mexico", "France"
+        played = {"scores": {73: (0, 1)}, "winners": {73: "France"}}
+        bracket = build_bracket(
+            engine, resolved, sim, spec, played=played  # type: ignore[arg-type]
+        )
+        b73 = next(m for m in bracket["matches"] if m["match_number"] == 73)
+        assert b73["advances"] == "France"  # reality, whatever the engine said
+        assert b73["played"] is True
+        assert b73["actual_score"] == "0-1"
+        feeder = next(
+            m for m in bracket["matches"]
+            if 73 in (m["home_source"], m["away_source"])
+        )
+        side = "home" if feeder["home_source"] == 73 else "away"
+        assert feeder[side] == "France"
+        # A pin whose winner isn't an entrant must not corrupt the walk.
+        bad = {"scores": {73: (0, 1)}, "winners": {73: "Atlantis"}}
+        bracket2 = build_bracket(
+            engine, resolved, sim, spec, played=bad  # type: ignore[arg-type]
+        )
+        b73b = next(m for m in bracket2["matches"] if m["match_number"] == 73)
+        assert b73b["advances"] in ("Mexico", "France")
+        assert b73b["actual_score"] == "0-1"  # score still shown
+
+
+class TestSquadStrength:
+    """squad_history parsing/matching + the backtest study's adjustment math."""
+
+    _WIKITEXT = """
+==Group A==
+===Ecuador===
+{{nat fs g start}}
+{{nat fs g player|no=1|pos=GK|name=[[Hernán Galíndez]]|age={{birth date and age2|df=y|2022|11|20|1987|3|30}}|caps=12|goals=0|club=[[S.D. Aucas|Aucas]]|clubnat=ECU}}
+{{nat fs g player|no=2|pos=DF|name=[[Some Player]]|age={{birth date and age2|df=y|2022|11|20|1997|1|11}}|caps=17|goals=2|club=[[Manchester City F.C.|Manchester City]]|clubnat=ENG}}
+{{nat fs g end}}
+===Senegal===
+{{nat fs g player|no=1|pos=GK|name=[[Édouard Mendy]]|age={{birth date and age2|df=y|2022|11|20|1992|3|1}}|caps=24|goals=0|club=[[Chelsea F.C.|Chelsea]]|clubnat=ENG}}
+{{nat fs g player|no=9|pos=FW|name=[[X Y]]|age={{birth date and age2|df=y|2022|11|20|1999|5|5}}|caps=3|goals=1|club={{ill|Casa Sports|fr}}|clubnat=SEN}}
+===Player representation===
+Some appendix prose with no player rows.
+"""
+
+    def test_parse_squads_handles_nested_templates(self) -> None:
+        from scripts.worldcup.squad_history import parse_squads
+
+        squads = parse_squads(self._WIKITEXT)
+        assert set(squads) == {"Ecuador", "Senegal"}  # appendix heading dropped
+        assert squads["Ecuador"] == ["Aucas", "Manchester City"]
+        assert squads["Senegal"] == ["Chelsea", "Casa Sports"]  # {{ill}} handled
+
+    def test_club_matcher_cascade(self) -> None:
+        from scripts.worldcup.squad_history import ClubMatcher
+
+        elo = {"Man City": 2029.2, "Chelsea": 1900.0, "Arsenal": 1950.0,
+               "Arsenal Tula": 1500.0, "Barcelona": 1980.0}
+        m = ClubMatcher(elo)
+        assert m.match("Chelsea") == "Chelsea"            # exact
+        assert m.match("FC Barcelona") == "Barcelona"     # stop-token strip
+        assert m.match("Manchester City") == "Man City"   # alias map
+        assert m.match("Arsenal Tula") == "Arsenal Tula"  # exact beats prefix
+        assert m.match("Casa Sports") is None             # not in ClubElo
+        # 'Arsenal' alone: exact normalized hit, never the Tula guess
+        assert m.match("Arsenal") == "Arsenal"
+
+    def test_squad_adjustments_math(self) -> None:
+        from scripts.worldcup.backtest import _squad_adjustments
+
+        teams = {
+            f"T{i}": {"mean_club_elo": 1700 + 50 * i, "coverage_pct": 100.0}
+            for i in range(9)
+        }
+        teams["NoData"] = {"mean_club_elo": None, "coverage_pct": 0.0}
+        teams["HalfCov"] = {"mean_club_elo": 1700 + 50 * 8, "coverage_pct": 50.0}
+        hist = {"Tournament X": teams}
+        adj = _squad_adjustments(hist, "Tournament X")
+        assert "NoData" not in adj                       # no fabricated signal
+        zs = np.array([adj[f"T{i}"] for i in range(9)])
+        assert zs[0] < 0 < zs[-1]                        # ordered by strength
+        assert abs(float(np.mean(zs))) < 0.2             # roughly centred
+        # coverage shrinks: HalfCov has T8's elo but half the weight
+        assert adj["HalfCov"] == pytest.approx(adj["T8"] * 0.5, rel=1e-6)
+        # fewer than 8 teams with data -> no signal at all
+        assert _squad_adjustments({"Y": dict(list(teams.items())[:5])}, "Y") == {}
+
+
 class TestAvailability:
     """Player-availability layer: name keys, impact math, lineup overrides."""
 
