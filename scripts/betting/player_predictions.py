@@ -11,6 +11,8 @@ Predicts per-player per-match floor markets:
   7. Player Passes Completed O/U 19.5, 29.5, 39.5 — negative binomial tail
      (measured per-player over-dispersion 4.25x vs Poisson; tackles at 1.12
      stay Poisson like fouls)
+  8. Player Duels Won O/U 2.5, 4.5 (dispersion 1.29 — Poisson + isotonic)
+  9. Player Interceptions O/U 0.5, 1.5 (dispersion 1.07 — Poisson)
 
 Method (validated 2026-06-04 — see .plans/player-props-deep-plan.md):
   Per-player EMPIRICAL per-90 rate, computed as an expanding mean over the
@@ -83,6 +85,8 @@ MAX_P90 = {
     "goals": 1.5,
     "accurate_passes": 95.0,   # p99 = 89
     "tackles": 7.0,            # p99 = 6
+    "duels_won": 14.0,         # p99 = 13
+    "interceptions": 6.0,      # p99 = 5
 }
 
 # ── market definitions ───────────────────────────────────────────────────────
@@ -104,6 +108,10 @@ TARGETS = {
     "passes_o195": {"col": "accurate_passes", "line": 19, "label": "Passes Completed Over 19.5", "dist": "nbinom"},
     "passes_o295": {"col": "accurate_passes", "line": 29, "label": "Passes Completed Over 29.5", "dist": "nbinom"},
     "passes_o395": {"col": "accurate_passes", "line": 39, "label": "Passes Completed Over 39.5", "dist": "nbinom"},
+    "duels_o25":      {"col": "duels_won",     "line": 2, "label": "Duels Won Over 2.5"},
+    "duels_o45":      {"col": "duels_won",     "line": 4, "label": "Duels Won Over 4.5"},
+    "intercepts_o05": {"col": "interceptions", "line": 0, "label": "Interceptions Over 0.5"},
+    "intercepts_o15": {"col": "interceptions", "line": 1, "label": "Interceptions Over 1.5"},
 }
 
 # Distinct count columns we build per-90 priors for.
@@ -341,6 +349,7 @@ _CALIBRATE_MARKETS = {
     "shots_o05", "fouls_o05", "fouled_o05",
     "tackles_o05", "tackles_o15",
     "passes_o195", "passes_o295", "passes_o395",
+    "duels_o25", "duels_o45", "intercepts_o05",
 }
 
 

@@ -1231,14 +1231,16 @@ _FLOOR_DISPLAY_MARKETS = [
     "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
     "tackles_o05", "tackles_o15", "tackles_o25",
     "passes_o195", "passes_o295", "passes_o395",
+    "duels_o25", "duels_o45", "intercepts_o05", "intercepts_o15",
 ]
 # Headline-eligible subset: the near-universal floors (P(>=20 passes) ~ 0.9 for
-# half the pitch, tackles O0.5 similar) stay display-only — otherwise they'd
-# hijack every top-6 slot and bury the shots/SoT signal.
+# half the pitch, tackles O0.5 / duels O2.5 similar) stay display-only —
+# otherwise they'd hijack every top-6 slot and bury the shots/SoT signal.
 _FLOOR_HEADLINE_MARKETS = [
     "shots_o15", "sot_o05", "shots_o05", "shots_o25",
     "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
     "tackles_o15", "tackles_o25", "passes_o395",
+    "duels_o45", "intercepts_o15",
 ]
 
 

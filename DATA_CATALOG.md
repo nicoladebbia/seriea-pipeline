@@ -310,7 +310,7 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 
 | File | Rows | Cols | What |
 |------|------|------|------|
-| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 15-market player floor engine (passes/tackles validated 2026-06-11, NB tail for passes) |
+| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
 | `shotmap_stats.parquet` | 2,926 | 30 | Shot events (location x/y, situation, body part, outcome) |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
