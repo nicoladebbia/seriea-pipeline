@@ -2494,8 +2494,38 @@ def _release_lock():
 # never edits anything under scripts/worldcup/.
 
 WC_ALERT_STATE = PROJECT_ROOT / "data" / "worldcup" / "prematch_alerts_sent.json"
-WC_ALERT_WINDOW_MIN = (20, 150)       # alert when kickoff is 20–150 min away
+WC_ALERT_WINDOW_MIN = (0, 150)        # consider fixtures 0–150 min from kickoff
+WC_ALERT_LAST_CALL_MIN = 25           # ≤ this: send with whatever we have
+WC_REFRESH_WAIT_MAX_S = 12 * 60       # give a spawned refresh this long to land
 _WC_ALERT_LAST_CHECK = {"t": 0.0}
+_WC_PREDICTIONS_JSON = PROJECT_ROOT / "data" / "worldcup" / "predictions.json"
+
+
+def _wc_lineups_confirmed(match_number) -> bool:
+    import json as _json
+    try:
+        cl = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "confirmed_lineups.json").read_text())
+        return bool((cl.get(str(match_number)) or {}).get("confirmed"))
+    except (OSError, ValueError):
+        return False
+
+
+def _wc_spawn_refresh(state: dict) -> None:
+    """Kick the full WC pipeline (lineups → availability → predictions) in a
+    detached subprocess so the briefing is built from CONFIRMED-XI numbers.
+    Globally throttled; output appended to logs/wc-prematch-refresh.log."""
+    import subprocess
+    last = state.get("_refresh_spawned_at", 0.0)
+    if time.time() - last < 600:        # one spawn per 10 min, globally
+        return
+    state["_refresh_spawned_at"] = time.time()
+    with open(PROJECT_ROOT / "logs" / "wc-prematch-refresh.log", "ab") as logf:
+        subprocess.Popen(  # noqa: S603 — static argv, no user input
+            [sys.executable, "-m", "scripts.worldcup.refresh"],
+            cwd=str(PROJECT_ROOT), stdout=logf, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )   # child holds its own dup of the fd; parent copy closes here
+    log.info("Pre-match: spawned WC refresh for confirmed-lineup predictions")
 
 
 def _wc_grid(lh: float, la: float) -> dict:
@@ -2537,7 +2567,10 @@ def _wc_scorer_shortlist(players_doc: dict, match_number) -> list[str]:
     entry = ((players_doc or {}).get("per_match") or {}).get(str(match_number)) or {}
     out = []
     for side in ("home", "away"):
-        for r in entry.get(side, []) or []:
+        rows = entry.get(side, []) or []
+        # once lineups are confirmed upstream, only confirmed starters count
+        confirmed_rows = [r for r in rows if r.get("confirmed_xi")]
+        for r in (confirmed_rows or rows):
             prob = r.get("prob")
             if prob:
                 out.append((float(prob),
@@ -2796,27 +2829,60 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
         changed = False
         for p in preds:
             mn = str(p.get("match_number"))
-            if mn in sent:
-                continue
+            entry = sent.get(mn)
+            if isinstance(entry, str) or (isinstance(entry, dict) and entry.get("sent")):
+                continue                     # already alerted (old or new format)
             try:
                 ko = datetime.fromisoformat(p["kickoff_utc"])
             except (KeyError, ValueError, TypeError):
                 continue
             mins = (ko - now).total_seconds() / 60
-            if lo <= mins <= hi:
-                msg = _build_prematch_alert(p, mins)
-                _tg_send_message(token, chat_id, msg)
-                sent[mn] = now.isoformat()
-                changed = True
-                log.info("Pre-match alert sent: %s vs %s (T-%dmin)",
-                         p.get("home_team"), p.get("away_team"), int(mins))
-                # First alert of the (Rome) day also carries the day's ladder
-                from zoneinfo import ZoneInfo
-                day_key = f"ladder_{now.astimezone(ZoneInfo('Europe/Rome')).date()}"
-                if day_key not in sent:
-                    _tg_send_message(token, chat_id, _build_daily_ladder(tier="safe"))
-                    _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
-                    sent[day_key] = now.isoformat()
+            if not (lo <= mins <= hi):
+                continue
+
+            # ── lineup-gated, pipeline-fresh send ────────────────────────
+            # Goal: send ONCE, built from a predictions.json regenerated
+            # AFTER lineups confirmed. Last-call: never miss a match.
+            st = entry if isinstance(entry, dict) else {}
+            confirmed = _wc_lineups_confirmed(mn)
+            try:
+                preds_mtime = _WC_PREDICTIONS_JSON.stat().st_mtime
+            except OSError:
+                preds_mtime = 0.0
+            refresh_at = st.get("refresh_at", 0.0)
+            fresh = refresh_at and preds_mtime > refresh_at
+            waited_out = refresh_at and (time.time() - refresh_at) > WC_REFRESH_WAIT_MAX_S
+            last_call = mins <= WC_ALERT_LAST_CALL_MIN
+
+            ready = (confirmed and fresh) or waited_out or last_call
+            if not ready:
+                if not refresh_at and (confirmed or mins <= 90):
+                    # lineups just confirmed, or close enough that they should
+                    # exist upstream: pull the whole pipeline once, then send
+                    # on a later tick from the regenerated artifacts.
+                    _wc_spawn_refresh(sent)
+                    st["refresh_at"] = time.time()
+                    sent[mn] = st
+                    changed = True
+                continue
+
+            msg = _build_prematch_alert(p, mins)
+            _tg_send_message(token, chat_id, msg)
+            st["sent"] = now.isoformat()
+            st["lineups_confirmed"] = confirmed
+            st["pipeline_fresh"] = bool(fresh)
+            sent[mn] = st
+            changed = True
+            log.info("Pre-match alert sent: %s vs %s (T-%dmin, lineups=%s, fresh=%s)",
+                     p.get("home_team"), p.get("away_team"), int(mins),
+                     confirmed, bool(fresh))
+            # First alert of the (Rome) day also carries the day's ladders
+            from zoneinfo import ZoneInfo
+            day_key = f"ladder_{now.astimezone(ZoneInfo('Europe/Rome')).date()}"
+            if day_key not in sent:
+                _tg_send_message(token, chat_id, _build_daily_ladder(tier="safe"))
+                _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
+                sent[day_key] = now.isoformat()
         if changed:
             WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
     except Exception as e:  # noqa: BLE001 — alerts must never kill the bot loop
