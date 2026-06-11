@@ -75,6 +75,18 @@
                    border-radius: 4px; padding: 2px 7px; margin-left: 8px; vertical-align: middle; }
   .wc-model-line { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 6px; }
 
+  /* Best combos — accumulator cards */
+  .wc-combo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: var(--space-3); }
+  .wc-combo-leg-meta { display: block; font-size: 10px; color: var(--text-tertiary); font-weight: 400; }
+  .wc-combo-combined { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px;
+                       padding-top: 8px; border-top: 1px solid var(--border-subtle); font-size: 12px;
+                       color: var(--text-secondary); font-family: var(--font-mono); flex-wrap: wrap; }
+  .wc-combo-combined b { color: var(--text-primary); }
+  .wc-combo-ev { font-size: 10px; font-weight: 800; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }
+  .wc-combo-ev--pos { color: var(--green); background: var(--green-muted); }
+  .wc-combo-ev--neg { color: #f87171; background: rgba(248,113,113,0.10); }
+  .wc-combo-note { margin-top: 8px; font-size: 10px; color: var(--text-tertiary); }
+
   /* Road to the final — team × round probability matrix */
   .wc-road-wrap { overflow-x: auto; }
   .wc-road-grid { min-width: 580px; max-width: 780px; }
@@ -111,6 +123,11 @@
 <div class="wc-section" id="wc-record-section" style="display:none;">
   <div class="wc-section__title">📊 Record so far — graded vs reality</div>
   <div id="wc-record"></div>
+</div>
+
+<div class="wc-section" id="wc-combo-section" style="display:none;">
+  <div class="wc-section__title">🎯 Best combos to play — next 48h</div>
+  <div id="wc-combos"></div>
 </div>
 
 <div class="wc-section">
@@ -224,6 +241,46 @@ function renderRecord(rec) {
 }
 
 // ------------------------------------------------------------------- sim --
+function renderCombos(bc) {
+  // Accumulators from the validated who-wins family only (1X2 + DC) — the
+  // server never builds a leg from a noise market. Hidden when no upcoming
+  // slate (e.g. between rounds).
+  const sec = document.getElementById('wc-combo-section');
+  if (!bc || !bc.combos || !bc.combos.length) return;
+  const icons = { safe: '🔒', favorites: '⭐', value: '💎' };
+  document.getElementById('wc-combos').innerHTML = '<div class="wc-combo-grid">' + bc.combos.map(cb => {
+    const legs = cb.legs.map(l => {
+      const edge = l.edge != null ? ' · edge vs market ' + (l.edge >= 0 ? '+' : '') + (l.edge * 100).toFixed(1) + 'pp' : '';
+      return `
+      <div class="pj-row" title="${l.market} — fair odds ${fmtOdds(l.fair_odds)}${edge}">
+        <span class="pj-row__label" style="min-width:0;"><b>${l.pick_label}</b>
+          <span class="wc-combo-leg-meta">${l.match} · ${(l.date || '').slice(5)} ${l.time}</span></span>
+        <span style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+          <span class="pj-row__prob">${pct(l.prob)}</span>
+          <span class="pj-row__odds">${fmtOdds(l.market_odds || l.fair_odds)}</span>
+        </span>
+        <div class="pj-bar" style="width:${Math.max(2, l.prob * 100)}%;"></div>
+      </div>`;
+    }).join('');
+    const cm = cb.combined;
+    const ev = cm.ev != null
+      ? `<span class="wc-combo-ev ${cm.ev >= 0 ? 'wc-combo-ev--pos' : 'wc-combo-ev--neg'}"
+              title="expected value at the quoted (Sofascore proxy) prices: combined prob × combined odds − 1">
+           EV ${cm.ev >= 0 ? '+' : ''}${(cm.ev * 100).toFixed(1)}%</span>`
+      : '';
+    return `<div class="pj-card">
+      <div class="pj-card__title">${icons[cb.key] || '🎯'} ${cb.title}${trustBadge('signal')}</div>
+      ${legs}
+      <div class="wc-combo-combined">
+        <span><b>${pct1(cm.prob)}</b> combined · fair ${fmtOdds(cm.fair_odds)}${cm.market_odds ? ' · market ' + fmtOdds(cm.market_odds) : ''}</span>
+        ${ev}
+      </div>
+      <div class="wc-combo-note">${cb.note}</div>
+    </div>`;
+  }).join('') + '</div>';
+  sec.style.display = '';
+}
+
 function renderSim(sim, goldenBoot) {
   const c = document.getElementById('wc-sim');
   if (!sim || !sim.teams || !sim.teams.length) {
@@ -673,6 +730,7 @@ Promise.all([
 ]).then(([api, sim, rec]) => {
   renderModelLine(api.model || {}, api.player_model || {});
   renderRecord(rec);
+  renderCombos(api.best_combos);
   renderSim(sim, api.golden_boot || []);
   renderRoad(sim);
   renderMatches(api.projections);

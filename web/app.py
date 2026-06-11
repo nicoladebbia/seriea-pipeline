@@ -1183,6 +1183,7 @@ def api_worldcup():
             "coverage_note": players.get("coverage_note", ""),
         } if isinstance(players, dict) else {},
         "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
+        "best_combos": _build_wc_best_combos(preds, market),
         "projections": projections,
     })
 
@@ -1205,6 +1206,127 @@ def api_worldcup_simulation():
     if isinstance(sim, dict) and context:
         sim["team_context"] = context
     return jsonify(sim)
+
+
+def _build_wc_best_combos(preds: list, market: dict, now=None,
+                          window_hours: float = 48.0, max_legs: int = 3) -> dict:
+    """Best accumulators ("combos") from the validated who-wins family.
+
+    Legs come ONLY from 1X2 and double chance — the family that passed the
+    held-out tournament gate (model_metadata.json); goal-quantity props are
+    noise on internationals and never enter a combo. Slate = matches kicking
+    off within `window_hours` of `now`. Legs are one-per-match and matches are
+    independent, so the combined probability is the plain product. The "value"
+    combo additionally requires the blended model prob to beat the margin-free
+    Sofascore implied prob — and since deployed probs are already shrunk 0.4
+    toward that same market, a surviving gap is genuine model disagreement.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    now = now or datetime.now(UTC)
+    horizon = now + timedelta(hours=window_hours)
+
+    def make_leg(base: dict, market_name: str, pick: str, pick_label: str,
+                 prob: float, mkt_odds, mkt_implied) -> dict:
+        return {
+            **base,
+            "market": market_name, "pick": pick, "pick_label": pick_label,
+            "prob": round(prob, 4),
+            "fair_odds": round(1 / prob, 2) if prob > 0.001 else 99,
+            "market_odds": round(mkt_odds, 2) if mkt_odds else None,
+            "edge": round(prob - mkt_implied, 4) if mkt_implied else None,
+        }
+
+    dc_legs: list[dict] = []
+    fav_legs: list[dict] = []
+    value_pool: list[dict] = []
+    n_slate = 0
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p.get("kickoff_utc") or "")
+        except (TypeError, ValueError):
+            continue
+        if ko.tzinfo is None or not (now < ko <= horizon):
+            continue
+        probs = p.get("probabilities") or {}
+        h = float(probs.get("home", 0.0))
+        d = float(probs.get("draw", 0.0))
+        a = float(probs.get("away", 0.0))
+        if h + d + a < 0.9:  # malformed entry — skip, never crash the page
+            continue
+        n_slate += 1
+        home, away = p.get("home_team", "?"), p.get("away_team", "?")
+        mk = market.get(str(p.get("match_number"))) if isinstance(market, dict) else None
+        odds = (mk or {}).get("odds") or {}
+        implied = (mk or {}).get("implied") or {}
+        base = {
+            "match": p.get("match") or f"{home} vs {away}",
+            "date": p.get("date", ""), "time": p.get("time", ""),
+            "match_number": p.get("match_number"),
+        }
+
+        # Straight 1X2 — the top outcome.
+        key = max((("home", h), ("draw", d), ("away", a)), key=lambda kv: kv[1])[0]
+        label = {"home": home, "draw": "Draw", "away": away}[key]
+        prob = {"home": h, "draw": d, "away": a}[key]
+        fav = make_leg(base, "1X2", {"home": "1", "draw": "X", "away": "2"}[key],
+                       label, prob, odds.get(key), implied.get(key))
+        fav_legs.append(fav)
+
+        # Double chance — the two most likely outcomes. Market odds derived
+        # from the quoted 1X2 prices (1/(1/oA+1/oB), margin carried over —
+        # slightly conservative vs a real book's DC price).
+        dc_opts = [("1X", ("home", "draw"), h + d, f"{home} or draw"),
+                   ("X2", ("draw", "away"), d + a, f"Draw or {away}"),
+                   ("12", ("home", "away"), h + a, f"{home} or {away}")]
+        code, keys, prob, label = max(dc_opts, key=lambda o: o[2])
+        o1, o2 = odds.get(keys[0]), odds.get(keys[1])
+        dc_odds = 1 / (1 / o1 + 1 / o2) if o1 and o2 else None
+        dc_imp = (implied.get(keys[0], 0) + implied.get(keys[1], 0)) or None
+        dc = make_leg(base, "Double Chance", code, label, prob, dc_odds, dc_imp)
+        dc_legs.append(dc)
+
+        # Value pool: prefer the stronger-edge framing of the two per match.
+        edged = [x for x in (fav, dc)
+                 if x["edge"] is not None and x["edge"] >= 0.02 and x["market_odds"]]
+        if edged:
+            value_pool.append(max(edged, key=lambda x: x["edge"]))
+
+    def combo(key, title, note, legs):
+        if len(legs) < 2:
+            return None
+        legs = sorted(legs, key=lambda x: (x["date"], x["time"]))
+        prob = 1.0
+        for leg_ in legs:
+            prob *= leg_["prob"]
+        out = {"key": key, "title": title, "note": note, "legs": legs,
+               "combined": {"prob": round(prob, 4),
+                            "fair_odds": round(1 / prob, 2) if prob > 0.001 else 99}}
+        if all(leg_["market_odds"] for leg_ in legs):
+            mo = 1.0
+            for leg_ in legs:
+                mo *= leg_["market_odds"]
+            out["combined"]["market_odds"] = round(mo, 2)
+            out["combined"]["ev"] = round(prob * mo - 1, 4)
+        return out
+
+    def top(legs, sort_key):
+        return sorted(legs, key=sort_key, reverse=True)[:max_legs]
+
+    combos = [
+        combo("safe", "Safe — double chance",
+              "Highest combined probability; modest payout.",
+              top(dc_legs, lambda x: x["prob"])),
+        combo("favorites", "Favorites — straight 1X2",
+              "Top model favorites, straight up.",
+              top(fav_legs, lambda x: x["prob"])),
+        combo("value", "Value — model vs market",
+              "Legs where the blended model beats the Sofascore-implied "
+              "price by ≥2pp; EV at quoted odds (proxy, not a bookmaker).",
+              top(value_pool, lambda x: x["edge"])),
+    ]
+    return {"window_hours": window_hours, "n_matches": n_slate,
+            "combos": [c for c in combos if c]}
 
 
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}

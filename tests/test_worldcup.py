@@ -900,3 +900,110 @@ class TestAvailability:
         assert adj["home_xg"] == pytest.approx(base["home_xg"] * 0.90, rel=0.01)
         assert adj["probabilities"]["home"] < base["probabilities"]["home"]
         assert adj["availability_impact"]["home_out"] == ["Star"]
+
+
+class TestBestCombos:
+    """Serve-time accumulator builder (web.app._build_wc_best_combos)."""
+
+    NOW = None  # set in _build to keep datetime import local
+
+    @staticmethod
+    def _pred(n, home, away, h, d, a, ko, date, time="19:00"):
+        return {
+            "match_number": n, "match": f"{home} vs {away}",
+            "home_team": home, "away_team": away,
+            "date": date, "time": time, "kickoff_utc": ko,
+            "probabilities": {"home": h, "draw": d, "away": a},
+        }
+
+    def _slate(self):
+        # A: heavy home favorite (huge model-vs-market edge)
+        # B: mild home favorite (small edge)
+        # C: heavy away favorite (edge below the 2pp value bar)
+        # D: already kicked off, E: beyond the 48h window — both excluded
+        return [
+            self._pred(1, "Mexico", "South Africa", 0.70, 0.20, 0.10,
+                       "2026-06-15T18:00:00+00:00", "2026-06-15"),
+            self._pred(2, "Canada", "Qatar", 0.55, 0.25, 0.20,
+                       "2026-06-16T18:00:00+00:00", "2026-06-16"),
+            self._pred(3, "Honduras", "Brazil", 0.10, 0.20, 0.70,
+                       "2026-06-16T20:00:00+00:00", "2026-06-16", "21:00"),
+            self._pred(4, "Italy", "Norway", 0.50, 0.30, 0.20,
+                       "2026-06-15T10:00:00+00:00", "2026-06-15"),
+            self._pred(5, "Spain", "Ghana", 0.60, 0.25, 0.15,
+                       "2026-06-18T12:00:00+00:00", "2026-06-18"),
+        ]
+
+    def _market(self):
+        return {
+            "1": {"odds": {"home": 1.8, "draw": 4.0, "away": 8.5},
+                  "implied": {"home": 0.52, "draw": 0.27, "away": 0.21}},
+            "2": {"odds": {"home": 2.0, "draw": 3.4, "away": 3.8},
+                  "implied": {"home": 0.48, "draw": 0.28, "away": 0.24}},
+            "3": {"odds": {"home": 9.0, "draw": 4.4, "away": 1.45},
+                  "implied": {"home": 0.10, "draw": 0.21, "away": 0.69}},
+        }
+
+    def _build(self, preds, market):
+        from datetime import UTC, datetime
+
+        from web.app import _build_wc_best_combos
+
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+        return _build_wc_best_combos(preds, market, now=now)
+
+    def test_only_upcoming_window_enters(self) -> None:
+        out = self._build(self._slate(), self._market())
+        assert out["n_matches"] == 3
+        matches = {leg["match"] for c in out["combos"] for leg in c["legs"]}
+        assert "Italy vs Norway" not in matches  # already kicked off
+        assert "Spain vs Ghana" not in matches   # beyond 48h
+
+    def test_safe_combo_is_double_chance_product(self) -> None:
+        out = self._build(self._slate(), self._market())
+        safe = next(c for c in out["combos"] if c["key"] == "safe")
+        assert all(leg["market"] == "Double Chance" for leg in safe["legs"])
+        picks = {leg["match"]: leg["pick"] for leg in safe["legs"]}
+        assert picks["Mexico vs South Africa"] == "1X"
+        assert picks["Honduras vs Brazil"] == "X2"
+        assert safe["combined"]["prob"] == pytest.approx(0.90 * 0.80 * 0.90, abs=1e-3)
+        # DC market odds derived from the quoted 1X2 prices
+        mex = next(leg for leg in safe["legs"] if leg["match"] == "Mexico vs South Africa")
+        assert mex["market_odds"] == pytest.approx(1 / (1 / 1.8 + 1 / 4.0), abs=0.01)
+
+    def test_favorites_combo_straight_top_pick(self) -> None:
+        out = self._build(self._slate(), self._market())
+        fav = next(c for c in out["combos"] if c["key"] == "favorites")
+        assert all(leg["market"] == "1X2" for leg in fav["legs"])
+        assert {leg["pick_label"] for leg in fav["legs"]} == {"Mexico", "Canada", "Brazil"}
+        assert fav["combined"]["prob"] == pytest.approx(0.70 * 0.55 * 0.70, abs=1e-3)
+        # legs come back in kickoff order, not selection order
+        assert [leg["match_number"] for leg in fav["legs"]] == [1, 2, 3]
+
+    def test_value_combo_requires_2pp_edge_and_prices_ev(self) -> None:
+        out = self._build(self._slate(), self._market())
+        val = next(c for c in out["combos"] if c["key"] == "value")
+        # Brazil edge is 0.70-0.69=1pp -> below the bar; Mexico+Canada qualify
+        assert {leg["pick_label"] for leg in val["legs"]} == {"Mexico", "Canada"}
+        assert all(leg["edge"] >= 0.02 for leg in val["legs"])
+        cm = val["combined"]
+        assert cm["market_odds"] == pytest.approx(1.8 * 2.0, abs=0.01)
+        assert cm["ev"] == pytest.approx(0.70 * 0.55 * 3.6 - 1, abs=1e-3)
+
+    def test_no_market_means_no_value_combo(self) -> None:
+        out = self._build(self._slate(), {})
+        keys = {c["key"] for c in out["combos"]}
+        assert keys == {"safe", "favorites"}
+        safe = next(c for c in out["combos"] if c["key"] == "safe")
+        assert "market_odds" not in safe["combined"]
+        assert all(leg["market_odds"] is None for leg in safe["legs"])
+
+    def test_single_match_yields_no_combo(self) -> None:
+        out = self._build(self._slate()[:1], self._market())
+        assert out["combos"] == []
+
+    def test_malformed_entries_fail_soft(self) -> None:
+        broken = [{"match_number": 9}, {"kickoff_utc": "garbage"},
+                  self._pred(8, "A", "B", 0.0, 0.0, 0.0, "2026-06-16T18:00:00+00:00", "2026-06-16")]
+        out = self._build(broken, {})
+        assert out["combos"] == [] and out["n_matches"] == 0
