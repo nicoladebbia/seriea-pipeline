@@ -1229,6 +1229,16 @@ _PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
 _FLOOR_DISPLAY_MARKETS = [
     "shots_o15", "sot_o05", "shots_o05", "shots_o25",
     "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
+    "tackles_o05", "tackles_o15", "tackles_o25",
+    "passes_o195", "passes_o295", "passes_o395",
+]
+# Headline-eligible subset: the near-universal floors (P(>=20 passes) ~ 0.9 for
+# half the pitch, tackles O0.5 similar) stay display-only — otherwise they'd
+# hijack every top-6 slot and bury the shots/SoT signal.
+_FLOOR_HEADLINE_MARKETS = [
+    "shots_o15", "sot_o05", "shots_o05", "shots_o25",
+    "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
+    "tackles_o15", "tackles_o25", "passes_o395",
 ]
 
 
@@ -1366,9 +1376,10 @@ def _attach_player_floors(proj_by_match: dict) -> None:
             rows = []
             for pl in players:
                 mk = pl.get("markets", {})
-                # headline = the player's most-confident displayable floor
+                # headline = the player's most-confident HEADLINE-ELIGIBLE floor
+                # (display list is wider; near-universal floors excluded here)
                 best = max(
-                    (mk[k] for k in _FLOOR_DISPLAY_MARKETS if k in mk),
+                    (mk[k] for k in _FLOOR_HEADLINE_MARKETS if k in mk),
                     key=lambda m: m["prob"], default=None,
                 )
                 if not best or best["prob"] < 0.30:
@@ -1386,7 +1397,7 @@ def _attach_player_floors(proj_by_match: dict) -> None:
                         cell.update(g)
                     markets[k] = cell
                 # headline carries the best market's grade for the collapsed row
-                best_key = next((k for k in _FLOOR_DISPLAY_MARKETS
+                best_key = next((k for k in _FLOOR_HEADLINE_MARKETS
                                  if k in mk and mk[k] is best), None)
                 hg = _grade(nm, best_key, best["prob"]) if (is_past and best_key) else None
                 rows.append({
