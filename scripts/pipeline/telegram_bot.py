@@ -2868,6 +2868,11 @@ def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None,
         lines = [f"🪜 <b>Ladder rung {st['streak'] + 1}</b> — bet <b>€{rung:.2f}</b>{cap}. "
                  f"Streak {st['streak']}; roughly {surv:.0%} of ladders survive "
                  f"this deep — banking is always allowed."]
+        if rung > 0.75 * bal:
+            half = max(5.0, round(rung / 2))
+            lines.append(f"⚖️ That rung is {rung / bal:.0%} of your account. "
+                         f"Half-ride: reply <b>{half:.0f}</b> to bet €{half:.0f} "
+                         f"and keep €{bal - half:.2f} on the floor.")
     else:
         rung = max(5.0, round(bal * WC_RUNG_FRACTION))
         lines = [f"💡 Suggested stake: <b>€{rung:.0f}</b> (base rung — "
