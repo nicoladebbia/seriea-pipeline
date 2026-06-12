@@ -28,7 +28,6 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Project paths
@@ -494,12 +493,10 @@ def _edit_message(token: str, chat_id: str, message_id: int, text: str,
 
 # advisor.py uses load_json_safe; expose it under the legacy _load_json name
 # that telegram_bot was originally written against.
-from scripts.utils.json_utils import load_json_safe as _load_json
 from web.advisor import (
     TOOL_DEFINITIONS,
     TOOL_HANDLERS,
     _build_system_prompt,
-    _get_bankroll,
     _tool_get_bankroll_status,
     _tool_get_live_matches,
     _tool_get_value_bets,
@@ -1460,7 +1457,7 @@ def _get_weekly_bets() -> dict:
 
 def _handle_summary_menu(token: str, chat_id: str) -> str | None:
     """Show week selector with inline keyboard buttons."""
-    from scripts.pipeline.notify import TgMsg, _html_escape
+    from scripts.pipeline.notify import TgMsg
 
     by_week = _get_weekly_bets()
     if not by_week:
@@ -1780,10 +1777,9 @@ def _handle_worldcup() -> str:
 
     Same sources as /worldcup on the dashboard (predictions.json +
     market_odds.json via scripts.worldcup.combos — who-wins markets only).
-    Times shown in Italy time.
+    Times shown in the WC display timezone (Miami by default).
     """
     from datetime import UTC, datetime
-    from zoneinfo import ZoneInfo
 
     from scripts.worldcup.combos import (
         MARKET_ODDS_JSON,
@@ -1792,7 +1788,7 @@ def _handle_worldcup() -> str:
     )
     from scripts.worldcup.engine import read_json_safe
 
-    rome = ZoneInfo("Europe/Rome")
+    rome = _wc_tz()
     now = datetime.now(UTC)
     doc = read_json_safe(PREDICTIONS_JSON, {})
     preds = doc.get("predictions", []) if isinstance(doc, dict) else []
@@ -1814,7 +1810,7 @@ def _handle_worldcup() -> str:
 
     lines = [f"🌍 <b>World Cup 2026 — {today_rome.strftime('%A %d %B')}</b>", ""]
     if todays:
-        lines.append("⚽ <b>Today</b> (Italy time)")
+        lines.append(f"⚽ <b>Today</b> ({WC_TZ_LABEL} time)")
         for ko, p in todays:
             probs = p.get("probabilities") or {}
             pick = max(probs, key=probs.get) if probs else None
@@ -2537,6 +2533,17 @@ def _release_lock():
 # WC BET TRACKER — Nicola's manual SISAL bets, logged via buttons/text,
 # auto-settled from real results, bankroll-aware (added 2026-06-12)
 # =============================================================================
+# Display timezone for all WC times (Nicola is in Miami for the tournament).
+# Override via WC_DISPLAY_TZ / WC_TZ_LABEL in .env if he travels.
+WC_DISPLAY_TZ = os.environ.get("WC_DISPLAY_TZ", "America/New_York")
+WC_TZ_LABEL = os.environ.get("WC_TZ_LABEL", "Miami")
+
+
+def _wc_tz():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(WC_DISPLAY_TZ)
+
+
 WC_MYBETS_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bets.json"
 WC_BANKROLL_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bankroll.json"
 WC_RUNG_FRACTION = 0.47          # ladder rung ≈ this share of balance, floor keeps the rest
@@ -2948,16 +2955,15 @@ def _wc_scorer_shortlist(players_doc: dict, match_number) -> list[str]:
 def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
     """One match's pre-kickoff briefing (Telegram HTML)."""
     import json as _json
-    from zoneinfo import ZoneInfo
 
     home, away = p.get("home_team", "?"), p.get("away_team", "?")
     probs = p.get("probabilities") or {}
     pure = p.get("probabilities_pure_model") or {}
     lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
-    ko_rome = ""
+    ko_local = ""
     try:
         ko = datetime.fromisoformat(p["kickoff_utc"])
-        ko_rome = ko.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M")
+        ko_local = ko.astimezone(_wc_tz()).strftime("%H:%M")
     except (KeyError, ValueError, TypeError):
         pass
 
@@ -2966,7 +2972,8 @@ def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
     fam = _wc_poisson_family(lh, la) if lh and la else None
 
     lines = [
-        f"⏰ <b>{home} vs {away}</b> — kickoff ~{int(minutes_to_ko)} min ({ko_rome} IT)",
+        f"⏰ <b>{home} vs {away}</b> — kickoff ~{int(minutes_to_ko)} min "
+        f"({ko_local} {WC_TZ_LABEL})",
         "",
         f"🎯 <b>Our call: {sym}</b> — {home} {probs.get('home', 0):.0%} / "
         f"X {probs.get('draw', 0):.0%} / {away} {probs.get('away', 0):.0%}",
@@ -3079,16 +3086,15 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
     shown at OUR FAIR ODDS (= 1/prob): that is the MINIMUM SISAL price to
     accept — if the book pays less than the rung's 'min odds', skip the rung."""
     import json as _json
-    from zoneinfo import ZoneInfo
 
     try:
         doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
     except (OSError, ValueError):
         return "🪜 No predictions on disk."
     preds = doc.get("predictions", []) if isinstance(doc, dict) else []
-    rome = ZoneInfo("Europe/Rome")
+    tz = _wc_tz()
     now = datetime.now(UTC)
-    today = now.astimezone(rome).date()
+    today = now.astimezone(tz).date()
 
     slate = []
     for p in preds:
@@ -3096,7 +3102,7 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
             ko = datetime.fromisoformat(p["kickoff_utc"])
         except (KeyError, ValueError, TypeError):
             continue
-        if ko.astimezone(rome).date() == today and ko > now:
+        if ko.astimezone(tz).date() == today and ko > now:
             slate.append((ko, p))
     slate.sort(key=lambda x: x[0])
     if not slate:
@@ -3125,7 +3131,7 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
         in_band = [leg for leg in _wc_ladder_legs(p) if lo <= leg[0] <= hi]
         # safest = highest prob in band; longest = lowest prob in band
         pick = (in_band[0] if cfg["pick"] == "safest" else in_band[-1]) if in_band else None
-        ko_txt = ko.astimezone(rome).strftime("%H:%M")
+        ko_txt = ko.astimezone(tz).strftime("%H:%M")
         match = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
         if not pick:
             lines.append(f"⏭ {ko_txt} {match}: no leg in the {lo:.0%}–{hi:.0%} band — skip")
@@ -3258,8 +3264,7 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                      p.get("home_team"), p.get("away_team"), int(mins),
                      confirmed, bool(fresh))
             # First alert of the (Rome) day also carries the day's ladders
-            from zoneinfo import ZoneInfo
-            day_key = f"ladder_{now.astimezone(ZoneInfo('Europe/Rome')).date()}"
+            day_key = f"ladder_{now.astimezone(_wc_tz()).date()}"
             if day_key not in sent:
                 _tg_send_message(token, chat_id, _build_daily_ladder(tier="safe"))
                 _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
