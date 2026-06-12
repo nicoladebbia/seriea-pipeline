@@ -2045,16 +2045,22 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     show_alert = False
 
     if data.startswith("wcbet:"):
+        # Money flow: send VERBATIM and return None — a returned string gets
+        # fed to Claude as a user message (the analyze-button pattern) and
+        # comes back paraphrased/footered/refused. Found live 2026-06-12.
         _, mn, key = data.split(":", 2)
         _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id},
                     timeout=5)
         if key == "other":
             _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": None,
                                         "label": None}
-            return ("📝 Type the bet as: <code>STAKE @ ODDS description</code>\n"
-                    "e.g. <code>60 @ 1.80 Canada win</code>\n"
-                    "(free-text legs settle via /settle won|lost)")
+            _tg_send_message(token, chat_id,
+                "📝 Type the bet as: <code>STAKE @ ODDS description</code>\n"
+                "e.g. <code>60 @ 1.80 Canada win</code>\n"
+                "(free-text legs settle via /settle won|lost · /cancel to abort)")
+            return None
         legs = {}
+        match_name = f"match {mn}"
         try:
             import json as _json
             doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
@@ -2063,13 +2069,15 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             legs = {k: lbl for _pr, lbl, k in _wc_ladder_legs(p)}
             match_name = f"{p.get('home_team')} vs {p.get('away_team')}"
         except (OSError, ValueError, StopIteration):
-            match_name = f"match {mn}"
+            pass
         label = legs.get(key, key)
         _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": key,
                                     "label": label, "match": match_name}
-        return (f"🎫 Logging <b>{label}</b> ({match_name}).\n"
-                f"Reply with stake and the odds SISAL gave you: "
-                f"<code>60 @ 1.80</code>")
+        _tg_send_message(token, chat_id,
+            f"🎫 Logging <b>{label}</b> ({match_name}).\n"
+            f"Reply with stake and the odds SISAL gave you: "
+            f"<code>60 @ 1.80</code> (or <code>60 at 1.80</code> · /cancel)")
+        return None
 
     if data.startswith("analyze:"):
         match_name = data[len("analyze:"):]
@@ -3256,11 +3264,14 @@ def run_bot():
                     text = _REPLY_BUTTON_MAP[text]
                     cmd = text.split()[0].lower()
 
-                # Pending bet completion: "60 @ 1.80" (optionally + free text)
+                # Pending bet completion: "60 @ 1.80" / "60 at 1.80" (+ free
+                # text). While a bet is pending this flow OWNS the chat —
+                # nothing falls through to Claude (which paraphrases, refuses,
+                # or claims SA/EPL-only — observed live 2026-06-12).
                 if not cmd and chat_id in _WC_PENDING_BET:
                     bm = re.match(
-                        r"^(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
-                        text.strip())
+                        r"^(\d+(?:[.,]\d+)?)\s*(?:@|at)\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+                        text.strip(), re.IGNORECASE)
                     if bm:
                         pend = _WC_PENDING_BET.pop(chat_id)
                         stake = float(bm.group(1).replace(",", "."))
@@ -3277,7 +3288,14 @@ def run_bot():
                         _tg_send_message(token, chat_id,
                             f"🎫 Logged: <b>{label}</b> @ {odds} × €{stake:.2f} "
                             f"(returns €{stake * odds:.2f})\n{auto}{bal_txt}")
-                        continue
+                    elif text.strip().lower() in ("/cancel", "cancel", "annulla"):
+                        _WC_PENDING_BET.pop(chat_id, None)
+                        _tg_send_message(token, chat_id, "🚫 Bet logging cancelled.")
+                    else:
+                        _tg_send_message(token, chat_id,
+                            "I need <b>stake and odds</b> first, like "
+                            "<code>60 @ 1.80</code> — then I log it. (/cancel to abort)")
+                    continue
 
                 if cmd == "/start":
                     response_text = _handle_start()
@@ -3324,8 +3342,8 @@ def run_bot():
                         response_text = _wc_money_footer()
                 elif cmd == "/bet":
                     bm = re.match(
-                        r"^/bet\s+(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
-                        text.strip())
+                        r"^/bet\s+(\d+(?:[.,]\d+)?)\s*(?:@|at)\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+                        text.strip(), re.IGNORECASE)
                     if not bm:
                         response_text = ("Usage: <code>/bet 60 @ 1.80 Canada win</code> "
                                          "(or tap a 🎫 button on an alert)")
