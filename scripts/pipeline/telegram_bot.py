@@ -3415,6 +3415,51 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
     return "\n".join(lines)
 
 
+_WC_POSTMATCH_LAST = {"t": 0.0}
+
+
+def _wc_postmatch_check(token: str, chat_id: str) -> None:
+    """After an alerted match should have ENDED (kickoff + 110 min), keep
+    spawning the WC refresh until its final score is on disk — so settlement,
+    result-pinning and grading happen minutes after the whistle instead of at
+    the next 2-hourly tick. (Found live 2026-06-12: Canada FT 1-1, Nicola's
+    settlement message sat in the gap between refresh cycles.)"""
+    import json as _json
+    if time.time() - _WC_POSTMATCH_LAST["t"] < 120:
+        return
+    _WC_POSTMATCH_LAST["t"] = time.time()
+    try:
+        try:
+            sent = _json.loads(WC_ALERT_STATE.read_text())
+        except (OSError, ValueError):
+            return
+        now = datetime.now(UTC)
+        changed = False
+        for mn, st in list(sent.items()):
+            if not isinstance(st, dict) or not st.get("sent") or st.get("result_seen"):
+                continue
+            p = _wc_pred_for_match(mn)
+            if not p:
+                continue
+            try:
+                ko = datetime.fromisoformat(p["kickoff_utc"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            mins_since_ko = (now - ko).total_seconds() / 60
+            if mins_since_ko < 110:
+                continue                      # match still running
+            if _wc_result_for_match(mn):
+                st["result_seen"] = now.isoformat()
+                changed = True                # settle check picks it up ≤5 min
+            elif mins_since_ko < 240:
+                _wc_spawn_refresh(sent)       # globally throttled to 1/10min
+                changed = True
+        if changed:
+            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+    except Exception as e:  # noqa: BLE001 — must never kill the bot loop
+        log.warning("postmatch check failed: %s", e)
+
+
 def _check_prematch_alerts(token: str, chat_id: str) -> None:
     """Fire pre-kickoff briefings for fixtures entering the alert window."""
     import json as _json
@@ -3575,6 +3620,8 @@ def run_bot():
 
             # Proactive WC pre-match briefings (throttled internally)
             _check_prematch_alerts(token, chat_id)
+            # Post-match: hunt the final score until it lands on disk
+            _wc_postmatch_check(token, chat_id)
             # Auto-settle Nicola's logged bets against real results
             _wc_check_my_bets(token, chat_id)
 
