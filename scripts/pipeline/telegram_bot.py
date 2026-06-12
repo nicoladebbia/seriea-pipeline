@@ -435,26 +435,31 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
 
 
 def _reply_keyboard() -> dict:
-    """Build a persistent reply keyboard shown at the bottom of the chat."""
-    return {
-        "keyboard": [
-            [{"text": "💰 Bets"}, {"text": "📊 Bankroll"}, {"text": "⚽ Today"}],
-            [{"text": "🔴 Live"}, {"text": "🎯 Match"}, {"text": "🏆 Parlays"}],
-            [{"text": "📋 Summary"}, {"text": "📰 Digest"}, {"text": "🌍 World Cup"}],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True,
-    }
+    """Remove the old persistent bottom grid (Nicola 2026-06-12: it ate half
+    the screen and was Serie A-era). Commands live in the LEFT menu button
+    now (setMyCommands) — hidden until tapped. Attaching this remove-markup
+    to outgoing messages clears the grid from existing chats too."""
+    return {"remove_keyboard": True}
+
+
+# WC-season command menu — populates Telegram's ☰ menu button at input-left.
+_WC_COMMANDS = [
+    {"command": "wc", "description": "🌍 Today's World Cup slate + best combos"},
+    {"command": "ladder", "description": "🪜 Today's ladder (add 'risk' for spicy)"},
+    {"command": "mybets", "description": "🎫 My bets + balance"},
+    {"command": "bet", "description": "Log a bet: /bet 60 @ 1.80 Canada win"},
+    {"command": "balance", "description": "💰 Show or set balance"},
+    {"command": "settle", "description": "Settle a free-text bet: won|lost|void"},
+]
 
 
 def _register_commands(token: str):
-    """Clear the slash command menu — commands are handled via inline buttons instead."""
-    # Send empty list to remove the ☰ menu commands
-    result = _tg_request(token, "setMyCommands", {"commands": []}, timeout=10)
+    """Register the WC command set → Telegram shows them in the left ☰ menu."""
+    result = _tg_request(token, "setMyCommands", {"commands": _WC_COMMANDS}, timeout=10)
     if result is not None:
-        log.info("Cleared bot command menu (using inline buttons instead)")
+        log.info("Registered %d WC commands in the menu button", len(_WC_COMMANDS))
     else:
-        log.warning("Failed to clear bot command menu")
+        log.warning("Failed to register command menu")
 
 
 def _edit_message(token: str, chat_id: str, message_id: int, text: str,
