@@ -2081,6 +2081,7 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
                 "match": f"{p.get('home_team')} vs {p.get('away_team')}" if p else f"match {mn}"}
         suggested, msg = _wc_stake_suggestion(odds, prob)
         pend["suggested"] = suggested
+        pend["at"] = time.time()
         _WC_PENDING_BET[chat_id] = pend
         _tg_send_message(token, chat_id,
                          f"🎫 <b>{label}</b> @ {odds} ({pend['match']})\n{msg}")
@@ -2095,7 +2096,7 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
                     timeout=5)
         if key == "other":
             _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": None,
-                                        "label": None}
+                                        "label": None, "at": time.time()}
             _tg_send_message(token, chat_id,
                 "📝 Type the bet as: <code>STAKE @ ODDS description</code>\n"
                 "e.g. <code>60 @ 1.80 Canada win</code>\n"
@@ -2110,7 +2111,7 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         label, prob = legs.get(key, (key, None))
         _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": key,
                                     "label": label, "match": match_name,
-                                    "prob": prob}
+                                    "prob": prob, "at": time.time()}
         _tg_send_message(token, chat_id,
             f"🎫 Logging <b>{label}</b> ({match_name}).\n"
             f"Send the SISAL odds (e.g. <code>1.80</code>) and I'll calculate "
@@ -3642,12 +3643,19 @@ def run_bot():
                         continue
                     spont = _wc_spontaneous_bet(text)
                     if spont:
+                        spont["at"] = time.time()
                         _WC_PENDING_BET[chat_id] = spont
                         if spont.get("label"):
                             _tg_send_message(token, chat_id,
                                 f"🎫 <b>{spont['label']}</b> ({spont['match']}) — got it.")
                         # fall through to the pending handler below, which
                         # parses odds/stake from THIS same message
+
+                # Stale pending (>15 min) expires silently — the message
+                # gets processed fresh instead of feeding a dead flow.
+                if (chat_id in _WC_PENDING_BET
+                        and time.time() - _WC_PENDING_BET[chat_id].get("at", 0) > 900):
+                    _WC_PENDING_BET.pop(chat_id, None)
 
                 if not cmd and chat_id in _WC_PENDING_BET:
                     if text.strip().lower() in ("/cancel", "cancel", "annulla"):
@@ -3737,6 +3745,11 @@ def run_bot():
                     _tg_send_typing(token, chat_id)
                     _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
                     response_text = _build_daily_ladder(tier=_tier)
+                elif cmd == "/cancel":
+                    if _WC_PENDING_BET.pop(chat_id, None):
+                        response_text = "🚫 Bet logging cancelled."
+                    else:
+                        response_text = "Nothing pending — all clear."
                 elif cmd == "/balance":
                     arg = text.replace("/balance", "").strip().replace(",", ".")
                     if arg:
