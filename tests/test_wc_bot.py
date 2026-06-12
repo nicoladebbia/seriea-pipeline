@@ -51,6 +51,33 @@ class TestLegEval:
             assert pa + pb == pytest.approx(total, abs=1e-9)
 
 
+from scripts.pipeline.telegram_bot import _wc_parse_bet_text
+
+
+class TestLenientBetParse:
+    """The conversational parser: Nicola types like a human, the bot fills
+    in whichever piece is missing across messages."""
+
+    @pytest.mark.parametrize("text,pend,stake,odds", [
+        ("60 @ 1.80", {}, 60.0, 1.80),
+        ("60 at 1.80", {}, 60.0, 1.80),
+        ("I bet Canada winning at 1.80", {}, None, 1.80),     # odds only → ask stake
+        ("60", {"odds": 1.80}, 60.0, 1.80),                   # stake completes it
+        ("1.85", {"stake": 5.0}, 5.0, 1.85),                  # odds completes it
+        ("60", {}, 60.0, None),                               # stake only → ask odds
+        ("1.80 for my 60", {}, 60.0, 1.80),                   # swapped word order
+        ("5 at 1.85", {}, 5.0, 1.85),                         # both small numbers
+        ("put 12,50 on it at 2,43", {}, 12.5, 2.43),
+    ])
+    def test_extraction(self, text, pend, stake, odds):
+        s, o, _w = _wc_parse_bet_text(text, dict(pend))
+        assert s == stake and o == odds
+
+    def test_words_become_label(self):
+        _s, _o, words = _wc_parse_bet_text("I bet Canada winning at 1.80", {})
+        assert "Canada winning" in words
+
+
 STAKE_RE = r"^(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$"
 
 

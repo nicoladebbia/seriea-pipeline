@@ -2681,6 +2681,38 @@ def _wc_money_footer() -> str:
     return " · ".join(parts)
 
 
+def _wc_parse_bet_text(text: str, pend: dict) -> tuple[float | None, float | None, str]:
+    """Human-friendly stake/odds extraction for the pending-bet flow.
+
+    Accepts "60 @ 1.80", "60 at 1.80", "I bet Canada winning at 1.80" (odds
+    only — stake asked next), bare "60" (stake only — odds asked next), in
+    any order across messages. Returns (stake, odds, leftover_words); either
+    number may be None — the caller asks for what's missing.
+    Heuristics: two numbers = positional stake, odds — swapped only when the
+    first looks like odds (decimal ≤ 20) and the second like a stake (whole
+    number ≥ 21). One number = odds if it has decimals in 1.01–20 (or stake
+    is already known), else stake.
+    """
+    nums = [float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text)]
+    words = re.sub(r"\d+(?:[.,]\d+)?", " ", text)
+    words = re.sub(r"(?i)\b(at|bet|i|on|the|per|euro|eur)\b|[@×x€$]", " ", words)
+    words = " ".join(words.split()).strip(" .,!?")
+    stake, odds = pend.get("stake"), pend.get("odds")
+    if len(nums) >= 2:
+        stake, odds = nums[0], nums[1]
+        if (stake != int(stake) and stake <= 20
+                and odds == int(odds) and odds >= 21):
+            stake, odds = odds, stake          # "1.80 ... 60" word order
+    elif len(nums) == 1:
+        n = nums[0]
+        looks_like_odds = n != int(n) and 1.01 <= n <= 20
+        if odds is None and (looks_like_odds or stake is not None):
+            odds = n
+        else:
+            stake = n
+    return stake, odds, words
+
+
 def _wc_bet_keyboard(p: dict) -> dict | None:
     """Big one-per-row buttons for logging what Nicola actually bet."""
     legs = _wc_ladder_legs(p)
@@ -3269,14 +3301,17 @@ def run_bot():
                 # nothing falls through to Claude (which paraphrases, refuses,
                 # or claims SA/EPL-only — observed live 2026-06-12).
                 if not cmd and chat_id in _WC_PENDING_BET:
-                    bm = re.match(
-                        r"^(\d+(?:[.,]\d+)?)\s*(?:@|at)\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
-                        text.strip(), re.IGNORECASE)
-                    if bm:
-                        pend = _WC_PENDING_BET.pop(chat_id)
-                        stake = float(bm.group(1).replace(",", "."))
-                        odds = float(bm.group(2).replace(",", "."))
-                        label = pend.get("label") or (bm.group(3).strip() or "custom bet")
+                    if text.strip().lower() in ("/cancel", "cancel", "annulla"):
+                        _WC_PENDING_BET.pop(chat_id, None)
+                        _tg_send_message(token, chat_id, "🚫 Bet logging cancelled.")
+                        continue
+                    pend = _WC_PENDING_BET[chat_id]
+                    stake, odds, words = _wc_parse_bet_text(text, pend)
+                    if not pend.get("label") and len(words) > 2:
+                        pend["label"] = words            # "Canada winning" etc.
+                    if stake and odds and odds >= 1.01:
+                        _WC_PENDING_BET.pop(chat_id, None)
+                        label = pend.get("label") or "custom bet"
                         bet = _wc_log_bet(pend["match_number"],
                                           pend.get("match", f"match {pend['match_number']}"),
                                           pend.get("leg_key"), label, stake, odds)
@@ -3288,13 +3323,16 @@ def run_bot():
                         _tg_send_message(token, chat_id,
                             f"🎫 Logged: <b>{label}</b> @ {odds} × €{stake:.2f} "
                             f"(returns €{stake * odds:.2f})\n{auto}{bal_txt}")
-                    elif text.strip().lower() in ("/cancel", "cancel", "annulla"):
-                        _WC_PENDING_BET.pop(chat_id, None)
-                        _tg_send_message(token, chat_id, "🚫 Bet logging cancelled.")
                     else:
-                        _tg_send_message(token, chat_id,
-                            "I need <b>stake and odds</b> first, like "
-                            "<code>60 @ 1.80</code> — then I log it. (/cancel to abort)")
+                        pend["stake"], pend["odds"] = stake, odds
+                        if odds and not stake:
+                            ask = f"Got it — odds <b>{odds}</b>. How much did you stake? (just the number)"
+                        elif stake and not odds:
+                            ask = f"Got it — €<b>{stake:.0f}</b>. At what odds? (e.g. 1.80)"
+                        else:
+                            ask = ("Tell me stake and odds — <code>60 @ 1.80</code>, "
+                                   "or one at a time. (/cancel to abort)")
+                        _tg_send_message(token, chat_id, ask)
                     continue
 
                 if cmd == "/start":
