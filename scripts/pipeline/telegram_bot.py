@@ -2635,6 +2635,7 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
             b["settled_at"] = datetime.now(UTC).isoformat()
             b["score"] = f"{h}-{a}"
             changed = True
+            st_l = _wc_ladder_on_settle(b, won)
             if won:
                 ret = b["stake"] * b["odds"]
                 b["return"] = round(ret, 2)
@@ -2642,13 +2643,16 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
                 _tg_send_message(token, chat_id,
                     f"✅ <b>Bet WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
                     f"\n{b['match']} finished {h}-{a} → return <b>€{ret:.2f}</b>"
-                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else ""))
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else "")
+                    + f"\n🪜 Ladder continues — next rung: <b>€{st_l['rung']:.2f}</b> "
+                      f"(streak {st_l['streak']}). Banking is always allowed.")
             else:
                 bk = _wc_bankroll()
                 _tg_send_message(token, chat_id,
                     f"❌ <b>Bet lost</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
                     f"\n{b['match']} finished {h}-{a}"
-                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else ""))
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else "")
+                    + "\n🪜 Ladder reset — next bet sizes from the floor again.")
         if changed:
             _wc_json_save(WC_MYBETS_JSON, bets)
     except Exception as e:  # noqa: BLE001 — settling must never kill the loop
@@ -2709,6 +2713,28 @@ def _wc_parse_bet_text(text: str, pend: dict) -> tuple[float | None, float | Non
     return stake, odds, words
 
 
+WC_LADDER_STATE_JSON = PROJECT_ROOT / "data" / "worldcup" / "ladder_state.json"
+
+
+def _wc_ladder_state() -> dict:
+    return _wc_json_load(WC_LADDER_STATE_JSON, {"rung": None, "streak": 0})
+
+
+def _wc_ladder_on_settle(bet: dict, won: bool) -> dict:
+    """Persist the ladder across bets: a WIN makes the next rung = this bet's
+    full return (the ladder rule); a LOSS resets — rebuild from the floor."""
+    st = _wc_ladder_state()
+    if won:
+        st["rung"] = round(bet["stake"] * bet["odds"], 2)
+        st["streak"] = int(st.get("streak", 0)) + 1
+    else:
+        st["rung"] = None
+        st["streak"] = 0
+    st["updated_at"] = datetime.now(UTC).isoformat()
+    _wc_json_save(WC_LADDER_STATE_JSON, st)
+    return st
+
+
 def _wc_pred_for_match(match_number) -> dict | None:
     import json as _json
     try:
@@ -2761,9 +2787,22 @@ def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None,
     bal = bk.get("balance")
     if not bal:
         return None, "Set your balance first: /balance 128.56 — then I can size bets."
-    rung = max(5.0, round(bal * WC_RUNG_FRACTION))
-    lines = [f"💡 Suggested stake: <b>€{rung:.0f}</b> (ladder rung — "
-             f"{WC_RUNG_FRACTION:.0%} of €{bal:.2f}, floor €{bal - rung:.2f} stays)"]
+    st = _wc_ladder_state()
+    if st.get("streak", 0) >= 1 and st.get("rung"):
+        # Ladder memory: the rung is what the last win returned. Win big by
+        # letting it ride — but never suggest more than the account holds.
+        nominal = float(st["rung"])
+        rung = min(nominal, bal)
+        surv = 0.6 ** (st["streak"] + 1)  # rough: rungs run ~55-65% legs
+        cap = (f" (your last win returned €{nominal:.2f}; account holds €{bal:.2f})"
+               if rung < nominal else " — your last win's full return")
+        lines = [f"🪜 <b>Ladder rung {st['streak'] + 1}</b> — bet <b>€{rung:.2f}</b>{cap}. "
+                 f"Streak {st['streak']}; roughly {surv:.0%} of ladders survive "
+                 f"this deep — banking is always allowed."]
+    else:
+        rung = max(5.0, round(bal * WC_RUNG_FRACTION))
+        lines = [f"💡 Suggested stake: <b>€{rung:.0f}</b> (base rung — "
+                 f"{WC_RUNG_FRACTION:.0%} of €{bal:.2f}, floor €{bal - rung:.2f} stays)"]
     if prob:
         fair = 1.0 / prob
         b = odds - 1.0
@@ -3497,8 +3536,11 @@ def run_bot():
                         if arg == "won":
                             b["return"] = round(b["stake"] * b["odds"], 2)
                             _wc_bankroll_apply(b["return"], f"bet #{b['id']} WON (manual)")
+                            _wc_ladder_on_settle(b, True)
                         elif arg == "void":
                             _wc_bankroll_apply(b["stake"], f"bet #{b['id']} void")
+                        else:
+                            _wc_ladder_on_settle(b, False)
                         _wc_json_save(WC_MYBETS_JSON, bets)
                         bk = _wc_bankroll()
                         response_text = (f"{'✅' if arg == 'won' else '⚪' if arg == 'void' else '❌'} "

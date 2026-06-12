@@ -78,6 +78,33 @@ class TestLenientBetParse:
         assert "Canada winning" in words
 
 
+class TestLadderMemory:
+    """The ladder remembers: wins roll the rung forward, losses reset."""
+
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path, monkeypatch):
+        import scripts.pipeline.telegram_bot as tb
+        monkeypatch.setattr(tb, "WC_LADDER_STATE_JSON", tmp_path / "ladder.json")
+        self.tb = tb
+
+    def test_win_sets_next_rung_to_return(self):
+        st = self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
+        assert st["rung"] == pytest.approx(108.0)
+        assert st["streak"] == 1
+
+    def test_consecutive_wins_compound(self):
+        self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
+        st = self.tb._wc_ladder_on_settle({"stake": 108.0, "odds": 1.50}, True)
+        assert st["rung"] == pytest.approx(162.0)
+        assert st["streak"] == 2
+
+    def test_loss_resets(self):
+        self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
+        st = self.tb._wc_ladder_on_settle({"stake": 108.0, "odds": 1.50}, False)
+        assert st["rung"] is None
+        assert st["streak"] == 0
+
+
 STAKE_RE = r"^(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$"
 
 
