@@ -2496,7 +2496,7 @@ def _release_lock():
 WC_ALERT_STATE = PROJECT_ROOT / "data" / "worldcup" / "prematch_alerts_sent.json"
 WC_ALERT_WINDOW_MIN = (0, 150)        # consider fixtures 0–150 min from kickoff
 WC_ALERT_LAST_CALL_MIN = 25           # ≤ this: send with whatever we have
-WC_REFRESH_WAIT_MAX_S = 12 * 60       # give a spawned refresh this long to land
+WC_REFRESH_WAIT_MAX_S = 12 * 60       # re-pull cadence while XIs unconfirmed
 _WC_ALERT_LAST_CHECK = {"t": 0.0}
 _WC_PREDICTIONS_JSON = PROJECT_ROOT / "data" / "worldcup" / "predictions.json"
 
@@ -2851,15 +2851,19 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                 preds_mtime = 0.0
             refresh_at = st.get("refresh_at", 0.0)
             fresh = refresh_at and preds_mtime > refresh_at
-            waited_out = refresh_at and (time.time() - refresh_at) > WC_REFRESH_WAIT_MAX_S
             last_call = mins <= WC_ALERT_LAST_CALL_MIN
 
-            ready = (confirmed and fresh) or waited_out or last_call
+            # Send ONLY on confirmed lineups + pipeline rebuilt after the spawn
+            # that confirmed them — or at last call (a ban never silences a
+            # match, but it also never tricks us into an early unconfirmed
+            # send: Sofascore publishes XIs ~T-60, so we keep refreshing).
+            ready = (confirmed and fresh) or last_call
             if not ready:
-                if not refresh_at and (confirmed or mins <= 90):
-                    # lineups just confirmed, or close enough that they should
-                    # exist upstream: pull the whole pipeline once, then send
-                    # on a later tick from the regenerated artifacts.
+                refresh_stale = (not refresh_at
+                                 or time.time() - refresh_at > WC_REFRESH_WAIT_MAX_S)
+                if refresh_stale and mins <= 90:
+                    # pull the whole pipeline (lineups → availability →
+                    # predictions); re-pulls every ~12 min until XIs confirm.
                     _wc_spawn_refresh(sent)
                     st["refresh_at"] = time.time()
                     sent[mn] = st
