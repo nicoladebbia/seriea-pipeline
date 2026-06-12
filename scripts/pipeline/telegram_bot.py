@@ -2056,6 +2056,36 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     answer_text = ""
     show_alert = False
 
+    if data.startswith("wcbeto:"):
+        # One-tap from an odds-sheet scan: leg AND price already known —
+        # jump straight to the stake calculation. Verbatim send, never Claude.
+        payload = data[len("wcbeto:"):]
+        mn, key, odds_s = payload.split("|", 2)
+        odds = float(odds_s)
+        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id},
+                    timeout=5)
+        p = _wc_pred_for_match(mn)
+        label, prob = key, None
+        if p and key.startswith("CS:"):
+            _, sh, sa = key.split(":")
+            lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+            prob = _wc_grid(lh, la).get((int(sh), int(sa))) if lh and la else None
+            label = f"Exact score {sh}-{sa}"
+        elif p:
+            for pr, lbl, k in _wc_ladder_legs(p):
+                if k == key:
+                    label, prob = lbl, pr
+                    break
+        pend = {"match_number": int(mn), "leg_key": key, "label": label,
+                "prob": prob, "odds": odds,
+                "match": f"{p.get('home_team')} vs {p.get('away_team')}" if p else f"match {mn}"}
+        suggested, msg = _wc_stake_suggestion(odds, prob)
+        pend["suggested"] = suggested
+        _WC_PENDING_BET[chat_id] = pend
+        _tg_send_message(token, chat_id,
+                         f"🎫 <b>{label}</b> @ {odds} ({pend['match']})\n{msg}")
+        return None
+
     if data.startswith("wcbet:"):
         # Money flow: send VERBATIM and return None — a returned string gets
         # fed to Claude as a user message (the analyze-button pattern) and
@@ -2653,7 +2683,14 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
             if not score:
                 continue
             h, a = score
-            won = WC_LEG_EVAL[b["leg_key"]](h, a)
+            key = b["leg_key"]
+            if key.startswith("CS:"):
+                _, sh, sa = key.split(":")
+                won = (h == int(sh) and a == int(sa))
+            elif key in WC_LEG_EVAL:
+                won = WC_LEG_EVAL[key](h, a)
+            else:
+                continue  # unknown key — leave open for manual /settle
             b["status"] = "won" if won else "lost"
             b["settled_at"] = datetime.now(UTC).isoformat()
             b["score"] = f"{h}-{a}"
@@ -2851,6 +2888,119 @@ def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None,
                 f"Send a stake anyway to override, or /cancel.")
     lines.append("Reply <b>ok</b> to log the suggested stake, or send your own number.")
     return rung, "\n".join(lines)
+
+
+# ── odds-sheet scanner: paste a menu of prices, get the EV ranking ───────────
+
+def _wc_match_from_text(text: str, require_mention: bool = False) -> dict | None:
+    """Resolve which upcoming fixture (next 48h) a message refers to, by team
+    mentions; fallback = the next kickoff (sheet senders often omit the team)."""
+    import json as _json
+    w = f" {text.lower()} "
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+    except (OSError, ValueError):
+        return None
+    now = datetime.now(UTC)
+    best, soonest = None, None
+    for p in doc.get("predictions", []):
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (-3 <= (ko - now).total_seconds() / 3600 <= 48):
+            continue
+        if soonest is None or ko < soonest[0]:
+            soonest = (ko, p)
+        hits = sum(1 for team in (p.get("home_team", ""), p.get("away_team", ""))
+                   for tok in team.lower().split() if len(tok) > 3 and tok in w)
+        if hits and (best is None or hits > best[0]):
+            best = (hits, p)
+    if best:
+        return best[1]
+    if require_mention:
+        return None
+    return soonest[1] if soonest else None
+
+
+def _wc_resolve_market(p: dict, phrase: str) -> tuple[str, str, float] | None:
+    """Segment-level market resolution — bare 1/X/2 are safe here because the
+    phrase is already isolated from the odds number."""
+    w = f" {phrase.lower().strip()} "
+    cs = re.search(r"(\d)\s*[-:]\s*(\d)", w)
+    if cs:
+        h, a = int(cs.group(1)), int(cs.group(2))
+        lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+        if lh and la:
+            prob = _wc_grid(lh, la).get((h, a), 0.0)
+            return f"CS:{h}:{a}", f"Exact score {h}-{a}", prob
+        return None
+    guess = _wc_guess_leg(p, w)
+    if guess:
+        return guess
+    sym = re.search(r"(?<![a-z0-9])(1x|x2|12|[1x2])(?![a-z0-9.,])", w)
+    if sym:
+        key = {"1x": "1X", "x2": "X2", "12": "12",
+               "1": "1", "x": "X", "2": "2"}[sym.group(1)]
+        for prob, label, k in _wc_ladder_legs(p):
+            if k == key:
+                return key, label, prob
+    return None
+
+
+def _wc_parse_odds_sheet(p: dict, text: str) -> list[tuple[str, str, float, float]]:
+    """'X2 at 1.50, 1 at 2.00, 2 at 3.00' → [(key, label, our_prob, odds)].
+    One segment = one market + one price; the LAST plausible decimal in the
+    segment is the price, everything before it is the market phrase."""
+    out, seen = [], set()
+    for seg in re.split(r"[,\n;]+|\band\b", text, flags=re.IGNORECASE):
+        nums = list(re.finditer(r"(?<![A-Za-z])\d+(?:[.,]\d+)?", seg))
+        if not nums:
+            continue
+        m = nums[-1]
+        odds = float(m.group(0).replace(",", "."))
+        if not (1.01 <= odds <= 100):
+            continue
+        resolved = _wc_resolve_market(p, seg[:m.start()])
+        if resolved and resolved[0] not in seen:
+            seen.add(resolved[0])
+            out.append((*resolved, odds))
+    return out
+
+
+def _wc_scan_odds_sheet(p: dict, pairs: list) -> tuple[str, dict | None]:
+    """Rank a pasted odds menu by EV against our model → (message, keyboard).
+    Keyboard offers one-tap logging for the +EV legs only."""
+    bal = _wc_bankroll().get("balance")
+    rows, buttons = [], []
+    ranked = sorted(pairs, key=lambda t: t[2] * t[3], reverse=True)
+    for key, label, prob, odds in ranked:
+        if prob <= 0:
+            continue
+        fair = 1.0 / prob
+        ev = prob * odds - 1.0
+        if ev > 0:
+            b = odds - 1.0
+            kelly = max(0.0, (prob * b - (1 - prob)) / b)
+            kelly_txt = f" · Kelly €{kelly * bal:.0f}" if bal else ""
+            rows.append(f"✅ <b>{label}</b> @ {odds} — our {prob:.0%} "
+                        f"(fair {fair:.2f}) → <b>EV {ev:+.0%}</b>{kelly_txt}")
+            if len(buttons) < 3:
+                buttons.append([_button(f"🎫 {label} @ {odds}",
+                                        f"wcbeto:{p.get('match_number')}|{key}|{odds}")])
+        else:
+            rows.append(f"❌ {label} @ {odds} — our {prob:.0%} "
+                        f"(fair {fair:.2f}) → EV {ev:+.0%}")
+    head = (f"🧮 <b>{p.get('home_team')} vs {p.get('away_team')}</b> — "
+            f"your prices vs our model\n\n")
+    if buttons:
+        best = ranked[0]
+        tail = (f"\n👉 <b>Best of this menu: {best[1]} @ {best[3]}</b> — "
+                f"tap to log it and I'll size the stake.")
+    else:
+        tail = ("\n👉 <b>Nothing here beats our fair lines — skip this menu.</b> "
+                "The book is charging more than every leg is worth.")
+    return head + "\n".join(rows) + tail, (_inline_keyboard(buttons) if buttons else None)
 
 
 def _wc_spontaneous_bet(text: str) -> dict | None:
@@ -3481,6 +3631,15 @@ def run_bot():
                 # deterministically and open the calculation flow — the chat
                 # AI never sees money intent.
                 if not cmd and chat_id not in _WC_PENDING_BET:
+                    # Pasted odds menu ("X2 at 1.5, 1 at 2, 2 at 3") → rank
+                    # the whole sheet by EV and offer one-tap logging.
+                    p_sheet = _wc_match_from_text(text)
+                    pairs = _wc_parse_odds_sheet(p_sheet, text) if p_sheet else []
+                    if len(pairs) >= 2:
+                        sheet_msg, sheet_kb = _wc_scan_odds_sheet(p_sheet, pairs)
+                        _tg_send_message(token, chat_id, sheet_msg,
+                                         reply_markup=sheet_kb)
+                        continue
                     spont = _wc_spontaneous_bet(text)
                     if spont:
                         _WC_PENDING_BET[chat_id] = spont

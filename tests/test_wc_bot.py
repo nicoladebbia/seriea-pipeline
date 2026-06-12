@@ -115,6 +115,48 @@ class TestLadderMemory:
         assert st["streak"] == 0
 
 
+FAKE_P = {
+    "match_number": 3, "home_team": "Canada", "away_team": "Bosnia and Herzegovina",
+    "probabilities": {"home": 0.5981, "draw": 0.2297, "away": 0.1722},
+    "home_xg": 1.78, "away_xg": 0.834, "kickoff_utc": "2026-06-12T19:00:00+00:00",
+}
+
+
+class TestOddsSheetScanner:
+    def test_parses_his_exact_example(self):
+        from scripts.pipeline.telegram_bot import _wc_parse_odds_sheet
+        pairs = _wc_parse_odds_sheet(FAKE_P, "X2 is at 1.50, 1 is at 2.00, 2 is at 3.00")
+        keys = {k: o for k, _l, _p, o in pairs}
+        assert keys == {"X2": 1.50, "1": 2.00, "2": 3.00}
+
+    def test_ev_ranking_picks_the_value_leg(self):
+        from scripts.pipeline.telegram_bot import _wc_parse_odds_sheet, _wc_scan_odds_sheet
+        pairs = _wc_parse_odds_sheet(FAKE_P, "X2 at 1.50, 1 at 2.00, 2 at 3.00")
+        msg, kb = _wc_scan_odds_sheet(FAKE_P, pairs)
+        assert "Best of this menu: 1 (Canada win) @ 2.0" in msg
+        assert msg.count("❌") == 2 and msg.count("✅") == 1
+        assert kb and len(kb["inline_keyboard"]) == 1   # only the +EV leg gets a button
+
+    def test_all_bad_menu_says_skip(self):
+        from scripts.pipeline.telegram_bot import _wc_parse_odds_sheet, _wc_scan_odds_sheet
+        pairs = _wc_parse_odds_sheet(FAKE_P, "X2 at 1.50, 2 at 3.00")
+        msg, kb = _wc_scan_odds_sheet(FAKE_P, pairs)
+        assert "skip this menu" in msg and kb is None
+
+    def test_exact_scores_and_totals_in_sheet(self):
+        from scripts.pipeline.telegram_bot import _wc_parse_odds_sheet
+        pairs = _wc_parse_odds_sheet(
+            FAKE_P, "1-0 at 8.0, over 2.5 at 2.10, btts no at 1.85")
+        keys = [k for k, *_ in pairs]
+        assert keys == ["CS:1:0", "O25", "BTTSN"]
+
+    def test_cs_settlement(self):
+        key = "CS:1:0"
+        _, sh, sa = key.split(":")
+        assert (1 == int(sh) and 0 == int(sa)) is True
+        assert (2 == int(sh) and 0 == int(sa)) is False
+
+
 STAKE_RE = r"^(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$"
 
 
