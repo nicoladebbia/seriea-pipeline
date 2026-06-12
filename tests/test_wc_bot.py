@@ -77,6 +77,16 @@ class TestLenientBetParse:
         _s, _o, words = _wc_parse_bet_text("I bet Canada winning at 1.80", {})
         assert "Canada winning" in words
 
+    def test_market_symbol_digits_are_not_money(self):
+        """'X2 ... odds are 1.95' — the 2 in X2 must not become a stake."""
+        s, o, _w = _wc_parse_bet_text(
+            "I want to bet on X2 in Canada vs bosnia, and the odds are 1.95", {})
+        assert s is None and o == 1.95
+
+    def test_over_line_digits_are_not_money(self):
+        s, o, _w = _wc_parse_bet_text("bet over 2.5 at 2.10", {})
+        assert s is None and o == 2.10
+
 
 class TestLadderMemory:
     """The ladder remembers: wins roll the rung forward, losses reset."""

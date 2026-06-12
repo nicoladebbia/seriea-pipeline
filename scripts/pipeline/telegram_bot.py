@@ -2716,9 +2716,14 @@ def _wc_parse_bet_text(text: str, pend: dict) -> tuple[float | None, float | Non
     number ≥ 21). One number = odds if it has decimals in 1.01–20 (or stake
     is already known), else stake.
     """
-    nums = [float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text)]
+    # Market tokens first ("X2", "over 2.5") — their digits are NOT money.
+    cleaned = re.sub(r"(?i)\b(over|under)\s*\d[.,]5\b", " ", text)
+    cleaned = re.sub(r"(?i)(?<![a-z0-9])(1x|x2|12)(?![a-z0-9.,])", " ", cleaned)
+    nums = [float(n.replace(",", ".")) for n in
+            re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?", cleaned)]
     words = re.sub(r"\d+(?:[.,]\d+)?", " ", text)
-    words = re.sub(r"(?i)\b(at|bet|i|on|the|per|euro|eur)\b|[@×x€$]", " ", words)
+    words = re.sub(r"(?i)\b(at|bet|i|on|the|per|euro|eur|want|to|and|odds|are|is|in|vs)\b|[@×€$]",
+                   " ", words)
     words = " ".join(words.split()).strip(" .,!?")
     stake, odds = pend.get("stake"), pend.get("odds")
     if len(nums) >= 2:
@@ -2781,7 +2786,10 @@ def _wc_guess_leg(p: dict, words: str) -> tuple[str, str, float] | None:
     key = None
     over = re.search(r"over\s*(\d[.,]5)", w)
     under = re.search(r"under\s*(\d[.,]5)", w)
-    if over:
+    sym = re.search(r"(?<![a-z0-9])(1x|x2|12)(?![a-z0-9.,])", w)
+    if sym:
+        key = {"1x": "1X", "x2": "X2", "12": "12"}[sym.group(1)]
+    elif over:
         key = {"1.5": "O15", "2.5": "O25"}.get(over.group(1).replace(",", "."))
     elif under:
         key = {"2.5": "U25", "3.5": "U35"}.get(under.group(1).replace(",", "."))
@@ -2834,10 +2842,54 @@ def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None,
             lines.append(f"📐 Our {prob:.0%} → fair {fair:.2f} → at {odds} this is "
                          f"<b>+EV ✅</b> · Kelly-optimal would be €{kelly * bal:.0f}")
         else:
-            lines.append(f"📐 Our {prob:.0%} → fair {fair:.2f} → at {odds} this is "
-                         f"<b>below our fair price ⚠️</b> (model says skip)")
+            # Below our fair price: no stake suggestion AT ALL — the model
+            # says skip, and a suggested number reads as endorsement.
+            return None, (
+                f"📐 Our {prob:.0%} → fair <b>{fair:.2f}</b> — at {odds} this is "
+                f"<b>below our fair price ⚠️</b>. The model says SKIP: you'd "
+                f"need ≥ {fair:.2f} for this leg to be value.\n"
+                f"Send a stake anyway to override, or /cancel.")
     lines.append("Reply <b>ok</b> to log the suggested stake, or send your own number.")
     return rung, "\n".join(lines)
+
+
+def _wc_spontaneous_bet(text: str) -> dict | None:
+    """Detect 'I want to bet on X2 in Canada vs Bosnia, odds are 1.95' typed
+    out of nowhere — find the fixture (next 48h) by team mentions, resolve
+    the leg, and return a pending-bet dict. None = not a bet statement.
+    Deterministic on purpose: money intent must NEVER reach the chat AI,
+    which paraphrases or refuses (observed live 2026-06-12, twice)."""
+    w = f" {text.lower()} "
+    if not re.search(r"\b(bet|betting|punto|scommetto|gioco)\b", w):
+        return None
+    import json as _json
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+    except (OSError, ValueError):
+        return None
+    now = datetime.now(UTC)
+    best = None
+    for p in doc.get("predictions", []):
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (-3 <= (ko - now).total_seconds() / 3600 <= 48):
+            continue
+        hits = sum(1 for team in (p.get("home_team", ""), p.get("away_team", ""))
+                   for tok in team.lower().split() if len(tok) > 3 and tok in w)
+        if hits and (best is None or hits > best[0]):
+            best = (hits, p)
+    if not best:
+        return None
+    p = best[1]
+    pend = {"match_number": p.get("match_number"),
+            "match": f"{p.get('home_team')} vs {p.get('away_team')}",
+            "leg_key": None, "label": None}
+    guess = _wc_guess_leg(p, text)
+    if guess:
+        pend["leg_key"], pend["label"], pend["prob"] = guess
+    return pend
 
 
 def _wc_bet_keyboard(p: dict) -> dict | None:
@@ -3425,6 +3477,19 @@ def run_bot():
                 # text). While a bet is pending this flow OWNS the chat —
                 # nothing falls through to Claude (which paraphrases, refuses,
                 # or claims SA/EPL-only — observed live 2026-06-12).
+                # Spontaneous bet statement with no pending flow: detect it
+                # deterministically and open the calculation flow — the chat
+                # AI never sees money intent.
+                if not cmd and chat_id not in _WC_PENDING_BET:
+                    spont = _wc_spontaneous_bet(text)
+                    if spont:
+                        _WC_PENDING_BET[chat_id] = spont
+                        if spont.get("label"):
+                            _tg_send_message(token, chat_id,
+                                f"🎫 <b>{spont['label']}</b> ({spont['match']}) — got it.")
+                        # fall through to the pending handler below, which
+                        # parses odds/stake from THIS same message
+
                 if not cmd and chat_id in _WC_PENDING_BET:
                     if text.strip().lower() in ("/cancel", "cancel", "annulla"):
                         _WC_PENDING_BET.pop(chat_id, None)
