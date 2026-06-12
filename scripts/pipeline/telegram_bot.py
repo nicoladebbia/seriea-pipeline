@@ -2704,7 +2704,7 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
                 _tg_send_message(token, chat_id,
                     f"✅ <b>Bet WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
                     f"\n{b['match']} finished {h}-{a} → return <b>€{ret:.2f}</b>"
-                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else "")
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}" if bk.get("balance") is not None else "")
                     + f"\n🪜 Ladder continues — next rung: <b>€{st_l['rung']:.2f}</b> "
                       f"(streak {st_l['streak']}). Banking is always allowed.")
             else:
@@ -2712,7 +2712,7 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
                 _tg_send_message(token, chat_id,
                     f"❌ <b>Bet lost</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
                     f"\n{b['match']} finished {h}-{a}"
-                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else "")
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}" if bk.get("balance") is not None else "")
                     + "\n🪜 Ladder reset — next bet sizes from the floor again.")
         if changed:
             _wc_json_save(WC_MYBETS_JSON, bets)
@@ -2720,13 +2720,30 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
         log.warning("my-bets settle check failed: %s", e)
 
 
+def _wc_net_line() -> str:
+    """Real P/L vs deposits: balance + money riding − total deposited."""
+    bk = _wc_bankroll()
+    bal, dep = bk.get("balance"), bk.get("deposited")
+    if bal is None or not dep:
+        return ""
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    riding = sum(b["stake"] for b in bets if b.get("status") == "open")
+    net = bal - dep
+    riding_txt = f" · €{riding:.0f} riding" if riding else ""
+    sign = "🟢 up" if net > 0 else ("🔴 down" if net < 0 else "⚪ even")
+    return f"deposited €{dep:.0f}{riding_txt} → {sign} <b>€{abs(net):.2f}</b> real"
+
+
 def _wc_money_footer() -> str:
-    """Personalized footer: balance + how the last settled bet went."""
+    """Personalized footer: balance + real P/L + how the last bet went."""
     bk = _wc_bankroll()
     bets = _wc_json_load(WC_MYBETS_JSON, [])
     parts = []
     if bk.get("balance") is not None:
         parts.append(f"💰 Balance <b>€{bk['balance']:.2f}</b>")
+        nl = _wc_net_line()
+        if nl:
+            parts.append(nl)
     else:
         parts.append("💰 Set your balance: /balance 128.56")
     settled = [b for b in bets if b.get("status") in ("won", "lost")]
@@ -3750,6 +3767,22 @@ def run_bot():
                     _tg_send_typing(token, chat_id)
                     _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
                     response_text = _build_daily_ladder(tier=_tier)
+                elif cmd == "/deposit":
+                    arg = text.replace("/deposit", "").strip().replace(",", ".")
+                    try:
+                        amt = float(arg)
+                        bk = _wc_bankroll()
+                        bk["deposited"] = round(float(bk.get("deposited") or 0) + amt, 2)
+                        bk["balance"] = round(float(bk.get("balance") or 0) + amt, 2)
+                        bk["history"] = (bk.get("history") or [])[-49:] + [
+                            {"at": datetime.now(UTC).isoformat(), "delta": amt,
+                             "note": "deposit"}]
+                        _wc_json_save(WC_BANKROLL_JSON, bk)
+                        response_text = (f"🏦 Deposit €{amt:.2f} recorded. "
+                                         f"Balance €{bk['balance']:.2f} · "
+                                         f"total deposited €{bk['deposited']:.2f}.")
+                    except ValueError:
+                        response_text = "Usage: <code>/deposit 20</code>"
                 elif cmd == "/cancel":
                     if _WC_PENDING_BET.pop(chat_id, None):
                         response_text = "🚫 Bet logging cancelled."
