@@ -430,16 +430,27 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "📰 Digest": "/digest",
     "🌍 World Cup": "/wc",
     "🪜 Ladder": "/ladder",
+    "🎲 Risk": "/ladder risk",
     "🎫 My bets": "/mybets",
+    "💰 Balance": "/balance",
 }
 
 
 def _reply_keyboard() -> dict:
-    """Remove the old persistent bottom grid (Nicola 2026-06-12: it ate half
-    the screen and was Serie A-era). Commands live in the LEFT menu button
-    now (setMyCommands) — hidden until tapped. Attaching this remove-markup
-    to outgoing messages clears the grid from existing chats too."""
-    return {"remove_keyboard": True}
+    """WC-only button grid, COLLAPSED by default (Nicola 2026-06-12: the old
+    persistent 9-button grid ate half the screen; full removal killed the
+    toggle too). one_time_keyboard + not persistent = the grid hides after
+    use and lives behind the keyboard toggle icon in the input bar — pops
+    up only when summoned. Slash commands also sit in the left ☰ menu."""
+    return {
+        "keyboard": [
+            [{"text": "🌍 World Cup"}, {"text": "🪜 Ladder"}, {"text": "🎲 Risk"}],
+            [{"text": "🎫 My bets"}, {"text": "💰 Balance"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+        "is_persistent": False,
+    }
 
 
 # WC-season command menu — populates Telegram's ☰ menu button at input-left.
