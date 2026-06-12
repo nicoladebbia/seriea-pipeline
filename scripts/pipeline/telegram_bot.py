@@ -2061,22 +2061,18 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             return None
         legs = {}
         match_name = f"match {mn}"
-        try:
-            import json as _json
-            doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
-            p = next(x for x in doc.get("predictions", [])
-                     if str(x.get("match_number")) == mn)
-            legs = {k: lbl for _pr, lbl, k in _wc_ladder_legs(p)}
+        p = _wc_pred_for_match(mn)
+        if p:
+            legs = {k: (lbl, pr) for pr, lbl, k in _wc_ladder_legs(p)}
             match_name = f"{p.get('home_team')} vs {p.get('away_team')}"
-        except (OSError, ValueError, StopIteration):
-            pass
-        label = legs.get(key, key)
+        label, prob = legs.get(key, (key, None))
         _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": key,
-                                    "label": label, "match": match_name}
+                                    "label": label, "match": match_name,
+                                    "prob": prob}
         _tg_send_message(token, chat_id,
             f"🎫 Logging <b>{label}</b> ({match_name}).\n"
-            f"Reply with stake and the odds SISAL gave you: "
-            f"<code>60 @ 1.80</code> (or <code>60 at 1.80</code> · /cancel)")
+            f"Send the SISAL odds (e.g. <code>1.80</code>) and I'll calculate "
+            f"the stake — or stake and odds together: <code>60 @ 1.80</code> (/cancel)")
         return None
 
     if data.startswith("analyze:"):
@@ -2713,6 +2709,75 @@ def _wc_parse_bet_text(text: str, pend: dict) -> tuple[float | None, float | Non
     return stake, odds, words
 
 
+def _wc_pred_for_match(match_number) -> dict | None:
+    import json as _json
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+        return next(x for x in doc.get("predictions", [])
+                    if str(x.get("match_number")) == str(match_number))
+    except (OSError, ValueError, StopIteration):
+        return None
+
+
+def _wc_guess_leg(p: dict, words: str) -> tuple[str, str, float] | None:
+    """Map free text like 'Canada winning' / 'over 2.5' / 'no goal' to a
+    structured leg of THIS match → (key, label, our_prob). None = no guess."""
+    w = f" {words.lower()} "
+    home = (p.get("home_team") or "").lower()
+    away = (p.get("away_team") or "").lower()
+
+    def team_in(t: str) -> bool:
+        return bool(t) and any(tok in w for tok in t.split() if len(tok) > 3)
+
+    key = None
+    over = re.search(r"over\s*(\d[.,]5)", w)
+    under = re.search(r"under\s*(\d[.,]5)", w)
+    if over:
+        key = {"1.5": "O15", "2.5": "O25"}.get(over.group(1).replace(",", "."))
+    elif under:
+        key = {"2.5": "U25", "3.5": "U35"}.get(under.group(1).replace(",", "."))
+    elif "no goal" in w or "nogoal" in w or "btts no" in w:
+        key = "BTTSN"
+    elif "btts" in w or "goal goal" in w:
+        key = "BTTSY"
+    elif "draw" in w or "pareggio" in w:
+        key = "X"
+    elif team_in(home):
+        key = "2" if ("lose" in w or "perde" in w) else "1"
+    elif team_in(away):
+        key = "1" if ("lose" in w or "perde" in w) else "2"
+    if not key:
+        return None
+    for prob, label, k in _wc_ladder_legs(p):
+        if k == key:
+            return key, label, prob
+    return None
+
+
+def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None, str]:
+    """(suggested_stake, message) — ladder rung from the REAL balance plus a
+    Kelly line when we know our probability for the leg."""
+    bk = _wc_bankroll()
+    bal = bk.get("balance")
+    if not bal:
+        return None, "Set your balance first: /balance 128.56 — then I can size bets."
+    rung = max(5.0, round(bal * WC_RUNG_FRACTION))
+    lines = [f"💡 Suggested stake: <b>€{rung:.0f}</b> (ladder rung — "
+             f"{WC_RUNG_FRACTION:.0%} of €{bal:.2f}, floor €{bal - rung:.2f} stays)"]
+    if prob:
+        fair = 1.0 / prob
+        b = odds - 1.0
+        kelly = max(0.0, (prob * b - (1 - prob)) / b) if b > 0 else 0.0
+        if odds > fair:
+            lines.append(f"📐 Our {prob:.0%} → fair {fair:.2f} → at {odds} this is "
+                         f"<b>+EV ✅</b> · Kelly-optimal would be €{kelly * bal:.0f}")
+        else:
+            lines.append(f"📐 Our {prob:.0%} → fair {fair:.2f} → at {odds} this is "
+                         f"<b>below our fair price ⚠️</b> (model says skip)")
+    lines.append("Reply <b>ok</b> to log the suggested stake, or send your own number.")
+    return rung, "\n".join(lines)
+
+
 def _wc_bet_keyboard(p: dict) -> dict | None:
     """Big one-per-row buttons for logging what Nicola actually bet."""
     legs = _wc_ladder_legs(p)
@@ -3306,9 +3371,20 @@ def run_bot():
                         _tg_send_message(token, chat_id, "🚫 Bet logging cancelled.")
                         continue
                     pend = _WC_PENDING_BET[chat_id]
-                    stake, odds, words = _wc_parse_bet_text(text, pend)
+                    # "ok" accepts the suggested (calculated) stake
+                    if (text.strip().lower() in ("ok", "okay", "yes", "si", "sì", "va bene", "👍")
+                            and pend.get("odds") and pend.get("suggested")):
+                        stake, odds, words = pend["suggested"], pend["odds"], ""
+                    else:
+                        stake, odds, words = _wc_parse_bet_text(text, pend)
                     if not pend.get("label") and len(words) > 2:
                         pend["label"] = words            # "Canada winning" etc.
+                        # try to resolve free text to a structured leg of this
+                        # match → enables auto-settle + the EV check
+                        mp = _wc_pred_for_match(pend.get("match_number"))
+                        guess = _wc_guess_leg(mp, words) if mp else None
+                        if guess:
+                            pend["leg_key"], pend["label"], pend["prob"] = guess
                     if stake and odds and odds >= 1.01:
                         _WC_PENDING_BET.pop(chat_id, None)
                         label = pend.get("label") or "custom bet"
@@ -3320,18 +3396,29 @@ def run_bot():
                                    if bk.get("balance") is not None else "")
                         auto = ("settles automatically at the final whistle"
                                 if bet["leg_key"] else "free-text — settle with /settle won|lost")
+                        ev_line = ""
+                        prob = pend.get("prob")
+                        if prob:
+                            fair = 1.0 / prob
+                            ev_line = (f"\n📐 Our {prob:.0%} → fair {fair:.2f} → "
+                                       + ("<b>+EV ✅</b>" if odds > fair
+                                          else "<b>below fair ⚠️</b>"))
                         _tg_send_message(token, chat_id,
                             f"🎫 Logged: <b>{label}</b> @ {odds} × €{stake:.2f} "
-                            f"(returns €{stake * odds:.2f})\n{auto}{bal_txt}")
+                            f"(returns €{stake * odds:.2f}){ev_line}\n{auto}{bal_txt}")
                     else:
                         pend["stake"], pend["odds"] = stake, odds
                         if odds and not stake:
-                            ask = f"Got it — odds <b>{odds}</b>. How much did you stake? (just the number)"
+                            # THE calculation he asked for: size it from the
+                            # real balance + judge the price when leg is known
+                            suggested, ask = _wc_stake_suggestion(odds, pend.get("prob"))
+                            pend["suggested"] = suggested
                         elif stake and not odds:
                             ask = f"Got it — €<b>{stake:.0f}</b>. At what odds? (e.g. 1.80)"
                         else:
-                            ask = ("Tell me stake and odds — <code>60 @ 1.80</code>, "
-                                   "or one at a time. (/cancel to abort)")
+                            ask = ("Tell me the bet with odds — e.g. "
+                                   "<code>Canada win at 1.80</code> — and I'll "
+                                   "calculate the stake. (/cancel to abort)")
                         _tg_send_message(token, chat_id, ask)
                     continue
 
