@@ -6,9 +6,11 @@ The traps are real — read the ⚠️ notes before acting.
 
 ## 0. Current state you're starting from (set 2026-06-11)
 
-- All launchd jobs are LOADED (the June-1 hibernation was reversed by the WC
-  reload). `wc-refresh` exits instantly outside the tournament window after
-  Jul 20 — harmless to leave loaded.
+- Only THREE jobs are loaded (2026-06-12, Nicola's request — the SA/EPL
+  pipeline was spamming parlay/digest messages off-season): `wc-refresh`,
+  `telegram-bot`, `web-dashboard`. Everything else was `launchctl unload`ed
+  with plists intact on disk → step 4's reload restores the full set.
+  `wc-refresh` exits instantly outside the tournament window after Jul 20.
 - `BETTING_DRY_RUN_FROM_MORNING=true` is ALREADY in morning+evening plists
   (file-level edit 2026-06-11) but only takes effect when launchd RE-loads
   them → step 4 makes it live.

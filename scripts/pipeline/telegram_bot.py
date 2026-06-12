@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -429,6 +430,7 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "📰 Digest": "/digest",
     "🌍 World Cup": "/wc",
     "🪜 Ladder": "/ladder",
+    "🎫 My bets": "/mybets",
 }
 
 
@@ -474,19 +476,18 @@ def _edit_message(token: str, chat_id: str, message_id: int, text: str,
 # Reuse advisor tools and system prompt from web app
 # ---------------------------------------------------------------------------
 
+# advisor.py uses load_json_safe; expose it under the legacy _load_json name
+# that telegram_bot was originally written against.
+from scripts.utils.json_utils import load_json_safe as _load_json
 from web.advisor import (
     TOOL_DEFINITIONS,
     TOOL_HANDLERS,
     _build_system_prompt,
     _get_bankroll,
-    _tool_get_value_bets,
     _tool_get_bankroll_status,
     _tool_get_live_matches,
+    _tool_get_value_bets,
 )
-# advisor.py uses load_json_safe; expose it under the legacy _load_json name
-# that telegram_bot was originally written against.
-from scripts.utils.json_utils import load_json_safe as _load_json
-
 
 # Telegram-specific system prompt extension
 _TELEGRAM_SYSTEM_ADDON = """
@@ -878,7 +879,7 @@ def _delete_message(token: str, chat_id: str, message_id: int | None):
 
 def _handle_start() -> str:
     """Handle /start — contextual greeting showing current state."""
-    from scripts.pipeline.notify import TgMsg, _html_escape, _bankroll_in_context, _get_bankroll_context
+    from scripts.pipeline.notify import TgMsg, _bankroll_in_context, _get_bankroll_context, _html_escape
 
     br_ctx = _get_bankroll_context()
     tg = TgMsg()
@@ -1312,8 +1313,9 @@ def _handle_player_lookup(query: str) -> str:
 
         # Also search in market values for single-team players
         if not matches:
-            import pandas as pd
             from pathlib import Path as _P
+
+            import pandas as pd
             for season in ["2025_2026", "2024_2025"]:
                 mv_path = _P("data/external/transfermarkt") / f"market_values_{season}.parquet"
                 if mv_path.exists():
@@ -1415,6 +1417,7 @@ def _handle_player_lookup(query: str) -> str:
 def _get_weekly_bets() -> dict:
     """Load settled bets grouped by week."""
     from collections import defaultdict
+
     from config.settings import DATA_DIR
 
     journal_path = DATA_DIR / "betting" / "bet_journal.json"
@@ -1861,8 +1864,8 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
     /league epl     -> set filter to Premier League
     /league all     -> remove filter (show all leagues)
     """
-    from scripts.pipeline.notify import TgMsg, _html_escape
     from config.leagues import LEAGUE_REGISTRY
+    from scripts.pipeline.notify import TgMsg, _html_escape
 
     # League aliases for user-friendly input
     _ALIASES: dict[str, str] = {
@@ -2040,6 +2043,33 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     # Default: silent answer to remove loading spinner
     answer_text = ""
     show_alert = False
+
+    if data.startswith("wcbet:"):
+        _, mn, key = data.split(":", 2)
+        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id},
+                    timeout=5)
+        if key == "other":
+            _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": None,
+                                        "label": None}
+            return ("📝 Type the bet as: <code>STAKE @ ODDS description</code>\n"
+                    "e.g. <code>60 @ 1.80 Canada win</code>\n"
+                    "(free-text legs settle via /settle won|lost)")
+        legs = {}
+        try:
+            import json as _json
+            doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+            p = next(x for x in doc.get("predictions", [])
+                     if str(x.get("match_number")) == mn)
+            legs = {k: lbl for _pr, lbl, k in _wc_ladder_legs(p)}
+            match_name = f"{p.get('home_team')} vs {p.get('away_team')}"
+        except (OSError, ValueError, StopIteration):
+            match_name = f"match {mn}"
+        label = legs.get(key, key)
+        _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": key,
+                                    "label": label, "match": match_name}
+        return (f"🎫 Logging <b>{label}</b> ({match_name}).\n"
+                f"Reply with stake and the odds SISAL gave you: "
+                f"<code>60 @ 1.80</code>")
 
     if data.startswith("analyze:"):
         match_name = data[len("analyze:"):]
@@ -2484,6 +2514,181 @@ def _release_lock():
 
 
 # =============================================================================
+# WC BET TRACKER — Nicola's manual SISAL bets, logged via buttons/text,
+# auto-settled from real results, bankroll-aware (added 2026-06-12)
+# =============================================================================
+WC_MYBETS_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bets.json"
+WC_BANKROLL_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bankroll.json"
+WC_RUNG_FRACTION = 0.47          # ladder rung ≈ this share of balance, floor keeps the rest
+_WC_PENDING_BET: dict = {}       # chat_id -> {"match_number", "leg_key", "label", "match"}
+_WC_SETTLE_LAST = {"t": 0.0}
+
+# Structured legs the bot can settle ALONE from a final score (h, a).
+WC_LEG_EVAL = {
+    "1":      lambda h, a: h > a,
+    "X":      lambda h, a: h == a,
+    "2":      lambda h, a: a > h,
+    "1X":     lambda h, a: h >= a,
+    "X2":     lambda h, a: a >= h,
+    "12":     lambda h, a: h != a,
+    "O15":    lambda h, a: h + a > 1.5,
+    "U25":    lambda h, a: h + a < 2.5,
+    "O25":    lambda h, a: h + a > 2.5,
+    "U35":    lambda h, a: h + a < 3.5,
+    "BTTSY":  lambda h, a: h > 0 and a > 0,
+    "BTTSN":  lambda h, a: h == 0 or a == 0,
+    "1U35":   lambda h, a: h > a and h + a < 3.5,
+    "1O15":   lambda h, a: h > a and h + a > 1.5,
+    "2U35":   lambda h, a: a > h and h + a < 3.5,
+    "1orO25": lambda h, a: h > a or h + a > 2.5,
+}
+
+
+def _wc_json_load(path: Path, default):
+    import json as _json
+    try:
+        return _json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def _wc_json_save(path: Path, data) -> None:
+    import json as _json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(data, indent=1))
+    tmp.replace(path)
+
+
+def _wc_bankroll() -> dict:
+    return _wc_json_load(WC_BANKROLL_JSON, {"balance": None, "history": []})
+
+
+def _wc_bankroll_apply(delta: float, note: str) -> dict:
+    bk = _wc_bankroll()
+    if bk.get("balance") is None:
+        return bk
+    bk["balance"] = round(bk["balance"] + delta, 2)
+    bk["history"] = (bk.get("history") or [])[-49:] + [
+        {"at": datetime.now(UTC).isoformat(), "delta": round(delta, 2), "note": note}]
+    _wc_json_save(WC_BANKROLL_JSON, bk)
+    return bk
+
+
+def _wc_log_bet(match_number, match: str, leg_key: str | None, label: str,
+                stake: float, odds: float) -> dict:
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    bet = {
+        "id": len(bets) + 1, "match_number": match_number, "match": match,
+        "leg_key": leg_key, "label": label, "stake": round(stake, 2),
+        "odds": round(odds, 2), "placed_at": datetime.now(UTC).isoformat(),
+        "status": "open",
+    }
+    bets.append(bet)
+    _wc_json_save(WC_MYBETS_JSON, bets)
+    _wc_bankroll_apply(-stake, f"bet #{bet['id']} {label} @ {odds}")
+    return bet
+
+
+def _wc_result_for_match(match_number) -> tuple[int, int] | None:
+    """Final score for a fixture, via fixtures.json names ↔ same-night results."""
+    fx = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "fixtures.json", {})
+    fixtures = fx.get("fixtures", fx) if isinstance(fx, dict) else fx
+    home = away = None
+    for f in fixtures or []:
+        if f.get("match_number") == int(match_number):
+            home, away = f.get("home"), f.get("away")
+            break
+    if not home:
+        return None
+    res = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "sofascore_results.json", {})
+    rows = res.get("results", res) if isinstance(res, dict) else res
+    for r in rows or []:
+        if r.get("home") == home and r.get("away") == away:
+            return int(r["home_score"]), int(r["away_score"])
+        if r.get("home") == away and r.get("away") == home:   # orientation flip
+            return int(r["away_score"]), int(r["home_score"])
+    return None
+
+
+def _wc_check_my_bets(token: str, chat_id: str) -> None:
+    """Settle open structured bets against real results; message each verdict."""
+    if time.time() - _WC_SETTLE_LAST["t"] < 300:
+        return
+    _WC_SETTLE_LAST["t"] = time.time()
+    try:
+        bets = _wc_json_load(WC_MYBETS_JSON, [])
+        changed = False
+        for b in bets:
+            if b.get("status") != "open" or not b.get("leg_key"):
+                continue
+            score = _wc_result_for_match(b.get("match_number"))
+            if not score:
+                continue
+            h, a = score
+            won = WC_LEG_EVAL[b["leg_key"]](h, a)
+            b["status"] = "won" if won else "lost"
+            b["settled_at"] = datetime.now(UTC).isoformat()
+            b["score"] = f"{h}-{a}"
+            changed = True
+            if won:
+                ret = b["stake"] * b["odds"]
+                b["return"] = round(ret, 2)
+                bk = _wc_bankroll_apply(ret, f"bet #{b['id']} WON")
+                _tg_send_message(token, chat_id,
+                    f"✅ <b>Bet WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+                    f"\n{b['match']} finished {h}-{a} → return <b>€{ret:.2f}</b>"
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else ""))
+            else:
+                bk = _wc_bankroll()
+                _tg_send_message(token, chat_id,
+                    f"❌ <b>Bet lost</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+                    f"\n{b['match']} finished {h}-{a}"
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>" if bk.get("balance") is not None else ""))
+        if changed:
+            _wc_json_save(WC_MYBETS_JSON, bets)
+    except Exception as e:  # noqa: BLE001 — settling must never kill the loop
+        log.warning("my-bets settle check failed: %s", e)
+
+
+def _wc_money_footer() -> str:
+    """Personalized footer: balance + how the last settled bet went."""
+    bk = _wc_bankroll()
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    parts = []
+    if bk.get("balance") is not None:
+        parts.append(f"💰 Balance <b>€{bk['balance']:.2f}</b>")
+    else:
+        parts.append("💰 Set your balance: /balance 128.56")
+    settled = [b for b in bets if b.get("status") in ("won", "lost")]
+    if settled:
+        b = settled[-1]
+        if b["status"] == "won":
+            parts.append(f"last bet ✅ {b['label']} @ {b['odds']} → +€{b['return'] - b['stake']:.2f}")
+        else:
+            parts.append(f"last bet ❌ {b['label']} @ {b['odds']} → −€{b['stake']:.2f}")
+    open_n = sum(1 for b in bets if b.get("status") == "open")
+    if open_n:
+        parts.append(f"{open_n} open")
+    return " · ".join(parts)
+
+
+def _wc_bet_keyboard(p: dict) -> dict | None:
+    """Big one-per-row buttons for logging what Nicola actually bet."""
+    legs = _wc_ladder_legs(p)
+    mn = p.get("match_number")
+    rows = []
+    for prob, label, key in legs:
+        if key and 0.35 <= prob <= 0.90 and len(rows) < 4:
+            rows.append([_button(f"🎫 I bet: {label} ({prob:.0%}, min {1 / prob:.2f})",
+                                 f"wcbet:{mn}:{key}")])
+    if not rows:
+        return None
+    rows.append([_button("📝 something else — I'll type it", f"wcbet:{mn}:other")])
+    return _inline_keyboard(rows)
+
+
+# =============================================================================
 # WORLD CUP PRE-MATCH ALERTS (proactive, added 2026-06-11)
 # =============================================================================
 # Unprompted Telegram message when a WC fixture is WC_ALERT_WINDOW minutes
@@ -2656,8 +2861,7 @@ def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
         pass
 
     lines.append("")
-    lines.append("ℹ️ Who-wins markets are the validated family. Same-match combos: "
-                 "books price correlation — the odds product overstates real payout.")
+    lines.append(_wc_money_footer())
     return "\n".join(lines)
 
 
@@ -2672,27 +2876,28 @@ def _wc_ladder_legs(p: dict) -> list[tuple[float, str]]:
     probs = p.get("probabilities") or {}
     home, away = p.get("home_team", "?"), p.get("away_team", "?")
     lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
-    legs: list[tuple[float, str]] = []
+    legs: list[tuple[float, str, str]] = []          # (prob, label, settle-key)
     if probs:
         ph, pd, pa = probs.get("home", 0), probs.get("draw", 0), probs.get("away", 0)
-        legs += [(ph, f"1 ({home} win)"), (pa, f"2 ({away} win)")]
-        legs += [(ph + pd, f"1X ({home} or draw)"), (pa + pd, f"X2 ({away} or draw)"),
-                 (ph + pa, "12 (no draw)")]
+        legs += [(ph, f"1 ({home} win)", "1"), (pa, f"2 ({away} win)", "2")]
+        legs += [(ph + pd, f"1X ({home} or draw)", "1X"),
+                 (pa + pd, f"X2 ({away} or draw)", "X2"),
+                 (ph + pa, "12 (no draw)", "12")]
     if lh and la:
         g = _wc_grid(lh, la)
         tot = lambda f: sum(v for (h, a), v in g.items() if f(h, a))  # noqa: E731
         legs += [
-            (tot(lambda h, a: h + a > 1.5), "Over 1.5"),
-            (tot(lambda h, a: h + a < 2.5), "Under 2.5"),
-            (tot(lambda h, a: h + a > 2.5), "Over 2.5"),
-            (tot(lambda h, a: h + a < 3.5), "Under 3.5"),
-            (tot(lambda h, a: h > 0 and a > 0), "BTTS Yes"),
-            (tot(lambda h, a: h == 0 or a == 0), "BTTS No"),
+            (tot(lambda h, a: h + a > 1.5), "Over 1.5", "O15"),
+            (tot(lambda h, a: h + a < 2.5), "Under 2.5", "U25"),
+            (tot(lambda h, a: h + a > 2.5), "Over 2.5", "O25"),
+            (tot(lambda h, a: h + a < 3.5), "Under 3.5", "U35"),
+            (tot(lambda h, a: h > 0 and a > 0), "BTTS Yes", "BTTSY"),
+            (tot(lambda h, a: h == 0 or a == 0), "BTTS No", "BTTSN"),
             # SISAL "Combo" markets — exact joints, correlation priced in
-            (tot(lambda h, a: h > a and h + a < 3.5), f"1 + Under 3.5 ({home})"),
-            (tot(lambda h, a: h > a and h + a > 1.5), f"1 + Over 1.5 ({home})"),
-            (tot(lambda h, a: a > h and h + a < 3.5), f"2 + Under 3.5 ({away})"),
-            (tot(lambda h, a: h > a or h + a > 2.5), f"1 or Over 2.5 ({home})"),
+            (tot(lambda h, a: h > a and h + a < 3.5), f"1 + Under 3.5 ({home})", "1U35"),
+            (tot(lambda h, a: h > a and h + a > 1.5), f"1 + Over 1.5 ({home})", "1O15"),
+            (tot(lambda h, a: a > h and h + a < 3.5), f"2 + Under 3.5 ({away})", "2U35"),
+            (tot(lambda h, a: h > a or h + a > 2.5), f"1 or Over 2.5 ({home})", "1orO25"),
         ]
     legs.sort(reverse=True)
     return legs
@@ -2739,8 +2944,20 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
 
     cfg = WC_LADDER_TIERS.get(tier, WC_LADDER_TIERS["safe"])
     lo, hi = cfg["band"]
+    # Bankroll-aware staking: rung = WC_RUNG_FRACTION of the real balance,
+    # the floor stays untouched — the split Nicola actually plays (60/128.56).
+    bk = _wc_bankroll()
+    floor_line = ""
+    if bk.get("balance"):
+        bal = float(bk["balance"])
+        stake = max(5.0, round(bal * WC_RUNG_FRACTION))
+        floor_line = (f"💰 Balance €{bal:.2f} → rung <b>€{stake:.0f}</b>, "
+                      f"floor <b>€{bal - stake:.2f}</b> stays in the account")
     lines = [f"{cfg['title']} — <b>{today.strftime('%A %d %B')}</b> (start €{stake:.0f}, "
-             "each rung bets the previous return)", ""]
+             "each rung bets the previous return)"]
+    if floor_line:
+        lines.append(floor_line)
+    lines.append("")
     bank = stake
     surv = 1.0
     rung = 0
@@ -2753,7 +2970,7 @@ def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
         if not pick:
             lines.append(f"⏭ {ko_txt} {match}: no leg in the {lo:.0%}–{hi:.0%} band — skip")
             continue
-        prob, label = pick
+        prob, label, _key = pick
         rung += 1
         fair = 1.0 / prob
         ret = bank * fair
@@ -2871,7 +3088,7 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                 continue
 
             msg = _build_prematch_alert(p, mins)
-            _tg_send_message(token, chat_id, msg)
+            _tg_send_message(token, chat_id, msg, reply_markup=_wc_bet_keyboard(p))
             st["sent"] = now.isoformat()
             st["lineups_confirmed"] = confirmed
             st["pipeline_fresh"] = bool(fresh)
@@ -2968,6 +3185,8 @@ def run_bot():
 
             # Proactive WC pre-match briefings (throttled internally)
             _check_prematch_alerts(token, chat_id)
+            # Auto-settle Nicola's logged bets against real results
+            _wc_check_my_bets(token, chat_id)
 
             for update in updates:
                 update_id = update.get("update_id", 0)
@@ -3037,6 +3256,29 @@ def run_bot():
                     text = _REPLY_BUTTON_MAP[text]
                     cmd = text.split()[0].lower()
 
+                # Pending bet completion: "60 @ 1.80" (optionally + free text)
+                if not cmd and chat_id in _WC_PENDING_BET:
+                    bm = re.match(
+                        r"^(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+                        text.strip())
+                    if bm:
+                        pend = _WC_PENDING_BET.pop(chat_id)
+                        stake = float(bm.group(1).replace(",", "."))
+                        odds = float(bm.group(2).replace(",", "."))
+                        label = pend.get("label") or (bm.group(3).strip() or "custom bet")
+                        bet = _wc_log_bet(pend["match_number"],
+                                          pend.get("match", f"match {pend['match_number']}"),
+                                          pend.get("leg_key"), label, stake, odds)
+                        bk = _wc_bankroll()
+                        bal_txt = (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>"
+                                   if bk.get("balance") is not None else "")
+                        auto = ("settles automatically at the final whistle"
+                                if bet["leg_key"] else "free-text — settle with /settle won|lost")
+                        _tg_send_message(token, chat_id,
+                            f"🎫 Logged: <b>{label}</b> @ {odds} × €{stake:.2f} "
+                            f"(returns €{stake * odds:.2f})\n{auto}{bal_txt}")
+                        continue
+
                 if cmd == "/start":
                     response_text = _handle_start()
                 elif cmd == "/bets":
@@ -3068,6 +3310,69 @@ def run_bot():
                     _tg_send_typing(token, chat_id)
                     _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
                     response_text = _build_daily_ladder(tier=_tier)
+                elif cmd == "/balance":
+                    arg = text.replace("/balance", "").strip().replace(",", ".")
+                    if arg:
+                        try:
+                            bk = _wc_bankroll()
+                            bk["balance"] = round(float(arg), 2)
+                            _wc_json_save(WC_BANKROLL_JSON, bk)
+                            response_text = f"💰 Balance set: <b>€{bk['balance']:.2f}</b>"
+                        except ValueError:
+                            response_text = "Usage: <code>/balance 128.56</code>"
+                    else:
+                        response_text = _wc_money_footer()
+                elif cmd == "/bet":
+                    bm = re.match(
+                        r"^/bet\s+(\d+(?:[.,]\d+)?)\s*@\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+                        text.strip())
+                    if not bm:
+                        response_text = ("Usage: <code>/bet 60 @ 1.80 Canada win</code> "
+                                         "(or tap a 🎫 button on an alert)")
+                    else:
+                        stake = float(bm.group(1).replace(",", "."))
+                        odds = float(bm.group(2).replace(",", "."))
+                        label = bm.group(3).strip() or "custom bet"
+                        bet = _wc_log_bet(None, "manual", None, label, stake, odds)
+                        bk = _wc_bankroll()
+                        response_text = (
+                            f"🎫 Logged #{bet['id']}: <b>{label}</b> @ {odds} × €{stake:.2f}. "
+                            f"Settle with /settle won|lost."
+                            + (f"\n💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                elif cmd == "/settle":
+                    arg = text.replace("/settle", "").strip().lower()
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    open_manual = [b for b in bets
+                                   if b.get("status") == "open" and not b.get("leg_key")]
+                    if arg not in ("won", "lost", "void") or not open_manual:
+                        response_text = ("Usage: /settle won|lost|void — settles your "
+                                         f"latest free-text bet ({len(open_manual)} open)")
+                    else:
+                        b = open_manual[-1]
+                        b["status"] = arg
+                        b["settled_at"] = datetime.now(UTC).isoformat()
+                        if arg == "won":
+                            b["return"] = round(b["stake"] * b["odds"], 2)
+                            _wc_bankroll_apply(b["return"], f"bet #{b['id']} WON (manual)")
+                        elif arg == "void":
+                            _wc_bankroll_apply(b["stake"], f"bet #{b['id']} void")
+                        _wc_json_save(WC_MYBETS_JSON, bets)
+                        bk = _wc_bankroll()
+                        response_text = (f"{'✅' if arg == 'won' else '⚪' if arg == 'void' else '❌'} "
+                                         f"#{b['id']} {b['label']} settled {arg}."
+                                         + (f" 💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                elif cmd == "/mybets":
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    if not bets:
+                        response_text = "No bets logged yet — tap 🎫 on an alert."
+                    else:
+                        rows = [_wc_money_footer(), ""]
+                        for b in bets[-10:]:
+                            icon = {"open": "⏳", "won": "✅", "lost": "❌",
+                                    "void": "⚪"}.get(b["status"], "?")
+                            rows.append(f"{icon} #{b['id']} {b['label']} @ {b['odds']} "
+                                        f"× €{b['stake']:.2f} [{b['status']}]")
+                        response_text = "\n".join(rows)
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
