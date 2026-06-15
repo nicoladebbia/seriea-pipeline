@@ -2654,12 +2654,19 @@ def main():
     if not leagues:
         leagues = ["serie_a"]
 
-    if args.live_monitor:
-        from scripts.data.live_monitor import watch_loop
-        watch_loop()
-    elif args.live_once:
-        from scripts.data.live_monitor import poll_once
-        poll_once()
+    if args.live_monitor or args.live_once:
+        # In-play polling burns ~24 Odds-API credits/matchday and is only worth
+        # it if betting LIVE. Gated off by default (LIVE_MONITORING=1 to enable)
+        # so it can't silently resume when the Odds API key is renewed.
+        if os.environ.get("LIVE_MONITORING", "0") != "1":
+            print("Live monitoring is OFF (set LIVE_MONITORING=1 to enable in-play "
+                  "polling). Pre-match scanning is unaffected.")
+        elif args.live_monitor:
+            from scripts.data.live_monitor import watch_loop
+            watch_loop()
+        else:
+            from scripts.data.live_monitor import poll_once
+            poll_once()
     elif args.live_status:
         from scripts.data.live_monitor import show_status
         show_status()

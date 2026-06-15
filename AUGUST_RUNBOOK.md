@@ -152,3 +152,25 @@ ECE worse) — incumbent catboost_no_odds.cbm (Apr 24) stays production.
 | Prop auto-settlement | scheduler settlement_check | live at reload |
 | Result-pinned WC sim | scripts/worldcup/ | WC-only, sunsets Jul 20 |
 | Betfair feed / lineup scraper | NOT BUILT — master plan WS3.3/3.7 | next build block |
+
+## Quick reference — what was hardened mid-June (scanner audit session)
+
+| Thing | Where | State |
+|---|---|---|
+| Scanner reads BettingConfig enabled-flags | odds_edge_monitor.py `_build_edge_thresholds` | live; only O/U_Over surfaces as actionable, 1X2/DC/O/U_Under → watchlist (flagged "no proven edge") |
+| 1X2 Home now evaluated (was silently dropped) | odds_edge_monitor.py selection loop | live; routed to watchlist (1X2 disabled), not actionable |
+| De-vig fixes (no phantom edges) | odds_edge_monitor.py 1X2 fallback + O/U pair + live | live; fallback de-vigs best-line triplet, O/U skips when no real under price, live path de-vigs + ±50% clamp; `no_sharp_ref` flag added |
+| LIVE_MONITORING gate (default OFF) | odds_edge_monitor.scan_live_value + run_full_pipeline | live; in-play polling off until `LIVE_MONITORING=1`. **August: leave OFF unless betting live.** |
+| O/U Over 2.5 validation logging | prediction_tracker.score_predictions | live; logs `model_over_2_5` (Poisson from xG, NOT the bogus `over_25` boolean flag), `home/away_xg`, `total_goals`, `over_2_5_hit` |
+
+### CRITICAL August check — validate O/U Over before trusting it
+The scanner's ONLY enabled market (O/U Over) has NEVER been validated on real
+data — the "+10% ROI" is a BettingConfig comment, not a reproduced number. The
+June scanner backtest couldn't test it because the tracker logged 1X2 probs
+only. That gap is now closed (tracker logs O/U prob + outcome as of mid-June):
+1. After ~4-6 weeks of resumed Serie A, backtest `model_over_2_5` vs
+   `over_2_5_hit` in `prediction_tracker.json:scored`: skill score
+   `1 - brier/baseline_brier > 0` AND realized ROI at the de-vigged edge.
+2. If skill ≤ 0 or ROI negative over 40+ bets, O/U Over is NOT the earner the
+   config claims — gate it like the others. Do NOT keep betting on faith.
+3. Until that backtest exists, treat O/U Over bets as PROVISIONAL.

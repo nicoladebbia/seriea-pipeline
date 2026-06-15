@@ -2937,12 +2937,18 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
                 ret = b["stake"] * b["odds"]
                 b["return"] = round(ret, 2)
                 bk = _wc_bankroll_apply(ret, f"bet #{b['id']} WON")
+                # rung can be None (derived ladder unseeded) — guard the format
+                # so a missing rung never aborts the whole settle (NoneType
+                # format crash was swallowing the settlement).
+                rung = st_l.get("rung")
+                rung_txt = (f"next rung: <b>€{rung:.2f}</b> " if rung is not None
+                            else "next rung sizes from the floor ")
                 _tg_send_message(token, chat_id,
                     f"✅ <b>Bet WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
                     f"\n{b['match']} finished {h}-{a} → return <b>€{ret:.2f}</b>"
                     + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}" if bk.get("balance") is not None else "")
-                    + f"\n🪜 Ladder continues — next rung: <b>€{st_l['rung']:.2f}</b> "
-                      f"(streak {st_l['streak']}). Banking is always allowed.")
+                    + f"\n🪜 Ladder continues — {rung_txt}"
+                      f"(streak {st_l.get('streak', 0)}). Banking is always allowed.")
             else:
                 bk = _wc_bankroll()
                 _tg_send_message(token, chat_id,

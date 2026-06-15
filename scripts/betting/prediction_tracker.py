@@ -160,6 +160,24 @@ def score_predictions(predictions: List[Dict], results: Dict[str, Dict]) -> List
         )
         confidence = max(prob_h, prob_d, prob_a)
 
+        # O/U Over 2.5 — the ONE market the scanner actually bets (BettingConfig
+        # enabled). Logged here alongside outcomes so its edge becomes
+        # backtestable: prior tracker records had 1X2 probs only, so O/U Over
+        # could never be validated (the 2026-06 scanner backtest hit exactly
+        # this gap). NOTE: predictions.json `over_25` is a BOOLEAN flag, not a
+        # probability — do NOT log it. The real model O/U signal is the same
+        # one the scanner uses: P(total > 2.5) derived from xG via Poisson.
+        home_xg = pred.get("home_xg")
+        away_xg = pred.get("away_xg")
+        ou_prob = None
+        if home_xg is not None and away_xg is not None:
+            try:
+                from scipy.stats import poisson
+                lam = float(home_xg) + float(away_xg)
+                ou_prob = float(1.0 - sum(poisson.pmf(k, lam) for k in range(3)))
+            except Exception:
+                ou_prob = None
+        total_goals = hs + as_
         scored.append({
             "home_team": home,
             "away_team": away,
@@ -173,6 +191,12 @@ def score_predictions(predictions: List[Dict], results: Dict[str, Dict]) -> List
             "correct": predicted == actual,
             "home_score": hs,
             "away_score": as_,
+            # --- O/U Over 2.5 validation fields (added 2026-06) ---
+            "model_over_2_5": round(ou_prob, 4) if ou_prob is not None else None,
+            "home_xg": home_xg,
+            "away_xg": away_xg,
+            "total_goals": total_goals,
+            "over_2_5_hit": (total_goals > 2.5) if ou_prob is not None else None,
             "scored_at": datetime.now().isoformat(),
         })
 

@@ -50,6 +50,154 @@ _PICK_OUTCOME = {"1": "home", "X": "draw", "2": "away"}
 _DC_COVER = {"1X": ("home", "draw"), "X2": ("draw", "away"), "12": ("home", "away")}
 
 
+def _poisson_pmf(k: int, lam: float) -> float:
+    """P(X = k) for X ~ Poisson(lam). Closed form, no scipy."""
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    import math
+    return math.exp(-lam) * lam**k / math.factorial(k)
+
+
+def _over_prob(lam_total: float, line: float) -> float:
+    """P(goals > line) for a single Poisson stream of rate ``lam_total``.
+    Lines are .5 so there are no pushes: sum the PMF up to floor(line)."""
+    floor = int(line)  # 1.5 -> 1, 0.5 -> 0, 2.5 -> 2
+    p_under = sum(_poisson_pmf(k, lam_total) for k in range(floor + 1))
+    return max(0.0, min(1.0, 1.0 - p_under))
+
+
+# Goal-quantity markets for the FUN combos, each derived from the engine's
+# own Poisson lambdas (home_xg / away_xg in predictions.json). These are the
+# DNA of Nicola's played slip (Over 1.5, team-total Over) — NOT backtest-gated,
+# goal props are noise on internationals, so every leg carries edge="none".
+_FUN_MARKETS = (
+    ("O15",  "Over 1.5",         lambda lh, la: _over_prob(lh + la, 1.5)),
+    ("O25",  "Over 2.5",         lambda lh, la: _over_prob(lh + la, 2.5)),
+    ("H_O05", "Home team Over 0.5", lambda lh, la: _over_prob(lh, 0.5)),
+    ("A_O05", "Away team Over 0.5", lambda lh, la: _over_prob(la, 0.5)),
+    ("H_O15", "Home team Over 1.5", lambda lh, la: _over_prob(lh, 1.5)),
+)
+
+FUN_PROB_MIN = 0.50          # never stack a goal leg the model rates a coin-flip or worse
+FUN_BIG_TARGET = (10.0, 20.0)  # combined fair-odds band for the "big odds" ticket
+
+
+def build_fun_combos(preds: list, now: datetime | None = None,
+                     window_hours: float = 48.0, max_legs: int = 8) -> dict:
+    """Goal-quantity accumulators in the style Nicola actually plays (Over 1.5 /
+    team-total Over), built from the engine's Poisson lambdas.
+
+    Returns two tickets: 'fun_safe' stacks the highest-probability Over legs;
+    'fun_big' stacks legs to land in the FUN_BIG_TARGET combined-odds band.
+    Goal props do NOT pass the WC backtest (skill ≤ 0 on internationals), so
+    every leg and ticket is stamped edge='none' — entertainment, not +EV. The
+    who-wins build_best_combos remains the only edge-bearing path.
+    """
+    now = now or datetime.now(UTC)
+    horizon = now + timedelta(hours=window_hours)
+
+    # Two independent pools so the two tickets draw GENUINELY different legs:
+    #  safe_cands  — the highest-probability Over leg per match (Over 0.5-ish)
+    #  big_cands   — the Over leg per match priced nearest FUN_BIG_LEG_PRICE
+    #                (Over 1.5 / Over 2.5 — the legs that build a real payout,
+    #                exactly the DNA of Nicola's played 14.68 slip).
+    # One leg per match in EACH pool keeps every ticket's product-of-probs valid.
+    FUN_BIG_LEG_PRICE = 1.55  # ideal per-leg fair odds for the big ticket
+    safe_cands: list[dict] = []
+    big_cands: list[dict] = []
+    n_slate = 0
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p.get("kickoff_utc") or "")
+        except (TypeError, ValueError):
+            continue
+        if ko.tzinfo is None or not (now < ko <= horizon):
+            continue
+        lh = p.get("home_xg")
+        la = p.get("away_xg")
+        if lh is None or la is None:
+            continue
+        lh, la = float(lh), float(la)
+        n_slate += 1
+        home, away = p.get("home_team", "?"), p.get("away_team", "?")
+        base = {
+            "match": p.get("match") or f"{home} vs {away}",
+            "home_team": home, "away_team": away,
+            "stage": p.get("stage", "group"),
+            "date": p.get("date", ""), "time": p.get("time", ""),
+            "kickoff_utc": p.get("kickoff_utc"),
+            "match_number": p.get("match_number"),
+        }
+        cands = []
+        for code, label, fn in _FUN_MARKETS:
+            prob = fn(lh, la)
+            if prob < FUN_PROB_MIN:
+                continue
+            disp = label if code in ("O15", "O25") else (
+                label.replace("Home team", home).replace("Away team", away))
+            cands.append({
+                **base, "market": "Goals", "pick": code, "pick_label": disp,
+                "prob": round(prob, 4),
+                "fair_odds": round(1 / prob, 2) if prob > 0.001 else 99,
+                "market_odds": None, "edge": "none",
+            })
+        if cands:
+            safe_cands.append(max(cands, key=lambda x: x["prob"]))
+            # Highest-paying leg that still clears the floor — nearest the
+            # target price, tie-broken toward longer odds for a bigger payout.
+            big_cands.append(min(
+                cands, key=lambda x: (abs(x["fair_odds"] - FUN_BIG_LEG_PRICE),
+                                      -x["fair_odds"])))
+
+    def assemble(key: str, title: str, note: str, chosen: list[dict]) -> dict | None:
+        if len(chosen) < 2:
+            return None
+        chosen = sorted(chosen, key=lambda x: (x["date"], x["time"]))
+        prob = 1.0
+        for leg in chosen:
+            prob *= leg["prob"]
+        return {
+            "key": key, "title": title, "note": note, "edge": "none",
+            "legs": chosen,
+            "combined": {"prob": round(prob, 4),
+                         "fair_odds": round(1 / prob, 2) if prob > 0.001 else 99},
+        }
+
+    # Safest: the most-probable Over legs, up to max_legs.
+    safe_legs = sorted(safe_cands, key=lambda x: x["prob"], reverse=True)[:max_legs]
+
+    # Big odds: stack the higher-paying legs (already chosen per match nearest
+    # ~1.55) longest-first, building the product until combined fair odds enter
+    # FUN_BIG_TARGET, then stop. fair_odds = 1/prob grows as legs are added
+    # (prob shrinks), so the band test runs on the accumulated product.
+    big_legs: list[dict] = []
+    running = 1.0  # running combined probability
+    for leg in sorted(big_cands, key=lambda x: x["fair_odds"], reverse=True):
+        if 1 / running >= FUN_BIG_TARGET[0]:
+            break  # already in the band — don't dilute the payout further
+        nxt = running * leg["prob"]
+        if 1 / nxt > FUN_BIG_TARGET[1] and big_legs:
+            break  # this leg would overshoot the top of the band
+        big_legs.append(leg)
+        running = nxt
+        if len(big_legs) >= max_legs:
+            break
+
+    combos = [
+        assemble("fun_safe", "🎲 Fun — safest Overs",
+                 "Highest-probability goal legs (Over 1.5 / team Over), model "
+                 "Poisson. NO model edge — goal props are noise on "
+                 "internationals; entertainment only.", safe_legs),
+        assemble("fun_big", "🎲 Fun — big odds",
+                 f"Stacked toward {FUN_BIG_TARGET[0]:.0f}-{FUN_BIG_TARGET[1]:.0f}x "
+                 "like a played multipla. NO model edge — entertainment only.",
+                 big_legs),
+    ]
+    return {"window_hours": window_hours, "n_matches": n_slate,
+            "edge": "none",
+            "combos": [c for c in combos if c]}
+
+
 def build_best_combos(preds: list, market: dict, now: datetime | None = None,
                       window_hours: float = 48.0, max_legs: int = 3) -> dict:
     """The three accumulator tiers from the next `window_hours` of matches.

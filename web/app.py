@@ -1184,6 +1184,7 @@ def api_worldcup():
         } if isinstance(players, dict) else {},
         "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
         "best_combos": _wc_best_combos(preds, market),
+        "fun_combos": _wc_fun_combos(preds),
         "projections": projections,
     })
 
@@ -1330,6 +1331,16 @@ def _wc_best_combos(preds: list, market: dict) -> dict:
     from scripts.worldcup.combos import build_best_combos
 
     return build_best_combos(preds, market)
+
+
+def _wc_fun_combos(preds: list) -> dict:
+    """Goal-prop accumulators (Over 1.5 / team-Over) from the engine's Poisson
+    lambdas — the DNA of a played multipla. Carries edge="none": goal props are
+    noise on internationals and are served as entertainment, NOT a model edge.
+    Same builder the Telegram /wc digest uses. Lazy import keeps boot light."""
+    from scripts.worldcup.combos import build_fun_combos
+
+    return build_fun_combos(preds)
 
 
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
@@ -2092,6 +2103,36 @@ def api_value_bets():
     })
 
 
+def _club_leagues_dormant(horizon_days: int = 14) -> dict[str, bool]:
+    """Per-club-league off-season flag for the freshness check.
+
+    A league is dormant when it has NO fixture scheduled within the next
+    ``horizon_days``. Mirrors health_check.py's season-aware philosophy:
+    assert on the unambiguous signal (are there matches to have data FOR?)
+    rather than calendar age, so the off-season ban + stale club parquet
+    stop reading as a hard failure. Auto-clears the moment a fixture appears
+    inside the window. Conservative: any read error -> not dormant (so a
+    genuine failure is never masked by a parse problem here).
+    """
+    flags = {"serie_a": False, "premier_league": False}
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if not matches_path.exists():
+        return flags
+    try:
+        import pandas as pd
+        m = pd.read_parquet(matches_path, columns=["league", "match_date"])
+        m["match_date"] = pd.to_datetime(m["match_date"], errors="coerce")
+        now = datetime.now()
+        horizon = now + timedelta(days=horizon_days)
+        for lg in flags:
+            sub = m[m["league"] == lg] if "league" in m.columns else m
+            upcoming = sub[(sub["match_date"] > now) & (sub["match_date"] <= horizon)]
+            flags[lg] = len(upcoming) == 0
+    except Exception:
+        return {"serie_a": False, "premier_league": False}
+    return flags
+
+
 @app.route("/api/data-freshness")
 def api_data_freshness():
     """Sofascore refresh freshness — used by the global staleness banner.
@@ -2174,6 +2215,8 @@ def api_data_freshness():
     any_html_ok = False
     any_hard_fail = False
     schema_break_seen = False
+    dormant = _club_leagues_dormant()
+    all_dormant = all(dormant.get(lg) for lg in ("serie_a", "premier_league"))
 
     for lg in ("serie_a", "premier_league"):
         # Trigger scrape (cached) to refresh health entry
@@ -2203,15 +2246,19 @@ def api_data_freshness():
             "html_last_success": last_success_iso,
             "parquet_age_hours": pq_age_h,
             "parquet_too_old": (pq_age_h is not None and pq_age_h > 24 * 7),
+            "offseason_dormant": bool(dormant.get(lg)),
         }
         if html_ok:
             any_html_ok = True
         if h.get("schema_break"):
             schema_break_seen = True
-        # Hard fail: this league has no fresh source at all
+        # Hard fail: this league has no fresh source at all — but a dormant
+        # (off-season, no fixtures within 14d) league is EXPECTED to be stale,
+        # so it never counts as a hard failure. It re-arms automatically the
+        # moment a fixture appears inside the window.
         league_hard = (not html_ok) and (
             league_health[lg]["parquet_too_old"] or pq_age_h is None
-        )
+        ) and not dormant.get(lg)
         if league_hard:
             any_hard_fail = True
 
@@ -2238,6 +2285,18 @@ def api_data_freshness():
         out["message"] = (
             "BOTH live HTML scrape AND cached parquet are stale. User-facing "
             "data is unreliable. Fix Sofascore access or restore parquet."
+        )
+    elif all_dormant:
+        # No club fixtures within 14d in either league → off-season. Stale
+        # club parquet + a blocked HTML scrape are the CORRECT state here, so
+        # this is informational, not a failure. World Cup data is served by a
+        # separate path (scripts/worldcup) and is unaffected.
+        out["severity"] = "offseason_dormant"
+        out["ok"] = True
+        out["message"] = (
+            "Off-season — Serie A & EPL dormant (no fixtures within 14d); "
+            "club data intentionally stale until the season resumes. Live "
+            "match data (e.g. World Cup) is served separately and unaffected."
         )
     elif not any_html_ok:
         # No HTML, but parquet within 7d — degraded but tolerable

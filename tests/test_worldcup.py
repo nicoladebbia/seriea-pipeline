@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from scripts.worldcup.combos import build_fun_combos
 from scripts.worldcup.engine import (
     ELO_HOME_ADV,
     INITIAL_ELO,
@@ -22,6 +23,7 @@ from scripts.worldcup.engine import (
     one_x_two,
     score_matrix,
 )
+from scripts.worldcup.generate_predictions import _apply_availability
 from scripts.worldcup.players import (
     _squad_candidates,
     build_shares,
@@ -1068,6 +1070,82 @@ class TestResultConditioning:
         assert b73b["actual_score"] == "0-1"  # score still shown
 
 
+class TestSofaHtmlFallback:
+    """Shared lineups-payload builders (one schema, API transport today;
+    match pages measured to be client-rendered shells with NO embedded
+    lineups — 2026-06-11 — so no page-tier transport exists for these)."""
+
+    @staticmethod
+    def _lineups_payload() -> dict:
+        return {
+            "confirmed": True,
+            "home": {
+                "players": [
+                    {"player": {"name": "Memo Ochoa", "id": 5, "position": "G"},
+                     "substitute": False,
+                     "statistics": {"minutesPlayed": 90, "totalShots": 0,
+                                    "onTargetScoringAttempt": 0, "goals": 0,
+                                    "rating": 7.1}},
+                    {"player": {"name": "Sub Guy", "id": 6, "position": "F"},
+                     "substitute": True,
+                     "statistics": {"minutesPlayed": 0}},
+                ],
+                "missingPlayers": [
+                    {"player": {"name": "Hurt Star", "position": "F"},
+                     "type": "missing", "reason": 1},
+                ],
+            },
+            "away": {
+                "players": [
+                    {"player": {"name": "Keeper Two", "id": 7, "position": "G"},
+                     "substitute": False,
+                     "statistics": {"minutesPlayed": 90, "totalShots": 2,
+                                    "onTargetScoringAttempt": 1, "goals": 1}},
+                ],
+                "missingPlayers": [],
+            },
+        }
+
+    def test_lineup_entry_builder(self) -> None:
+        from scripts.worldcup.sofascore_fetch import (
+            MISSING_REASON_MAP,
+            _lineup_entry,
+        )
+
+        entry = _lineup_entry(self._lineups_payload(), eid=42)
+        assert entry["event_id"] == 42 and entry["confirmed"] is True
+        assert entry["home"]["starters"] == ["Memo Ochoa"]
+        assert entry["home"]["bench"] == ["Sub Guy"]
+        m = entry["home"]["missing"][0]
+        assert m["name"] == "Hurt Star"
+        assert m["reason"] == MISSING_REASON_MAP.get(1, "Other")
+        assert entry["away"]["missing"] == []
+
+    def test_player_stat_rows_semantics(self) -> None:
+        from scripts.worldcup.sofascore_fetch import _player_stat_rows
+
+        event = {
+            "id": 99, "startTimestamp": 1781204400,
+            "tournament": {"name": "FIFA World Cup 2026, Group A"},
+            "homeTeam": {"id": 100, "name": "Mexico"},
+            "awayTeam": {"id": 200, "name": "South Africa"},
+            "homeScore": {"current": 2}, "awayScore": {"current": 1},
+        }
+        rows = _player_stat_rows(
+            event, self._lineups_payload(), "home", "Mexico", 100,
+            "2026-06-11T21:00:00+00:00", "https://example/match",
+        )
+        assert [r["player_name"] for r in rows] == ["Memo Ochoa", "Sub Guy"]
+        starter, sub = rows
+        assert starter["started"] is True and starter["minutes"] == 90
+        assert starter["shots"] == 0 and starter["rating"] == 7.1
+        assert sub["started"] is False and sub["minutes"] == 0
+        assert sub["shots"] is None and sub["goals"] is None  # no fake zeros
+        assert starter["our_score"] == 2 and starter["opp_score"] == 1
+        assert starter["opponent"] == "South Africa"
+
+
+
 class TestSquadStrength:
     """squad_history parsing/matching + the backtest study's adjustment math."""
 
@@ -1766,7 +1844,7 @@ class TestWorldCupDigest:
 
         text = _handle_worldcup()
         assert "World Cup 2026" in text
-        assert "Best combos" in text
+        assert "Edge combos" in text
         # both matches are inside the 48h combo window -> legs reference them
         assert "Foo or draw" in text and "Baz or draw" in text
         # today-section content mirrors the Rome-date check the digest uses
@@ -1775,6 +1853,229 @@ class TestWorldCupDigest:
             assert "Foo–Bar" in text
         else:
             assert "No matches today" in text
+
+
+class TestAvailabilityMovesPrediction:
+    """The lineup→xG system (availability.py → generate_predictions.
+    _apply_availability) already exists; these prove it actually moves the
+    model lambdas in the right direction when fed a real confirmed-XI impact
+    payload — the verification Nicola asked for, so we KNOW it fires the
+    moment Sofascore lineups are healthy again (currently ban-degraded)."""
+
+    def test_no_team_news_is_noop(self):
+        lh, la, adjusted, summary = _apply_availability(1.8, 1.2, None)
+        assert (lh, la, adjusted, summary) == (1.8, 1.2, False, None)
+
+    def test_star_striker_out_shrinks_own_lambda(self):
+        # Home loses attacking value → lambda_factor_self < 1 → home xg drops,
+        # away xg unchanged (their factor_opp is 1.0).
+        av = {
+            "home": {
+                "impact": {"lambda_factor_self": 0.85, "lambda_factor_opp": 1.0},
+                "out": [{"name": "Star Striker"}], "doubtful": [],
+            },
+            "away": {
+                "impact": {"lambda_factor_self": 1.0, "lambda_factor_opp": 1.0},
+                "out": [], "doubtful": [],
+            },
+        }
+        lh, la, adjusted, summary = _apply_availability(2.0, 1.0, av)
+        assert adjusted is True
+        assert lh == pytest.approx(2.0 * 0.85)        # 1.70 — own attack down
+        assert la == pytest.approx(1.0)               # opponent unaffected
+        assert summary["home_out"] == ["Star Striker"]
+        assert summary["home_factor"] == pytest.approx(0.85)
+
+    def test_opponent_keeper_out_grows_own_lambda(self):
+        # Away's defensive absence travels to HOME's lambda via factor_opp.
+        av = {
+            "home": {
+                "impact": {"lambda_factor_self": 1.0, "lambda_factor_opp": 1.0},
+                "out": [], "doubtful": [],
+            },
+            "away": {
+                "impact": {"lambda_factor_self": 1.0, "lambda_factor_opp": 1.18},
+                "out": [{"name": "First-Choice Keeper"}], "doubtful": [],
+            },
+        }
+        lh, la, adjusted, summary = _apply_availability(1.5, 1.5, av)
+        assert adjusted is True
+        assert lh == pytest.approx(1.5 * 1.18)        # 1.77 — opponent leaks
+        assert la == pytest.approx(1.5)
+        assert summary["away_out"] == ["First-Choice Keeper"]
+
+    def test_both_sides_compose(self):
+        av = {
+            "home": {"impact": {"lambda_factor_self": 0.9, "lambda_factor_opp": 1.1},
+                     "out": [], "doubtful": []},
+            "away": {"impact": {"lambda_factor_self": 0.8, "lambda_factor_opp": 1.2},
+                     "out": [], "doubtful": []},
+        }
+        lh, la, adjusted, _ = _apply_availability(2.0, 2.0, av)
+        # home = 2.0 * self(0.9) * away.opp(1.2); away = 2.0 * self(0.8) * home.opp(1.1)
+        assert lh == pytest.approx(2.0 * 0.9 * 1.2)
+        assert la == pytest.approx(2.0 * 0.8 * 1.1)
+        assert adjusted is True
+
+
+class TestFunCombos:
+    """Goal-prop multiplas (Nicola's played-slip DNA) from the engine's own
+    Poisson lambdas. NOT edge-bearing — every leg/section stamped edge='none'."""
+
+    def _preds(self):
+        # Two high-scoring fixtures so Over legs clear FUN_PROB_MIN.
+        return [
+            {"match_number": 1, "home_team": "Aaa", "away_team": "Bbb",
+             "home_xg": 2.4, "away_xg": 1.3, "date": "2026-06-20", "time": "18:00",
+             "kickoff_utc": "2026-06-20T18:00:00+00:00", "stage": "group",
+             "match": "Aaa vs Bbb"},
+            {"match_number": 2, "home_team": "Ccc", "away_team": "Ddd",
+             "home_xg": 2.1, "away_xg": 1.6, "date": "2026-06-20", "time": "21:00",
+             "kickoff_utc": "2026-06-20T21:00:00+00:00", "stage": "group",
+             "match": "Ccc vs Ddd"},
+        ]
+
+    def test_builds_two_tickets_both_no_edge(self):
+        from datetime import UTC, datetime
+        res = build_fun_combos(self._preds(),
+                               now=datetime(2026, 6, 19, tzinfo=UTC),
+                               window_hours=48)
+        assert res["edge"] == "none"
+        keys = {c["key"] for c in res["combos"]}
+        assert keys == {"fun_safe", "fun_big"}
+        for c in res["combos"]:
+            assert c["edge"] == "none"
+            assert all(leg["edge"] == "none" for leg in c["legs"])
+            # combined prob is the product of leg probs
+            prod = 1.0
+            for leg in c["legs"]:
+                prod *= leg["prob"]
+            assert c["combined"]["prob"] == pytest.approx(round(prod, 4))
+
+    def test_big_ticket_has_higher_odds_than_safe(self):
+        from datetime import UTC, datetime
+        res = build_fun_combos(self._preds(),
+                               now=datetime(2026, 6, 19, tzinfo=UTC),
+                               window_hours=48)
+        by_key = {c["key"]: c for c in res["combos"]}
+        # The big ticket targets a higher payout than the safest stack.
+        assert (by_key["fun_big"]["combined"]["fair_odds"]
+                >= by_key["fun_safe"]["combined"]["fair_odds"])
+
+    def test_empty_when_no_matches_in_window(self):
+        from datetime import UTC, datetime
+        res = build_fun_combos(self._preds(),
+                               now=datetime(2026, 7, 1, tzinfo=UTC),
+                               window_hours=48)
+        assert res["combos"] == []
+
+
+class TestParlaySettlement:
+    """Per-leg parlay auto-settle (_wc_settle_parlay): all-win → won, any leg
+    lost → ticket lost early, manual legs block the won-grade, half-based legs
+    use HT data and degrade to manual when HT is absent. The single-bet path
+    must keep working (regression)."""
+
+    def _wire(self, tmp_path, monkeypatch, bets, ft_map, ht_map=None):
+        """Point the bot's JSON paths at tmp, stub Telegram + result lookups."""
+        import json as _json
+
+        import scripts.pipeline.telegram_bot as tb
+
+        mb = tmp_path / "my_bets.json"
+        bk = tmp_path / "my_bankroll.json"
+        mb.write_text(_json.dumps(bets))
+        bk.write_text(_json.dumps({"balance": 100.0, "deposited": 100.0, "history": []}))
+        monkeypatch.setattr(tb, "WC_MYBETS_JSON", mb)
+        monkeypatch.setattr(tb, "WC_BANKROLL_JSON", bk)
+        sent = []
+        monkeypatch.setattr(tb, "_tg_send_message",
+                            lambda tok, cid, msg, **k: sent.append(msg))
+        monkeypatch.setattr(tb, "_wc_result_for_match",
+                            lambda mn: ft_map.get(mn))
+        monkeypatch.setattr(tb, "_wc_ht_for_match",
+                            lambda mn: (ht_map or {}).get(mn))
+        tb._WC_SETTLE_LAST["t"] = 0.0  # bypass the 300s throttle
+        return tb, mb, sent
+
+    def _parlay(self, legs, stake=50.0, odds=14.68):
+        return [{"id": 5, "label": "8-leg parlay", "stake": stake, "odds": odds,
+                 "status": "open", "legs": legs}]
+
+    def _leg(self, n, mn, key, feed="wc", status="open"):
+        return {"n": n, "match": f"m{n}", "match_number": mn,
+                "leg_key": key, "label": key, "odds": 1.5,
+                "feed": feed, "status": status}
+
+    def test_all_legs_win_pays_ticket(self, tmp_path, monkeypatch):
+        import json as _json
+        legs = [self._leg(1, 9, "O15"), self._leg(2, 10, "O15")]
+        ft = {9: (2, 0), 10: (1, 1)}  # both Over 1.5
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, self._parlay(legs), ft)
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "won"
+        assert b["return"] == round(50.0 * 14.68, 2)
+        assert any("Parlay WON" in m for m in sent)
+
+    def test_one_leg_lost_kills_ticket_early(self, tmp_path, monkeypatch):
+        import json as _json
+        legs = [self._leg(1, 9, "O15"), self._leg(2, 10, "O15")]
+        ft = {9: (0, 0)}  # leg 1 UNDER 1.5 -> lost; leg 2 has no result yet
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, self._parlay(legs), ft)
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "lost"            # dead before leg 2 resolves
+        assert b["legs"][0]["status"] == "lost"
+        assert b["legs"][1]["status"] == "open"
+        assert any("Parlay LOST" in m for m in sent)
+
+    def test_manual_legs_block_the_win(self, tmp_path, monkeypatch):
+        import json as _json
+        legs = [self._leg(1, 9, "O15"),
+                self._leg(2, None, "H_O05", feed="manual")]
+        ft = {9: (3, 0)}  # WC leg wins; manual leg still pending
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, self._parlay(legs), ft)
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "open"            # not won — manual leg pending
+        assert b["legs"][0]["status"] == "won"
+        assert b["legs"][1]["status"] == "open"
+        assert any("still open" in m for m in sent)
+
+    def test_half_based_leg_settles_with_ht(self, tmp_path, monkeypatch):
+        import json as _json
+        # combo: 1T Over 1.5 AND 2T Over 0.5. ht=(2,0) ft=(2,1) -> won.
+        legs = [self._leg(1, 10, "1TO15_2TO05")]
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, self._parlay(legs),
+                                  {10: (2, 1)}, {10: (2, 0)})
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "won"
+
+    def test_half_based_leg_without_ht_stays_open(self, tmp_path, monkeypatch):
+        import json as _json
+        # Same combo leg, FT known but NO HT -> undecidable -> ticket open.
+        legs = [self._leg(1, 10, "1TO15_2TO05")]
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, self._parlay(legs),
+                                  {10: (3, 0)}, {})  # ht_map empty
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "open"
+        assert b["legs"][0]["status"] == "open"
+
+    def test_single_bet_path_still_settles(self, tmp_path, monkeypatch):
+        """Regression: a flat single bet (no `legs`) settles as before."""
+        import json as _json
+        single = [{"id": 1, "match": "m1", "match_number": 9, "leg_key": "O15",
+                   "label": "Over 1.5", "stake": 10.0, "odds": 1.8,
+                   "status": "open"}]
+        tb, mb, sent = self._wire(tmp_path, monkeypatch, single, {9: (2, 1)})
+        tb._wc_check_my_bets("tok", "cid")
+        b = _json.loads(mb.read_text())[0]
+        assert b["status"] == "won"
+        assert b["score"] == "2-1"
+        assert any("Bet WON" in m for m in sent)
 
 
 class TestMarketGrading:

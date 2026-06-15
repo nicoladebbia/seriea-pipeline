@@ -209,8 +209,9 @@ Organised by *symptom-first* so you can grep for what you're seeing:
 - **What you'll see**: `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
 - **Why**: Cloudflare IP-fingerprint ban, often after heavy scraping. Lasts hours to days.
 - **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance live directly under `props.pageProps` (since ~2026-06; previously nested in `props.pageProps.initialProps` — the web/app.py parsers support both paths).
+- **Page-tier map (measured 2026-06-11, mid-ban)**: NOT all www pages are equal. **Tournament hub pages** are ISR-rendered FRESH (live scores within minutes — use these; WC: `scripts/worldcup/sofascore_fetch.WC_TOURNAMENT_PAGE`). **Daily-schedule pages** (`/football/{date}`) are stale prerenders (opener showed `notstarted` 75 min after kickoff) — last resort only. **Match pages** are client-rendered shells: `__NEXT_DATA__` carries i18n strings only, NO event/lineups/statistics payloads — an HTML fallback for lineups or player stats is IMPOSSIBLE; during bans, lineups degrade to caps-fallback XIs and the stats parquet catches up on the first healthy API run (`events/last` re-serves history).
 - **Sentinels**: SA standings page must contain `Inter`; EPL must contain `Arsenal`. If sentinel missing → schema break, log and trip breaker.
-- **Prevention rule**: **HTML scraping with breaker is the canonical fallback for Sofascore**. Never just retry the API in a loop when you get 403 — burn the cooldown, scrape the HTML.
+- **Prevention rule**: **HTML scraping with breaker is the canonical fallback for Sofascore**. Never just retry the API in a loop when you get 403 — burn the cooldown, scrape the HTML. And before writing any NEW page parser, fetch one specimen and confirm the data is present AND fresh (see the global "never write a parser against an unverified source" rule — this project paid for it).
 
 ### Symptom: "EPL data missing where SA has it"
 

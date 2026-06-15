@@ -294,11 +294,11 @@ def fetch_played_stats() -> int:
     per team) and (b) starter-dampening freshness. Idempotent: existing
     (team, match_id) pairs are skipped. Returns number of rows appended.
 
-    When the API tier is 403-banned, falls back to finished WC matches on
-    the daily-schedule HTML pages and their match-page __NEXT_DATA__
-    lineups (statistics ride on the same embedded payload). The fallback
-    covers WC fixture dates only — other internationals resume when the
-    API does."""
+    API-only by necessity: per-player statistics live in the event-lineups
+    API payload, and match pages are client-rendered shells that embed no
+    such payload (measured 2026-06-11 — see WC_TOURNAMENT_PAGE comment).
+    During API bans nothing is lost, only delayed: events/last re-serves
+    history, so the parquet catches up on the first healthy run."""
     import pandas as pd
 
     df = pd.read_parquet(SOFA_PARQUET)
@@ -309,7 +309,6 @@ def fetch_played_stats() -> int:
     new_rows: list[dict[str, Any]] = []
     now_iso = datetime.now(UTC).isoformat()
     breaker_open = False
-    api_alive = False
     for team, tid in sorted(team_ids.items()):
         if breaker_open:
             break
@@ -321,7 +320,6 @@ def fetch_played_stats() -> int:
         _sleep()
         if payload is None:
             continue
-        api_alive = True
         for e in payload.get("events", []):
             eid = int(e["id"])
             if (team, eid) in seen:
@@ -346,44 +344,6 @@ def fetch_played_stats() -> int:
                 )
             )
             seen.add((team, eid))
-
-    if not api_alive:
-        # API dark — finished WC matches off the page tier; statistics ride
-        # on the same embedded lineups payload the match pages carry.
-        id_to_name = {tid_: name for name, tid_ in team_ids.items()}
-        fixtures = json.loads(FIXTURES_JSON.read_text())
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
-        cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
-        dates = sorted({
-            d for f in fixtures
-            if cutoff <= (d := str(f.get("date_utc", ""))[:10]) <= today
-        })
-        for eid, e in sorted(_day_page_wc_events(session, dates).items()):
-            if str((e.get("status") or {}).get("type")) != "finished":
-                continue
-            url = _match_page_url(e)
-            if url is None:
-                continue
-            lineups = _lineups_from_next_data(_get_html(session, url))
-            if lineups is None:
-                continue
-            has_stats = any(
-                (p.get("statistics") or {}).get("minutesPlayed") is not None
-                for s in ("home", "away")
-                for p in (lineups.get(s) or {}).get("players", [])
-            )
-            if not has_stats:
-                continue  # pre-match page — no real statistics yet
-            for side, tkey in (("home", "homeTeam"), ("away", "awayTeam")):
-                team = id_to_name.get(int((e.get(tkey) or {}).get("id", 0) or 0))
-                if team is None or (team, eid) in seen:
-                    continue
-                new_rows.extend(
-                    _player_stat_rows(
-                        e, lineups, side, team, team_ids[team], now_iso, url
-                    )
-                )
-                seen.add((team, eid))
 
     if new_rows:
         import pandas as pd
@@ -423,7 +383,7 @@ def _event_to_result(
         return None
     winner_code = int(e.get("winnerCode", 0) or 0)
     pens = hs.get("penalties") is not None or as_.get("penalties") is not None
-    return {
+    rec = {
         "event_id": int(e["id"]),
         "date": date,
         "home": home,
@@ -435,6 +395,20 @@ def _event_to_result(
         "decided_by": "PEN" if pens else "FT",
         "penalties": [hs.get("penalties"), as_.get("penalties")] if pens else None,
     }
+    # Half-time scores for half-based parlay legs (1T/2T markets). DEFENSIVE +
+    # UNVERIFIED: the Sofascore API was 403-banned when this was written, so
+    # `period1` could not be confirmed against a live specimen. We store it
+    # only when present; a finished match WITHOUT it prints a one-line warning
+    # so the schema assumption is falsifiable the moment the ban clears. The
+    # parlay engine treats missing HT as "settle manually", never a guess.
+    ht_h, ht_a = hs.get("period1"), as_.get("period1")
+    if ht_h is not None and ht_a is not None:
+        rec["ht_home"] = int(ht_h)
+        rec["ht_away"] = int(ht_a)
+    else:
+        print(f"HT-fetch: finished match {home}-{away} has no period1 "
+              "(half-time legs will fall back to manual settle)")
+    return rec
 
 
 _NEXT_DATA_RE = re.compile(
@@ -480,43 +454,6 @@ def _events_from_next_data(html: str) -> list[dict[str, Any]]:
     return events
 
 
-def _lineups_from_next_data(html: str) -> dict[str, Any] | None:
-    """The api/v1 event-lineups object embedded in a match page — found by
-    SHAPE: a {home, away} pair whose sides both carry a players list of
-    {player: {...}} rows. Statistics period objects also use home/away keys
-    but hold numbers, not player lists, so they can't false-positive."""
-    blob = _next_data_blob(html)
-    if blob is None:
-        return None
-    hits: list[dict[str, Any]] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            h, a = node.get("home"), node.get("away")
-            if (
-                isinstance(h, dict) and isinstance(a, dict)
-                and isinstance(h.get("players"), list)
-                and isinstance(a.get("players"), list)
-            ):
-                hits.append(node)
-                return
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(blob)
-    for cand in hits:
-        if all(
-            isinstance(p, dict) and isinstance(p.get("player"), dict)
-            for side in ("home", "away")
-            for p in cand[side]["players"][:5]
-        ):
-            return cand
-    return None
-
-
 def _get_html(session: Any, url: str) -> str:
     """Polite page GET — empty string on any failure (page tier has no
     breaker; a missing page is just skipped)."""
@@ -529,25 +466,24 @@ def _get_html(session: Any, url: str) -> str:
     return html
 
 
-def _match_page_url(e: dict[str, Any]) -> str | None:
-    """Event object → www.sofascore.com match-page URL (slug + customId
-    ride on every event object the day pages embed)."""
-    slug, cid = e.get("slug"), e.get("customId")
-    if not slug or not cid:
-        return None
-    return f"https://www.sofascore.com/football/match/{slug}/{cid}"
+# The tournament hub page is ISR-rendered with FRESH event data; the
+# daily-schedule pages are stale prerenders (measured 2026-06-11: the
+# opener showed 'notstarted' on the day page 75 minutes after kickoff,
+# 'inprogress 1-0' here). Match pages are client-rendered shells — their
+# __NEXT_DATA__ holds i18n strings only, NO lineups/event payloads, so an
+# HTML fallback for lineups/player-stats is INFEASIBLE; don't re-attempt.
+WC_TOURNAMENT_PAGE = "https://www.sofascore.com/tournament/football/world/world-cup/16"
 
 
-def _day_page_wc_events(
-    session: Any, dates: list[str]
-) -> dict[int, dict[str, Any]]:
-    """World Cup event objects from the daily-schedule HTML pages — the
+def _page_wc_events(session: Any, urls: list[str]) -> dict[int, dict[str, Any]]:
+    """World Cup event objects from www.sofascore.com HTML pages — the
     transport that survives API-tier 403 bans. Deduped by event id."""
     events: dict[int, dict[str, Any]] = {}
-    for date in dates:
-        html = _get_html(session, f"https://www.sofascore.com/football/{date}")
+    for url in urls:
+        html = _get_html(session, url)
+        label = url.rsplit("/", 1)[-1]
         if not html:
-            print(f"html route: {date} page unavailable")
+            print(f"html route: {label} page unavailable")
             continue
         page_events = _events_from_next_data(html)
         n = 0
@@ -560,8 +496,113 @@ def _day_page_wc_events(
                 continue
             events[eid] = e
             n += 1
-        print(f"html route: {date} — {len(page_events)} events on page, {n} WC")
+        print(f"html route: {label} — {len(page_events)} events on page, {n} WC")
     return events
+
+
+# ESPN team-name → our canonical fixture names (only the few that differ).
+# ESPN's hidden scoreboard JSON is key-free and NOT behind Cloudflare, so it
+# survives the Sofascore/FBref bans. Verified 2026-06-15: matched every known
+# stored result and reported live state correctly (not a stale prerender).
+_ESPN_NAME_FIX = {
+    "ivory coast": "Côte d'Ivoire",
+    "cape verde": "Cabo Verde",
+    "south korea": "Korea Republic",
+    "usa": "United States",
+    "united states": "United States",
+}
+
+
+def _espn_results(fixtures: list, wc_start: str) -> list[dict[str, Any]]:
+    """Final WC scores from ESPN's key-free JSON scoreboard — the ban-proof
+    fallback when both Sofascore tiers (API + HTML) are dark.
+
+    Joins to our fixtures BY NORMALIZED NAME (ESPN carries no Sofascore event
+    ids), honouring ESPN's explicit home/away. Only STATUS_FULL_TIME events
+    on/after the opening day are returned. event_id is synthesised as a stable
+    negative int from the match_number so it never collides with Sofascore ids
+    and is idempotent across runs.
+    """
+    import urllib.request
+
+    # canonical names from fixtures, keyed by normalized form for the join
+    canon_by_norm: dict[str, str] = {}
+    mn_by_pair: dict[frozenset, int] = {}
+    for f in fixtures:
+        h, a = f.get("home"), f.get("away")
+        if h:
+            canon_by_norm[normalize_simple(h)] = h
+        if a:
+            canon_by_norm[normalize_simple(a)] = a
+        if h and a and f.get("match_number"):
+            mn_by_pair[frozenset((normalize_simple(h), normalize_simple(a)))] = int(
+                f["match_number"]
+            )
+
+    def to_canon(espn_name: str) -> str | None:
+        fixed = _ESPN_NAME_FIX.get(espn_name.strip().lower())
+        if fixed:
+            return fixed
+        return canon_by_norm.get(normalize_simple(espn_name))
+
+    today = datetime.now(UTC).date()
+    start = datetime.fromisoformat(wc_start).date() if wc_start[:4].isdigit() else today
+    out: list[dict[str, Any]] = []
+    seen_pairs: set[frozenset] = set()
+    d = start
+    while d <= today:
+        url = (
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/"
+            f"scoreboard?dates={d.strftime('%Y%m%d')}"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001 — a bad day must not kill the fallback
+            print(f"espn: {d} fetch failed ({type(exc).__name__})")
+            d += timedelta(days=1)
+            continue
+        for e in payload.get("events", []):
+            st = (e.get("status") or {}).get("type", {}).get("name", "")
+            if st != "STATUS_FULL_TIME":
+                continue
+            comp = (e.get("competitions") or [{}])[0]
+            cs = comp.get("competitors", [])
+            hs = next((x for x in cs if x.get("homeAway") == "home"), None)
+            aw = next((x for x in cs if x.get("homeAway") == "away"), None)
+            if not hs or not aw:
+                continue
+            home = to_canon(hs.get("team", {}).get("displayName", ""))
+            away = to_canon(aw.get("team", {}).get("displayName", ""))
+            if not home or not away:
+                print(f"espn: unmapped teams "
+                      f"{hs.get('team',{}).get('displayName')} / "
+                      f"{aw.get('team',{}).get('displayName')} — skipped")
+                continue
+            try:
+                h_score, a_score = int(hs.get("score")), int(aw.get("score"))
+            except (TypeError, ValueError):
+                continue
+            pair = frozenset((normalize_simple(home), normalize_simple(away)))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            mn = mn_by_pair.get(pair)
+            out.append({
+                "event_id": -(mn) if mn else -(10000 + len(out)),  # stable, non-colliding
+                "date": d.strftime("%Y-%m-%d"),
+                "home": home,
+                "away": away,
+                "home_score": h_score,
+                "away_score": a_score,
+                "winner": home if h_score > a_score else away if a_score > h_score else None,
+                "decided_by": "FT",
+                "penalties": None,
+                "source": "espn",
+            })
+        d += timedelta(days=1)
+    return out
 
 
 def fetch_results() -> dict[str, Any]:
@@ -610,24 +651,55 @@ def fetch_results() -> dict[str, Any]:
         print(f"breaker: {exc} — trying the HTML route")
 
     if not api_alive:
-        # API dark (the known Cloudflare API-tier ban) — daily schedule
-        # pages still serve 200 with the same event objects embedded.
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
-        cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
-        dates = sorted({
-            d for f in fixtures
-            if cutoff <= (d := str(f.get("date_utc", ""))[:10]) <= today
-        })
-        for e in _day_page_wc_events(session, dates).values():
+        # API dark (the known Cloudflare API-tier ban) — the tournament hub
+        # page is ISR-rendered with fresh event data. Day pages only as a
+        # last resort: they're stale prerenders (see WC_TOURNAMENT_PAGE).
+        events = _page_wc_events(session, [WC_TOURNAMENT_PAGE])
+        if not events:
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%d")
+            dates = sorted({
+                d for f in fixtures
+                if cutoff <= (d := str(f.get("date_utc", ""))[:10]) <= today
+            })
+            events = _page_wc_events(
+                session,
+                [f"https://www.sofascore.com/football/{d}" for d in dates],
+            )
+        for e in events.values():
             rec = _event_to_result(e, id_to_name, wc_start)
             if rec is not None and rec["event_id"] not in by_event:
                 by_event[rec["event_id"]] = rec
                 n_new += 1
 
+    # ESPN fallback — fires when both Sofascore tiers are dark / dry. ESPN is
+    # key-free and not behind Cloudflare, so it backfills the games the ban
+    # hides. Dedup is BY NORMALISED TEAM-PAIR (ESPN ids differ from Sofascore),
+    # so a match already stored from Sofascore is never duplicated; ESPN only
+    # ADDS genuinely-missing games.
+    if n_new == 0:
+        existing_pairs = {
+            frozenset((normalize_simple(r["home"]), normalize_simple(r["away"])))
+            for r in by_event.values()
+        }
+        n_espn = 0
+        for rec in _espn_results(fixtures, wc_start):
+            pair = frozenset(
+                (normalize_simple(rec["home"]), normalize_simple(rec["away"]))
+            )
+            if pair in existing_pairs:
+                continue
+            existing_pairs.add(pair)
+            by_event[rec["event_id"]] = rec
+            n_espn += 1
+        if n_espn:
+            print(f"espn fallback: +{n_espn} results the Sofascore ban hid")
+            n_new += n_espn
+
     out = {
         "fetched_at": datetime.now(UTC).isoformat(),
         "results": sorted(
-            by_event.values(), key=lambda r: (r["date"], r["event_id"])
+            by_event.values(), key=lambda r: (r["date"], str(r["event_id"]))
         ),
     }
     atomic_write_json(SOFA_RESULTS_JSON, out)
@@ -713,10 +785,11 @@ def fetch_confirmed_lineups(horizon_hours: float = 48.0) -> dict[str, Any]:
     Sofascore publishes lineups ~1h pre-kickoff (confirmed=true); run this on
     match days and regenerate the player predictions afterwards.
 
-    When the API tier is 403-banned, falls back to the match pages'
-    __NEXT_DATA__ (same payload, page transport). A confirmed entry never
-    regresses to an unconfirmed one, and an empty shell never overwrites
-    real data."""
+    API-only by necessity: match pages are client-rendered shells whose
+    __NEXT_DATA__ carries no lineups payload (measured 2026-06-11 on a live
+    match — see WC_TOURNAMENT_PAGE comment), so there is NO page-tier
+    fallback. During API bans the availability layer degrades to its
+    caps-fallback XIs, by design."""
     fixtures = json.loads(FIXTURES_JSON.read_text())
     team_ids = team_ids_from_scrape()
     session = _session()
@@ -755,48 +828,6 @@ def fetch_confirmed_lineups(horizon_hours: float = 48.0) -> dict[str, Any]:
         out[str(match_number)] = entry
         if entry["confirmed"]:
             confirmed_count += 1
-
-    if not api_events:
-        # API dark — same events + lineups off the page tier. Window starts
-        # a day back so a just-kicked-off match near midnight still counts.
-        start_dt = datetime.now(UTC) - timedelta(hours=3)
-        end_dt = datetime.now(UTC) + timedelta(hours=horizon_hours)
-        dates = sorted({
-            d for f in fixtures
-            if start_dt.strftime("%Y-%m-%d")
-            <= (d := str(f.get("date_utc", ""))[:10])
-            <= end_dt.strftime("%Y-%m-%d")
-        })
-        for eid, e in sorted(_day_page_wc_events(session, dates).items()):
-            ts = int(e.get("startTimestamp", 0) or 0)
-            if not (now - 3 * 3600 <= ts <= now + horizon_hours * 3600):
-                continue
-            key = (
-                sofa_canon(str((e.get("homeTeam") or {}).get("name", ""))),
-                sofa_canon(str((e.get("awayTeam") or {}).get("name", ""))),
-            )
-            match_number = fix_key.get(key)
-            if match_number is None:
-                continue
-            url = _match_page_url(e)
-            if url is None:
-                continue
-            payload = _lineups_from_next_data(_get_html(session, url))
-            if payload is None:
-                print(f"html route: no embedded lineups for match {match_number}")
-                continue
-            entry = _lineup_entry(payload, eid)
-            if not any(
-                entry[s]["starters"] or entry[s]["missing"]
-                for s in ("home", "away")
-            ):
-                continue  # empty shell — never store nothing
-            prev = dict(out.get(str(match_number), {}) or {})
-            if prev.get("confirmed") and not entry["confirmed"]:
-                continue  # a confirmed XI never regresses to a projection
-            out[str(match_number)] = entry
-            if entry["confirmed"]:
-                confirmed_count += 1
 
     atomic_write_json(CONFIRMED_LINEUPS_JSON, out)
     print(
