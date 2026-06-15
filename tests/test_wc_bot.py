@@ -204,3 +204,50 @@ class TestStakeParser:
     @pytest.mark.parametrize("text", ["hello", "@ 1.8", "60 @", "ladder risk"])
     def test_invalid(self, text):
         assert re.match(STAKE_RE, text.strip()) is None
+
+
+class TestGuardrail:
+    """The responsible-betting guard refuses the patterns that cost EUR150."""
+
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path, monkeypatch):
+        import scripts.pipeline.telegram_bot as tb
+        monkeypatch.setattr(tb, "WC_BANKROLL_JSON", tmp_path / "bk.json")
+        self.tb = tb
+
+    def _bal(self, balance, deposited=None, loss_stop=None):
+        import json
+        d = {"balance": balance}
+        if deposited is not None:
+            d["deposited"] = deposited
+        if loss_stop is not None:
+            d["loss_stop_eur"] = loss_stop
+        self.tb.WC_BANKROLL_JSON.write_text(json.dumps(d))
+
+    def test_blocks_8_leg_parlay(self):
+        self._bal(100.0)
+        assert "parlay blocked" in self.tb._wc_guard_check(10, n_legs=8, is_wc=True).lower() \
+            or "leg" in self.tb._wc_guard_check(10, n_legs=8, is_wc=True).lower()
+
+    def test_blocks_non_wc(self):
+        self._bal(100.0)
+        msg = self.tb._wc_guard_check(10, n_legs=1, is_wc=False)
+        assert msg and "World Cup" in msg
+
+    def test_blocks_oversized_stake(self):
+        self._bal(100.0)
+        msg = self.tb._wc_guard_check(60, n_legs=1, is_wc=True)
+        assert msg and "half" in msg.lower()
+
+    def test_allows_good_single(self):
+        self._bal(100.0)
+        assert self.tb._wc_guard_check(20, n_legs=1, is_wc=True) is None
+
+    def test_loss_stop_hard_blocks(self):
+        self._bal(0.40, deposited=151.0, loss_stop=50.0)
+        msg = self.tb._wc_guard_check(5, n_legs=1, is_wc=True)
+        assert msg and "Loss-stop" in msg
+
+    def test_force_overrides_soft_limits(self):
+        self._bal(100.0)
+        assert self.tb._wc_guard_check(10, n_legs=8, is_wc=False, force=True) is None

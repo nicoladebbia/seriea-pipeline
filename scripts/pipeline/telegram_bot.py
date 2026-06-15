@@ -460,6 +460,8 @@ _WC_COMMANDS = [
     {"command": "bet", "description": "Log a bet: /bet 60 @ 1.80 Canada win"},
     {"command": "balance", "description": "💰 Show or set balance"},
     {"command": "settle", "description": "Settle a free-text bet: won|lost|void"},
+    {"command": "guard", "description": "🛡 Show betting guardrail status"},
+    {"command": "lossstop", "description": "🛑 Set loss-stop limit: /lossstop 50"},
 ]
 
 
@@ -2597,6 +2599,17 @@ def _wc_tz():
 WC_MYBETS_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bets.json"
 WC_BANKROLL_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bankroll.json"
 WC_RUNG_FRACTION = 0.47          # ladder rung ≈ this share of balance, floor keeps the rest
+
+# ── Responsible-betting guardrail (added 2026-06-15 after a EUR50 8-leg
+# parlay on Brazil Serie B lost on one leg; EUR151 deposited -> EUR0.40).
+# The bot REFUSES to log bets that violate these. Override per-bet only with
+# an explicit "force" word; change the limits here.
+WC_GUARD = {
+    "max_parlay_legs": 3,        # no accumulators beyond this (8-folds are -EV by construction)
+    "max_stake_pct": 0.50,       # one bet ≤ 50% of current balance
+    "wc_matches_only": True,     # refuse legs the model can't price (non-WC leagues)
+    "loss_stop": True,           # hard stop when down past the limit below
+}
 _WC_PENDING_BET: dict = {}       # chat_id -> {"match_number", "leg_key", "label", "match"}
 _WC_SETTLE_LAST = {"t": 0.0}
 
@@ -2708,6 +2721,41 @@ def _wc_bankroll_apply(delta: float, note: str) -> dict:
         {"at": datetime.now(UTC).isoformat(), "delta": round(delta, 2), "note": note}]
     _wc_json_save(WC_BANKROLL_JSON, bk)
     return bk
+
+
+def _wc_guard_check(stake: float, n_legs: int = 1, is_wc: bool = True,
+                    force: bool = False) -> str | None:
+    """Return a refusal message if this bet violates the guardrail, else None.
+    `force` (user typed 'force') bypasses the soft limits — but the loss-stop
+    is never silently bypassable: it nudges to /deposit or a cool-off."""
+    if force:
+        return None
+    bk = _wc_bankroll()
+    bal = bk.get("balance")
+    # Loss-stop: down past the limit → hard stop.
+    if WC_GUARD["loss_stop"] and bk.get("deposited"):
+        limit = bk.get("loss_stop_eur")
+        net = (bal or 0) - bk["deposited"]
+        if limit and net <= -abs(limit):
+            return (f"🛑 <b>Loss-stop hit.</b> You're down €{abs(net):.2f} of your "
+                    f"€{abs(limit):.0f} limit. No more bets this session — that was "
+                    f"the deal you set. Take a break; the model's calls keep grading "
+                    f"on /mybets with no money at risk.")
+    if WC_GUARD["wc_matches_only"] and not is_wc:
+        return ("🚫 That's not a World Cup match — the model can't price it, so I "
+                "won't log it. WC 2026 fixtures only (the Brazil Série B legs are "
+                "exactly the blind bets that cost €150). Type <b>force</b> to override.")
+    if n_legs > WC_GUARD["max_parlay_legs"]:
+        return (f"🚫 <b>{n_legs}-leg parlay blocked.</b> Max {WC_GUARD['max_parlay_legs']} "
+                f"legs — an 8-fold is ~6% to hit and negative-EV by construction "
+                f"(it's how you lost €50 on one leg). Singles or ≤3-leg combos. "
+                f"Type <b>force</b> to override.")
+    if bal and stake > bal * WC_GUARD["max_stake_pct"] + 0.01:
+        cap = bal * WC_GUARD["max_stake_pct"]
+        return (f"🚫 €{stake:.2f} is over half your €{bal:.2f} balance. Max bet right "
+                f"now: €{cap:.2f}. One bet shouldn't be able to halve you. "
+                f"Type <b>force</b> to override.")
+    return None
 
 
 def _wc_log_bet(match_number, match: str, leg_key: str | None, label: str,
@@ -3956,6 +4004,11 @@ def run_bot():
                         if guess:
                             pend["leg_key"], pend["label"], pend["prob"] = guess
                     if stake and odds and odds >= 1.01:
+                        _force = "force" in text.lower()
+                        _guard = _wc_guard_check(stake, n_legs=1, is_wc=True, force=_force)
+                        if _guard:
+                            _tg_send_message(token, chat_id, _guard)
+                            continue
                         _WC_PENDING_BET.pop(chat_id, None)
                         label = pend.get("label") or "custom bet"
                         bet = _wc_log_bet(pend["match_number"],
@@ -4023,6 +4076,32 @@ def run_bot():
                     _tg_send_typing(token, chat_id)
                     _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
                     response_text = _build_daily_ladder(tier=_tier)
+                elif cmd == "/lossstop":
+                    arg = text.replace("/lossstop", "").strip().replace(",", ".")
+                    bk = _wc_bankroll()
+                    if arg:
+                        try:
+                            bk["loss_stop_eur"] = round(abs(float(arg)), 2)
+                            _wc_json_save(WC_BANKROLL_JSON, bk)
+                            response_text = (f"🛑 Loss-stop set: the bot refuses bets once "
+                                             f"you're down <b>€{bk['loss_stop_eur']:.0f}</b> "
+                                             f"vs deposits. This is the deal — keep it.")
+                        except ValueError:
+                            response_text = "Usage: <code>/lossstop 50</code>"
+                    else:
+                        cur = bk.get("loss_stop_eur")
+                        response_text = (f"🛑 Loss-stop: €{cur:.0f}" if cur
+                                         else "No loss-stop set. <code>/lossstop 50</code> to set one.")
+                elif cmd == "/guard":
+                    g = WC_GUARD
+                    bk = _wc_bankroll()
+                    response_text = (
+                        "🛡 <b>Guardrail</b> (protects against the parlay/blind-bet pattern):\n"
+                        f"• Max {g['max_parlay_legs']} legs per ticket\n"
+                        f"• Max bet ≤ {g['max_stake_pct']:.0%} of balance\n"
+                        f"• World Cup matches only\n"
+                        f"• Loss-stop: {('€' + format(bk['loss_stop_eur'], '.0f')) if bk.get('loss_stop_eur') else 'not set (/lossstop 50)'}\n"
+                        "Type <b>force</b> in a bet to override the soft limits.")
                 elif cmd == "/deposit":
                     arg = text.replace("/deposit", "").strip().replace(",", ".")
                     try:
@@ -4067,12 +4146,20 @@ def run_bot():
                         stake = float(bm.group(1).replace(",", "."))
                         odds = float(bm.group(2).replace(",", "."))
                         label = bm.group(3).strip() or "custom bet"
-                        bet = _wc_log_bet(None, "manual", None, label, stake, odds)
-                        bk = _wc_bankroll()
-                        response_text = (
-                            f"🎫 Logged #{bet['id']}: <b>{label}</b> @ {odds} × €{stake:.2f}. "
-                            f"Settle with /settle won|lost."
-                            + (f"\n💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                        _force = "force" in label.lower()
+                        # an odds product that looks like a multi-leg combo
+                        _legs = 4 if odds >= 6.0 else (2 if odds >= 3.0 else 1)
+                        _guard = _wc_guard_check(stake, n_legs=_legs, is_wc=False,
+                                                 force=_force)
+                        if _guard:
+                            response_text = _guard
+                        else:
+                            bet = _wc_log_bet(None, "manual", None, label, stake, odds)
+                            bk = _wc_bankroll()
+                            response_text = (
+                                f"🎫 Logged #{bet['id']}: <b>{label}</b> @ {odds} × €{stake:.2f}. "
+                                f"Settle with /settle won|lost."
+                                + (f"\n💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
                 elif cmd == "/settle":
                     arg = text.replace("/settle", "").strip().lower()
                     bets = _wc_json_load(WC_MYBETS_JSON, [])
