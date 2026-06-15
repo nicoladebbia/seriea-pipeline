@@ -26,11 +26,13 @@ Honesty / safety
 - Score strings are Opta full-time scores ('2–1', en-dash). Extra-time/penalty
   shootout handling matches the CSV/Sofascore convention: the FT score is stored;
   90'-reconstruction for knockouts happens downstream from goalscorers, unchanged.
-- IMPORTANT: the live FBref WC page has not been fetched from this host yet (the
-  IP is Cloudflare-banned at build time). The PARSER is specimen-verified; the
-  FETCH + the WC team-name mapping must be confirmed against one real WC specimen
-  before the output is trusted — see ``verify_against_specimen`` and the log line
-  it emits. Until then this is armed, not proven.
+- STATUS: live-verified 2026-06-15 against the real WC schedule page (visible
+  solver returned ~366 KB, 12 finished matches parsed with correct scores and
+  canon-joinable team names). FBref is a MANUAL backup, not an unattended source:
+  it needs a VISIBLE browser to pass Cloudflare (headless is detected), so it is
+  NOT in the 30-min cron. The unattended fallback is ESPN's key-free scoreboard
+  (``sofascore_fetch._espn_results``). Run FBref by hand only when ESPN +
+  Sofascore are both down: ``python3 -m scripts.worldcup.fbref_fetch``.
 """
 
 from __future__ import annotations
@@ -61,45 +63,87 @@ FBREF_RESULTS_JSON = DATA_DIR / "fbref_results.json"
 # FBref uses an EN DASH between scores ("2–1"), occasionally a hyphen.
 _SCORE_SEPS = ("–", "—", "-")
 
+# FBref renders each team cell with a 2-letter country flag code attached:
+# Home = "Mexico mx" (trailing), Away = "za South Africa" (leading). Plus a few
+# spellings differ from the canonical results dataset.
+_FBREF_TEAM_FIXUPS = {
+    "Bosnia-Herzegovina": "Bosnia and Herzegovina",
+    "Korea Republic": "South Korea",   # canon_team also maps this; belt-and-braces
+    "IR Iran": "Iran",
+    "Czechia": "Czech Republic",
+}
 
-def fetch_schedule_html(timeout_s: int = 60) -> str | None:
-    """Headless-browser fetch of the WC schedule page; None on any failure.
 
-    Mirrors ``_refresh_fbref_fixtures``: botasaurus solves Cloudflare, we grab
-    the rendered HTML. Fails fast (no retry storm) so a ban can't hang refresh.
+def _clean_team(raw: Any) -> str:
+    """Strip FBref's flag code and normalise to a canon-joinable name.
+
+    'Mexico mx' -> 'Mexico'; 'za South Africa' -> 'South Africa'. The flag code
+    is a standalone lowercase 2-letter token at the start or end of the cell.
+    """
+    s = str(raw).strip()
+    if not s:
+        return s
+    parts = s.split()
+    # Flag code is a standalone lowercase 2-3 letter token (xx=ISO-2, or 3-letter
+    # for UK home nations: sct/eng/wls/nir). Trailing on Home, leading on Away.
+    def _is_code(tok: str) -> bool:
+        return 2 <= len(tok) <= 3 and tok.islower() and tok.isalpha()
+    if len(parts) > 1 and _is_code(parts[-1]):
+        parts = parts[:-1]          # trailing code (Home cells)
+    elif len(parts) > 1 and _is_code(parts[0]):
+        parts = parts[1:]           # leading code (Away cells)
+    name = " ".join(parts).strip()
+    name = _FBREF_TEAM_FIXUPS.get(name, name)
+    return canon_team(name)
+
+
+def fetch_schedule_html(timeout_s: int = 150) -> str | None:
+    """Fetch the WC schedule page past Cloudflare; None on any failure.
+
+    Uses the undetected-chromedriver solver and reads the HTML DIRECTLY from the
+    solved browser (``driver.page_source``) — NOT cookie-extraction, which is
+    racy and short-lived. Verified to return the real WC schedule (~366 KB, 12+
+    matches) where plain HTTP gets a 403 challenge.
+
+    IMPORTANT — NOT for the unattended cron: Cloudflare reliably detects a
+    HEADLESS browser, so this must run VISIBLE (a Chrome window opens for ~30 s).
+    That needs a desktop session. The 30-min refresh job does NOT call this; run
+    it manually (``python3 -m scripts.worldcup.fbref_fetch``) as a backup when
+    BOTH ESPN and Sofascore are down. The primary live source is ESPN's key-free
+    scoreboard (``sofascore_fetch._espn_results``), which is Cloudflare-free and
+    runs unattended.
     """
     try:
-        from botasaurus.browser import Driver, browser
-    except ImportError:
-        log.warning("botasaurus not installed — FBref source unavailable")
+        from scraper.cloudflare_solver import _create_driver, _wait_for_challenge
+    except ImportError as exc:
+        log.warning("cloudflare_solver unavailable — FBref source off: %s", exc)
         return None
 
-    @browser(
-        headless=True,
-        block_images_and_css=False,
-        wait_for_complete_page_load=True,
-        reuse_driver=False,
-        output=None,
-        create_error_logs=False,
-    )
-    def _fetch(driver: Driver, data: dict) -> str:
-        driver.get(data["url"])
-        # Cloudflare interstitial / consent dismissal, best-effort.
-        try:
-            driver.wait_for_element("body.fb", wait=timeout_s)
-        except Exception:  # noqa: BLE001, S110 — absence handled by the size guard below
-            pass
-        html = driver.page_html
-        return html or ""
-
+    driver = None
     try:
-        html = _fetch({"url": WC_SCHEDULE_URL})
+        # Visible (headless is detected by Cloudflare). Real browser solves the JS
+        # challenge; we then read the already-rendered DOM — no cookie handoff.
+        driver = _create_driver(use_undetected=True, headless=False)
+        driver.get(WC_SCHEDULE_URL)
+        if not _wait_for_challenge(driver, timeout_s):
+            log.warning("FBref: Cloudflare challenge unresolved in %ss", timeout_s)
+            return None
+        import time
+        time.sleep(3)  # let the schedule table finish rendering
+        html = driver.page_source or ""
     except Exception as exc:  # noqa: BLE001 — any browser/network error => no source
         log.warning("FBref fetch failed: %s", exc)
         return None
-    if not html or len(html) < 50_000:
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001, S110 — quit errors are non-fatal
+                pass
+
+    if len(html) < 50_000:
         log.warning("FBref page too small (%s bytes) — likely a CF challenge",
-                    len(html) if html else 0)
+                    len(html))
         return None
     HTML_DIR.mkdir(parents=True, exist_ok=True)
     SPECIMEN_HTML.write_text(html, encoding="utf-8")
@@ -154,10 +198,12 @@ def parse_results(html: str) -> list[dict[str, Any]]:
         score = _parse_score(d.get("Score"))
         if score is None:
             continue  # not played yet / malformed
-        home = d.get("Home")
-        away = d.get("Away")
         date = d.get("Date")
-        if not (home and away and date) or str(home) == "nan":
+        if not (d.get("Home") and d.get("Away") and date) or str(d.get("Home")) == "nan":
+            continue
+        home = _clean_team(d["Home"])   # strips FBref flag codes -> canon name
+        away = _clean_team(d["Away"])
+        if not home or not away:
             continue
         hs, as_ = score
         # FBref id: stable surrogate from (date, teams) — no event id on the page.
@@ -165,12 +211,11 @@ def parse_results(html: str) -> list[dict[str, Any]]:
         out.append({
             "event_id": eid,
             "date": str(date),
-            "home": canon_team(str(home)),
-            "away": canon_team(str(away)),
+            "home": home,
+            "away": away,
             "home_score": hs,
             "away_score": as_,
-            "winner": (canon_team(str(home)) if hs > as_
-                       else canon_team(str(away)) if as_ > hs else None),
+            "winner": (home if hs > as_ else away if as_ > hs else None),
             "decided_by": "FT",
             "penalties": None,
             "source": "fbref",

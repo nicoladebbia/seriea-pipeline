@@ -2323,6 +2323,22 @@ class TestFbrefResults:
         assert _parse_score(None) is None
         assert _parse_score("postponed") is None
 
+    def test_clean_team_strips_flag_codes(self):
+        from scripts.worldcup.fbref_fetch import _clean_team
+        # 2-letter codes (trailing on Home, leading on Away)
+        assert _clean_team("Mexico mx") == "Mexico"
+        assert _clean_team("za South Africa") == "South Africa"
+        # 3-letter UK home-nation codes
+        assert _clean_team("sct Scotland") == "Scotland"
+        assert _clean_team("England eng") == "England"
+        # canon mapping applied
+        assert _clean_team("Korea Republic kr") == "South Korea"
+        assert _clean_team("cz Czechia") == "Czech Republic"
+        assert _clean_team("ba Bosnia-Herzegovina") == "Bosnia and Herzegovina"
+        # must NOT over-strip real multi-word names
+        assert _clean_team("Ivory Coast") == "Ivory Coast"
+        assert _clean_team("DR Congo") == "DR Congo"
+
     def test_overlay_merges_fbref_when_sofascore_lacks_it(self, tmp_path, monkeypatch):
         # FBref-only result (neither CSV nor Sofascore has it) must reach the grader.
         import scripts.worldcup.engine as eng

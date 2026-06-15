@@ -123,10 +123,11 @@ def main() -> None:
     # Same-night final scores — bridges martj42's publish lag so the
     # knockout fill and the result-pinned simulation see reality first.
     _run("scripts.worldcup.sofascore_fetch", "--results")
-    # Independent second live source (different CDN): when Sofascore is
-    # Cloudflare-banned, FBref may still answer. Fail-soft, short timeout so a
-    # ban can't hang the cycle; the grader merges whatever either source has.
-    _run("scripts.worldcup.fbref_fetch", timeout=180)
+    # NOTE: the unattended live-results fallback is ESPN's key-free scoreboard
+    # (sofascore_fetch._espn_results) — Cloudflare-free, runs here every cycle.
+    # FBref is a MANUAL backup only (scripts.worldcup.fbref_fetch): it needs a
+    # VISIBLE browser to pass Cloudflare's headless detection, so it can't run in
+    # this headless cron. Invoke it by hand if ESPN + Sofascore are both down.
     _run("scripts.worldcup.availability")
     _run("scripts.worldcup.knockout")
     _run("scripts.worldcup.generate_predictions", "--sims", "10000")
