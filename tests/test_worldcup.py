@@ -1775,3 +1775,137 @@ class TestWorldCupDigest:
             assert "Foo–Bar" in text
         else:
             assert "No matches today" in text
+
+
+class TestMarketGrading:
+    """Per-market grading for played matches (scripts.worldcup.market_grading)."""
+
+    @staticmethod
+    def _snap(hxg: float, axg: float, ph: float, pd_: float, pa: float) -> dict:
+        return {
+            "home_team": "Home",
+            "away_team": "Away",
+            "home_xg": hxg,
+            "away_xg": axg,
+            "probabilities": {"home": ph, "draw": pd_, "away": pa},
+        }
+
+    def test_1x2_hit_and_miss(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(2.0, 0.7, 0.69, 0.20, 0.11)  # strong home
+        rows = grade_match_markets(snap, 2, 0)  # home win → pick hits
+        r = next(x for x in rows if x["family"] == "1x2")
+        assert r["pick"] == "Home"
+        assert r["hit"] is True
+        assert r["edge"] == "model"
+
+        rows2 = grade_match_markets(snap, 0, 1)  # away win → pick misses
+        r2 = next(x for x in rows2 if x["family"] == "1x2")
+        assert r2["hit"] is False
+
+    def test_over_under_distance(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(2.0, 1.5, 0.5, 0.25, 0.25)  # high-scoring lean → Over
+        rows = grade_match_markets(snap, 3, 1)  # 4 goals total
+        ou25 = next(
+            x for x in rows
+            if x["family"] == "over_under" and "2.5" in x["label"]
+        )
+        # 4 goals vs line 2.5 → Over hits, 2 goals clear (3 and 4 both > 2.5... )
+        assert ou25["pick"] == "Over 2.5"
+        assert ou25["hit"] is True
+        assert ou25["distance"] == 2.0  # |4 - 2.5| rounds to 2 goals clear
+
+        # a 0-0 makes every Over miss by the full line distance
+        rows0 = grade_match_markets(snap, 0, 0)
+        ou05 = next(
+            x for x in rows0
+            if x["family"] == "over_under" and "0.5" in x["label"]
+        )
+        assert ou05["hit"] is False  # picked Over 0.5, but 0 goals
+
+    def test_exact_score_distance_manhattan(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(1.6, 1.2, 0.45, 0.27, 0.28)
+        rows = grade_match_markets(snap, 2, 1)
+        es = next(x for x in rows if x["family"] == "exact_score")
+        # predicted top score is some H-A; distance is |Δh| + |Δa| vs 2-1
+        assert es["distance"] is not None
+        assert es["distance"] >= 0
+        # if the model's top score equals 2-1, distance is 0 and hit True
+        if es["pick"] == "2-1":
+            assert es["distance"] == 0.0
+            assert es["hit"] is True
+
+    def test_btts_yes_no(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(1.8, 1.6, 0.4, 0.25, 0.35)  # both likely to score
+        rows = grade_match_markets(snap, 2, 1)  # both scored
+        btts = next(x for x in rows if x["family"] == "btts")
+        assert btts["pick"] == "Yes"
+        assert btts["hit"] is True
+
+        rows_nil = grade_match_markets(snap, 1, 0)  # only home scored
+        b2 = next(x for x in rows_nil if x["family"] == "btts")
+        assert b2["hit"] is (b2["pick"] == "No")
+
+    def test_kelly_stake_only_on_edge_with_value(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(2.0, 0.7, 0.69, 0.20, 0.11)
+        # market odds GENEROUS on home (2.0) vs fair ~1.45 → positive edge → stake>0
+        mo = {"odds": {"home": 2.0, "draw": 3.5, "away": 6.0}}
+        rows = grade_match_markets(snap, 2, 0, market_odds=mo)
+        r = next(x for x in rows if x["family"] == "1x2")
+        assert r["kind"] == "kelly"
+        assert r["stake"] > 0
+        assert r["payout_if_hit"] > r["stake"]
+
+        # market odds STINGY (1.10) → no edge → stake 0, kind no_edge
+        mo2 = {"odds": {"home": 1.10, "draw": 8.0, "away": 15.0}}
+        rows2 = grade_match_markets(snap, 2, 0, market_odds=mo2)
+        r2 = next(x for x in rows2 if x["family"] == "1x2")
+        assert r2["stake"] == 0
+        assert r2["kind"] == "no_edge"
+
+    def test_display_props_get_token_stake(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(2.0, 1.5, 0.5, 0.25, 0.25)
+        rows = grade_match_markets(snap, 3, 1)
+        ou = next(x for x in rows if x["family"] == "over_under")
+        assert ou["edge"] == "display"
+        assert ou["kind"] == "display"
+        assert ou["stake"] == 1.0  # flat token, not Kelly
+
+    def test_timing_ungraded_without_ht(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(1.8, 1.2, 0.45, 0.27, 0.28)
+        rows = grade_match_markets(snap, 2, 1)  # no ht passed
+        fh = next((x for x in rows if x["family"] == "first_half"), None)
+        assert fh is not None
+        assert fh["hit"] is None  # ungraded
+        assert "ungraded" in fh["distance_txt"]
+
+    def test_timing_graded_with_ht(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        snap = self._snap(1.8, 1.2, 0.45, 0.27, 0.28)
+        rows = grade_match_markets(snap, 2, 1, ht=(1, 0))  # home led at HT
+        fh = next(x for x in rows if x["family"] == "first_half")
+        assert fh["hit"] is not None  # now graded
+        gbh = next((x for x in rows if x["family"] == "goal_both_halves"), None)
+        assert gbh is not None
+        # HT 1-0, FT 2-1 → 2nd half had goals (1 each) → both halves YES
+        assert gbh["actual"] == "goals in both halves"
+
+    def test_degenerate_xg_returns_empty(self) -> None:
+        from scripts.worldcup.market_grading import grade_match_markets
+
+        assert grade_match_markets({"home_xg": 0, "away_xg": 1}, 1, 0) == []
+        assert grade_match_markets({"probabilities": {}}, 1, 0) == []

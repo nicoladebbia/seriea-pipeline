@@ -112,6 +112,35 @@ def _ninety_minute_score(
     return (h90, a90)
 
 
+def reconstruct_halftime(
+    scorers: pd.DataFrame,
+    home_canon: str,
+    away_canon: str,
+    result_date: pd.Timestamp,
+    ft: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Half-time (<=45') score from scorer minutes; None if coverage incomplete.
+
+    Mirrors ``_ninety_minute_score``'s honesty guard: if the number of scorer
+    rows doesn't match the full-time goal count, coverage is incomplete and we
+    refuse to fabricate a half-time split. Own goals are credited to the
+    beneficiary team (the ``team`` column already encodes that).
+    """
+    if scorers.empty:
+        return None
+    rows = scorers[
+        (pd.to_datetime(scorers["date"]) == result_date)
+        & (scorers["home_team"] == home_canon)
+        & (scorers["away_team"] == away_canon)
+    ]
+    if len(rows) != ft[0] + ft[1]:
+        return None  # incomplete scorer coverage — cannot split halves honestly
+    first_half = rows[rows["minute"].fillna(999) <= 45]
+    hh = int((first_half["team"] == home_canon).sum())
+    ah = int((first_half["team"] == away_canon).sum())
+    return (hh, ah)
+
+
 def _brier(probs: tuple[float, float, float], y: tuple[float, float, float]) -> float:
     return float(sum((p - t) ** 2 for p, t in zip(probs, y, strict=True)))
 

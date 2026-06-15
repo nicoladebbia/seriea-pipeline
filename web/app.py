@@ -1200,6 +1200,111 @@ def api_worldcup_record():
     return jsonify(record)
 
 
+# Per-match grade cache: keyed by (archive mtime, results mtime) so the full
+# menu is only re-graded when the snapshots or results actually change.
+_WC_GRADES_CACHE: dict = {"key": None, "payload": None}
+
+
+@app.route("/api/worldcup/match-grades")
+def api_worldcup_match_grades():
+    """Full per-market grade for every PLAYED World Cup match — the drill-down
+    behind each clickable row in the record table.
+
+    For each archived pre-kickoff snapshot whose result is known, reconstructs
+    the entire tipster market menu (same numbers the page shows as insight) and
+    grades each market vs reality: hit/miss, distance-to-correct, the AI's
+    quarter-Kelly suggested stake at the Sofascore-proxy price, and the payout
+    had it hit. Honest tiers — who-wins family carries the backtested edge; goal
+    props are flagged display-only. Half-dependent markets grade only when the
+    half-time score reconstructs from complete scorer coverage.
+    """
+    import pandas as pd
+
+    from scripts.worldcup.engine import canon_team
+    from scripts.worldcup.grading import (
+        GOALSCORERS_CSV,
+        SHOOTOUTS_CSV,
+        _find_result,
+        _ninety_minute_score,
+        reconstruct_halftime,
+    )
+    from scripts.worldcup.market_grading import grade_match_markets
+
+    archive_path = WORLDCUP_DIR / "predictions_archive.json"
+    results_csv = WORLDCUP_DIR / "international_results.csv"
+    # Cache key invalidates whenever the snapshots OR the results change on disk.
+    def _mtime(p) -> float:
+        try:
+            return p.stat().st_mtime if p.exists() else 0.0
+        except OSError:
+            return 0.0
+    cache_key = (round(_mtime(archive_path), 3), round(_mtime(results_csv), 3))
+    if _WC_GRADES_CACHE["key"] == cache_key and _WC_GRADES_CACHE["payload"] is not None:
+        return jsonify(_WC_GRADES_CACHE["payload"])
+
+    archive = _load_json(archive_path, {})
+    market = _load_json(WORLDCUP_DIR / "market_odds.json", {})
+    if not isinstance(archive, dict) or not archive:
+        return jsonify({"matches": {}, "n": 0})
+
+    from scripts.worldcup.engine import load_results as _wc_load_results
+
+    df = _wc_load_results()
+    scorers = pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
+    shootouts = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
+
+    out: dict[str, dict] = {}
+    for key, snap in archive.items():
+        if not isinstance(snap, dict):
+            continue
+        home, away, date = snap.get("home_team"), snap.get("away_team"), snap.get("date")
+        if not (home and away and date):
+            continue
+        res = _find_result(df, str(home), str(away), str(date))
+        if res is None:
+            continue  # not played / not in results yet
+        hs, as_, result_date = res
+        stage = snap.get("stage", "group")
+        ht = None
+        if stage != "group":
+            r90 = _ninety_minute_score(
+                scorers, shootouts, canon_team(str(home)), canon_team(str(away)),
+                result_date, (hs, as_),
+            )
+            if r90 is None:
+                continue  # can't grade a knockout's 90' honestly — skip
+            hs, as_ = r90
+        else:
+            ht = reconstruct_halftime(
+                scorers, canon_team(str(home)), canon_team(str(away)),
+                result_date, (hs, as_),
+            )
+        mo = market.get(str(snap.get("match_number"))) if isinstance(market, dict) else None
+        graded = grade_match_markets(snap, hs, as_, ht=ht, market_odds=mo)
+        if not graded:
+            continue
+        n_hit = sum(1 for g in graded if g["hit"] is True)
+        n_graded = sum(1 for g in graded if g["hit"] is not None)
+        out[key] = {
+            "match": f"{home} vs {away}",
+            "home_team": home,
+            "away_team": away,
+            "date": date,
+            "stage": stage,
+            "score": f"{hs}-{as_}",
+            "ht_score": f"{ht[0]}-{ht[1]}" if ht else None,
+            "match_number": snap.get("match_number"),
+            "n_hit": n_hit,
+            "n_graded": n_graded,
+            "markets": graded,
+        }
+
+    payload = {"matches": out, "n": len(out)}
+    _WC_GRADES_CACHE["key"] = cache_key
+    _WC_GRADES_CACHE["payload"] = payload
+    return jsonify(payload)
+
+
 @app.route("/api/worldcup/simulation")
 def api_worldcup_simulation():
     """Monte Carlo tournament simulation: advancement + champion probabilities.
