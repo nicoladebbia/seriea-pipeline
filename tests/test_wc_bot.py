@@ -89,29 +89,56 @@ class TestLenientBetParse:
 
 
 class TestLadderMemory:
-    """The ladder remembers: wins roll the rung forward, losses reset."""
+    """The ladder is DERIVED from the settled journal (self-healing) — the
+    trailing win-streak counts back from the most recent settled bet."""
 
     @pytest.fixture(autouse=True)
     def _sandbox(self, tmp_path, monkeypatch):
         import scripts.pipeline.telegram_bot as tb
         monkeypatch.setattr(tb, "WC_LADDER_STATE_JSON", tmp_path / "ladder.json")
+        monkeypatch.setattr(tb, "WC_MYBETS_JSON", tmp_path / "bets.json")
         self.tb = tb
 
+    def _journal(self, *settled):
+        """settled = list of (status, stake, odds) in chronological order."""
+        import json
+        rows = []
+        for i, (status, stake, odds) in enumerate(settled):
+            rows.append({"id": i + 1, "label": "x", "stake": stake, "odds": odds,
+                         "status": status, "settled_at": f"2026-06-12T{i:02d}:00:00"})
+        (self.tb.WC_MYBETS_JSON).write_text(json.dumps(rows))
+
     def test_win_sets_next_rung_to_return(self):
-        st = self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
+        self._journal(("won", 60.0, 1.80))
+        st = self.tb._wc_ladder_state()
         assert st["rung"] == pytest.approx(108.0)
         assert st["streak"] == 1
 
     def test_consecutive_wins_compound(self):
-        self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
-        st = self.tb._wc_ladder_on_settle({"stake": 108.0, "odds": 1.50}, True)
+        self._journal(("won", 60.0, 1.80), ("won", 108.0, 1.50))
+        st = self.tb._wc_ladder_state()
         assert st["rung"] == pytest.approx(162.0)
         assert st["streak"] == 2
 
     def test_loss_resets(self):
-        self.tb._wc_ladder_on_settle({"stake": 60.0, "odds": 1.80}, True)
-        st = self.tb._wc_ladder_on_settle({"stake": 108.0, "odds": 1.50}, False)
+        self._journal(("won", 60.0, 1.80), ("lost", 108.0, 1.50))
+        st = self.tb._wc_ladder_state()
         assert st["rung"] is None
+        assert st["streak"] == 0
+
+    def test_lost_won_lost_is_streak_zero(self):
+        """The exact 2026-06-15 bug: lost-won-lost must derive streak 0, NOT
+        carry a phantom streak from an old incremental counter."""
+        self._journal(("lost", 120.0, 2.0), ("won", 8.0, 2.05), ("lost", 16.0, 1.17))
+        st = self.tb._wc_ladder_state()
+        assert st["streak"] == 0 and st["rung"] is None
+
+    def test_self_heals_from_corrupt_cache(self):
+        """A corrupt stored streak-7 is ignored — journal wins."""
+        import json
+        self.tb.WC_LADDER_STATE_JSON.write_text(json.dumps({"rung": 18.0, "streak": 7}))
+        self._journal(("lost", 16.0, 1.17))
+        st = self.tb._wc_ladder_state()
         assert st["streak"] == 0
 
 

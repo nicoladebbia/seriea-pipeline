@@ -1785,6 +1785,7 @@ def _handle_worldcup() -> str:
         MARKET_ODDS_JSON,
         PREDICTIONS_JSON,
         build_best_combos,
+        build_fun_combos,
     )
     from scripts.worldcup.engine import read_json_safe
 
@@ -1828,7 +1829,7 @@ def _handle_worldcup() -> str:
     best = build_best_combos(preds, market)
     icons = {"safe": "🔒", "favorites": "⭐", "value": "💎"}
     if best.get("combos"):
-        lines.append("🎯 <b>Best combos — next 48h</b>")
+        lines.append("🎯 <b>Edge combos — next 48h</b> (who-wins, model-backed)")
         for c in best["combos"]:
             cm = c["combined"]
             head = (f"{icons.get(c['key'], '🎯')} <b>{c['key'].capitalize()}</b> — "
@@ -1844,8 +1845,26 @@ def _handle_worldcup() -> str:
                              f" — {leg['match']}")
             lines.append("")
     else:
-        lines.append("🎯 No combos — no upcoming matches in the next 48h.")
+        lines.append("🎯 No edge combos — no upcoming matches in the next 48h.")
         lines.append("")
+
+    # Fun combos — goal-prop multiplas like Nicola's played slip. NO model
+    # edge (goal props are noise on internationals); labeled as such so they
+    # are never mistaken for the edge combos above.
+    fun = build_fun_combos(preds)
+    if fun.get("combos"):
+        lines.append("🎲 <b>Fun combos — no model edge</b> (Over-goals, like a played multipla)")
+        for c in fun["combos"]:
+            cm = c["combined"]
+            lines.append(f"{c['title']} — {cm['prob'] * 100:.0f}% "
+                         f"(fair {cm['fair_odds']:.1f}×, {len(c['legs'])} legs)")
+            for leg in c["legs"]:
+                lines.append(f" • {leg['pick_label']} ({leg['prob'] * 100:.0f}%)"
+                             f" — {leg['match']}")
+            lines.append("")
+        lines.append("<i>🎲 Fun = entertainment only. Goal props don't beat the "
+                     "book on internationals — bet these for fun, not for edge.</i>")
+
     lines.append("<i>Model probabilities, Sofascore-proxy prices — insight, not bets.</i>")
     return "\n".join(lines)
 
@@ -2601,6 +2620,64 @@ WC_LEG_EVAL = {
     "1orO25": lambda h, a: h > a or h + a > 2.5,
 }
 
+# Half-based markets — keyed on (ht_h, ht_a) for first-half legs, or on BOTH
+# halves for combo legs. Evaluated by _wc_eval_leg only when HT data exists;
+# otherwise the leg is undecidable (returns None) and flagged for manual entry.
+#   ht  = (home, away) goals at half-time
+#   fh  = first-half goals only; sh = second-half = ft - ht
+WC_HALF_EVAL = {
+    # First-half totals/results (1T)
+    "1T_O05": lambda ht, sh: ht[0] + ht[1] > 0.5,
+    "1T_O15": lambda ht, sh: ht[0] + ht[1] > 1.5,
+    "1T_U15": lambda ht, sh: ht[0] + ht[1] < 1.5,
+    "1T_1":   lambda ht, sh: ht[0] > ht[1],
+    "1T_X":   lambda ht, sh: ht[0] == ht[1],
+    "1T_2":   lambda ht, sh: ht[1] > ht[0],
+    # Second-half totals (2T) — second-half goals = full-time minus half-time
+    "2T_O05": lambda ht, sh: sh[0] + sh[1] > 0.5,
+    "2T_O15": lambda ht, sh: sh[0] + sh[1] > 1.5,
+    "2T_U05": lambda ht, sh: sh[0] + sh[1] < 0.5,
+    # Combo: the leg Nicola played — Over 1.5 in 1T AND Over 0.5 in 2T.
+    "1TO15_2TO05": lambda ht, sh: (ht[0] + ht[1] > 1.5) and (sh[0] + sh[1] > 0.5),
+}
+
+
+def _wc_eval_leg(leg: dict, ft: tuple[int, int] | None,
+                 ht: tuple[int, int] | None) -> bool | None:
+    """Evaluate ONE parlay/structured leg against a final score (ft) and an
+    optional half-time score (ht).
+
+    Returns True (won), False (lost), or None (undecidable — settle manually
+    or wait). Undecidable when:
+      • feed != "wc" (e.g. a Brazilian leg with no result source), or
+      • the full-time score is missing, or
+      • the leg is half-based but no HT score is available (the defensive,
+        unverified HT path — degrades to manual, never guesses).
+    """
+    if leg.get("feed") and leg["feed"] != "wc":
+        return None  # manual feed — only a human (or /leg) settles it
+    key = leg.get("leg_key")
+    if not key:
+        return None
+    # Exact-score legs: "CS:h:a"
+    if isinstance(key, str) and key.startswith("CS:"):
+        if ft is None:
+            return None
+        _, sh, sa = key.split(":")
+        return ft[0] == int(sh) and ft[1] == int(sa)
+    # Half-based legs need HT (and full-time, to derive the second half).
+    if key in WC_HALF_EVAL:
+        if ft is None or ht is None:
+            return None
+        second = (ft[0] - ht[0], ft[1] - ht[1])
+        return bool(WC_HALF_EVAL[key](ht, second))
+    # Full-time legs.
+    if key in WC_LEG_EVAL:
+        if ft is None:
+            return None
+        return bool(WC_LEG_EVAL[key](ft[0], ft[1]))
+    return None  # unknown market — manual
+
 
 def _wc_json_load(path: Path, default):
     import json as _json
@@ -2669,8 +2746,114 @@ def _wc_result_for_match(match_number) -> tuple[int, int] | None:
     return None
 
 
+def _wc_ht_for_match(match_number) -> tuple[int, int] | None:
+    """Half-time score for a fixture, oriented home-away like _wc_result_for_match.
+
+    Returns None when no HT data is stored (the UNVERIFIED HT path — Sofascore
+    `period1` may be absent during/after a ban). Half-based legs degrade to
+    manual settle in that case; they never settle on a guess."""
+    fx = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "fixtures.json", {})
+    fixtures = fx.get("fixtures", fx) if isinstance(fx, dict) else fx
+    home = away = None
+    for f in fixtures or []:
+        if f.get("match_number") == int(match_number):
+            home, away = f.get("home"), f.get("away")
+            break
+    if not home:
+        return None
+    res = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "sofascore_results.json", {})
+    rows = res.get("results", res) if isinstance(res, dict) else res
+    for r in rows or []:
+        if r.get("ht_home") is None or r.get("ht_away") is None:
+            continue
+        if r.get("home") == home and r.get("away") == away:
+            return int(r["ht_home"]), int(r["ht_away"])
+        if r.get("home") == away and r.get("away") == home:   # orientation flip
+            return int(r["ht_away"]), int(r["ht_home"])
+    return None
+
+
+def _wc_settle_parlay(b: dict, token: str, chat_id: str) -> bool:
+    """Settle one open PARLAY (a bet carrying a `legs` array) leg-by-leg.
+
+    Each leg with feed=="wc" is evaluated as its match produces a result (and
+    HT, for half-based legs). Rules:
+      • ANY leg lost  → the whole ticket is lost immediately (no need to wait
+        for the remaining legs — a parlay needs every leg).
+      • ALL legs won  → ticket won, return = stake × odds.
+      • otherwise (some legs still open, or undecidable/manual legs pending)
+        → ticket stays open; only the per-leg statuses advance.
+    Messages each newly-settled leg and the final ticket grade. Returns True
+    if anything changed (so the caller persists)."""
+    legs = b.get("legs") or []
+    changed = False
+    for lg in legs:
+        if lg.get("status") and lg["status"] != "open":
+            continue  # already settled (auto or via /leg)
+        mn = lg.get("match_number")
+        ft = _wc_result_for_match(mn) if mn is not None else None
+        ht = _wc_ht_for_match(mn) if mn is not None else None
+        verdict = _wc_eval_leg(lg, ft, ht)
+        if verdict is None:
+            continue  # undecidable yet (no result / no HT / manual feed)
+        lg["status"] = "won" if verdict else "lost"
+        if ft is not None:
+            lg["score"] = f"{ft[0]}-{ft[1]}"
+        lg["settled_at"] = datetime.now(UTC).isoformat()
+        changed = True
+        _tg_send_message(token, chat_id,
+            f"{'✅' if verdict else '❌'} <b>Leg {lg.get('n', '?')} "
+            f"{'won' if verdict else 'LOST'}</b> — {lg.get('match', '?')}: "
+            f"{lg.get('label') or lg.get('leg_key')} "
+            + (f"({lg['score']})" if lg.get("score") else ""))
+
+    statuses = [lg.get("status", "open") for lg in legs]
+    manual_pending = any(
+        (lg.get("feed") == "manual") and lg.get("status", "open") == "open"
+        for lg in legs)
+
+    if "lost" in statuses:
+        # Early-loss: ticket dead the moment one leg loses.
+        b["status"] = "lost"
+        b["settled_at"] = datetime.now(UTC).isoformat()
+        bk = _wc_bankroll()
+        dead = next(lg for lg in legs if lg.get("status") == "lost")
+        _tg_send_message(token, chat_id,
+            f"❌ <b>Parlay LOST</b> — {b['label']} × €{b['stake']:.2f}"
+            f"\nKilled by leg {dead.get('n', '?')}: {dead.get('match', '?')}"
+            + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}"
+               if bk.get("balance") is not None else ""))
+        return True
+    if statuses and all(s == "won" for s in statuses):
+        # Every leg won — pay the full ticket.
+        b["status"] = "won"
+        b["settled_at"] = datetime.now(UTC).isoformat()
+        ret = b["stake"] * b["odds"]
+        b["return"] = round(ret, 2)
+        bk = _wc_bankroll_apply(ret, f"bet #{b['id']} parlay WON")
+        _tg_send_message(token, chat_id,
+            f"✅ <b>Parlay WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+            f"\nAll {len(legs)} legs landed → return <b>€{ret:.2f}</b>"
+            + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}"
+               if bk.get("balance") is not None else ""))
+        return True
+    if changed and manual_pending:
+        # Some auto legs settled, but manual legs (e.g. BRA) still block the
+        # grade — nudge once so the user knows to confirm them.
+        n_open = sum(1 for s in statuses if s == "open")
+        _tg_send_message(token, chat_id,
+            f"⏳ Parlay {b['label']}: {sum(1 for s in statuses if s == 'won')} legs won, "
+            f"{n_open} still open — confirm manual legs with "
+            f"<code>/leg {b['id']} &lt;n&gt; w|l</code> when they finish.")
+    return changed
+
+
 def _wc_check_my_bets(token: str, chat_id: str) -> None:
-    """Settle open structured bets against real results; message each verdict."""
+    """Settle open structured bets against real results; message each verdict.
+
+    Dispatches per bet: a bet with a `legs` array is a PARLAY (per-leg settle,
+    see _wc_settle_parlay); a flat bet with a top-level `leg_key` is a SINGLE
+    (the original path, unchanged)."""
     if time.time() - _WC_SETTLE_LAST["t"] < 300:
         return
     _WC_SETTLE_LAST["t"] = time.time()
@@ -2678,7 +2861,12 @@ def _wc_check_my_bets(token: str, chat_id: str) -> None:
         bets = _wc_json_load(WC_MYBETS_JSON, [])
         changed = False
         for b in bets:
-            if b.get("status") != "open" or not b.get("leg_key"):
+            if b.get("status") != "open":
+                continue
+            if b.get("legs"):
+                changed = _wc_settle_parlay(b, token, chat_id) or changed
+                continue
+            if not b.get("leg_key"):
                 continue
             score = _wc_result_for_match(b.get("match_number"))
             if not score:
@@ -2800,20 +2988,41 @@ WC_LADDER_STATE_JSON = PROJECT_ROOT / "data" / "worldcup" / "ladder_state.json"
 
 
 def _wc_ladder_state() -> dict:
-    return _wc_json_load(WC_LADDER_STATE_JSON, {"rung": None, "streak": 0})
+    # Always derive from the settled journal (self-healing — the stored file is
+    # just a cache/audit trail). Guarantees the rung the user sees matches their
+    # real win/loss record, never a stale incremental counter.
+    return _wc_ladder_derive()
+
+
+def _wc_ladder_derive() -> dict:
+    """Derive the ladder from the REAL settled journal — single source of truth.
+
+    The trailing streak = consecutive WINS counting back from the most recent
+    settled bet; the rung = that latest win's full return; any loss (or no
+    settled bets) resets to base. Voids are skipped (they don't break a streak
+    or continue it). Derived, not incremented, so it can NEVER drift again
+    (the streak-7 bug on 2026-06-15 came from settle paths that bypassed the
+    old incremental counter)."""
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    settled = [b for b in bets if b.get("status") in ("won", "lost")]
+    settled.sort(key=lambda b: b.get("settled_at") or b.get("placed_at") or "")
+    streak, rung = 0, None
+    for b in reversed(settled):
+        if b["status"] == "won":
+            streak += 1
+            if rung is None:
+                rung = round(b["stake"] * b["odds"], 2)
+        else:
+            break
+    return {"rung": rung, "streak": streak,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "note": "derived from settled journal"}
 
 
 def _wc_ladder_on_settle(bet: dict, won: bool) -> dict:
-    """Persist the ladder across bets: a WIN makes the next rung = this bet's
-    full return (the ladder rule); a LOSS resets — rebuild from the floor."""
-    st = _wc_ladder_state()
-    if won:
-        st["rung"] = round(bet["stake"] * bet["odds"], 2)
-        st["streak"] = int(st.get("streak", 0)) + 1
-    else:
-        st["rung"] = None
-        st["streak"] = 0
-    st["updated_at"] = datetime.now(UTC).isoformat()
+    """Recompute the ladder from the journal after a settle. (bet/won kept for
+    call-site compatibility; the journal is now the source of truth.)"""
+    st = _wc_ladder_derive()
     _wc_json_save(WC_LADDER_STATE_JSON, st)
     return st
 
@@ -3889,17 +4098,67 @@ def run_bot():
                         response_text = (f"{'✅' if arg == 'won' else '⚪' if arg == 'void' else '❌'} "
                                          f"#{b['id']} {b['label']} settled {arg}."
                                          + (f" 💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                elif cmd == "/leg":
+                    # /leg <bet_id> <leg_n> w|l — settle a manual parlay leg
+                    # (e.g. the Brazilian legs with no result feed), then
+                    # re-grade the ticket (may complete or early-kill it).
+                    parts = text.replace("/leg", "").strip().split()
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    ok = False
+                    if len(parts) == 3 and parts[2].lower() in ("w", "l", "won", "lost"):
+                        try:
+                            bid, ln = int(parts[0]), int(parts[1])
+                        except ValueError:
+                            bid = ln = None
+                        won = parts[2].lower() in ("w", "won")
+                        bet = next((x for x in bets if x.get("id") == bid
+                                    and x.get("status") == "open" and x.get("legs")), None)
+                        leg = next((lg for lg in (bet or {}).get("legs", [])
+                                    if lg.get("n") == ln), None) if bet else None
+                        if leg and leg.get("status", "open") == "open":
+                            leg["status"] = "won" if won else "lost"
+                            leg["settled_at"] = datetime.now(UTC).isoformat()
+                            leg["manual"] = True
+                            _wc_json_save(WC_MYBETS_JSON, bets)
+                            # Re-grade the whole ticket now this leg is in.
+                            _wc_settle_parlay(bet, token, chat_id)
+                            _wc_json_save(WC_MYBETS_JSON, bets)
+                            ok = True
+                            response_text = (
+                                f"{'✅' if won else '❌'} Leg {ln} of #{bid} "
+                                f"settled {'won' if won else 'lost'} "
+                                f"[ticket: {bet['status']}].")
+                    if not ok:
+                        open_parlays = [b for b in bets
+                                        if b.get("status") == "open" and b.get("legs")]
+                        hint = ""
+                        if open_parlays:
+                            b = open_parlays[-1]
+                            pend = [str(lg["n"]) for lg in b["legs"]
+                                    if lg.get("status", "open") == "open"]
+                            hint = (f" Open parlay #{b['id']} legs awaiting: "
+                                    f"{', '.join(pend) or 'none'}.")
+                        response_text = ("Usage: <code>/leg &lt;bet_id&gt; &lt;leg_n&gt; w|l</code>"
+                                         f" — settle one manual parlay leg.{hint}")
                 elif cmd == "/mybets":
                     bets = _wc_json_load(WC_MYBETS_JSON, [])
                     if not bets:
                         response_text = "No bets logged yet — tap 🎫 on an alert."
                     else:
                         rows = [_wc_money_footer(), ""]
+                        leg_icon = {"open": "⏳", "won": "✅", "lost": "❌"}
                         for b in bets[-10:]:
                             icon = {"open": "⏳", "won": "✅", "lost": "❌",
                                     "void": "⚪"}.get(b["status"], "?")
                             rows.append(f"{icon} #{b['id']} {b['label']} @ {b['odds']} "
                                         f"× €{b['stake']:.2f} [{b['status']}]")
+                            # Parlay: show per-leg status so pending legs are visible.
+                            for lg in (b.get("legs") or []):
+                                li = leg_icon.get(lg.get("status", "open"), "?")
+                                tag = " ✋" if lg.get("feed") == "manual" else ""
+                                rows.append(f"     {li} L{lg.get('n', '?')} "
+                                            f"{lg.get('match', '?')}: "
+                                            f"{lg.get('label') or lg.get('leg_key')}{tag}")
                         response_text = "\n".join(rows)
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
