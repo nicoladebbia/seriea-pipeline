@@ -1232,13 +1232,18 @@ def api_worldcup_match_grades():
 
     archive_path = WORLDCUP_DIR / "predictions_archive.json"
     results_csv = WORLDCUP_DIR / "international_results.csv"
-    # Cache key invalidates whenever the snapshots OR the results change on disk.
+    live_results = WORLDCUP_DIR / "sofascore_results.json"
+    # Cache key invalidates whenever the snapshots OR either result source changes.
     def _mtime(p) -> float:
         try:
             return p.stat().st_mtime if p.exists() else 0.0
         except OSError:
             return 0.0
-    cache_key = (round(_mtime(archive_path), 3), round(_mtime(results_csv), 3))
+    cache_key = (
+        round(_mtime(archive_path), 3),
+        round(_mtime(results_csv), 3),
+        round(_mtime(live_results), 3),
+    )
     if _WC_GRADES_CACHE["key"] == cache_key and _WC_GRADES_CACHE["payload"] is not None:
         return jsonify(_WC_GRADES_CACHE["payload"])
 
@@ -1247,9 +1252,9 @@ def api_worldcup_match_grades():
     if not isinstance(archive, dict) or not archive:
         return jsonify({"matches": {}, "n": 0})
 
-    from scripts.worldcup.engine import load_results as _wc_load_results
+    from scripts.worldcup.engine import load_results_with_live as _wc_load_results
 
-    df = _wc_load_results()
+    df = _wc_load_results()  # CSV + live Sofascore overlay so the drill-down sees same-night results
     scorers = pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
     shootouts = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
 

@@ -218,7 +218,7 @@ def _result_resolver() -> Callable[[str, str, str, str], str | None]:
     """90'-honest outcome lookup, reusing grading.py's reconstruction."""
     import pandas as pd
 
-    from scripts.worldcup.engine import canon_team, load_results
+    from scripts.worldcup.engine import canon_team, load_results_with_live
     from scripts.worldcup.grading import (
         GOALSCORERS_CSV,
         SHOOTOUTS_CSV,
@@ -226,7 +226,7 @@ def _result_resolver() -> Callable[[str, str, str, str], str | None]:
         _ninety_minute_score,
     )
 
-    df = load_results()
+    df = load_results_with_live()  # CSV + live Sofascore overlay (same-night settling)
     scorers = (
         pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
     )

@@ -123,6 +123,10 @@ def main() -> None:
     # Same-night final scores — bridges martj42's publish lag so the
     # knockout fill and the result-pinned simulation see reality first.
     _run("scripts.worldcup.sofascore_fetch", "--results")
+    # Independent second live source (different CDN): when Sofascore is
+    # Cloudflare-banned, FBref may still answer. Fail-soft, short timeout so a
+    # ban can't hang the cycle; the grader merges whatever either source has.
+    _run("scripts.worldcup.fbref_fetch", timeout=180)
     _run("scripts.worldcup.availability")
     _run("scripts.worldcup.knockout")
     _run("scripts.worldcup.generate_predictions", "--sims", "10000")

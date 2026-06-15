@@ -34,7 +34,7 @@ from scripts.worldcup.engine import (
     DATA_DIR,
     atomic_write_json,
     canon_team,
-    load_results,
+    load_results_with_live,
     read_json_safe,
 )
 
@@ -151,7 +151,7 @@ def build_track_record() -> dict[str, Any]:
         record = {"n_graded": 0, "matches": []}
         atomic_write_json(TRACK_RECORD_JSON, record)
         return record
-    df = load_results()
+    df = load_results_with_live()  # CSV + live Sofascore overlay (same-night grading)
     base = _base_rates(df)
     scorers = (
         pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()

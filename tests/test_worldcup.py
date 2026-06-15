@@ -1909,3 +1909,157 @@ class TestMarketGrading:
 
         assert grade_match_markets({"home_xg": 0, "away_xg": 1}, 1, 0) == []
         assert grade_match_markets({"probabilities": {}}, 1, 0) == []
+
+
+class TestLiveResultsOverlay:
+    """load_results_with_live: merge same-night Sofascore results onto the CSV."""
+
+    def _patch_live(self, monkeypatch, rows):
+        """Make load_results_with_live read `rows` as the live Sofascore blob."""
+        import scripts.worldcup.engine as eng
+        real = eng.read_json_safe
+
+        def fake(path, default, **kw):
+            if str(path).endswith("sofascore_results.json"):
+                return {"results": rows}
+            return real(path, default, **kw)
+        monkeypatch.setattr(eng, "read_json_safe", fake)
+
+    def test_no_live_results_returns_csv_unchanged(self, monkeypatch):
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        self._patch_live(monkeypatch, [])
+        base = load_results()
+        live = load_results_with_live()
+        assert len(live) == len(base)
+
+    def test_adds_genuinely_missing_match(self, monkeypatch):
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        # A fictional pairing on a future date the CSV cannot have.
+        self._patch_live(monkeypatch, [{
+            "home": "Spain", "away": "Cape Verde", "date": "2099-01-01",
+            "home_score": 0, "away_score": 0,
+        }])
+        base = load_results()
+        live = load_results_with_live()
+        assert len(live) == len(base) + 1
+        import pandas as pd
+        row = live[live["date"] == pd.Timestamp("2099-01-01")]
+        assert len(row) == 1
+        # canon_team maps "Cape Verde" -> "Cape Verde" (already canonical)
+        assert row.iloc[0]["home_team"] == "Spain"
+        assert row.iloc[0]["away_team"] == "Cape Verde"
+        assert int(row.iloc[0]["home_score"]) == 0
+
+    def test_dedups_within_one_day_skew(self, monkeypatch):
+        # martj42 stores some US-hosted night games one day off from Sofascore.
+        # The overlay must NOT add a duplicate when the CSV has the pair +/-1 day.
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        import pandas as pd
+        base = load_results()
+        # pick any real CSV match, offer it via "live" one day later
+        sample = base.iloc[-1]
+        live_date = (pd.Timestamp(sample["date"]) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        self._patch_live(monkeypatch, [{
+            "home": sample["home_team"], "away": sample["away_team"],
+            "date": live_date,
+            "home_score": int(sample["home_score"]), "away_score": int(sample["away_score"]),
+        }])
+        live = load_results_with_live()
+        assert len(live) == len(base)  # no phantom duplicate
+
+    def test_dedups_swapped_orientation(self, monkeypatch):
+        # Neutral-venue matches can be home/away-swapped between sources.
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        base = load_results()
+        sample = base.iloc[-1]
+        self._patch_live(monkeypatch, [{
+            "home": sample["away_team"], "away": sample["home_team"],  # swapped
+            "date": str(sample["date"])[:10],
+            "home_score": int(sample["away_score"]), "away_score": int(sample["home_score"]),
+        }])
+        live = load_results_with_live()
+        assert len(live) == len(base)  # recognised as the same match
+
+    def test_training_path_untouched(self):
+        # The Elo/backtest path must use the PURE CSV loader, never the overlay.
+        import inspect
+        from scripts.worldcup import engine
+        src = inspect.getsource(engine.WorldCupEngine.build)
+        assert "load_results_with_live" not in src
+        assert "load_results(" in src
+
+
+class TestFbrefResults:
+    """FBref WC results source (scripts.worldcup.fbref_fetch)."""
+
+    SPECIMEN = "data/raw/html/2025_2026/fixtures.html"
+
+    def test_parser_against_real_fbref_specimen(self):
+        # Per CLAUDE.md "never parse an unverified source": the WC schedule table
+        # has the SAME schema as this saved Serie A specimen, so parsing it proves
+        # the extraction logic on real FBref HTML.
+        import os
+        from scripts.worldcup.fbref_fetch import parse_results
+        if not os.path.exists(self.SPECIMEN):
+            import pytest
+            pytest.skip("FBref specimen not present")
+        html = open(self.SPECIMEN, encoding="utf-8").read()
+        res = parse_results(html)
+        assert len(res) > 100  # a full season of played matches
+        r = res[0]
+        assert set(["event_id", "date", "home", "away", "home_score", "away_score"]) <= set(r)
+        assert isinstance(r["home_score"], int) and isinstance(r["away_score"], int)
+        # every score row is a real played match (had a parseable Score)
+        assert all(isinstance(x["home_score"], int) for x in res)
+
+    def test_parse_score_variants(self):
+        from scripts.worldcup.fbref_fetch import _parse_score
+        assert _parse_score("2–1") == (2, 1)   # en dash
+        assert _parse_score("0-0") == (0, 0)   # hyphen
+        assert _parse_score("3—2") == (3, 2)   # em dash
+        assert _parse_score("") is None
+        assert _parse_score("nan") is None
+        assert _parse_score(None) is None
+        assert _parse_score("postponed") is None
+
+    def test_overlay_merges_fbref_when_sofascore_lacks_it(self, tmp_path, monkeypatch):
+        # FBref-only result (neither CSV nor Sofascore has it) must reach the grader.
+        import scripts.worldcup.engine as eng
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        real = eng.read_json_safe
+
+        def fake(path, default, **kw):
+            name = str(path)
+            if name.endswith("fbref_results.json"):
+                return {"results": [{
+                    "home": "Spain", "away": "Cape Verde", "date": "2099-02-02",
+                    "home_score": 1, "away_score": 0,
+                }]}
+            if name.endswith("sofascore_results.json"):
+                return {"results": []}
+            return real(path, default, **kw)
+        monkeypatch.setattr(eng, "read_json_safe", fake)
+        base = load_results()
+        live = load_results_with_live()
+        assert len(live) == len(base) + 1
+        import pandas as pd
+        row = live[live["date"] == pd.Timestamp("2099-02-02")]
+        assert len(row) == 1 and row.iloc[0]["home_team"] == "Spain"
+
+    def test_two_live_sources_dont_double_count(self, monkeypatch):
+        # Same match in BOTH Sofascore and FBref must add only ONE row.
+        import scripts.worldcup.engine as eng
+        from scripts.worldcup.engine import load_results, load_results_with_live
+        real = eng.read_json_safe
+        match = {"home": "Spain", "away": "Cape Verde", "date": "2099-03-03",
+                 "home_score": 2, "away_score": 2}
+
+        def fake(path, default, **kw):
+            name = str(path)
+            if name.endswith("sofascore_results.json") or name.endswith("fbref_results.json"):
+                return {"results": [match]}
+            return real(path, default, **kw)
+        monkeypatch.setattr(eng, "read_json_safe", fake)
+        base = load_results()
+        live = load_results_with_live()
+        assert len(live) == len(base) + 1  # not +2

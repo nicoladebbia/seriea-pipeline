@@ -23,6 +23,7 @@ import math
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -155,6 +156,71 @@ def load_results(path: Path = RESULTS_CSV) -> pd.DataFrame:
     df["away_score"] = df["away_score"].astype(int)
     df["neutral"] = df["neutral"].astype(bool)
     return df.sort_values("date", kind="stable").reset_index(drop=True)
+
+
+def load_results_with_live(path: Path = RESULTS_CSV) -> pd.DataFrame:
+    """Results CSV with the live Sofascore + FBref overlays merged on top.
+
+    The martj42 results CSV lags live matches by hours-to-a-day, so a match can
+    be over (and graded-worthy) while the CSV still has NA scores for it. Two
+    INDEPENDENT live sources fill that gap, each behind a different CDN so a ban
+    on one doesn't take the other down:
+      * ``sofascore_results.json`` (``sofascore_fetch.fetch_results``)
+      * ``fbref_results.json``     (``fbref_fetch.fetch_results``)
+    This loader returns the CSV PLUS any live result not already present — so the
+    moment ANY of the three has a final score, downstream grading sees it.
+
+    Used ONLY by result-consuming code (track record, combos, knockouts), NEVER
+    by the Elo training / backtest path: live same-night rows must not leak into
+    model fitting. All three sources store full-time (extra-time-inclusive)
+    scores, so they're merge-compatible (90'-reconstruction for knockouts happens
+    downstream from goalscorers, unchanged).
+    """
+    df = load_results(path)
+
+    # "Already present" matches the GRADER's tolerance, not exact (date,home,away).
+    # Two real-world skews otherwise create phantom duplicates:
+    #   * date: martj42/Sofascore/FBref disagree by up to a day on US-hosted night
+    #     kickoffs (local vs UTC) — grading._find_result allows +/-1 day.
+    #   * orientation: neutral-venue matches can be stored home/away-swapped.
+    # Index by unordered team-pair -> match dates; a live row is "known" if the
+    # pair already exists within +/-1 day. Accepted live rows are ADDED to the
+    # index so the two live sources don't duplicate each other either.
+    have: dict[frozenset[str], list[pd.Timestamp]] = {}
+    for r in df.itertuples(index=False):
+        have.setdefault(frozenset((r.home_team, r.away_team)), []).append(
+            pd.Timestamp(r.date).normalize()
+        )
+    one_day = pd.Timedelta(days=1)
+
+    extra: list[dict[str, Any]] = []
+    # Sofascore first (richer metadata), then FBref fills whatever's still missing.
+    for src in ("sofascore_results.json", "fbref_results.json"):
+        blob = read_json_safe(DATA_DIR / src, {})
+        rows = blob.get("results", []) if isinstance(blob, dict) else []
+        for r in rows:
+            try:
+                h = canon_team(str(r["home"]))
+                a = canon_team(str(r["away"]))
+                hs = int(r["home_score"])
+                as_ = int(r["away_score"])
+                dt = pd.Timestamp(str(r["date"])).normalize()
+            except (KeyError, TypeError, ValueError):
+                continue
+            pair = frozenset((h, a))
+            if any(abs(d - dt) <= one_day for d in have.get(pair, [])):
+                continue  # already present (CSV or an earlier live source)
+            have.setdefault(pair, []).append(dt)  # block the other source dupes
+            extra.append({
+                "date": dt, "home_team": h, "away_team": a,
+                "home_score": hs, "away_score": as_,
+                "tournament": "FIFA World Cup", "city": "", "country": "",
+                "neutral": True,
+            })
+    if not extra:
+        return df
+    merged = pd.concat([df, pd.DataFrame(extra)], ignore_index=True)
+    return merged.sort_values("date", kind="stable").reset_index(drop=True)
 
 
 def elo_history(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
