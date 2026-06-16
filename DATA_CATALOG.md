@@ -19,6 +19,7 @@
 6. [Sofascore (6 files)](#4-sofascore-6-files)
 7. [Understat](#5-understat)
 8. [Weather / Referees / External context](#6-weather-referees-external-context)
+8b. [World Cup 2026 — data/worldcup/](#6b-world-cup-2026--dataworldcup)
 9. [Cross-source mapping — match_id_mapping.parquet](#7-cross-source-mapping--match_id_mappingparquet)
 10. [Auto-refresh infrastructure](#8-auto-refresh-infrastructure)
 11. [Fallback matrix (Plan A / B / C)](#9-fallback-matrix-plan-a--b--c)
@@ -101,7 +102,7 @@
 | 6 | `data/parsed/goalkeeper_stats.parquet` | 6,651 | 260/330 | ⚠ | FBref HTMLs (no fallback yet) | 6h ago |
 | 7 | `data/parsed/shots.parquet` | 9,213 | 0 | ❌ FBref deprecated | Use Sofascore shotmap instead | 64 days ago |
 | 8 | `data/parsed/match_id_mapping.parquet` | 7,930 | 330 | ✅ | `build_match_id_mapping.py` | 5h ago |
-| 9 | `data/external/sofascore/player_match_stats.parquet` | 45,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
+| 9 | `data/external/sofascore/player_match_stats.parquet` | 101,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 11 | `data/external/sofascore/shotmap_stats.parquet` | 2,926 | 328/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 82,432 | 206 (legacy) | ⚠ Legacy | No active writer | 71 days ago |
@@ -309,7 +310,7 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 
 | File | Rows | Cols | What |
 |------|------|------|------|
-| `player_match_stats.parquet` | 45,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.) |
+| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
 | `shotmap_stats.parquet` | 2,926 | 30 | Shot events (location x/y, situation, body part, outcome) |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
@@ -384,6 +385,66 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **Weekly snapshots** (usually Friday)
 - ~63 players per snapshot
 - Used as match-day context (key player out, squad thinness)
+
+---
+
+## 6b. World Cup 2026 — data/worldcup/
+
+Standalone international engine (added 2026-06-09, branch `feat/worldcup-2026`).
+**Completely separate from the Serie A club model** — own data, own model, own
+artifacts. Code: `scripts/worldcup/` (engine, simulate, backtest,
+generate_predictions). UI: `/worldcup` page, `/api/worldcup` +
+`/api/worldcup/simulation` endpoints.
+
+| File | What it is | Source / writer | Refresh |
+|------|-----------|-----------------|---------|
+| `international_results.csv` | ~49.4k A-internationals 1872 → present (date, teams, score, tournament, city, country, neutral). **Contains future fixture rows with NaN scores — filter `home_score.notna()`** (engine.load_results does) | [martj42/international_results](https://github.com/martj42/international_results) raw CSV, master branch | manual `curl` re-download (updated upstream within days of matches) |
+| `international_shootouts.csv` | 678 shootout outcomes (winner, first shooter) | same repo | manual, with results.csv |
+| `fixtures.json` | All 104 WC2026 fixtures: match_number, stage, group, date_utc, real team names for 72 group games, slot labels (`1A`, `3ABCDF`, `W74`, `L101`) for knockouts. **Slots auto-fill from real results** (`scripts/worldcup/knockout.py` in the refresh loop): complete groups rank via the 2026 rules, thirds via Annex C once all 12 groups close, W/L slots once the feeder match is decided (level ET-inclusive score ⇒ shootouts.csv). A filled side keeps its original label in `slot_home`/`slot_away` and is never touched again | fixturedownload.com feed + Wikipedia bracket, cross-checked | automatic during the tournament; manual edits only if the filler reports an Annex C error |
+| `format_spec.json` | Official 2026 format: advancement rules, group + third-place tiebreakers (verified vs FIFA Regulations Art. 13 — **head-to-head BEFORE overall GD, new in 2026**), R32 pairings, later-round progression, **exact Annex C third-place allocation (all 495 combinations)**, knockout rules, hosts | FIFA regs PDF + Wikipedia, agent-extracted + cross-verified | static for the tournament |
+| `predictions.json` | Per-match λs + 1X2 for every fixture with known teams (72 now). Shape mirrors `data/upcoming/predictions.json` so `_build_score_range_projection` derives the full market family at serve time | `python3 -m scripts.worldcup.generate_predictions` | re-run after results.csv refresh or fixture updates |
+| `simulation.json` | 10k-run Monte Carlo **conditioned on reality**: played group matches keep their ACTUAL score in every sim (banked points, not re-simulated), decided knockouts keep their real winner — `conditioned_on` counts the pins, `results` maps match_number → actual score (knockouts ET-inclusive). Per-team group win/runner-up/best-third/advance, reach-R32→final, champion probabilities; most-likely R32 ties; **`bracket`** = the single most-likely tournament feeding the /worldcup bracket view — greedy group standings + Annex C thirds, then per-KO-match engine predictions (90' 1X2, top scorelines, advance incl. ET/pens), each match carrying `pairing_prob`, top-3 alt ties and win-slot marginals (third place included; `resolved: true` once knockout.py fills names; `played: true` + `actual_score` once the match is real — the walk continues from the actual winner) | same generator (`--sims N`) | with predictions.json |
+| `sofascore_results.json` | Same-night final scores of played WC matches (Sofascore): finished-only, team-id joined, oriented as Sofascore reports, ET-inclusive scores + penalties winner via winnerCode. **The bridge for martj42's publish lag** — `knockout._merged_result_lookup` reads results.csv FIRST, this file second, so the result-pinned simulation and the bracket fill see reality the same night; the canonical CSV silently takes over as it catches up. API route when healthy; during API-tier 403 bans, the tournament hub page's `__NEXT_DATA__` (ISR-rendered fresh — the daily-schedule pages are stale prerenders, last-resort only; match pages are data-free shells). Union-merged by event id | `python3 -m scripts.worldcup.sofascore_fetch --results` (in the 2h refresh loop, before knockout fill) | every refresh during the tournament |
+| `clubelo_history.json` | Historical squad club-Elo per backtest tournament (WC18/Euro20/WC22/Euro24/Copa24): team → mean club Elo of the squad + coverage_pct, built from Wikipedia squad pages + api.clubelo.com date snapshots (raw cache in `squad_history/`). ClubElo is Europe-only → Copa squads ~45% coverage, Qatar 2022 = 0% (by design, recorded honestly) | `python3 -m scripts.worldcup.squad_history` | static (historical tournaments don't change) |
+| `squad_strength_study.json` | **Squad-strength experiment verdict (2026-06-11): NULL.** k-grid over Elo-adjustment strength (z of squad club Elo × coverage) on the fixed production variant: dev picked k=20 over k=0 by Brier 0.0004 (noise), untouched finals said k=20 is WORSE (Brier +0.0005, ECE +0.012). Club-based squad strength is REDUNDANT with international Elo — do not re-run this hunt without a materially different signal (e.g. global-coverage Transfermarkt history) | `python3 -m scripts.worldcup.backtest --squad-study` | re-run only with new signal design |
+| `model_metadata.json` | **The live source for every WC model performance number.** Variant-selection backtest: dev = WC18+Euro20 (selection ONLY), final = untouched WC22/Euro24/Copa24 group stages. Holds the dev grid (GLM / DC / ensembles), selected variant (GLM+Dixon-Coles geometric ensemble), final accuracy/Brier/skill/ECE vs base-rate + higher-Elo + plain-GLM references, gate verdict | `python3 -m scripts.worldcup.backtest` | after any engine/data change — **never quote WC numbers from docs, read this file** |
+| `predictions_archive.json` | Pre-kickoff snapshots (Track Record join shape): **last write BEFORE kickoff wins** (graded probabilities = closing deployment incl. odds/lineups/news), immutable from kickoff (writer refuses + grading double-checks archived_at < kickoff). Carries deployed AND pure-model probabilities + frozen market view. Atomic writes; corrupt file quarantined, never silently rebuilt | generator (every refresh until kickoff) | automatic |
+| `international_goalscorers.csv` | ~47.6k goal events (date, teams, **team = beneficiary**, scorer, minute, own_goal, penalty). **A SAMPLE, not a ledger**: whole matches lack scorer rows in 2024-26 (~55-80% goal coverage) and it lags results.csv by ~2 months. Use for who-scores propensity (shares); NEVER for goal totals. OG rows name the opponent's player — `players.load_goalscorers` drops them | same martj42 repo | manual, with results.csv |
+| `squads.json` | Final 2026 squads: 48 teams × 23-26 players (1,246 total) with position/club/caps/goals, **keyed by fixture display names** | Wikipedia '2026 FIFA World Cup squads' wikitext, agent-parsed | manual if squads change (injury replacements) |
+| `player_predictions.json` | Per-match anytime-goalscorer candidates (top 5/side, squad-filtered) + golden-boot expected-goals top 20. **Gate-enforced at generation**: a failing backtest writes an empty layer | `python3 -m scripts.worldcup.players` | after results/squads refresh |
+| `player_model_metadata.json` | **Live source for player-model numbers.** Brier lift vs equal-share baseline on 5,280 player-matches (WC22/Euro20/Euro24/Copa24 holdouts; α selected on WC18 only), calibration, gate verdict | `python3 -m scripts.worldcup.players --backtest` | after any player-model change |
+| `sofascore_intl_player_stats.parquet` | Per-player-match stats for the **last 10 internationals of all 48 WC teams** (2026-06-10 scrape): 11,317 rows × 22 cols, 372 unique matches. team, match_id, date, tournament, opponent, scores, player_name, `norm_name` (NFKD+lower), `norm_name_sorted` (token-order-proof — Korean names are reversed on Sofascore), position, **started, minutes, shots, shots_on_target, goals, rating**. shots/SoT/goals coalesced to 0 for played players (Sofascore omits zero stats); NaN = unused sub. ~42% rows started=True, ~66% played | Sofascore `www.sofascore.com/api/v1` proxy (`team/{id}/events/last/0` + `event/{id}/lineups`; api.sofascore.com unreachable from this network) | one-shot scrape; re-scrape script pattern in git history |
+| `sofascore_intl/` (dir) | Raw per-team JSONs behind the parquet: 48 files keyed by ASCII team name, each with resolved Sofascore team_id, scraped_at, source_url, 10 matches with full lineup player lists (raw nulls preserved) | same scrape | with the parquet |
+| `transfermarkt_values.json` (+ `transfermarkt/` dir) | Current market value for 1,247 squad players, 48/48 teams, 94.4% name-match to squads.json (worst: Jordan 58%, IR Iran 69% — transliteration). `_meta` key holds provenance — its `players` field is a COUNT, skip it when iterating teams. Tournament total €17.26bn; France top €1.52bn | Transfermarkt national-team squad pages (2026-06-10 scrape) | one-shot; re-scrape near roster changes |
+| `clubelo_raw.csv` + `clubelo_squad_strength.json` | Club-strength Elo for each squad player's club: 825/1,246 matched (66.2% — **European clubs only**; Saudi/Qatar/Jordan ≈4%). Per team: mean/median club Elo, coverage_pct, per-player elo (null if unmatched). **Gate any use on coverage_pct** — low-coverage means are 1-3 players | api.clubelo.com one-call CSV (2026-06-10) | manual re-pull |
+| `scrape_model_metadata.json` | **Live source for scrape-derived gate verdicts.** Walk-forward inside the scraped window: starter-dampening (presence mode deployed, +2.5%, PASSED; minutes mode +3.3% but warm-up-rotation domain shift documented) and shots-floor (−7.4%, FAILED — not shipped) | `python3 -m scripts.worldcup.players --validate-scrape` | after a re-scrape |
+| `team_context.json` | Display-only per-team context for the UI: squad_value_eur + mean_club_elo (only where clubelo coverage ≥50%) | written by the player generator | with player_predictions.json |
+| `market_odds.json` | Bookmaker 1X2 per fixture (decimal odds + de-vigged implied probs), keyed by match_number. Join is pair-based with ±1-day date sanity. **Feeds the VALIDATED market blend** (see model_metadata.json market_blend) | `python3 -m scripts.worldcup.sofascore_fetch --odds` (www.sofascore.com/api/v1 proxy) | re-run before each matchday — odds sharpen toward kickoff and the blend inherits that |
+| `historical_odds.json` | Closing 1X2 odds for the 5 backtest tournaments' group stages: 190/192 matches (48+36+48+36+22). Powers the blend validation: w=0.4 model / 0.6 market selected on DEV, beat the pure model on untouched finals (Brier 0.5773 vs 0.5884); **pure market alone was 0.5758 — the model adds picks, not pricing**. Validation used CLOSING odds; deployment uses current odds (sharper near kickoff) | `sofascore_fetch --historical-odds` | static |
+| `track_record.json` | Live predicted-vs-actual scoreboard: pick hits, system/market/base Brier (like-for-like on the odds-covered subset), per-match grades. **KO matches graded on the reconstructed 90' result** (pens ⇒ draw; ET goals subtracted via goalscorers minute column; incomplete scorer coverage ⇒ skipped, counted in n_skipped_ko_coverage). Snapshots stamped at/after kickoff are never graded | `python3 -m scripts.worldcup.grading` (in the refresh loop) | every refresh |
+| `player_availability.json` (+ `availability_study.json`) | Team news per fixture in a 7-day horizon: expected XI, out/doubtful (Sofascore missing-players), value-weighted λ factors (ALPHA=0.45, bounds 0.85-1.15 — mechanical, study file is directional evidence only, never read by production) | `python3 -m scripts.worldcup.availability` | every refresh |
+| `combos_archive.json` | Pre-kickoff **combo ticket** snapshots (safe/favorites/value accumulators shown on /worldcup), keyed by `tier\|first_leg_kickoff`. Same protocol as predictions_archive: **last write BEFORE the first leg kicks off wins**, immutable after (writer refuses + grader double-checks archived_at < first kickoff). Legs are self-contained for cold grading (teams, stage, picks, prob, quoted odds, edge, EV) | `python3 -m scripts.worldcup.combos` (in the refresh loop) | every refresh until each ticket's first kickoff |
+| `combo_record.json` | Settled combo tickets graded vs 90' outcomes (KO via grading.py reconstruction; a ticket grades only when EVERY leg settles, otherwise pending — never as a miss). Per tier: hit rate vs **expected_hit_rate** (mean promised combined prob — the calibration bar) + flat-1u ROI at archived quoted odds. Served under `combos` in /api/worldcup/record | same module, after archiving | every refresh |
+| `refresh_state.json` | Matchday-loop state (odds fetch age gating, last run). Atomic writes, fail-soft reads — corruption self-heals to {} | scripts/worldcup/refresh.py | every run |
+| `confirmed_lineups.json` | Per-fixture lineup feed: starters + bench (published ~1h pre-kickoff, `confirmed` flag) PLUS `missing` per side — Sofascore missing-player list with type (`missing`/`doubtful`) and reason (Injury/Suspension/Other via MISSING_REASON_MAP). When confirmed: scorer shares override presence-damping (starter ×1.0, bench ×0.35, absent ×0.05 — mechanical minute expectations) | `sofascore_fetch --lineups` on match days, then re-run availability + players generators | every matchday (refresh loop runs it 2-hourly in-window) |
+| `player_availability.json` | **Team-news layer, keyed by match_number (7-day horizon)**: per side an expected XI ("who people think plays" — top-11 by starts over last 5 internationals, flips to the confirmed XI when published), out/doubtful lists with reasons + Transfermarkt values, and clamped lambda factors (position-split market-value share of absent expected starters × ALPHA). generate_predictions applies the factors to MODEL lambdas BEFORE the market blend (books already price news — no double counting); web/app.py serves the block as `team_news` | `python3 -m scripts.worldcup.availability` (after `--lineups`) | every refresh-loop run; rebuild before regenerating predictions |
+| `availability_study.json` | **Live source for the availability adjustment's honesty numbers**: absence-value-share vs goals-shortfall OLS on competitive internationals in the scrape window (n, slope, SE, sign verdict). The slope is rotation-diluted — it bounds ALPHA from below; never quote adjustment strength from docs, read this file | `python3 -m scripts.worldcup.availability --study` | after a re-scrape |
+
+**FBref note:** club-season per-90s were attempted (2026-06-10) and are NOT available — Cloudflare JS challenge blocks all non-browser access, mirrors dead. No fbref artifacts exist; do not trust any claim of FBref-derived WC player data.
+
+**Team-name trap** — fixtures use FIFA display names, results.csv uses its own:
+`USA→United States`, `Korea Republic→South Korea`, `IR Iran→Iran`,
+`Côte d'Ivoire→Ivory Coast`, `Cabo Verde→Cape Verde`, `Türkiye→Turkey`,
+`Czechia→Czech Republic`, `Congo DR→DR Congo`. Mapping lives in
+`scripts/worldcup/engine.py:FIXTURE_TO_CANON` (`canon_team()`); plain
+"Congo" in the dataset is Congo-Brazzaville — a different team, never merge.
+The generator hard-fails if any of the 48 teams doesn't resolve.
+
+**Model in one line:** World-Football-Elo (eloratings.net convention) over the
+full history → Poisson GLM `log λ = b0 + b_diff·(Δelo/100) + b_home + b_friendly`
+(time-decay weighted, 2010+) → score grid → markets via
+`scripts.betting.extended_markets`. Host advantage applies only when a team
+plays in its own country (city→country map in `simulate.country_of_city`).
 
 ---
 

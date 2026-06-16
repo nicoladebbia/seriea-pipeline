@@ -19,15 +19,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Project paths
@@ -427,30 +427,51 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "🏆 Parlays": "/parlays",
     "📋 Summary": "/summary",
     "📰 Digest": "/digest",
+    "🌍 World Cup": "/wc",
+    "🪜 Ladder": "/ladder",
+    "🎲 Risk": "/ladder risk",
+    "🎫 My bets": "/mybets",
+    "💰 Balance": "/balance",
 }
 
 
 def _reply_keyboard() -> dict:
-    """Build a persistent reply keyboard shown at the bottom of the chat."""
+    """WC-only button grid, COLLAPSED by default (Nicola 2026-06-12: the old
+    persistent 9-button grid ate half the screen; full removal killed the
+    toggle too). one_time_keyboard + not persistent = the grid hides after
+    use and lives behind the keyboard toggle icon in the input bar — pops
+    up only when summoned. Slash commands also sit in the left ☰ menu."""
     return {
         "keyboard": [
-            [{"text": "💰 Bets"}, {"text": "📊 Bankroll"}, {"text": "⚽ Today"}],
-            [{"text": "🔴 Live"}, {"text": "🎯 Match"}, {"text": "🏆 Parlays"}],
-            [{"text": "📋 Summary"}, {"text": "📰 Digest"}],
+            [{"text": "🌍 World Cup"}, {"text": "🪜 Ladder"}, {"text": "🎲 Risk"}],
+            [{"text": "🎫 My bets"}, {"text": "💰 Balance"}],
         ],
         "resize_keyboard": True,
-        "is_persistent": True,
+        "one_time_keyboard": True,
+        "is_persistent": False,
     }
 
 
+# WC-season command menu — populates Telegram's ☰ menu button at input-left.
+_WC_COMMANDS = [
+    {"command": "wc", "description": "🌍 Today's World Cup slate + best combos"},
+    {"command": "ladder", "description": "🪜 Today's ladder (add 'risk' for spicy)"},
+    {"command": "mybets", "description": "🎫 My bets + balance"},
+    {"command": "bet", "description": "Log a bet: /bet 60 @ 1.80 Canada win"},
+    {"command": "balance", "description": "💰 Show or set balance"},
+    {"command": "settle", "description": "Settle a free-text bet: won|lost|void"},
+    {"command": "guard", "description": "🛡 Show betting guardrail status"},
+    {"command": "lossstop", "description": "🛑 Set loss-stop limit: /lossstop 50"},
+]
+
+
 def _register_commands(token: str):
-    """Clear the slash command menu — commands are handled via inline buttons instead."""
-    # Send empty list to remove the ☰ menu commands
-    result = _tg_request(token, "setMyCommands", {"commands": []}, timeout=10)
+    """Register the WC command set → Telegram shows them in the left ☰ menu."""
+    result = _tg_request(token, "setMyCommands", {"commands": _WC_COMMANDS}, timeout=10)
     if result is not None:
-        log.info("Cleared bot command menu (using inline buttons instead)")
+        log.info("Registered %d WC commands in the menu button", len(_WC_COMMANDS))
     else:
-        log.warning("Failed to clear bot command menu")
+        log.warning("Failed to register command menu")
 
 
 def _edit_message(token: str, chat_id: str, message_id: int, text: str,
@@ -472,19 +493,16 @@ def _edit_message(token: str, chat_id: str, message_id: int, text: str,
 # Reuse advisor tools and system prompt from web app
 # ---------------------------------------------------------------------------
 
+# advisor.py uses load_json_safe; expose it under the legacy _load_json name
+# that telegram_bot was originally written against.
 from web.advisor import (
     TOOL_DEFINITIONS,
     TOOL_HANDLERS,
     _build_system_prompt,
-    _get_bankroll,
-    _tool_get_value_bets,
     _tool_get_bankroll_status,
     _tool_get_live_matches,
+    _tool_get_value_bets,
 )
-# advisor.py uses load_json_safe; expose it under the legacy _load_json name
-# that telegram_bot was originally written against.
-from scripts.utils.json_utils import load_json_safe as _load_json
-
 
 # Telegram-specific system prompt extension
 _TELEGRAM_SYSTEM_ADDON = """
@@ -876,7 +894,7 @@ def _delete_message(token: str, chat_id: str, message_id: int | None):
 
 def _handle_start() -> str:
     """Handle /start — contextual greeting showing current state."""
-    from scripts.pipeline.notify import TgMsg, _html_escape, _bankroll_in_context, _get_bankroll_context
+    from scripts.pipeline.notify import TgMsg, _bankroll_in_context, _get_bankroll_context, _html_escape
 
     br_ctx = _get_bankroll_context()
     tg = TgMsg()
@@ -1310,8 +1328,9 @@ def _handle_player_lookup(query: str) -> str:
 
         # Also search in market values for single-team players
         if not matches:
-            import pandas as pd
             from pathlib import Path as _P
+
+            import pandas as pd
             for season in ["2025_2026", "2024_2025"]:
                 mv_path = _P("data/external/transfermarkt") / f"market_values_{season}.parquet"
                 if mv_path.exists():
@@ -1413,6 +1432,7 @@ def _handle_player_lookup(query: str) -> str:
 def _get_weekly_bets() -> dict:
     """Load settled bets grouped by week."""
     from collections import defaultdict
+
     from config.settings import DATA_DIR
 
     journal_path = DATA_DIR / "betting" / "bet_journal.json"
@@ -1439,7 +1459,7 @@ def _get_weekly_bets() -> dict:
 
 def _handle_summary_menu(token: str, chat_id: str) -> str | None:
     """Show week selector with inline keyboard buttons."""
-    from scripts.pipeline.notify import TgMsg, _html_escape
+    from scripts.pipeline.notify import TgMsg
 
     by_week = _get_weekly_bets()
     if not by_week:
@@ -1754,6 +1774,122 @@ def _handle_digest() -> str:
         return f"Failed to generate digest: {e}"
 
 
+def _handle_worldcup() -> str:
+    """World Cup digest: today's slate + the three best-combo tiers.
+
+    Same sources as /worldcup on the dashboard (predictions.json +
+    market_odds.json via scripts.worldcup.combos — who-wins markets only).
+    Times shown in the WC display timezone (Miami by default).
+    """
+    from datetime import UTC, datetime
+
+    from scripts.worldcup.combos import (
+        MARKET_ODDS_JSON,
+        PREDICTIONS_JSON,
+        build_best_combos,
+        build_fun_combos,
+    )
+    from scripts.worldcup.engine import read_json_safe
+
+    rome = _wc_tz()
+    now = datetime.now(UTC)
+    doc = read_json_safe(PREDICTIONS_JSON, {})
+    preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+    if not preds:
+        return "🌍 No World Cup predictions on disk — run scripts.worldcup.refresh."
+    market = dict(read_json_safe(MARKET_ODDS_JSON, {}))
+
+    pick_sym = {"home": "1", "draw": "X", "away": "2"}
+    today_rome = now.astimezone(rome).date()
+    todays = []
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p.get("kickoff_utc") or "")
+        except (TypeError, ValueError):
+            continue
+        if ko.astimezone(rome).date() == today_rome:
+            todays.append((ko, p))
+    todays.sort(key=lambda x: x[0])
+
+    lines = [f"🌍 <b>World Cup 2026 — {today_rome.strftime('%A %d %B')}</b>", ""]
+    if todays:
+        lines.append(f"⚽ <b>Today</b> ({WC_TZ_LABEL} time)")
+        for ko, p in todays:
+            probs = p.get("probabilities") or {}
+            pick = max(probs, key=probs.get) if probs else None
+            played = ko <= now
+            mark = "✔️ played" if played else (
+                f"<b>{pick_sym.get(pick, '?')}</b> {probs.get(pick, 0) * 100:.0f}%")
+            lines.append(
+                f"{ko.astimezone(rome).strftime('%H:%M')}  "
+                f"{p.get('home_team', '?')}–{p.get('away_team', '?')} — {mark}")
+        lines.append("")
+    else:
+        lines.append("⚽ No matches today.")
+        lines.append("")
+
+    best = build_best_combos(preds, market)
+    icons = {"safe": "🔒", "favorites": "⭐", "value": "💎"}
+    if best.get("combos"):
+        lines.append("🎯 <b>Edge combos — next 48h</b> (who-wins, model-backed)")
+        for c in best["combos"]:
+            cm = c["combined"]
+            head = (f"{icons.get(c['key'], '🎯')} <b>{c['key'].capitalize()}</b> — "
+                    f"{cm['prob'] * 100:.0f}%")
+            if cm.get("market_odds"):
+                ev = cm.get("ev")
+                head += (f" @ {cm['market_odds']:.2f}"
+                         f" (EV {'+' if ev >= 0 else ''}{ev * 100:.0f}%)")
+            lines.append(head)
+            for leg in c["legs"]:
+                odds = f" @ {leg['market_odds']:.2f}" if leg.get("market_odds") else ""
+                lines.append(f" • {leg['pick_label']} ({leg['prob'] * 100:.0f}%{odds})"
+                             f" — {leg['match']}")
+            lines.append("")
+    else:
+        lines.append("🎯 No edge combos — no upcoming matches in the next 48h.")
+        lines.append("")
+
+    # Fun combos — goal-prop multiplas like Nicola's played slip. NO model
+    # edge (goal props are noise on internationals); labeled as such so they
+    # are never mistaken for the edge combos above.
+    fun = build_fun_combos(preds)
+    if fun.get("combos"):
+        lines.append("🎲 <b>Fun combos — no model edge</b> (Over-goals, like a played multipla)")
+        for c in fun["combos"]:
+            cm = c["combined"]
+            lines.append(f"{c['title']} — {cm['prob'] * 100:.0f}% "
+                         f"(fair {cm['fair_odds']:.1f}×, {len(c['legs'])} legs)")
+            for leg in c["legs"]:
+                lines.append(f" • {leg['pick_label']} ({leg['prob'] * 100:.0f}%)"
+                             f" — {leg['match']}")
+            lines.append("")
+        lines.append("<i>🎲 Fun = entertainment only. Goal props don't beat the "
+                     "book on internationals — bet these for fun, not for edge.</i>")
+
+    lines.append("<i>Model probabilities, Sofascore-proxy prices — insight, not bets.</i>")
+    return "\n".join(lines)
+
+
+def send_worldcup_digest() -> bool:
+    """One-shot morning push (refresh loop runs `--wc-digest`); independent
+    of the polling loop — no lock, no signal handlers, send and exit."""
+    token = _get_env("TELEGRAM_BOT_TOKEN")
+    chat_id = _get_env("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        log.error("wc-digest: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
+        return False
+    text = _handle_worldcup()
+    result = _tg_request(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    })
+    ok = result is not None
+    log.info("wc-digest: %s", "sent" if ok else "send FAILED")
+    return ok
+
+
 def _handle_league(args: str, conversation: ConversationManager) -> str:
     """Handle /league — show, set, or clear league filter.
 
@@ -1761,8 +1897,8 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
     /league epl     -> set filter to Premier League
     /league all     -> remove filter (show all leagues)
     """
-    from scripts.pipeline.notify import TgMsg, _html_escape
     from config.leagues import LEAGUE_REGISTRY
+    from scripts.pipeline.notify import TgMsg, _html_escape
 
     # League aliases for user-friendly input
     _ALIASES: dict[str, str] = {
@@ -1872,6 +2008,7 @@ def _handle_help() -> str:
     tg.blank()
     tg.raw("<b>Reports:</b>")
     tg.raw("  /digest \u2014 daily summary")
+    tg.raw("  /wc — World Cup: today's slate + best combos")
     tg.blank()
     tg.raw("<b>Session:</b>")
     tg.raw("  /clear \u2014 reset conversation")
@@ -1939,6 +2076,68 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     # Default: silent answer to remove loading spinner
     answer_text = ""
     show_alert = False
+
+    if data.startswith("wcbeto:"):
+        # One-tap from an odds-sheet scan: leg AND price already known —
+        # jump straight to the stake calculation. Verbatim send, never Claude.
+        payload = data[len("wcbeto:"):]
+        mn, key, odds_s = payload.split("|", 2)
+        odds = float(odds_s)
+        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id},
+                    timeout=5)
+        p = _wc_pred_for_match(mn)
+        label, prob = key, None
+        if p and key.startswith("CS:"):
+            _, sh, sa = key.split(":")
+            lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+            prob = _wc_grid(lh, la).get((int(sh), int(sa))) if lh and la else None
+            label = f"Exact score {sh}-{sa}"
+        elif p:
+            for pr, lbl, k in _wc_ladder_legs(p):
+                if k == key:
+                    label, prob = lbl, pr
+                    break
+        pend = {"match_number": int(mn), "leg_key": key, "label": label,
+                "prob": prob, "odds": odds,
+                "match": f"{p.get('home_team')} vs {p.get('away_team')}" if p else f"match {mn}"}
+        suggested, msg = _wc_stake_suggestion(odds, prob)
+        pend["suggested"] = suggested
+        pend["at"] = time.time()
+        _WC_PENDING_BET[chat_id] = pend
+        _tg_send_message(token, chat_id,
+                         f"🎫 <b>{label}</b> @ {odds} ({pend['match']})\n{msg}")
+        return None
+
+    if data.startswith("wcbet:"):
+        # Money flow: send VERBATIM and return None — a returned string gets
+        # fed to Claude as a user message (the analyze-button pattern) and
+        # comes back paraphrased/footered/refused. Found live 2026-06-12.
+        _, mn, key = data.split(":", 2)
+        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id},
+                    timeout=5)
+        if key == "other":
+            _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": None,
+                                        "label": None, "at": time.time()}
+            _tg_send_message(token, chat_id,
+                "📝 Type the bet as: <code>STAKE @ ODDS description</code>\n"
+                "e.g. <code>60 @ 1.80 Canada win</code>\n"
+                "(free-text legs settle via /settle won|lost · /cancel to abort)")
+            return None
+        legs = {}
+        match_name = f"match {mn}"
+        p = _wc_pred_for_match(mn)
+        if p:
+            legs = {k: (lbl, pr) for pr, lbl, k in _wc_ladder_legs(p)}
+            match_name = f"{p.get('home_team')} vs {p.get('away_team')}"
+        label, prob = legs.get(key, (key, None))
+        _WC_PENDING_BET[chat_id] = {"match_number": int(mn), "leg_key": key,
+                                    "label": label, "match": match_name,
+                                    "prob": prob, "at": time.time()}
+        _tg_send_message(token, chat_id,
+            f"🎫 Logging <b>{label}</b> ({match_name}).\n"
+            f"Send the SISAL odds (e.g. <code>1.80</code>) and I'll calculate "
+            f"the stake — or stake and odds together: <code>60 @ 1.80</code> (/cancel)")
+        return None
 
     if data.startswith("analyze:"):
         match_name = data[len("analyze:"):]
@@ -2382,6 +2581,1233 @@ def _release_lock():
         pass
 
 
+# =============================================================================
+# WC BET TRACKER — Nicola's manual SISAL bets, logged via buttons/text,
+# auto-settled from real results, bankroll-aware (added 2026-06-12)
+# =============================================================================
+# Display timezone for all WC times (Nicola is in Miami for the tournament).
+# Override via WC_DISPLAY_TZ / WC_TZ_LABEL in .env if he travels.
+WC_DISPLAY_TZ = os.environ.get("WC_DISPLAY_TZ", "America/New_York")
+WC_TZ_LABEL = os.environ.get("WC_TZ_LABEL", "Miami")
+
+
+def _wc_tz():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(WC_DISPLAY_TZ)
+
+
+WC_MYBETS_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bets.json"
+WC_BANKROLL_JSON = PROJECT_ROOT / "data" / "worldcup" / "my_bankroll.json"
+WC_RUNG_FRACTION = 0.47          # ladder rung ≈ this share of balance, floor keeps the rest
+
+# ── Responsible-betting guardrail (added 2026-06-15 after a EUR50 8-leg
+# parlay on Brazil Serie B lost on one leg; EUR151 deposited -> EUR0.40).
+# The bot REFUSES to log bets that violate these. Override per-bet only with
+# an explicit "force" word; change the limits here.
+WC_GUARD = {
+    "max_parlay_legs": 3,        # no accumulators beyond this (8-folds are -EV by construction)
+    "max_stake_pct": 0.50,       # one bet ≤ 50% of current balance
+    "wc_matches_only": True,     # refuse legs the model can't price (non-WC leagues)
+    "loss_stop": True,           # hard stop when down past the limit below
+}
+_WC_PENDING_BET: dict = {}       # chat_id -> {"match_number", "leg_key", "label", "match"}
+_WC_SETTLE_LAST = {"t": 0.0}
+
+# Structured legs the bot can settle ALONE from a final score (h, a).
+WC_LEG_EVAL = {
+    "1":      lambda h, a: h > a,
+    "X":      lambda h, a: h == a,
+    "2":      lambda h, a: a > h,
+    "1X":     lambda h, a: h >= a,
+    "X2":     lambda h, a: a >= h,
+    "12":     lambda h, a: h != a,
+    "O15":    lambda h, a: h + a > 1.5,
+    "U25":    lambda h, a: h + a < 2.5,
+    "O25":    lambda h, a: h + a > 2.5,
+    "U35":    lambda h, a: h + a < 3.5,
+    "BTTSY":  lambda h, a: h > 0 and a > 0,
+    "BTTSN":  lambda h, a: h == 0 or a == 0,
+    "1U35":   lambda h, a: h > a and h + a < 3.5,
+    "1O15":   lambda h, a: h > a and h + a > 1.5,
+    "2U35":   lambda h, a: a > h and h + a < 3.5,
+    "1orO25": lambda h, a: h > a or h + a > 2.5,
+}
+
+# Half-based markets — keyed on (ht_h, ht_a) for first-half legs, or on BOTH
+# halves for combo legs. Evaluated by _wc_eval_leg only when HT data exists;
+# otherwise the leg is undecidable (returns None) and flagged for manual entry.
+#   ht  = (home, away) goals at half-time
+#   fh  = first-half goals only; sh = second-half = ft - ht
+WC_HALF_EVAL = {
+    # First-half totals/results (1T)
+    "1T_O05": lambda ht, sh: ht[0] + ht[1] > 0.5,
+    "1T_O15": lambda ht, sh: ht[0] + ht[1] > 1.5,
+    "1T_U15": lambda ht, sh: ht[0] + ht[1] < 1.5,
+    "1T_1":   lambda ht, sh: ht[0] > ht[1],
+    "1T_X":   lambda ht, sh: ht[0] == ht[1],
+    "1T_2":   lambda ht, sh: ht[1] > ht[0],
+    # Second-half totals (2T) — second-half goals = full-time minus half-time
+    "2T_O05": lambda ht, sh: sh[0] + sh[1] > 0.5,
+    "2T_O15": lambda ht, sh: sh[0] + sh[1] > 1.5,
+    "2T_U05": lambda ht, sh: sh[0] + sh[1] < 0.5,
+    # Combo: the leg Nicola played — Over 1.5 in 1T AND Over 0.5 in 2T.
+    "1TO15_2TO05": lambda ht, sh: (ht[0] + ht[1] > 1.5) and (sh[0] + sh[1] > 0.5),
+}
+
+
+def _wc_eval_leg(leg: dict, ft: tuple[int, int] | None,
+                 ht: tuple[int, int] | None) -> bool | None:
+    """Evaluate ONE parlay/structured leg against a final score (ft) and an
+    optional half-time score (ht).
+
+    Returns True (won), False (lost), or None (undecidable — settle manually
+    or wait). Undecidable when:
+      • feed != "wc" (e.g. a Brazilian leg with no result source), or
+      • the full-time score is missing, or
+      • the leg is half-based but no HT score is available (the defensive,
+        unverified HT path — degrades to manual, never guesses).
+    """
+    if leg.get("feed") and leg["feed"] != "wc":
+        return None  # manual feed — only a human (or /leg) settles it
+    key = leg.get("leg_key")
+    if not key:
+        return None
+    # Exact-score legs: "CS:h:a"
+    if isinstance(key, str) and key.startswith("CS:"):
+        if ft is None:
+            return None
+        _, sh, sa = key.split(":")
+        return ft[0] == int(sh) and ft[1] == int(sa)
+    # Half-based legs need HT (and full-time, to derive the second half).
+    if key in WC_HALF_EVAL:
+        if ft is None or ht is None:
+            return None
+        second = (ft[0] - ht[0], ft[1] - ht[1])
+        return bool(WC_HALF_EVAL[key](ht, second))
+    # Full-time legs.
+    if key in WC_LEG_EVAL:
+        if ft is None:
+            return None
+        return bool(WC_LEG_EVAL[key](ft[0], ft[1]))
+    return None  # unknown market — manual
+
+
+def _wc_json_load(path: Path, default):
+    import json as _json
+    try:
+        return _json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def _wc_json_save(path: Path, data) -> None:
+    import json as _json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(data, indent=1))
+    tmp.replace(path)
+
+
+def _wc_bankroll() -> dict:
+    return _wc_json_load(WC_BANKROLL_JSON, {"balance": None, "history": []})
+
+
+def _wc_bankroll_apply(delta: float, note: str) -> dict:
+    bk = _wc_bankroll()
+    if bk.get("balance") is None:
+        return bk
+    bk["balance"] = round(bk["balance"] + delta, 2)
+    bk["history"] = (bk.get("history") or [])[-49:] + [
+        {"at": datetime.now(UTC).isoformat(), "delta": round(delta, 2), "note": note}]
+    _wc_json_save(WC_BANKROLL_JSON, bk)
+    return bk
+
+
+def _wc_guard_check(stake: float, n_legs: int = 1, is_wc: bool = True,
+                    force: bool = False) -> str | None:
+    """Return a refusal message if this bet violates the guardrail, else None.
+    `force` (user typed 'force') bypasses the soft limits — but the loss-stop
+    is never silently bypassable: it nudges to /deposit or a cool-off."""
+    if force:
+        return None
+    bk = _wc_bankroll()
+    bal = bk.get("balance")
+    # Loss-stop: down past the limit → hard stop.
+    if WC_GUARD["loss_stop"] and bk.get("deposited"):
+        limit = bk.get("loss_stop_eur")
+        net = (bal or 0) - bk["deposited"]
+        if limit and net <= -abs(limit):
+            return (f"🛑 <b>Loss-stop hit.</b> You're down €{abs(net):.2f} of your "
+                    f"€{abs(limit):.0f} limit. No more bets this session — that was "
+                    f"the deal you set. Take a break; the model's calls keep grading "
+                    f"on /mybets with no money at risk.")
+    if WC_GUARD["wc_matches_only"] and not is_wc:
+        return ("🚫 That's not a World Cup match — the model can't price it, so I "
+                "won't log it. WC 2026 fixtures only (the Brazil Série B legs are "
+                "exactly the blind bets that cost €150). Type <b>force</b> to override.")
+    if n_legs > WC_GUARD["max_parlay_legs"]:
+        return (f"🚫 <b>{n_legs}-leg parlay blocked.</b> Max {WC_GUARD['max_parlay_legs']} "
+                f"legs — an 8-fold is ~6% to hit and negative-EV by construction "
+                f"(it's how you lost €50 on one leg). Singles or ≤3-leg combos. "
+                f"Type <b>force</b> to override.")
+    if bal and stake > bal * WC_GUARD["max_stake_pct"] + 0.01:
+        cap = bal * WC_GUARD["max_stake_pct"]
+        return (f"🚫 €{stake:.2f} is over half your €{bal:.2f} balance. Max bet right "
+                f"now: €{cap:.2f}. One bet shouldn't be able to halve you. "
+                f"Type <b>force</b> to override.")
+    return None
+
+
+def _wc_log_bet(match_number, match: str, leg_key: str | None, label: str,
+                stake: float, odds: float) -> dict:
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    bet = {
+        "id": len(bets) + 1, "match_number": match_number, "match": match,
+        "leg_key": leg_key, "label": label, "stake": round(stake, 2),
+        "odds": round(odds, 2), "placed_at": datetime.now(UTC).isoformat(),
+        "status": "open",
+    }
+    bets.append(bet)
+    _wc_json_save(WC_MYBETS_JSON, bets)
+    _wc_bankroll_apply(-stake, f"bet #{bet['id']} {label} @ {odds}")
+    return bet
+
+
+def _wc_result_for_match(match_number) -> tuple[int, int] | None:
+    """Final score for a fixture, via fixtures.json names ↔ same-night results."""
+    fx = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "fixtures.json", {})
+    fixtures = fx.get("fixtures", fx) if isinstance(fx, dict) else fx
+    home = away = None
+    for f in fixtures or []:
+        if f.get("match_number") == int(match_number):
+            home, away = f.get("home"), f.get("away")
+            break
+    if not home:
+        return None
+    res = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "sofascore_results.json", {})
+    rows = res.get("results", res) if isinstance(res, dict) else res
+    for r in rows or []:
+        if r.get("home") == home and r.get("away") == away:
+            return int(r["home_score"]), int(r["away_score"])
+        if r.get("home") == away and r.get("away") == home:   # orientation flip
+            return int(r["away_score"]), int(r["home_score"])
+    return None
+
+
+def _wc_ht_for_match(match_number) -> tuple[int, int] | None:
+    """Half-time score for a fixture, oriented home-away like _wc_result_for_match.
+
+    Returns None when no HT data is stored (the UNVERIFIED HT path — Sofascore
+    `period1` may be absent during/after a ban). Half-based legs degrade to
+    manual settle in that case; they never settle on a guess."""
+    fx = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "fixtures.json", {})
+    fixtures = fx.get("fixtures", fx) if isinstance(fx, dict) else fx
+    home = away = None
+    for f in fixtures or []:
+        if f.get("match_number") == int(match_number):
+            home, away = f.get("home"), f.get("away")
+            break
+    if not home:
+        return None
+    res = _wc_json_load(PROJECT_ROOT / "data" / "worldcup" / "sofascore_results.json", {})
+    rows = res.get("results", res) if isinstance(res, dict) else res
+    for r in rows or []:
+        if r.get("ht_home") is None or r.get("ht_away") is None:
+            continue
+        if r.get("home") == home and r.get("away") == away:
+            return int(r["ht_home"]), int(r["ht_away"])
+        if r.get("home") == away and r.get("away") == home:   # orientation flip
+            return int(r["ht_away"]), int(r["ht_home"])
+    return None
+
+
+def _wc_settle_parlay(b: dict, token: str, chat_id: str) -> bool:
+    """Settle one open PARLAY (a bet carrying a `legs` array) leg-by-leg.
+
+    Each leg with feed=="wc" is evaluated as its match produces a result (and
+    HT, for half-based legs). Rules:
+      • ANY leg lost  → the whole ticket is lost immediately (no need to wait
+        for the remaining legs — a parlay needs every leg).
+      • ALL legs won  → ticket won, return = stake × odds.
+      • otherwise (some legs still open, or undecidable/manual legs pending)
+        → ticket stays open; only the per-leg statuses advance.
+    Messages each newly-settled leg and the final ticket grade. Returns True
+    if anything changed (so the caller persists)."""
+    legs = b.get("legs") or []
+    changed = False
+    for lg in legs:
+        if lg.get("status") and lg["status"] != "open":
+            continue  # already settled (auto or via /leg)
+        mn = lg.get("match_number")
+        ft = _wc_result_for_match(mn) if mn is not None else None
+        ht = _wc_ht_for_match(mn) if mn is not None else None
+        verdict = _wc_eval_leg(lg, ft, ht)
+        if verdict is None:
+            continue  # undecidable yet (no result / no HT / manual feed)
+        lg["status"] = "won" if verdict else "lost"
+        if ft is not None:
+            lg["score"] = f"{ft[0]}-{ft[1]}"
+        lg["settled_at"] = datetime.now(UTC).isoformat()
+        changed = True
+        _tg_send_message(token, chat_id,
+            f"{'✅' if verdict else '❌'} <b>Leg {lg.get('n', '?')} "
+            f"{'won' if verdict else 'LOST'}</b> — {lg.get('match', '?')}: "
+            f"{lg.get('label') or lg.get('leg_key')} "
+            + (f"({lg['score']})" if lg.get("score") else ""))
+
+    statuses = [lg.get("status", "open") for lg in legs]
+    manual_pending = any(
+        (lg.get("feed") == "manual") and lg.get("status", "open") == "open"
+        for lg in legs)
+
+    if "lost" in statuses:
+        # Early-loss: ticket dead the moment one leg loses.
+        b["status"] = "lost"
+        b["settled_at"] = datetime.now(UTC).isoformat()
+        bk = _wc_bankroll()
+        dead = next(lg for lg in legs if lg.get("status") == "lost")
+        _tg_send_message(token, chat_id,
+            f"❌ <b>Parlay LOST</b> — {b['label']} × €{b['stake']:.2f}"
+            f"\nKilled by leg {dead.get('n', '?')}: {dead.get('match', '?')}"
+            + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}"
+               if bk.get("balance") is not None else ""))
+        return True
+    if statuses and all(s == "won" for s in statuses):
+        # Every leg won — pay the full ticket.
+        b["status"] = "won"
+        b["settled_at"] = datetime.now(UTC).isoformat()
+        ret = b["stake"] * b["odds"]
+        b["return"] = round(ret, 2)
+        bk = _wc_bankroll_apply(ret, f"bet #{b['id']} parlay WON")
+        _tg_send_message(token, chat_id,
+            f"✅ <b>Parlay WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+            f"\nAll {len(legs)} legs landed → return <b>€{ret:.2f}</b>"
+            + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}"
+               if bk.get("balance") is not None else ""))
+        return True
+    if changed and manual_pending:
+        # Some auto legs settled, but manual legs (e.g. BRA) still block the
+        # grade — nudge once so the user knows to confirm them.
+        n_open = sum(1 for s in statuses if s == "open")
+        _tg_send_message(token, chat_id,
+            f"⏳ Parlay {b['label']}: {sum(1 for s in statuses if s == 'won')} legs won, "
+            f"{n_open} still open — confirm manual legs with "
+            f"<code>/leg {b['id']} &lt;n&gt; w|l</code> when they finish.")
+    return changed
+
+
+def _wc_check_my_bets(token: str, chat_id: str) -> None:
+    """Settle open structured bets against real results; message each verdict.
+
+    Dispatches per bet: a bet with a `legs` array is a PARLAY (per-leg settle,
+    see _wc_settle_parlay); a flat bet with a top-level `leg_key` is a SINGLE
+    (the original path, unchanged)."""
+    if time.time() - _WC_SETTLE_LAST["t"] < 300:
+        return
+    _WC_SETTLE_LAST["t"] = time.time()
+    try:
+        bets = _wc_json_load(WC_MYBETS_JSON, [])
+        changed = False
+        for b in bets:
+            if b.get("status") != "open":
+                continue
+            if b.get("legs"):
+                changed = _wc_settle_parlay(b, token, chat_id) or changed
+                continue
+            if not b.get("leg_key"):
+                continue
+            score = _wc_result_for_match(b.get("match_number"))
+            if not score:
+                continue
+            h, a = score
+            key = b["leg_key"]
+            if key.startswith("CS:"):
+                _, sh, sa = key.split(":")
+                won = (h == int(sh) and a == int(sa))
+            elif key in WC_LEG_EVAL:
+                won = WC_LEG_EVAL[key](h, a)
+            else:
+                continue  # unknown key — leave open for manual /settle
+            b["status"] = "won" if won else "lost"
+            b["settled_at"] = datetime.now(UTC).isoformat()
+            b["score"] = f"{h}-{a}"
+            changed = True
+            st_l = _wc_ladder_on_settle(b, won)
+            if won:
+                ret = b["stake"] * b["odds"]
+                b["return"] = round(ret, 2)
+                bk = _wc_bankroll_apply(ret, f"bet #{b['id']} WON")
+                # rung can be None (derived ladder unseeded) — guard the format
+                # so a missing rung never aborts the whole settle (NoneType
+                # format crash was swallowing the settlement).
+                rung = st_l.get("rung")
+                rung_txt = (f"next rung: <b>€{rung:.2f}</b> " if rung is not None
+                            else "next rung sizes from the floor ")
+                _tg_send_message(token, chat_id,
+                    f"✅ <b>Bet WON</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+                    f"\n{b['match']} finished {h}-{a} → return <b>€{ret:.2f}</b>"
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}" if bk.get("balance") is not None else "")
+                    + f"\n🪜 Ladder continues — {rung_txt}"
+                      f"(streak {st_l.get('streak', 0)}). Banking is always allowed.")
+            else:
+                bk = _wc_bankroll()
+                _tg_send_message(token, chat_id,
+                    f"❌ <b>Bet lost</b> — {b['label']} @ {b['odds']} × €{b['stake']:.2f}"
+                    f"\n{b['match']} finished {h}-{a}"
+                    + (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b> · {_wc_net_line()}" if bk.get("balance") is not None else "")
+                    + "\n🪜 Ladder reset — next bet sizes from the floor again.")
+        if changed:
+            _wc_json_save(WC_MYBETS_JSON, bets)
+    except Exception as e:  # noqa: BLE001 — settling must never kill the loop
+        log.warning("my-bets settle check failed: %s", e)
+
+
+def _wc_net_line() -> str:
+    """Real P/L vs deposits: balance + money riding − total deposited."""
+    bk = _wc_bankroll()
+    bal, dep = bk.get("balance"), bk.get("deposited")
+    if bal is None or not dep:
+        return ""
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    riding = sum(b["stake"] for b in bets if b.get("status") == "open")
+    net = bal - dep
+    riding_txt = f" · €{riding:.0f} riding" if riding else ""
+    sign = "🟢 up" if net > 0 else ("🔴 down" if net < 0 else "⚪ even")
+    return f"deposited €{dep:.0f}{riding_txt} → {sign} <b>€{abs(net):.2f}</b> real"
+
+
+def _wc_money_footer() -> str:
+    """Personalized footer: balance + real P/L + how the last bet went."""
+    bk = _wc_bankroll()
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    parts = []
+    if bk.get("balance") is not None:
+        parts.append(f"💰 Balance <b>€{bk['balance']:.2f}</b>")
+        nl = _wc_net_line()
+        if nl:
+            parts.append(nl)
+    else:
+        parts.append("💰 Set your balance: /balance 128.56")
+    settled = [b for b in bets if b.get("status") in ("won", "lost")]
+    if settled:
+        b = settled[-1]
+        if b["status"] == "won":
+            parts.append(f"last bet ✅ {b['label']} @ {b['odds']} → +€{b['return'] - b['stake']:.2f}")
+        else:
+            parts.append(f"last bet ❌ {b['label']} @ {b['odds']} → −€{b['stake']:.2f}")
+    open_n = sum(1 for b in bets if b.get("status") == "open")
+    if open_n:
+        parts.append(f"{open_n} open")
+    return " · ".join(parts)
+
+
+def _wc_parse_bet_text(text: str, pend: dict) -> tuple[float | None, float | None, str]:
+    """Human-friendly stake/odds extraction for the pending-bet flow.
+
+    Accepts "60 @ 1.80", "60 at 1.80", "I bet Canada winning at 1.80" (odds
+    only — stake asked next), bare "60" (stake only — odds asked next), in
+    any order across messages. Returns (stake, odds, leftover_words); either
+    number may be None — the caller asks for what's missing.
+    Heuristics: two numbers = positional stake, odds — swapped only when the
+    first looks like odds (decimal ≤ 20) and the second like a stake (whole
+    number ≥ 21). One number = odds if it has decimals in 1.01–20 (or stake
+    is already known), else stake.
+    """
+    # Market tokens first ("X2", "over 2.5") — their digits are NOT money.
+    cleaned = re.sub(r"(?i)\b(over|under)\s*\d[.,]5\b", " ", text)
+    cleaned = re.sub(r"(?i)(?<![a-z0-9])(1x|x2|12)(?![a-z0-9.,])", " ", cleaned)
+    nums = [float(n.replace(",", ".")) for n in
+            re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?", cleaned)]
+    words = re.sub(r"\d+(?:[.,]\d+)?", " ", text)
+    words = re.sub(r"(?i)\b(at|bet|i|on|the|per|euro|eur|want|to|and|odds|are|is|in|vs)\b|[@×€$]",
+                   " ", words)
+    words = " ".join(words.split()).strip(" .,!?")
+    stake, odds = pend.get("stake"), pend.get("odds")
+    if len(nums) >= 2:
+        stake, odds = nums[0], nums[1]
+        if (stake != int(stake) and stake <= 20
+                and odds == int(odds) and odds >= 21):
+            stake, odds = odds, stake          # "1.80 ... 60" word order
+    elif len(nums) == 1:
+        n = nums[0]
+        looks_like_odds = n != int(n) and 1.01 <= n <= 20
+        if odds is None and (looks_like_odds or stake is not None):
+            odds = n
+        else:
+            stake = n
+    return stake, odds, words
+
+
+WC_LADDER_STATE_JSON = PROJECT_ROOT / "data" / "worldcup" / "ladder_state.json"
+
+
+def _wc_ladder_state() -> dict:
+    # Always derive from the settled journal (self-healing — the stored file is
+    # just a cache/audit trail). Guarantees the rung the user sees matches their
+    # real win/loss record, never a stale incremental counter.
+    return _wc_ladder_derive()
+
+
+def _wc_ladder_derive() -> dict:
+    """Derive the ladder from the REAL settled journal — single source of truth.
+
+    The trailing streak = consecutive WINS counting back from the most recent
+    settled bet; the rung = that latest win's full return; any loss (or no
+    settled bets) resets to base. Voids are skipped (they don't break a streak
+    or continue it). Derived, not incremented, so it can NEVER drift again
+    (the streak-7 bug on 2026-06-15 came from settle paths that bypassed the
+    old incremental counter)."""
+    bets = _wc_json_load(WC_MYBETS_JSON, [])
+    settled = [b for b in bets if b.get("status") in ("won", "lost")]
+    settled.sort(key=lambda b: b.get("settled_at") or b.get("placed_at") or "")
+    streak, rung = 0, None
+    for b in reversed(settled):
+        if b["status"] == "won":
+            streak += 1
+            if rung is None:
+                rung = round(b["stake"] * b["odds"], 2)
+        else:
+            break
+    return {"rung": rung, "streak": streak,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "note": "derived from settled journal"}
+
+
+def _wc_ladder_on_settle(bet: dict, won: bool) -> dict:
+    """Recompute the ladder from the journal after a settle. (bet/won kept for
+    call-site compatibility; the journal is now the source of truth.)"""
+    st = _wc_ladder_derive()
+    _wc_json_save(WC_LADDER_STATE_JSON, st)
+    return st
+
+
+def _wc_pred_for_match(match_number) -> dict | None:
+    import json as _json
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+        return next(x for x in doc.get("predictions", [])
+                    if str(x.get("match_number")) == str(match_number))
+    except (OSError, ValueError, StopIteration):
+        return None
+
+
+def _wc_guess_leg(p: dict, words: str) -> tuple[str, str, float] | None:
+    """Map free text like 'Canada winning' / 'over 2.5' / 'no goal' to a
+    structured leg of THIS match → (key, label, our_prob). None = no guess."""
+    w = f" {words.lower()} "
+    home = (p.get("home_team") or "").lower()
+    away = (p.get("away_team") or "").lower()
+
+    def team_in(t: str) -> bool:
+        return bool(t) and any(tok in w for tok in t.split() if len(tok) > 3)
+
+    key = None
+    over = re.search(r"over\s*(\d[.,]5)", w)
+    under = re.search(r"under\s*(\d[.,]5)", w)
+    sym = re.search(r"(?<![a-z0-9])(1x|x2|12)(?![a-z0-9.,])", w)
+    if sym:
+        key = {"1x": "1X", "x2": "X2", "12": "12"}[sym.group(1)]
+    elif over:
+        key = {"1.5": "O15", "2.5": "O25"}.get(over.group(1).replace(",", "."))
+    elif under:
+        key = {"2.5": "U25", "3.5": "U35"}.get(under.group(1).replace(",", "."))
+    elif "no goal" in w or "nogoal" in w or "btts no" in w:
+        key = "BTTSN"
+    elif "btts" in w or "goal goal" in w:
+        key = "BTTSY"
+    elif "draw" in w or "pareggio" in w:
+        key = "X"
+    elif team_in(home):
+        key = "2" if ("lose" in w or "perde" in w) else "1"
+    elif team_in(away):
+        key = "1" if ("lose" in w or "perde" in w) else "2"
+    if not key:
+        return None
+    for prob, label, k in _wc_ladder_legs(p):
+        if k == key:
+            return key, label, prob
+    return None
+
+
+def _wc_stake_suggestion(odds: float, prob: float | None) -> tuple[float | None, str]:
+    """(suggested_stake, message) — ladder rung from the REAL balance plus a
+    Kelly line when we know our probability for the leg."""
+    bk = _wc_bankroll()
+    bal = bk.get("balance")
+    if not bal:
+        return None, "Set your balance first: /balance 128.56 — then I can size bets."
+    st = _wc_ladder_state()
+    if st.get("streak", 0) >= 1 and st.get("rung"):
+        # Ladder memory: the rung is what the last win returned. Win big by
+        # letting it ride — but never suggest more than the account holds.
+        nominal = float(st["rung"])
+        rung = min(nominal, bal)
+        surv = 0.6 ** (st["streak"] + 1)  # rough: rungs run ~55-65% legs
+        cap = (f" (your last win returned €{nominal:.2f}; account holds €{bal:.2f})"
+               if rung < nominal else " — your last win's full return")
+        lines = [f"🪜 <b>Ladder rung {st['streak'] + 1}</b> — bet <b>€{rung:.2f}</b>{cap}. "
+                 f"Streak {st['streak']}; roughly {surv:.0%} of ladders survive "
+                 f"this deep — banking is always allowed."]
+        if rung > 0.75 * bal:
+            half = max(5.0, round(rung / 2))
+            lines.append(f"⚖️ That rung is {rung / bal:.0%} of your account. "
+                         f"Half-ride: reply <b>{half:.0f}</b> to bet €{half:.0f} "
+                         f"and keep €{bal - half:.2f} on the floor.")
+    else:
+        rung = max(5.0, round(bal * WC_RUNG_FRACTION))
+        lines = [f"💡 Suggested stake: <b>€{rung:.0f}</b> (base rung — "
+                 f"{WC_RUNG_FRACTION:.0%} of €{bal:.2f}, floor €{bal - rung:.2f} stays)"]
+    if prob:
+        fair = 1.0 / prob
+        b = odds - 1.0
+        kelly = max(0.0, (prob * b - (1 - prob)) / b) if b > 0 else 0.0
+        if odds > fair:
+            lines.append(f"📐 Our {prob:.0%} → fair {fair:.2f} → at {odds} this is "
+                         f"<b>+EV ✅</b> · Kelly-optimal would be €{kelly * bal:.0f}")
+        else:
+            # Below our fair price: no stake suggestion AT ALL — the model
+            # says skip, and a suggested number reads as endorsement.
+            return None, (
+                f"📐 Our {prob:.0%} → fair <b>{fair:.2f}</b> — at {odds} this is "
+                f"<b>below our fair price ⚠️</b>. The model says SKIP: you'd "
+                f"need ≥ {fair:.2f} for this leg to be value.\n"
+                f"Send a stake anyway to override, or /cancel.")
+    lines.append("Reply <b>ok</b> to log the suggested stake, or send your own number.")
+    return rung, "\n".join(lines)
+
+
+# ── odds-sheet scanner: paste a menu of prices, get the EV ranking ───────────
+
+def _wc_match_from_text(text: str, require_mention: bool = False) -> dict | None:
+    """Resolve which upcoming fixture (next 48h) a message refers to, by team
+    mentions; fallback = the next kickoff (sheet senders often omit the team)."""
+    import json as _json
+    w = f" {text.lower()} "
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+    except (OSError, ValueError):
+        return None
+    now = datetime.now(UTC)
+    best, soonest = None, None
+    for p in doc.get("predictions", []):
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (-3 <= (ko - now).total_seconds() / 3600 <= 48):
+            continue
+        if soonest is None or ko < soonest[0]:
+            soonest = (ko, p)
+        hits = sum(1 for team in (p.get("home_team", ""), p.get("away_team", ""))
+                   for tok in team.lower().split() if len(tok) > 3 and tok in w)
+        if hits and (best is None or hits > best[0]):
+            best = (hits, p)
+    if best:
+        return best[1]
+    if require_mention:
+        return None
+    return soonest[1] if soonest else None
+
+
+def _wc_resolve_market(p: dict, phrase: str) -> tuple[str, str, float] | None:
+    """Segment-level market resolution — bare 1/X/2 are safe here because the
+    phrase is already isolated from the odds number."""
+    w = f" {phrase.lower().strip()} "
+    cs = re.search(r"(\d)\s*[-:]\s*(\d)", w)
+    if cs:
+        h, a = int(cs.group(1)), int(cs.group(2))
+        lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+        if lh and la:
+            prob = _wc_grid(lh, la).get((h, a), 0.0)
+            return f"CS:{h}:{a}", f"Exact score {h}-{a}", prob
+        return None
+    guess = _wc_guess_leg(p, w)
+    if guess:
+        return guess
+    sym = re.search(r"(?<![a-z0-9])(1x|x2|12|[1x2])(?![a-z0-9.,])", w)
+    if sym:
+        key = {"1x": "1X", "x2": "X2", "12": "12",
+               "1": "1", "x": "X", "2": "2"}[sym.group(1)]
+        for prob, label, k in _wc_ladder_legs(p):
+            if k == key:
+                return key, label, prob
+    return None
+
+
+def _wc_parse_odds_sheet(p: dict, text: str) -> list[tuple[str, str, float, float]]:
+    """'X2 at 1.50, 1 at 2.00, 2 at 3.00' → [(key, label, our_prob, odds)].
+    One segment = one market + one price; the LAST plausible decimal in the
+    segment is the price, everything before it is the market phrase."""
+    out, seen = [], set()
+    for seg in re.split(r"[,\n;]+|\band\b", text, flags=re.IGNORECASE):
+        nums = list(re.finditer(r"(?<![A-Za-z])\d+(?:[.,]\d+)?", seg))
+        if not nums:
+            continue
+        m = nums[-1]
+        odds = float(m.group(0).replace(",", "."))
+        if not (1.01 <= odds <= 100):
+            continue
+        resolved = _wc_resolve_market(p, seg[:m.start()])
+        if resolved and resolved[0] not in seen:
+            seen.add(resolved[0])
+            out.append((*resolved, odds))
+    return out
+
+
+def _wc_scan_odds_sheet(p: dict, pairs: list) -> tuple[str, dict | None]:
+    """Rank a pasted odds menu by EV against our model → (message, keyboard).
+    Keyboard offers one-tap logging for the +EV legs only."""
+    bal = _wc_bankroll().get("balance")
+    rows, buttons = [], []
+    ranked = sorted(pairs, key=lambda t: t[2] * t[3], reverse=True)
+    for key, label, prob, odds in ranked:
+        if prob <= 0:
+            continue
+        fair = 1.0 / prob
+        ev = prob * odds - 1.0
+        if ev > 0:
+            b = odds - 1.0
+            kelly = max(0.0, (prob * b - (1 - prob)) / b)
+            kelly_txt = f" · Kelly €{kelly * bal:.0f}" if bal else ""
+            rows.append(f"✅ <b>{label}</b> @ {odds} — our {prob:.0%} "
+                        f"(fair {fair:.2f}) → <b>EV {ev:+.0%}</b>{kelly_txt}")
+            if len(buttons) < 3:
+                buttons.append([_button(f"🎫 {label} @ {odds}",
+                                        f"wcbeto:{p.get('match_number')}|{key}|{odds}")])
+        else:
+            rows.append(f"❌ {label} @ {odds} — our {prob:.0%} "
+                        f"(fair {fair:.2f}) → EV {ev:+.0%}")
+    head = (f"🧮 <b>{p.get('home_team')} vs {p.get('away_team')}</b> — "
+            f"your prices vs our model\n\n")
+    if buttons:
+        best = ranked[0]
+        tail = (f"\n👉 <b>Best of this menu: {best[1]} @ {best[3]}</b> — "
+                f"tap to log it and I'll size the stake.")
+    else:
+        tail = ("\n👉 <b>Nothing here beats our fair lines — skip this menu.</b> "
+                "The book is charging more than every leg is worth.")
+    return head + "\n".join(rows) + tail, (_inline_keyboard(buttons) if buttons else None)
+
+
+def _wc_spontaneous_bet(text: str) -> dict | None:
+    """Detect 'I want to bet on X2 in Canada vs Bosnia, odds are 1.95' typed
+    out of nowhere — find the fixture (next 48h) by team mentions, resolve
+    the leg, and return a pending-bet dict. None = not a bet statement.
+    Deterministic on purpose: money intent must NEVER reach the chat AI,
+    which paraphrases or refuses (observed live 2026-06-12, twice)."""
+    w = f" {text.lower()} "
+    if not re.search(r"\b(bet|betting|punto|scommetto|gioco)\b", w):
+        return None
+    import json as _json
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+    except (OSError, ValueError):
+        return None
+    now = datetime.now(UTC)
+    best = None
+    for p in doc.get("predictions", []):
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not (-3 <= (ko - now).total_seconds() / 3600 <= 48):
+            continue
+        hits = sum(1 for team in (p.get("home_team", ""), p.get("away_team", ""))
+                   for tok in team.lower().split() if len(tok) > 3 and tok in w)
+        if hits and (best is None or hits > best[0]):
+            best = (hits, p)
+    if not best:
+        return None
+    p = best[1]
+    pend = {"match_number": p.get("match_number"),
+            "match": f"{p.get('home_team')} vs {p.get('away_team')}",
+            "leg_key": None, "label": None}
+    guess = _wc_guess_leg(p, text)
+    if guess:
+        pend["leg_key"], pend["label"], pend["prob"] = guess
+    return pend
+
+
+def _wc_bet_keyboard(p: dict) -> dict | None:
+    """Big one-per-row buttons for logging what Nicola actually bet."""
+    legs = _wc_ladder_legs(p)
+    mn = p.get("match_number")
+    rows = []
+    for prob, label, key in legs:
+        if key and 0.35 <= prob <= 0.90 and len(rows) < 4:
+            rows.append([_button(f"🎫 I bet: {label} ({prob:.0%}, min {1 / prob:.2f})",
+                                 f"wcbet:{mn}:{key}")])
+    if not rows:
+        return None
+    rows.append([_button("📝 something else — I'll type it", f"wcbet:{mn}:other")])
+    return _inline_keyboard(rows)
+
+
+# =============================================================================
+# WORLD CUP PRE-MATCH ALERTS (proactive, added 2026-06-11)
+# =============================================================================
+# Unprompted Telegram message when a WC fixture is WC_ALERT_WINDOW minutes
+# from kickoff: our call, the market family derived from the lambdas, lineup
+# status, scorer propensities (labeled lower-confidence), and the WHY (Elo
+# gap, model-vs-market agreement, availability). One alert per match, state
+# on disk so restarts don't re-send. Reads the same artifacts as /worldcup —
+# never edits anything under scripts/worldcup/.
+
+WC_ALERT_STATE = PROJECT_ROOT / "data" / "worldcup" / "prematch_alerts_sent.json"
+WC_ALERT_WINDOW_MIN = (0, 150)        # consider fixtures 0–150 min from kickoff
+WC_ALERT_LAST_CALL_MIN = 25           # ≤ this: send with whatever we have
+WC_REFRESH_WAIT_MAX_S = 12 * 60       # re-pull cadence while XIs unconfirmed
+_WC_ALERT_LAST_CHECK = {"t": 0.0}
+_WC_PREDICTIONS_JSON = PROJECT_ROOT / "data" / "worldcup" / "predictions.json"
+
+
+def _wc_lineups_confirmed(match_number) -> bool:
+    import json as _json
+    try:
+        cl = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "confirmed_lineups.json").read_text())
+        return bool((cl.get(str(match_number)) or {}).get("confirmed"))
+    except (OSError, ValueError):
+        return False
+
+
+def _wc_spawn_refresh(state: dict) -> None:
+    """Kick the full WC pipeline (lineups → availability → predictions) in a
+    detached subprocess so the briefing is built from CONFIRMED-XI numbers.
+    Globally throttled; output appended to logs/wc-prematch-refresh.log."""
+    import subprocess
+    last = state.get("_refresh_spawned_at", 0.0)
+    if time.time() - last < 600:        # one spawn per 10 min, globally
+        return
+    state["_refresh_spawned_at"] = time.time()
+    with open(PROJECT_ROOT / "logs" / "wc-prematch-refresh.log", "ab") as logf:
+        subprocess.Popen(  # noqa: S603 — static argv, no user input
+            [sys.executable, "-m", "scripts.worldcup.refresh"],
+            cwd=str(PROJECT_ROOT), stdout=logf, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )   # child holds its own dup of the fd; parent copy closes here
+    log.info("Pre-match: spawned WC refresh for confirmed-lineup predictions")
+
+
+def _wc_grid(lh: float, la: float) -> dict:
+    """Joint score grid P(h, a) from the two lambdas — the base object every
+    derived market (and every same-match COMBO leg) is computed from, so
+    correlated legs get their TRUE joint probability, never a naive product."""
+    import math
+
+    def P(lam: float, k: int) -> float:
+        return math.exp(-lam) * lam ** k / math.factorial(k)
+
+    ph = [P(lh, k) for k in range(9)]
+    pa = [P(la, k) for k in range(9)]
+    return {(h, a): ph[h] * pa[a] for h in range(9) for a in range(9)}
+
+
+def _wc_poisson_family(lh: float, la: float) -> dict:
+    """Score grid markets from the two lambdas (mirrors the /worldcup page)."""
+    grid = _wc_grid(lh, la)
+    top = sorted(grid.items(), key=lambda kv: -kv[1])[:3]
+    btts_no = sum(p for (h, a), p in grid.items() if h == 0 or a == 0)
+    o25 = sum(p for (h, a), p in grid.items() if h + a > 2.5)
+    margins = {
+        "home by 1": sum(p for (h, a), p in grid.items() if h - a == 1),
+        "home by 2+": sum(p for (h, a), p in grid.items() if h - a >= 2),
+        "away by 1": sum(p for (h, a), p in grid.items() if a - h == 1),
+        "away by 2+": sum(p for (h, a), p in grid.items() if a - h >= 2),
+    }
+    return {"top_scores": top, "btts_no": btts_no, "over25": o25, "margins": margins}
+
+
+def _wc_scorer_shortlist(players_doc: dict, match_number) -> list[str]:
+    """Top anytime-scorer propensities for one match.
+
+    per_match shape: {match_number: {"home": [{name, prob, fair_odds, ...}],
+    "away": [...]}} — names + our prob + our fair odds, so the user can spot
+    when a book price is above/below our number.
+    """
+    entry = ((players_doc or {}).get("per_match") or {}).get(str(match_number)) or {}
+    out = []
+    for side in ("home", "away"):
+        rows = entry.get(side, []) or []
+        # once lineups are confirmed upstream, only confirmed starters count
+        confirmed_rows = [r for r in rows if r.get("confirmed_xi")]
+        for r in (confirmed_rows or rows):
+            prob = r.get("prob")
+            if prob:
+                out.append((float(prob),
+                            f"{r.get('name', '?')} {float(prob):.0%}"
+                            f" (fair {r.get('fair_odds', '?')})"))
+    out.sort(reverse=True)
+    return [s for _, s in out[:3]]
+
+
+def _build_prematch_alert(p: dict, minutes_to_ko: float) -> str:
+    """One match's pre-kickoff briefing (Telegram HTML)."""
+    import json as _json
+
+    home, away = p.get("home_team", "?"), p.get("away_team", "?")
+    probs = p.get("probabilities") or {}
+    pure = p.get("probabilities_pure_model") or {}
+    lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+    ko_local = ""
+    try:
+        ko = datetime.fromisoformat(p["kickoff_utc"])
+        ko_local = ko.astimezone(_wc_tz()).strftime("%H:%M")
+    except (KeyError, ValueError, TypeError):
+        pass
+
+    pick = max(probs, key=probs.get) if probs else "?"
+    sym = {"home": "1", "draw": "X", "away": "2"}.get(pick, "?")
+    fam = _wc_poisson_family(lh, la) if lh and la else None
+
+    lines = [
+        f"⏰ <b>{home} vs {away}</b> — kickoff ~{int(minutes_to_ko)} min "
+        f"({ko_local} {WC_TZ_LABEL})",
+        "",
+        f"🎯 <b>Our call: {sym}</b> — {home} {probs.get('home', 0):.0%} / "
+        f"X {probs.get('draw', 0):.0%} / {away} {probs.get('away', 0):.0%}",
+    ]
+    if fam:
+        ts = " · ".join(f"{h}-{a} {pr:.0%} (min {1 / pr:.1f})"
+                        for (h, a), pr in fam["top_scores"] if pr > 0)
+        lines.append(f"📊 Top scores: {ts}")
+        lines.append(
+            f"⚽ BTTS No {fam['btts_no']:.0%} · Over 2.5: {fam['over25']:.0%}"
+            + ("  ⚠️ coin-flip" if 0.45 <= fam["over25"] <= 0.55 else "")
+        )
+        best_margin = max(fam["margins"], key=fam["margins"].get)
+        lines.append(f"📏 Margin lean: {best_margin.replace('home', home).replace('away', away)} "
+                     f"{fam['margins'][best_margin]:.0%}")
+
+    # WHY — elo gap, model vs market agreement, availability
+    why = []
+    eh, ea = p.get("elo_home"), p.get("elo_away")
+    if eh and ea:
+        why.append(f"Elo {eh:.0f} vs {ea:.0f} ({'+' if eh >= ea else '−'}{abs(eh - ea):.0f})")
+    if pure and probs:
+        d = abs(pure.get(pick, 0) - probs.get(pick, 0))
+        if p.get("market_informed"):
+            why.append(f"market {'agrees' if d < 0.05 else 'tempers us'} "
+                       f"(pure model {pure.get(pick, 0):.0%})")
+    if p.get("availability_adjusted"):
+        why.append("λ adjusted for team news")
+    if why:
+        lines.append(f"🧠 Why: {'; '.join(why)}")
+
+    # Lineups — confirmed or not (status honesty)
+    try:
+        cl = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "confirmed_lineups.json").read_text())
+        entry = cl.get(str(p.get("match_number"))) or {}
+        if entry.get("confirmed"):
+            miss = entry.get("missing") or []
+            mtxt = f" · out: {', '.join(m.get('name', '?') for m in miss[:4])}" if miss else ""
+            lines.append(f"📋 Lineups CONFIRMED{mtxt}")
+        else:
+            lines.append("📋 Lineups not confirmed yet — based on expected XI")
+    except (OSError, ValueError):
+        pass
+
+    # Scorer propensities — honest label, this family is NOT betting-validated
+    try:
+        players_doc = _json.loads((PROJECT_ROOT / "data" / "worldcup" / "player_predictions.json").read_text())
+        sc = _wc_scorer_shortlist(players_doc, p.get("match_number"))
+        if sc:
+            lines.append(f"👟 Scorer propensity (lower confidence): {' · '.join(sc)}")
+    except (OSError, ValueError):
+        pass
+
+    lines.append("")
+    lines.append(_wc_money_footer())
+    return "\n".join(lines)
+
+
+def _wc_ladder_legs(p: dict) -> list[tuple[float, str]]:
+    """Candidate legs for one match across the WHOLE market family.
+
+    Returns [(prob, label)] sorted by prob desc. Who-wins legs use the
+    deployed (market-informed) probabilities; totals/joints come from the
+    score grid. SISAL-style combo legs (e.g. "1 + Under 3.5") are exact
+    joint probabilities from the grid.
+    """
+    probs = p.get("probabilities") or {}
+    home, away = p.get("home_team", "?"), p.get("away_team", "?")
+    lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+    legs: list[tuple[float, str, str]] = []          # (prob, label, settle-key)
+    if probs:
+        ph, pd, pa = probs.get("home", 0), probs.get("draw", 0), probs.get("away", 0)
+        legs += [(ph, f"1 ({home} win)", "1"), (pa, f"2 ({away} win)", "2")]
+        legs += [(ph + pd, f"1X ({home} or draw)", "1X"),
+                 (pa + pd, f"X2 ({away} or draw)", "X2"),
+                 (ph + pa, "12 (no draw)", "12")]
+    if lh and la:
+        g = _wc_grid(lh, la)
+        tot = lambda f: sum(v for (h, a), v in g.items() if f(h, a))  # noqa: E731
+        legs += [
+            (tot(lambda h, a: h + a > 1.5), "Over 1.5", "O15"),
+            (tot(lambda h, a: h + a < 2.5), "Under 2.5", "U25"),
+            (tot(lambda h, a: h + a > 2.5), "Over 2.5", "O25"),
+            (tot(lambda h, a: h + a < 3.5), "Under 3.5", "U35"),
+            (tot(lambda h, a: h > 0 and a > 0), "BTTS Yes", "BTTSY"),
+            (tot(lambda h, a: h == 0 or a == 0), "BTTS No", "BTTSN"),
+            # SISAL "Combo" markets — exact joints, correlation priced in
+            (tot(lambda h, a: h > a and h + a < 3.5), f"1 + Under 3.5 ({home})", "1U35"),
+            (tot(lambda h, a: h > a and h + a > 1.5), f"1 + Over 1.5 ({home})", "1O15"),
+            (tot(lambda h, a: a > h and h + a < 3.5), f"2 + Under 3.5 ({away})", "2U35"),
+            (tot(lambda h, a: h > a or h + a > 2.5), f"1 or Over 2.5 ({home})", "1orO25"),
+        ]
+    legs.sort(reverse=True)
+    return legs
+
+
+# Ladder tiers. "safe" takes the HIGHEST-prob leg inside its band (steady
+# compounding); "risk" takes the LOWEST-prob leg inside its band — longest
+# odds that still clear the 40% floor, so each rung roughly doubles. Same
+# honest math either way: min-odds gate + cumulative survival shown.
+WC_LADDER_TIERS = {
+    "safe": {"band": (0.55, 0.85), "pick": "safest", "title": "🪜 Safe ladder"},
+    "risk": {"band": (0.40, 0.70), "pick": "longest", "title": "🎲 Risk ladder"},
+}
+
+
+def _build_daily_ladder(stake: float = 10.0, tier: str = "safe") -> str:
+    """Kickoff-ordered ladder over today's slate: one band-qualifying leg per
+    match, each rung staking the full return of the previous one. All payouts
+    shown at OUR FAIR ODDS (= 1/prob): that is the MINIMUM SISAL price to
+    accept — if the book pays less than the rung's 'min odds', skip the rung."""
+    import json as _json
+
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+    except (OSError, ValueError):
+        return "🪜 No predictions on disk."
+    preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+    tz = _wc_tz()
+    now = datetime.now(UTC)
+    today = now.astimezone(tz).date()
+
+    slate = []
+    for p in preds:
+        try:
+            ko = datetime.fromisoformat(p["kickoff_utc"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if ko.astimezone(tz).date() == today and ko > now:
+            slate.append((ko, p))
+    slate.sort(key=lambda x: x[0])
+    if not slate:
+        return "🪜 No remaining fixtures today — ladder starts with tomorrow's slate."
+
+    cfg = WC_LADDER_TIERS.get(tier, WC_LADDER_TIERS["safe"])
+    lo, hi = cfg["band"]
+    # Bankroll-aware staking: rung = WC_RUNG_FRACTION of the real balance,
+    # the floor stays untouched — the split Nicola actually plays (60/128.56).
+    bk = _wc_bankroll()
+    floor_line = ""
+    if bk.get("balance"):
+        bal = float(bk["balance"])
+        stake = max(5.0, round(bal * WC_RUNG_FRACTION))
+        floor_line = (f"💰 Balance €{bal:.2f} → rung <b>€{stake:.0f}</b>, "
+                      f"floor <b>€{bal - stake:.2f}</b> stays in the account")
+    lines = [f"{cfg['title']} — <b>{today.strftime('%A %d %B')}</b> (start €{stake:.0f}, "
+             "each rung bets the previous return)"]
+    if floor_line:
+        lines.append(floor_line)
+    lines.append("")
+    bank = stake
+    surv = 1.0
+    rung = 0
+    for ko, p in slate:
+        in_band = [leg for leg in _wc_ladder_legs(p) if lo <= leg[0] <= hi]
+        # safest = highest prob in band; longest = lowest prob in band
+        pick = (in_band[0] if cfg["pick"] == "safest" else in_band[-1]) if in_band else None
+        ko_txt = ko.astimezone(tz).strftime("%H:%M")
+        match = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
+        if not pick:
+            lines.append(f"⏭ {ko_txt} {match}: no leg in the {lo:.0%}–{hi:.0%} band — skip")
+            continue
+        prob, label, _key = pick
+        rung += 1
+        fair = 1.0 / prob
+        ret = bank * fair
+        surv *= prob
+        lines.append(
+            f"<b>Rung {rung}</b> · {ko_txt} {match}\n"
+            f"   {label} — our {prob:.0%} · <b>min odds {fair:.2f}</b>\n"
+            f"   stake €{bank:.2f} → €{ret:.2f} if it lands "
+            f"(survival so far {surv:.0%})"
+        )
+        bank = ret
+    if rung == 0:
+        return (f"{cfg['title']}: nothing in the {lo:.0%}–{hi:.0%} band today — "
+                "no ladder, that's the discipline.")
+    lines += [
+        "",
+        f"💰 Full ladder at min odds: €{stake:.0f} → €{bank:.2f} "
+        f"(x{bank / stake:.1f}) with {surv:.0%} survival",
+        "⚠️ Rules: take a rung ONLY if SISAL pays ≥ the min odds (that's our "
+        "fair price — below it the rung is -EV by our model). Real book odds "
+        "above min raise the payout. Stop any time; banking a rung is always "
+        "allowed; never chase a broken ladder.",
+    ]
+    if tier == "safe":
+        lines.append("🎲 Spicier version: /ladder risk")
+    if tier == "risk":
+        # Score shot of the day: the slate's strongest exact-score conviction.
+        # SINGLE bet, not a rung — laddering 14% legs is a lottery (2% over two
+        # rungs); a top-conviction score at min odds is a longshot WITH a thesis.
+        best = None
+        for _ko, p in slate:
+            lh, la = float(p.get("home_xg") or 0), float(p.get("away_xg") or 0)
+            if not (lh and la):
+                continue
+            g = _wc_grid(lh, la)
+            (h, a), pr = max(g.items(), key=lambda kv: kv[1])
+            if best is None or pr > best[0]:
+                nxt = sorted(g.items(), key=lambda kv: -kv[1])[1]
+                best = (pr, h, a, nxt, p)
+        if best:
+            pr, h, a, ((h2, a2), pr2), p = best
+            m = f"{p.get('home_team', '?')}–{p.get('away_team', '?')}"
+            lines += [
+                "",
+                f"🎯 <b>Score shot of the day</b>: {m} → <b>{h}-{a}</b> "
+                f"(our {pr:.0%}, <b>min odds {1 / pr:.1f}</b>)",
+                f"   cover: add {h2}-{a2} ({pr2:.0%}, min {1 / pr2:.1f}) — "
+                f"together {pr + pr2:.0%} that one of the two lands",
+                "   single bet, flat stake — exact scores do NOT ladder.",
+            ]
+    return "\n".join(lines)
+
+
+_WC_POSTMATCH_LAST = {"t": 0.0}
+
+
+def _wc_postmatch_check(token: str, chat_id: str) -> None:
+    """After an alerted match should have ENDED (kickoff + 110 min), keep
+    spawning the WC refresh until its final score is on disk — so settlement,
+    result-pinning and grading happen minutes after the whistle instead of at
+    the next 2-hourly tick. (Found live 2026-06-12: Canada FT 1-1, Nicola's
+    settlement message sat in the gap between refresh cycles.)"""
+    import json as _json
+    if time.time() - _WC_POSTMATCH_LAST["t"] < 120:
+        return
+    _WC_POSTMATCH_LAST["t"] = time.time()
+    try:
+        try:
+            sent = _json.loads(WC_ALERT_STATE.read_text())
+        except (OSError, ValueError):
+            return
+        now = datetime.now(UTC)
+        changed = False
+        for mn, st in list(sent.items()):
+            if not isinstance(st, dict) or not st.get("sent") or st.get("result_seen"):
+                continue
+            p = _wc_pred_for_match(mn)
+            if not p:
+                continue
+            try:
+                ko = datetime.fromisoformat(p["kickoff_utc"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            mins_since_ko = (now - ko).total_seconds() / 60
+            if mins_since_ko < 110:
+                continue                      # match still running
+            if _wc_result_for_match(mn):
+                st["result_seen"] = now.isoformat()
+                changed = True                # settle check picks it up ≤5 min
+            elif mins_since_ko < 240:
+                _wc_spawn_refresh(sent)       # globally throttled to 1/10min
+                changed = True
+        if changed:
+            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+    except Exception as e:  # noqa: BLE001 — must never kill the bot loop
+        log.warning("postmatch check failed: %s", e)
+
+
+def _check_prematch_alerts(token: str, chat_id: str) -> None:
+    """Fire pre-kickoff briefings for fixtures entering the alert window."""
+    import json as _json
+
+    now_ts = time.time()
+    if now_ts - _WC_ALERT_LAST_CHECK["t"] < 120:    # throttle: every 2 min
+        return
+    _WC_ALERT_LAST_CHECK["t"] = now_ts
+    try:
+        doc = _json.loads(_WC_PREDICTIONS_JSON.read_text())
+        preds = doc.get("predictions", []) if isinstance(doc, dict) else []
+        if not preds:
+            return
+        try:
+            sent = _json.loads(WC_ALERT_STATE.read_text())
+        except (OSError, ValueError):
+            sent = {}
+        now = datetime.now(UTC)
+        lo, hi = WC_ALERT_WINDOW_MIN
+        changed = False
+        for p in preds:
+            mn = str(p.get("match_number"))
+            entry = sent.get(mn)
+            if isinstance(entry, str) or (isinstance(entry, dict) and entry.get("sent")):
+                continue                     # already alerted (old or new format)
+            try:
+                ko = datetime.fromisoformat(p["kickoff_utc"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            mins = (ko - now).total_seconds() / 60
+            if not (lo <= mins <= hi):
+                continue
+
+            # ── lineup-gated, pipeline-fresh send ────────────────────────
+            # Goal: send ONCE, built from a predictions.json regenerated
+            # AFTER lineups confirmed. Last-call: never miss a match.
+            st = entry if isinstance(entry, dict) else {}
+            confirmed = _wc_lineups_confirmed(mn)
+            try:
+                preds_mtime = _WC_PREDICTIONS_JSON.stat().st_mtime
+            except OSError:
+                preds_mtime = 0.0
+            refresh_at = st.get("refresh_at", 0.0)
+            fresh = refresh_at and preds_mtime > refresh_at
+            last_call = mins <= WC_ALERT_LAST_CALL_MIN
+
+            # Send ONLY on confirmed lineups + pipeline rebuilt after the spawn
+            # that confirmed them — or at last call (a ban never silences a
+            # match, but it also never tricks us into an early unconfirmed
+            # send: Sofascore publishes XIs ~T-60, so we keep refreshing).
+            ready = (confirmed and fresh) or last_call
+            if not ready:
+                refresh_stale = (not refresh_at
+                                 or time.time() - refresh_at > WC_REFRESH_WAIT_MAX_S)
+                if refresh_stale and mins <= 90:
+                    # pull the whole pipeline (lineups → availability →
+                    # predictions); re-pulls every ~12 min until XIs confirm.
+                    _wc_spawn_refresh(sent)
+                    st["refresh_at"] = time.time()
+                    sent[mn] = st
+                    changed = True
+                continue
+
+            msg = _build_prematch_alert(p, mins)
+            _tg_send_message(token, chat_id, msg, reply_markup=_wc_bet_keyboard(p))
+            st["sent"] = now.isoformat()
+            st["lineups_confirmed"] = confirmed
+            st["pipeline_fresh"] = bool(fresh)
+            sent[mn] = st
+            changed = True
+            log.info("Pre-match alert sent: %s vs %s (T-%dmin, lineups=%s, fresh=%s)",
+                     p.get("home_team"), p.get("away_team"), int(mins),
+                     confirmed, bool(fresh))
+            # First alert of the (Rome) day also carries the day's ladders
+            day_key = f"ladder_{now.astimezone(_wc_tz()).date()}"
+            if day_key not in sent:
+                _tg_send_message(token, chat_id, _build_daily_ladder(tier="safe"))
+                _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
+                sent[day_key] = now.isoformat()
+        if changed:
+            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+    except Exception as e:  # noqa: BLE001 — alerts must never kill the bot loop
+        log.warning("prematch alert check failed: %s", e)
+
+
 def run_bot():
     """Main bot loop — long-polls Telegram for messages."""
     global _running
@@ -2455,6 +3881,13 @@ def run_bot():
             # Reset backoff on success
             backoff = 1
 
+            # Proactive WC pre-match briefings (throttled internally)
+            _check_prematch_alerts(token, chat_id)
+            # Post-match: hunt the final score until it lands on disk
+            _wc_postmatch_check(token, chat_id)
+            # Auto-settle Nicola's logged bets against real results
+            _wc_check_my_bets(token, chat_id)
+
             for update in updates:
                 update_id = update.get("update_id", 0)
                 offset = update_id + 1
@@ -2523,6 +3956,101 @@ def run_bot():
                     text = _REPLY_BUTTON_MAP[text]
                     cmd = text.split()[0].lower()
 
+                # Pending bet completion: "60 @ 1.80" / "60 at 1.80" (+ free
+                # text). While a bet is pending this flow OWNS the chat —
+                # nothing falls through to Claude (which paraphrases, refuses,
+                # or claims SA/EPL-only — observed live 2026-06-12).
+                # Spontaneous bet statement with no pending flow: detect it
+                # deterministically and open the calculation flow — the chat
+                # AI never sees money intent.
+                if not cmd and chat_id not in _WC_PENDING_BET:
+                    # Pasted odds menu ("X2 at 1.5, 1 at 2, 2 at 3") → rank
+                    # the whole sheet by EV and offer one-tap logging.
+                    p_sheet = _wc_match_from_text(text)
+                    pairs = _wc_parse_odds_sheet(p_sheet, text) if p_sheet else []
+                    if len(pairs) >= 2:
+                        sheet_msg, sheet_kb = _wc_scan_odds_sheet(p_sheet, pairs)
+                        _tg_send_message(token, chat_id, sheet_msg,
+                                         reply_markup=sheet_kb)
+                        continue
+                    spont = _wc_spontaneous_bet(text)
+                    if spont:
+                        spont["at"] = time.time()
+                        _WC_PENDING_BET[chat_id] = spont
+                        if spont.get("label"):
+                            _tg_send_message(token, chat_id,
+                                f"🎫 <b>{spont['label']}</b> ({spont['match']}) — got it.")
+                        # fall through to the pending handler below, which
+                        # parses odds/stake from THIS same message
+
+                # Stale pending (>15 min) expires silently — the message
+                # gets processed fresh instead of feeding a dead flow.
+                if (chat_id in _WC_PENDING_BET
+                        and time.time() - _WC_PENDING_BET[chat_id].get("at", 0) > 900):
+                    _WC_PENDING_BET.pop(chat_id, None)
+
+                if not cmd and chat_id in _WC_PENDING_BET:
+                    if text.strip().lower() in ("/cancel", "cancel", "annulla"):
+                        _WC_PENDING_BET.pop(chat_id, None)
+                        _tg_send_message(token, chat_id, "🚫 Bet logging cancelled.")
+                        continue
+                    pend = _WC_PENDING_BET[chat_id]
+                    # "ok" accepts the suggested (calculated) stake
+                    if (text.strip().lower() in ("ok", "okay", "yes", "si", "sì", "va bene", "👍")
+                            and pend.get("odds") and pend.get("suggested")):
+                        stake, odds, words = pend["suggested"], pend["odds"], ""
+                    else:
+                        stake, odds, words = _wc_parse_bet_text(text, pend)
+                    if not pend.get("label") and len(words) > 2:
+                        pend["label"] = words            # "Canada winning" etc.
+                        # try to resolve free text to a structured leg of this
+                        # match → enables auto-settle + the EV check
+                        mp = _wc_pred_for_match(pend.get("match_number"))
+                        guess = _wc_guess_leg(mp, words) if mp else None
+                        if guess:
+                            pend["leg_key"], pend["label"], pend["prob"] = guess
+                    if stake and odds and odds >= 1.01:
+                        _force = "force" in text.lower()
+                        _guard = _wc_guard_check(stake, n_legs=1, is_wc=True, force=_force)
+                        if _guard:
+                            _tg_send_message(token, chat_id, _guard)
+                            continue
+                        _WC_PENDING_BET.pop(chat_id, None)
+                        label = pend.get("label") or "custom bet"
+                        bet = _wc_log_bet(pend["match_number"],
+                                          pend.get("match", f"match {pend['match_number']}"),
+                                          pend.get("leg_key"), label, stake, odds)
+                        bk = _wc_bankroll()
+                        bal_txt = (f"\n💰 Balance: <b>€{bk['balance']:.2f}</b>"
+                                   if bk.get("balance") is not None else "")
+                        auto = ("settles automatically at the final whistle"
+                                if bet["leg_key"] else "free-text — settle with /settle won|lost")
+                        ev_line = ""
+                        prob = pend.get("prob")
+                        if prob:
+                            fair = 1.0 / prob
+                            ev_line = (f"\n📐 Our {prob:.0%} → fair {fair:.2f} → "
+                                       + ("<b>+EV ✅</b>" if odds > fair
+                                          else "<b>below fair ⚠️</b>"))
+                        _tg_send_message(token, chat_id,
+                            f"🎫 Logged: <b>{label}</b> @ {odds} × €{stake:.2f} "
+                            f"(returns €{stake * odds:.2f}){ev_line}\n{auto}{bal_txt}")
+                    else:
+                        pend["stake"], pend["odds"] = stake, odds
+                        if odds and not stake:
+                            # THE calculation he asked for: size it from the
+                            # real balance + judge the price when leg is known
+                            suggested, ask = _wc_stake_suggestion(odds, pend.get("prob"))
+                            pend["suggested"] = suggested
+                        elif stake and not odds:
+                            ask = f"Got it — €<b>{stake:.0f}</b>. At what odds? (e.g. 1.80)"
+                        else:
+                            ask = ("Tell me the bet with odds — e.g. "
+                                   "<code>Canada win at 1.80</code> — and I'll "
+                                   "calculate the stake. (/cancel to abort)")
+                        _tg_send_message(token, chat_id, ask)
+                    continue
+
                 if cmd == "/start":
                     response_text = _handle_start()
                 elif cmd == "/bets":
@@ -2547,6 +4075,184 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
+                elif cmd in ("/wc", "/worldcup"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _handle_worldcup()
+                elif cmd in ("/ladder", "/scala"):
+                    _tg_send_typing(token, chat_id)
+                    _tier = "risk" if any(w in text.lower() for w in ("risk", "rischio")) else "safe"
+                    response_text = _build_daily_ladder(tier=_tier)
+                elif cmd == "/lossstop":
+                    arg = text.replace("/lossstop", "").strip().replace(",", ".")
+                    bk = _wc_bankroll()
+                    if arg:
+                        try:
+                            bk["loss_stop_eur"] = round(abs(float(arg)), 2)
+                            _wc_json_save(WC_BANKROLL_JSON, bk)
+                            response_text = (f"🛑 Loss-stop set: the bot refuses bets once "
+                                             f"you're down <b>€{bk['loss_stop_eur']:.0f}</b> "
+                                             f"vs deposits. This is the deal — keep it.")
+                        except ValueError:
+                            response_text = "Usage: <code>/lossstop 50</code>"
+                    else:
+                        cur = bk.get("loss_stop_eur")
+                        response_text = (f"🛑 Loss-stop: €{cur:.0f}" if cur
+                                         else "No loss-stop set. <code>/lossstop 50</code> to set one.")
+                elif cmd == "/guard":
+                    g = WC_GUARD
+                    bk = _wc_bankroll()
+                    response_text = (
+                        "🛡 <b>Guardrail</b> (protects against the parlay/blind-bet pattern):\n"
+                        f"• Max {g['max_parlay_legs']} legs per ticket\n"
+                        f"• Max bet ≤ {g['max_stake_pct']:.0%} of balance\n"
+                        f"• World Cup matches only\n"
+                        f"• Loss-stop: {('€' + format(bk['loss_stop_eur'], '.0f')) if bk.get('loss_stop_eur') else 'not set (/lossstop 50)'}\n"
+                        "Type <b>force</b> in a bet to override the soft limits.")
+                elif cmd == "/deposit":
+                    arg = text.replace("/deposit", "").strip().replace(",", ".")
+                    try:
+                        amt = float(arg)
+                        bk = _wc_bankroll()
+                        bk["deposited"] = round(float(bk.get("deposited") or 0) + amt, 2)
+                        bk["balance"] = round(float(bk.get("balance") or 0) + amt, 2)
+                        bk["history"] = (bk.get("history") or [])[-49:] + [
+                            {"at": datetime.now(UTC).isoformat(), "delta": amt,
+                             "note": "deposit"}]
+                        _wc_json_save(WC_BANKROLL_JSON, bk)
+                        response_text = (f"🏦 Deposit €{amt:.2f} recorded. "
+                                         f"Balance €{bk['balance']:.2f} · "
+                                         f"total deposited €{bk['deposited']:.2f}.")
+                    except ValueError:
+                        response_text = "Usage: <code>/deposit 20</code>"
+                elif cmd == "/cancel":
+                    if _WC_PENDING_BET.pop(chat_id, None):
+                        response_text = "🚫 Bet logging cancelled."
+                    else:
+                        response_text = "Nothing pending — all clear."
+                elif cmd == "/balance":
+                    arg = text.replace("/balance", "").strip().replace(",", ".")
+                    if arg:
+                        try:
+                            bk = _wc_bankroll()
+                            bk["balance"] = round(float(arg), 2)
+                            _wc_json_save(WC_BANKROLL_JSON, bk)
+                            response_text = f"💰 Balance set: <b>€{bk['balance']:.2f}</b>"
+                        except ValueError:
+                            response_text = "Usage: <code>/balance 128.56</code>"
+                    else:
+                        response_text = _wc_money_footer()
+                elif cmd == "/bet":
+                    bm = re.match(
+                        r"^/bet\s+(\d+(?:[.,]\d+)?)\s*(?:@|at)\s*(\d+(?:[.,]\d+)?)\s*(.*)$",
+                        text.strip(), re.IGNORECASE)
+                    if not bm:
+                        response_text = ("Usage: <code>/bet 60 @ 1.80 Canada win</code> "
+                                         "(or tap a 🎫 button on an alert)")
+                    else:
+                        stake = float(bm.group(1).replace(",", "."))
+                        odds = float(bm.group(2).replace(",", "."))
+                        label = bm.group(3).strip() or "custom bet"
+                        _force = "force" in label.lower()
+                        # an odds product that looks like a multi-leg combo
+                        _legs = 4 if odds >= 6.0 else (2 if odds >= 3.0 else 1)
+                        _guard = _wc_guard_check(stake, n_legs=_legs, is_wc=False,
+                                                 force=_force)
+                        if _guard:
+                            response_text = _guard
+                        else:
+                            bet = _wc_log_bet(None, "manual", None, label, stake, odds)
+                            bk = _wc_bankroll()
+                            response_text = (
+                                f"🎫 Logged #{bet['id']}: <b>{label}</b> @ {odds} × €{stake:.2f}. "
+                                f"Settle with /settle won|lost."
+                                + (f"\n💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                elif cmd == "/settle":
+                    arg = text.replace("/settle", "").strip().lower()
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    open_manual = [b for b in bets
+                                   if b.get("status") == "open" and not b.get("leg_key")]
+                    if arg not in ("won", "lost", "void") or not open_manual:
+                        response_text = ("Usage: /settle won|lost|void — settles your "
+                                         f"latest free-text bet ({len(open_manual)} open)")
+                    else:
+                        b = open_manual[-1]
+                        b["status"] = arg
+                        b["settled_at"] = datetime.now(UTC).isoformat()
+                        if arg == "won":
+                            b["return"] = round(b["stake"] * b["odds"], 2)
+                            _wc_bankroll_apply(b["return"], f"bet #{b['id']} WON (manual)")
+                            _wc_ladder_on_settle(b, True)
+                        elif arg == "void":
+                            _wc_bankroll_apply(b["stake"], f"bet #{b['id']} void")
+                        else:
+                            _wc_ladder_on_settle(b, False)
+                        _wc_json_save(WC_MYBETS_JSON, bets)
+                        bk = _wc_bankroll()
+                        response_text = (f"{'✅' if arg == 'won' else '⚪' if arg == 'void' else '❌'} "
+                                         f"#{b['id']} {b['label']} settled {arg}."
+                                         + (f" 💰 €{bk['balance']:.2f}" if bk.get("balance") is not None else ""))
+                elif cmd == "/leg":
+                    # /leg <bet_id> <leg_n> w|l — settle a manual parlay leg
+                    # (e.g. the Brazilian legs with no result feed), then
+                    # re-grade the ticket (may complete or early-kill it).
+                    parts = text.replace("/leg", "").strip().split()
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    ok = False
+                    if len(parts) == 3 and parts[2].lower() in ("w", "l", "won", "lost"):
+                        try:
+                            bid, ln = int(parts[0]), int(parts[1])
+                        except ValueError:
+                            bid = ln = None
+                        won = parts[2].lower() in ("w", "won")
+                        bet = next((x for x in bets if x.get("id") == bid
+                                    and x.get("status") == "open" and x.get("legs")), None)
+                        leg = next((lg for lg in (bet or {}).get("legs", [])
+                                    if lg.get("n") == ln), None) if bet else None
+                        if leg and leg.get("status", "open") == "open":
+                            leg["status"] = "won" if won else "lost"
+                            leg["settled_at"] = datetime.now(UTC).isoformat()
+                            leg["manual"] = True
+                            _wc_json_save(WC_MYBETS_JSON, bets)
+                            # Re-grade the whole ticket now this leg is in.
+                            _wc_settle_parlay(bet, token, chat_id)
+                            _wc_json_save(WC_MYBETS_JSON, bets)
+                            ok = True
+                            response_text = (
+                                f"{'✅' if won else '❌'} Leg {ln} of #{bid} "
+                                f"settled {'won' if won else 'lost'} "
+                                f"[ticket: {bet['status']}].")
+                    if not ok:
+                        open_parlays = [b for b in bets
+                                        if b.get("status") == "open" and b.get("legs")]
+                        hint = ""
+                        if open_parlays:
+                            b = open_parlays[-1]
+                            pend = [str(lg["n"]) for lg in b["legs"]
+                                    if lg.get("status", "open") == "open"]
+                            hint = (f" Open parlay #{b['id']} legs awaiting: "
+                                    f"{', '.join(pend) or 'none'}.")
+                        response_text = ("Usage: <code>/leg &lt;bet_id&gt; &lt;leg_n&gt; w|l</code>"
+                                         f" — settle one manual parlay leg.{hint}")
+                elif cmd == "/mybets":
+                    bets = _wc_json_load(WC_MYBETS_JSON, [])
+                    if not bets:
+                        response_text = "No bets logged yet — tap 🎫 on an alert."
+                    else:
+                        rows = [_wc_money_footer(), ""]
+                        leg_icon = {"open": "⏳", "won": "✅", "lost": "❌"}
+                        for b in bets[-10:]:
+                            icon = {"open": "⏳", "won": "✅", "lost": "❌",
+                                    "void": "⚪"}.get(b["status"], "?")
+                            rows.append(f"{icon} #{b['id']} {b['label']} @ {b['odds']} "
+                                        f"× €{b['stake']:.2f} [{b['status']}]")
+                            # Parlay: show per-leg status so pending legs are visible.
+                            for lg in (b.get("legs") or []):
+                                li = leg_icon.get(lg.get("status", "open"), "?")
+                                tag = " ✋" if lg.get("feed") == "manual" else ""
+                                rows.append(f"     {li} L{lg.get('n', '?')} "
+                                            f"{lg.get('match', '?')}: "
+                                            f"{lg.get('label') or lg.get('leg_key')}{tag}")
+                        response_text = "\n".join(rows)
                 elif cmd and cmd.startswith("/player"):
                     _tg_send_typing(token, chat_id)
                     player_name = cmd.replace("/player", "").strip()
@@ -2603,4 +4309,6 @@ def run_bot():
 
 
 if __name__ == "__main__":
+    if "--wc-digest" in sys.argv:
+        sys.exit(0 if send_worldcup_digest() else 1)
     run_bot()

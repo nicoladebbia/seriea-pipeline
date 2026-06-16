@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -45,13 +46,43 @@ SNAPSHOTS_DIR = DATA_DIR / "odds_snapshots"
 
 from config.leagues import ACTIVE_LEAGUES
 
-# Edge thresholds (must match betting_unified.py BettingConfig)
-EDGE_THRESHOLDS = {
-    "1X2_Draw": {"min": 5.0, "max": 12.0},
-    "1X2_Away": {"min": 7.0, "max": 10.0},
-    "O/U_Over": {"min": 6.0, "max": 8.0},
-    "DC":       {"min": 5.0, "max": 8.0},
+# Edge thresholds + enabled-flags are derived from BettingConfig.market_rules
+# (the SINGLE source of truth, backtest-tuned) — NOT hard-coded here. The
+# scanner was previously surfacing markets the config has DISABLED (all 1X2,
+# DC, O/U Under are -EV / no-edge per held-out backtests; only O/U Over is
+# enabled at +10% ROI / +2.5% CLV). Reading the flags keeps the scanner and
+# the auto-bet path from disagreeing about what's bettable.
+#
+# Scanner market_category -> BettingConfig.market_rules key:
+_SCANNER_CAT_TO_RULE = {
+    "1X2_Home": "1X2",        # home maps to the "1X2" rule (betting_unified.py:2661)
+    "1X2_Draw": "1X2_Draw",
+    "1X2_Away": "1X2_Away",
+    "O/U_Over": "O/U_Over",
+    "O/U_Under": "O/U_Under",
+    "DC": "DC",
 }
+
+
+def _build_edge_thresholds() -> dict:
+    """EDGE_THRESHOLDS built from BettingConfig.market_rules: each scanner
+    category carries min/max edge AND the config's `enabled` flag. A disabled
+    market still gets thresholds (so it can be shown as informational), but
+    `enabled=False` gates it out of actionable value_bets downstream."""
+    from scripts.betting.betting_unified import BettingConfig
+    rules = BettingConfig().market_rules
+    out = {}
+    for cat, rule_key in _SCANNER_CAT_TO_RULE.items():
+        r = rules.get(rule_key, {})
+        out[cat] = {
+            "min": float(r.get("min_edge_pct", 5.0)),
+            "max": float(r.get("max_edge_pct", 8.0)),
+            "enabled": bool(r.get("enabled", False)),
+        }
+    return out
+
+
+EDGE_THRESHOLDS = _build_edge_thresholds()
 
 # Watchlist: alert when edge is within this many pp of threshold
 WATCHLIST_PROXIMITY_PP = 2.0  # e.g., alert at 3% when threshold is 5%
@@ -199,18 +230,38 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 "away": raw_probs[2] / total,
             }
 
-        # Check each selection
+        # Check each selection. Home is the most liquid (and most commonly
+        # soft-priced) 1X2 outcome — it must be scanned alongside Draw/Away.
         for selection, model_p, best_odds, pin_odds, market_cat in [
+            ("Home", model_h, best_h, pin_h, "1X2_Home"),
             ("Draw", model_d, best_d, pin_d, "1X2_Draw"),
             ("Away", model_a, best_a, pin_a, "1X2_Away"),
         ]:
             if best_odds <= 1.0 or model_p <= 0:
                 continue
 
-            # Use overround-removed Pinnacle prob if available
+            # Sharp reference = overround-removed Pinnacle prob when available.
+            # FALLBACK (no Pinnacle): de-vig the full best-line 1X2 triplet
+            # rather than using 1/best_odds. best_odds is the MOST generous
+            # price on the market, so 1/best_odds is the LOWEST implied prob →
+            # it biases the edge HIGH and manufactures phantom value exactly
+            # when the sharp ref is missing (~35% of matches). Removing the
+            # overround from the best-line triplet gives an honest fair prob.
             sharp_implied = pin_probs.get(selection.lower(), 0)
             if sharp_implied <= 0:
-                sharp_implied = 1.0 / best_odds  # Fallback
+                if best_h > 1.0 and best_d > 1.0 and best_a > 1.0:
+                    fair = remove_overround([best_h, best_d, best_a])
+                    idx = {"home": 0, "draw": 1, "away": 2}[selection.lower()]
+                    sharp_implied = fair[idx] if fair else 0
+                if sharp_implied <= 0:
+                    # Last resort: single-price implied, but FLAG it so a
+                    # phantom-edge can't masquerade as a sharp-referenced one.
+                    sharp_implied = 1.0 / best_odds
+                    bet_info_unsharp = True
+                else:
+                    bet_info_unsharp = False
+            else:
+                bet_info_unsharp = False
 
             edge_pct = ((model_p - sharp_implied) / sharp_implied * 100) if sharp_implied > 0 else 0
             thresholds = EDGE_THRESHOLDS.get(market_cat, {"min": 5.0, "max": 8.0})
@@ -234,6 +285,11 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 "best_bookmaker": best_bm,
                 "pinnacle_odds": round(pin_odds, 3) if pin_odds > 0 else None,
                 "market_category": market_cat,
+                "enabled": thresholds.get("enabled", False),
+                # True = no sharp (Pinnacle) reference; fair price is a de-vig
+                # of the best-line triplet. Lower-confidence edge — flagged so
+                # it can be filtered/down-weighted downstream.
+                "no_sharp_ref": bet_info_unsharp,
                 "timestamp": datetime.now().isoformat(),
             }
 
@@ -241,10 +297,15 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             if edge_pct > 50 or edge_pct < -50:
                 continue
 
-            if thresholds["min"] <= edge_pct <= thresholds["max"]:
-                value_bets.append(bet_info)
-            elif 0 < edge_pct < thresholds["min"] and edge_pct >= thresholds["min"] - WATCHLIST_PROXIMITY_PP:
-                bet_info["gap_to_threshold"] = round(thresholds["min"] - edge_pct, 2)
+            in_band = thresholds["min"] <= edge_pct <= thresholds["max"]
+            if in_band and thresholds.get("enabled", False):
+                value_bets.append(bet_info)          # actionable: in-band AND market enabled
+            elif in_band or (0 < edge_pct < thresholds["min"]
+                             and edge_pct >= thresholds["min"] - WATCHLIST_PROXIMITY_PP):
+                # Disabled-market edge OR near-threshold edge → informational only.
+                bet_info["gap_to_threshold"] = round(max(0.0, thresholds["min"] - edge_pct), 2)
+                if not thresholds.get("enabled", False):
+                    bet_info["note"] = "market disabled in BettingConfig (no proven edge)"
                 watchlist.append(bet_info)
 
         # Check O/U totals
@@ -307,10 +368,22 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                     pin_under = bm.get("under", 0)
                     break
 
-            ref_over = pin_over if pin_over > 1.0 else over_odds
-            ref_under = total.get("under", 0)
-            if ref_under <= 1.0:
-                ref_under = pin_under if pin_under > 1.0 else 2.0
+            # De-vig the Over/Under PAIR. Prefer a Pinnacle pair (both legs
+            # from the sharp book) so the fair line isn't a mismatched blend of
+            # one book's over with another's under. If no genuine under price
+            # exists, SKIP this total — do NOT fabricate ref_under=2.0, which
+            # invents an even-money fair line and produces a fake edge (the old
+            # behaviour). A missing sharp side means "no opinion", not "50%".
+            if pin_over > 1.0 and pin_under > 1.0:
+                ref_over, ref_under = pin_over, pin_under   # sharp pair
+            else:
+                ref_over = over_odds
+                ref_under = total.get("under", 0)
+                if ref_under <= 1.0:
+                    ref_under = pin_under if pin_under > 1.0 else 0
+
+            if ref_over <= 1.0 or ref_under <= 1.0:
+                continue  # no honest two-sided price → can't compute a fair line
 
             true_probs = remove_overround([ref_over, ref_under])
             sharp_implied = true_probs[0] if true_probs else 1.0 / ref_over
@@ -330,6 +403,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                     (bm.get("bookmaker", "") for bm in total.get("all_bookmakers", [])
                      if bm.get("over", 0) == over_odds), ""),
                 "market_category": "O/U_Over",
+                "enabled": thresholds.get("enabled", False),
                 "timestamp": datetime.now().isoformat(),
             }
 
@@ -337,10 +411,14 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             if edge_pct > 50 or edge_pct < -50:
                 continue
 
-            if thresholds["min"] <= edge_pct <= thresholds["max"]:
-                value_bets.append(bet_info)
-            elif 0 < edge_pct < thresholds["min"] and edge_pct >= thresholds["min"] - WATCHLIST_PROXIMITY_PP:
-                bet_info["gap_to_threshold"] = round(thresholds["min"] - edge_pct, 2)
+            in_band = thresholds["min"] <= edge_pct <= thresholds["max"]
+            if in_band and thresholds.get("enabled", False):
+                value_bets.append(bet_info)          # actionable: in-band AND market enabled
+            elif in_band or (0 < edge_pct < thresholds["min"]
+                             and edge_pct >= thresholds["min"] - WATCHLIST_PROXIMITY_PP):
+                bet_info["gap_to_threshold"] = round(max(0.0, thresholds["min"] - edge_pct), 2)
+                if not thresholds.get("enabled", False):
+                    bet_info["note"] = "market disabled in BettingConfig (no proven edge)"
                 watchlist.append(bet_info)
 
     return {
@@ -356,7 +434,15 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
 
     Reads from data/live/YYYY-MM-DD.json (populated by live_monitor.py)
     and checks if current live odds create edge vs model prediction.
+
+    GATED OFF by default (LIVE_MONITORING env, default "0"). In-play polling
+    costs ~24 Odds-API credits/matchday and is only useful if you actually bet
+    LIVE. Nicola does not (pre-match only), so this stays off until explicitly
+    enabled with LIVE_MONITORING=1 — prevents it silently resuming when the
+    Odds API key is renewed. Pre-match scanning (scan_for_edges) is unaffected.
     """
+    if os.environ.get("LIVE_MONITORING", "0") != "1":
+        return []
     today = datetime.now().strftime("%Y-%m-%d")
     live_path = DATA_DIR / "live" / f"{today}.json"
     if not live_path.exists():
@@ -408,11 +494,28 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
         from scipy.stats import poisson
         prob_over_25 = 1.0 - poisson.cdf(goals_needed_25 - 1, expected_remaining) if goals_needed_25 > 0 else 1.0
 
-        # Get live Over 2.5 odds
+        # Get live Over 2.5 odds. De-vig against the live UNDER when present:
+        # in-play margins are wide (books pad live vig heavily), so a raw
+        # 1/over implied understates the fair prob and inflates the edge —
+        # the worst false positive to surface, since live alerts are URGENT
+        # and push fast in-play action. Fall back to raw 1/over only if no
+        # under price exists, and flag it.
         live_over_odds = avg_odds.get("over_2_5", 0)
+        live_under_odds = avg_odds.get("under_2_5", 0)
         if live_over_odds > 1.0 and prob_over_25 > 0.1:
-            implied = 1.0 / live_over_odds
+            no_sharp_ref = True
+            if live_under_odds > 1.0:
+                fair = remove_overround([live_over_odds, live_under_odds])
+                implied = fair[0] if fair else 1.0 / live_over_odds
+                no_sharp_ref = False
+            else:
+                implied = 1.0 / live_over_odds
             edge = ((prob_over_25 - implied) / implied * 100) if implied > 0 else 0
+
+            # Same sanity clamp the pre-match paths use — a >50% live "edge"
+            # is a data/model artefact, never a real price.
+            if edge > 50 or edge < -50:
+                continue
 
             if edge >= 5.0:
                 live_value.append({
@@ -421,9 +524,11 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
                     "selection": f"Over 2.5 (score {score[0]}-{score[1]}, min {minute})",
                     "model_prob": round(prob_over_25, 4),
                     "live_odds": round(live_over_odds, 3),
+                    "sharp_implied": round(implied, 4),
                     "edge_pct": round(edge, 2),
                     "minutes_remaining": minutes_left,
                     "goals_needed": goals_needed_25,
+                    "no_sharp_ref": no_sharp_ref,
                     "is_live": True,
                     "timestamp": datetime.now().isoformat(),
                 })

@@ -70,6 +70,11 @@ def archive_predictions():
                 "home_xg": pred.get("home_xg", 0),
                 "away_xg": pred.get("away_xg", 0),
                 "probabilities": pred.get("probabilities", {}),
+                # Money path — raw blend without draw boost / temperature
+                # sharpening; what the betting system prices with. The
+                # calibration-drift monitor grades THIS layer (display
+                # "probabilities" are accuracy-tuned, deliberately sharper).
+                "betting_probabilities": pred.get("betting_probabilities", {}),
                 "date": match_date,
                 "archived_at": datetime.now().isoformat(),
                 # Feedback loop fields (for post-settlement analysis)

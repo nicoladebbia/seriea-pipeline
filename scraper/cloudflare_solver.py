@@ -110,6 +110,33 @@ def solve_cloudflare(
         log.info("Browser closed after Cloudflare solve.")
 
 
+def _detect_chrome_major() -> Optional[int]:
+    """Installed Chrome major version, so undetected-chromedriver fetches the
+    matching driver. Hardcoding a version goes stale every Chrome update and
+    raises SessionNotCreatedException ('only supports Chrome version N'); None
+    lets uc auto-detect as a last resort."""
+    import re
+    import subprocess
+
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+        "google-chrome",
+        "chromium",
+    ]
+    for binary in candidates:
+        try:
+            out = subprocess.run(  # noqa: S603 — fixed argv (binary + --version), no user input
+                [binary, "--version"], capture_output=True, text=True, timeout=10
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            continue
+        m = re.search(r"(\d+)\.\d+\.\d+", out.stdout)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _create_driver(use_undetected: bool, headless: bool):
     """Create Chrome driver (undetected or standard Selenium)."""
     if use_undetected:
@@ -133,8 +160,11 @@ def _create_driver(use_undetected: bool, headless: bool):
         options.add_argument("--disable-component-extensions-with-background-pages")
         options.add_argument("--disable-default-apps")
         _harden_isolation(options)
-        driver = uc.Chrome(options=options, version_main=144)
-        log.info("Created undetected-chromedriver")
+        # Match the driver to the INSTALLED Chrome, not a hardcoded version that
+        # breaks on every Chrome upgrade. None -> uc auto-detects.
+        chrome_major = _detect_chrome_major()
+        driver = uc.Chrome(options=options, version_main=chrome_major)
+        log.info("Created undetected-chromedriver (Chrome major: %s)", chrome_major)
         return driver
     else:
         return _create_selenium_driver(headless)

@@ -959,5 +959,153 @@ def _compute_booking_points_ranges(expected_cards: float) -> dict:
     return ranges
 
 
+def compute_somma_goal(home_xg: float, away_xg: float) -> list:
+    """Somma Goal Finale — probability of each exact TOTAL goal count (0,1,2,3,4,5+)."""
+    total = home_xg + away_xg
+    out = []
+    cum = 0.0
+    for k in range(5):
+        p = poisson_pmf(k, total)
+        cum += p
+        out.append({"total": str(k), "prob": round(p, 4),
+                    "fair_odds": round(1 / p, 2) if p > 0.001 else 99})
+    p5 = max(0.0, 1 - cum)
+    out.append({"total": "5+", "prob": round(p5, 4),
+                "fair_odds": round(1 / p5, 2) if p5 > 0.001 else 99})
+    return out
+
+
+def compute_team_odd_even(home_xg: float, away_xg: float) -> dict:
+    """Pari/Dispari per team — P(home goals odd) and P(away goals odd)."""
+    def odd_prob(xg, max_goals=12):
+        return sum(poisson_pmf(k, xg) for k in range(1, max_goals, 2))
+    result = {}
+    for side, xg in (("home", home_xg), ("away", away_xg)):
+        po = min(1.0, odd_prob(xg))
+        result[side] = {
+            "odd": {"prob": round(po, 4), "fair_odds": round(1 / po, 2) if po > 0.001 else 99},
+            "even": {"prob": round(1 - po, 4), "fair_odds": round(1 / (1 - po), 2) if (1 - po) > 0.001 else 99},
+        }
+    return result
+
+
+def compute_ribaltone(home_xg: float, away_xg: float) -> dict:
+    """Ribaltone (comeback) — P(a team trails at HT but does NOT lose at FT).
+
+    Uses the same 0.43 first-half goal share as the HT/FT model. Approximate:
+    sums over (HT score, 2nd-half score) where a team behind at HT ends level/ahead.
+    """
+    fh_h, fh_a = home_xg * 0.43, away_xg * 0.43
+    sh_h, sh_a = home_xg * 0.57, away_xg * 0.57
+    fh = score_matrix(fh_h, fh_a, max_goals=5)
+    sh = score_matrix(sh_h, sh_a, max_goals=5)
+    p_comeback = 0.0
+    for (h1, a1), p1 in fh.items():
+        for (h2, a2), p2 in sh.items():
+            ht_lead = h1 - a1
+            ft_h, ft_a = h1 + h2, a1 + a2
+            ft_lead = ft_h - ft_a
+            # a team was behind at HT (ht_lead != 0) and the trailing team ends >= level
+            if ht_lead < 0 and ft_h >= ft_a:        # home behind at HT, level/ahead at FT
+                p_comeback += p1 * p2
+            elif ht_lead > 0 and ft_a >= ft_h:      # away behind at HT, level/ahead at FT
+                p_comeback += p1 * p2
+    p_comeback = min(1.0, p_comeback)
+    return {
+        "yes": {"prob": round(p_comeback, 4), "fair_odds": round(1 / p_comeback, 2) if p_comeback > 0.001 else 99},
+        "no": {"prob": round(1 - p_comeback, 4), "fair_odds": round(1 / (1 - p_comeback), 2) if (1 - p_comeback) > 0.001 else 99},
+    }
+
+
+def compute_team_win_to_nil(home_xg: float, away_xg: float) -> dict:
+    """Casa/Ospite vince a 0 — P(team wins AND keeps a clean sheet)."""
+    mat = score_matrix(home_xg, away_xg, max_goals=8)
+    p_home = sum(p for (h, a), p in mat.items() if h > a and a == 0)
+    p_away = sum(p for (h, a), p in mat.items() if a > h and h == 0)
+    return {
+        "home_win_to_nil": {"prob": round(p_home, 4),
+                            "fair_odds": round(1 / p_home, 2) if p_home > 0.001 else 99},
+        "away_win_to_nil": {"prob": round(p_away, 4),
+                            "fair_odds": round(1 / p_away, 2) if p_away > 0.001 else 99},
+    }
+
+
+def compute_half_goals_ou(home_xg: float, away_xg: float) -> dict:
+    """Somma goal tempo + U/O per half — total goals O/U for each half.
+
+    Uses the standard 0.43 first-half share (same as the HT/FT model).
+    """
+    out = {}
+    for half, share in (("first", 0.43), ("second", 0.57)):
+        lam = (home_xg + away_xg) * share
+        lines = {}
+        for line in (0.5, 1.5, 2.5):
+            over = 1 - poisson_cdf(int(line), lam)
+            lines[f"over_{line}"] = {"prob": round(over, 4),
+                                     "fair_odds": round(1 / over, 2) if over > 0.001 else 99}
+            lines[f"under_{line}"] = {"prob": round(1 - over, 4),
+                                      "fair_odds": round(1 / (1 - over), 2) if (1 - over) > 0.001 else 99}
+        # exact total goals in the half (somma goal tempo)
+        exact = {}
+        cum = 0.0
+        for k in range(4):
+            pk = poisson_pmf(k, lam)
+            cum += pk
+            exact[str(k)] = round(pk, 4)
+        exact["4+"] = round(max(0.0, 1 - cum), 4)
+        out[half] = {"expected": round(lam, 2), "over_under": lines, "exact": exact}
+    return out
+
+
+def compute_combos(home_xg: float, away_xg: float) -> dict:
+    """Combo markets — JOINT probabilities from the score matrix.
+
+    Combos are NOT products of marginals (1X2 and O/U are correlated, e.g.
+    P(home AND over) != P(home)*P(over)). Every joint is summed over the score
+    grid so correlation is captured exactly. Covers the common Sisal combos:
+    1X2+U/O 2.5, DC+GG, 1X2+GG, GG+U/O, DC+U/O, and the "Combo Chance" OR markets.
+    """
+    mat = score_matrix(home_xg, away_xg, max_goals=8)
+
+    def jp(cond):
+        return round(sum(p for (h, a), p in mat.items() if cond(h, a)), 4)
+
+    res = (lambda h, a: "H" if h > a else ("A" if a > h else "D"))
+    over = lambda h, a, line=2.5: (h + a) > line
+    gg = lambda h, a: h > 0 and a > 0
+
+    combos = {
+        # 1X2 + Over/Under 2.5
+        "1_over": jp(lambda h, a: res(h, a) == "H" and over(h, a)),
+        "1_under": jp(lambda h, a: res(h, a) == "H" and not over(h, a)),
+        "X_over": jp(lambda h, a: res(h, a) == "D" and over(h, a)),
+        "X_under": jp(lambda h, a: res(h, a) == "D" and not over(h, a)),
+        "2_over": jp(lambda h, a: res(h, a) == "A" and over(h, a)),
+        "2_under": jp(lambda h, a: res(h, a) == "A" and not over(h, a)),
+        # 1X2 + GG/NG
+        "1_gg": jp(lambda h, a: res(h, a) == "H" and gg(h, a)),
+        "1_ng": jp(lambda h, a: res(h, a) == "H" and not gg(h, a)),
+        "2_gg": jp(lambda h, a: res(h, a) == "A" and gg(h, a)),
+        "2_ng": jp(lambda h, a: res(h, a) == "A" and not gg(h, a)),
+        # Double chance + GG/NG
+        "1X_gg": jp(lambda h, a: res(h, a) in ("H", "D") and gg(h, a)),
+        "X2_gg": jp(lambda h, a: res(h, a) in ("D", "A") and gg(h, a)),
+        # GG + Over/Under
+        "gg_over": jp(lambda h, a: gg(h, a) and over(h, a)),
+        "gg_under": jp(lambda h, a: gg(h, a) and not over(h, a)),
+        # Double chance + Over
+        "1X_over": jp(lambda h, a: res(h, a) in ("H", "D") and over(h, a)),
+        "X2_over": jp(lambda h, a: res(h, a) in ("D", "A") and over(h, a)),
+        # "Combo Chance" OR markets (either condition true)
+        "1_or_gg": jp(lambda h, a: res(h, a) == "H" or gg(h, a)),
+        "1_or_over": jp(lambda h, a: res(h, a) == "H" or over(h, a)),
+        "2_or_gg": jp(lambda h, a: res(h, a) == "A" or gg(h, a)),
+        "X_or_gg": jp(lambda h, a: res(h, a) == "D" or gg(h, a)),
+        "gg_or_over": jp(lambda h, a: gg(h, a) or over(h, a)),
+    }
+    return {k: {"prob": v, "fair_odds": round(1 / v, 2) if v > 0.001 else 99}
+            for k, v in combos.items()}
+
+
 if __name__ == "__main__":
     generate_extended_markets()

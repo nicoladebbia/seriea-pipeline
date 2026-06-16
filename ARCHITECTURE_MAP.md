@@ -1321,10 +1321,10 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imports: config/settings.py; Imported by: auto_settle.py, parlay_generator.py
 - **Quality signals:** ~60 LOC; clean settlement API with leg result checking; per-category statistics; simple but essential for parlay tracking
 
-#### 🟢 `scripts/betting/player_predictions.py` — grade A · keep
-- **Does:** Player-level prediction system: trains 10 per-player-per-match binary classifiers (anytime goalscorer, shots O/U, cards, etc.) using Sofascore rolling stats, xG data, and referee features; exports calibrated probabilities.
-- **Talks to:** Imports: catboost, sklearn; Imported by: backtest_player_props.py, player_prop_odds.py, predict_scorer_suitability.py, run_full_pipeline.py
-- **Quality signals:** 747 LOC; well-structured ML pipeline (data loading, feature engineering, training, prediction); 10 CatBoost models per target; Platt scaling calibration; comprehensive feature engineering (rolling stats, xG, referee data, market values); production-grade feature leakage prevention (all lagged); used by main pipeline
+#### 🟢 `scripts/betting/player_predictions.py` — grade A · keep (rewritten 2026-06-04, extended 2026-06-11)
+- **Does:** Player floor-market engine — 19 markets: anytime goalscorer, shots O0.5/1.5/2.5, SoT O0.5/1.5, fouls O0.5/1.5, fouled O0.5, tackles O0.5/1.5/2.5, passes completed O19.5/29.5/39.5, duels won O2.5/4.5, interceptions O0.5/1.5. Empirical leak-free per-90 priors (expanding mean over prior 60+min matches, groupby.transform — never g.apply) × projected minutes → Poisson tail (negative binomial for passes, fitted dispersion r≈10; measured over-dispersion 4.25x), out-of-fold isotonic on ECE-flagged markets, possession-context multiplier on passes (β=0.5, validated 8/8 season cells 2026-06-11). The old 10-CatBoost stack was deleted 2026-06-04 (died on within-position control).
+- **Talks to:** Imports: scipy, sklearn (isotonic), pandas; reads player_match_stats[+_premier_league].parquet + match_team_stats.parquet (possession). Imported by: web/app.py (_player_engine → /api/projections player_floors), player_prop_odds.py, prop_tracker.py. CLI: `python3 -m scripts.betting.player_predictions validate|predict [league]`.
+- **Quality signals:** Typed; leak-free by construction; validate() gate = Brier-vs-base per market (all 19 TRUST, 2026-06-11); strong controls on record in .plans/passes-tackles-floors-findings.md; unit-tested in tests/test_player_floors.py (leak-freedom, tail math vs scipy, dispersion fit, display contract). Betting GATED (betting_rules.json Player_Props) — validated probability, not edge.
 
 #### 🟢 `scripts/betting/player_prop_odds.py` — grade B · keep
 - **Does:** Player prop odds fetcher: queries Odds API for player prop markets (anytime goal, shots, cards, etc.), matches model predictions to odds, identifies value, and saves bet candidates.
@@ -1591,6 +1591,86 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Does:** Squad data quality utilities for checking freshness, validating against Understat xG data, identifying missing/stale teams, and printing injury summaries.
 - **Talks to:** Imports config/settings.py (DATA_DIR), config/team_names.py (SERIE_A_2025_26, normalize_team). No importers recorded.
 - **Quality signals:** 196 lines, 4 functions. Good docstrings, minimal type hints (should add List[Dict], Dict, etc). Uses pandas for Understat data. Includes emoji console output for visual feedback. Minor: hardcoded UNDERSTAT_TEAM_MAP should be in config; error handling is basic (print statements instead of logging).
+
+### `scripts/worldcup/` — 10 files (added 2026-06-09, feat/worldcup-2026)
+
+#### ⚫ `scripts/worldcup/__init__.py` — grade A · keep
+- **Does:** Package marker for the World Cup 2026 prediction package.
+- **Talks to:** Nothing; docstring only.
+- **Quality signals:** One-line docstring, standard.
+
+#### 🟢 `scripts/worldcup/engine.py` — grade A · keep
+- **Does:** International prediction engine: World-Football-Elo ratings (eloratings.net convention) over `data/worldcup/international_results.csv`, a time-decay-weighted Poisson GLM (`b0 + b_diff·(Δelo/100) + b_home + b_friendly + b_major`), AND a Dixon-Coles attack/defense MLE (`fit_dc_model`, scipy L-BFGS with analytic gradients, L2 shrinkage). **Production = 50/50 geometric ensemble of the two** (PRODUCTION_* constants, dev-selected; beat plain GLM on Brier + ECE on untouched finals). Exposes `WorldCupEngine.build()`, `lambdas()`, `one_x_two()`, `score_matrix()`, `blend_lambdas()`, and `canon_team()` (fixture-display → results-dataset name map).
+- **Talks to:** Read by simulate.py, backtest.py, generate_predictions.py. No Serie A pipeline coupling.
+- **Quality signals:** Fully typed, leak-free Elo features by construction (pre-match ratings), tested in tests/test_worldcup.py (Elo math, GLM monotonicity, grid invariants).
+
+#### 🟢 `scripts/worldcup/simulate.py` — grade A · keep
+- **Does:** Monte Carlo of the 2026 tournament: group stage with the NEW 2026 tiebreakers (head-to-head before overall GD, with reapplication; verified vs FIFA Regs Art. 13), best-8-thirds, **exact FIFA Annex C** third-place bracket allocation (495-combination lookup from format_spec.json, backtracking fallback), knockout rounds (ET at λ/3, penalties 50/50), per-team advancement/champion counters, plus per-knockout-match matchup/winner distributions for EVERY KO match incl. the third-place playoff (`SimResult.ko_matchup_probs`/`ko_win_probs` — feeds the /worldcup predicted bracket; `r32_matchup_probs` kept for back-compat). **Conditions on reality**: `pinned_scores` keeps played group matches at their actual score in every sim (banked points, never re-simulated), `pinned_winners` short-circuits decided knockouts (applied only when the pinned team is a simulated entrant — mismatching pins ignored, not forced).
+- **Talks to:** imports engine.py; consumed by generate_predictions.py. Reads data/worldcup/fixtures.json + format_spec.json. Knockout progression parses `slot_home`/`slot_away` originals first, so the sim survives fixtures resolved by knockout.py (real names in home/away).
+- **Quality signals:** Typed, seeded RNG (reproducible), 2026-rule regression tests (h2h-beats-GD case), invariant tests (champion probs sum to 1, 32 R32 entrants, per-KO-match distributions sum to 1, no crash on resolved fixtures).
+
+#### 🟢 `scripts/worldcup/backtest.py` — grade A · keep
+- **Does:** The production gate + variant selector. DEV (WC18+Euro20) compares GLM/DC/ensemble grid and selects by Brier; FINAL (untouched WC22+Euro24+Copa24 group stages — KO scores include ET) reports the selected variant vs base-rate, higher-Elo, and plain-GLM references. Writes `data/worldcup/model_metadata.json` (THE live source for WC performance numbers). `--squad-study` runs the squad-strength experiment (k-grid Elo adjustment from clubelo_history.json on the fixed production variant; verdict 2026-06-11: NULL — redundant with international Elo, see squad_strength_study.json) without touching model metadata.
+- **Talks to:** imports engine.py; `--squad-study` reads data/worldcup/clubelo_history.json (scripts.worldcup.squad_history). Run via `python3 -m scripts.worldcup.backtest`.
+- **Quality signals:** No hardcoded performance numbers anywhere; gate rule `skill_score > 0` enforced and recorded in metadata.
+
+#### 🟢 `scripts/worldcup/players.py` — grade A · keep
+- **Does:** Anytime-goalscorer model: decayed international goal share (2y half-life, shrinkage α selected on WC 2018 only) × backtested team λ → `1−exp(−λ·share)`, filtered to the real 2026 squads (squads.json). Backtest mode (`--backtest`) evaluates vs an equal-share baseline on 4 untouched holdout tournaments and writes player_model_metadata.json; generation mode **enforces the gate** — a failing backtest ships an empty player layer. Also computes the golden-boot expected-goals leaderboard (share × E[team tournament goals] from the sim, incl. third-place match).
+- **Talks to:** imports engine.py (canon_team, elo_history, fit_goal_model, load_results). Reads international_goalscorers.csv (a SAMPLE — OG rows dropped, never used for totals), squads.json, predictions.json, simulation.json. Output consumed by web/app.py `/api/worldcup` (m.goalscorers + golden_boot).
+- **Quality signals:** Typed, leak-free (shares strictly pre-tournament, α never tuned on holdouts), name normalization handles the csv's own accent inconsistency, OG-exclusion loader-tested, gate enforced at one choke point.
+
+#### 🟢 `scripts/worldcup/sofascore_fetch.py` — grade A · keep
+- **Does:** Production access to Sofascore via the `www.sofascore.com/api/v1` proxy (api.sofascore.com is TCP-dead from this network; the www proxy serves the identical API unchallenged — discovered 2026-06-10. The HTML `__NEXT_DATA__` fallback was separately broken 2026-06-01→11 by Sofascore hoisting `initialProps.*` onto `pageProps`; web/app.py parsers fixed 2026-06-11 to support both paths). `--odds` resolves fixtures→events (pair-based join, ±1-day date sanity, `sofa_canon` spelling normalizer) and writes market_odds.json (1X2 decimals + de-vigged implied). `--lineups` writes confirmed_lineups.json: starters/bench per side PLUS the missing-player list (name, type missing/doubtful, reason code→label via MISSING_REASON_MAP — same codes the Serie A lineup_predictor parses). `--results` writes sofascore_results.json: final scores of played WC matches (finished-only, joined by team id, ET-inclusive + pens winner from winnerCode) — API team event lists first, daily-schedule HTML `__NEXT_DATA__` pages when the API tier is 403-banned (shape-walk parser `_events_from_next_data`, path-independent); union-merged by event id so breaker trips never shrink the store. Feeds the same-night result-pinning chain (knockout._merged_result_lookup). **Page-tier facts (measured 2026-06-11, mid-ban)**: the tournament hub page (`WC_TOURNAMENT_PAGE`) is ISR-rendered FRESH (opener inprogress 1-0 on it while the daily-schedule page still said notstarted 75' after kickoff — day pages are stale prerenders, used only as last resort); match pages are client-rendered SHELLS whose `__NEXT_DATA__` holds i18n strings only — **no page-tier fallback is possible for `--lineups`/`--refresh-stats`** (don't re-attempt; availability degrades to caps-fallback XIs during bans, the stats parquet catches up on the first healthy API run since events/last re-serves history). Shared payload builders `_lineup_entry`/`_player_stat_rows` keep the lineups/stats schemas single-sourced. Incremental merge: re-runs only add/update.
+- **Talks to:** imports engine.canon_team. Output consumed by web/app.py api_worldcup (display-only "Market check" card — never blended into model probabilities).
+- **Quality signals:** Typed, polite delays + retry-once + stop-on-ban, fractional→decimal via Fraction (exact), devig sums to 1 (tested), provenance timestamps.
+
+#### 🟢 `scripts/worldcup/refresh.py` — grade A · keep
+- **Does:** The matchday loop in one command: csv re-download (120s socket timeout, tmp+replace) → odds (5h age-gated, breaker-aware) → lineups → played-stats append → availability → knockout (slot auto-fill) → generate → players → grading → combos (archive+grade tickets) → Telegram morning digest (once per UTC day, ≥07:00) → dashboard kickstart. Tournament-window guard exits instantly outside Jun 10–Jul 20. Every step fail-soft (timeout/OSError caught); state atomic + fail-soft.
+- **Talks to:** subprocess-runs the sibling worldcup modules; scheduled by ~/Library/LaunchAgents/com.seriea-pipeline.wc-refresh.plist (StartInterval 7200, RunAtLoad false).
+- **Quality signals:** Shakedown-tested against a dead Sofascore (breaker tripped 3 steps, chain still completed in 13 min); reviewer-hardened (atomic writes, hang timeouts, rc-checked kickstart).
+
+#### 🟢 `scripts/worldcup/grading.py` — grade A · keep
+- **Does:** Grades immutable pre-kickoff snapshots vs played results: pick hits + system/market/base Brier, like-for-like subsets. Knockouts graded on the reconstructed 90' result (shootout ⇒ draw; ET goals subtracted via goalscorers minutes; incomplete coverage ⇒ honest skip). Drops any snapshot stamped at/after kickoff.
+- **Talks to:** reads predictions_archive.json + results/goalscorers/shootouts csvs; writes track_record.json; served at /api/worldcup/record; rendered as the "Record so far" section.
+
+#### 🟢 `scripts/worldcup/knockout.py` — grade A · keep (added 2026-06-11)
+- **Does:** Auto-fills fixtures.json bracket slots from REAL results (replaces the manual knockout flow): complete groups rank via simulate._rank_group_2026 (exact 2026 rules), best-8 thirds placed via the shared Annex C loader (simulate.load_third_alloc) once all 12 groups close, W##/L## slots resolve from decided feeder matches (level ET-inclusive scores fall through to shootouts.csv). Partial groups never rank; filled sides freeze (original label kept in slot_home/slot_away); atomic write only on change; Annex C mismatches surface as loud errors, never silent mis-seeds. Also exports `collect_played_results(fixtures)` — match_number → actual score + decided-knockout winner from the same results join — consumed by generate_predictions to PIN reality into the Monte Carlo and the bracket every refresh. All result lookups are MERGED: results.csv first (canonical), sofascore_results.json second (`_merged_result_lookup` / `_merged_shootout_lookup`) — same-night scores bridge martj42's publish lag for both the slot fill and the pins.
+- **Talks to:** imports engine.py (canon_team, io) + simulate.py (parse_slot — extended with the 'loser' kind for L101/L102, ranking, Annex C); grading._find_result for result lookup. Run via `python3 -m scripts.worldcup.knockout` in the refresh loop BEFORE generate_predictions (KO matches appear on /worldcup automatically once filled).
+- **Quality signals:** All resolvers dependency-injected, tested in tests/test_worldcup.py::TestKnockoutFill (partial-group wait, shootout winner canon→display mapping, slot freeze, Annex C pool guard, loser labels).
+
+#### 🟢 `scripts/worldcup/combos.py` — grade A · keep (added 2026-06-11)
+- **Does:** Best-combo accumulators, all three concerns in one module: `build_best_combos` (the safe/favorites/value tiers served on /worldcup — who-wins legs ONLY, value pool scans all 6 framings per match gated by ≥2pp edge + positive EV + 20% prob floor, ranked by per-leg EV), `merge_combo_archive` (pre-kickoff ticket snapshots, last-write-before-FIRST-leg-kickoff, immutable after), `build_combo_record` (grades fully-settled tickets vs 90' outcomes — hit rate vs promised rate + flat-1u ROI at archived odds).
+- **Talks to:** imports engine.py (DATA_DIR, atomic/safe io) + grading.py (90' reconstruction, lazy). Imported by web/app.py `_wc_best_combos` (serve path, lazy — refresh must NOT import web.app: Flask + scheduler side effects). Run via `python3 -m scripts.worldcup.combos` in the refresh loop. Writes combos_archive.json + combo_record.json; record served under `combos` in /api/worldcup/record.
+- **Quality signals:** Typed, stdlib-only on the serve path (pandas only inside the grading resolver), tested in tests/test_worldcup.py::TestBestCombos/TestComboArchive/TestComboRecord (framings scan, floors, archive freeze, pending-vs-miss, ROI math).
+
+#### 🟢 `scripts/worldcup/availability.py` — grade A · keep
+- **Does:** Team-news layer: expected XI (recent competitive starts), confirmed-XI overrides, out/doubtful lists, market-value-share λ factors (position-weighted, ALPHA=0.45, clamped 0.85-1.15 — mechanical constants; --study writes directional evidence only). Applied to MODEL λs pre-blend (market already prices news).
+- **Talks to:** reads sofa parquet + squads + TM values + confirmed lineups; writes player_availability.json consumed by generate_predictions._apply_availability.
+
+#### 🟢 `scripts/worldcup/generate_predictions.py` — grade A · keep
+- **Does:** Orchestrates engine + simulator → writes data/worldcup/predictions.json (per-match λs+1X2, shape-compatible with `_build_score_range_projection`), simulation.json (10k-run probabilities + **`bracket`**: the single most-likely tournament via `build_bracket` — greedy standings from sim marginals, Annex C thirds, per-KO-match engine predictions with advance-incl-ET/pens via `_ko_match_prediction`, honest `pairing_prob` per tie, resolved-fixture override), predictions_archive.json (append-only Track-Record-shape snapshots). Hard-fails on unmapped team names.
+- **Talks to:** imports engine.py + simulate.py + reads player_availability.json (lambda factors applied pre-market-blend via `_apply_availability`). Run via `python3 -m scripts.worldcup.generate_predictions [--sims N]`. Output consumed by web/app.py `/api/worldcup*`.
+- **Quality signals:** Typed, append-only archive semantics, prints champion top-10 for eyeballing.
+
+#### 🟢 `scripts/worldcup/squad_history.py` — grade A · keep
+- **Does:** Historical squad club-Elo dataset for the squad-strength study: parses Wikipedia "<tournament> squads" wikitext (player → club, one {{nat fs g player}} line each — club= extracted per LINE because the templates nest {{birth date and age2}}), fetches api.clubelo.com date snapshots, matches club names (normalization → alias map → prefix-token containment, ambiguity = non-match), aggregates mean club Elo + coverage per (tournament, team). Raw fetches cached in data/worldcup/squad_history/ → re-runs offline.
+- **Talks to:** imports engine.py (DATA_DIR, atomic_write_json); output clubelo_history.json consumed by backtest.py --squad-study. Run via `python3 -m scripts.worldcup.squad_history`.
+- **Quality signals:** Typed, cached/idempotent fetches, join validated 5/5 tournaments vs results.csv windows (zero name mismatches), unmatched clubs reported by frequency (all genuinely non-European), parser/matcher unit-tested.
+
+#### 🟢 `scripts/worldcup/availability.py` — grade A · keep
+- **Does:** Player-availability layer (added 2026-06-11): per fixture in a 7-day horizon, builds expected XI (top-11 by starts over last 5 internationals), merges Sofascore missing/doubtful lists and confirmed lineups into per-player statuses, computes market-value-weighted absence impact (position-split attack/defense shares), and emits clamped lambda factors. `--study` replays the construction on the scraped competitive window and writes the absence-vs-goals regression (sign check for ALPHA) to availability_study.json. Writes data/worldcup/player_availability.json.
+- **Talks to:** imports players.py (norm_sorted, load_sofa, load_squads, RECENT_WINDOW), sofascore_fetch.py (sofa_canon), engine.py (canon_team), simulate.py (load_fixtures). Output consumed by generate_predictions.py (lambda adjustment) and web/app.py api_worldcup (`team_news` block).
+- **Quality signals:** Typed, mechanical-not-fitted constants documented in-module (ALPHA below the prior, above the rotation-diluted study estimate), all cross-source name joins through one hyphen-insensitive `akey()`, tested in tests/test_worldcup.py::TestAvailability (impact math, clamps, lineup overrides, end-to-end lambda routing).
+
+#### 🟢 `scripts/worldcup/refresh.py` — grade A · keep
+- **Does:** Matchday refresh loop in one command: results/goalscorers CSV re-download, market odds (age-gated), confirmed lineups + missing players, played-stats parquet append, availability report, predictions+sim regeneration, players regeneration, grading, dashboard kickstart. No-ops outside the tournament window.
+- **Talks to:** subprocess-runs the other worldcup modules; scheduled via `~/Library/LaunchAgents/com.seriea-pipeline.wc-refresh.plist` (every 2h, RunAtLoad false per the wake-storm lesson).
+- **Quality signals:** Fail-soft per step, state-file freshness gating for odds, logs to a single refresh log.
+
+#### 🟢 `scripts/worldcup/grading.py` — grade A · keep
+- **Does:** Grades archived pre-kickoff predictions against played results (model vs market vs base rate) into data/worldcup/track_record.json for the Track Record page.
+- **Talks to:** reads predictions_archive.json + played results; output consumed by web/app.py `/api/worldcup/record`.
+- **Quality signals:** Immutable-snapshot grading (first pre-kickoff write wins upstream).
 
 ### `scripts/` — 2 files
 

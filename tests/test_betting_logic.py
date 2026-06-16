@@ -373,6 +373,58 @@ def test_odds_implied_probability_calculation():
                         f"Lost precision: {original_prob:.1%} -> {back_to_prob:.1%}")
 
 
+def test_scan_evaluates_home_and_respects_config_enabled_flags():
+    """Regression for TWO coupled fixes:
+
+    1. Home was never in the 1X2 selection loop (only Draw/Away) — silently
+       dropped ~1/3 of evaluations. Home must now be EVALUATED.
+    2. The scanner ignored BettingConfig's enabled/disabled flags and surfaced
+       disabled markets as actionable value bets. 1X2 is DISABLED (sharp, no
+       edge) so a 1X2 home edge must land in WATCHLIST (informational), NOT
+       value_bets; an ENABLED market (O/U Over) with an in-band edge IS a
+       value bet. Plain asserts → pytest FAILS if either regresses.
+    """
+    from scripts.betting.odds_edge_monitor import EDGE_THRESHOLDS, scan_for_edges
+
+    # Thresholds are config-derived and carry the enabled flag.
+    assert "1X2_Home" in EDGE_THRESHOLDS, "1X2_Home threshold missing"
+    assert EDGE_THRESHOLDS["1X2_Home"]["enabled"] is False, "1X2 should be disabled (sharp)"
+    assert EDGE_THRESHOLDS["O/U_Over"]["enabled"] is True, "O/U Over should be enabled"
+
+    # 1X2 home edge ~+7% (disabled market) + O/U Over 2.5 edge ~+6% (enabled).
+    # O/U fair is de-vigged from the PINNACLE PAIR (over 1.74 / under 2.10) →
+    # over_fair≈0.547; model 0.580 gives ~+6% (in the 5-7 enabled band).
+    preds = {"A vs B": {"probabilities": {"home": 0.539, "draw": 0.260, "away": 0.201},
+                        "over_2_5": 0.580}}
+    odds = {"matches": {"A vs B": {
+        "h2h": [
+            {"bookmaker": "Pinnacle", "home": 1.95, "draw": 3.60, "away": 4.40},
+            {"bookmaker": "Bet365", "home": 2.08, "draw": 3.55, "away": 4.50},
+        ],
+        "totals": [{"line": 2.5, "over": 1.85, "under": 2.05, "all_bookmakers": [
+            {"bookmaker": "Pinnacle", "over": 1.74, "under": 2.10},
+            {"bookmaker": "Bet365", "over": 1.85, "under": 2.05},
+        ]}]}}}
+    res = scan_for_edges(preds, odds)
+
+    # Fix 1: Home is evaluated (appears somewhere, not silently dropped).
+    watch_sels = {b["selection"] for b in res.get("watchlist", [])}
+    value_sels = {b["selection"] for b in res["value_bets"]}
+    assert "Home" in (watch_sels | value_sels), "Home selection was not evaluated at all"
+
+    # Fix 2a: disabled 1X2 home → watchlist (informational), NOT actionable.
+    assert "Home" in watch_sels, "Disabled 1X2 home should be on the watchlist"
+    assert "Home" not in value_sels, "Disabled 1X2 must NOT be an actionable value bet"
+    home_watch = next(b for b in res["watchlist"] if b["selection"] == "Home")
+    assert home_watch.get("enabled") is False
+    assert "disabled" in home_watch.get("note", "").lower()
+
+    # Fix 2b: enabled O/U Over with in-band edge → actionable value bet.
+    ou_value = [b for b in res["value_bets"] if b["market"].startswith("O/U")]
+    assert ou_value, "Enabled O/U Over with in-band edge should be an actionable value bet"
+    assert ou_value[0]["enabled"] is True
+
+
 def main():
     print("=" * 70)
     print("BETTING LOGIC VALIDATION TESTS")

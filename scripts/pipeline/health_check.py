@@ -604,6 +604,125 @@ def check_silent_failures() -> Dict:
     return checks
 
 
+def check_calibration_drift() -> Dict:
+    """Rolling live-calibration check on archived pre-kickoff 1X2 predictions.
+
+    Computes 10-bin confidence-ECE over the most recent CALIB_WINDOW archived
+    predictions that joined to a real result (same leak-free join the Track
+    Record page uses: archived_at < kickoff snapshots only). A model can stay
+    accurate while its probabilities drift — this catches the drift between
+    retrains. Thresholds: ECE > 0.10 CRITICAL, > 0.06 WARNING. Fewer than
+    CALIB_MIN_N graded predictions = SKIP (off-season, early season).
+
+    Grades the MONEY PATH, not the display layer (isolated 2026-06-11):
+    display "probabilities" carry a deliberate draw-boost + temperature
+    sharpening (ECE ~0.11 by design, accuracy/draw-recall trade) while the
+    raw blend the betting system prices with sat at ~0.06. Preference order:
+    archived betting_probabilities -> raw blend reconstructed from
+    component_predictions with ENSEMBLE_WEIGHTS -> display (last resort,
+    labeled). display_ece is reported informationally either way.
+    """
+    CALIB_WINDOW = 100
+    CALIB_MIN_N = 60
+    out: dict = {"status": "SKIP", "n": 0, "ece": None, "window": CALIB_WINDOW}
+    try:
+        import pandas as pd
+
+        arch_path = DATA_DIR / "upcoming" / "predictions_archive.json"
+        if not arch_path.exists():
+            out["reason"] = "no predictions archive"
+            return {"calibration_1x2": out}
+        with open(arch_path) as f:
+            arch = json.load(f)
+        m = pd.read_parquet(
+            DATA_DIR / "parsed" / "matches.parquet",
+            columns=["match_date", "home_team", "away_team", "home_score", "away_score"],
+        ).dropna(subset=["home_score", "away_score"])
+        m["key"] = (m["home_team"] + " vs " + m["away_team"] + "_"
+                    + pd.to_datetime(m["match_date"]).dt.strftime("%Y-%m-%d"))
+        res = {r["key"]: (int(r["home_score"]), int(r["away_score"]))
+               for _, r in m.iterrows()}
+
+        # ENSEMBLE_WEIGHTS mirror (scripts/prediction/ensemble_prediction_engine.py)
+        # for reconstructing the raw money-path blend from archived components.
+        weights = {"factor": 0.035, "xg": 0.124, "ml": 0.605,
+                   "player_xg": 0.032, "market": 0.205}
+
+        def _money_probs(p: dict) -> tuple[dict | None, str]:
+            bp = p.get("betting_probabilities") or {}
+            if bp.get("home"):
+                return bp, "betting_probabilities"
+            cp = p.get("component_predictions") or {}
+            acc, wsum = [0.0, 0.0, 0.0], 0.0
+            for name, w in weights.items():
+                c = cp.get(name) or {}
+                if "prob_H" in c:
+                    s = float(c["prob_H"]) + float(c["prob_D"]) + float(c["prob_A"])
+                    if s > 0:
+                        acc[0] += w * float(c["prob_H"]) / s
+                        acc[1] += w * float(c["prob_D"]) / s
+                        acc[2] += w * float(c["prob_A"]) / s
+                        wsum += w
+            if wsum >= 0.5:
+                return ({"home": acc[0] / wsum, "draw": acc[1] / wsum,
+                         "away": acc[2] / wsum}, "raw_blend")
+            disp = p.get("probabilities") or {}
+            return (disp or None), "display"
+
+        def _ece(window: list) -> tuple[float, int]:
+            probs = [w[0] for w in window]
+            hits = [w[1] for w in window]
+            total, bins_used = 0.0, 0
+            for b in range(10):
+                sel = [i for i, q in enumerate(probs) if int(min(q, 0.999) * 10) == b]
+                if len(sel) < 5:
+                    continue
+                bins_used += 1
+                conf = sum(probs[i] for i in sel) / len(sel)
+                acc_ = sum(hits[i] for i in sel) / len(sel)
+                total += abs(conf - acc_) * len(sel) / len(window)
+            return total, bins_used
+
+        graded, graded_disp, layers = [], [], {}
+        for k, p in (arch or {}).items():
+            if k not in res:
+                continue
+            hs, as_ = res[k]
+            act = "home" if hs > as_ else ("away" if as_ > hs else "draw")
+            money, layer = _money_probs(p)
+            if money:
+                call = max(money, key=money.get)
+                graded.append((p.get("archived_at", ""), float(money[call]),
+                               int(call == act)))
+                layers[layer] = layers.get(layer, 0) + 1
+            disp = p.get("probabilities") or {}
+            if disp:
+                dcall = max(disp, key=disp.get)
+                graded_disp.append((p.get("archived_at", ""), float(disp[dcall]),
+                                    int(dcall == act)))
+        graded.sort()
+        window = [(g[1], g[2]) for g in graded[-CALIB_WINDOW:]]
+        out["n"] = len(window)
+        out["layers"] = layers
+        if len(window) < CALIB_MIN_N:
+            out["reason"] = f"only {len(window)} graded predictions (< {CALIB_MIN_N})"
+            return {"calibration_1x2": out}
+
+        ece, bins_used = _ece(window)
+        out["ece"] = round(ece, 4)
+        out["bins_used"] = bins_used
+        graded_disp.sort()
+        dwin = [(g[1], g[2]) for g in graded_disp[-CALIB_WINDOW:]]
+        if len(dwin) >= CALIB_MIN_N:
+            out["display_ece"] = round(_ece(dwin)[0], 4)  # informational only
+        out["status"] = ("CRITICAL" if ece > 0.10 else
+                         "WARNING" if ece > 0.06 else "OK")
+    except Exception as e:
+        out["status"] = "SKIP"
+        out["reason"] = f"check failed: {e}"
+    return {"calibration_1x2": out}
+
+
 def check_disk_space() -> Dict:
     """Check available disk space on the project partition."""
     import shutil
@@ -728,6 +847,7 @@ def run_health_check() -> Dict:
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
         "model_consistency": check_model_metadata_consistency(),
+        "calibration_drift": check_calibration_drift(),
         "betting_health": check_betting_health(),
         "system_integrity": check_system_integrity(),
         "issues": [],
@@ -767,6 +887,13 @@ def run_health_check() -> Dict:
         drift_alerts = result["betting_health"]["details"].get("drift", {}).get("alerts", [])
         for a in drift_alerts:
             issues.append(("WARNING", a["message"]))
+
+    # Live calibration drift (rolling ECE on archived 1X2 predictions)
+    calib = result.get("calibration_drift", {}).get("calibration_1x2", {})
+    if calib.get("status") in ("WARNING", "CRITICAL"):
+        issues.append((calib["status"],
+                       f"1X2 calibration drift: rolling-{calib.get('n')} ECE "
+                       f"{calib.get('ece')} (warn >0.06, crit >0.10)"))
 
     # System issues
     if not result["system_integrity"].get("imports_ok", True):

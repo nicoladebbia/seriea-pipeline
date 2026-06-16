@@ -1,0 +1,531 @@
+{% extends "base.html" %}
+{% block title %}Projections — SerieAI{% endblock %}
+{% block page_title %}Score-Range Projections{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Model probabilities from the calibrated xG model · insight only, not bets
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  .pj-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent);
+             border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
+  .pj-note b { color: var(--text-secondary); }
+
+  .pj-day { margin-bottom: 22px; }
+  .pj-day__header { font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: capitalize;
+                    padding: 6px 2px 10px; border-bottom: 1px solid var(--border-subtle); margin-bottom: 12px;
+                    display: flex; align-items: baseline; gap: 10px; }
+  .pj-day__count { font-size: 10px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .pj-match { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+              margin-bottom: 16px; overflow: hidden; }
+  .pj-bb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 16px;
+               background: linear-gradient(90deg, rgba(250,204,21,0.10), rgba(250,204,21,0.02));
+               border-bottom: 1px solid rgba(250,204,21,0.25); }
+  .pj-bb-label { font-size: 10px; font-weight: 800; color: #facc15; letter-spacing: 0.5px; }
+  .pj-bb-single { font-size: 13px; color: var(--text-primary); }
+  .pj-bb-single b { color: #facc15; }
+  .pj-bb-lift { font-size: 10px; color: var(--green,#4ade80); font-family: var(--font-mono); }
+  .pj-bb-combo { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono);
+                 background: rgba(0,0,0,0.2); border-radius: 4px; padding: 2px 8px; }
+  .pj-bb-hit { font-size: 10px; font-weight: 800; color: #4ade80; background: rgba(74,222,128,0.15); border-radius: 4px; padding: 2px 8px; }
+  .pj-bb-miss { font-size: 10px; font-weight: 800; color: #f87171; background: rgba(248,113,113,0.15); border-radius: 4px; padding: 2px 8px; }
+  .pj-result { font-size: 11px; font-weight: 700; color: var(--accent,#60a5fa); background: rgba(96,165,250,0.12);
+               border-radius: 4px; padding: 1px 7px; margin-left: 8px; font-family: var(--font-mono); vertical-align: middle; }
+  .pj-recap { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px;
+              background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--border-subtle); }
+  .pj-recap-label { font-size: 10px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px; margin-right: 4px; }
+  .pj-rec-pill { font-size: 10px; border-radius: 4px; padding: 2px 8px; font-family: var(--font-mono); }
+  .pj-rec-pill.hit { color: #4ade80; background: rgba(74,222,128,0.10); }
+  .pj-rec-pill.miss { color: #f87171; background: rgba(248,113,113,0.10); }
+  .pj-rec-pill.missed { color: #facc15; background: rgba(250,204,21,0.10); }
+  .pj-rec-pill.skip { color: var(--text-tertiary); background: rgba(255,255,255,0.04); }
+  .pj-vb-count { font-size: 9px; font-weight: 700; color: var(--green, #4ade80); background: rgba(74,222,128,0.12);
+                 border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+  .pj-vb-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px;
+                  background: rgba(74,222,128,0.06); border-top: 1px solid rgba(74,222,128,0.15); }
+  .pj-vb-label { font-size: 9px; font-weight: 700; color: var(--green, #4ade80); text-transform: uppercase; letter-spacing: 0.5px; }
+  .pj-vb-pill { font-size: 11px; color: var(--text-secondary); background: var(--bg-primary, rgba(0,0,0,0.2));
+                border: 1px solid rgba(74,222,128,0.25); border-radius: 4px; padding: 2px 8px; font-family: var(--font-mono); }
+  .pj-vb-pill b { color: var(--green, #4ade80); }
+  .pj-match__head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
+                    background: var(--bg-tertiary, rgba(255,255,255,0.02)); border-bottom: 1px solid var(--border-subtle);
+                    cursor: pointer; user-select: none; }
+  .pj-match__teams { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+  .pj-match__meta { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); display:flex; gap:14px; align-items:center; }
+  .pj-xg { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 700; }
+  .pj-chevron { transition: transform 0.3s; color: var(--text-tertiary); }
+  .pj-chevron.open { transform: rotate(180deg); }
+
+  .pj-body { max-height: 0; overflow: hidden; transition: max-height 0.45s ease; }
+  .pj-body.open { max-height: 6000px; }
+  .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-3); padding: var(--space-4); }
+  .pj-noise { margin: 0 16px 14px; border-top: 1px dashed var(--border-subtle); }
+  .pj-noise > summary { cursor: pointer; padding: 10px 0 4px; font-size: 11px; color: var(--text-tertiary);
+                        list-style: none; user-select: none; }
+  .pj-noise > summary:hover { color: var(--text-secondary); }
+  .pj-noise[open] > summary { color: var(--text-secondary); }
+
+  .pj-card { background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+             padding: var(--space-3) var(--space-4); transition: border-color 0.15s, transform 0.15s; }
+  .pj-card:hover { border-color: var(--border-default); }
+  .pj-card--dim { opacity: 0.62; }
+  .pj-card--dim:hover { opacity: 1; }
+  .pj-card__title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-tertiary);
+                    margin-bottom: var(--space-3); font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .pj-trust { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 4px; padding: 2px 5px; font-weight: 700; }
+  .pj-trust--ok { color: var(--green); background: var(--green-muted); }
+  .pj-trust--no { color: var(--text-tertiary); background: rgba(113,113,122,0.12); }
+
+  /* ── readable probability rows: the bar is now a BACKGROUND FILL behind the
+        row, not an invisible 3px line. You read the whole card at a glance. ── */
+  .pj-row { position: relative; display: flex; justify-content: space-between; align-items: center;
+            font-size: 12.5px; padding: 5px 8px; border-radius: 5px; margin: 1px 0; overflow: hidden; z-index: 0; }
+  .pj-row__label { color: var(--text-secondary); position: relative; z-index: 1; }
+  .pj-row__prob { font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; position: relative; z-index: 1; }
+  .pj-row__odds { font-family: var(--font-mono); color: var(--text-tertiary); font-size: 10px; min-width: 38px; text-align: right; position: relative; z-index: 1; }
+  /* bar = horizontal fill behind the row, width set inline; subtle by default */
+  .pj-bar { position: absolute; left: 0; top: 0; bottom: 0; height: auto !important; margin: 0 !important;
+            border-radius: 5px; background: var(--accent); opacity: 0.16; z-index: 0; transition: opacity 0.15s; }
+  .pj-row:hover .pj-bar { opacity: 0.24; }
+  /* the model's single most-likely outcome in a card */
+  .pj-top { font-weight: 600; }
+  .pj-top .pj-bar { opacity: 0.30; background: var(--emerald); }
+  .pj-top .pj-row__label { color: var(--text-primary); }
+
+  .pj-empty { padding: 48px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+
+  /* player floor breakdown — clean nested rows */
+  .pj-player { border-radius: 6px; }
+  .pj-player[open] { background: rgba(129,140,248,0.04); }
+  .pj-player > summary::-webkit-details-marker { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pj-note">
+  <b>What this is:</b> every goal-derived market for each upcoming match — multigol, correct score, half-time/full-time,
+  BTTS, double chance, team totals, winning margin and more — computed from the same calibrated xG model that drives the
+  1X2 predictions. These are <b>honest model probabilities and fair odds</b>, shown as insight. They are <b>not bets</b>:
+  betting on these markets is gated on the Betfair odds layer and per-market validation.
+</div>
+
+<div id="pj-container"><div class="pj-empty">Loading projections…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// IIFE-scoped: app.js defines globals like pct()/oddsFmt() — wrapping isolates
+// our locals so a const redeclaration can't throw and kill the whole script.
+(function () {
+const pct = p => (p * 100).toFixed(0) + '%';
+const fmtOdds = o => (o && o < 99) ? o.toFixed(2) : '—';
+
+// Render a list of {label, prob, fair_odds} rows, sorted desc, marking the top
+function rows(items, topHighlight = true) {
+  const sorted = [...items].sort((a, b) => b.prob - a.prob);
+  return sorted.map((r, i) => `
+    <div class="pj-row ${topHighlight && i === 0 ? 'pj-top' : ''}" style="flex-wrap:wrap;">
+      <span class="pj-row__label">${r.label}</span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <span class="pj-row__prob">${pct(r.prob)}</span>
+        <span class="pj-row__odds">${fmtOdds(r.fair_odds)}</span>
+      </span>
+      <div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div>
+    </div>`).join('');
+}
+
+// trust badge: 'signal' = validated (beats base / permutation), 'unvalidated' =
+// honest model probability with no proven edge (goal-quantity props are noise).
+function trustBadge(trust) {
+  if (trust === 'signal')
+    return ' <span class="pj-trust pj-trust--ok" title="validated: beats base rate / permutation-tested">signal</span>';
+  if (trust === 'unvalidated')
+    return ' <span class="pj-trust pj-trust--no" title="honest model probability — NOT validated, no proven edge (goal-quantity props tested as noise)">display</span>';
+  return '';
+}
+
+// Returns {html, trust} so the caller can group signal vs noise. Empty -> null.
+function card(title, items, topHighlight = true, trust = '') {
+  if (!items || !items.length) return null;
+  const cls = trust === 'unvalidated' ? ' pj-card--dim' : '';
+  const html = `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
+  return { html, trust };
+}
+
+// adapters: turn each market's shape into [{label, prob, fair_odds}]
+function fromList(list, labelKey) {
+  return (list || []).map(x => ({ label: x[labelKey], prob: x.prob, fair_odds: x.fair_odds }));
+}
+function fromDict(obj, labelMap) {
+  if (!obj) return [];
+  return Object.entries(obj)
+    .filter(([k, v]) => v && typeof v === 'object' && 'prob' in v)
+    .map(([k, v]) => ({ label: (labelMap && labelMap[k]) || k, prob: v.prob, fair_odds: v.fair_odds }));
+}
+
+function renderMatch(m) {
+  const H = m.home_team, A = m.away_team;
+  const tt = m.team_totals || {};
+  // team-totals: spell out side + line, e.g. "Milan over 1.5"
+  const totLabel = (side, k) => `${side} ${k.replace('_', ' ')}`;
+  const homeTot = fromDict(tt.home, null).map(r => ({ ...r, label: totLabel(H, r.label) }));
+  const awayTot = fromDict(tt.away, null).map(r => ({ ...r, label: totLabel(A, r.label) }));
+
+  // HT/FT combos → readable (H/H = "Home / Home")
+  const sideWord = { H: 'Home', D: 'Draw', A: 'Away' };
+  const htft = fromList(m.htft, 'combo').map(r => ({
+    ...r, label: r.label.split('/').map(s => sideWord[s] || s).join(' / ')
+  }));
+
+  // Winning margin: home_by_1 → "Home by 1", away_by_3_plus → "Away by 3+"
+  const marginLabel = {
+    draw: 'Draw',
+    home_by_1: `${H} by 1`, home_by_2: `${H} by 2`, home_by_3_plus: `${H} by 3+`,
+    away_by_1: `${A} by 1`, away_by_2: `${A} by 2`, away_by_3_plus: `${A} by 3+`,
+  };
+
+  // Trust tier per card (user choice: all visible, badge tells trust).
+  // 'signal' = who-wins markets (1X2/DC, validated this session); 'unvalidated'
+  // = goal-quantity props (backtested as noise — honest display, no proven edge).
+  const S = 'signal', U = 'unvalidated';
+  const cards = [
+    card('Double chance', fromDict(m.double_chance, { '1X': `${H} or Draw`, 'X2': 'Draw or ' + A, '12': `${H} or ${A}` }), true, S),
+    card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' }), true, U),
+    card('Most likely scores', fromList(m.exact_score, 'score'), true, U),
+    card('Multigol · total goals (independent ranges)', fromList(m.multi_goal, 'range'), false, U),
+    card('Half-time / Full-time', htft, true, U),
+    card('Winning margin', fromDict(m.winning_margin, marginLabel), true, U),
+    card('Team totals', [...homeTot, ...awayTot], false, U),
+    card('Goal in both halves', fromDict(m.goal_both_halves, {
+      goal_both_halves_yes: 'Yes', goal_both_halves_no: 'No',
+      home_scores_both_halves: `${H} both halves`, away_scores_both_halves: `${A} both halves`,
+    }), true, U),
+    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' }), true, U),
+    card('Win to nil', fromDict(m.win_to_nil, {
+      home_win_to_nil: `${H} win to nil`, away_win_to_nil: `${A} win to nil`,
+      home_clean_sheet: `${H} clean sheet`, away_clean_sheet: `${A} clean sheet`,
+    }), true, U),
+    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A }), true, U),
+    card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A }), true, U),
+    card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' }), true, U),
+    card('Vince a 0 (win to nil)', fromDict(m.team_win_to_nil, { home_win_to_nil: `${H} a 0`, away_win_to_nil: `${A} a 0` }), true, U),
+    card('U/O 1° tempo', fromDict((m.half_goals||{}).first?.over_under, null), false, U),
+    card('U/O 2° tempo', fromDict((m.half_goals||{}).second?.over_under, null), false, U),
+    card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false, U),
+    card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' }), true, U),
+    card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' }), true, U),
+    card(`${A} odd/even`, fromDict((m.team_odd_even||{}).away, { odd: 'Odd', even: 'Even' }), true, U),
+  ].filter(Boolean);
+  // Combos are the noisiest, bulkiest cards (3 × ~20 rows) — own collapsed group.
+  const comboCards = [
+    card('Combo: 1X2 + O/U 2.5', fromDict(m.combos, {
+      '1_over': '1 & Over', '1_under': '1 & Under', 'X_over': 'X & Over', 'X_under': 'X & Under',
+      '2_over': '2 & Over', '2_under': '2 & Under' }, true), false, U),
+    card('Combo: result + Goal', fromDict(m.combos, {
+      '1_gg': '1 & GG', '1_ng': '1 & NG', '2_gg': '2 & GG', '2_ng': '2 & NG',
+      '1X_gg': '1X & GG', 'X2_gg': 'X2 & GG' }, true), false, U),
+    card('Combo Chance (either)', fromDict(m.combos, {
+      '1_or_gg': '1 or GG', '1_or_over': '1 or Over', '2_or_gg': '2 or GG',
+      'X_or_gg': 'X or GG', 'gg_or_over': 'GG or Over' }, true), false, U),
+  ].filter(Boolean);
+
+  // shot markets (who has more shots — permutation-validated +0.10 signal)
+  let shotsCard = '';
+  if (m.shots) {
+    const mk = (s, label) => {
+      if (!s) return '';
+      const wm = s.who_more || {};
+      const rows = [
+        { label: `${H} più tiri`, prob: wm.home },
+        { label: 'Pari', prob: wm.tie },
+        { label: `${A} più tiri`, prob: wm.away },
+      ].filter(r => r.prob != null);
+      const ouRows = Object.entries(s.lines || {}).map(([ln, v]) => ({ label: `Over ${ln}`, prob: v.over }));
+      return `<div class="pj-card" style="border-color:rgba(96,165,250,0.25);">
+        <div class="pj-card__title">${label} <span style="font-size:8px;color:var(--accent,#60a5fa);background:rgba(96,165,250,0.12);border-radius:3px;padding:1px 4px;" title="match-specific signal validated; shown as calibrated display">tiri</span></div>
+        <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">attesi ${s.exp_home} – ${s.exp_away}</div>
+        ${[...rows, ...ouRows].sort((a,b)=>b.prob-a.prob).map((r,i)=>`<div class="pj-row ${i===0?'pj-top':''}"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div></div>`).join('')}
+      </div>`;
+    };
+    shotsCard = mk(m.shots.shots_total, 'Tiri totali') + mk(m.shots.shots_on_target_count, 'Tiri in porta');
+  }
+
+  // referee-aware total-cards O/U (validated signal market)
+  let totalCardsCard = '';
+  if (m.total_cards) {
+    const tc = m.total_cards;
+    const lineRows = Object.entries(tc.lines).map(([ln, v]) => ({ label: `Over ${ln}`, prob: v.over }))
+      .concat(Object.entries(tc.lines).map(([ln, v]) => ({ label: `Under ${ln}`, prob: v.under })));
+    totalCardsCard = `<div class="pj-card" style="border-color:rgba(74,222,128,0.25);">
+      <div class="pj-card__title">Cartellini totali O/U <span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;">signal</span></div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">ref ${tc.referee||'?'} · attesi ${tc.expected_total}</div>
+      ${lineRows.map(r=>`<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div></div>`).join('')}
+    </div>`;
+  }
+
+  // referee-aware total-fouls O/U (second validated signal market)
+  let totalFoulsCard = '';
+  if (m.total_fouls) {
+    const tf = m.total_fouls;
+    const rows = Object.entries(tf.lines).map(([ln, v]) => ({ label: `Over ${ln}`, prob: v.over }))
+      .concat(Object.entries(tf.lines).map(([ln, v]) => ({ label: `Under ${ln}`, prob: v.under })));
+    totalFoulsCard = `<div class="pj-card" style="border-color:rgba(74,222,128,0.25);">
+      <div class="pj-card__title">Falli totali O/U <span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;">signal</span></div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">ref ${tf.referee||'?'} · attesi ${tf.expected_total}</div>
+      ${rows.map(r=>`<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div></div>`).join('')}
+    </div>`;
+  }
+
+  // European handicap (who-wins with a goal head-start — inherits 1X2, validated
+  // ECE 0.035). Shows the handicap lines with team names + 3 outcomes each.
+  let ehCard = '';
+  if (m.european_handicap && Object.keys(m.european_handicap).length) {
+    const eh = m.european_handicap;
+    // friendly line label: home_-1 = "Milan -1", home_+1 = "Milan +1"
+    const lineLabel = (k) => {
+      const sign = k.includes('-') ? '−' : '+';
+      const n = k.replace(/\D/g, '');
+      return `${H} ${sign}${n}`;
+    };
+    // show the two most common lines (-1 and +1) if present, else whatever exists
+    const order = ['home_-1', 'home_+1', 'home_-2', 'home_+2'].filter(k => eh[k]);
+    const blocks = order.slice(0, 2).map(k => {
+      const o = eh[k];
+      const outs = [
+        { label: H, prob: (o.home || {}).prob },
+        { label: 'Draw', prob: (o.draw || {}).prob },
+        { label: A, prob: (o.away || {}).prob },
+      ].filter(r => r.prob != null);
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:5px 0 2px;font-weight:600;">${lineLabel(k)}</div>`
+        + outs.map(r => `<div class="pj-row"><span class="pj-row__label">${r.label}</span><span class="pj-row__prob">${pct(r.prob)}</span><div class="pj-bar" style="width:${Math.max(2, r.prob * 100)}%;"></div></div>`).join('');
+    }).join('');
+    ehCard = `<div class="pj-card">
+      <div class="pj-card__title">Handicap europeo <span class="pj-trust pj-trust--ok" title="who-wins market, inherits validated 1X2 (ECE 0.035)">signal</span></div>
+      ${blocks}
+    </div>`;
+  }
+
+  // player floor markets (shots / SoT / fouls / tackles / passes O-U per likely starter)
+  // Validated leak-free model — DISPLAY only, betting gated.
+  let playerFloorsCard = '';
+  if (m.player_floors && ((m.player_floors.home||[]).length || (m.player_floors.away||[]).length)) {
+    const pf = m.player_floors;
+    // ORDER markets within a player's expanded breakdown, strongest signal first.
+    const MK_ORDER = ['shots_o15','shots_o05','shots_o25','sot_o05','sot_o15',
+                      'fouls_o05','fouls_o15','fouled_o05','goalscorer',
+                      'tackles_o05','tackles_o15','tackles_o25',
+                      'duels_o25','duels_o45','intercepts_o05','intercepts_o15',
+                      'passes_o195','passes_o295','passes_o395'];
+    const side = (players, teamName) => {
+      if (!players || !players.length) return '';
+      const rows = players.map(p => {
+        const n = (p.prior_matches || 0);
+        const sub = (p.proj_minutes < 70)
+          ? ` <span style="font-size:8px;color:var(--text-tertiary);">~${Math.round(p.proj_minutes)}'</span>` : '';
+        // full 8-market breakdown, ordered, with calibrated flag where set
+        const mk = p.markets || {};
+        // grade chip: HIT/MISS only when hit is true/false (≥55% call);
+        // neutral occurred/didn't otherwise; nothing if match not played
+        const gradeChip = (v) => {
+          if (v.hit === true)  return ` <span style="color:#4ade80;font-size:9px;" title="had ${v.actual}">✅ HIT</span>`;
+          if (v.hit === false) return ` <span style="color:#f87171;font-size:9px;" title="had ${v.actual}">❌ MISS</span>`;
+          if (v.occurred === true)  return ` <span style="color:var(--text-tertiary);font-size:9px;" title="had ${v.actual} — sub-55% call, shown neutral">✓ ${v.actual}</span>`;
+          if (v.occurred === false) return ` <span style="color:var(--text-tertiary);font-size:9px;" title="had ${v.actual}">· ${v.actual}</span>`;
+          return '';
+        };
+        const breakdown = MK_ORDER.filter(k => mk[k]).map(k => {
+          const v = mk[k];
+          const cal = v.calibrated ? ' <span style="color:#4ade80;" title="isotonic-calibrated">✓</span>' : '';
+          return `<div class="pj-row" style="font-size:11px;padding:1px 0;">
+            <span class="pj-row__label" style="font-size:10px;">${v.label}${cal}${gradeChip(v)}</span>
+            <span class="pj-row__prob" style="font-size:10px;">${pct(v.prob)}</span>
+            <div class="pj-bar" style="width:${Math.max(2,v.prob*100)}%;opacity:0.6;"></div>
+          </div>`;
+        }).join('');
+        const hHit = p.headline.hit === true ? ' <span style="color:#4ade80;font-size:9px;">✅</span>'
+                   : p.headline.hit === false ? ' <span style="color:#f87171;font-size:9px;">❌</span>' : '';
+        return `<details class="pj-player" title="${p.position} · ${n} prior matches · proj ${Math.round(p.proj_minutes)} min">
+          <summary class="pj-row" style="cursor:pointer;list-style:none;">
+            <span class="pj-row__label">${p.name}${sub} <span style="font-size:8px;color:var(--text-tertiary);">${p.position}·${n}m</span></span>
+            <span class="pj-row__prob">${pct(p.headline.prob)}${hHit}</span>
+            <div class="pj-bar" style="width:${Math.max(2,p.headline.prob*100)}%;"></div>
+            <span style="font-size:8px;color:var(--text-tertiary);display:block;margin-top:-2px;">${p.headline.label} ▸</span>
+          </summary>
+          <div style="padding:3px 0 5px 8px;border-left:1px solid rgba(168,85,247,0.3);margin:2px 0 4px;">${breakdown}</div>
+        </details>`;
+      }).join('');
+      return `<div style="font-size:9px;color:var(--text-tertiary);margin:4px 0 2px;font-weight:600;">${teamName}</div>${rows}`;
+    };
+    playerFloorsCard = `<div class="pj-card" style="border-color:rgba(168,85,247,0.25);grid-column:1/-1;">
+      <div class="pj-card__title">Giocatori — floor markets
+        <span style="font-size:8px;color:#a855f7;background:rgba(168,85,247,0.12);border-radius:3px;padding:1px 4px;" title="per-player validated leak-free model; display only, betting gated">players</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <div>${side(pf.home, m.home_team)}</div>
+        <div>${side(pf.away, m.away_team)}</div>
+      </div>
+      <div style="font-size:8px;color:var(--text-tertiary);margin-top:6px;">${pf.note||''}</div>
+    </div>`;
+  }
+
+  // comparative team-stat markets (who makes more corners/fouls/cards)
+  const comp = m.comparative || [];
+  const compCards = comp.map(c => {
+    const conf = c.confidence === 'signal'
+      ? '<span style="font-size:8px;color:var(--green,#4ade80);background:rgba(74,222,128,0.12);border-radius:3px;padding:1px 4px;">signal</span>'
+      : c.confidence === 'shrunk'
+      ? '<span style="font-size:8px;color:var(--accent,#60a5fa);background:rgba(96,165,250,0.12);border-radius:3px;padding:1px 4px;" title="real per-match signal, shrunk toward base rate to avoid overconfidence">model</span>'
+      : '<span style="font-size:8px;color:var(--text-tertiary);background:rgba(255,255,255,0.05);border-radius:3px;padding:1px 4px;" title="low differentiation — shows base rate">base rate</span>';
+    const rows = [
+      { label: `${H} more`, prob: c.home_more },
+      { label: 'Equal', prob: c.tie },
+      { label: `${A} more`, prob: c.away_more },
+    ];
+    return `<div class="pj-card">
+      <div class="pj-card__title">${c.label} ${conf}</div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-bottom:4px;font-family:var(--font-mono);">exp ${c.exp_home} – ${c.exp_away}</div>
+      ${rows.sort((a,b)=>b.prob-a.prob).map((r,i)=>`
+        <div class="pj-row ${i===0?'pj-top':''}">
+          <span class="pj-row__label">${r.label}</span>
+          <span class="pj-row__prob">${pct(r.prob)}</span>
+          <div class="pj-bar" style="width:${Math.max(2,r.prob*100)}%;"></div>
+        </div>`).join('')}
+    </div>`;
+  }).join('');
+
+  // value-bets banner (only when a book's odds are attached)
+  const vbs = m.value_bets || [];
+  const mktLabel = { '1x2': '1X2', 'double_chance': 'DC', 'btts': 'BTTS', 'over_under': 'O/U' };
+  const vbBadge = vbs.length
+    ? `<span class="pj-vb-count">${vbs.length} value</span>` : '';
+  const vbBanner = vbs.length ? `
+    <div class="pj-vb-banner">
+      <span class="pj-vb-label">VALUE vs ${m.odds_book || 'book'}:</span>
+      ${vbs.map(v => `<span class="pj-vb-pill" title="model ${pct(v.model_prob)} · fair ${v.fair_odds} · EV ${v.ev > 0 ? '+' : ''}${v.ev.toFixed(2)}">
+        ${(mktLabel[v.market] || v.market)} ${v.outcome} @ ${v.book_odds} <b>+${v.edge_pct.toFixed(1)}pp</b></span>`).join('')}
+    </div>` : '';
+
+  // best bets banner (top recommendation + combo)
+  const bb = m.best_bets || {};
+  const bs = bb.best_single;
+  const bc = bb.best_combo;
+  let bestBetsBar = '';
+  if (bs) {
+    let combo = '';
+    if (bc) {
+      combo = `<span class="pj-bb-combo">COMBO ${pct(bc.joint_prob)} @ ${bc.fair_odds}: ${bc.legs.map(l => `${l.pick}`).join(' + ')}</span>`;
+    }
+    // result grade (✅/❌) if the match is completed
+    let grade = '';
+    if (bs.hit === true) grade = '<span class="pj-bb-hit">✅ HIT</span>';
+    else if (bs.hit === false) grade = '<span class="pj-bb-miss">❌ MISS</span>';
+    bestBetsBar = `<div class="pj-bb-bar">
+      <span class="pj-bb-label">⭐ BEST</span>
+      <span class="pj-bb-single">${bs.market}: <b>${bs.pick}</b> ${pct(bs.prob)} <span class="pj-bb-lift">+${(bs.lift*100).toFixed(0)}pp vs base</span></span>
+      ${grade}
+      ${combo}
+    </div>`;
+  }
+
+  // results recap (completed matches): all recommended bets graded + insights
+  let recap = '';
+  const g = m.grading;
+  if (g) {
+    const recRows = (g.recommended || []).map(r =>
+      `<span class="pj-rec-pill ${r.hit ? 'hit' : 'miss'}">${r.hit ? '✅' : '❌'} ${r.market}: ${r.pick} ${pct(r.prob)}</span>`).join('');
+    const missed = (g.missed_opportunities || []).map(mo =>
+      `<span class="pj-rec-pill missed">💡 ${mo.market}: ${mo.pick} ${pct(mo.prob)} — hit, not flagged</span>`).join('');
+    const skips = (g.good_skips || []).map(s =>
+      `<span class="pj-rec-pill skip">🛡️ skipped ${s.market}: ${s.pick}</span>`).join('');
+    if (recRows || missed || skips) {
+      recap = `<div class="pj-recap">
+        <span class="pj-recap-label">RESULTS · ${g.n_recommended_hit}✅ ${g.n_recommended_miss}❌</span>
+        ${recRows}${missed}${skips}
+      </div>`;
+    }
+  }
+
+  return `
+  <div class="pj-match">
+    ${bestBetsBar}
+    ${recap}
+    <div class="pj-match__head" onclick="const mm=this.closest('.pj-match');mm.querySelector('.pj-body').classList.toggle('open');this.querySelector('.pj-chevron').classList.toggle('open');">
+      <div>
+        <div class="pj-match__teams">${m.home_team} <span style="color:var(--text-tertiary);font-weight:400;">vs</span> ${m.away_team} ${vbBadge}${m.actual ? `<span class="pj-result">FT ${m.actual.score}</span>` : ''}</div>
+        <div class="pj-match__meta">
+          <span>${m.date || ''} ${m.time || ''}</span>
+          <span class="pj-xg">xG ${m.home_xg} – ${m.away_xg}</span>
+          <span>1X2 ${pct(m.probabilities.home)}/${pct(m.probabilities.draw)}/${pct(m.probabilities.away)}</span>
+        </div>
+      </div>
+      <svg class="pj-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    ${vbBanner}
+    <div class="pj-body">${(() => {
+      // SIGNAL on top (always visible): validated team markets + shots + ref
+      // cards/fouls + comparative + players. NOISE collapsed (goal-quantity props
+      // + combos) — present for completeness, one click away, never buried-but-equal.
+      const signalHtml = cards.filter(c => c.trust === 'signal').map(c => c.html).join('')
+        + shotsCard + totalCardsCard + totalFoulsCard + ehCard + compCards + playerFloorsCard;
+      const noiseCards = cards.filter(c => c.trust !== 'signal');
+      const noiseHtml = noiseCards.map(c => c.html).join('');
+      const comboHtml = comboCards.map(c => c.html).join('');
+      const nNoise = noiseCards.length + comboCards.length;
+      return `<div class="pj-grid">${signalHtml}</div>`
+        + (nNoise ? `<details class="pj-noise"><summary>▾ ${nNoise} model-probability markets (goal-quantity + combos · display only, not validated)</summary>
+            <div class="pj-grid" style="padding-top:8px;">${noiseHtml}${comboHtml}</div></details>` : '');
+    })()}</div>
+  </div>`;
+}
+
+const _pjC = document.getElementById('pj-container');
+_pjC.innerHTML = '<div class="pj-empty">Fetching /api/projections …</div>';
+
+fetch('/api/projections')
+  .then(r => {
+    _pjC.innerHTML = '<div class="pj-empty">Got HTTP ' + r.status + ', parsing…</div>';
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  })
+  .then(data => {
+    const proj = data.projections || [];
+    if (!proj.length) {
+      _pjC.innerHTML = '<div class="pj-empty">No upcoming matches with projections.<br><span style="font-size:11px;">Projections appear when predictions.json has matches (off-season: empty until fixtures resume).</span></div>';
+      return;
+    }
+    // group matches by date (like the homepage), then render each day section
+    const fmtDay = d => {
+      try { return new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); }
+      catch { return d || 'Undated'; }
+    };
+    const byDate = {};
+    proj.forEach(m => { (byDate[m.date || ''] = byDate[m.date || ''] || []).push(m); });
+    const dates = Object.keys(byDate).sort();
+
+    const html = dates.map(date => {
+      const matches = byDate[date].map(m => {
+        try { return renderMatch(m); }
+        catch (err) { return '<div class="pj-match" style="padding:12px;color:#f87171;">⚠ ' + (m.home_team||'?') + ' vs ' + (m.away_team||'?') + ' failed: ' + err.message + '</div>'; }
+      }).join('');
+      return `<div class="pj-day">
+        <div class="pj-day__header">${fmtDay(date)} <span class="pj-day__count">${byDate[date].length} ${byDate[date].length === 1 ? 'match' : 'matches'}</span></div>
+        ${matches}
+      </div>`;
+    }).join('');
+    _pjC.innerHTML = html;
+    const first = _pjC.querySelector('.pj-body');
+    if (first) {
+      first.classList.add('open');
+      const ch = first.closest('.pj-match').querySelector('.pj-chevron');
+      if (ch) ch.classList.add('open');
+    }
+  })
+  .catch(e => {
+    _pjC.innerHTML = '<div class="pj-empty" style="color:#f87171;">Failed to load: ' + e.message + '<br><span style="font-size:11px;">(check the browser console — Cmd+Option+J)</span></div>';
+  });
+})();
+</script>
+{% endblock %}

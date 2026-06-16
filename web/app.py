@@ -9,6 +9,7 @@ import sys
 import threading
 import time as _time
 from collections import defaultdict
+from typing import Any
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -340,6 +341,7 @@ _LEAGUE_SOFASCORE_PAGE = {
 # Live HTML standings cache (5min TTL on success; 30s on failure for fast retry)
 _html_standings_cache: dict[str, tuple[float, dict]] = {}
 _HTML_STANDINGS_TTL = 300
+_HTML_FAILURE_TTL = 30  # negative-cache TTL: empty payload = recent failure marker
 
 # Sentinel teams — the league is broken if these don't appear
 _HTML_SENTINEL_TEAM = {
@@ -370,6 +372,30 @@ def _html_is_broken(league: str) -> bool:
     return h["consecutive_failures"] >= _HTML_FAILURE_THRESHOLD or h["schema_break"]
 
 
+def _sofascore_get_retry(s: Any, url: str, timeout: int = 10, attempts: int = 3) -> tuple[Any, str]:
+    """GET with in-call retry on transient transport errors.
+
+    Retries connect failures, timeouts, and Cloudflare-mood statuses (403/429/5xx)
+    with 1s/2s backoff so a single blip never reaches the failure breaker.
+    Returns (response, "") on success or hard status (404 etc.); (None, err) when
+    all attempts were transient failures.
+    """
+    err = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            r = s.get(url, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 — transport errors vary by curl_cffi backend
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+        else:
+            if r.status_code in (403, 429) or r.status_code >= 500:
+                err = f"HTTP {r.status_code}"
+            else:
+                return r, ""
+        if attempt < attempts:
+            _time.sleep(attempt)
+    return None, f"transport ({attempts} attempts): {err}"
+
+
 def _live_standings_via_html(league: str) -> dict:
     """Scrape live standings from Sofascore tournament HTML page.
 
@@ -381,12 +407,23 @@ def _live_standings_via_html(league: str) -> dict:
     now = _t.time()
     h = _html_health_now(league)
 
-    # Cache hit on a recent successful payload — short-circuit
+    # Cache hit — success payloads live 5min; failure markers ({}) 30s, so a
+    # flaky Sofascore isn't re-hammered by every caller
     if league in _html_standings_cache:
         cached_at, payload = _html_standings_cache[league]
-        if (now - cached_at) < _HTML_STANDINGS_TTL:
+        ttl = _HTML_STANDINGS_TTL if payload else _HTML_FAILURE_TTL
+        if (now - cached_at) < ttl:
             import copy
             return copy.deepcopy(payload)
+
+    def _fail(err: str, *, schema: bool = False) -> dict:
+        (log.error if schema else log.warning)("HTML standings %s: %s", league, err)
+        h["last_error"] = err
+        if schema:
+            h["schema_break"] = True
+        h["consecutive_failures"] += 1
+        _html_standings_cache[league] = (now, {})
+        return {}
 
     h["last_attempt_at"] = now
     slug_info = _LEAGUE_SOFASCORE_PAGE.get(league)
@@ -405,42 +442,27 @@ def _live_standings_via_html(league: str) -> dict:
             "Accept": "text/html,application/xhtml+xml",
             "Accept-Language": "en-US,en;q=0.9",
         })
-        r = s.get(url, timeout=8)
+        r, terr = _sofascore_get_retry(s, url, timeout=10)
+        if r is None:
+            return _fail(terr)
         if r.status_code != 200:
-            err = f"HTTP {r.status_code}"
-            log.warning("HTML standings %s: %s", league, err)
-            h["last_error"] = err
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail(f"HTTP {r.status_code}")
 
         import re as _re
         m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
         if not m:
-            err = "NEXT_DATA script not found"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("NEXT_DATA script not found", schema=True)
 
         data = json.loads(m.group(1))
-        st_list = data.get("props", {}).get("pageProps", {}).get("initialProps", {}).get("standings", [])
+        pp = data.get("props", {}).get("pageProps", {})
+        # 2026-06: Sofascore hoisted initialProps.* directly onto pageProps — support both
+        st_list = pp.get("standings") or (pp.get("initialProps") or {}).get("standings", [])
         if not st_list or not isinstance(st_list, list):
-            err = "standings list missing in NEXT_DATA"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("standings list missing in NEXT_DATA", schema=True)
 
         rows = st_list[0].get("rows", [])
         if not rows:
-            err = "rows array empty"
-            log.error("HTML standings %s schema break: %s", league, err)
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            return _fail("rows array empty", schema=True)
 
         teams: dict[str, dict] = {}
         for row in rows:
@@ -474,13 +496,9 @@ def _live_standings_via_html(league: str) -> dict:
         # Sentinel: known team must be in the parsed standings.
         sentinel = _HTML_SENTINEL_TEAM.get(league)
         if sentinel and sentinel not in teams:
-            err = f"sentinel team {sentinel!r} missing — schema break"
-            log.error("HTML standings %s: %s. Found teams: %s",
-                      league, err, sorted(teams.keys())[:5])
-            h["last_error"] = err
-            h["schema_break"] = True
-            h["consecutive_failures"] += 1
-            return {}
+            log.error("HTML standings %s: sentinel %r missing. Found teams: %s",
+                      league, sentinel, sorted(teams.keys())[:5])
+            return _fail(f"sentinel team {sentinel!r} missing — schema break", schema=True)
 
         max_played = max((t["played"] for t in teams.values()), default=0)
         payload = {
@@ -503,11 +521,7 @@ def _live_standings_via_html(league: str) -> dict:
         import copy
         return copy.deepcopy(payload)
     except Exception as e:
-        err = f"{type(e).__name__}: {str(e)[:120]}"
-        log.warning("HTML standings %s failed: %s", league, err)
-        h["last_error"] = err
-        h["consecutive_failures"] += 1
-        return {}
+        return _fail(f"{type(e).__name__}: {str(e)[:120]}")
 
 
 def _next_fixture_for_team(league: str, team: str) -> dict | None:
@@ -1069,6 +1083,1056 @@ def matches_page():
     return render_template("matches.html", active_page="matches")
 
 
+@app.route("/projections")
+@app.route("/proj")
+@app.route("/score-projections")
+def projections_page():
+    # no-cache so the browser never serves a stale version of this evolving page
+    resp = app.make_response(render_template("projections.html", active_page="projections"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.route("/track-record")
+@app.route("/track")
+def track_record_page():
+    resp = app.make_response(render_template("track_record.html", active_page="track_record"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# World Cup 2026 — Elo+Poisson engine (scripts/worldcup/), artifacts in
+# data/worldcup/. Markets derived at serve time exactly like /projections.
+# ---------------------------------------------------------------------------
+
+WORLDCUP_DIR = DATA_DIR / "worldcup"
+
+
+@app.route("/worldcup")
+@app.route("/wc")
+def worldcup_page():
+    resp = app.make_response(render_template("worldcup.html", active_page="worldcup"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/api/worldcup")
+def api_worldcup():
+    """Per-match World Cup projections (full market family per fixture).
+
+    Display-only insight, NOT bets. 1X2/DC/handicap inherit the backtested
+    who-wins skill (see model_metadata.json); goal-quantity props tested as
+    noise on internationals too and are badged display-grade.
+    """
+    data = _load_json(WORLDCUP_DIR / "predictions.json", {})
+    preds = data.get("predictions", []) if isinstance(data, dict) else []
+
+    # Player layer: anytime-goalscorer candidates (scripts/worldcup/players.py),
+    # gate-checked like everything else. Absent file -> no cards, no error.
+    players = _load_json(WORLDCUP_DIR / "player_predictions.json", {})
+    players_by_match = players.get("per_match", {}) if isinstance(players, dict) else {}
+    # Market odds (Sofascore proxy, scripts/worldcup/sofascore_fetch.py):
+    # shown per match for transparency; the same odds also feed the
+    # VALIDATED 0.4/0.6 blend at generation (model_metadata.json market_blend).
+    market = _load_json(WORLDCUP_DIR / "market_odds.json", {})
+    # Team news (scripts/worldcup/availability.py): expected/confirmed XI,
+    # out/doubtful lists, and the lambda factors already applied upstream.
+    availability = _load_json(WORLDCUP_DIR / "player_availability.json", {})
+    av_matches = availability.get("matches", {}) if isinstance(availability, dict) else {}
+
+    projections = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is None:
+            continue
+        for key in ("stage", "group", "venue", "city", "match_number",
+                    "elo_home", "elo_away", "market_informed",
+                    "availability_adjusted", "availability_impact"):
+            proj[key] = p.get(key)
+        news = av_matches.get(str(p.get("match_number")))
+        if isinstance(news, dict):
+            proj["team_news"] = news
+        scorers = players_by_match.get(str(p.get("match_number")))
+        if scorers and (scorers.get("home") or scorers.get("away")):
+            proj["goalscorers"] = scorers
+        mk = market.get(str(p.get("match_number"))) if isinstance(market, dict) else None
+        if isinstance(mk, dict) and mk.get("implied"):
+            proj["market"] = {
+                "odds": mk.get("odds", {}),
+                "implied": mk["implied"],
+                "fetched_at": mk.get("fetched_at", ""),
+            }
+        projections.append(proj)
+
+    meta = _load_json(WORLDCUP_DIR / "model_metadata.json", {})
+    return jsonify({
+        "generated_at": data.get("generated_at", "") if isinstance(data, dict) else "",
+        "fitted_through": data.get("fitted_through", "") if isinstance(data, dict) else "",
+        "count": len(projections),
+        "model": {
+            "overall": meta.get("overall", {}),
+            "gate": meta.get("gate", {}),
+            "holdout_scope": meta.get("holdout_scope", ""),
+            "n_tournaments": len(meta.get("per_tournament", [])),
+        },
+        "player_model": {
+            "gate": players.get("gate", {}),
+            "method": players.get("method", ""),
+            "coverage_note": players.get("coverage_note", ""),
+        } if isinstance(players, dict) else {},
+        "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
+        "best_combos": _wc_best_combos(preds, market),
+        "fun_combos": _wc_fun_combos(preds),
+        "projections": projections,
+    })
+
+
+@app.route("/api/worldcup/record")
+def api_worldcup_record():
+    """Live predicted-vs-actual scoreboard (model vs market vs base rate),
+    graded from immutable pre-kickoff snapshots. Includes the combo-ticket
+    record (scripts/worldcup/combos.py) under "combos" when any has settled."""
+    record = _load_json(WORLDCUP_DIR / "track_record.json", {"n_graded": 0})
+    combos = _load_json(WORLDCUP_DIR / "combo_record.json", {})
+    if isinstance(record, dict) and isinstance(combos, dict) and combos.get("n_graded"):
+        record["combos"] = combos
+    return jsonify(record)
+
+
+# Per-match grade cache: keyed by (archive mtime, results mtime) so the full
+# menu is only re-graded when the snapshots or results actually change.
+_WC_GRADES_CACHE: dict = {"key": None, "payload": None}
+
+
+@app.route("/api/worldcup/match-grades")
+def api_worldcup_match_grades():
+    """Full per-market grade for every PLAYED World Cup match — the drill-down
+    behind each clickable row in the record table.
+
+    For each archived pre-kickoff snapshot whose result is known, reconstructs
+    the entire tipster market menu (same numbers the page shows as insight) and
+    grades each market vs reality: hit/miss, distance-to-correct, the AI's
+    quarter-Kelly suggested stake at the Sofascore-proxy price, and the payout
+    had it hit. Honest tiers — who-wins family carries the backtested edge; goal
+    props are flagged display-only. Half-dependent markets grade only when the
+    half-time score reconstructs from complete scorer coverage.
+    """
+    import pandas as pd
+
+    from scripts.worldcup.engine import canon_team
+    from scripts.worldcup.grading import (
+        GOALSCORERS_CSV,
+        SHOOTOUTS_CSV,
+        _find_result,
+        _ninety_minute_score,
+        reconstruct_halftime,
+    )
+    from scripts.worldcup.market_grading import grade_match_markets
+
+    archive_path = WORLDCUP_DIR / "predictions_archive.json"
+    results_csv = WORLDCUP_DIR / "international_results.csv"
+    live_results = WORLDCUP_DIR / "sofascore_results.json"
+    # Cache key invalidates whenever the snapshots OR either result source changes.
+    def _mtime(p) -> float:
+        try:
+            return p.stat().st_mtime if p.exists() else 0.0
+        except OSError:
+            return 0.0
+    cache_key = (
+        round(_mtime(archive_path), 3),
+        round(_mtime(results_csv), 3),
+        round(_mtime(live_results), 3),
+    )
+    if _WC_GRADES_CACHE["key"] == cache_key and _WC_GRADES_CACHE["payload"] is not None:
+        return jsonify(_WC_GRADES_CACHE["payload"])
+
+    archive = _load_json(archive_path, {})
+    market = _load_json(WORLDCUP_DIR / "market_odds.json", {})
+    if not isinstance(archive, dict) or not archive:
+        return jsonify({"matches": {}, "n": 0})
+
+    from scripts.worldcup.engine import load_results_with_live as _wc_load_results
+
+    df = _wc_load_results()  # CSV + live Sofascore overlay so the drill-down sees same-night results
+    scorers = pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
+    shootouts = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
+
+    out: dict[str, dict] = {}
+    for key, snap in archive.items():
+        if not isinstance(snap, dict):
+            continue
+        home, away, date = snap.get("home_team"), snap.get("away_team"), snap.get("date")
+        if not (home and away and date):
+            continue
+        res = _find_result(df, str(home), str(away), str(date))
+        if res is None:
+            continue  # not played / not in results yet
+        hs, as_, result_date = res
+        stage = snap.get("stage", "group")
+        ht = None
+        if stage != "group":
+            r90 = _ninety_minute_score(
+                scorers, shootouts, canon_team(str(home)), canon_team(str(away)),
+                result_date, (hs, as_),
+            )
+            if r90 is None:
+                continue  # can't grade a knockout's 90' honestly — skip
+            hs, as_ = r90
+        else:
+            ht = reconstruct_halftime(
+                scorers, canon_team(str(home)), canon_team(str(away)),
+                result_date, (hs, as_),
+            )
+        mo = market.get(str(snap.get("match_number"))) if isinstance(market, dict) else None
+        graded = grade_match_markets(snap, hs, as_, ht=ht, market_odds=mo)
+        if not graded:
+            continue
+        n_hit = sum(1 for g in graded if g["hit"] is True)
+        n_graded = sum(1 for g in graded if g["hit"] is not None)
+        out[key] = {
+            "match": f"{home} vs {away}",
+            "home_team": home,
+            "away_team": away,
+            "date": date,
+            "stage": stage,
+            "score": f"{hs}-{as_}",
+            "ht_score": f"{ht[0]}-{ht[1]}" if ht else None,
+            "match_number": snap.get("match_number"),
+            "n_hit": n_hit,
+            "n_graded": n_graded,
+            "markets": graded,
+        }
+
+    payload = {"matches": out, "n": len(out)}
+    _WC_GRADES_CACHE["key"] = cache_key
+    _WC_GRADES_CACHE["payload"] = payload
+    return jsonify(payload)
+
+
+@app.route("/api/worldcup/simulation")
+def api_worldcup_simulation():
+    """Monte Carlo tournament simulation: advancement + champion probabilities.
+
+    Enriched with display-only team context (squad market value, mean club
+    Elo where coverage >= 50%) from the scraped sources when present."""
+    sim = _load_json(WORLDCUP_DIR / "simulation.json", {})
+    context = _load_json(WORLDCUP_DIR / "team_context.json", {})
+    if isinstance(sim, dict) and context:
+        sim["team_context"] = context
+    return jsonify(sim)
+
+
+def _wc_best_combos(preds: list, market: dict) -> dict:
+    """Serve-time accumulator tiers — all math in scripts.worldcup.combos
+    (tested; shared with the refresh job, which archives + grades the same
+    tickets pre-kickoff). Lazy import keeps web boot light."""
+    from scripts.worldcup.combos import build_best_combos
+
+    return build_best_combos(preds, market)
+
+
+def _wc_fun_combos(preds: list) -> dict:
+    """Goal-prop accumulators (Over 1.5 / team-Over) from the engine's Poisson
+    lambdas — the DNA of a played multipla. Carries edge="none": goal props are
+    noise on internationals and are served as entertainment, NOT a model edge.
+    Same builder the Telegram /wc digest uses. Lazy import keeps boot light."""
+    from scripts.worldcup.combos import build_fun_combos
+
+    return build_fun_combos(preds)
+
+
+_COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
+_PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
+
+# Markets shown on the page, in display order. Goalscorer last (weakest, +6.9%).
+_FLOOR_DISPLAY_MARKETS = [
+    "shots_o15", "sot_o05", "shots_o05", "shots_o25",
+    "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
+    "tackles_o05", "tackles_o15", "tackles_o25",
+    "passes_o195", "passes_o295", "passes_o395",
+    "duels_o25", "duels_o45", "intercepts_o05", "intercepts_o15",
+]
+# Headline-eligible subset: the near-universal floors (P(>=20 passes) ~ 0.9 for
+# half the pitch, tackles O0.5 / duels O2.5 similar) stay display-only —
+# otherwise they'd hijack every top-6 slot and bury the shots/SoT signal.
+_FLOOR_HEADLINE_MARKETS = [
+    "shots_o15", "sot_o05", "shots_o05", "shots_o25",
+    "sot_o15", "fouls_o05", "fouled_o05", "goalscorer",
+    "tackles_o15", "tackles_o25", "passes_o395",
+    "duels_o45", "intercepts_o15",
+]
+
+
+def _player_engine():
+    """Cached (pms-with-priors, base_rates) for the player floor engine.
+
+    Rebuilds only when the underlying parquet changes. Building priors over
+    100k rows is ~1s, so we never want to do it per request.
+    """
+    path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None, None
+    if _PLAYER_ENGINE_CACHE["pms"] is None or _PLAYER_ENGINE_CACHE["mtime"] != mtime:
+        from scripts.betting.player_predictions import (
+            load_player_data, build_player_features, compute_position_base_rates,
+        )
+        pms = build_player_features(load_player_data("serie_a"))
+        _PLAYER_ENGINE_CACHE["pms"] = pms
+        _PLAYER_ENGINE_CACHE["base_rates"] = compute_position_base_rates(pms)
+        _PLAYER_ENGINE_CACHE["mtime"] = mtime
+    return _PLAYER_ENGINE_CACHE["pms"], _PLAYER_ENGINE_CACHE["base_rates"]
+
+
+def _lineup_entries(side_lineup: dict) -> list:
+    """Flatten a lineup_predictions side into [{player_name, player_id, position,
+    proj_minutes, is_starter}], using start_pct * avg_minutes for projected mins.
+    """
+    out = []
+    for grp, starter in (("predicted_xi", True), ("bench", False)):
+        for p in side_lineup.get(grp, []) or []:
+            avg_min = float(p.get("avg_minutes") or (82.0 if starter else 20.0))
+            start_pct = float(p.get("start_pct") or (100.0 if starter else 0.0))
+            proj_min = avg_min if starter else avg_min * (start_pct / 100.0)
+            out.append({
+                "player_name": p.get("name") or p.get("player_name", ""),
+                "player_id": p.get("player_id"),
+                "position": p.get("position", "M"),
+                "proj_minutes": proj_min,
+                "is_starter": starter,
+            })
+    return out
+
+
+def _attach_player_floors(proj_by_match: dict) -> None:
+    """Attach top player floor markets to each projection (display only).
+
+    For each match with a predicted lineup, predicts every player's floor
+    markets and keeps, per side, the players with the strongest single floor —
+    so the page shows "who's most likely to shoot / be fouled / score".
+    """
+    pms, base_rates = _player_engine()
+    if pms is None:
+        return
+    from scripts.betting.player_predictions import predict_match_players
+
+    lineups = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
+    lp_matches = lineups.get("matches", {}) if isinstance(lineups, dict) else {}
+
+    def _recent_xi(team):
+        """Fallback likely-XI: the team's most-recent match starters from pms.
+
+        Used when lineup_predictions has no matching entry (off-season / stale
+        lineup file). Names + ids come straight from sofascore so they resolve.
+        """
+        tdf = pms[pms["team"] == team]
+        if not len(tdf):
+            return []
+        last_date = tdf["date"].max()
+        last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
+        return [{
+            "player_name": r["player_name"], "player_id": r["player_id"],
+            "position": r["position"], "is_starter": True,
+            "proj_minutes": None,  # engine uses the player's leak-free min_prior
+        } for _, r in last.iterrows()]
+
+    from scripts.betting.player_predictions import TARGETS as _FLOOR_TARGETS
+    # Only grade HIT/MISS above this confidence — a 17% goal call that doesn't
+    # hit is the model being RIGHT, not a miss (advisor). Below threshold we
+    # show the neutral outcome (occurred / didn't), never a red ❌.
+    _GRADE_MIN_PROB = 0.55
+
+    def _actual_xi(home, away):
+        """For a PAST match: the actual starters + their actual stats, joined on
+        date+teams (not teams alone — double fixtures would mis-grade). Returns
+        ({name: actual_row}, match_date) or ({}, None) if the match hasn't been
+        played / isn't in pms.
+        """
+        mrows = pms[((pms["team"] == home) & (pms["opponent"] == away))
+                    | ((pms["team"] == away) & (pms["opponent"] == home))]
+        if not len(mrows):
+            return {}, None
+        last_date = mrows["date"].max()
+        played = mrows[(mrows["date"] == last_date) & (mrows["is_starter"] == True)]  # noqa: E712
+        return {r["player_name"]: r for _, r in played.iterrows()}, last_date
+
+    for match_key, proj in proj_by_match.items():
+        lp = lp_matches.get(match_key)
+        # For a PAST match, prefer the ACTUAL starters (so display + grading show
+        # the same real XI). Detect "past" = we have the played row in pms.
+        actual_by_name, _ = _actual_xi(proj.get("home_team", ""), proj.get("away_team", ""))
+        is_past = bool(actual_by_name)
+        if lp and not is_past:
+            home_xi = _lineup_entries(lp.get("home_lineup", {}))
+            away_xi = _lineup_entries(lp.get("away_lineup", {}))
+        else:
+            home_xi = _recent_xi(proj.get("home_team", ""))
+            away_xi = _recent_xi(proj.get("away_team", ""))
+        if not home_xi and not away_xi:
+            continue
+        result = predict_match_players(
+            proj.get("home_team", ""), proj.get("away_team", ""),
+            home_xi, away_xi, pms=pms, base_rates=base_rates,
+        )
+
+        def _grade(name, market_key, prob):
+            """Grade one player market vs actual. Returns dict or None.
+            hit: True/False only when prob>=threshold; else outcome shown neutral."""
+            row = actual_by_name.get(name)
+            if row is None:
+                return None
+            cfg = _FLOOR_TARGETS.get(market_key)
+            if not cfg:
+                return None
+            occurred = bool(row[cfg["col"]] >= cfg["line"] + 1)
+            graded = prob >= _GRADE_MIN_PROB
+            return {
+                "occurred": occurred,
+                "actual": int(row[cfg["col"]]),
+                "hit": occurred if graded else None,  # None = neutral (sub-threshold)
+            }
+
+        def _trim(players):
+            rows = []
+            for pl in players:
+                mk = pl.get("markets", {})
+                # headline = the player's most-confident HEADLINE-ELIGIBLE floor
+                # (display list is wider; near-universal floors excluded here)
+                best = max(
+                    (mk[k] for k in _FLOOR_HEADLINE_MARKETS if k in mk),
+                    key=lambda m: m["prob"], default=None,
+                )
+                if not best or best["prob"] < 0.30:
+                    continue
+                nm = pl["player_name"]
+                # grade each displayed market vs actual (past matches only)
+                markets = {}
+                for k in _FLOOR_DISPLAY_MARKETS:
+                    if k not in mk:
+                        continue
+                    cell = {"label": mk[k]["label"], "prob": mk[k]["prob"],
+                            "calibrated": mk[k].get("calibrated", False)}
+                    g = _grade(nm, k, mk[k]["prob"]) if is_past else None
+                    if g:
+                        cell.update(g)
+                    markets[k] = cell
+                # headline carries the best market's grade for the collapsed row
+                best_key = next((k for k in _FLOOR_HEADLINE_MARKETS
+                                 if k in mk and mk[k] is best), None)
+                hg = _grade(nm, best_key, best["prob"]) if (is_past and best_key) else None
+                rows.append({
+                    "name": nm,
+                    "position": pl["position"],
+                    "proj_minutes": pl["proj_minutes"],
+                    "prior_matches": pl.get("prior_matches", 0),
+                    "headline": {"label": best["label"], "prob": best["prob"],
+                                 **({"hit": hg["hit"], "actual": hg["actual"]} if hg else {})},
+                    "markets": markets,
+                })
+            rows.sort(key=lambda r: r["headline"]["prob"], reverse=True)
+            return rows[:6]
+
+        src = "actual XI (graded vs result)" if is_past else (
+            "predicted XI" if lp else "last XI (lineup TBD)")
+        proj["player_floors"] = {
+            "home": _trim(result.get("home_players", [])),
+            "away": _trim(result.get("away_players", [])),
+            "lineup_source": src,
+            "is_past": is_past,
+            "note": (f"Leak-free predictions vs ACTUAL result · {src}. "
+                     "HIT/MISS only on ≥55% calls (a 17% call not hitting is correct, not a miss)."
+                     if is_past else
+                     f"Validated leak-free model · {src}. Display only — betting gated."),
+        }
+
+
+def _comparative_matches_df():
+    """Cached read of matches.parquet for comparative markets (re-reads if file changes)."""
+    import pandas as pd
+    path = DATA_DIR / "parsed" / "matches.parquet"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if _COMPARATIVE_CACHE["df"] is None or _COMPARATIVE_CACHE["mtime"] != mtime:
+        cols = ["match_date", "home_team", "away_team", "referee",
+                "home_score", "away_score",
+                "home_corners", "away_corners", "home_fouls", "away_fouls",
+                "home_yellow_cards", "away_yellow_cards",
+                "home_shots_total", "away_shots_total",
+                "home_shots_on_target_count", "away_shots_on_target_count"]
+        # read only columns that exist (tolerant of schema changes)
+        import pyarrow.parquet as _pq
+        present = set(_pq.ParquetFile(path).schema.names)
+        df = pd.read_parquet(path, columns=[c for c in cols if c in present])
+        _COMPARATIVE_CACHE["df"] = df
+        _COMPARATIVE_CACHE["mtime"] = mtime
+    return _COMPARATIVE_CACHE["df"]
+
+
+def _grade_pick(pick: dict, actual: dict) -> bool | None:
+    """Did a pick hit, given the actual result? None if not gradable."""
+    key = pick.get("key", "")
+    sel = (pick.get("pick") or "").lower()
+    res = actual["result"]
+    if key == "1x2_home":
+        return res == "home"
+    if key == "1x2_away":
+        return res == "away"
+    if key == "1x2_draw":
+        return res == "draw"
+    if key == "double_chance":
+        if "1x" in sel or "or draw" in sel:
+            return res in ("home", "draw")
+        if "x2" in sel:
+            return res in ("draw", "away")
+        if "12" in sel:
+            return res in ("home", "away")
+    if key == "ou_2.5":
+        return (actual["total_goals"] > 2.5) if "over" in sel else (actual["total_goals"] < 2.5)
+    if key == "btts":
+        return actual["btts"] if ("goal" in sel or "yes" in sel) else not actual["btts"]
+    if key.startswith("ref_cards"):
+        ln = float(key.split("_o")[-1])
+        return (actual["total_cards"] > ln) if "over" in sel else (actual["total_cards"] < ln)
+    if key.startswith("ref_fouls"):
+        ln = float(key.split("_o")[-1])
+        return (actual["total_fouls"] > ln) if "over" in sel else (actual["total_fouls"] < ln)
+    if key == "corners_more":
+        # graded only if we have corner data on the actual row (handled by caller)
+        return None
+    return None
+
+
+def _build_score_range_projection(pred: dict) -> dict | None:
+    """Derive the full score-range market family for one match from its xG.
+
+    Everything here rides the existing calibrated goal/xG Poisson model — the
+    only inputs are home_xg / away_xg (already in predictions.json) plus the
+    1X2 probabilities. No new model; we read a model that works. All math lives
+    in scripts.betting.extended_markets (tested), this just wires it per-match.
+    """
+    from scripts.betting import extended_markets as em
+
+    hxg = pred.get("home_xg")
+    axg = pred.get("away_xg")
+    if hxg is None or axg is None:
+        return None
+    try:
+        hxg = float(hxg)
+        axg = float(axg)
+    except (TypeError, ValueError):
+        return None
+    if hxg <= 0 or axg <= 0:
+        return None
+
+    probs = pred.get("probabilities") or {}
+    # normalise 1X2 prob keys (predictions.json uses home/draw/away)
+    p1x2 = {
+        "home": probs.get("home", probs.get("H", 0.0)),
+        "draw": probs.get("draw", probs.get("D", 0.0)),
+        "away": probs.get("away", probs.get("A", 0.0)),
+    }
+
+    # BTTS (Goal/No Goal) — Poisson: P(both score) = (1-P(home=0))*(1-P(away=0)).
+    # Independence is the standard approximation; the rho-correlated matrix is
+    # used for score-grid markets above where it matters more.
+    import math as _math
+    btts_yes = (1 - _math.exp(-hxg)) * (1 - _math.exp(-axg))
+    btts_yes = max(0.0, min(1.0, btts_yes))
+    btts = {
+        "yes": {"prob": round(btts_yes, 4),
+                "fair_odds": round(1 / btts_yes, 2) if btts_yes > 0.001 else 99},
+        "no": {"prob": round(1 - btts_yes, 4),
+               "fair_odds": round(1 / (1 - btts_yes), 2) if (1 - btts_yes) > 0.001 else 99},
+    }
+
+    return {
+        "match": pred.get("match"),
+        "home_team": pred.get("home_team"),
+        "away_team": pred.get("away_team"),
+        "date": pred.get("date", ""),
+        "time": pred.get("time", ""),
+        "home_xg": round(hxg, 2),
+        "away_xg": round(axg, 2),
+        "predicted_outcome": pred.get("predicted_outcome"),
+        "probabilities": p1x2,
+        # The full tipster market menu, all Poisson-derived:
+        "btts": btts,
+        "double_chance": em.compute_double_chance(p1x2),
+        "multi_goal": em.compute_multi_goal(hxg, axg),
+        "exact_score": em.compute_exact_score_top10(hxg, axg),
+        "htft": em.compute_htft(hxg, axg),
+        "first_half": em.compute_first_half(hxg, axg),
+        "second_half": em.compute_second_half_result(hxg, axg),
+        "team_totals": em.compute_team_totals(hxg, axg),
+        "winning_margin": em.compute_winning_margin(hxg, axg),
+        "odd_even": em.compute_odd_even(hxg, axg),
+        "goal_both_halves": em.compute_goal_in_both_halves(hxg, axg),
+        "team_to_score_first": em.compute_team_to_score_first(hxg, axg),
+        "win_to_nil": em.compute_win_to_nil(hxg, axg, p1x2),
+        "european_handicap": em.compute_european_handicap(hxg, axg),
+        "somma_goal": em.compute_somma_goal(hxg, axg),
+        "team_odd_even": em.compute_team_odd_even(hxg, axg),
+        "ribaltone": em.compute_ribaltone(hxg, axg),
+        "combos": em.compute_combos(hxg, axg),
+        "team_win_to_nil": em.compute_team_win_to_nil(hxg, axg),
+        "half_goals": em.compute_half_goals_ou(hxg, axg),
+    }
+
+
+_TRACKREC_CACHE: dict = {"data": None, "mtime": 0.0}
+
+
+def _build_track_record():
+    """Grade every ARCHIVED pre-match prediction against the actual result.
+
+    Honest track record (advisor): predictions_archive.json holds genuine
+    pre-kickoff snapshots (archived_at < kickoff) — zero leak, unlike
+    regenerating with the trained model. Rolls up per-market hit rate WITH
+    base rate + n so a high hit-rate can't masquerade as skill when the base
+    is already high. ~134 matches join to an actual result.
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import poisson
+
+    arch = _load_json(UPCOMING_DIR / "predictions_archive.json", {})
+    if not isinstance(arch, dict) or not arch:
+        return {"markets": [], "n_matches": 0}
+    mpath = DATA_DIR / "parsed" / "matches.parquet"
+    try:
+        m = pd.read_parquet(mpath, columns=["match_date", "home_team", "away_team",
+                                            "home_score", "away_score"])
+    except Exception:
+        return {"markets": [], "n_matches": 0}
+    m = m.dropna(subset=["home_score", "away_score"]).copy()
+    m["key"] = (m["home_team"] + " vs " + m["away_team"] + "_"
+                + pd.to_datetime(m["match_date"]).dt.strftime("%Y-%m-%d"))
+    res = {r["key"]: r for _, r in m.iterrows()}
+
+    # market -> {n, hits, outcomes (count of each actual outcome for base rate), matches[]}
+    # base rate = best fixed-pick strategy on the SAME matches (max outcome frequency),
+    # so "DC 77.6%" is judged against "always pick 1X ~73%" — the structural floor.
+    mk: dict = {}
+
+    def add(name, pick, hit, prob, actual_outcome, match, score, dt):
+        d = mk.setdefault(name, {"n": 0, "hits": 0, "outcomes": {}, "matches": []})
+        d["n"] += 1
+        d["hits"] += int(hit)
+        d["outcomes"][actual_outcome] = d["outcomes"].get(actual_outcome, 0) + 1
+        d["matches"].append({"match": match, "date": dt, "score": score,
+                             "pick": pick, "hit": bool(hit), "prob": round(float(prob), 3)})
+
+    n_matches = 0
+    for k, p in arch.items():
+        if k not in res:
+            continue
+        r = res[k]
+        hs, as_ = int(r["home_score"]), int(r["away_score"])
+        tot = hs + as_
+        pr = p.get("probabilities") or {}
+        hxg, axg = p.get("home_xg"), p.get("away_xg")
+        if not pr:
+            continue
+        n_matches += 1
+        match = p.get("match", k.rsplit("_", 1)[0])
+        dt = p.get("date", "")
+        score = f"{hs}-{as_}"
+        act = "home" if hs > as_ else ("away" if as_ > hs else "draw")
+        # 1X2 — our call is the top outcome; base outcome = the actual result
+        call = max(pr, key=pr.get)
+        add("1X2", call.upper(), call == act, pr[call], act, match, score, dt)
+        # Double chance — two-way cover; base outcome = which DC class the result falls in.
+        # For base rate we record ALL covering classes? No — record the single class our
+        # framing tracks: the actual result maps to whichever DC pick would've covered it.
+        dcp = "1X" if call in ("home", "draw") else "X2"
+        dch = (act in ("home", "draw")) if dcp == "1X" else (act in ("draw", "away"))
+        dcprob = (pr.get("home", 0) + pr.get("draw", 0)) if dcp == "1X" else (pr.get("draw", 0) + pr.get("away", 0))
+        # base outcome for DC = the most-frequent DC class: '1X' covers home+draw, 'X2'
+        # covers draw+away. We tag by the result so the rollup's max-freq = best fixed DC.
+        dc_class = "1X" if act in ("home", "draw") else "X2"
+        add("Double Chance", dcp, dch, dcprob, dc_class, match, score, dt)
+        # goal markets from xg (Poisson)
+        if hxg and axg:
+            lam = hxg + axg
+            pov = 1 - poisson.cdf(2, lam)
+            cou = "Over 2.5" if pov >= 0.5 else "Under 2.5"
+            add("O/U 2.5", cou, (tot > 2.5) == (pov >= 0.5), max(pov, 1 - pov),
+                "Over" if tot > 2.5 else "Under", match, score, dt)
+            pb = (1 - np.exp(-hxg)) * (1 - np.exp(-axg))
+            cb = "Yes" if pb >= 0.5 else "No"
+            add("BTTS", cb, ((hs > 0 and as_ > 0)) == (pb >= 0.5), max(pb, 1 - pb),
+                "Yes" if (hs > 0 and as_ > 0) else "No", match, score, dt)
+
+    # roll up — base rate = best fixed-pick strategy on the SAME matches (max outcome
+    # frequency). edge = hit_rate - base_rate is what actually shows skill (advisor:
+    # DC 77.6% vs ~73% base = +4.6 edge, NOT a 77% genius bar). Rank by EDGE.
+    MIN_N = 20
+    markets = []
+    for name, d in mk.items():
+        if d["n"] == 0:
+            continue
+        rate = d["hits"] / d["n"]
+        base = max(d["outcomes"].values()) / d["n"] if d["outcomes"] else 0.0
+        markets.append({
+            "market": name,
+            "hit_rate": round(rate, 4),
+            "base_rate": round(base, 4),
+            "edge": round(rate - base, 4),
+            "hits": d["hits"],
+            "n": d["n"],
+            "trusted": d["n"] >= MIN_N,
+            "matches": sorted(d["matches"], key=lambda x: x["date"], reverse=True),
+        })
+    markets.sort(key=lambda x: -x["edge"])
+    return {"markets": markets, "n_matches": n_matches,
+            "source": "predictions_archive (pre-kickoff snapshots) — ranked by edge over best fixed pick"}
+
+
+@app.route("/api/track-record")
+def api_track_record():
+    """Per-market hit rate from archived pre-match predictions (cached)."""
+    arch_path = UPCOMING_DIR / "predictions_archive.json"
+    try:
+        mtime = arch_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _TRACKREC_CACHE["data"] is None or _TRACKREC_CACHE["mtime"] != mtime:
+        _TRACKREC_CACHE["data"] = _build_track_record()
+        _TRACKREC_CACHE["mtime"] = mtime
+    return jsonify(_TRACKREC_CACHE["data"])
+
+
+@app.route("/api/projections")
+def api_projections():
+    """Score-range projection family for every upcoming match.
+
+    Display-only insight (NOT betting) — derived from the calibrated goal model.
+    Betting on these markets is gated on the Betfair odds layer + per-market
+    validation (see .plans/prop-projection-product-plan.md). These are honest
+    model probabilities, not edges.
+    """
+    predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
+    if isinstance(predictions_raw, dict):
+        preds = predictions_raw.get("predictions", [])
+        generated_at = predictions_raw.get("generated_at", "")
+    else:
+        preds = predictions_raw or []
+        generated_at = ""
+
+    projections = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is not None:
+            projections.append(proj)
+
+    # Attach comparative team-stat markets (who makes more corners/fouls/cards).
+    # Opponent-adjusted; fouls has real signal, corners/cards fall back to base rate.
+    try:
+        from scripts.prediction.comparative_markets import (
+            compute_expected_counts, all_comparative_markets, compute_base_rates,
+            total_cards_over_under, ref_card_avg, team_card_rate,
+            total_fouls_over_under, ref_stat_avg, team_stat_rate)
+        _matches = _comparative_matches_df()   # cached read (see helper)
+        _base_rates = compute_base_rates(_matches) if _matches is not None else {}
+        # predictions.json carries the assigned referee per match
+        ref_by_match = {p.get("match"): p.get("referee")
+                        for p in (preds if isinstance(preds, list) else [])}
+        if _matches is not None:
+            for proj in projections:
+                exp = compute_expected_counts(proj.get("home_team"), proj.get("away_team"), _matches)
+                if exp:
+                    proj["comparative"] = all_comparative_markets(exp, base_rates=_base_rates)
+                # referee-aware total-cards O/U (the validated signal market)
+                ref = ref_by_match.get(proj.get("match"))
+                ra = ref_card_avg(ref, _matches) if ref else None
+                hcr = team_card_rate(proj.get("home_team"), _matches)
+                acr = team_card_rate(proj.get("away_team"), _matches)
+                tc = total_cards_over_under(ra, hcr, acr)
+                if tc:
+                    tc["referee"] = ref
+                    proj["total_cards"] = tc
+                # referee-aware total-fouls O/U (second validated signal market)
+                rfa = ref_stat_avg(ref, _matches, "fouls") if ref else None
+                hfr = team_stat_rate(proj.get("home_team"), _matches, "fouls")
+                afr = team_stat_rate(proj.get("away_team"), _matches, "fouls")
+                tf = total_fouls_over_under(rfa, hfr, afr)
+                if tf:
+                    tf["referee"] = ref
+                    proj["total_fouls"] = tf
+                # shot markets (1X2 tiri + U/O shots / shots-on-target) — display
+                from scripts.prediction.comparative_markets import shot_markets
+                sm = shot_markets(proj.get("home_team"), proj.get("away_team"), _matches)
+                if sm:
+                    proj["shots"] = sm
+    except Exception as e:
+        log.warning("comparative markets skipped: %s", e)
+
+    # Player floor markets (shots / SoT / fouls O-U per likely starter).
+    # Validated leak-free engine (see .plans/player-props-deep-plan.md): every
+    # market beats base rate on walk-forward Brier. DISPLAY only — betting gated.
+    try:
+        _attach_player_floors({p.get("match"): p for p in projections})
+    except Exception as e:
+        log.warning("player floors skipped: %s", e)
+
+    # Calibrate the overclaiming markets so the displayed % = real hit rate
+    # (live isotonic maps from 2017+ history; away-win/O-U overclaim otherwise).
+    try:
+        from scripts.prediction.market_calibration import calibrate
+        _mp = str(DATA_DIR / "features" / "features_serie_a.parquet")
+        for proj in projections:
+            pr = proj.get("probabilities") or {}
+            for side, key in (("home", "1x2_home"), ("draw", "1x2_draw"), ("away", "1x2_away")):
+                if pr.get(side) is not None:
+                    pr[side] = calibrate(key, pr[side], _mp)
+            b = proj.get("btts") or {}
+            if b.get("yes", {}).get("prob") is not None:
+                cy = calibrate("btts", b["yes"]["prob"], _mp)
+                b["yes"]["prob"] = cy
+                if "no" in b:
+                    b["no"]["prob"] = round(1 - cy, 4)
+            # double chance — backtest showed ECE 0.075 (miscalibrated); calibrate each leg
+            dc = proj.get("double_chance") or {}
+            for leg, key in (("1X", "dc_1x"), ("X2", "dc_x2"), ("12", "dc_12")):
+                cell = dc.get(leg)
+                if isinstance(cell, dict) and cell.get("prob") is not None:
+                    cp = calibrate(key, cell["prob"], _mp)
+                    cell["prob"] = round(cp, 4)
+                    cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+            # team totals over-lines — ECE sweep found 0.066-0.073, held-out validated
+            tt = proj.get("team_totals") or {}
+            for side in ("home", "away"):
+                for line, key in (("over_1.5", f"tt_{side}_o1.5"), ("over_2.5", f"tt_{side}_o2.5")):
+                    cell = (tt.get(side) or {}).get(line)
+                    if isinstance(cell, dict) and cell.get("prob") is not None:
+                        cp = calibrate(key, cell["prob"], _mp)
+                        cell["prob"] = round(cp, 4)
+                        cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+                        # keep under = 1 - over coherent
+                        u = (tt.get(side) or {}).get(line.replace("over", "under"))
+                        if isinstance(u, dict):
+                            u["prob"] = round(1 - cp, 4)
+                            u["fair_odds"] = round(1.0 / max(1 - cp, 0.01), 2)
+            # multigol 2-3 — calibrated (held-out ECE 0.040 -> 0.006)
+            for cell in (proj.get("multi_goal") or []):
+                if isinstance(cell, dict) and cell.get("range") == "2-3" and cell.get("prob") is not None:
+                    cp = calibrate("multigol_2_3", cell["prob"], _mp)
+                    cell["prob"] = round(cp, 4)
+                    cell["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+            # european handicap — home outcome at +1/+2 was miscalibrated (held-out
+            # 0.075 -> 0.034); calibrate the home leg + keep draw/away renormalized.
+            eh = proj.get("european_handicap") or {}
+            for lk, key in (("home_+1", "eh_home_+1"), ("home_+2", "eh_home_+2")):
+                line = eh.get(lk)
+                if isinstance(line, dict) and (line.get("home") or {}).get("prob") is not None:
+                    cp = calibrate(key, line["home"]["prob"], _mp)
+                    old = line["home"]["prob"]
+                    line["home"]["prob"] = round(cp, 4)
+                    line["home"]["fair_odds"] = round(1.0 / max(cp, 0.01), 2)
+                    # renormalize draw/away to keep the 3 outcomes summing to 1
+                    rem = max(0.0, 1.0 - cp)
+                    dr, aw = line.get("draw") or {}, line.get("away") or {}
+                    base = (dr.get("prob", 0) + aw.get("prob", 0)) or 1.0
+                    for cell in (dr, aw):
+                        if cell.get("prob") is not None:
+                            cell["prob"] = round(rem * cell["prob"] / base, 4)
+                            cell["fair_odds"] = round(1.0 / max(cell["prob"], 0.01), 2)
+            proj["calibrated"] = True
+    except Exception as e:
+        log.warning("calibration skipped: %s", e)
+
+    # Best-bets: per match, the strongest plays from backtest-trusted markets only.
+    try:
+        from scripts.prediction.best_bets import rank_bets
+        for proj in projections:
+            proj["best_bets"] = rank_bets(
+                proj, proj.get("comparative"),
+                proj.get("total_cards"), proj.get("total_fouls"))
+    except Exception as e:
+        log.warning("best-bets skipped: %s", e)
+
+    # Results grading: for COMPLETED matches, attach the actual result and grade
+    # whether the ⭐ best-bet hit. Lets the user see if the predictions came true.
+    try:
+        import pandas as pd
+        _m = _comparative_matches_df()
+        if _m is not None and "home_score" in _m.columns:
+            for proj in projections:
+                row = _m[(_m["home_team"] == proj.get("home_team")) &
+                         (_m["away_team"] == proj.get("away_team"))].sort_values("match_date").tail(1)
+                if not len(row) or pd.isna(row.iloc[0].get("home_score")):
+                    continue
+                r = row.iloc[0]
+                hs, as_ = int(r["home_score"]), int(r["away_score"])
+                actual = {
+                    "score": f"{hs}-{as_}",
+                    "result": "home" if hs > as_ else ("away" if as_ > hs else "draw"),
+                    "total_goals": hs + as_,
+                    "total_cards": int((r.get("home_yellow_cards") or 0) + (r.get("away_yellow_cards") or 0)),
+                    "total_fouls": int((r.get("home_fouls") or 0) + (r.get("away_fouls") or 0)),
+                    "btts": hs > 0 and as_ > 0,
+                }
+                # add corners to actual for grading the corners-more market
+                actual["home_corners"] = int(r.get("home_corners") or 0)
+                actual["away_corners"] = int(r.get("away_corners") or 0)
+                proj["actual"] = actual
+
+                # grade EVERY ranked candidate (all markets the engine considered)
+                ranked = (proj.get("best_bets") or {}).get("all_ranked", [])
+                graded = []
+                for c in ranked:
+                    hit = _grade_pick(c, actual)
+                    if c.get("key") == "corners_more" and actual.get("home_corners") is not None:
+                        hc, ac = actual["home_corners"], actual["away_corners"]
+                        sel = (c.get("pick") or "")
+                        if "+" in sel and proj.get("home_team", "") in sel:
+                            hit = hc > ac
+                        elif "+" in sel and proj.get("away_team", "") in sel:
+                            hit = ac > hc
+                        elif "pari" in sel.lower():
+                            hit = hc == ac
+                    if hit is None:
+                        continue
+                    graded.append({**c, "hit": bool(hit)})
+
+                # insights: what we recommended vs what actually won
+                rec_hit = [g for g in graded if g["recommended"] and g["hit"]]
+                rec_miss = [g for g in graded if g["recommended"] and not g["hit"]]
+                # MISSED OPPORTUNITY: high-confidence, hit, but NOT recommended (trust gate kept it off)
+                missed_opp = [g for g in graded if not g["recommended"] and g["hit"]
+                              and g["prob"] >= 0.60 and g["lift"] >= 0.08]
+                # GOOD SKIP: not recommended AND correctly didn't hit
+                good_skip = [g for g in graded if not g["recommended"] and not g["hit"]
+                             and g["prob"] >= 0.55]
+                bs = (proj.get("best_bets") or {}).get("best_single")
+                if bs:
+                    proj["best_bets"]["best_single"]["hit"] = _grade_pick(bs, actual)
+                proj["grading"] = {
+                    "n_recommended_hit": len(rec_hit),
+                    "n_recommended_miss": len(rec_miss),
+                    "recommended": [{"market": g["market"], "pick": g["pick"],
+                                     "prob": g["prob"], "hit": g["hit"]} for g in (rec_hit + rec_miss)],
+                    "missed_opportunities": [{"market": g["market"], "pick": g["pick"],
+                                              "prob": g["prob"]} for g in missed_opp[:3]],
+                    "good_skips": [{"market": g["market"], "pick": g["pick"]} for g in good_skip[:3]],
+                }
+    except Exception as e:
+        log.warning("results grading skipped: %s", e)
+
+    # Attach odds-edge comparison when a book's odds are available.
+    # comparison_odds.json is written by the Betfair client (or a sample);
+    # format {match: {market: {outcome: price}}}. The engine is source-agnostic.
+    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
+    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
+    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+    if book_odds_by_match:
+        from scripts.betting.odds_comparison import compare_match, best_value_bets
+        for proj in projections:
+            mo = book_odds_by_match.get(proj.get("match"))
+            if not mo:
+                continue
+            results = compare_match(proj, mo, book=book_name)
+            proj["odds_book"] = book_name
+            proj["edges"] = [r.to_dict() for r in results]
+            proj["value_bets"] = [r.to_dict() for r in best_value_bets(results)]
+
+    return jsonify({
+        "generated_at": generated_at,
+        "count": len(projections),
+        "odds_source": book_name,
+        "projections": projections,
+    })
+
+
+@app.route("/value-bets")
+@app.route("/value")
+def value_bets_page():
+    resp = app.make_response(render_template("value_bets.html", active_page="value_bets"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/api/value-bets")
+def api_value_bets():
+    """All value bets across all matches, sorted by edge — the bet-slip view.
+
+    Reads predictions.json + comparison_odds.json, runs the comparison engine,
+    flattens every flagged value bet with its match context. Separates 'skill'
+    (trusted) from 'noise' (model-unreliable) so the UI can warn appropriately.
+    """
+    predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
+    preds = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else (predictions_raw or [])
+    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
+    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
+    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+
+    if not book_odds_by_match:
+        return jsonify({"odds_source": "", "value_bets": [], "count": 0,
+                        "message": "No book odds loaded — wire Betfair/Sisal odds to comparison_odds.json"})
+
+    from scripts.betting.odds_comparison import compare_match, best_value_bets
+
+    all_bets = []
+    for p in preds:
+        proj = _build_score_range_projection(p)
+        if proj is None:
+            continue
+        mo = book_odds_by_match.get(proj.get("match"))
+        if not mo:
+            continue
+        for r in best_value_bets(compare_match(proj, mo, book=book_name), top_n=99):
+            bet = r.to_dict()
+            bet["match"] = proj.get("match")
+            bet["home_team"] = proj.get("home_team")
+            bet["away_team"] = proj.get("away_team")
+            bet["date"] = proj.get("date", "")
+            bet["time"] = proj.get("time", "")
+            all_bets.append(bet)
+
+    all_bets.sort(key=lambda b: -b["edge_pct"])
+    return jsonify({
+        "odds_source": book_name,
+        "count": len(all_bets),
+        "trusted_count": sum(1 for b in all_bets if b["trust"] == "skill"),
+        "value_bets": all_bets,
+    })
+
+
+def _club_leagues_dormant(horizon_days: int = 14) -> dict[str, bool]:
+    """Per-club-league off-season flag for the freshness check.
+
+    A league is dormant when it has NO fixture scheduled within the next
+    ``horizon_days``. Mirrors health_check.py's season-aware philosophy:
+    assert on the unambiguous signal (are there matches to have data FOR?)
+    rather than calendar age, so the off-season ban + stale club parquet
+    stop reading as a hard failure. Auto-clears the moment a fixture appears
+    inside the window. Conservative: any read error -> not dormant (so a
+    genuine failure is never masked by a parse problem here).
+    """
+    flags = {"serie_a": False, "premier_league": False}
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if not matches_path.exists():
+        return flags
+    try:
+        import pandas as pd
+        m = pd.read_parquet(matches_path, columns=["league", "match_date"])
+        m["match_date"] = pd.to_datetime(m["match_date"], errors="coerce")
+        now = datetime.now()
+        horizon = now + timedelta(days=horizon_days)
+        for lg in flags:
+            sub = m[m["league"] == lg] if "league" in m.columns else m
+            upcoming = sub[(sub["match_date"] > now) & (sub["match_date"] <= horizon)]
+            flags[lg] = len(upcoming) == 0
+    except Exception:
+        return {"serie_a": False, "premier_league": False}
+    return flags
+
+
 @app.route("/api/data-freshness")
 def api_data_freshness():
     """Sofascore refresh freshness — used by the global staleness banner.
@@ -1151,6 +2215,8 @@ def api_data_freshness():
     any_html_ok = False
     any_hard_fail = False
     schema_break_seen = False
+    dormant = _club_leagues_dormant()
+    all_dormant = all(dormant.get(lg) for lg in ("serie_a", "premier_league"))
 
     for lg in ("serie_a", "premier_league"):
         # Trigger scrape (cached) to refresh health entry
@@ -1180,15 +2246,19 @@ def api_data_freshness():
             "html_last_success": last_success_iso,
             "parquet_age_hours": pq_age_h,
             "parquet_too_old": (pq_age_h is not None and pq_age_h > 24 * 7),
+            "offseason_dormant": bool(dormant.get(lg)),
         }
         if html_ok:
             any_html_ok = True
         if h.get("schema_break"):
             schema_break_seen = True
-        # Hard fail: this league has no fresh source at all
+        # Hard fail: this league has no fresh source at all — but a dormant
+        # (off-season, no fixtures within 14d) league is EXPECTED to be stale,
+        # so it never counts as a hard failure. It re-arms automatically the
+        # moment a fixture appears inside the window.
         league_hard = (not html_ok) and (
             league_health[lg]["parquet_too_old"] or pq_age_h is None
-        )
+        ) and not dormant.get(lg)
         if league_hard:
             any_hard_fail = True
 
@@ -1200,10 +2270,14 @@ def api_data_freshness():
     if schema_break_seen:
         out["severity"] = "schema_break"
         out["ok"] = False
+        errs = "; ".join(
+            f"{lg}: {league_health[lg].get('html_last_error', '?')}"
+            for lg in league_health
+            if league_health[lg].get("html_schema_break")
+        )
         out["message"] = (
-            "Sofascore HTML schema changed — scrape is parsing but a sentinel "
-            "team is missing. Check _live_standings_via_html parsers and update "
-            "_HTML_SENTINEL_TEAM / NEXT_DATA paths."
+            f"Sofascore HTML schema break ({errs}). Check the NEXT_DATA paths in "
+            "_live_standings_via_html / _scrape_match_html (web/app.py)."
         )
     elif any_hard_fail:
         out["severity"] = "hard_fail"
@@ -1211,6 +2285,18 @@ def api_data_freshness():
         out["message"] = (
             "BOTH live HTML scrape AND cached parquet are stale. User-facing "
             "data is unreliable. Fix Sofascore access or restore parquet."
+        )
+    elif all_dormant:
+        # No club fixtures within 14d in either league → off-season. Stale
+        # club parquet + a blocked HTML scrape are the CORRECT state here, so
+        # this is informational, not a failure. World Cup data is served by a
+        # separate path (scripts/worldcup) and is unaffected.
+        out["severity"] = "offseason_dormant"
+        out["ok"] = True
+        out["message"] = (
+            "Off-season — Serie A & EPL dormant (no fixtures within 14d); "
+            "club data intentionally stale until the season resumes. Live "
+            "match data (e.g. World Cup) is served separately and unaffected."
         )
     elif not any_html_ok:
         # No HTML, but parquet within 7d — degraded but tolerable
@@ -7106,7 +8192,8 @@ def _scrape_match_html(ss_match_id: int) -> dict:
     now = _t.time()
     if ss_match_id in _match_html_cache:
         cached_at, payload = _match_html_cache[ss_match_id]
-        if (now - cached_at) < _MATCH_HTML_TTL:
+        ttl = _MATCH_HTML_TTL if payload else _HTML_FAILURE_TTL
+        if (now - cached_at) < ttl:
             import copy
             return copy.deepcopy(payload)
 
@@ -7119,18 +8206,27 @@ def _scrape_match_html(ss_match_id: int) -> dict:
             "Accept-Language": "en-US,en;q=0.9",
         })
         # /event/{id} redirects to the canonical /football/match/{slug}/{token}
-        r = s.get(f"https://www.sofascore.com/event/{ss_match_id}", timeout=5)
+        r, terr = _sofascore_get_retry(s, f"https://www.sofascore.com/event/{ss_match_id}", timeout=10)
+        if r is None:
+            log.warning("match HTML %d: %s", ss_match_id, terr)
+            _match_html_cache[ss_match_id] = (now, {})
+            return {}
         if r.status_code != 200:
             log.warning("match HTML %d: HTTP %d", ss_match_id, r.status_code)
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
 
         import re as _re
         m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
         if not m:
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
         data = json.loads(m.group(1))
-        ip = data.get("props", {}).get("pageProps", {}).get("initialProps", {})
+        pp = data.get("props", {}).get("pageProps", {})
+        # 2026-06: Sofascore hoisted initialProps.* directly onto pageProps — support both
+        ip = pp.get("initialProps") or pp
         if not ip:
+            _match_html_cache[ss_match_id] = (now, {})
             return {}
         ev = ip.get("event", {}) or {}
         venue_obj = ev.get("venue", {}) or {}
@@ -7185,6 +8281,7 @@ def _scrape_match_html(ss_match_id: int) -> dict:
         return payload
     except Exception as e:
         log.warning("match HTML %d failed: %s", ss_match_id, e)
+        _match_html_cache[ss_match_id] = (now, {})
         return {}
 
 
