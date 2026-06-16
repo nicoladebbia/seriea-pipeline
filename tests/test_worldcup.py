@@ -151,6 +151,26 @@ class TestScoreMatrix:
         assert p_home + p_draw + p_away == pytest.approx(1.0)
         assert p_home > p_away
 
+    def test_dc_tau_increases_draw_prob(self) -> None:
+        # Negative rho (the international-football direction) must lift the draw
+        # probability vs independent Poisson, on an even, low-scoring matchup
+        # (the regime independent Poisson structurally caps near ~30%).
+        _, p_draw_indep, _ = one_x_two(1.2, 1.2, rho=0.0)
+        _, p_draw_dc, _ = one_x_two(1.2, 1.2, rho=-0.12)
+        assert p_draw_dc > p_draw_indep
+
+    def test_dc_tau_still_sums_to_one(self) -> None:
+        grid = score_matrix(1.5, 1.1, rho=-0.10)
+        assert grid.sum() == pytest.approx(1.0)
+        p_home, p_draw, p_away = one_x_two(1.5, 1.1, rho=-0.10)
+        assert p_home + p_draw + p_away == pytest.approx(1.0)
+
+    def test_dc_tau_zero_is_independent(self) -> None:
+        # rho=0.0 must be byte-identical to the independent-Poisson grid.
+        a = score_matrix(1.7, 0.9, rho=0.0)
+        b = score_matrix(1.7, 0.9)
+        assert np.array_equal(a, b)
+
 
 class TestTeamNames:
     def test_fixture_display_names_map_to_dataset_names(self) -> None:

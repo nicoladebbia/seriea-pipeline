@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -459,6 +460,73 @@ def fit_dc_model(
     )
 
 
+def fit_dc_tau(
+    hist: pd.DataFrame,
+    lam_provider: Callable[[Any], tuple[float, float]],
+    *,
+    train_start: str = TRAIN_START,
+    train_end: str | None = None,
+    half_life_days: float = HALF_LIFE_DAYS,
+    min_matches: int = 500,
+) -> float:
+    """Fit the single Dixon-Coles rho by 1-D weighted MLE on observed
+    scorelines, holding each match's lambda pair fixed at lam_provider(row).
+
+    rho is the only free parameter: we maximize the time-decay-weighted
+    log-likelihood of the real (home_score, away_score) pairs under the
+    tau-corrected independent-Poisson grid. For international football the MLE
+    lands on rho<0 (the draw-inflating direction; see _dc_tau). The search
+    spans both signs so the data picks the direction; if the unconstrained
+    optimum is ~0 the correction is effectively off.
+    """
+    from scipy.optimize import minimize_scalar
+
+    mask = hist["date"] >= pd.Timestamp(train_start)
+    if train_end is not None:
+        mask &= hist["date"] < pd.Timestamp(train_end)
+    sub = hist.loc[mask]
+    if len(sub) < min_matches:
+        raise ValueError(f"Only {len(sub)} matches in tau training window.")
+
+    age = (sub["date"].max() - sub["date"]).dt.days.to_numpy(dtype=np.float64)
+    weights = np.float_power(0.5, age / half_life_days)
+
+    lam_h = np.empty(len(sub))
+    lam_a = np.empty(len(sub))
+    yh = sub["home_score"].to_numpy(dtype=np.int64)
+    ya = sub["away_score"].to_numpy(dtype=np.int64)
+    for i, row in enumerate(sub.itertuples(index=False)):
+        lam_h[i], lam_a[i] = lam_provider(row)
+
+    # Only the four lowest-score cells carry rho; the Poisson factor is
+    # constant in rho so the objective reduces to the tau log-likelihood.
+    low = (yh <= 1) & (ya <= 1)
+
+    def neg_ll(rho: float) -> float:
+        t = np.ones(len(sub))
+        h0a0 = low & (yh == 0) & (ya == 0)
+        h0a1 = low & (yh == 0) & (ya == 1)
+        h1a0 = low & (yh == 1) & (ya == 0)
+        h1a1 = low & (yh == 1) & (ya == 1)
+        t[h0a0] = 1.0 - lam_h[h0a0] * lam_a[h0a0] * rho
+        t[h0a1] = 1.0 + lam_h[h0a1] * rho
+        t[h1a0] = 1.0 + lam_a[h1a0] * rho
+        t[h1a1] = 1.0 - rho
+        t = np.maximum(t, 1e-9)
+        return float(-(weights * np.log(t)).sum())
+
+    # Feasibility: every tau cell must stay non-negative.
+    #   rho>0 binds on (1 - lam_h*lam_a*rho) >= 0
+    #   rho<0 binds on (1 + lam_h*rho) >= 0 and (1 + lam_a*rho) >= 0
+    # Cap the search just inside the feasible region on both sides.
+    lam_prod_max = float(np.maximum(lam_h * lam_a, 1e-6).max())
+    lam_max = float(np.maximum(np.maximum(lam_h, lam_a), 1e-6).max())
+    rho_hi = min(0.30, 0.99 / lam_prod_max)
+    rho_lo = max(-0.30, -0.99 / lam_max)
+    res = minimize_scalar(neg_ll, bounds=(rho_lo, rho_hi), method="bounded")
+    return float(res.x)
+
+
 def blend_lambdas(
     lam_glm: float, lam_dc: float | None, weight_glm: float
 ) -> float:
@@ -473,24 +541,68 @@ def blend_lambdas(
     )
 
 
-def score_matrix(lam_home: float, lam_away: float, max_goals: int = MAX_GOALS) -> np.ndarray:
-    """Independent-Poisson scoreline grid P[h, a].
+def _dc_tau(lam_home: float, lam_away: float, rho: float) -> np.ndarray:
+    """Dixon-Coles low-score correction matrix tau for the (0/1)x(0/1) corner.
 
-    Mirrors scripts.betting.extended_markets.score_matrix but returns a
-    normalized numpy grid for vectorized model evaluation; the dict version
-    there feeds the market layer and supports bivariate rho.
+    The 1992 Dixon-Coles formula (standard sign convention):
+
+        tau(0,0) = 1 - lam_h*lam_a*rho
+        tau(0,1) = 1 + lam_h*rho
+        tau(1,0) = 1 + lam_a*rho
+        tau(1,1) = 1 - rho
+
+    Sign of rho controls direction: rho<0 lifts the 0-0/1-1 diagonal (MORE
+    draws) and depresses 1-0/0-1; rho>0 does the reverse. International
+    football needs rho<0 because independent Poisson UNDER-predicts draws here
+    (empirical ~37% on low-scoring games vs an independent ceiling near 30%).
+    rho=0 is the identity. Only the four lowest-scoring cells are touched.
+    """
+    tau = np.ones((2, 2))
+    tau[0, 0] = 1.0 - lam_home * lam_away * rho
+    tau[0, 1] = 1.0 + lam_home * rho
+    tau[1, 0] = 1.0 + lam_away * rho
+    tau[1, 1] = 1.0 - rho
+    return tau
+
+
+def score_matrix(
+    lam_home: float, lam_away: float, max_goals: int = MAX_GOALS, rho: float = 0.0
+) -> np.ndarray:
+    """Independent-Poisson scoreline grid P[h, a], with optional Dixon-Coles
+    low-score correction.
+
+    rho=0.0 (default) is pure independent Poisson — every existing caller and
+    the score-grid tests keep their exact behaviour. rho!=0 applies the
+    Dixon-Coles tau correction to the four lowest-scoring cells (see _dc_tau).
+    For international football the fitted rho is NEGATIVE, which re-weights mass
+    onto the 0-0/1-1 diagonal so the engine can express the draw rate that
+    independent Poisson structurally caps near ~30%. The grid is re-normalized
+    after the correction, so it still sums to 1.
+
+    Mirrors scripts.betting.extended_markets.score_matrix (which uses a
+    bivariate-Poisson rho for the market layer); this one uses the Dixon-Coles
+    diagonal tau because the goal here is specifically draw inflation.
     """
     goals = np.arange(max_goals + 1)
     log_fact = np.cumsum(np.log(np.maximum(goals, 1)))
     ph = np.exp(goals * math.log(lam_home) - lam_home - log_fact)
     pa = np.exp(goals * math.log(lam_away) - lam_away - log_fact)
     grid = np.outer(ph, pa)
+    if rho != 0.0:
+        # Clamp tau cells to stay non-negative for large lambda * rho products.
+        tau = np.maximum(_dc_tau(lam_home, lam_away, rho), 0.0)
+        grid[:2, :2] *= tau
     return grid / grid.sum()
 
 
-def one_x_two(lam_home: float, lam_away: float) -> tuple[float, float, float]:
-    """(P_home, P_draw, P_away) from the independent-Poisson grid."""
-    grid = score_matrix(lam_home, lam_away)
+def one_x_two(
+    lam_home: float, lam_away: float, rho: float = 0.0
+) -> tuple[float, float, float]:
+    """(P_home, P_draw, P_away) from the scoreline grid.
+
+    rho=0.0 (default) is independent Poisson; rho>0 applies the Dixon-Coles
+    low-score draw correction (see score_matrix)."""
+    grid = score_matrix(lam_home, lam_away, rho=rho)
     p_home = float(np.tril(grid, -1).sum())
     p_draw = float(np.trace(grid))
     p_away = float(np.triu(grid, 1).sum())

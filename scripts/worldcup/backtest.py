@@ -38,6 +38,7 @@ from scripts.worldcup.engine import (
     blend_lambdas,
     elo_history,
     fit_dc_model,
+    fit_dc_tau,
     fit_goal_model,
     load_results,
     one_x_two,
@@ -85,8 +86,15 @@ def ece_score(probs: np.ndarray, outcomes: np.ndarray, n_bins: int = 10) -> floa
 
 def _make_predictors(
     hist: pd.DataFrame, start: str
-) -> dict[str, PredictFn]:
-    """All variant lambda-providers, each fit strictly pre-tournament."""
+) -> tuple[dict[str, PredictFn], dict[str, float]]:
+    """All variant lambda-providers, each fit strictly pre-tournament.
+
+    Returns (predictors, rho_map). rho_map[name] is the Dixon-Coles low-score
+    draw correction applied to that variant's score grid (0.0 = independent
+    Poisson). Every base variant is independent (rho=0); the ens_w*_tau variants
+    reuse the same lambdas as their base ensemble but carry a walk-forward
+    fitted rho.
+    """
     glm: GoalModel = fit_goal_model(hist, train_start=TRAIN_START, train_end=start)
     dcs: dict[float, DCModel] = {
         reg: fit_dc_model(hist, train_start=TRAIN_START, train_end=start, reg=reg)
@@ -124,7 +132,21 @@ def _make_predictors(
                 dh, da = dc_fn(r, _reg)
                 return blend_lambdas(gh, dh, _w), blend_lambdas(ga, da, _w)
             predictors[f"ens_w{w:g}_reg{reg:g}"] = ens
-    return predictors
+
+    rho_map: dict[str, float] = {name: 0.0 for name in predictors}
+
+    # Dixon-Coles draw-correction variants: same lambdas as the ensemble, but
+    # the score grid gets a walk-forward fitted rho. Only build them for the
+    # production ensemble weight to keep the grid small; rho is fit on the same
+    # strictly-pre-tournament window the lambdas use.
+    for reg in DC_REG_GRID:
+        base = predictors[f"ens_w{PRODUCTION_WEIGHT_GLM:g}_reg{reg:g}"]
+        rho = fit_dc_tau(hist, base, train_start=TRAIN_START, train_end=start)
+        name = f"ens_w{PRODUCTION_WEIGHT_GLM:g}_reg{reg:g}_tau"
+        predictors[name] = base
+        rho_map[name] = rho
+
+    return predictors, rho_map
 
 
 def _evaluate(
@@ -135,6 +157,7 @@ def _evaluate(
     end: str,
     predict_fn: PredictFn,
     train: pd.DataFrame,
+    rho: float = 0.0,
 ) -> dict[str, Any] | None:
     window = hist[
         (hist["tournament"] == tournament)
@@ -169,8 +192,8 @@ def _evaluate(
 
     for i, row in enumerate(window.itertuples(index=False)):
         lam_h, lam_a = predict_fn(row)
-        probs[i] = one_x_two(lam_h, lam_a)
-        grid = score_matrix(lam_h, lam_a)
+        probs[i] = one_x_two(lam_h, lam_a, rho=rho)
+        grid = score_matrix(lam_h, lam_a, rho=rho)
         totals = np.add.outer(np.arange(grid.shape[0]), np.arange(grid.shape[1]))
         p_over[i] = float(grid[totals > 2.5].sum())
 
@@ -334,7 +357,7 @@ def run_blend_validation(
     ) -> dict[str, float] | None:
         all_p, all_y = [], []
         for _label, tournament, start, end in tournaments:
-            predictors = _make_predictors(hist, start)
+            predictors, _rho_map = _make_predictors(hist, start)
             res = _evaluate_blend(
                 hist, tournament, start, end, predictors[selected_variant],
                 lookup, w, use_tilt=tilt,
@@ -389,11 +412,15 @@ def run_backtest() -> dict[str, Any]:
 
     # --- DEV phase: every variant on WC 2018 + Euro 2020 ---------------------
     dev_results: dict[str, list[dict[str, Any]]] = {}
+    rho_dev: dict[str, float] = {}
     for label, tournament, start, end in DEV_TOURNAMENTS:
         train = hist[hist["date"] < pd.Timestamp(start)]
-        predictors = _make_predictors(hist, start)
+        predictors, rho_map = _make_predictors(hist, start)
+        rho_dev = rho_map  # last tournament's fitted rho, for reporting
         for name, fn in predictors.items():
-            r = _evaluate(hist, label, tournament, start, end, fn, train)
+            r = _evaluate(
+                hist, label, tournament, start, end, fn, train, rho=rho_map[name]
+            )
             if r is not None:
                 dev_results.setdefault(name, []).append(r)
 
@@ -405,11 +432,16 @@ def run_backtest() -> dict[str, Any]:
     # --- FINAL phase: selected variant + glm_base reference on the untouched
     # tournaments ------------------------------------------------------------
     final_rows: dict[str, list[dict[str, Any]]] = {selected: [], "glm_base": []}
+    rho_final: dict[str, float] = {}
     for label, tournament, start, end in FINAL_TOURNAMENTS:
         train = hist[hist["date"] < pd.Timestamp(start)]
-        predictors = _make_predictors(hist, start)
+        predictors, rho_map = _make_predictors(hist, start)
+        rho_final = rho_map
         for name in final_rows:
-            r = _evaluate(hist, label, tournament, start, end, predictors[name], train)
+            r = _evaluate(
+                hist, label, tournament, start, end, predictors[name], train,
+                rho=rho_map[name],
+            )
             if r is not None:
                 final_rows[name].append(r)
 
@@ -427,6 +459,10 @@ def run_backtest() -> dict[str, Any]:
             "variant selected on DEV (WC 2018 + Euro 2020) only"
         ),
         "selected_variant": selected,
+        "selected_rho": round(rho_final.get(selected, rho_dev.get(selected, 0.0)), 4),
+        "dc_tau_rho_fitted": {
+            name: round(r, 4) for name, r in sorted(rho_final.items()) if r != 0.0
+        },
         "dev_summary": dev_summary,
         "overall": overall,
         "reference_glm_base": reference,
