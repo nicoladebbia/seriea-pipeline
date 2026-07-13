@@ -1183,6 +1183,7 @@ def api_worldcup():
             "coverage_note": players.get("coverage_note", ""),
         } if isinstance(players, dict) else {},
         "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
+        "actual_scorers": players.get("actual_scorers", []) if isinstance(players, dict) else [],
         "best_combos": _wc_best_combos(preds, market),
         "fun_combos": _wc_fun_combos(preds),
         "projections": projections,

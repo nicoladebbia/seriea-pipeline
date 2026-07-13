@@ -90,6 +90,12 @@ NAME_ALIASES = {
 
 # (label, csv tournament string, group window) — WC 2018 is the ALPHA
 # selection set; the other four are untouched holdouts.
+# Tournament window for the LIVE actual-goals leaderboard (real goals scored
+# in WC 2026, not projected). The Sofascore parquet is kept fresh by the
+# refresh loop (--refresh-stats appends played matches), so this reads real
+# tournament goals — distinct from the projected golden_boot.
+WC_START = "2026-06-11"
+
 SELECTION = ("World Cup 2018", "FIFA World Cup", "2018-06-14", "2018-06-28")
 HOLDOUTS = [
     ("World Cup 2022", "FIFA World Cup", "2022-11-20", "2022-12-02"),
@@ -171,8 +177,77 @@ def norm_sorted(name: str) -> str:
 
 def load_sofa(path: Path = SOFA_PARQUET) -> pd.DataFrame:
     df = pd.read_parquet(path)
-    df["date"] = pd.to_datetime(df["date"].str[:10])
+    # date may already be datetime (fresh refresh appends) or an ISO string —
+    # coerce both; str-slice only when it's actually a string column.
+    if pd.api.types.is_string_dtype(df["date"]):
+        df["date"] = pd.to_datetime(df["date"].str[:10])
+    else:
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
     return df.sort_values(["team", "date"], kind="stable")
+
+
+def actual_scorers(
+    squads: dict[str, list[dict[str, Any]]],
+    top_n: int = 20,
+    wc_start: str = WC_START,
+) -> list[dict[str, Any]]:
+    """LIVE golden-boot leaderboard: real goals scored in the tournament,
+    summed from the Sofascore per-player-match parquet over the WC window.
+    This is FACT (what happened), distinct from the projected golden_boot
+    (share x E[team goals]). Squad-filtered so display names match the UI;
+    deduped on (match_id, player_id) — a true unique key that keeps two
+    same-name players apart (e.g. Brazil's two Édersons) — because the scrape
+    occasionally carries a player twice for one match."""
+    if not SOFA_PARQUET.exists():
+        return []
+    sofa = load_sofa()
+    wc = sofa[sofa["date"] >= pd.Timestamp(wc_start)].copy()
+    if wc.empty:
+        return []
+    # single-count guard: one goal tally per player per match. player_id is the
+    # unique key (name collides — two Édersons); fall back to name if absent.
+    # keep="last" after sort-by-goals so a later completed-match re-scrape
+    # (goals>0) wins over an earlier in-progress one (goals=0), never undercounts.
+    dedup_key = (
+        ["match_id", "player_id"]
+        if "player_id" in wc.columns
+        else ["match_id", "norm_name_sorted"]
+    )
+    wc = wc.sort_values("goals").drop_duplicates(subset=dedup_key, keep="last")
+    wc = wc[wc["goals"].fillna(0) > 0]
+    if wc.empty:
+        return []
+
+    # Bridge scrape keys -> squad display name/team/position (only squad players
+    # are shown). Key by (canon team, sorted name): two different players can
+    # share a name across squads (two Emiliano Martínez), so a name-only key
+    # would misattribute or drop a real scorer's goals.
+    bridge: dict[tuple[str, str], dict[str, str]] = {}
+    for team, roster in squads.items():
+        ct = canon_team(team)
+        for p in roster:
+            bridge[(ct, norm_sorted(str(p["name"])))] = {
+                "name": str(p["name"]),
+                "team": team,
+                "position": str(p.get("position", "")),
+            }
+
+    tally: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in wc.itertuples(index=False):
+        info = bridge.get((canon_team(str(r.team)), str(r.norm_name_sorted)))
+        if info is None:
+            continue  # not in a 2026 squad (can't be displayed anyway)
+        tkey = (info["team"], info["name"])
+        rec = tally.setdefault(
+            tkey,
+            {**info, "goals": 0, "matches": 0, "minutes": 0.0},
+        )
+        rec["goals"] += int(r.goals)
+        rec["matches"] += 1
+        rec["minutes"] += float(r.minutes or 0)
+
+    rows = sorted(tally.values(), key=lambda r: (-r["goals"], -r["matches"]))
+    return rows[:top_n]
 
 
 def minutes_profile(
@@ -709,23 +784,35 @@ def generate(sims_meta_required: bool = True) -> dict[str, Any]:
     for p in team_preds["predictions"]:
         entry: dict[str, Any] = {}
         lineup = lineups.get(str(p["match_number"]))
-        lineup_ok = bool(lineup and lineup.get("confirmed"))
+        # A projection is ONLY the ESPN last-match fallback (source=espn_projected
+        # or a per-side projected=True). A Sofascore XI is REAL data even when its
+        # match-level confirmed flag is still false (Sofascore fills starters ~1h
+        # out, before the official-confirm flip) — labelling that a "guess" would
+        # understate real early-signal data. Discriminate on the source field.
+        entry_projected = (lineup or {}).get("source") == "espn_projected"
         for side, lam_key in (("home", "home_xg"), ("away", "away_xg")):
             team = p[f"{side}_team"]
             lam = float(p[lam_key])
             team_lambdas.setdefault(team, []).append(lam)
             starters: set[str] = set()
             bench: set[str] = set()
-            if lineup_ok and lineup is not None:
-                side_lineup = lineup.get(side, {})
-                starters = {norm_sorted(n) for n in side_lineup.get("starters", [])}
+            # A side's XI is usable when it has named starters — real Sofascore XI
+            # or an ESPN last-match projection. Per-side 'projected' lets one side
+            # be an ESPN guess while the other is real.
+            side_lineup = (lineup or {}).get(side, {})
+            side_starters = side_lineup.get("starters", [])
+            side_projected = bool(side_lineup.get("projected", entry_projected))
+            lineup_usable = bool(side_starters)
+            if lineup_usable:
+                starters = {norm_sorted(n) for n in side_starters}
                 bench = {norm_sorted(n) for n in side_lineup.get("bench", [])}
             rows = []
             for c in shares_by_team.get(team, [])[: DISPLAY_TOP_N * 3]:
                 share = c["share"]
                 confirmed_xi: bool | None = None
-                if lineup_ok:
-                    # Confirmed lineup is FACT — it overrides presence damping.
+                if lineup_usable:
+                    # Named XI overrides presence damping. Confirmed = fact;
+                    # projected = ESPN last-match XI (surfaced via lineup_source).
                     key = norm_sorted(str(c["name"]))
                     factor = (
                         LINEUP_STARTER if key in starters
@@ -745,6 +832,12 @@ def generate(sims_meta_required: bool = True) -> dict[str, Any]:
                         "recent": c.get("recent"),
                         "value_eur": c.get("value_eur"),
                         "confirmed_xi": confirmed_xi,
+                        # confirmed | projected | null — lets the UI label a guess
+                        "lineup_source": (
+                            None if not lineup_usable
+                            else "projected" if side_projected
+                            else "confirmed"
+                        ),
                     }
                 )
             rows.sort(key=lambda r: -float(r["prob"]))
@@ -823,6 +916,9 @@ def generate(sims_meta_required: bool = True) -> dict[str, Any]:
         "scrape_gates": scrape_gates,
         "per_match": per_match,
         "golden_boot": boot,
+        # LIVE leaderboard: real goals scored so far (fact), separate from the
+        # projected golden_boot above (share x E[team goals]).
+        "actual_scorers": actual_scorers(squads),
     }
     PLAYER_PREDICTIONS_JSON.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False)

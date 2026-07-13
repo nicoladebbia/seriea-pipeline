@@ -508,8 +508,12 @@ _ESPN_NAME_FIX = {
     "ivory coast": "Côte d'Ivoire",
     "cape verde": "Cabo Verde",
     "south korea": "Korea Republic",
-    "usa": "United States",
-    "united states": "United States",
+    # fixtures.json canonical is "USA" (not "United States") — map ESPN's
+    # display form onto the actual fixture name or the join silently drops it.
+    "usa": "USA",
+    "united states": "USA",
+    "bosnia-herzegovina": "Bosnia and Herzegovina",
+    "bosnia and herzegovina": "Bosnia and Herzegovina",
 }
 
 
@@ -602,6 +606,193 @@ def _espn_results(fixtures: list, wc_start: str) -> list[dict[str, Any]]:
                 "source": "espn",
             })
         d += timedelta(days=1)
+    return out
+
+
+def _espn_summary(event_id: str | int) -> dict[str, Any] | None:
+    """One ESPN event summary (key-free, ban-proof). None on any failure."""
+    import urllib.request
+
+    url = (
+        "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/"
+        f"summary?event={event_id}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=18) as resp:
+            return json.loads(resp.read())  # type: ignore[no-any-return]
+    except Exception as exc:  # noqa: BLE001 — a bad summary must not kill the run
+        print(f"espn summary {event_id} failed ({type(exc).__name__})")
+        return None
+
+
+def _espn_roster_xi(summary: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Extract {espn_display_name -> {starters:[...], bench:[...]}} from an
+    ESPN summary's rosters block. Empty roster (scheduled, XI not yet released)
+    yields an empty starters list, which the caller treats as 'no XI yet'."""
+    out: dict[str, dict[str, list[str]]] = {}
+    for t in summary.get("rosters") or []:
+        team_name = str(t.get("team", {}).get("displayName", ""))
+        starters, bench = [], []
+        for p in t.get("roster", []):
+            nm = str(p.get("athlete", {}).get("displayName", "")).strip()
+            if not nm:
+                continue
+            (starters if p.get("starter") else bench).append(nm)
+        out[team_name] = {"starters": starters, "bench": bench}
+    return out
+
+
+def _espn_last_xi(team_ref: dict[str, Any]) -> dict[str, list[str]] | None:
+    """A team's most-recent completed-match XI from ESPN — the PROJECTED
+    lineup used before the confirmed XI is released. team_ref is an ESPN
+    competitor's 'team' object (carries an id we resolve a schedule from)."""
+    import urllib.request
+
+    tid = team_ref.get("id")
+    if not tid:
+        return None
+    url = (
+        "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/"
+        f"teams/{tid}/schedule"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            sched = json.loads(resp.read())
+    except Exception:  # noqa: BLE001
+        return None
+    played = [
+        ev for ev in sched.get("events", [])
+        if (ev.get("competitions") or [{}])[0].get("status", {})
+        .get("type", {}).get("completed")
+    ]
+    if not played:
+        return None
+    # sort by date explicitly rather than trusting ESPN's event order
+    last = sorted(played, key=lambda ev: str(ev.get("date", "")))[-1]
+    summary = _espn_summary(last.get("id"))
+    if not summary:
+        return None
+    rosters = _espn_roster_xi(summary)
+    want = str(team_ref.get("displayName", ""))
+    entry = rosters.get(want)
+    if entry and entry["starters"]:
+        return entry
+    # displayName may differ across endpoints — take whichever roster is this team
+    for name, e in rosters.items():
+        if normalize_simple(name) == normalize_simple(want) and e["starters"]:
+            return e
+    return None
+
+
+def _espn_lineups(fixtures: list, horizon_hours: float) -> dict[str, dict[str, Any]]:
+    """ESPN confirmed/projected XIs for fixtures kicking off within the horizon
+    — the ban-proof lineup fallback (Sofascore API is the only confirmed-XI
+    source and it's IP-banned; ESPN's key-free JSON is not).
+
+    Returns {match_number(str) -> entry}. Each entry is _lineup_entry-shaped
+    (starters/bench per side) plus:
+      confirmed=True,  source='espn'            when ESPN has released the XI
+      confirmed=False, source='espn_projected'  team's last-match XI (a guess)
+    ESPN populates a scheduled event's roster only when the official XI drops
+    (~1h pre-kickoff, verified 2026-07-13); before that we fall back per team
+    to the last completed match's XI so the UI shows a labelled projection."""
+    from datetime import datetime as _dt
+
+    def _canon(espn_name: str) -> str | None:
+        fixed = _ESPN_NAME_FIX.get(espn_name.strip().lower())
+        if fixed:
+            return fixed
+        for f in fixtures:
+            for side in ("home", "away"):
+                nm = f.get(side)
+                if nm and normalize_simple(nm) == normalize_simple(espn_name):
+                    return str(nm)
+        return None
+
+    mn_by_pair: dict[frozenset, int] = {}
+    for f in fixtures:
+        h, a = f.get("home"), f.get("away")
+        if h and a and f.get("match_number"):
+            mn_by_pair[frozenset((normalize_simple(h), normalize_simple(a)))] = int(
+                f["match_number"]
+            )
+
+    now = datetime.now(UTC)
+    # dates to scan: any fixture whose kickoff is within [-3h, +horizon]
+    scan_dates: set[str] = set()
+    for f in fixtures:
+        ku = str(f.get("date_utc", ""))
+        if not ku[:4].isdigit():
+            continue
+        try:
+            kt = _dt.fromisoformat(ku.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if -3 * 3600 <= (kt - now).total_seconds() <= horizon_hours * 3600:
+            scan_dates.add(kt.strftime("%Y%m%d"))
+
+    out: dict[str, dict[str, Any]] = {}
+    import urllib.request
+    for d in sorted(scan_dates):
+        url = (
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/"
+            f"scoreboard?dates={d}"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                board = json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001
+            print(f"espn lineups: {d} scoreboard failed ({type(exc).__name__})")
+            continue
+        for e in board.get("events", []):
+            comp = (e.get("competitions") or [{}])[0]
+            cs = comp.get("competitors", [])
+            hs = next((x for x in cs if x.get("homeAway") == "home"), None)
+            aw = next((x for x in cs if x.get("homeAway") == "away"), None)
+            if not hs or not aw:
+                continue
+            home = _canon(hs.get("team", {}).get("displayName", ""))
+            away = _canon(aw.get("team", {}).get("displayName", ""))
+            if not home or not away:
+                print(f"espn lineups: unmapped "
+                      f"{hs.get('team',{}).get('displayName')} / "
+                      f"{aw.get('team',{}).get('displayName')} — skipped")
+                continue
+            mn = mn_by_pair.get(
+                frozenset((normalize_simple(home), normalize_simple(away)))
+            )
+            if mn is None:
+                continue
+            summary = _espn_summary(e.get("id"))
+            if not summary:
+                continue
+            rosters = _espn_roster_xi(summary)
+            entry: dict[str, Any] = {
+                "event_id": -(int(mn)),  # negative: never collides with Sofascore ids
+                "fetched_at": datetime.now(UTC).isoformat(),
+            }
+            confirmed_sides = 0
+            for side, comp_obj in (("home", hs), ("away", aw)):
+                espn_name = comp_obj.get("team", {}).get("displayName", "")
+                xi = rosters.get(espn_name)
+                if xi and xi["starters"]:
+                    entry[side] = {"starters": xi["starters"], "bench": xi["bench"],
+                                   "missing": [], "projected": False}
+                    confirmed_sides += 1
+                else:
+                    proj = _espn_last_xi(comp_obj.get("team", {}))
+                    entry[side] = {
+                        "starters": proj["starters"] if proj else [],
+                        "bench": proj["bench"] if proj else [],
+                        "missing": [],
+                        "projected": True,
+                    }
+            entry["confirmed"] = confirmed_sides == 2
+            entry["source"] = "espn" if entry["confirmed"] else "espn_projected"
+            out[str(mn)] = entry
     return out
 
 
@@ -785,11 +976,12 @@ def fetch_confirmed_lineups(horizon_hours: float = 48.0) -> dict[str, Any]:
     Sofascore publishes lineups ~1h pre-kickoff (confirmed=true); run this on
     match days and regenerate the player predictions afterwards.
 
-    API-only by necessity: match pages are client-rendered shells whose
-    __NEXT_DATA__ carries no lineups payload (measured 2026-06-11 on a live
-    match — see WC_TOURNAMENT_PAGE comment), so there is NO page-tier
-    fallback. During API bans the availability layer degrades to its
-    caps-fallback XIs, by design."""
+    Two-source: Sofascore API first (confirmed XIs, but IP-bannable). When it
+    yields no confirmed XI for an in-horizon fixture, fall back to ESPN's
+    key-free JSON (ban-proof) — confirmed once ESPN releases the official XI,
+    else the team's last-match XI as a labelled PROJECTION (projected=true,
+    source=espn_projected). This replaces the old 'no fallback' behaviour where
+    a Sofascore ban left every knockout fixture on caps-based XIs."""
     fixtures = json.loads(FIXTURES_JSON.read_text())
     team_ids = team_ids_from_scrape()
     session = _session()
@@ -829,9 +1021,28 @@ def fetch_confirmed_lineups(horizon_hours: float = 48.0) -> dict[str, Any]:
         if entry["confirmed"]:
             confirmed_count += 1
 
+    # ESPN fallback — ban-proof. Fills any in-horizon fixture Sofascore didn't
+    # confirm (banned, or XI not yet up). ESPN-confirmed replaces a stale entry;
+    # ESPN-projected only fills where we have no confirmed XI, and never
+    # downgrades an existing confirmed one.
+    espn_confirmed = espn_projected = 0
+    for mn, entry in _espn_lineups(fixtures, horizon_hours).items():
+        prior = out.get(mn)
+        prior_confirmed = bool(prior and prior.get("confirmed"))
+        if entry["confirmed"]:
+            out[mn] = entry
+            confirmed_count += 1
+            espn_confirmed += 1
+        elif not prior_confirmed and any(
+            entry.get(s, {}).get("starters") for s in ("home", "away")
+        ):
+            out[mn] = entry  # labelled projection; won't override a confirmed XI
+            espn_projected += 1
+
     atomic_write_json(CONFIRMED_LINEUPS_JSON, out)
     print(
         f"lineups: {len(out)} fixtures tracked, {confirmed_count} confirmed "
+        f"(espn +{espn_confirmed} confirmed, +{espn_projected} projected) "
         f"-> {CONFIRMED_LINEUPS_JSON}"
     )
     return out
