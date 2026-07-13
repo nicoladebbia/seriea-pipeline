@@ -584,6 +584,36 @@ class TestGrading:
         assert r2 is not None and (r2[0], r2[1]) == (2, 0)
         assert _find_result(df, "Mexico", "South Africa", "2026-06-20") is None
 
+    def test_find_result_swapped_orientation_flips_score(self) -> None:
+        # A pre-kickoff snapshot may store the teams in the opposite home/away
+        # order from the neutral-venue results CSV. The lookup must still join
+        # AND return the score flipped into the *queried* frame, so a caller's
+        # ``outcome = "home" if hs>as_`` is correct in the snapshot's own frame
+        # (Mexico beat Czechia 3-0; a Mexico pick must grade HIT, not a Czechia
+        # loss graded backwards). This is the bug that dropped Mexico-Czechia,
+        # Switzerland-Canada and Türkiye-USA from the track record.
+        from scripts.worldcup.grading import _find_result
+
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-25"]),
+                "home_team": ["Mexico"],  # CSV orientation
+                "away_team": ["Czech Republic"],
+                "home_score": [3],
+                "away_score": [0],
+                "tournament": ["FIFA World Cup"],
+                "city": ["x"],
+                "country": ["x"],
+                "neutral": [True],
+            }
+        )
+        # Queried in the SNAPSHOT orientation (home=Czechia, away=Mexico).
+        r = _find_result(df, "Czechia", "Mexico", "2026-06-25")
+        assert r is not None
+        hs, as_, _ = r
+        assert (hs, as_) == (0, 3)  # flipped into the queried (snapshot) frame
+        assert ("home" if hs > as_ else "draw" if hs == as_ else "away") == "away"
+
     def test_brier_math(self) -> None:
         from scripts.worldcup.grading import _brier
 

@@ -129,18 +129,31 @@ def _base_rates(df: pd.DataFrame) -> tuple[float, float, float]:
 def _find_result(
     df: pd.DataFrame, home: str, away: str, date: str
 ) -> tuple[int, int, pd.Timestamp] | None:
-    """FT score + result date, by canon names + date (±1 day for tz skew)."""
+    """FT score + result date, by canon names + date (±1 day for tz skew).
+
+    Orientation-agnostic: the results CSV stores each neutral-venue match in one
+    fixed home/away order, but a pre-kickoff snapshot may have been archived with
+    the teams swapped (the fixture feed and the CSV don't always agree on which
+    side is "home" at a neutral venue). We try the queried orientation first; if
+    it misses, we try the swap and **flip the score back into the queried frame**
+    so the returned ``(home_score, away_score)`` always means "queried-home's
+    goals, queried-away's goals". Every caller's ``outcome = "home" if hs>as_``
+    is then correct in the snapshot's own frame — no backwards grading.
+    """
     target = pd.Timestamp(date)
-    window = df[
-        (df["home_team"] == canon_team(home))
-        & (df["away_team"] == canon_team(away))
-        & (df["date"] >= target - pd.Timedelta(days=1))
-        & (df["date"] <= target + pd.Timedelta(days=1))
-    ]
-    if window.empty:
-        return None
-    row = window.iloc[0]
-    return int(row["home_score"]), int(row["away_score"]), row["date"]
+    lo, hi = target - pd.Timedelta(days=1), target + pd.Timedelta(days=1)
+    chome, caway = canon_team(home), canon_team(away)
+    in_window = (df["date"] >= lo) & (df["date"] <= hi)
+    ordered = df[in_window & (df["home_team"] == chome) & (df["away_team"] == caway)]
+    if not ordered.empty:
+        row = ordered.iloc[0]
+        return int(row["home_score"]), int(row["away_score"]), row["date"]
+    swapped = df[in_window & (df["home_team"] == caway) & (df["away_team"] == chome)]
+    if not swapped.empty:
+        row = swapped.iloc[0]
+        # flip: CSV home==queried-away, so queried-home's goals are away_score
+        return int(row["away_score"]), int(row["home_score"]), row["date"]
+    return None
 
 
 def _ninety_minute_score(
