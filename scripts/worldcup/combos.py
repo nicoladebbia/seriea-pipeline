@@ -363,38 +363,31 @@ def _leg_hit(market_name: str, pick: str, outcome: str) -> bool:
 
 
 def _result_resolver() -> Callable[[str, str, str, str], str | None]:
-    """90'-honest outcome lookup, reusing grading.py's reconstruction."""
-    import pandas as pd
+    """Who-wins outcome lookup, shared with the track record.
 
-    from scripts.worldcup.engine import canon_team, load_results_with_live
+    Combo legs are 1X2 / double-chance (who-wins only), so knockouts resolve on
+    who ADVANCED (:func:`grading.resolve_knockout`) — same semantics as the
+    record — not the 90' score. A penalty tie with no known winner returns None
+    (leg stays ungraded rather than settled a draw).
+    """
+    from scripts.worldcup.engine import load_results_with_live
     from scripts.worldcup.grading import (
-        GOALSCORERS_CSV,
-        SHOOTOUTS_CSV,
         _find_result,
-        _ninety_minute_score,
+        _load_advance_winners,
+        resolve_knockout,
     )
 
     df = load_results_with_live()  # CSV + live Sofascore overlay (same-night settling)
-    scorers = (
-        pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
-    )
-    shootouts = (
-        pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
-    )
+    advance_winners = _load_advance_winners()
 
     def resolve(home: str, away: str, date: str, stage: str) -> str | None:
         res = _find_result(df, home, away, date)
         if res is None:
             return None
-        hs, as_, result_date = res
+        hs, as_, _result_date = res
         if stage != "group":
-            r90 = _ninety_minute_score(
-                scorers, shootouts, canon_team(home), canon_team(away),
-                result_date, (hs, as_),
-            )
-            if r90 is None:
-                return None  # scorer coverage incomplete — refuse to grade wrong
-            hs, as_ = r90
+            resolved = resolve_knockout(home, away, hs, as_, advance_winners)
+            return resolved[0] if resolved else None
         return "home" if hs > as_ else "draw" if hs == as_ else "away"
 
     return resolve
