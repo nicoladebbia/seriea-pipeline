@@ -28,6 +28,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pandas as pd
+
 from scripts.worldcup.engine import (
     DATA_DIR,
     atomic_write_json,
@@ -263,8 +265,6 @@ def _real_result_lookup() -> ResultFn:
 
 
 def _real_shootout_lookup() -> Callable[[str, str, str], str | None]:
-    import pandas as pd
-
     df = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else None
 
     def shootout_winner(home: str, away: str, date: str) -> str | None:
@@ -286,18 +286,58 @@ SOFA_RESULTS_JSON = DATA_DIR / "sofascore_results.json"
 
 def _sofa_results_index(
     path: Any = None,
-) -> dict[tuple[frozenset[str], str], dict[str, Any]]:
-    """(teams-set, date) -> scraped final-score record, orientation kept in
-    the record. Source: sofascore_fetch --results (finished events only)."""
+) -> dict[frozenset[str], list[dict[str, Any]]]:
+    """canon teams-set -> [scraped final-score records], orientation kept in
+    each record. Source: sofascore_fetch --results (finished events only).
+
+    Keyed by the CANONICAL team pair (not the raw Sofascore spelling) and
+    NOT by date, so :func:`_sofa_lookup` can match the fixture's canonical
+    names with a ±1-day tolerance — the same skew allowance
+    ``load_results_with_live`` uses. Without this a pens-decided feeder whose
+    Sofascore spelling ("Turkey", "United States") or UTC date differed from
+    the fixture's canonical name / ``date_utc`` would fail to resolve the next
+    slot in time to archive it before kickoff (the bug that orphaned
+    Paraguay-France, Canada-Morocco and Argentina-Egypt).
+    """
     blob = read_json_safe(path or SOFA_RESULTS_JSON, {})
-    out: dict[tuple[frozenset[str], str], dict[str, Any]] = {}
+    out: dict[frozenset[str], list[dict[str, Any]]] = {}
     for r in blob.get("results", []) if isinstance(blob, dict) else []:
         try:
-            key = (frozenset((str(r["home"]), str(r["away"]))), str(r["date"]))
-            out[key] = r
+            pair = frozenset((canon_team(str(r["home"])), canon_team(str(r["away"]))))
         except (KeyError, TypeError):
             continue  # malformed row — skip, never crash the fill
+        out.setdefault(pair, []).append(r)
     return out
+
+
+def _sofa_lookup(
+    idx: dict[frozenset[str], list[dict[str, Any]]],
+    home: str,
+    away: str,
+    date: str,
+) -> dict[str, Any] | None:
+    """Overlay record for a canonical pair within ±1 day of ``date``.
+
+    ``home``/``away`` are canonical; the index is canon-keyed, so orientation
+    doesn't matter. Ties broken by closeness in date so a same-pair rematch
+    can't be mis-picked. The record's own ``home``/``away`` still name the
+    orientation for the caller to un-flip the score."""
+    rows = idx.get(frozenset((canon_team(home), canon_team(away))))
+    if not rows:
+        return None
+    try:
+        target = pd.Timestamp(date)
+    except (ValueError, TypeError):
+        return rows[0]
+    best, best_gap = None, None
+    for r in rows:
+        try:
+            gap = abs((pd.Timestamp(str(r["date"])) - target).days)
+        except (ValueError, TypeError, KeyError):
+            continue
+        if gap <= 1 and (best_gap is None or gap < best_gap):
+            best, best_gap = r, gap
+    return best
 
 
 def _merged_result_lookup(sofa_path: Any = None) -> ResultFn:
@@ -311,10 +351,12 @@ def _merged_result_lookup(sofa_path: Any = None) -> ResultFn:
         res = csv_fn(home, away, date)
         if res is not None:
             return res
-        rec = idx.get((frozenset((home, away)), date))
+        rec = _sofa_lookup(idx, home, away, date)
         if rec is None:
             return None
-        if str(rec["home"]) == home:
+        # rec orientation is the raw record's; align the score to the queried
+        # (canonical) frame.
+        if canon_team(str(rec["home"])) == canon_team(home):
             return int(rec["home_score"]), int(rec["away_score"])
         return int(rec["away_score"]), int(rec["home_score"])
 
@@ -334,7 +376,7 @@ def _merged_shootout_lookup(
         w = csv_fn(home, away, date)
         if w is not None:
             return w
-        rec = idx.get((frozenset((home, away)), date))
+        rec = _sofa_lookup(idx, home, away, date)
         if rec and rec.get("winner") and rec.get("decided_by") == "PEN":
             return canon_team(str(rec["winner"]))
         return None

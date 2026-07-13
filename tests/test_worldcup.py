@@ -1014,7 +1014,9 @@ class TestResultConditioning:
              "away": "Japan", "home_score": 1, "away_score": 1,
              "winner": "Japan", "decided_by": "PEN", "penalties": [3, 4]},
         ]}))
-        # CSV empty → the scrape bridges, in both orientations, exact date.
+        # CSV empty → the scrape bridges, in both orientations, within ±1 day
+        # (the same UTC-skew tolerance load_results_with_live uses — a late
+        # pens feeder logged a day off must still resolve the next slot).
         monkeypatch.setattr(ko, "_real_result_lookup",
                             lambda: (lambda h, a, d: None))
         monkeypatch.setattr(ko, "_real_shootout_lookup",
@@ -1022,9 +1024,12 @@ class TestResultConditioning:
         rfn = ko._merged_result_lookup(sofa_path=store)
         assert rfn("Mexico", "South Africa", "2026-06-11") == (2, 1)
         assert rfn("South Africa", "Mexico", "2026-06-11") == (1, 2)
-        assert rfn("Mexico", "South Africa", "2026-06-12") is None
+        assert rfn("Mexico", "South Africa", "2026-06-12") == (2, 1)  # +1 day
+        assert rfn("Mexico", "South Africa", "2026-06-10") == (2, 1)  # -1 day
+        assert rfn("Mexico", "South Africa", "2026-06-14") is None  # out of window
         sfn = ko._merged_shootout_lookup(sofa_path=store)
         assert sfn("Spain", "Japan", "2026-07-05") == "Japan"  # PEN winner
+        assert sfn("Spain", "Japan", "2026-07-06") == "Japan"  # +1 day skew
         assert sfn("Mexico", "South Africa", "2026-06-11") is None  # FT: none
         # The canonical CSV always outranks the scrape.
         monkeypatch.setattr(ko, "_real_result_lookup",

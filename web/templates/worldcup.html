@@ -494,7 +494,7 @@ function renderRecord(rec, grades) {
         1X2 picks: <b>${rec.hits}/${rec.n_graded}</b> (${(rec.hit_rate * 100).toFixed(0)}%)${mktTot ? ` · across <b>${mktTot}</b> graded markets: <b>${mktHit}</b> correct (${((mktHit / mktTot) * 100).toFixed(0)}%)` : ''}<br>
         Brier: system <b>${rec.brier_system}</b> vs base ${rec.brier_base}${rec.brier_market != null ? ` · same-subset (n=${rec.n_with_market}): system <b>${rec.brier_system_market_subset}</b> ` + signed(rec.brier_system_market_subset, rec.brier_market) + ` market ${rec.brier_market}` : ''}
       </div>
-      <div style="font-size:9px;color:var(--text-tertiary);">Click any match to expand every market the model called — hit/miss, how far each pick was from landing, the AI's ¼-Kelly stake and what it would have paid. "System" = the deployed 0.4 model / 0.6 market blend, frozen at the last refresh before each kickoff. Knockouts graded on the reconstructed 90-minute result. Lower Brier is better; small samples swing wildly — judge after 20+ matches.</div>
+      <div style="font-size:9px;color:var(--text-tertiary);">Click any match to expand every market the model called — hit/miss, how far each pick was from landing, the AI's ¼-Kelly stake and what it would have paid. "System" = the deployed 0.4 model / 0.6 market blend, frozen at the last refresh before each kickoff. Knockouts are graded on who advanced — the actual result — with penalty-decided ties (shown "1-1 (pens)") credited to the team that went through. Lower Brier is better; small samples swing wildly — judge after 20+ matches.</div>
     </div>`;
   // Clickable rows: each opens an inline per-market drill-down (when graded).
   const rows = (rec.matches || []).slice(-12).reverse().map((m, i) => {
