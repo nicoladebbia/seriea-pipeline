@@ -1153,6 +1153,106 @@ def api_transfers():
     })
 
 
+@app.route("/rosters")
+def rosters_page():
+    return render_template("rosters.html", active_page="rosters")
+
+
+@app.route("/api/rosters")
+def api_rosters():
+    """Current per-club Serie A squads for a season (the actual rosa, not deltas).
+
+    Live from the Transfermarkt squad pages (market_values_*.parquet) — this is
+    the resulting roster, distinct from the transfer-flow view on /transfers.
+    Players are grouped GK→DEF→MID→ATT and sorted by market value within each
+    group. A player is flagged `new` if a confirmed (non-loan-return) 2026-27
+    arrival row exists for them in transfers_*.parquet.
+    """
+    import re
+    import unicodedata
+
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    tm_dir = DATA_DIR / "external" / "transfermarkt"
+    sfx = season.replace("-", "_")
+
+    mv_path = tm_dir / f"market_values_{sfx}.parquet"
+    if not mv_path.exists():
+        return jsonify({"error": f"no squad data for {season}", "clubs": []})
+    try:
+        mv = pd.read_parquet(mv_path)
+    except Exception:  # noqa: BLE001 — corrupt cache degrades to empty, never 500s
+        return jsonify({"error": "squad data unreadable", "clubs": []})
+
+    def _pos_group(p: str) -> str:
+        p = (p or "").lower()
+        if "goalkeeper" in p:
+            return "GK"
+        if "back" in p or "defender" in p:
+            return "DEF"
+        if "midfield" in p:
+            return "MID"
+        if any(k in p for k in ("winger", "forward", "striker", "attack")):
+            return "ATT"
+        return "OTH"
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", str(s or ""))
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return re.sub(r"[^a-z ]", " ", s.lower()).strip()
+
+    # confirmed (non-loan-return) arrivals → the "new" flag
+    new_in: set = set()
+    tf_path = tm_dir / f"transfers_{sfx}.parquet"
+    if tf_path.exists():
+        try:
+            tf = pd.read_parquet(tf_path)
+            for _, r in tf[tf["transfer_type"] == "in"].iterrows():
+                if "end of loan" not in str(r.get("fee_text", "")).lower():
+                    new_in.add((r["team"], _norm(r.get("player_name"))))
+        except Exception:  # noqa: BLE001 — the flag is optional; squad still renders
+            new_in = set()
+
+    order = {"GK": 0, "DEF": 1, "MID": 2, "ATT": 3, "OTH": 4}
+    mv = mv.copy()
+    mv["pg"] = mv["position"].map(_pos_group)
+
+    clubs = []
+    for team, grp in mv.groupby("team"):
+        players = []
+        for _, p in grp.iterrows():
+            val = float(p["market_value_eur"]) if pd.notna(p.get("market_value_eur")) else 0.0
+            players.append({
+                "name": p.get("player_name"),
+                "pos": p.get("position") or "",
+                "pg": p["pg"],
+                "age": None if pd.isna(p.get("age")) else int(p["age"]),
+                "val": val,
+                "nat": p.get("nationality") or "",
+                "new": (team, _norm(p.get("player_name"))) in new_in,
+            })
+        players.sort(key=lambda x: (order.get(x["pg"], 9), -x["val"]))
+        total = float(grp["market_value_eur"].sum())
+        clubs.append({
+            "team": team,
+            "players": players,
+            "squad_size": len(players),
+            "total_value": total,
+            "new_count": sum(1 for pl in players if pl["new"]),
+        })
+    clubs.sort(key=lambda c: -c["total_value"])
+
+    return jsonify({
+        "season": season,
+        "clubs": clubs,
+        "league_total": float(mv["market_value_eur"].sum()),
+        "total_players": int(len(mv)),
+    })
+
+
 @app.route("/api/quota")
 def api_quota():
     """The Odds API quota snapshot: remaining credits, days to reset, undercount warnings.

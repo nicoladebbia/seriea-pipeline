@@ -307,12 +307,26 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
             if pos_span:
                 player_data["position"] = pos_span.get_text(strip=True)
 
-        # Age
+        # Age — on the squad page the age is the parenthesized number in the
+        # date-of-birth cell, e.g. "01/07/2000 (26)". The OLD code grabbed the
+        # first standalone 1-2 digit cell, which is the SHIRT NUMBER
+        # (td.rueckennummer, e.g. "9") — so Scamacca (shirt 9) got age 9. Parse
+        # "(NN)" instead; fall back to a plausible bare age only if no DOB found.
+        player_data["age"] = None
         for td in cells:
-            text = td.get_text(strip=True)
-            if re.match(r"^\d{1,2}$", text):
-                player_data["age"] = int(text)
+            m = re.search(r"\((\d{1,2})\)", td.get_text(strip=True))
+            if m:
+                player_data["age"] = int(m.group(1))
                 break
+        if player_data["age"] is None:
+            for td in cells:
+                # skip the shirt-number cell explicitly
+                if "rueckennummer" in (td.get("class") or []):
+                    continue
+                text = td.get_text(strip=True)
+                if re.match(r"^\d{2}$", text) and 15 <= int(text) <= 45:
+                    player_data["age"] = int(text)
+                    break
 
         # Market value (last cell typically)
         mv_cell = row.select_one("td.rechts.hauptlink")
