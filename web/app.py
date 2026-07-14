@@ -1096,12 +1096,23 @@ def api_transfers():
             def _rows(g):
                 out = []
                 for _, r in g.iterrows():
+                    mv = r.get("market_value_at_transfer")
                     out.append({
                         "player": r.get("player_name"),
                         "age": None if pd.isna(r.get("age")) else int(r["age"]),
                         "fee_text": r.get("fee_text"),
                         "fee_eur": None if pd.isna(r.get("fee_eur")) else float(r["fee_eur"]),
                         "is_loan": bool(r.get("is_loan")) if pd.notna(r.get("is_loan")) else False,
+                        # richer detail (2026-07-14): position/nationality/clubs from
+                        # the TM /plus/1 layout; date + n_sources from the Wikipedia
+                        # cross-source merge (n_sources=2 → confirmed by both feeds).
+                        "position": r.get("position") if pd.notna(r.get("position")) else None,
+                        "nationality": r.get("nationality") if pd.notna(r.get("nationality")) else None,
+                        "from_club": r.get("from_club") if pd.notna(r.get("from_club")) else None,
+                        "to_club": r.get("to_club") if pd.notna(r.get("to_club")) else None,
+                        "market_value_eur": None if pd.isna(mv) else float(mv),
+                        "transfer_date": r.get("transfer_date") if pd.notna(r.get("transfer_date")) else None,
+                        "n_sources": int(r.get("n_sources")) if pd.notna(r.get("n_sources")) else 1,
                     })
                 return out
 

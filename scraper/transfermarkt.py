@@ -335,8 +335,22 @@ def scrape_transfers(
     season: str = "2024-2025",
     league: str = "serie_a",
     only_teams: set[str] | None = None,
+    window: str = "both",
 ) -> pd.DataFrame:
     """Scrape all transfers for a league/season.
+
+    window: which transfer window(s) to fetch, and how to TAG each row.
+        "both"   → fetch summer + winter separately and tag every row with a
+                   ``window`` column ("summer"/"winter"). This is the default and
+                   the form the daily cron uses so the file always carries the
+                   window flag (the leak-free net_squad_delta filter and the live
+                   jan_* features both depend on being able to tell them apart).
+        "summer" → summer window only (w_s=s), rows tagged "summer".
+        "winter" → winter window only (w_s=w), rows tagged "winter".
+    Tagging matters: net_squad_delta must exclude winter (a January signing must
+    not retroactively inflate that season's August matches — training leak), while
+    the jan_* features specifically read winter rows. A single untagged file can
+    serve neither correctly.
 
     Fetches each team's transfer page once and parses both the Arrivals
     and Departures tables separately (they appear as table[0] and table[1]).
@@ -377,23 +391,42 @@ def scrape_transfers(
     all_rows = []
     tm_season = season.split("-")[0]
 
+    # (window label, w_s query value) pairs to fetch. TM's w_s param filters the
+    # transfer window: s=summer, w=winter. "both" fetches each separately so every
+    # row is unambiguously tagged (parsing a merged page's section order is
+    # fragile; two explicit fetches are not).
+    _WS = {"summer": "s", "winter": "w"}
+    if window == "both":
+        windows = [("summer", "s"), ("winter", "w")]
+    elif window in _WS:
+        windows = [(window, _WS[window])]
+    else:
+        raise ValueError(f"window must be 'both'/'summer'/'winter', got {window!r}")
+
     for team_name, (slug, verein_id) in teams_to_scrape.items():
-        url = f"{TM_BASE}/{slug}/transfers/verein/{verein_id}/saison_id/{tm_season}"
-        log.info("Fetching %s transfers: %s", team_name, url)
+        n_in = n_out = 0
+        for win_label, ws in windows:
+            url = (
+                f"{TM_BASE}/{slug}/transfers/verein/{verein_id}/saison_id/{tm_season}"
+                f"/pos//detailpos/0/w_s/{ws}/plus/1"
+            )
+            try:
+                resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                log.warning("Failed to fetch %s %s transfers: %s", team_name, win_label, e)
+                time.sleep(5)
+                continue
 
-        try:
-            resp = requests.get(url, headers=TM_HEADERS, timeout=30)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            log.warning("Failed to fetch %s transfers: %s", team_name, e)
-            time.sleep(5)
-            continue
-
-        arrivals, departures = _parse_transfers_page(resp.text, team_name)
-        all_rows.extend(arrivals)
-        all_rows.extend(departures)
-        log.info("  %s: %d arrivals, %d departures", team_name, len(arrivals), len(departures))
-        time.sleep(4)
+            arrivals, departures = _parse_transfers_page(resp.text, team_name)
+            for r in arrivals + departures:
+                r["window"] = win_label
+            all_rows.extend(arrivals)
+            all_rows.extend(departures)
+            n_in += len(arrivals)
+            n_out += len(departures)
+            time.sleep(4)
+        log.info("  %s: %d arrivals, %d departures", team_name, n_in, n_out)
 
     new_df = pd.DataFrame(all_rows)
 
@@ -560,6 +593,23 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
             else:
                 continue
 
+            # Position — the 2nd row of the inline name table holds the role
+            # subtext ("Centre-Forward"); the 1st row is the name itself.
+            position = None
+            inline = row.select_one("table.inline-table")
+            if inline:
+                inline_rows = inline.select("tr")
+                if len(inline_rows) >= 2:
+                    pos_text = inline_rows[1].get_text(strip=True)
+                    if pos_text:
+                        position = pos_text
+            transfer["position"] = position
+
+            # Nationality — first flag image title is the player's nation (later
+            # flags are the club's country); skip if absent.
+            flag = row.select_one("img.flaggenrahmen")
+            transfer["nationality"] = flag.get("title") if flag else None
+
             # Age
             for td in cells:
                 text = td.get_text(strip=True)
@@ -567,10 +617,24 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
                     transfer["age"] = int(text)
                     break
 
-            # From/To club
-            club_links = row.select("td.zentriert a[href*='/verein/']")
-            if club_links:
-                other_club = club_links[0].get_text(strip=True)
+            # From/To club — on the /plus/1 layout the club link is NOT inside
+            # td.zentriert (the sibling parser's selector finds 0 here). Each real
+            # transfer row carries the other club TWICE: a crest <img> (full name,
+            # e.g. "Manchester United") and a text link (short "Man Utd"), both
+            # pointing at the same /verein/ id. Verified 2026-07-14 on a live page:
+            # the two always resolve to the same club, so grabbing the crest's
+            # full-name title is unambiguous. Prefer the FIRST crest img whose link
+            # is a /verein/ link; fall back to the first verein link's text.
+            other_club = None
+            for a in row.select("a[href*='/verein/']"):
+                img = a.select_one("img[title], img[alt]")
+                if img is not None:
+                    other_club = img.get("title") or img.get("alt")
+                    break
+            if not other_club:
+                link = row.select_one("a[href*='/verein/']")
+                other_club = link.get_text(strip=True) or None if link is not None else None
+            if other_club:
                 if direction == "in":
                     transfer["from_club"] = other_club
                     transfer["to_club"] = team_name
@@ -578,10 +642,22 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
                     transfer["from_club"] = team_name
                     transfer["to_club"] = other_club
 
-            # Fee
-            fee_cell = row.select_one("td.rechts")
-            if fee_cell:
-                fee_text = fee_cell.get_text(strip=True)
+            # Market value AND fee both render as td.rechts. On the /plus/1 layout
+            # the FIRST td.rechts is the player's market value at the move and the
+            # LAST is the transfer fee. The old code took the first (select_one) →
+            # it silently stored MARKET VALUE as the fee whenever both were present
+            # (e.g. Højlund fee €44m was recorded as his €60m value). Take the last
+            # for the fee, keep the first as market_value_at_transfer.
+            rechts = row.select("td.rechts")
+            if rechts:
+                if len(rechts) >= 2:
+                    mv_text = rechts[0].get_text(strip=True)
+                    transfer["market_value_at_transfer"] = _parse_market_value(mv_text)
+                    fee_text = rechts[-1].get_text(strip=True)
+                else:
+                    # single value → it's the fee column; no separate MV shown
+                    transfer["market_value_at_transfer"] = None
+                    fee_text = rechts[0].get_text(strip=True)
                 transfer["fee_text"] = fee_text
                 transfer["fee_eur"] = _parse_market_value(fee_text)
                 transfer["is_loan"] = "loan" in fee_text.lower()

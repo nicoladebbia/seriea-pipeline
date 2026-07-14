@@ -32,10 +32,18 @@
   .tf-col__label { font-size: 10px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
   .tf-col.in .tf-col__label { color: #4ade80; }
   .tf-col.out .tf-col__label { color: #f87171; }
-  .tf-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 12px; }
+  .tf-row { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; padding: 5px 0; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .tf-row__main { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
   .tf-row__name { color: var(--text-primary); }
+  .tf-row__money { text-align: right; white-space: nowrap; }
+  .tf-row__meta { grid-column: 1 / 2; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 1px; }
   .tf-row__fee { font-family: var(--font-mono); font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
   .tf-loan { font-size: 9px; color: var(--accent); border: 1px solid var(--border-subtle); border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+  .tf-pos { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; }
+  .tf-club-tag { font-size: 10px; color: var(--text-secondary); }
+  .tf-date { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .tf-mv { display: block; font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .tf-dual { font-size: 9px; color: #4ade80; margin-left: 4px; letter-spacing: -1px; }
 
   /* Rumors — deliberately visually distinct: dashed, muted, "speculation" */
   .tf-rumors-wrap { margin-top: 28px; }
@@ -77,6 +85,31 @@
     if (r.fee_eur) return "€" + (r.fee_eur / 1e6).toFixed(1) + "m";
     return r.fee_text && r.fee_text !== "-" ? esc(r.fee_text) : "free/—";
   }
+  function mvLabel(r) {
+    return r.market_value_eur ? "MV €" + (r.market_value_eur / 1e6).toFixed(1) + "m" : "";
+  }
+  function fmtDate(iso) {
+    if (!iso) return "";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d)) return esc(iso);
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  }
+  // Rich transfer row: name + position, other club, fee, market value, date, and a
+  // dual-source badge (✓✓ = confirmed by both Transfermarkt AND Wikipedia).
+  function transferRow(r, dir) {
+    const otherClub = dir === "in" ? r.from_club : r.to_club;
+    const pos = r.position ? `<span class="tf-pos">${esc(r.position)}</span>` : "";
+    const club = otherClub ? `<span class="tf-club-tag">${dir === "in" ? "←" : "→"} ${esc(otherClub)}</span>` : "";
+    const mv = mvLabel(r) ? `<span class="tf-mv">${mvLabel(r)}</span>` : "";
+    const date = r.transfer_date ? `<span class="tf-date" title="exact date from Wikipedia">${fmtDate(r.transfer_date)}</span>` : "";
+    const dual = r.n_sources >= 2 ? `<span class="tf-dual" title="confirmed by Transfermarkt and Wikipedia">✓✓</span>` : "";
+    const loan = r.is_loan ? '<span class="tf-loan">loan</span>' : "";
+    return `<div class="tf-row">
+      <div class="tf-row__main"><span class="tf-row__name">${esc(r.player)}${loan}${dual}</span>${pos}</div>
+      <div class="tf-row__meta">${club}${date}</div>
+      <div class="tf-row__money"><span class="tf-row__fee">${feeLabel(r)}</span>${mv}</div>
+    </div>`;
+  }
 
   function renderClubs(clubs) {
     const names = Object.keys(clubs).sort((a, b) => clubs[b].net_squad_delta - clubs[a].net_squad_delta);
@@ -86,8 +119,8 @@
       const d = c.net_squad_delta || 0;
       const cls = d > 0.05 ? "pos" : d < -0.05 ? "neg" : "flat";
       const sign = d > 0 ? "+" : "";
-      const rowsIn = (c.in || []).map(r => `<div class="tf-row"><span class="tf-row__name">${esc(r.player)}${r.is_loan ? '<span class="tf-loan">loan</span>' : ''}</span><span class="tf-row__fee">${feeLabel(r)}</span></div>`).join("") || '<div class="tf-row__fee">—</div>';
-      const rowsOut = (c.out || []).map(r => `<div class="tf-row"><span class="tf-row__name">${esc(r.player)}${r.is_loan ? '<span class="tf-loan">loan</span>' : ''}</span><span class="tf-row__fee">${feeLabel(r)}</span></div>`).join("") || '<div class="tf-row__fee">—</div>';
+      const rowsIn = (c.in || []).map(r => transferRow(r, "in")).join("") || '<div class="tf-row__fee">—</div>';
+      const rowsOut = (c.out || []).map(r => transferRow(r, "out")).join("") || '<div class="tf-row__fee">—</div>';
       return `<div class="tf-club">
         <div class="tf-club__head">
           <span class="tf-club__name">${esc(name)}</span>
