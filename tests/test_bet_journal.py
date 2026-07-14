@@ -313,8 +313,11 @@ class TestReport:
         assert "No bets" in report
 
     def test_report_contains_bankroll(self, populated_journal, monkeypatch):
-        # Create a mock bankroll file
-        bankroll_path = JOURNAL_PATH.parent / "bankroll.json"
+        # Create a mock bankroll file in the ISOLATED tmp journal dir — never
+        # the real data/betting/bankroll.json. populated_journal yields the
+        # tmp journal path; JOURNAL_PATH (imported at module load) still points
+        # at the real file, so writing there corrupts the production ledger.
+        bankroll_path = populated_journal.parent / "bankroll.json"
         bankroll_path.parent.mkdir(parents=True, exist_ok=True)
         with open(bankroll_path, "w") as f:
             json.dump({"initial_balance": 1000.0, "current_balance": 1050.0}, f)
@@ -326,7 +329,7 @@ class TestReport:
         pending = get_pending_bets()
         settle_bet(pending[0]["bet_id"], "won", "2-1", profit=60.0)
 
-        bankroll_path = JOURNAL_PATH.parent / "bankroll.json"
+        bankroll_path = populated_journal.parent / "bankroll.json"
         bankroll_path.parent.mkdir(parents=True, exist_ok=True)
         with open(bankroll_path, "w") as f:
             json.dump({"initial_balance": 1000.0, "current_balance": 1060.0}, f)
