@@ -560,8 +560,8 @@ def _espn_results(fixtures: list, wc_start: str) -> list[dict[str, Any]]:
             f"scoreboard?dates={d.strftime('%Y%m%d')}"
         )
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
+            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
                 payload = json.loads(resp.read())
         except Exception as exc:  # noqa: BLE001 — a bad day must not kill the fallback
             print(f"espn: {d} fetch failed ({type(exc).__name__})")
@@ -618,8 +618,8 @@ def _espn_summary(event_id: str | int) -> dict[str, Any] | None:
         f"summary?event={event_id}"
     )
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=18) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
+        with urllib.request.urlopen(req, timeout=18) as resp:  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
             return json.loads(resp.read())  # type: ignore[no-any-return]
     except Exception as exc:  # noqa: BLE001 — a bad summary must not kill the run
         print(f"espn summary {event_id} failed ({type(exc).__name__})")
@@ -657,8 +657,8 @@ def _espn_last_xi(team_ref: dict[str, Any]) -> dict[str, list[str]] | None:
         f"teams/{tid}/schedule"
     )
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
             sched = json.loads(resp.read())
     except Exception:  # noqa: BLE001
         return None
@@ -741,8 +741,8 @@ def _espn_lineups(fixtures: list, horizon_hours: float) -> dict[str, dict[str, A
             f"scoreboard?dates={d}"
         )
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
+            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — hardcoded https ESPN host, only path/query interpolated
                 board = json.loads(resp.read())
         except Exception as exc:  # noqa: BLE001
             print(f"espn lineups: {d} scoreboard failed ({type(exc).__name__})")

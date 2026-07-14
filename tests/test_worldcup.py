@@ -681,6 +681,30 @@ class TestNinetyMinuteReconstruction:
         assert r is None  # refuse to grade rather than grade wrong
 
 
+def _unresolve_knockouts(fixtures: list) -> list:
+    """Deep-copy fixtures with knockout ``home``/``away`` reset to their
+    original slot labels (``slot_home``/``slot_away``).
+
+    As the live tournament plays, ``knockout.py`` fills real team names into
+    the knockout fixtures' ``home``/``away`` while preserving the slot label in
+    ``slot_home``/``slot_away``. Bracket-logic tests that assert on slot labels
+    or drive their own resolution must start from the *pre-tournament* view, or
+    they break every time a real match is played (this is what left three
+    bracket tests permanently red). Group fixtures already carry real teams and
+    are copied unchanged.
+    """
+    out = []
+    for f in fixtures:
+        g = dict(f)
+        if g.get("stage") != "group":
+            if g.get("slot_home"):
+                g["home"] = g["slot_home"]
+            if g.get("slot_away"):
+                g["away"] = g["slot_away"]
+        out.append(g)
+    return out
+
+
 @pytest.mark.integration
 class TestRealArtifacts:
     """Validations against the real data files (skipped when absent)."""
@@ -728,6 +752,9 @@ class TestRealArtifacts:
 
         if not RESULTS_CSV.exists():
             pytest.skip("international results dataset not present")
+        # Simulate from the pre-tournament bracket so the invariants hold
+        # regardless of how far the live tournament has progressed.
+        fixtures = _unresolve_knockouts(fixtures)
         engine = WorldCupEngine.build()
         sim = TournamentSimulator(
             engine, fixtures, spec, rng=np.random.default_rng(7)
@@ -869,6 +896,7 @@ class TestRealArtifacts:
     ) -> None:
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = self._stub_engine_and_stats(fixtures)
         resolved = [dict(f) for f in fixtures]
         m73 = next(f for f in resolved if int(f["match_number"]) == 73)
@@ -1096,6 +1124,7 @@ class TestResultConditioning:
     ) -> None:
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = TestRealArtifacts._stub_engine_and_stats(fixtures)
         resolved = [dict(f) for f in fixtures]
         m73 = next(f for f in resolved if int(f["match_number"]) == 73)
