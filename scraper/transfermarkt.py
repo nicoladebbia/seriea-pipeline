@@ -160,6 +160,41 @@ def _get_league_teams(league: str) -> dict[str, tuple[str, int]]:
     return teams
 
 
+_COMPETITION_IDS: dict[str, str] = {"serie_a": "IT1", "premier_league": "GB1"}
+
+
+def current_league_teams(season: str, league: str = "serie_a") -> set[str] | None:
+    """Team names actually in a league for a season, from TM's competition page.
+
+    The static team maps are historical supersets; this resolves the ACTUAL
+    member clubs for ``season`` by matching TM verein IDs on the competition
+    page against the map. Returns None on any failure so callers fall back to
+    the full map rather than silently scraping nothing.
+    """
+    comp = _COMPETITION_IDS.get(league)
+    if comp is None:
+        return None
+    tm_season = season.split("-")[0]
+    url = f"{TM_BASE}/x/startseite/wettbewerb/{comp}/saison_id/{tm_season}"
+    try:
+        resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("Could not fetch %s %s competition page (%s) — using full map",
+                    league, season, e)
+        return None
+    ids_on_page = {
+        int(cid)
+        for cid in re.findall(rf"/startseite/verein/(\d+)/saison_id/{tm_season}", resp.text)
+    }
+    if not ids_on_page:
+        log.warning("No club IDs parsed from %s competition page — using full map", league)
+        return None
+    names = {name for name, (_slug, cid) in _get_league_teams(league).items()
+             if cid in ids_on_page}
+    return names or None
+
+
 def _league_cache_prefix(league: str) -> str:
     """Return file prefix for league-specific cache files.
 
@@ -294,6 +329,7 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
 def scrape_transfers(
     season: str = "2024-2025",
     league: str = "serie_a",
+    only_teams: set[str] | None = None,
 ) -> pd.DataFrame:
     """Scrape all transfers for a league/season.
 
@@ -303,12 +339,19 @@ def scrape_transfers(
     Args:
         season: Season string, e.g. "2024-2025"
         league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
+        only_teams: optional set of team names to restrict the scrape to. The
+            Serie A map is a historical superset (relegated clubs kept for
+            backfilling old seasons); pass the current season's clubs so a
+            daily run doesn't waste ~12 requests on clubs no longer in the
+            league (see current_league_teams()).
 
     Returns DataFrame with columns:
         team, player_name, age, transfer_type (in/out),
         from_club, to_club, fee_eur, fee_text, is_loan
     """
     league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
     prefix = _league_cache_prefix(league)
     cache_path = TM_DIR / f"{prefix}transfers_{season.replace('-', '_')}.parquet"
     cached_df = None
