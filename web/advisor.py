@@ -887,10 +887,63 @@ def _tool_get_player_stats(args: dict) -> str:
     except Exception as e:  # noqa: BLE001 — market/salary is enrichment; never blocks the stats answer
         log.warning("Market/salary lookup failed: %s", e)
 
+    # 5. Understat multi-season history + xG over/under-performance. This is the
+    #    single most insightful GROUNDED analytical signal for a forward: goals
+    #    vs expected goals tells you if they're clinical or wasteful, and the
+    #    per-season rows give real "last season vs the season before" context.
+    #    Understat covers ONLY Serie A + Premier League — a Ligue 1 / Bundesliga
+    #    stint (e.g. David at Lille) simply won't appear, and that's fine: we
+    #    return what we have and never invent the gap.
+    try:
+        import pandas as pd
+        us_path = DATA_DIR / "parsed" / "understat_players.parquet"
+        if us_path.exists():
+            us = pd.read_parquet(us_path)
+            umask = _player_name_match(us["player"], player_q)
+            uhit = us[umask]
+            if not uhit.empty:
+                # canonical name = most common exact match; keep only that player
+                uname = uhit["player"].mode().iloc[0]
+                uhit = uhit[uhit["player"] == uname].sort_values("season")
+                seasons = []
+                for _, r in uhit.iterrows():
+                    g = float(r.get("goals", 0) or 0)
+                    xg = float(r.get("xg", 0) or 0)
+                    a = float(r.get("assists", 0) or 0)
+                    xa = float(r.get("xa", 0) or 0)
+                    seasons.append({
+                        "season": r.get("season"),
+                        "league": r.get("league"),
+                        "team": r.get("team"),
+                        "matches": int(r.get("matches", 0) or 0),
+                        "minutes": int(r.get("minutes", 0) or 0),
+                        "goals": int(g),
+                        "xg": round(xg, 1),
+                        # + = clinical (scored more than chances warranted), − = wasteful
+                        "goals_minus_xg": round(g - xg, 1),
+                        "assists": int(a),
+                        "xa": round(xa, 1),
+                        "shots": int(r.get("shots", 0) or 0),
+                        "key_passes": int(r.get("key_passes", 0) or 0),
+                    })
+                result["understat_history"] = {
+                    "note": (
+                        "Understat per-season data (Serie A + Premier League only). "
+                        "goals_minus_xg > 0 = finishing above expected (clinical); "
+                        "< 0 = below expected (wasteful/unlucky). Use it verbatim — do "
+                        "not invent seasons or leagues not listed here."
+                    ),
+                    "player": uname,
+                    "seasons": seasons,
+                }
+    except Exception as e:  # noqa: BLE001 — Understat is enrichment; never blocks the answer
+        log.warning("Understat history lookup failed: %s", e)
+
     if (
         "season_stats" not in result
         and "upcoming_props" not in result
         and "market_and_salary" not in result
+        and "understat_history" not in result
     ):
         return json.dumps({"error": f"No data found for player '{args.get('player')}'. Try the full name (e.g., 'Lautaro Martinez')."})
 
@@ -2676,7 +2729,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_player_stats",
-        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', or a scouting/analysis take. Fuzzy name matching supported.",
+        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — the key signal for judging a striker, e.g. Kean 8 goals on 15.4 xG = badly underperforming). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
         "input_schema": {
             "type": "object",
             "properties": {
