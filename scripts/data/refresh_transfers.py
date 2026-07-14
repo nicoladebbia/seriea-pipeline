@@ -105,6 +105,21 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — a dead second source must not kill the refresh
         _log(f"wikipedia/enrichment FAILED: {type(e).__name__}: {e}")
 
+    # 6. Change detection — diff the fresh squad against the last snapshot and log
+    #    every signing / departure / value-change / contract-change. First run
+    #    seeds the snapshot and logs nothing (no cold-start phantom signings).
+    try:
+        from scripts.data.transfer_change_detector import detect_changes
+        changes = detect_changes(season=args.season)
+        if changes:
+            _log(f"CHANGES DETECTED: {len(changes)} — " + "; ".join(
+                f"{c['type']}:{c.get('player')}" for c in changes[:6]
+            ) + (" …" if len(changes) > 6 else ""))
+        else:
+            _log("no squad changes since last snapshot")
+    except Exception as e:  # noqa: BLE001 — change log is best-effort, never blocks
+        _log(f"change detection FAILED: {type(e).__name__}: {e}")
+
     _log("=== Serie A transfer refresh done ===")
     return 0
 

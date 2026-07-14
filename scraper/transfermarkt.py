@@ -328,6 +328,22 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
                     player_data["age"] = int(text)
                     break
 
+        # Joined date + contract expiry — both render as dd/mm/yyyy in centered
+        # cells (joined comes before contract-until). Collect all full-date cells
+        # in row order: [-1] is the contract expiry, [-2] the joined date. The DOB
+        # cell is "dd/mm/yyyy (NN)" so it carries a "(" — exclude it so it isn't
+        # mistaken for the joined date. Verified 2026-07-14: cell[9]=joined,
+        # cell[11]=contract-until on the /plus/1 squad layout.
+        date_cells = []
+        for td in cells:
+            t = td.get_text(strip=True)
+            if re.fullmatch(r"\d{2}/\d{2}/\d{4}", t):  # bare date, no "(age)"
+                date_cells.append(t)
+        if date_cells:
+            player_data["contract_until"] = _tm_date_iso(date_cells[-1])
+            if len(date_cells) >= 2:
+                player_data["joined_date"] = _tm_date_iso(date_cells[-2])
+
         # Market value (last cell typically)
         mv_cell = row.select_one("td.rechts.hauptlink")
         if mv_cell:
@@ -343,6 +359,15 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
         rows.append(player_data)
 
     return rows
+
+
+def _tm_date_iso(text: str) -> Optional[str]:
+    """Convert a Transfermarkt 'dd/mm/yyyy' date to ISO 'yyyy-mm-dd', else None."""
+    m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", (text or "").strip())
+    if not m:
+        return None
+    d, mth, y = m.groups()
+    return f"{y}-{mth}-{d}"
 
 
 def scrape_transfers(

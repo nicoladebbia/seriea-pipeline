@@ -1233,6 +1233,7 @@ def api_rosters():
                 "val": val,
                 "nat": p.get("nationality") or "",
                 "new": (team, _norm(p.get("player_name"))) in new_in,
+                "contract_until": p.get("contract_until") if pd.notna(p.get("contract_until")) else None,
             })
         players.sort(key=lambda x: (order.get(x["pg"], 9), -x["val"]))
         total = float(grp["market_value_eur"].sum())
@@ -1251,6 +1252,30 @@ def api_rosters():
         "league_total": float(mv["market_value_eur"].sum()),
         "total_players": int(len(mv)),
     })
+
+
+@app.route("/api/transfer-changes")
+def api_transfer_changes():
+    """Recent squad changes (signings, departures, value/contract moves) for the feed.
+
+    Reads the append-only log written by the change detector on each refresh. Pure
+    display — never a model input. Returns newest-first, capped for the UI.
+    """
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    limit = min(int(flask_request.args.get("limit", 100)), 500)
+    path = DATA_DIR / "external" / "transfermarkt" / f"transfer_changes_{season.replace('-', '_')}.json"
+    if not path.exists():
+        return jsonify({"season": season, "changes": [], "count": 0})
+    try:
+        import json as _json
+        changes = _json.loads(path.read_text())
+    except Exception:  # noqa: BLE001 — corrupt/missing log degrades to empty
+        changes = []
+    return jsonify({"season": season, "changes": changes[:limit], "count": len(changes)})
 
 
 @app.route("/api/quota")
