@@ -381,6 +381,21 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **~860 rows per season** × 9 seasons
 - Used as team/player-strength proxy in features
 
+### `data/external/transfermarkt/transfers_2026_2027.parquet` (ins/outs — squad tracker; delta GATED out of the live model)
+- **Confirmed 2026-27 transfers per Serie A club** (arrivals + departures): `team, transfer_type (in/out), player_name, age, fee_text, fee_eur, is_loan`. 584 rows / 20 clubs at first scrape (2026-07-14).
+- **Writer:** `scraper/transfermarkt.scrape_transfers(season, league, only_teams)`. `current_league_teams()` resolves the ACTUAL 20 member clubs (the static map is a historical superset).
+- **Consumed by:** `features/transfer_impact_analysis.compute_net_squad_delta()` → `home/away_net_squad_delta` + `net_squad_delta_diff` (Step 35). Player weight blends TM market value with last-season minutes/rating from `sofascore/player_match_stats.parquet`.
+- **⚠ NOT a live model feature yet — GATED OUT of `get_ml_feature_columns`** (`features/build.py`) pending a leak-free held-out backtest with skill > 0 (project cardinal rule). Two open issues before it can be un-gated: (1) `compute_net_squad_delta` reads the WHOLE season file with no as-of-date cutoff → winter-window signings leak onto that season's August matches in training; (2) `market_values_2026_2027.parquet` does not yet exist, so live-signing talent weight falls to the 0.15 floor and the delta currently ranks the 3 PROMOTED clubs top (a net-count-of-signings artifact, not net talent). `refresh_transfers.py` fixes (2) on first run; (1) needs a date cutoff. Until then the columns drive ONLY the `/transfers` dashboard.
+- **⚠ 60% of rows are "End of loan" returns** (not real squad changes) — the feature discounts them 0.3× and guards against double-counting a loanee who returns AND leaves.
+
+### `data/external/transfermarkt/rumors_2026_2027.parquet` (DISPLAY-ONLY — never in the model)
+- **Unconfirmed transfer rumors per club:** `team, player_name, age, current_club, market_value_text, market_value_eur, source_date, source_url, confirmed(=False), scraped_at`. ~399 rows / 18 clubs (2026-07-14).
+- **Writer:** `scraper/transfermarkt.scrape_rumors()`. Overwritten each run (rumors expire); no incremental cache.
+- **NEVER read by the feature layer** — `compute_net_squad_delta` reads `transfers_*` only. Surfaced on `/transfers` dashboard as speculation with source date for traceability. TM's per-rumor "assessment" is usually blank, so NO fabricated probability is stored.
+
+### Auto-refresh (transfers)
+- **`com.seriea-pipeline.transfer-refresh` plist** (`deploy/launchagents/`, daily 06:00, `RunAtLoad: false`) runs `scripts/data/refresh_transfers.py` → scrapes confirmed + market values + rumors. Window-gated (summer 06-01→09-05, winter 01-01→02-05); exits instantly off-window. NOT auto-loaded — load with `launchctl load ~/Library/LaunchAgents/...` when wanted.
+
 ### `data/external/injuries/injuries_YYYY-MM-DD.parquet`
 - **Weekly snapshots** (usually Friday)
 - ~63 players per snapshot

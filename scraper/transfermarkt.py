@@ -208,17 +208,22 @@ def _league_cache_prefix(league: str) -> str:
 def scrape_squad_market_values(
     season: str = "2024-2025",
     league: str = "serie_a",
+    only_teams: set[str] | None = None,
 ) -> pd.DataFrame:
     """Scrape market values for all squads in a league from Transfermarkt.
 
     Args:
         season: Season string, e.g. "2024-2025"
         league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
+        only_teams: optional set of team names to restrict to (the map is a
+            historical superset — pass the current clubs to avoid wasted fetches).
 
     Returns DataFrame with columns:
         team, player_name, position, market_value_eur, age, nationality
     """
     league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
     prefix = _league_cache_prefix(league)
     cache_path = TM_DIR / f"{prefix}market_values_{season.replace('-', '_')}.parquet"
     cached_df = None
@@ -403,6 +408,116 @@ def scrape_transfers(
     df.to_parquet(cache_path, index=False)
     log.info("Saved %d transfers to %s", len(df), cache_path)
     return df
+
+
+def scrape_rumors(
+    season: str = "2026-2027",
+    league: str = "serie_a",
+    only_teams: set[str] | None = None,
+) -> pd.DataFrame:
+    """Scrape UNCONFIRMED transfer rumors per club (Transfermarkt /geruechte).
+
+    Rumors are SPECULATION, not done deals — this data is display-only and must
+    NEVER feed the model (compute_net_squad_delta reads transfers_*, never
+    rumors_*). Each rumor carries the honest signals TM actually provides:
+    the player's market value, the linked club, the most-recent-source date and
+    URL (freshness/traceability). No fabricated probability — TM's per-rumor
+    "assessment" is frequently blank, so we do not invent a number.
+
+    Rumors change and expire, so this OVERWRITES rumors_<season>.parquet each
+    run (no incremental cache) and stamps scraped_at. All rows are confirmed=False.
+
+    Returns columns: team, player_name, age, current_club, market_value_eur,
+    market_value_text, source_date, source_url, confirmed, scraped_at.
+    """
+    league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
+    prefix = _league_cache_prefix(league)
+    cache_path = TM_DIR / f"{prefix}rumors_{season.replace('-', '_')}.parquet"
+    scraped_at = pd.Timestamp.utcnow().isoformat()
+
+    all_rows: list[dict] = []
+    for team_name, (slug, verein_id) in league_teams.items():
+        url = f"{TM_BASE}/{slug}/geruechte/verein/{verein_id}"
+        try:
+            resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.warning("Failed to fetch %s rumors: %s", team_name, e)
+            time.sleep(5)
+            continue
+        rows = _parse_rumors_page(resp.text, team_name)
+        for r in rows:
+            r["confirmed"] = False
+            r["scraped_at"] = scraped_at
+        all_rows.extend(rows)
+        log.info("  %s: %d rumors", team_name, len(rows))
+        time.sleep(4)
+
+    df = pd.DataFrame(all_rows)
+    TM_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(cache_path, index=False)
+    log.info("Saved %d rumors to %s", len(df), cache_path)
+    return df
+
+
+def _parse_rumors_page(html: str, team_name: str) -> list[dict]:
+    """Parse a Transfermarkt rumors (/geruechte) page → list of rumor dicts.
+
+    Columns per row: Player, Nat., Age, Club (current club), Market value,
+    Most recent source (a dated forum-thread link), Assessment (often '-').
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.select_one("table.items")
+    if table is None:
+        return []
+    rows: list[dict] = []
+    for tr in table.select("tbody tr"):
+        name_link = tr.select_one("td.hauptlink a")
+        if not name_link:
+            continue
+        player = name_link.get_text(strip=True)
+        if not player:
+            continue
+        # TM renders a spacer/detail sub-row per player that also carries a
+        # hauptlink; it has no age cell. Skip it to avoid duplicate all-NaN rows.
+        has_age = any(
+            re.match(r"^\d{1,2}$", td.get_text(strip=True)) for td in tr.find_all("td")
+        )
+        if not has_age:
+            continue
+        rumor: dict = {"team": team_name, "player_name": player}
+
+        # Age — first standalone 1-2 digit cell
+        for td in tr.find_all("td"):
+            t = td.get_text(strip=True)
+            if re.match(r"^\d{1,2}$", t):
+                rumor["age"] = int(t)
+                break
+
+        # Current club (an image/link with a /verein/ href, title = club name)
+        club_link = tr.select_one("td.zentriert a[href*='/verein/'] img")
+        if club_link and club_link.get("alt"):
+            rumor["current_club"] = club_link["alt"].strip()
+
+        # Market value: a /marktwertverlauf/ link cell
+        mv_cell = tr.select_one("td.rechts a[href*='/marktwertverlauf/']")
+        if mv_cell:
+            mv_text = mv_cell.get_text(strip=True)
+            rumor["market_value_text"] = mv_text
+            rumor["market_value_eur"] = _parse_market_value(mv_text)
+
+        # Most-recent-source: dated forum link (freshness + traceability)
+        for a in tr.select("td.zentriert a[href*='/thread/']"):
+            date_txt = a.get_text(strip=True)
+            if re.match(r"\d{2}/\d{2}/\d{4}", date_txt):
+                rumor["source_date"] = date_txt
+                rumor["source_url"] = a.get("href")
+                break
+
+        rows.append(rumor)
+    return rows
 
 
 def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[dict]]:
