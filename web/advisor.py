@@ -30,6 +30,12 @@ advisor_bp = Blueprint("advisor", __name__)
 from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR
 from scripts.utils.json_utils import load_json_safe
 USAGE_FILE = DATA_DIR / "api_usage.json"
+# Project root. Six call sites (Sofascore player stats, match incidents, matches,
+# features) build paths as `_BASE / "data" / ...`; a past "deduplicate path
+# constants" commit dropped its definition, silently breaking those lookups
+# (they fail-soft in try/except, so the per-match ratings/team-sheet degraded
+# without surfacing). DATA_DIR is <root>/data, so _BASE is its parent.
+_BASE = DATA_DIR.parent
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -832,7 +838,60 @@ def _tool_get_player_stats(args: dict) -> str:
         if "upcoming_props" in result:
             break
 
-    if "season_stats" not in result and "upcoming_props" not in result:
+    # 4. Market value + contract + salary estimate (2026-27 squad data). Lets the
+    #    assistant answer "he earns X/month, has N years left, and last season
+    #    played…" in one breath. Salary is a Capology ESTIMATE (fixed gross, excl.
+    #    bonuses) — labeled as such so the model never states it as official.
+    try:
+        import pandas as pd
+        tm_dir = DATA_DIR / "external" / "transfermarkt"
+        mv_path = tm_dir / "market_values_2026_2027.parquet"
+        if mv_path.exists():
+            mv = pd.read_parquet(mv_path)
+            mmask = _player_name_match(mv["player_name"], player_q)
+            if team_q:
+                tr = _resolve_team(team_q)
+                if tr and "team" in mv.columns:
+                    mmask = mmask & (mv["team"] == tr)
+            hit = mv[mmask]
+            if not hit.empty:
+                row = hit.iloc[0]
+                market = {
+                    "team": row.get("team"),
+                    "market_value_eur": int(row["market_value_eur"]) if pd.notna(row.get("market_value_eur")) else None,
+                    "age": int(row["age"]) if pd.notna(row.get("age")) else None,
+                    "contract_until": str(row["contract_until"])[:10] if pd.notna(row.get("contract_until")) else None,
+                    "nationality": row.get("nationality"),
+                }
+                # Capology salary estimate, matched by (team, fuzzy name).
+                sal_path = tm_dir / "salaries_2026_2027.parquet"
+                if sal_path.exists():
+                    sal = pd.read_parquet(sal_path)
+                    smask = _player_name_match(sal["player_name"], player_q)
+                    if pd.notna(row.get("team")) and "team" in sal.columns:
+                        smask = smask & (sal["team"] == row.get("team"))
+                    shit = sal[smask]
+                    if not shit.empty:
+                        s = shit.iloc[0]
+                        ann = int(s["annual_gross_eur"]) if pd.notna(s.get("annual_gross_eur")) else None
+                        market["salary_estimate"] = {
+                            "source": "Capology estimate (fixed gross, excludes bonuses — NOT an official figure)",
+                            "verified_by_capology": bool(s.get("verified")),
+                            "annual_gross_eur": ann,
+                            "monthly_gross_eur": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else (ann // 12 if ann else None),
+                            "weekly_gross_eur": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else (ann // 52 if ann else None),
+                            "contract_years_remaining": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
+                            "contract_expiration": str(s["contract_expiration"])[:10] if pd.notna(s.get("contract_expiration")) else None,
+                        }
+                result["market_and_salary"] = market
+    except Exception as e:  # noqa: BLE001 — market/salary is enrichment; never blocks the stats answer
+        log.warning("Market/salary lookup failed: %s", e)
+
+    if (
+        "season_stats" not in result
+        and "upcoming_props" not in result
+        and "market_and_salary" not in result
+    ):
         return json.dumps({"error": f"No data found for player '{args.get('player')}'. Try the full name (e.g., 'Lautaro Martinez')."})
 
     return json.dumps(result, default=str)
@@ -2617,7 +2676,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_player_stats",
-        "description": "Get comprehensive player statistics including PER-MATCH RATINGS and FULL TEAM SHEET. Returns: season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, PLUS the full team sheet from the player's most recent match (all teammates with ratings, goals, assists, minutes). Also returns match events (goals, subs, cards) and availability/injury detection. Use for player analysis AND for match analysis (query any player from the match to get the full team sheet). Fuzzy name matching supported.",
+        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', or a scouting/analysis take. Fuzzy name matching supported.",
         "input_schema": {
             "type": "object",
             "properties": {
