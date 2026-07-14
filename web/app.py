@@ -1222,7 +1222,8 @@ def api_rosters():
     # estimate of *fixed* gross salary (excludes bonuses) — surfaced as such in
     # the UI, never as an official figure. Joined by (team, normalized name);
     # ~79% of the roster matches (unmatched players simply show no salary).
-    sal_by_key: dict = {}
+    sal_by_key: dict = {}          # exact (team, norm_name) → payload
+    sal_by_team: dict = {}         # team → [(name_token_set, norm_name, payload)] for subset fallback
     sal_path = tm_dir / f"salaries_{sfx}.parquet"
     if sal_path.exists():
         try:
@@ -1231,7 +1232,8 @@ def api_rosters():
                 ann = s.get("annual_gross_eur")
                 if pd.isna(ann):
                     continue
-                sal_by_key[(s["team"], _norm(s.get("player_name")))] = {
+                nn = _norm(s.get("player_name"))
+                payload = {
                     "annual": int(ann),
                     "monthly": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else None,
                     "weekly": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else None,
@@ -1241,8 +1243,33 @@ def api_rosters():
                     "years": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
                     "expires": s.get("contract_expiration") if pd.notna(s.get("contract_expiration")) else None,
                 }
+                sal_by_key[(s["team"], nn)] = payload
+                sal_by_team.setdefault(s["team"], []).append((frozenset(nn.split()), nn, payload))
         except Exception:  # noqa: BLE001 — salaries are optional garnish; squad still renders
             sal_by_key = {}
+            sal_by_team = {}
+
+    def _salary_for(team: str, name: str):
+        """Exact (team, normalized-name) match first; then a SAFE subset fallback —
+        Capology often carries an extra middle name (TM "Yann Bisseck" vs Capology
+        "Yann Aurel Bisseck", "Pio Esposito" vs "Francesco Pio Esposito"). Accept
+        only when one name's tokens are a subset of the other AND they share the
+        same last name AND exactly ONE Capology row qualifies (never ambiguous).
+        Recovers ~7 real players with zero false matches; a wrong wage is worse
+        than none, so ambiguity → no match."""
+        nn = _norm(name)
+        hit = sal_by_key.get((team, nn))
+        if hit is not None:
+            return hit
+        toks = frozenset(nn.split())
+        last = nn.split()[-1] if nn.split() else ""
+        cands = [
+            pl for (ctoks, cnn, pl) in sal_by_team.get(team, [])
+            if toks and ctoks
+            and cnn.split()[-1] == last
+            and (toks <= ctoks or ctoks <= toks)
+        ]
+        return cands[0] if len(cands) == 1 else None
 
     order = {"GK": 0, "DEF": 1, "MID": 2, "ATT": 3, "OTH": 4}
     mv = mv.copy()
@@ -1253,7 +1280,7 @@ def api_rosters():
         players = []
         for _, p in grp.iterrows():
             val = float(p["market_value_eur"]) if pd.notna(p.get("market_value_eur")) else 0.0
-            wage = sal_by_key.get((team, _norm(p.get("player_name"))))
+            wage = _salary_for(team, p.get("player_name"))
             players.append({
                 "name": p.get("player_name"),
                 "pos": p.get("position") or "",
@@ -1267,6 +1294,16 @@ def api_rosters():
                 "salary": wage,
             })
         players.sort(key=lambda x: (order.get(x["pg"], 9), -x["val"]))
+        # Flag the team's TOP EARNER — the single highest fixed annual among
+        # matched players — so the UI can highlight it. On a tie, exactly ONE is
+        # flagged (first in display order), since the user wants "the most paid one".
+        top_pl = max(
+            (pl for pl in players if pl.get("salary") and pl["salary"].get("annual")),
+            key=lambda pl: pl["salary"]["annual"],
+            default=None,
+        )
+        for pl in players:
+            pl["top_earner"] = pl is top_pl
         total = float(grp["market_value_eur"].sum())
         clubs.append({
             "team": team,
