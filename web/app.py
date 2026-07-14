@@ -1042,6 +1042,106 @@ def api_performance():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/transfers")
+def transfers_page():
+    return render_template("transfers.html", active_page="transfers")
+
+
+@app.route("/api/transfers")
+def api_transfers():
+    """Per-club Serie A 2026-27 transfers + net-squad-delta + rumors.
+
+    Confirmed transfers and the net_squad_delta come from transfers_*.parquet.
+    The net_squad_delta is COMPUTED and shown here, but it is currently GATED OUT
+    of the live ML feature set (see get_ml_feature_columns in features/build.py)
+    pending a leak-free held-out backtest — so today it is a squad-tracking view,
+    not yet a model input. Rumors come from rumors_*.parquet and are returned in a
+    SEPARATE key, clearly flagged confirmed=False — they never touch the model and
+    the UI must render them as speculation.
+    """
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    tm_dir = DATA_DIR / "external" / "transfermarkt"
+    sfx = season.replace("-", "_")
+
+    def _load(name):
+        p = tm_dir / f"{name}_{sfx}.parquet"
+        if not p.exists():
+            return None
+        try:
+            return pd.read_parquet(p)
+        except Exception:  # noqa: BLE001 — missing/corrupt cache degrades to empty
+            return None
+
+    tf = _load("transfers")
+    rm = _load("rumors")
+
+    # net squad delta per club (model feature) — confirmed only
+    try:
+        from features.transfer_impact_analysis import compute_net_squad_delta
+        deltas = compute_net_squad_delta(season=season, league="serie_a")
+    except Exception:  # noqa: BLE001 — feature is optional for the dashboard view
+        deltas = {}
+
+    clubs: dict = {}
+    if tf is not None and not tf.empty:
+        for team, grp in tf.groupby("team"):
+            key = team.lower().strip()
+            ins = grp[grp["transfer_type"] == "in"]
+            outs = grp[grp["transfer_type"] == "out"]
+
+            def _rows(g):
+                out = []
+                for _, r in g.iterrows():
+                    out.append({
+                        "player": r.get("player_name"),
+                        "age": None if pd.isna(r.get("age")) else int(r["age"]),
+                        "fee_text": r.get("fee_text"),
+                        "fee_eur": None if pd.isna(r.get("fee_eur")) else float(r["fee_eur"]),
+                        "is_loan": bool(r.get("is_loan")) if pd.notna(r.get("is_loan")) else False,
+                    })
+                return out
+
+            d = deltas.get(key, {})
+            clubs[team] = {
+                "in": _rows(ins),
+                "out": _rows(outs),
+                "net_squad_delta": d.get("net_squad_delta", 0.0),
+                "arrivals_weight": d.get("arrivals_weight", 0.0),
+                "departures_weight": d.get("departures_weight", 0.0),
+            }
+
+    rumors: dict = {}
+    if rm is not None and not rm.empty:
+        for team, grp in rm.groupby("team"):
+            rows = []
+            for _, r in grp.iterrows():
+                rows.append({
+                    "player": r.get("player_name"),
+                    "age": None if pd.isna(r.get("age")) else int(r["age"]),
+                    "current_club": r.get("current_club"),
+                    "market_value_text": r.get("market_value_text"),
+                    "source_date": r.get("source_date"),
+                    "source_url": r.get("source_url"),
+                    "confirmed": False,
+                })
+            rumors[team] = rows
+
+    return jsonify({
+        "season": season,
+        "clubs": clubs,
+        "rumors": rumors,
+        "note": (
+            "Net-squad-delta is computed and shown, but GATED OUT of the live "
+            "model pending a leak-free backtest. Rumors are speculation "
+            "(display-only) and never touch the model."
+        ),
+    })
+
+
 @app.route("/api/quota")
 def api_quota():
     """The Odds API quota snapshot: remaining credits, days to reset, undercount warnings.
