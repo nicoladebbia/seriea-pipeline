@@ -97,10 +97,17 @@
   .pg-OTH .rs-dot { background: var(--text-tertiary); } .pg-OTH .rs-pg__lab { color: var(--text-tertiary); }
 
   /* Player card: wider min so nothing clips; each datum has its own row. */
-  .rs-plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 6px 22px; }
-  .rs-row { padding: 8px 10px; border: 1px solid transparent; border-radius: 8px;
-    background: var(--bg-tertiary); font-size: 13px; transition: border-color .12s ease; }
-  .rs-row:hover { border-color: var(--border-default); }
+  .rs { --gold:#e5b567; }
+  .rs-plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 8px 20px; }
+  .rs-row { padding: 9px 11px; border: 1px solid var(--border-subtle); border-radius: 9px;
+    background: var(--bg-tertiary); font-size: 13px;
+    transition: border-color .12s ease, background .12s ease; }
+  .rs-row:hover { border-color: var(--border-default); background: var(--bg-secondary); }
+  /* top earner of the club — gold left rail + tinted ground */
+  .rs-row.is-top { border-color: rgba(229,181,103,.45);
+    box-shadow: inset 3px 0 0 var(--gold); background: rgba(229,181,103,.06); }
+  .rs-row.is-top:hover { background: rgba(229,181,103,.1); }
+  .rs-top { margin-right: 4px; font-size: 11px; vertical-align: 1px; }
   /* line 1 — name + market value */
   .rs-row__top { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 8px; }
   .rs-row__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -110,19 +117,22 @@
   .rs-row__val { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12px;
     font-weight: 700; white-space: nowrap; }
   /* line 2 — pos · age · nat · contract, wraps cleanly, no clip */
-  .rs-row__meta { font-size: 10px; color: var(--text-tertiary); margin-top: 3px;
+  .rs-row__meta { font-size: 10px; color: var(--text-tertiary); margin-top: 4px;
     display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
   /* line 3 — wage strip: its own space, chips laid out with gaps */
-  .rs-wage { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center;
+  .rs-wage { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
     font-variant-numeric: tabular-nums; }
   .rs-wage__chip { font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+    border: 1px solid var(--border-subtle); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
   .rs-wage__chip b { color: var(--text-primary); font-weight: 700; }
-  .rs-wage__chip .u { color: var(--text-tertiary); font-size: 9px; }
-  .rs-wage__mark { font-size: 11px; }
+  .rs-wage__chip .u { color: var(--text-tertiary); font-size: 9px; margin-left: 1px; }
+  /* on the top-earner card the /yr chip (first) reads gold */
+  .rs-row.is-top .rs-wage__chip:first-of-type { border-color: rgba(229,181,103,.5); }
+  .rs-row.is-top .rs-wage__chip:first-of-type b { color: var(--gold); }
+  .rs-wage__mark { font-size: 12px; line-height: 1; }
   .rs-wage__mark.v { color: var(--mid); }        /* ✓ verified */
   .rs-wage__mark.e { color: var(--text-tertiary); } /* ≈ estimated */
-  .rs-nowage { margin-top: 6px; font-size: 10px; color: var(--text-tertiary); font-style: italic; opacity: .65; }
+  .rs-nowage { margin-top: 7px; font-size: 10px; color: var(--text-tertiary); font-style: italic; opacity: .65; }
   .rs-row.hl { border-color: var(--accent); }
 
   .rs-empty { color: var(--text-tertiary); font-size: 14px; padding: 30px 0; text-align: center; }
@@ -257,9 +267,13 @@
           } else {
             wage = '<div class="rs-nowage" title="Capology publishes no salary estimate for this player">no wage data</div>';
           }
-          return '<div class="rs-row" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
+          // Top earner of the club — a crown badge on the name + a card accent.
+          var crown = p.top_earner
+            ? '<span class="rs-top" title="Top earner at this club (Capology fixed-salary estimate)">👑</span>'
+            : "";
+          return '<div class="rs-row' + (p.top_earner ? " is-top" : "") + '" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
             '<div class="rs-row__top">' +
-              '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") + '</span>' +
+              '<span class="rs-row__name">' + crown + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") + '</span>' +
               '<span class="rs-row__val">' + eur(p.val) + '</span>' +
             '</div>' +
             '<div class="rs-row__meta">' + esc(meta) + contract + '</div>' +
