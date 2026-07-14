@@ -47,6 +47,8 @@
   .rs-wage { margin-left: 8px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
     white-space: nowrap; }
   .rs-wage__m { color: var(--text-tertiary); font-size: 10px; }
+  .rs-nowage { margin-left: 8px; color: var(--text-tertiary); font-size: 10px; font-style: italic;
+    opacity: .7; }
 
   /* toolbar */
   .rs-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
@@ -127,8 +129,10 @@
     <span class="new">“NEW”</span> marks a confirmed 2026-27 arrival (loan returns excluded).
     Values are Transfermarkt market values, not fees. Squad lists include primavera/youth on the senior page.
     <br><b>💶 Salaries</b> are <b>Capology estimates</b> of <b>fixed gross</b> pay (excludes bonuses/image rights) —
-    <i>estimates, not official figures</i>. <b>✓</b> = Capology-verified, <b>≈</b> = estimated. Shown where a player
-    matched (~79% of the squad); no figure ≠ no salary, just no match.
+    <i>estimates, not official figures</i>. <b>✓</b> = Capology-verified, <b>≈</b> = estimated.
+    <br><b>~79%</b> of players show a wage; the remaining <b>~21%</b> are marked
+    <span class="rs-nowage">no wage data</span> — Capology doesn't publish an estimate for them
+    (mostly primavera/youth and deep-squad players). It means <i>no data</i>, <b>not</b> that they play for free.
   </div>
 
   <div class="rs-summary" id="rs-summary"></div>
@@ -214,13 +218,17 @@
           var meta = [p.pos, p.age != null ? p.age + "y" : "", p.nat].filter(Boolean).join(" · ");
           var contract = p.contract_until ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>" : "";
           // Capology salary estimate (fixed gross). ✓ = Capology-verified, else est.
-          var wage = "";
+          // When Capology has no estimate for a player, say so explicitly rather
+          // than leave the row silently blank (~21% of the squad — youth/fringe).
+          var wage;
           if (p.salary && p.salary.annual) {
             var s = p.salary, mark = s.verified ? "✓" : "≈";
             wage = '<span class="rs-wage" title="Capology estimate · fixed gross salary · ' +
               (s.verified ? "verified" : "estimated") + '">💶 ' + wageYr(s.annual) + '/yr' +
               (s.monthly ? ' · ' + wageMo(s.monthly) + '/mo' : "") +
               ' <span class="rs-wage__m">' + mark + '</span></span>';
+          } else {
+            wage = '<span class="rs-nowage" title="Capology publishes no salary estimate for this player">no wage data</span>';
           }
           return '<div class="rs-row" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
             '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") +
