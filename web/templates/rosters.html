@@ -43,12 +43,7 @@
   .rs-chg__player { color: var(--text-primary); font-weight: 600; }
   .rs-chg__detail { font-size: 11px; color: var(--text-tertiary); }
   .rs-chg__when { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .rs-contract { margin-left: 8px; color: var(--text-tertiary); }
-  .rs-wage { margin-left: 8px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
-    white-space: nowrap; }
-  .rs-wage__m { color: var(--text-tertiary); font-size: 10px; }
-  .rs-nowage { margin-left: 8px; color: var(--text-tertiary); font-size: 10px; font-style: italic;
-    opacity: .7; }
+  .rs-contract { color: var(--text-tertiary); white-space: nowrap; }
 
   /* toolbar */
   .rs-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
@@ -101,16 +96,34 @@
   .pg-ATT .rs-dot { background: var(--att); } .pg-ATT .rs-pg__lab { color: var(--att); }
   .pg-OTH .rs-dot { background: var(--text-tertiary); } .pg-OTH .rs-pg__lab { color: var(--text-tertiary); }
 
-  .rs-plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 20px; }
-  .rs-row { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 8px;
-    padding: 5px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
-  .rs-row__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+  /* Player card: wider min so nothing clips; each datum has its own row. */
+  .rs-plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 6px 22px; }
+  .rs-row { padding: 8px 10px; border: 1px solid transparent; border-radius: 8px;
+    background: var(--bg-tertiary); font-size: 13px; transition: border-color .12s ease; }
+  .rs-row:hover { border-color: var(--border-default); }
+  /* line 1 — name + market value */
+  .rs-row__top { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 8px; }
+  .rs-row__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-primary); font-weight: 600; }
   .rs-row__name .nw { color: var(--accent); font-size: 9px; font-weight: 800; margin-left: 5px;
     border: 1px solid var(--accent-muted); border-radius: 3px; padding: 0 3px; vertical-align: 1px; }
-  .rs-row__meta { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
   .rs-row__val { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12px;
-    font-weight: 600; white-space: nowrap; }
-  .rs-row.hl { background: var(--accent-muted); border-radius: 4px; margin: 0 -6px; padding: 5px 6px; }
+    font-weight: 700; white-space: nowrap; }
+  /* line 2 — pos · age · nat · contract, wraps cleanly, no clip */
+  .rs-row__meta { font-size: 10px; color: var(--text-tertiary); margin-top: 3px;
+    display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  /* line 3 — wage strip: its own space, chips laid out with gaps */
+  .rs-wage { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center;
+    font-variant-numeric: tabular-nums; }
+  .rs-wage__chip { font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+  .rs-wage__chip b { color: var(--text-primary); font-weight: 700; }
+  .rs-wage__chip .u { color: var(--text-tertiary); font-size: 9px; }
+  .rs-wage__mark { font-size: 11px; }
+  .rs-wage__mark.v { color: var(--mid); }        /* ✓ verified */
+  .rs-wage__mark.e { color: var(--text-tertiary); } /* ≈ estimated */
+  .rs-nowage { margin-top: 6px; font-size: 10px; color: var(--text-tertiary); font-style: italic; opacity: .65; }
+  .rs-row.hl { border-color: var(--accent); }
 
   .rs-empty { color: var(--text-tertiary); font-size: 14px; padding: 30px 0; text-align: center; }
 
@@ -187,6 +200,15 @@
     if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
     return "€" + Math.round(v / 1e3) + "k";
   }
+  // Weekly figure, e.g. 213653 → "€214k" / "€45k".
+  function wageWk(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    return "€" + Math.round(v / 1e3) + "k";
+  }
+  // A single labeled wage chip.
+  function chip(val, unit) {
+    return '<span class="rs-wage__chip"><b>' + val + '</b> <span class="u">' + unit + '</span></span>';
+  }
   // "2028-06-30" → "'28 · 2y left" (or "8mo left" / "expired"); shows remaining term
   function contractLabel(iso) {
     var end = new Date(iso + "T00:00:00");
@@ -215,25 +237,33 @@
       c.players.forEach(function (p) { (groups[p.pg] = groups[p.pg] || []).push(p); });
       var squad = ORDER.filter(function (g) { return groups[g]; }).map(function (g) {
         var rows = groups[g].map(function (p) {
+          // line 2 — pos · age · nat, then contract as its own chip (wraps, never clips)
           var meta = [p.pos, p.age != null ? p.age + "y" : "", p.nat].filter(Boolean).join(" · ");
-          var contract = p.contract_until ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>" : "";
-          // Capology salary estimate (fixed gross). ✓ = Capology-verified, else est.
-          // When Capology has no estimate for a player, say so explicitly rather
-          // than leave the row silently blank (~21% of the squad — youth/fringe).
+          var contract = p.contract_until
+            ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>"
+            : "";
+          // line 3 — Capology salary estimate (fixed gross): yr / mo / wk + years-left.
+          // ✓ = Capology-verified, ≈ = estimated. No estimate → say so, don't blank out.
           var wage;
           if (p.salary && p.salary.annual) {
-            var s = p.salary, mark = s.verified ? "✓" : "≈";
-            wage = '<span class="rs-wage" title="Capology estimate · fixed gross salary · ' +
-              (s.verified ? "verified" : "estimated") + '">💶 ' + wageYr(s.annual) + '/yr' +
-              (s.monthly ? ' · ' + wageMo(s.monthly) + '/mo' : "") +
-              ' <span class="rs-wage__m">' + mark + '</span></span>';
+            var s = p.salary, mk = s.verified ? "✓" : "≈", mkc = s.verified ? "v" : "e";
+            var chips = chip(wageYr(s.annual), "/yr");
+            if (s.monthly) chips += chip(wageMo(s.monthly), "/mo");
+            if (s.weekly) chips += chip(wageWk(s.weekly), "/wk");
+            if (s.years) chips += chip(s.years + "y", "left");
+            wage = '<div class="rs-wage" title="Capology estimate · fixed gross salary (excl. bonuses) · ' +
+              (s.verified ? "verified" : "estimated") + '">' +
+              '<span class="rs-wage__mark ' + mkc + '">' + mk + '</span>' + chips + '</div>';
           } else {
-            wage = '<span class="rs-nowage" title="Capology publishes no salary estimate for this player">no wage data</span>';
+            wage = '<div class="rs-nowage" title="Capology publishes no salary estimate for this player">no wage data</div>';
           }
           return '<div class="rs-row" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
-            '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") +
-            '<div class="rs-row__meta">' + esc(meta) + contract + wage + '</div></span>' +
-            '<span class="rs-row__val">' + eur(p.val) + '</span></div>';
+            '<div class="rs-row__top">' +
+              '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") + '</span>' +
+              '<span class="rs-row__val">' + eur(p.val) + '</span>' +
+            '</div>' +
+            '<div class="rs-row__meta">' + esc(meta) + contract + '</div>' +
+            wage + '</div>';
         }).join("");
         return '<div class="rs-pg pg-' + g + '"><div class="rs-pg__lab"><span class="rs-dot"></span>' +
           POS[g] + ' <span style="color:var(--text-tertiary);font-weight:600">(' + groups[g].length + ')</span></div>' +

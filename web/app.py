@@ -1236,6 +1236,10 @@ def api_rosters():
                     "monthly": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else None,
                     "weekly": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else None,
                     "verified": bool(s.get("verified")),
+                    # Capology's own contract read (independent of TM's contract_until):
+                    # years remaining + expiry ISO date.
+                    "years": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
+                    "expires": s.get("contract_expiration") if pd.notna(s.get("contract_expiration")) else None,
                 }
         except Exception:  # noqa: BLE001 — salaries are optional garnish; squad still renders
             sal_by_key = {}
