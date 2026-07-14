@@ -1216,6 +1216,30 @@ def api_rosters():
         except Exception:  # noqa: BLE001 — the flag is optional; squad still renders
             new_in = set()
 
+    # Capology salary ESTIMATES — read-time join, kept in its own parquet and
+    # NEVER materialized into market_values (that would co-mingle an estimate
+    # unlabeled beside TM's real market value). Every number here is a Capology
+    # estimate of *fixed* gross salary (excludes bonuses) — surfaced as such in
+    # the UI, never as an official figure. Joined by (team, normalized name);
+    # ~79% of the roster matches (unmatched players simply show no salary).
+    sal_by_key: dict = {}
+    sal_path = tm_dir / f"salaries_{sfx}.parquet"
+    if sal_path.exists():
+        try:
+            sal = pd.read_parquet(sal_path)
+            for _, s in sal.iterrows():
+                ann = s.get("annual_gross_eur")
+                if pd.isna(ann):
+                    continue
+                sal_by_key[(s["team"], _norm(s.get("player_name")))] = {
+                    "annual": int(ann),
+                    "monthly": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else None,
+                    "weekly": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else None,
+                    "verified": bool(s.get("verified")),
+                }
+        except Exception:  # noqa: BLE001 — salaries are optional garnish; squad still renders
+            sal_by_key = {}
+
     order = {"GK": 0, "DEF": 1, "MID": 2, "ATT": 3, "OTH": 4}
     mv = mv.copy()
     mv["pg"] = mv["position"].map(_pos_group)
@@ -1225,6 +1249,7 @@ def api_rosters():
         players = []
         for _, p in grp.iterrows():
             val = float(p["market_value_eur"]) if pd.notna(p.get("market_value_eur")) else 0.0
+            wage = sal_by_key.get((team, _norm(p.get("player_name"))))
             players.append({
                 "name": p.get("player_name"),
                 "pos": p.get("position") or "",
@@ -1234,6 +1259,8 @@ def api_rosters():
                 "nat": p.get("nationality") or "",
                 "new": (team, _norm(p.get("player_name"))) in new_in,
                 "contract_until": p.get("contract_until") if pd.notna(p.get("contract_until")) else None,
+                # Capology salary estimate (fixed gross) — null if no match.
+                "salary": wage,
             })
         players.sort(key=lambda x: (order.get(x["pg"], 9), -x["val"]))
         total = float(grp["market_value_eur"].sum())

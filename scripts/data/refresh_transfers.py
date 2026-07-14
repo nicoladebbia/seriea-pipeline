@@ -105,6 +105,23 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — a dead second source must not kill the refresh
         _log(f"wikipedia/enrichment FAILED: {type(e).__name__}: {e}")
 
+    # 5b. Capology salary ESTIMATES (display-only, /rosters). Capology 429-throttles
+    #     a fast sweep and wages change per-signing not per-day, so this runs WEEKLY
+    #     (Mondays) — not on every twice-daily fire — unless --force. Its own parquet;
+    #     NEVER a model feature; the number is a labeled estimate, never official.
+    if args.force or today.weekday() == 0:  # Monday
+        try:
+            from scraper.capology_salaries import save_salaries
+            sal = save_salaries(season=args.season)
+            if not sal.empty:
+                _log(f"capology salaries: {len(sal)} players across {sal['team'].nunique()} clubs")
+            else:
+                _log("capology salaries: nothing scraped (throttled/blocked) — kept prior parquet")
+        except Exception as e:  # noqa: BLE001 — a dead salary source must not kill the refresh
+            _log(f"capology salaries FAILED: {type(e).__name__}: {e}")
+    else:
+        _log("capology salaries: skipped (weekly step, runs Mondays; use --force to override)")
+
     # 6. Change detection — diff the fresh squad against the last snapshot and log
     #    every signing / departure / value-change / contract-change. First run
     #    seeds the snapshot and logs nothing (no cold-start phantom signings).

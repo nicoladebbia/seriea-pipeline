@@ -44,6 +44,9 @@
   .rs-chg__detail { font-size: 11px; color: var(--text-tertiary); }
   .rs-chg__when { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .rs-contract { margin-left: 8px; color: var(--text-tertiary); }
+  .rs-wage { margin-left: 8px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+    white-space: nowrap; }
+  .rs-wage__m { color: var(--text-tertiary); font-size: 10px; }
 
   /* toolbar */
   .rs-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
@@ -123,6 +126,9 @@
     not reconstructed from transfer flows. Players sorted by market value within GK → DEF → MID → ATT.
     <span class="new">“NEW”</span> marks a confirmed 2026-27 arrival (loan returns excluded).
     Values are Transfermarkt market values, not fees. Squad lists include primavera/youth on the senior page.
+    <br><b>💶 Salaries</b> are <b>Capology estimates</b> of <b>fixed gross</b> pay (excludes bonuses/image rights) —
+    <i>estimates, not official figures</i>. <b>✓</b> = Capology-verified, <b>≈</b> = estimated. Shown where a player
+    matched (~79% of the squad); no figure ≠ no salary, just no match.
   </div>
 
   <div class="rs-summary" id="rs-summary"></div>
@@ -166,6 +172,17 @@
     return v ? "€" + v : "—";
   }
   function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  // Compact salary, e.g. 11110000 → "€11.1m". Used for the yearly figure.
+  function wageYr(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    if (v >= 1e3) return "€" + Math.round(v / 1e3) + "k";
+    return "€" + v;
+  }
+  // Monthly figure, e.g. 925833 → "€926k" / "€1.4m".
+  function wageMo(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    return "€" + Math.round(v / 1e3) + "k";
+  }
   // "2028-06-30" → "'28 · 2y left" (or "8mo left" / "expired"); shows remaining term
   function contractLabel(iso) {
     var end = new Date(iso + "T00:00:00");
@@ -196,9 +213,18 @@
         var rows = groups[g].map(function (p) {
           var meta = [p.pos, p.age != null ? p.age + "y" : "", p.nat].filter(Boolean).join(" · ");
           var contract = p.contract_until ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>" : "";
+          // Capology salary estimate (fixed gross). ✓ = Capology-verified, else est.
+          var wage = "";
+          if (p.salary && p.salary.annual) {
+            var s = p.salary, mark = s.verified ? "✓" : "≈";
+            wage = '<span class="rs-wage" title="Capology estimate · fixed gross salary · ' +
+              (s.verified ? "verified" : "estimated") + '">💶 ' + wageYr(s.annual) + '/yr' +
+              (s.monthly ? ' · ' + wageMo(s.monthly) + '/mo' : "") +
+              ' <span class="rs-wage__m">' + mark + '</span></span>';
+          }
           return '<div class="rs-row" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
             '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") +
-            '<div class="rs-row__meta">' + esc(meta) + contract + '</div></span>' +
+            '<div class="rs-row__meta">' + esc(meta) + contract + wage + '</div></span>' +
             '<span class="rs-row__val">' + eur(p.val) + '</span></div>';
         }).join("");
         return '<div class="rs-pg pg-' + g + '"><div class="rs-pg__lab"><span class="rs-dot"></span>' +
