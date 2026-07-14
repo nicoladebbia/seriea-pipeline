@@ -23,6 +23,28 @@
   .rs-summary { display: flex; gap: 22px; flex-wrap: wrap; padding: 4px 2px 18px; font-size: 12px; color: var(--text-tertiary); }
   .rs-summary b { color: var(--text-primary); font-variant-numeric: tabular-nums; font-size: 15px; margin-right: 4px; }
 
+  /* recent-changes feed */
+  .rs-changes { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 14px 16px; margin-bottom: 18px; }
+  .rs-changes__head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rs-changes__title { font-size: 13px; font-weight: 800; color: var(--text-primary);
+    text-transform: uppercase; letter-spacing: .06em; }
+  .rs-changes__sub { font-size: 11px; color: var(--text-tertiary); }
+  .rs-changes__list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+  .rs-chg { display: grid; grid-template-columns: 70px 1fr auto; gap: 10px; align-items: baseline;
+    padding: 6px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
+  .rs-chg__type { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 4px; text-align: center; align-self: center; }
+  .chg-signing .rs-chg__type { background: rgba(63,174,149,.16); color: var(--mid); }
+  .chg-departure .rs-chg__type { background: rgba(224,101,74,.16); color: var(--att); }
+  .chg-value_change .rs-chg__type { background: var(--accent-muted); color: var(--accent); }
+  .chg-contract_change .rs-chg__type { background: rgba(224,145,63,.16); color: var(--gk, #e0913f); }
+  .rs-chg__body { min-width: 0; }
+  .rs-chg__player { color: var(--text-primary); font-weight: 600; }
+  .rs-chg__detail { font-size: 11px; color: var(--text-tertiary); }
+  .rs-chg__when { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rs-contract { margin-left: 8px; color: var(--text-tertiary); }
+
   /* toolbar */
   .rs-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
   .rs-search { flex: 1 1 260px; position: relative; }
@@ -105,6 +127,14 @@
 
   <div class="rs-summary" id="rs-summary"></div>
 
+  <div class="rs-changes" id="rs-changes" hidden>
+    <div class="rs-changes__head">
+      <span class="rs-changes__title">Recent changes</span>
+      <span class="rs-changes__sub">auto-detected each refresh · signings · departures · value &amp; contract moves</span>
+    </div>
+    <div class="rs-changes__list" id="rs-changes-list"></div>
+  </div>
+
   <div class="rs-tools">
     <label class="rs-search">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -136,6 +166,18 @@
     return v ? "€" + v : "—";
   }
   function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  // "2028-06-30" → "'28 · 2y left" (or "8mo left" / "expired"); shows remaining term
+  function contractLabel(iso) {
+    var end = new Date(iso + "T00:00:00");
+    if (isNaN(end)) return esc(iso);
+    var now = new Date();
+    var months = (end.getFullYear() - now.getFullYear()) * 12 + (end.getMonth() - now.getMonth());
+    var yr = "'" + String(end.getFullYear()).slice(-2);
+    if (months <= 0) return yr + " · expired";
+    if (months < 12) return yr + " · " + months + "mo left";
+    var y = Math.floor(months / 12), m = months % 12;
+    return yr + " · " + y + "y" + (m ? " " + m + "mo" : "") + " left";
+  }
 
   function render(data) {
     var clubs = data.clubs || [];
@@ -153,9 +195,10 @@
       var squad = ORDER.filter(function (g) { return groups[g]; }).map(function (g) {
         var rows = groups[g].map(function (p) {
           var meta = [p.pos, p.age != null ? p.age + "y" : "", p.nat].filter(Boolean).join(" · ");
+          var contract = p.contract_until ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>" : "";
           return '<div class="rs-row" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
             '<span class="rs-row__name">' + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") +
-            '<div class="rs-row__meta">' + esc(meta) + '</div></span>' +
+            '<div class="rs-row__meta">' + esc(meta) + contract + '</div></span>' +
             '<span class="rs-row__val">' + eur(p.val) + '</span></div>';
         }).join("");
         return '<div class="rs-pg pg-' + g + '"><div class="rs-pg__lab"><span class="rs-dot"></span>' +
@@ -209,6 +252,31 @@
   document.getElementById("rs-collapse").addEventListener("click", function () {
     Array.prototype.forEach.call(clubsEl.children, function (c) { c.classList.remove("open"); });
   });
+
+  // Recent-changes feed
+  function renderChanges(data) {
+    var changes = (data && data.changes) || [];
+    var wrap = document.getElementById("rs-changes");
+    var list = document.getElementById("rs-changes-list");
+    if (!changes.length) { wrap.hidden = true; return; }
+    var LABEL = { signing: "Signed", departure: "Left", value_change: "Value", contract_change: "Contract" };
+    list.innerHTML = changes.map(function (c) {
+      var when = "";
+      if (c.at) { var d = new Date(c.at); if (!isNaN(d)) when = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); }
+      return '<div class="rs-chg chg-' + esc(c.type) + '">' +
+        '<span class="rs-chg__type">' + esc(LABEL[c.type] || c.type) + '</span>' +
+        '<div class="rs-chg__body"><span class="rs-chg__player">' + esc(c.player) + '</span> ' +
+          '<span style="color:var(--text-tertiary)">· ' + esc(c.club) + '</span>' +
+          '<div class="rs-chg__detail">' + esc(c.detail || "") + '</div></div>' +
+        '<span class="rs-chg__when">' + when + '</span></div>';
+    }).join("");
+    wrap.hidden = false;
+  }
+
+  fetch("/api/transfer-changes?limit=60")
+    .then(function (r) { return r.json(); })
+    .then(renderChanges)
+    .catch(function () { /* feed is optional; silent */ });
 
   fetch("/api/rosters")
     .then(function (r) { return r.json(); })
