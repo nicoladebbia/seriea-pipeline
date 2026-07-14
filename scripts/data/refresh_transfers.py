@@ -91,6 +91,20 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         _log(f"rumors FAILED: {type(e).__name__}: {e}")
 
+    # 4. Second source — Wikipedia (exact date + independent cross-check). Serie A
+    #    only; display + data-quality, never fed to the model directly.
+    try:
+        from scraper.wiki_transfers import enrich_transfers_with_wiki, scrape_wiki_transfers
+        wk = scrape_wiki_transfers(season=args.season)
+        _log(f"wikipedia transfers: {len(wk)} rows")
+        # 5. Merge Wikipedia's date + confidence flag onto the TM spine.
+        enriched = enrich_transfers_with_wiki(season=args.season)
+        if enriched is not None and "n_sources" in enriched.columns:
+            dual = int((enriched["n_sources"] == 2).sum())
+            _log(f"cross-source enrichment: {dual}/{len(enriched)} TM rows dual-confirmed")
+    except Exception as e:  # noqa: BLE001 — a dead second source must not kill the refresh
+        _log(f"wikipedia/enrichment FAILED: {type(e).__name__}: {e}")
+
     _log("=== Serie A transfer refresh done ===")
     return 0
 

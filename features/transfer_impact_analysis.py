@@ -14,6 +14,7 @@ Data sources:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -256,13 +257,21 @@ def compute_january_window_features(
             "signing_integration": 1.0,
         }
 
-    # Filter to January window (Jan 1 - Jan 31)
-    if "date" in team_transfers.columns:
-        team_transfers["_date"] = pd.to_datetime(team_transfers["date"], errors="coerce")
-        jan_mask = team_transfers["_date"].dt.month == 1
-        jan_transfers = team_transfers[jan_mask]
+    # Filter to the WINTER (January) window via the scraped `window` tag. The
+    # transfers parquet has NO date column, so the old `else: assume all January`
+    # fallback ingested the WHOLE season as January — a within-row temporal leak
+    # (a September match got January signings). Filter on `window` instead:
+    # keep only winter. Untagged legacy rows default to summer → excluded (0), so
+    # a pre-backfill file yields no jan_* signal rather than re-leaking the season.
+    if "window" in team_transfers.columns:
+        winter_mask = team_transfers["window"].fillna("summer") == "winter"
+        jan_transfers = team_transfers[winter_mask]
     else:
-        jan_transfers = team_transfers  # Assume all are January if no date
+        # no window tag (file predates the backfill) → no winter signal, no leak
+        jan_transfers = team_transfers.iloc[0:0]
+
+    # phantom "End of loan" OUTs for bought-back loanees → drop from disruption
+    phantom_outs = _loan_to_permanent_outs(jan_transfers)
 
     # Arrivals
     type_col = "transfer_type" if "transfer_type" in jan_transfers.columns else "direction"
@@ -278,6 +287,10 @@ def compute_january_window_features(
     # Squad disruption from departures
     disruption = 0.0
     for _, dep in departures.iterrows():
+        # a bought-back loanee's "End of loan" OUT is a phantom departure — skip
+        dep_cat, _ = _transfer_materiality(dep.get("fee_text"), bool(dep.get("is_loan")))
+        if dep_cat == "loan_return" and _normalize_name(dep.get("player_name", "")) in phantom_outs:
+            continue
         minutes = pd.to_numeric(dep.get("minutes_played", 0), errors="coerce")
         if pd.isna(minutes):
             minutes = 0
@@ -411,6 +424,36 @@ def _transfer_materiality(fee_text: str, is_loan: bool) -> tuple[str, float]:
             _MATERIAL_WEIGHT)
 
 
+def _loan_to_permanent_outs(team_transfers: pd.DataFrame) -> set[str]:
+    """Normalized names of players whose OUT row is a PHANTOM 'End of loan'.
+
+    A player loaned in season N-1 then bought permanently in the summer gets BOTH
+    an "End of loan" OUT row (returning to the parent club) AND a real paid/free
+    IN row (the permanent purchase). The OUT is a phantom departure — the club
+    KEPT the player. This returns those names so both the net_squad_delta and the
+    squad_disruption departure loops can drop them (a bought-back loanee is an
+    arrival, not a departure).
+
+    Only the OUT that is specifically an "End of loan" AND paired with a
+    non-loan-return IN for the same player is dropped — a genuine sale still
+    counts, and a player who leaves on a fresh loan still counts.
+    """
+    tc = "transfer_type" if "transfer_type" in team_transfers.columns else "direction"
+    if tc not in team_transfers.columns:
+        return set()
+    # players with a REAL (non-return) arrival this club/window
+    real_in: set[str] = set()
+    end_of_loan_out: set[str] = set()
+    for _, row in team_transfers.iterrows():
+        cat, _ = _transfer_materiality(row.get("fee_text"), bool(row.get("is_loan")))
+        name = _normalize_name(row.get("player_name", ""))
+        if row.get(tc) == "in" and cat != "loan_return":
+            real_in.add(name)
+        elif row.get(tc) == "out" and cat == "loan_return":
+            end_of_loan_out.add(name)
+    return end_of_loan_out & real_in
+
+
 def _player_importance_lookup(
     season: str, minutes_path: Path | None = None
 ) -> dict[str, float]:
@@ -490,17 +533,47 @@ def compute_net_squad_delta(
     if tf.empty or "team" not in tf.columns:
         return {}
 
+    # Leak-free by construction: exclude WINTER-window transfers. This is a
+    # PRE-SEASON squad delta — the net talent present at match 1, applied to every
+    # match of the season. A summer signing is legitimately on the roster at match
+    # 38; a January signing must NOT retroactively inflate that season's August
+    # matches (training leak). Written as exclude-winter WITH A DEFAULT, never
+    # `== "summer"`: legacy files scraped before the window tag existed have no
+    # `window` column, and `.get("summer")` defaulting to "summer" keeps all their
+    # rows rather than silently zeroing the whole season.
+    if "window" in tf.columns:
+        tf = tf[tf["window"].fillna("summer") != "winter"]
+        if tf.empty:
+            return {}
+
     # last completed season's on-pitch importance (2026-27 window ⇒ 2025-2026)
     start = int(season.split("-")[0])
     prev_season = f"{start - 1}-{start}"
     importance = _player_importance_lookup(prev_season)
 
-    # market-value lookup (talent proxy), latest available season
+    # market-value lookup (talent proxy). MUST be the season-matched file, not
+    # the latest one: using the newest valuations for a historical season leaks
+    # future information (a 2019 transfer weighted by 2026 prices) and fabricates
+    # every historical delta — a walk-forward violation. Prefer the season's own
+    # file; if it is missing (older seasons), fall back to the nearest-PRIOR
+    # season's file, never a future one. For the live 2026-27 season this resolves
+    # to market_values_2026_2027 exactly, so the live signal is unaffected.
     mv_lookup: dict[str, float] = {}
-    mv_files = sorted((tm_dir).glob(f"{prefix}market_values_*.parquet"))
-    if mv_files:
+    season_key = season.replace("-", "_")
+    exact = tm_dir / f"{prefix}market_values_{season_key}.parquet"
+    if exact.exists():
+        mv_path: Path | None = exact
+    else:
+        # nearest-prior: largest start-year <= this season's start year
+        candidates = []
+        for p in tm_dir.glob(f"{prefix}market_values_*.parquet"):
+            m = re.search(r"market_values_(\d{4})_\d{4}", p.name)
+            if m and int(m.group(1)) <= start:
+                candidates.append((int(m.group(1)), p))
+        mv_path = max(candidates)[1] if candidates else None
+    if mv_path is not None:
         try:
-            mv = pd.read_parquet(mv_files[-1])
+            mv = pd.read_parquet(mv_path)
             mv["market_value_eur"] = pd.to_numeric(
                 mv.get("market_value_eur"), errors="coerce"
             )
@@ -535,19 +608,26 @@ def compute_net_squad_delta(
     for team, grp in tf.groupby("team"):
         arrivals_w = departures_w = 0.0
         n_in = n_out = 0
+        # phantom "End of loan" OUTs for players the club actually bought → drop
+        # them from the departure side (a bought-back loanee is not a departure).
+        phantom_outs = _loan_to_permanent_outs(grp)
         for _, row in grp.iterrows():
             cat, mat = _transfer_materiality(
                 row.get("fee_text"), bool(row.get("is_loan"))
             )
             w = player_weight(row["player_name"]) * mat
             direction = row["transfer_type"]
+            name = _normalize_name(row["player_name"])
             if direction == "in":
                 # skip a loan-return that is also leaving this window
-                if cat == "loan_return" and _normalize_name(row["player_name"]) in out_names:
+                if cat == "loan_return" and name in out_names:
                     continue
                 arrivals_w += w
                 n_in += 1
             elif direction == "out":
+                # skip a phantom "End of loan" OUT for a bought-back loanee
+                if cat == "loan_return" and name in phantom_outs:
+                    continue
                 departures_w += w
                 n_out += 1
         result[team.lower().strip()] = {
