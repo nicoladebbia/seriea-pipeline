@@ -624,6 +624,77 @@ def _tool_get_player_stats(args: dict) -> str:
                     + "\n".join(form_rows)
                 )
 
+                # Season-aggregate advanced Sofascore stats (2025-26 only). sof_rows
+                # spans ALL seasons (2017→2026), so scope to the current season before
+                # summing or a 30-year-old's career totals would leak in. These are the
+                # role-defining numbers the tool didn't surface: passing volume, defensive
+                # work rate, duels/aerials, creativity (big chances), and GK saves — all
+                # 100%-filled columns, verified. Per-90 where volume matters.
+                try:
+                    cur_sof = sof_rows[sof_rows["date"] >= "2025-08-01"] if "date" in sof_rows.columns else sof_rows
+                    if not cur_sof.empty:
+                        smin = float(cur_sof["minutes"].sum())
+                        p90 = smin / 90 if smin > 0 else 1
+
+                        def _ssum(col):
+                            return float(cur_sof[col].sum()) if col in cur_sof.columns else 0.0
+
+                        def _savg(col):
+                            return round(float(cur_sof[col].mean()), 2) if col in cur_sof.columns and cur_sof[col].notna().any() else None
+
+                        acc_p = _ssum("accurate_passes")
+                        tot_p = _ssum("total_passes")
+                        d_won = _ssum("duels_won")
+                        d_lost = _ssum("duels_lost")
+                        acc_lb = _ssum("accurate_long_balls")
+                        tot_lb = _ssum("total_long_balls")
+                        adv = {
+                            "matches": int(len(cur_sof)),
+                            "minutes": int(smin),
+                            "avg_rating": _savg("rating"),
+                            # passing / involvement
+                            "accurate_passes_total": int(acc_p),
+                            "passes_per_90": round(acc_p / p90, 1),
+                            "pass_accuracy_pct": round(100 * acc_p / tot_p, 1) if tot_p > 0 else None,
+                            "long_ball_accuracy_pct": round(100 * acc_lb / tot_lb, 1) if tot_lb > 0 else None,
+                            "touches_per_90": round(_ssum("touches") / p90, 1),
+                            "ball_recoveries_per_90": round(_ssum("ball_recoveries") / p90, 2),
+                            "possession_lost_per_90": round(_ssum("possession_lost") / p90, 1),
+                            # creativity
+                            "big_chances_created": int(_ssum("big_chances_created")),
+                            "big_chances_missed": int(_ssum("big_chances_missed")),
+                            "key_passes_per_90": round(_ssum("key_passes") / p90, 2),
+                            # defensive work rate
+                            "tackles": int(_ssum("tackles")),
+                            "interceptions": int(_ssum("interceptions")),
+                            "clearances": int(_ssum("clearances")),
+                            "blocks": int(_ssum("blocks")),
+                            "tackles_plus_int_per_90": round((_ssum("tackles") + _ssum("interceptions")) / p90, 2),
+                            "errors_leading_to_goal": int(_ssum("error_to_goal")),
+                            # duels
+                            "duels_won": int(d_won),
+                            "duel_win_pct": round(100 * d_won / (d_won + d_lost), 1) if (d_won + d_lost) > 0 else None,
+                            "aerials_won": int(_ssum("aerial_won")),
+                            # discipline
+                            "fouls": int(_ssum("fouls")),
+                            "was_fouled": int(_ssum("was_fouled")),
+                        }
+                        # Goalkeeper-only: saves (populated only for keepers — ~6% of rows).
+                        saves = _ssum("saves")
+                        if saves > 0:
+                            adv["saves"] = int(saves)
+                            adv["saves_per_90"] = round(saves / p90, 2)
+                        adv["_note"] = (
+                            "Season 2025-26 Sofascore aggregates. big_chances_missed vs "
+                            "goals = finishing waste; tackles_plus_int_per_90 = defensive "
+                            "work rate; pass_accuracy_pct + touches = involvement/security; "
+                            "duel_win_pct = physical dominance; errors_leading_to_goal is a "
+                            "hard red flag. Exact numbers — do not modify."
+                        )
+                        result["season_advanced_stats"] = adv
+                except Exception as e:  # noqa: BLE001 — advanced block is enrichment; never blocks
+                    log.warning("Advanced Sofascore aggregate failed: %s", e)
+
                 # Most recent match: add full team sheet + match events
                 latest = recent_sof.iloc[0]
                 latest_match_id = latest.get("match_id")
@@ -958,6 +1029,8 @@ def _tool_get_player_stats(args: dict) -> str:
                     xg = float(r.get("xg", 0) or 0)
                     a = float(r.get("assists", 0) or 0)
                     xa = float(r.get("xa", 0) or 0)
+                    npg = float(r.get("np_goals", 0) or 0)
+                    npxg = float(r.get("np_xg", 0) or 0)
                     seasons.append({
                         "season": r.get("season"),
                         "league": r.get("league"),
@@ -968,17 +1041,30 @@ def _tool_get_player_stats(args: dict) -> str:
                         "xg": round(xg, 1),
                         # + = clinical (scored more than chances warranted), − = wasteful
                         "goals_minus_xg": round(g - xg, 1),
+                        # NON-PENALTY goals vs xG — strips penalties, the truer finishing
+                        # signal for a penalty-taker (a striker padded by spot-kicks looks
+                        # clinical on raw xG but np_goals_minus_np_xg exposes open-play form)
+                        "np_goals": int(npg),
+                        "np_xg": round(npxg, 1),
+                        "np_goals_minus_np_xg": round(npg - npxg, 1),
                         "assists": int(a),
                         "xa": round(xa, 1),
                         "shots": int(r.get("shots", 0) or 0),
                         "key_passes": int(r.get("key_passes", 0) or 0),
+                        # buildup involvement: total xG of possessions the player was in
+                        # (chain) / in but not the shot or assist (buildup) — deep playmakers
+                        "xg_chain": round(float(r.get("xg_chain", 0) or 0), 1),
+                        "xg_buildup": round(float(r.get("xg_buildup", 0) or 0), 1),
                     })
                 result["understat_history"] = {
                     "note": (
                         "Understat per-season data (Serie A + Premier League only). "
-                        "goals_minus_xg > 0 = finishing above expected (clinical); "
-                        "< 0 = below expected (wasteful/unlucky). Use it verbatim — do "
-                        "not invent seasons or leagues not listed here."
+                        "goals_minus_xg > 0 = clinical, < 0 = wasteful/unlucky. "
+                        "np_goals_minus_np_xg = the same but PENALTY-STRIPPED (truer "
+                        "open-play finishing — use it for penalty-takers). xg_chain / "
+                        "xg_buildup = involvement in the buildup of chances (high = deep "
+                        "playmaker even with few goals). Use verbatim — never invent "
+                        "seasons or leagues not listed here."
                     ),
                     "player": uname,
                     "seasons": seasons,
@@ -2776,7 +2862,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_player_stats",
-        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — the key signal for judging a striker, e.g. Kean 8 goals on 15.4 xG = badly underperforming). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
+        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — e.g. Kean 8 goals on 15.4 xG = badly underperforming; plus non-penalty np_xg and buildup involvement xg_chain/xg_buildup), AND season advanced Sofascore stats (pass accuracy, touches, tackles+interceptions per 90, duel win %, big chances created/missed, errors leading to goals, GK saves) to profile the player's ROLE and physical/defensive/creative contribution beyond goals. NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3106,6 +3192,8 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - Show per-90 stats, not just totals (minutes matter).
 - Recent form (last 5): are they trending up or down? And WHY — tactical change, new partner, position shift, returning from injury.
 - If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap: "He's overperforming/underperforming his xG — here's what that means for the next few weeks."
+- **season_advanced_stats (Sofascore, this season)**: use these to profile the player beyond goals — pass_accuracy_pct + touches/passes per 90 = involvement/security; tackles_plus_int_per_90 + duel_win_pct + aerials = defensive/physical profile; big_chances_created = creation, big_chances_missed vs goals = finishing waste; errors_leading_to_goal is a hard red flag — always mention it if > 0. Don't dump the whole block; pick the 2-3 numbers that define THIS player's role and story.
+- **understat_history depth**: np_goals_minus_np_xg is finishing WITHOUT penalties — if a striker looks clinical on raw xG but the non-penalty gap is negative, he's penalty-padded (say so). xg_chain / xg_buildup high with few goals = a deep creator whose value doesn't show in the scoresheet.
 - If they have an upcoming prop: show the fair odds vs. market odds.
 
 ### Personalize the player take to the USER's betting state (you have it above)
