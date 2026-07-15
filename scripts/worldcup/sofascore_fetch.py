@@ -306,35 +306,78 @@ def fetch_played_stats() -> int:
     team_ids = team_ids_from_scrape()
     session = _session()
 
+    # ── Fail-fast health probe ───────────────────────────────────────────────
+    # Under a full IP-ban the detail endpoints don't 403 cleanly — get_json
+    # retries+backs-off on each of ~48 teams, so a fully-banned run HANGS for
+    # many minutes and only THEN prints its status (measured 2026-07-14). That
+    # both wastes the run and risks overlapping the next cron. So probe ONE team
+    # endpoint first: if it's down, we're banned — say so loudly and return now,
+    # instead of grinding the whole roster to reach the same conclusion slowly.
+    if team_ids:
+        probe_team, probe_tid = sorted(team_ids.items())[0]
+        try:
+            probe = get_json(session, f"team/{probe_tid}/events/last/0")
+        except SourceDownError:
+            probe = None
+        if probe is None:
+            print(
+                f"played-stats: SOURCE DOWN — probe team/{probe_tid}/events/last "
+                f"({probe_team}) returned nothing; Sofascore detail endpoints appear "
+                f"IP-banned. 0 rows appended, gap PERSISTS and self-heals on the first "
+                f"healthy run. Do NOT treat rc=0 as success. (Skipped the full-roster "
+                f"sweep to avoid a multi-minute hang against a banned source.)"
+            )
+            return 0
+        _sleep()
+
     new_rows: list[dict[str, Any]] = []
     now_iso = datetime.now(UTC).isoformat()
     breaker_open = False
+    # ── Health accounting so a "0 rows" outcome is never silent ──────────────
+    # A run can append 0 rows for two OPPOSITE reasons, and the old log
+    # ("0 player-match rows appended") couldn't tell them apart:
+    #   • source DOWN  — the endpoints are banned, the gap persists, retrying
+    #     won't help; this is the state to flag loudly.
+    #   • UP-TO-DATE   — every finished match is already captured; all good.
+    # We track: how many teams answered at all, how many finished matches we
+    # found that are NOT yet in the parquet (the real pending gap), and how
+    # many of those we couldn't fetch because the source went down mid-run.
+    teams_reachable = 0          # team/events/last calls that returned data
+    teams_down = 0               # team/events/last calls that returned None / raised
+    pending_uncaptured = 0       # finished, not-yet-in-parquet matches we saw
+    blocked_by_source = 0        # of those pending, ones we couldn't fetch (source down)
     for team, tid in sorted(team_ids.items()):
         if breaker_open:
             break
         try:
             payload = get_json(session, f"team/{tid}/events/last/0")
         except SourceDownError as exc:
+            teams_down += 1
             print(f"breaker: {exc} — appending {len(new_rows)} rows collected so far")
             break
         _sleep()
         if payload is None:
+            teams_down += 1
             continue
+        teams_reachable += 1
         for e in payload.get("events", []):
             eid = int(e["id"])
             if (team, eid) in seen:
                 continue
             if str(e.get("status", {}).get("type")) != "finished":
                 continue
+            pending_uncaptured += 1
             is_home = int(e["homeTeam"].get("id", -1)) == tid
             try:
                 lineups = get_json(session, f"event/{eid}/lineups")
             except SourceDownError:
+                blocked_by_source += 1
                 breaker_open = True
                 print(f"breaker open — appending {len(new_rows)} rows collected so far")
                 break
             _sleep()
             if lineups is None:
+                blocked_by_source += 1  # source served nothing for this event
                 continue
             side = "home" if is_home else "away"
             new_rows.extend(
@@ -350,7 +393,32 @@ def fetch_played_stats() -> int:
 
         updated = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
         updated.to_parquet(SOFA_PARQUET, index=False)
-    print(f"played-stats: {len(new_rows)} player-match rows appended")
+
+    # ── Loud, self-explaining status line (the whole point of this fix) ──────
+    total_teams = len(team_ids)
+    if teams_reachable == 0 and total_teams:
+        # Not one team endpoint answered — the detail endpoints are banned.
+        status = (
+            f"played-stats: SOURCE DOWN — 0/{total_teams} team endpoints reachable, "
+            f"0 rows appended. Sofascore detail endpoints appear IP-banned; the gap "
+            f"PERSISTS and will self-heal on the first healthy run. Do NOT treat rc=0 "
+            f"as success."
+        )
+    elif len(new_rows) == 0 and pending_uncaptured == 0:
+        status = (
+            f"played-stats: UP-TO-DATE — {teams_reachable}/{total_teams} teams "
+            f"reachable, 0 uncaptured finished matches, 0 rows appended (nothing to do)."
+        )
+    else:
+        status = (
+            f"played-stats: {len(new_rows)} rows appended | "
+            f"{teams_reachable}/{total_teams} teams reachable, {teams_down} down | "
+            f"{pending_uncaptured} uncaptured finished matches seen, "
+            f"{blocked_by_source} still blocked by source"
+            + (" (PARTIAL — source flapped mid-run, gap not fully drained)"
+               if blocked_by_source else "")
+        )
+    print(status)
     return len(new_rows)
 
 
