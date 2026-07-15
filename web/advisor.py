@@ -1072,11 +1072,67 @@ def _tool_get_player_stats(args: dict) -> str:
     except Exception as e:  # noqa: BLE001 — Understat is enrichment; never blocks the answer
         log.warning("Understat history lookup failed: %s", e)
 
+    # 6. World Cup 2026 tournament performance. Just played (Jun 11–Jul 19) — a
+    #    player's form/fitness/minutes there directly colours the new club season
+    #    (deep run + heavy minutes = fatigue risk; strong WC = confidence/value).
+    #    Filter to the ACTUAL tournament ("FIFA World Cup, Group X" / "…, Knockout")
+    #    — NOT the "World Cup Qual…" rows, which are a different competition.
+    try:
+        import pandas as pd
+        wc_path = DATA_DIR / "worldcup" / "sofascore_intl_player_stats.parquet"
+        if wc_path.exists():
+            wc = pd.read_parquet(wc_path)
+            if "tournament" in wc.columns:
+                is_wc = wc["tournament"].astype(str).str.startswith("FIFA World Cup, ")
+                is_qual = wc["tournament"].astype(str).str.contains("Qual", case=False, na=False)
+                wc = wc[is_wc & ~is_qual]
+                if "date" in wc.columns:
+                    wc = wc[pd.to_datetime(wc["date"], utc=True, errors="coerce") >= "2026-06-01"]
+            wmask = _player_name_match(wc["player_name"], player_q)
+            whit = wc[wmask]
+            if not whit.empty:
+                # canonical name (guards the "David" collision — 11 different Davids)
+                wname = whit["player_name"].mode().iloc[0]
+                whit = whit[whit["player_name"] == wname]
+                wmin = int(whit["minutes"].sum())
+                wmp = int(whit["match_id"].nunique()) if "match_id" in whit.columns else len(whit)
+                wgoals = int(whit["goals"].sum())
+                national_team = whit["team"].mode().iloc[0] if "team" in whit.columns else None
+                ratings = whit["rating"].dropna()
+                wavg = round(float(ratings.mean()), 1) if not ratings.empty else None
+                # Pre-render as a markdown table (same anti-hallucination pattern as
+                # match_performances) so the model copies exact numbers verbatim and
+                # never mistakes a nested JSON array for "truncated" data.
+                wc_header = "| Date | Opponent | Start | Min | G | Shots | Rating |"
+                wc_sep = "|------|----------|-------|-----|---|-------|--------|"
+                wc_lines = [wc_header, wc_sep]
+                for _, r in whit.sort_values("date", ascending=False).iterrows():
+                    rt = round(float(r["rating"]), 1) if pd.notna(r.get("rating")) else "-"
+                    st = "Y" if r.get("started") else "sub"
+                    wc_lines.append(
+                        f"| {str(r.get('date',''))[:10]} | {r.get('opponent','')} | {st} "
+                        f"| {int(r.get('minutes',0) or 0)} | {int(r.get('goals',0) or 0)} "
+                        f"| {int(r.get('shots',0) or 0)} | **{rt}** |"
+                    )
+                result["world_cup_2026"] = (
+                    f"FIFA WORLD CUP 2026 PERFORMANCE (this field IS present and populated — "
+                    f"the player DID feature; report it, never say it's missing). "
+                    f"{national_team}: {wmp} matches, {wmin} min, {wgoals} goals, "
+                    f"avg rating {wavg}. He JUST played this tournament (Jun-Jul 2026) — "
+                    f"weigh fatigue (heavy minutes/deep run) vs form (goals/ratings) against "
+                    f"his club season. Exact numbers, copy verbatim, do not invent matches "
+                    f"beyond this table:\n\n"
+                    + "\n".join(wc_lines)
+                )
+    except Exception as e:  # noqa: BLE001 — WC block is enrichment; never blocks the answer
+        log.warning("World Cup lookup failed: %s", e)
+
     if (
         "season_stats" not in result
         and "upcoming_props" not in result
         and "market_and_salary" not in result
         and "understat_history" not in result
+        and "world_cup_2026" not in result
     ):
         return json.dumps({"error": f"No data found for player '{args.get('player')}'. Try the full name (e.g., 'Lautaro Martinez')."})
 
@@ -2862,7 +2918,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_player_stats",
-        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — e.g. Kean 8 goals on 15.4 xG = badly underperforming; plus non-penalty np_xg and buildup involvement xg_chain/xg_buildup), AND season advanced Sofascore stats (pass accuracy, touches, tackles+interceptions per 90, duel win %, big chances created/missed, errors leading to goals, GK saves) to profile the player's ROLE and physical/defensive/creative contribution beyond goals. NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
+        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — e.g. Kean 8 goals on 15.4 xG = badly underperforming; plus non-penalty np_xg and buildup involvement xg_chain/xg_buildup), AND season advanced Sofascore stats (pass accuracy, touches, tackles+interceptions per 90, duel win %, big chances created/missed, errors leading to goals, GK saves) to profile the player's ROLE and physical/defensive/creative contribution beyond goals, AND their FIFA WORLD CUP 2026 performance (matches, minutes, goals, ratings — just played Jun-Jul 2026, so it shapes fitness/form entering the new club season). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3108,7 +3164,7 @@ After calling tools, do NOT just summarize the data. Your job is to THINK DEEPER
 - For match analysis: call BOTH get_match_prediction AND get_match_context. Always.
 - For "what happened today" / results / scores: call get_results with today's date.
 - For "best bets" / "what should I bet": call get_value_bets.
-- For player questions: call get_player_stats (it has full season data, per-90s, team ranking).
+- For player questions: call get_player_stats (it has club season data, per-90s, team ranking, wage/contract, Understat xG history, AND World Cup 2026 performance). ALWAYS call it — even when the question is specifically about a player's WORLD CUP form ("how did David do at the World Cup?", "his WC goals", "did he play well for his country"). The WC data lives INSIDE get_player_stats (world_cup_2026 field); there is no separate World Cup player tool. Never answer a player's WC performance from memory — call get_player_stats first. If the world_cup_2026 field is absent after the call, THEN say he didn't feature.
 - For team questions: call get_team_detail (has top scorers, form, standings, recent results).
 - For "who will score" / goalscorer questions: call get_match_scorers. It has anytime goal probabilities, xG/90, season goals, recent form, and bookmaker odds per player.
 - For "settle my bets" / "update results" / "check if my bets won" / "refresh results": call settle_bets. This fetches live results and settles everything. Then call get_results and get_bankroll_status to show the user what happened.
@@ -3194,6 +3250,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap: "He's overperforming/underperforming his xG — here's what that means for the next few weeks."
 - **season_advanced_stats (Sofascore, this season)**: use these to profile the player beyond goals — pass_accuracy_pct + touches/passes per 90 = involvement/security; tackles_plus_int_per_90 + duel_win_pct + aerials = defensive/physical profile; big_chances_created = creation, big_chances_missed vs goals = finishing waste; errors_leading_to_goal is a hard red flag — always mention it if > 0. Don't dump the whole block; pick the 2-3 numbers that define THIS player's role and story.
 - **understat_history depth**: np_goals_minus_np_xg is finishing WITHOUT penalties — if a striker looks clinical on raw xG but the non-penalty gap is negative, he's penalty-padded (say so). xg_chain / xg_buildup high with few goals = a deep creator whose value doesn't show in the scoresheet.
+- **world_cup_2026**: if present, the player JUST played the World Cup — weave it in because it changes the picture: heavy minutes + a deep run = fatigue/burnout risk starting the club season; a strong tournament (goals, high ratings) = confidence and form carrying over; barely featured or nation exited early = fresher legs, less wear. Contrast it with club form — a player quiet at his club but sharp at the WC (or vice versa) is exactly the kind of shift worth flagging. If world_cup_2026 is ABSENT, the player didn't feature at the 2026 WC (not selected / nation didn't qualify) — don't invent a tournament for him.
 - If they have an upcoming prop: show the fair odds vs. market odds.
 
 ### Personalize the player take to the USER's betting state (you have it above)
@@ -3258,6 +3315,7 @@ You know the user's live bankroll, ROI, peak, drawdown, and streak (injected in 
 - When asked about season-end predictions (final standings, top scorer, best player), be clear these are SPECULATIVE PROJECTIONS, not model outputs. Use phrases like "Based on current form and extrapolation..." rather than presenting projections as precise data. Our model predicts individual MATCHES, not season outcomes.
 - Don't pad responses with filler. Every sentence should either contain data, an insight, or a coaching decision. But DO give the full story when the question calls for it — a "tell me about Napoli" deserves more than 2 sentences.
 - **NEVER list your capabilities.** If the user asks something outside Serie A, Premier League, or the World Cup, just say "That's not my area — I cover Serie A, Premier League and the World Cup." in one sentence. Do NOT show a bulleted list of what you can do. The user already knows.
+- **A player's WORLD CUP performance is IN get_player_stats — call it, don't punt.** If asked how a player did at the WC, call get_player_stats (the world_cup_2026 field has his real matches/minutes/goals/ratings). Do NOT say "I don't have his WC data" without calling the tool first — that data exists. Only after the call, if world_cup_2026 is absent, does he not feature.
 - **WORLD CUP 2026 (Jun 11–Jul 19) is FULLY in scope.** The /worldcup dashboard, pre-match alerts, ladders, and Nicola's bet tracking all run during the tournament. If Nicola mentions a WC team, match, or bet (e.g. "Canada win at 1.80"): that is a WORLD CUP bet — do NOT refuse it, do NOT call it out-of-scope. If he's stating a bet he placed, tell him the exact logging format: "/bet 60 @ 1.80 Canada win" (or tap the 🎫 button on the match alert). The bot's bet commands are /bet, /mybets, /settle won|lost, /balance, /ladder. You never log money yourself — you point at the format.
 - **NEVER give up on typos or unclear names.** If the user writes something that sounds like a player name (e.g., "necropods" → "Nico Paz", "lukako" → "Lukaku", "kvara" → "Kvaratskhelia"), interpret it and call the tool. If you're unsure, make your best guess and say "I'm guessing you mean [X] — let me check." NEVER say "I don't know what that is" when it's obviously a misspelled name.""",
         "",
@@ -3525,7 +3583,11 @@ def _select_model(message: str, history: list) -> str:
 
 _conversations: dict[str, list] = {}
 MAX_HISTORY = 40  # max messages (includes tool call/result pairs)
-MAX_TOOL_RESULT_CHARS = 6000  # truncate large tool results to save tokens
+MAX_TOOL_RESULT_CHARS = 12000  # truncate large tool results to save tokens.
+# Raised from 6000: the enriched get_player_stats (advanced Sofascore stats +
+# Understat multi-season + World Cup 2026) runs ~8.5k chars, and the WC block is
+# near the end — a 6000 cap silently chopped it, so the model correctly reported
+# "no WC data" (the field really was truncated away before it arrived).
 MAX_HISTORY_TOOL_RESULT_CHARS = 1500  # aggressively compress old tool results in history
 
 
