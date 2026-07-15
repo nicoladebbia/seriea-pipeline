@@ -3905,6 +3905,13 @@ def _verify_answer_critic(answer: str, tool_data: str, api_key: str) -> list[str
             temperature=0,  # deterministic — a fact-check must not vary draw-to-draw
             messages=[{"role": "user", "content": critic_prompt}],
         )
+        # The critic is a real billed call — track it (was invisible in api_usage.json,
+        # which understated spend on every long answer that triggered a spin check).
+        if hasattr(resp, "usage"):
+            _track_usage(
+                resp.usage.__dict__ if hasattr(resp.usage, "__dict__") else {},
+                model=_CRITIC_MODEL,
+            )
         out = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
         if not out or out.upper().startswith("CLEAN") or "CLEAN" == out.upper():
             return []
@@ -3979,8 +3986,23 @@ def _compress_history(history: list) -> list:
 # Cost tracking
 # ---------------------------------------------------------------------------
 
-def _track_usage(usage: dict):
-    """Append usage stats to data/api_usage.json."""
+# Per-model pricing, USD per 1M tokens: (input, output, cache_read, cache_write).
+# A request billed as the wrong tier is why the old Sonnet-only math over-charged
+# every Haiku request ~3-5x. Keyed by the exact model IDs above.
+_PRICING = {
+    _MODEL_SONNET: (3.0, 15.0, 0.30, 3.75),   # Sonnet 4.6
+    _MODEL_HAIKU: (1.0, 5.0, 0.10, 1.25),     # Haiku 4.5
+}
+# Unknown model → assume the more expensive tier so cost is never silently understated.
+_PRICING_DEFAULT = _PRICING[_MODEL_SONNET]
+
+
+def _track_usage(usage: dict, model: str = _MODEL_SONNET):
+    """Append usage stats to data/api_usage.json, priced by the model that ran.
+
+    `model` MUST be the model ID that produced `usage` — the streaming answer loop
+    and the spin-critic run on different tiers, so passing the wrong one mis-prices
+    the request. Unknown model IDs fall back to Sonnet pricing (never understate)."""
     try:
         data = load_json_safe(USAGE_FILE, default={"daily": {}, "total": {}})
         today = datetime.now().strftime("%Y-%m-%d")
@@ -3999,12 +4021,12 @@ def _track_usage(usage: dict):
         day["cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
         day["cache_creation_tokens"] += usage.get("cache_creation_input_tokens", 0)
 
-        # Sonnet 4.6 pricing: input $3/M, output $15/M, cache read $0.30/M, cache write $3.75/M
+        in_p, out_p, cr_p, cw_p = _PRICING.get(model, _PRICING_DEFAULT)
         cost = (
-            usage.get("input_tokens", 0) * 3.0 / 1_000_000
-            + usage.get("output_tokens", 0) * 15.0 / 1_000_000
-            + usage.get("cache_read_input_tokens", 0) * 0.30 / 1_000_000
-            + usage.get("cache_creation_input_tokens", 0) * 3.75 / 1_000_000
+            usage.get("input_tokens", 0) * in_p / 1_000_000
+            + usage.get("output_tokens", 0) * out_p / 1_000_000
+            + usage.get("cache_read_input_tokens", 0) * cr_p / 1_000_000
+            + usage.get("cache_creation_input_tokens", 0) * cw_p / 1_000_000
         )
         day["estimated_cost"] = round(day["estimated_cost"] + cost, 6)
 
@@ -4109,7 +4131,10 @@ def chat():
                     # Get final message for usage tracking
                     final_message = stream.get_final_message()
                     if final_message and hasattr(final_message, "usage"):
-                        _track_usage(final_message.usage.__dict__ if hasattr(final_message.usage, "__dict__") else {})
+                        _track_usage(
+                            final_message.usage.__dict__ if hasattr(final_message.usage, "__dict__") else {},
+                            model=model,
+                        )
 
                     stop_reason = final_message.stop_reason if final_message else "end_turn"
 
