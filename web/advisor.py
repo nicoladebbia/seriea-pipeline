@@ -1100,6 +1100,73 @@ def _tool_get_player_stats(args: dict) -> str:
                 national_team = whit["team"].mode().iloc[0] if "team" in whit.columns else None
                 ratings = whit["rating"].dropna()
                 wavg = round(float(ratings.mean()), 1) if not ratings.empty else None
+                # Freshness guard. The player-stats parquet is the SLOWEST-updating WC
+                # file — it lags the live bracket by ~1 match. Cross-reference the
+                # authoritative, fresher international_results.csv to detect the lag and
+                # warn the model, so a stale per-player goal count is NEVER presented as
+                # final. (Paid lesson: the parquet said Lautaro=2g when results showed 3,
+                # and dated Arg-Switzerland a day late.)
+                wc_stale_note = ""
+                try:
+                    last_in_parquet = pd.to_datetime(
+                        whit["date"], utc=True, errors="coerce"
+                    ).max()
+                    res_path = DATA_DIR / "worldcup" / "international_results.csv"
+                    if national_team and res_path.exists():
+                        res = pd.read_csv(res_path)
+                        res["date"] = pd.to_datetime(
+                            res["date"], utc=True, errors="coerce"
+                        )
+                        res = res[
+                            res["tournament"].astype(str).str.contains(
+                                "World Cup", na=False
+                            )
+                            & (res["date"] >= "2026-06-01")
+                        ]
+                        team_res = res[
+                            (res["home_team"] == national_team)
+                            | (res["away_team"] == national_team)
+                        ]
+                        played = team_res.dropna(subset=["home_score", "away_score"])
+                        sched = team_res[team_res["home_score"].isna()]
+                        n_played = len(played)
+                        last_played = (
+                            played["date"].max() if not played.empty else None
+                        )
+                        next_sched = sched["date"].min() if not sched.empty else None
+                        # Missing matches = the parquet has fewer than the results file.
+                        missing = n_played - wmp
+                        parts = []
+                        if missing > 0 or (
+                            last_played is not None
+                            and pd.notna(last_in_parquet)
+                            and last_played > last_in_parquet
+                        ):
+                            parts.append(
+                                f"DATA FRESHNESS WARNING: this per-player table is from a "
+                                f"file that lags the live tournament. {national_team} have "
+                                f"actually PLAYED {n_played} WC matches (through "
+                                f"{str(last_played)[:10]}), but this table only captured "
+                                f"{wmp} of them — the goal count and ratings below MAY BE "
+                                f"BEHIND by the most recent match(es). Do NOT present these "
+                                f"as the player's FINAL tournament totals."
+                            )
+                        if next_sched is not None and pd.notna(next_sched):
+                            row = sched.sort_values("date").iloc[0]
+                            opp = (
+                                row["away_team"]
+                                if row["home_team"] == national_team
+                                else row["home_team"]
+                            )
+                            parts.append(
+                                f"{national_team}'s NEXT WC match is still to be played: "
+                                f"vs {opp} on {str(next_sched)[:10]} — the tournament is "
+                                f"LIVE, not finished."
+                            )
+                        if parts:
+                            wc_stale_note = " ".join(parts) + " "
+                except Exception as fe:  # noqa: BLE001
+                    log.warning("WC freshness cross-check failed: %s", fe)
                 # Pre-render as a markdown table (same anti-hallucination pattern as
                 # match_performances) so the model copies exact numbers verbatim and
                 # never mistakes a nested JSON array for "truncated" data.
@@ -1117,7 +1184,8 @@ def _tool_get_player_stats(args: dict) -> str:
                 result["world_cup_2026"] = (
                     f"FIFA WORLD CUP 2026 PERFORMANCE (this field IS present and populated — "
                     f"the player DID feature; report it, never say it's missing). "
-                    f"{national_team}: {wmp} matches, {wmin} min, {wgoals} goals, "
+                    f"{wc_stale_note}"
+                    f"{national_team}: {wmp} matches captured here, {wmin} min, {wgoals} goals, "
                     f"avg rating {wavg}. He JUST played this tournament (Jun-Jul 2026) — "
                     f"weigh fatigue (heavy minutes/deep run) vs form (goals/ratings) against "
                     f"his club season. Exact numbers, copy verbatim, do not invent matches "
