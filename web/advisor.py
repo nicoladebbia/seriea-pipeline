@@ -3763,6 +3763,12 @@ def _build_greeting() -> dict:
 _MODEL_SONNET = "claude-sonnet-4-6"
 _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
+# The post-answer spin critic (_verify_answer_critic). Spin-vs-honest-bearish is a
+# fine-judgment call — Haiku's weakest lane — so the critic runs on Sonnet. It fires
+# once per grounded answer, AFTER streaming completes (off the latency critical path),
+# so the extra cost is negligible and reliability matters more than speed here.
+_CRITIC_MODEL = _MODEL_SONNET
+
 # Keywords/patterns that need Sonnet's deeper reasoning
 _SONNET_PATTERNS = {
     # Match analysis requiring multi-tool reasoning
@@ -3816,6 +3822,102 @@ def _select_model(message: str, history: list) -> str:
 
     # Default to Haiku for everything else
     return _MODEL_HAIKU
+
+
+def _verify_answer_deterministic(answer: str) -> list[str]:
+    """DETERMINISTIC post-generation checks — the only true-gate-strength part.
+
+    Catches self-contradictions that are unambiguous from the text alone: the same
+    quantity stated as two different values in one answer (proven on the real
+    Lautaro 16-vs-17 goal specimen). Returns a list of note strings (empty = clean).
+    This is NOT semantic — it only fires on hard numeric contradictions, so it has
+    no false positives on legit derived numbers (goals_minus_xg, "roughly 16-17").
+    """
+    import re
+    notes: list[str] = []
+    # Same-season goal count stated as two different integers → contradiction.
+    # Match "N goal"/"N goals" but NOT "N+ goal" (a target like "20+ goal campaign").
+    goal_nums = {
+        int(n)
+        for n, plus in re.findall(r'\b(\d{1,2})(\+?)\s+goals?\b', answer)
+        if not plus and int(n) < 60
+    }
+    if len(goal_nums) > 1:
+        lo, hi = min(goal_nums), max(goal_nums)
+        # only flag a NARROW spread (1-2) — that's the source-conflict signature;
+        # a wide spread is likely two different players/seasons legitimately cited.
+        if hi - lo <= 2:
+            notes.append(
+                f"This answer states two different season goal totals ({lo} and {hi}). "
+                f"These come from two data sources (Understat vs the club-stats feed) "
+                f"that differ by match coverage — the real figure is ~{lo}-{hi}, not both."
+            )
+    return notes
+
+
+def _verify_answer_critic(answer: str, tool_data: str, api_key: str) -> list[str]:
+    """PROBABILISTIC post-generation critic — a FLAG, not a hard gate.
+
+    A separate Sonnet call (temp=0) re-reads the streamed answer against the raw
+    tool data with a REFUTE framing, looking for narrative-spin the prompt rules can't
+    deterministically prevent: a real number inflated into a story ("best of his
+    career"), an invented reassurance ("that tracks with his shot volume"), a
+    forecast from a few points ("classic bounce-back"). Returns short note strings.
+
+    Honest labelling: this is a second opinion, not a guarantee. It has false
+    positives and negatives. It NEVER blocks — the answer already streamed.
+    """
+    if not answer or len(answer) < 200:
+        return []  # too short to contain a developed narrative
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        critic_prompt = (
+            "You are checking a betting analyst's answer for NARRATIVE SPIN — real "
+            "numbers editorialised into a more confident/bullish story than the data "
+            "supports. Below is the ANALYST ANSWER and the full RAW DATA it drew from.\n\n"
+            "Flag ONLY these (spin, not gaps):\n"
+            "1. A neutral or bad signal spun positive with a REASON not in the data — "
+            "e.g. 'big chances missed sounds alarming but tracks with his shot volume' "
+            "(no such ratio is given); a neutral xG delta called 'the best calibration "
+            "of his career' when the season rows don't show this year has the smallest "
+            "|goals_minus_xg|.\n"
+            "2. A predictive story from a few points — 'bounce-back pattern', 'due for a "
+            "big season', 'classic regression-to-form'. Description is fine; forecasting is not.\n"
+            "3. A superlative ('best', 'career-high', 'elite') asserted without a data "
+            "row that ranks it as such.\n\n"
+            "DO NOT flag:\n"
+            "- A number that simply isn't in this data dump (it may be in a block not shown, "
+            "or legitimately derived like goals_minus_xg or 'roughly 16-17'). You are NOT "
+            "checking numeric provenance — only spin. If your only objection is 'that number "
+            "isn't here', say CLEAN.\n"
+            "- Honest bearish statements (calling a number a risk/waste/step-down is GOOD).\n"
+            "- Two slightly different counts of the same stat (a separate check handles that).\n\n"
+            "If the answer reports the data straight (even bluntly), return exactly 'CLEAN'. "
+            "Otherwise return 1-3 terse bullets, each quoting the exact spun phrase and why "
+            "it's unsupported. No preamble.\n\n"
+            f"=== RAW DATA ===\n{tool_data[:16000]}\n\n"
+            f"=== ANALYST ANSWER ===\n{answer[:4000]}"
+        )
+        resp = client.messages.create(
+            model=_CRITIC_MODEL,
+            max_tokens=400,
+            temperature=0,  # deterministic — a fact-check must not vary draw-to-draw
+            messages=[{"role": "user", "content": critic_prompt}],
+        )
+        out = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+        if not out or out.upper().startswith("CLEAN") or "CLEAN" == out.upper():
+            return []
+        # split into bullet lines, strip markers
+        lines = [
+            ln.lstrip("-•* ").strip()
+            for ln in out.splitlines()
+            if ln.strip() and "CLEAN" not in ln.upper()
+        ]
+        return [ln for ln in lines if len(ln) > 10][:3]
+    except Exception as e:  # noqa: BLE001 — critic is best-effort; never breaks the answer
+        log.warning("Answer critic failed: %s", e)
+        return []
 
 
 _conversations: dict[str, list] = {}
@@ -3953,6 +4055,10 @@ def chat():
             model = _select_model(user_message, history)
             max_out = 4096 if model == "claude-sonnet-4-6" else 2048
 
+            # Accumulate raw tool data across rounds so the post-generation critic
+            # can compare the final answer against everything the tools returned.
+            all_tool_data: list[str] = []
+
             for round_num in range(max_rounds):
                 # Stream response with prompt caching
                 with client.messages.stream(
@@ -4011,6 +4117,26 @@ def chat():
                 if stop_reason != "tool_use" or not tool_uses:
                     if full_text:
                         history.append({"role": "assistant", "content": full_text})
+                    # ── Post-generation verification (flag, NOT a gate) ──────────────
+                    # The answer has already streamed to the user; we cannot retract it.
+                    # We run two checks and, if either fires, append a correction note
+                    # the frontend renders below the answer:
+                    #   • deterministic: hard numeric self-contradictions (always run)
+                    #   • critic (Sonnet, temp=0): narrative-spin vs the tool data
+                    #     (only when the answer was grounded on tool calls — skip chit-chat)
+                    try:
+                        notes = _verify_answer_deterministic(full_text)
+                        if all_tool_data and len(full_text) >= 200:
+                            notes += _verify_answer_critic(
+                                full_text, "\n\n".join(all_tool_data), api_key
+                            )
+                        # de-dup while preserving order
+                        seen: set[str] = set()
+                        notes = [n for n in notes if not (n in seen or seen.add(n))]
+                        if notes:
+                            yield f"data: {json.dumps({'type': 'data_note', 'notes': notes})}\n\n"
+                    except Exception as _ve:  # noqa: BLE001 — verification never breaks the answer
+                        log.warning("Answer verification failed: %s", _ve)
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
@@ -4048,6 +4174,7 @@ def chat():
                         "tool_use_id": tu["id"],
                         "content": result_str,
                     })
+                    all_tool_data.append(result_str)
 
                     # Signal tool use to frontend
                     yield f"data: {json.dumps({'type': 'tool_use', 'tool': tu['name']})}\n\n"
