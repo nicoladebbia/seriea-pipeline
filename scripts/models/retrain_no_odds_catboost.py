@@ -306,6 +306,31 @@ def main(
     log.info(f"Using target column: {target_col}")
     y_str = df[target_col].copy()  # Keep original string labels
 
+    # Exclude rows without a supervisable label — LOUD, never silent.
+    # Unplayed / unparsed matches carry result="U" (or NaN): they cannot be trained
+    # on or scored against. Off-season, the last rounds of a season can sit unparsed
+    # (pipeline hibernates ~mid-May before season-end scores land). Drop them, but
+    # log the count + reason so an incomplete-season retrain is never masked.
+    valid_label = y_str.isin(LABEL_MAP.keys())
+    n_unlabeled = int((~valid_label).sum())
+    if n_unlabeled:
+        bad_vals = y_str[~valid_label].value_counts(dropna=False).to_dict()
+        log.warning(
+            "EXCLUDING %d rows with no valid H/D/A label (values=%s) — unplayed/unparsed "
+            "matches, cannot be supervised. Retraining on the labelled remainder only.",
+            n_unlabeled, bad_vals,
+        )
+        # Surface WHICH matches, so an incomplete season is visible not buried.
+        try:
+            sample_cols = [c for c in ("season", "match_date", "home_team", "away_team") if c in df.columns]
+            if sample_cols:
+                for _, r in df.loc[~valid_label, sample_cols].iterrows():
+                    log.warning("  unlabeled: %s", " | ".join(str(r[c]) for c in sample_cols))
+        except Exception as e:  # noqa: BLE001 - logging aid only, must never abort a retrain
+            log.warning("  (could not enumerate unlabeled rows: %s)", e)
+        df = df[valid_label.values].copy()
+        y_str = y_str[valid_label].copy()
+
     # Convert string labels (H/D/A) to integers (0/1/2) for training
     if y_str.dtype == object:
         log.info(f"Converting labels: {y_str.value_counts().to_dict()}")
