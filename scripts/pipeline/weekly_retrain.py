@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -379,6 +380,8 @@ def retrain_xg_models(dry_run: bool = False) -> dict:
     try:
         cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "models" / "train_unified.py"),
                "--mode", "xg_only"]
+        if dry_run:
+            cmd.append("--dry-run")
 
         proc = subprocess.run(
             cmd, cwd=str(PROJECT_ROOT),
@@ -988,7 +991,18 @@ def main():
         print(f"New metrics: acc={m.get('ensemble_accuracy', 0):.4f}  ll={m.get('ensemble_log_loss', 0):.4f}")
     print(f"{'=' * 60}")
 
-    sys.exit(0 if result.get("promoted") or result.get("dry_run") else 1)
+    # Hard teardown: the in-process ensemble training (train_universal) spins up
+    # joblib/catboost worker pools whose atexit join can hang the interpreter after
+    # main() returns — a wedged launchd job (runbook 8b defect #3). Everything durable
+    # (state, metrics history, model .cbm files) is already persisted in-body before
+    # this point, and no atexit handler is registered in the retrain modules, so a hard
+    # exit here skips nothing essential. os._exit bypasses the pool-join teardown while
+    # preserving the exit code, so a failed/not-promoted retrain still reports 1.
+    exit_code = 0 if result.get("promoted") or result.get("dry_run") else 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":
