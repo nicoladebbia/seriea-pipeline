@@ -525,8 +525,20 @@ def _tool_get_player_stats(args: dict) -> str:
                 "minutes": int(total_minutes),
                 "goals": int(player_rows["goals"].sum()),
                 "assists": int(player_rows["assists"].sum()),
-                "xg": round(player_rows["xg"].sum(), 2) if "xg" in player_rows.columns else None,
-                "xa": round(player_rows["xg_assist"].sum(), 2) if "xg_assist" in player_rows.columns else None,
+                # FBref xG in the parsed parquet is often broken (sums to 0.0 even
+                # for a striker with goals+shots). A 0.0 next to real shots is a
+                # DATA GAP, not reality — null it so the model uses Understat's real
+                # xG (surfaced in understat_history) instead of quoting a false 0.0.
+                "xg": (
+                    round(player_rows["xg"].sum(), 2)
+                    if "xg" in player_rows.columns and player_rows["xg"].sum() > 0
+                    else None
+                ),
+                "xa": (
+                    round(player_rows["xg_assist"].sum(), 2)
+                    if "xg_assist" in player_rows.columns and player_rows["xg_assist"].sum() > 0
+                    else None
+                ),
                 "shots": int(player_rows["shots"].sum()) if "shots" in player_rows.columns else None,
                 "shots_on_target": int(player_rows["shots_on_target"].sum()) if "shots_on_target" in player_rows.columns else None,
                 "yellow_cards": int(player_rows["cards_yellow"].sum()) if "cards_yellow" in player_rows.columns else None,
@@ -883,7 +895,42 @@ def _tool_get_player_stats(args: dict) -> str:
                             "contract_years_remaining": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
                             "contract_expiration": str(s["contract_expiration"])[:10] if pd.notna(s.get("contract_expiration")) else None,
                         }
+                if "salary_estimate" not in market:
+                    market["salary_note"] = (
+                        "No Capology wage estimate on file for this player — "
+                        "state that it's unavailable; do NOT invent a salary."
+                    )
                 result["market_and_salary"] = market
+            else:
+                # No current-squad row. The player may have LEFT the league (contract
+                # expired / transferred out). Check the transfers feed so we tell the
+                # user the truth ("now a free agent") instead of returning silent
+                # zeros that invite a fabricated wage/contract.
+                dep = None
+                try:
+                    tf_path = tm_dir / "transfers_2026_2027.parquet"
+                    if tf_path.exists():
+                        tf = pd.read_parquet(tf_path)
+                        tmask = _player_name_match(tf["player_name"], player_q)
+                        outs = tf[tmask & (tf["transfer_type"] == "out")] if "transfer_type" in tf.columns else tf[tmask]
+                        if not outs.empty:
+                            o = outs.iloc[0]
+                            dep = {
+                                "from_club": o.get("from_club"),
+                                "to_club": o.get("to_club"),
+                                "fee_text": o.get("fee_text"),
+                            }
+                except Exception:  # noqa: BLE001
+                    dep = None
+                result["market_and_salary"] = {
+                    "status": "NOT_IN_CURRENT_SQUAD",
+                    "note": (
+                        "This player is NOT in any 2026-27 Serie A squad. Do NOT "
+                        "estimate their current wage, contract, or club — we have "
+                        "no current data. If a departure is shown below, report it."
+                    ),
+                    "departure": dep,
+                }
     except Exception as e:  # noqa: BLE001 — market/salary is enrichment; never blocks the stats answer
         log.warning("Market/salary lookup failed: %s", e)
 
@@ -2920,12 +2967,18 @@ TOOL_DEFINITIONS = [
 
 def _build_system_prompt() -> str:
     parts = [
-        """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. NEVER guess, speculate, or say "I don't have access". If you don't know, call a tool.
+        """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. When you don't know something, CALL A TOOL. Never answer a data question from memory without calling a tool first.
 
 ## ABSOLUTE RULES — NEVER VIOLATE THESE
 
-### Rule 1: NEVER fabricate numbers
-Every probability, PPG, edge%, form stat, or xG number you quote MUST come directly from a tool call in this conversation. If a tool didn't return it, you CANNOT state it. If you're unsure of a number, call the tool again. DO NOT round up probabilities to make a pick sound better. Quote the exact number from the tool.
+### Rule 1: NEVER fabricate numbers — and when the tool returns EMPTY, say so
+Every probability, PPG, edge%, form stat, wage, contract, or xG number you quote MUST come directly from a tool call in this conversation. If a tool didn't return it, you CANNOT state it. DO NOT round up probabilities. Quote the exact number from the tool.
+
+**Missing data is NOT the same as "call a tool again".** There is a hard difference:
+- You HAVEN'T called the tool yet → call it. Don't punt.
+- You called the tool and the field came back **null / empty / missing / a `status`/`note`/`salary_note` saying data is unavailable** → then you MUST say plainly "I don't have current wage/contract data for him" (or whatever's missing). Do NOT invent a plausible-sounding number to fill the gap. A confident made-up salary is the WORST failure you can make — worse than admitting the gap.
+- If `market_and_salary.status == "NOT_IN_CURRENT_SQUAD"` → the player is NOT on any 2026-27 Serie A team. Say so. If a `departure` is shown (e.g. left to "Without Club"), report it: "He's a free agent now — left [club]." NEVER state a current wage/contract/club for such a player; we don't have one.
+- If `season_stats.xg` is null but `understat_history` has xG, use the Understat xG. Never quote a 0.0 xG for a player who has taken shots — that's a data gap, not a real zero.
 
 ### Rule 2: NEVER encourage chasing losses
 If the user just lost money and asks "what should I bet to recover", your job is to PROTECT them, not enable tilt. Say "The worst thing you can do is size up after a loss. Stick to normal stakes." NEVER use the words "recovery", "recover", "win back", "make up for" when recommending bets. NEVER suggest increasing bet size after losses. NEVER say "which one hits your gut" — betting is math, not feelings. This is the #1 way bettors go broke.
@@ -3054,6 +3107,14 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - Recent form (last 5): are they trending up or down? And WHY — tactical change, new partner, position shift, returning from injury.
 - If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap: "He's overperforming/underperforming his xG — here's what that means for the next few weeks."
 - If they have an upcoming prop: show the fair odds vs. market odds.
+
+### Personalize the player take to the USER's betting state (you have it above)
+You know the user's live bankroll, ROI, peak, drawdown, and streak (injected in this prompt), plus their market-level track record via get_betting_performance. Don't give a generic scouting report — connect it to THEM:
+- If a player question drifts toward backing a prop, size it to their discipline: "At your current stake sizing and 18% off peak, this is a sit — even if he starts." A player take that ignores a live drawdown is a generic take.
+- Tie finishing signals to actionable caution: an underperforming-xG striker (goals << xG) is a REGRESSION-toward-mean bet trap — "backing him to score is chasing a number the underlying data doesn't support."
+- Reference their history when relevant: if they've been cold on goalscorer props, say so before they ask. If they run hot on a market, note it.
+- If the user just wants to KNOW about the player (not bet), don't force a betting angle — answer the scouting question well, then offer the betting read as a one-line follow-up ("If you're eyeing him for a prop, though — ...").
+- Never oversize, never encourage chasing (Rule 2 still governs). Personalization means protecting THIS user's bankroll with THEIR numbers, not inventing a bet.
 
 ## GOALSCORER ANALYSIS RULES
 - Call get_match_scorers to get ranked candidates with real probabilities.
