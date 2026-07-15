@@ -1171,6 +1171,39 @@ def _tool_get_player_stats(args: dict) -> str:
                     "player": uname,
                     "seasons": seasons,
                 }
+
+                # ── Reconcile the two current-season goal counts ──────────────────────
+                # season_stats (FBref) and understat_history (Understat) are INDEPENDENT
+                # scrapes of the SAME season with different match coverage, so their goal
+                # totals routinely disagree by 1-2 (e.g. Lautaro FBref 16 vs Understat 17).
+                # Without this, the model quotes BOTH silently in adjacent sentences and
+                # contradicts itself. Hand it ONE reconciled headline number + the delta,
+                # and forbid citing both as if separate facts.
+                try:
+                    cur = next(
+                        (s for s in seasons if str(s.get("season", "")).startswith("2025")),
+                        None,
+                    )
+                    ss = result.get("season_stats")
+                    if cur and isinstance(ss, dict) and ss.get("goals") is not None:
+                        us_g, fb_g = int(cur["goals"]), int(ss["goals"])
+                        if us_g != fb_g:
+                            result["stat_reconciliation"] = (
+                                f"GOAL-COUNT SOURCE CONFLICT (2025-26): Understat says "
+                                f"{us_g} goals, the club-stats feed (FBref/Sofascore) says "
+                                f"{fb_g} — two independent scrapes with slightly different "
+                                f"match coverage. Report ONE number: use {us_g} (Understat, "
+                                f"the same source as the xG figures) as the headline goal "
+                                f"total so goals and xG are consistent, and if precision "
+                                f"matters say 'roughly {min(us_g, fb_g)}-{max(us_g, fb_g)} "
+                                f"depending on source'. Do NOT state {us_g} in one sentence "
+                                f"and {fb_g} in another as if both are separately true — "
+                                f"that reads as a contradiction. The advanced-stats block "
+                                f"may show a THIRD count ({ss.get('goals')} etc.); it is the "
+                                f"same conflict, not a new fact."
+                            )
+                except Exception as _re:  # noqa: BLE001
+                    log.warning("Goal-count reconciliation failed: %s", _re)
     except Exception as e:  # noqa: BLE001 — Understat is enrichment; never blocks the answer
         log.warning("Understat history lookup failed: %s", e)
 
@@ -3328,6 +3361,16 @@ When discussing handicaps or team probabilities, ALWAYS check which team is home
 ### Rule 4: Quote TOOL numbers, not your own
 When you say "Roma has a 78% chance", that number must be exactly what get_match_prediction returned. Do NOT adjust, round, or "feel" probabilities. The model's numbers are the ground truth. If you disagree with the model, say "The model gives 62%, but I think context pushes it higher because [specific reason]" — never silently inflate.
 
+### Rule 5: RECONCILE conflicting numbers — never quote two of them as if both are true
+Different tool blocks come from different scrapes and can disagree on the SAME quantity (e.g. season goals from the club-stats feed vs from Understat differ by 1-2 because of different match coverage). If a `stat_reconciliation` field is present, it tells you exactly which number to use as the headline and how to phrase the range — FOLLOW IT. Even without that field, if you notice two blocks give different values for the same stat (goals in `season_stats` vs `understat_history`, minutes, matches), do NOT state one figure in one sentence and the other figure in another sentence — that is a self-contradiction the user WILL catch. Pick ONE (prefer the source consistent with the rest of your point — Understat's goal count when you're discussing Understat's xG), and if the gap matters say "roughly N-M depending on source". One number per quantity, per answer.
+
+### Rule 6: Report the numbers straight — do NOT editorialize a bad signal into a good one
+Your job is to surface what the data says, including the parts that hurt the bet. You are NOT allowed to invent a reassurance that isn't in the data:
+- If a player has 16 big chances MISSED, that is a finishing-waste signal. Report it as such. Do NOT write "that sounds alarming but it tracks with his shot volume" or any similar softening UNLESS the tool actually gives you the ratio that proves it — that explanation is you making the number feel okay, which is exactly how a bettor gets talked into a bad prop.
+- A player at 0.0 / neutral vs xG is finishing to expectation — that is NOT "the best calibration period of his career" unless the multi-season data literally shows this year has the smallest |goals_minus_xg|. Describe the number, don't inflate it into a peak.
+- Do NOT narrate a "bounce-back pattern", "classic regression-to-form", "due for a big season" or any predictive story from two or three data points. A trend needs the data to show it, and even then it's a description, not a forecast.
+- The tone rules below (find hidden insights, be a sharp coach) are about SURFACING real signals in the data — never about spinning a real signal into the opposite mood. When a number is bearish for the bet, the honest coach says so plainly; softening it to sound smart is the sycophancy that loses the user money. Straight beats flattering, every time.
+
 ## PERSONALITY — BETTING MENTAL COACH
 You are NOT a chatbot summarizing data. You are a mental coach who:
 1. **Protects the bankroll first** — your #1 job is keeping the user from making bad bets, not finding action
@@ -3777,11 +3820,15 @@ def _select_model(message: str, history: list) -> str:
 
 _conversations: dict[str, list] = {}
 MAX_HISTORY = 40  # max messages (includes tool call/result pairs)
-MAX_TOOL_RESULT_CHARS = 12000  # truncate large tool results to save tokens.
-# Raised from 6000: the enriched get_player_stats (advanced Sofascore stats +
-# Understat multi-season + World Cup 2026) runs ~8.5k chars, and the WC block is
-# near the end — a 6000 cap silently chopped it, so the model correctly reported
-# "no WC data" (the field really was truncated away before it arrived).
+MAX_TOOL_RESULT_CHARS = 16000  # truncate large tool results to save tokens.
+# Raised 6000 -> 12000 -> 16000. The enriched get_player_stats (advanced Sofascore
+# stats + Understat multi-season + stat_reconciliation + World Cup 2026) hit ~11,956
+# chars for Lautaro at the 12000 cap — a 44-char margin that would silently chop the
+# LAST fields (stat_reconciliation, world_cup_2026) on any larger player. Those two
+# are load-bearing anti-contradiction / anti-stale instructions; truncating them
+# reintroduces the exact bugs they fix. 16000 gives real headroom. Truncation cuts
+# from the END, so the tool also inserts small critical instruction fields (like
+# stat_reconciliation) near the FRONT, right after season_stats, as belt-and-braces.
 MAX_HISTORY_TOOL_RESULT_CHARS = 1500  # aggressively compress old tool results in history
 
 
