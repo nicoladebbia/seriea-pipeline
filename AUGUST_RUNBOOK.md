@@ -120,18 +120,35 @@ positive CLV z-score on a real sample + model accuracy above floor. 52.5%
 accuracy + 5 historical bets is NOT that bar. Do not re-litigate without
 new evidence.
 
-## 8b. ⚠️ KNOWN BLOCKER — fix weekly_retrain BEFORE the first matchweek retrain
+## 8b. ✅ RESOLVED 2026-07-15 — weekly_retrain defects fixed BEFORE August
 
-The 2026-06-11 dry-run exposed three defects (logs/retrain.log, task #7):
-1. `catboost_no_odds` aux retrain crashes on NaN in y_true with the completed
-   2025-26 frame — the production weekly retrain WILL fail in August.
-2. `--dry-run` still overwrites production xg_home/xg_away in place (aux
-   section has no gate). xG models were refreshed 2026-06-11 ungated —
-   re-validate or accept explicitly.
-3. Teardown hang after the draw-detector phase (main-thread cond_wait) —
-   the job never exits; needs a join fix or timeout.
-Promote decision from that dry-run: candidate REJECTED (acc 51.7% vs 53.3%,
-ECE worse) — incumbent catboost_no_odds.cbm (Apr 24) stays production.
+The 2026-06-11 dry-run exposed three defects. All three closed 2026-07-15:
+
+1. ✅ **`catboost_no_odds` crashes on NaN y_true** — cause: 13 final-round 2025-26
+   matches have result="U" (scores never parsed, pipeline hibernated mid-May); "U"
+   maps to NaN. FIX: loud-exclude of unlabeled rows in `retrain_no_odds_catboost.py`
+   (logs count + names each, never silent). Commit f240272. In August with a complete
+   season it's a no-op. See memory project_jul15_retrain_datagap.
+2. ✅ **`--dry-run` overwrote xg_home/xg_away** — cause: `retrain_xg_models` never passed
+   dry-run, and `train_unified.py` had no dry-run flag. FIX (two layers): added `--dry-run`
+   to train_unified (honoured by xg_only mode → skips save_model), and `retrain_xg_models`
+   now forwards it. VERIFIED: `retrain_xg_models(dry_run=True)` leaves both .cbm mtimes
+   byte-unchanged. (The separate "aux xG has no quality GATE on the real run" is still
+   true and still just an accept-explicitly item — not fixed, not a crash.)
+3. ✅ **"Teardown hang / never exits"** — MISDIAGNOSIS confirmed by measurement. Four
+   non-destructive probes (import; draw-detector isolated; minimal in-process train;
+   full `train_universal(validate=True, all models)` + walk-forward CV) ALL exited clean
+   with ZERO lingering threads. The draw-detector "hang" was just SLOWNESS: the added
+   2025-26 season made it a 3-fold ablation, ~200s total — under the parent timeout=600,
+   not a deadlock. The real signature (`cond_wait` pool-join at teardown) was NOT
+   reproducible on 2026-07 code. HARDENING SHIPPED anyway: `main()` now does
+   flush + `os._exit(code)` (branch-independent — exits clean whether the rare hang
+   recurs or not; no atexit registered, all state persisted in-body, exit code preserved).
+
+Promote decision from the ORIGINAL 2026-06-11 dry-run: candidate REJECTED. The 2026-07-15
+loud-exclude dry-run also REJECTED (acc 0.489 < 0.50, ll 1.008 > 1.00) — the 2025-26 fold
+is the anchor because the season is incomplete (367/380). Incumbent stays production.
+August's normal backfill→rebuild→retrain on 380/380 fixes this cleanly.
 
 ## 9. First-week sanity watchlist
 

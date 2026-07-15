@@ -124,6 +124,7 @@ class TrainConfig:
     # --- Output ---
     model_dir: Optional[str] = None     # override output dir (default: MODELS_DIR/universal)
     random_seed: int = 42
+    dry_run: bool = False               # train + evaluate but do NOT write any .cbm to disk
 
     # --- Exclude features (e.g. drift-detected) ---
     exclude_features: Optional[List[str]] = field(default_factory=list)
@@ -873,10 +874,13 @@ class UnifiedTrainer:
                 eval_set=(X.iloc[n_all:], y_target.iloc[n_all:]),
                 verbose=False,
             )
-            model.save_model(str(self._model_dir / out_name))
-            log.info("Saved %s to %s", out_name, self._model_dir)
+            if cfg.dry_run:
+                log.info("DRY RUN — %s trained + evaluated but NOT saved", out_name)
+            else:
+                model.save_model(str(self._model_dir / out_name))
+                log.info("Saved %s to %s", out_name, self._model_dir)
 
-        return {"mode": "xg_only", "xg_metrics": xg_metrics}
+        return {"mode": "xg_only", "xg_metrics": xg_metrics, "dry_run": cfg.dry_run}
 
     # ---------------------------------------------------------------
     #  MODE: fast
@@ -1446,6 +1450,9 @@ Examples:
                         help="Override model output directory")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Train + evaluate but do NOT write any .cbm to disk "
+                             "(currently honoured by xg_only mode)")
 
     return parser
 
@@ -1466,6 +1473,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         deep_quick=args.quick,
         model_dir=args.model_dir,
         random_seed=args.seed,
+        dry_run=args.dry_run,
     )
     return config
 
