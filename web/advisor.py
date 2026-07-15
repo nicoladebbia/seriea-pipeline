@@ -483,6 +483,49 @@ def _player_name_match(series, query: str):
     return mask
 
 
+def played_bracket_context(res, national_team, next_match_date) -> str:
+    """Describe who the winner of the team's next match would face, asserting ONLY
+    resolved results. If the other same-round tie is unplayed, name it as unresolved
+    ('the France/Spain winner') — never state an outcome the results file hasn't
+    recorded. Guards against the user being ahead of our data (they may know Spain
+    won before international_results.csv does)."""
+    import pandas as pd
+    try:
+        nd = pd.to_datetime(next_match_date)
+        # other matches within ±1 day of this fixture = same knockout round
+        same_round = res[
+            (res["date"] >= nd - pd.Timedelta(days=1))
+            & (res["date"] <= nd + pd.Timedelta(days=1))
+        ]
+        others = same_round[
+            (same_round["home_team"] != national_team)
+            & (same_round["away_team"] != national_team)
+            & same_round["home_team"].notna()
+        ]
+        if others.empty:
+            return ""
+        o = others.iloc[0]
+        h, a = o["home_team"], o["away_team"]
+        if pd.notna(o.get("home_score")) and pd.notna(o.get("away_score")):
+            # resolved — name the actual winner
+            hs, as_ = int(o["home_score"]), int(o["away_score"])
+            winner = h if hs > as_ else (a if as_ > hs else None)
+            if winner:
+                return (
+                    f"The other same-round tie ({h} vs {a}) is RESOLVED: {winner} won "
+                    f"({hs}-{as_}), so the winner of this match would face {winner} next."
+                )
+            return f"The other same-round tie {h} vs {a} finished level ({hs}-{as_}, decided on/after)."
+        # unresolved — do NOT assert a winner even if the user claims one
+        return (
+            f"The other same-round tie ({h} vs {a}) has NOT been played/recorded in our "
+            f"data yet, so the winner of this match would face the {h}/{a} winner — do not "
+            f"state which of them advances unless our results file shows the score."
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _tool_get_player_stats(args: dict) -> str:
     player_q = args.get("player", "").lower().strip()
     team_q = args.get("team", "").strip()
@@ -619,7 +662,7 @@ def _tool_get_player_stats(args: dict) -> str:
                     )
                 latest_rating = round(float(recent_sof.iloc[0].get("rating", 0)), 1) if pd.notna(recent_sof.iloc[0].get("rating")) else "?"
                 result["match_performances"] = (
-                    f"⚠️ EXACT DATA — DO NOT MODIFY THESE NUMBERS.\n"
+                    f"EXACT DATA — DO NOT MODIFY THESE NUMBERS.\n"
                     f"Latest match rating: {latest_rating}\n\n"
                     + "\n".join(form_rows)
                 )
@@ -735,7 +778,7 @@ def _tool_get_player_stats(args: dict) -> str:
                     best = team_sheet[0] if team_sheet else None
                     best_note = f"Best rated: {best['player']} ({best['rating']})" if best else ""
                     result["latest_match_team_sheet"] = (
-                        f"⚠️ VERIFIED SOFASCORE DATA — COPY THIS TABLE EXACTLY, DO NOT CHANGE ANY NUMBERS:\n"
+                        f"VERIFIED SOFASCORE DATA — COPY THIS TABLE EXACTLY, DO NOT CHANGE ANY NUMBERS:\n"
                         f"{best_note}\n\n"
                         + "\n".join(rows)
                     )
@@ -890,6 +933,65 @@ def _tool_get_player_stats(args: dict) -> str:
                                         }
                                 else:
                                     availability["current_status"] = "fit"
+
+                        # --- Ground the absence REASON from the injury feed ---
+                        # The block above detects WHEN a player was absent (gap in
+                        # match dates) but not WHY. The Transfermarkt injury snapshots
+                        # (data/external/injuries/) carry injury_type + expected_return.
+                        # Attach the documented reason ONLY when a snapshot's window
+                        # overlaps the detected absence — never infer/invent a cause.
+                        try:
+                            absence = availability.get("longest_absence") or availability.get("returned_after")
+                            if absence:
+                                from datetime import date as _dt_date
+                                a_from = pd.to_datetime(absence.get("from") or absence.get("absent_from")).date()
+                                a_to = pd.to_datetime(absence.get("to") or absence.get("absent_to")).date()
+                                inj_dir = _BASE / "data" / "external" / "injuries"
+                                reason = None
+                                if inj_dir.exists():
+                                    # snapshots whose scrape date falls in/near the window
+                                    for snap in sorted(inj_dir.glob("injuries_*.parquet")):
+                                        # parse date from filename injuries_YYYY-MM-DD[...].parquet
+                                        import re as _re
+                                        m = _re.search(r"(\d{4}-\d{2}-\d{2})", snap.name)
+                                        if not m:
+                                            continue
+                                        snap_date = pd.to_datetime(m.group(1)).date()
+                                        # only snapshots inside the absence window (± a few days)
+                                        if not (a_from - timedelta(days=7) <= snap_date <= a_to + timedelta(days=7)):
+                                            continue
+                                        idf = pd.read_parquet(snap)
+                                        ncol = next((c for c in idf.columns if c.lower() in ("player_name", "name", "player")), None)
+                                        if ncol is None:
+                                            continue
+                                        # tight match: player name AND same team (guards
+                                        # "Lautaro Valenti"/Parma vs "Lautaro Martínez"/Inter)
+                                        cand = idf[_player_name_match(idf[ncol], player_q)]
+                                        if "team" in idf.columns and player_team:
+                                            cand = cand[cand["team"].astype(str).apply(
+                                                lambda t: _normalize_name(str(t)) == _normalize_name(str(player_team))
+                                                or _normalize_name(str(player_team)) in _normalize_name(str(t))
+                                            )]
+                                        cand = cand[cand.get("is_currently_out", True) == True] if "is_currently_out" in cand.columns else cand
+                                        if not cand.empty:
+                                            row = cand.iloc[0]
+                                            itype = str(row.get("injury_type", "") or "").strip()
+                                            exp_ret = row.get("expected_return")
+                                            if itype:
+                                                reason = {
+                                                    "injury_type": itype,
+                                                    "source": str(row.get("source", "transfermarkt")),
+                                                    "recorded_on": str(snap_date),
+                                                }
+                                                if pd.notna(exp_ret) and str(exp_ret).strip():
+                                                    reason["expected_return_at_time"] = str(exp_ret)[:10]
+                                                break  # first overlapping snapshot with a type wins
+                                if reason:
+                                    availability["absence_reason"] = reason
+                                else:
+                                    availability["absence_reason"] = "NOT_IN_DATA — the injury feed has no record covering this absence window; state the absence but do NOT invent a cause (do not say 'injury', 'suspension', 'rested' unless this field carries it)."
+                        except Exception as _ie:  # noqa: BLE001
+                            log.warning("Absence-reason lookup failed: %s", _ie)
 
                         result["availability"] = availability
                 except Exception as e:
@@ -1096,31 +1198,58 @@ def _tool_get_player_stats(args: dict) -> str:
                 whit = whit[whit["player_name"] == wname]
                 wmin = int(whit["minutes"].sum())
                 wmp = int(whit["match_id"].nunique()) if "match_id" in whit.columns else len(whit)
-                wgoals = int(whit["goals"].sum())
+                # NOTE: parquet goal-sum is only for the matches it captured. The AUTHORITATIVE
+                # goal count comes from the event log below — the parquet undercounts any player
+                # who scored in an uncaptured (Sofascore-banned) knockout match.
+                wgoals_parquet = int(whit["goals"].sum())
                 national_team = whit["team"].mode().iloc[0] if "team" in whit.columns else None
                 ratings = whit["rating"].dropna()
                 wavg = round(float(ratings.mean()), 1) if not ratings.empty else None
-                # Freshness guard. The player-stats parquet is the SLOWEST-updating WC
-                # file — it lags the live bracket by ~1 match. Cross-reference the
-                # authoritative, fresher international_results.csv to detect the lag and
-                # warn the model, so a stale per-player goal count is NEVER presented as
-                # final. (Paid lesson: the parquet said Lautaro=2g when results showed 3,
-                # and dated Arg-Switzerland a day late.)
+
+                # ── Layered authoritative sourcing (per source's ONE job) ──────────────
+                # The parquet (Sofascore) lags the live bracket because the provider is
+                # IP-banned mid-tournament (measured: breaker open, 0 rows appended). So:
+                #   • GOALS      → international_goalscorers.csv (event log = ground truth)
+                #   • COUNT/DATES/BRACKET → international_results.csv (fresh, ESPN/CSV path)
+                #   • MINUTES/RATINGS/SHOTS per match → parquet only (nothing else has them)
+                # Every fact is read live and asserted ONLY when the source confirms it —
+                # never infer a score or a bracket outcome the results file hasn't recorded.
+                wc_goals_true = wgoals_parquet          # fallback if event log unreadable
+                wc_goal_source = "parquet (may undercount)"
                 wc_stale_note = ""
                 try:
                     last_in_parquet = pd.to_datetime(
                         whit["date"], utc=True, errors="coerce"
                     ).max()
-                    res_path = DATA_DIR / "worldcup" / "international_results.csv"
+                    wc_dir = DATA_DIR / "worldcup"
+
+                    # 1) TRUE goal count from the per-goal event log
+                    gc_path = wc_dir / "international_goalscorers.csv"
+                    if gc_path.exists():
+                        gc = pd.read_csv(gc_path)
+                        gc["date"] = pd.to_datetime(gc["date"], errors="coerce")
+                        gc = gc[gc["date"] >= "2026-06-01"]
+                        gmask = _player_name_match(gc["scorer"].astype(str), player_q)
+                        pl_goals = gc[gmask]
+                        if national_team and "team" in gc.columns:
+                            pl_goals = pl_goals[
+                                pl_goals["team"].astype(str).apply(
+                                    lambda t: _normalize_name(str(t)) == _normalize_name(str(national_team))
+                                )
+                                | pl_goals["team"].isna()
+                            ]
+                        # only count if we actually located this scorer's rows
+                        if not pl_goals.empty or gmask.any():
+                            wc_goals_true = int(len(pl_goals))
+                            wc_goal_source = "event log (international_goalscorers.csv)"
+
+                    # 2) TRUE match count + schedule + bracket from the results file
+                    res_path = wc_dir / "international_results.csv"
                     if national_team and res_path.exists():
                         res = pd.read_csv(res_path)
-                        res["date"] = pd.to_datetime(
-                            res["date"], utc=True, errors="coerce"
-                        )
+                        res["date"] = pd.to_datetime(res["date"], utc=True, errors="coerce")
                         res = res[
-                            res["tournament"].astype(str).str.contains(
-                                "World Cup", na=False
-                            )
+                            res["tournament"].astype(str).str.contains("World Cup", na=False)
                             & (res["date"] >= "2026-06-01")
                         ]
                         team_res = res[
@@ -1130,43 +1259,38 @@ def _tool_get_player_stats(args: dict) -> str:
                         played = team_res.dropna(subset=["home_score", "away_score"])
                         sched = team_res[team_res["home_score"].isna()]
                         n_played = len(played)
-                        last_played = (
-                            played["date"].max() if not played.empty else None
-                        )
+                        last_played = played["date"].max() if not played.empty else None
                         next_sched = sched["date"].min() if not sched.empty else None
-                        # Missing matches = the parquet has fewer than the results file.
-                        missing = n_played - wmp
                         parts = []
+                        missing = n_played - wmp
                         if missing > 0 or (
                             last_played is not None
                             and pd.notna(last_in_parquet)
                             and last_played > last_in_parquet
                         ):
                             parts.append(
-                                f"DATA FRESHNESS WARNING: this per-player table is from a "
-                                f"file that lags the live tournament. {national_team} have "
-                                f"actually PLAYED {n_played} WC matches (through "
-                                f"{str(last_played)[:10]}), but this table only captured "
-                                f"{wmp} of them — the goal count and ratings below MAY BE "
-                                f"BEHIND by the most recent match(es). Do NOT present these "
-                                f"as the player's FINAL tournament totals."
+                                f"DATA NOTE: {national_team} have actually PLAYED {n_played} WC "
+                                f"matches (through {str(last_played)[:10]}), but the per-match "
+                                f"detail table below only captured {wmp} of them (the stats "
+                                f"provider was blocked for the newer knockout rounds). Use "
+                                f"{wc_goals_true} as the goal count (from the goal event log), "
+                                f"NOT the sum of the partial table. The per-match minutes/ratings "
+                                f"cover only the captured matches."
                             )
                         if next_sched is not None and pd.notna(next_sched):
-                            row = sched.sort_values("date").iloc[0]
-                            opp = (
-                                row["away_team"]
-                                if row["home_team"] == national_team
-                                else row["home_team"]
-                            )
+                            nrow = sched.sort_values("date").iloc[0]
+                            opp = nrow["away_team"] if nrow["home_team"] == national_team else nrow["home_team"]
+                            # bracket context: name what's still unresolved, assert only resolved
+                            other = played_bracket_context(res, national_team, next_sched)
                             parts.append(
-                                f"{national_team}'s NEXT WC match is still to be played: "
-                                f"vs {opp} on {str(next_sched)[:10]} — the tournament is "
-                                f"LIVE, not finished."
+                                f"{national_team}'s NEXT WC match is still to be played: vs {opp} "
+                                f"on {str(next_sched)[:10]} — the tournament is LIVE, not finished. "
+                                f"{other}"
                             )
                         if parts:
                             wc_stale_note = " ".join(parts) + " "
                 except Exception as fe:  # noqa: BLE001
-                    log.warning("WC freshness cross-check failed: %s", fe)
+                    log.warning("WC freshness/goal cross-check failed: %s", fe)
                 # Pre-render as a markdown table (same anti-hallucination pattern as
                 # match_performances) so the model copies exact numbers verbatim and
                 # never mistakes a nested JSON array for "truncated" data.
@@ -1185,11 +1309,13 @@ def _tool_get_player_stats(args: dict) -> str:
                     f"FIFA WORLD CUP 2026 PERFORMANCE (this field IS present and populated — "
                     f"the player DID feature; report it, never say it's missing). "
                     f"{wc_stale_note}"
-                    f"{national_team}: {wmp} matches captured here, {wmin} min, {wgoals} goals, "
-                    f"avg rating {wavg}. He JUST played this tournament (Jun-Jul 2026) — "
-                    f"weigh fatigue (heavy minutes/deep run) vs form (goals/ratings) against "
-                    f"his club season. Exact numbers, copy verbatim, do not invent matches "
-                    f"beyond this table:\n\n"
+                    f"{national_team}: {wc_goals_true} goals [source: {wc_goal_source}] — this "
+                    f"is the goal count to report. Per-match detail captured for {wmp} match(es) "
+                    f"below (~{wmin} min, avg rating {wavg} across captured matches only). He JUST "
+                    f"played this tournament (Jun-Jul 2026) — weigh fatigue (heavy minutes/deep "
+                    f"run) vs form against his club season. The table shows minutes/ratings/shots "
+                    f"for the matches the provider captured; do NOT invent matches beyond it, and "
+                    f"do NOT re-sum its goals column (use the goal count above):\n\n"
                     + "\n".join(wc_lines)
                 )
     except Exception as e:  # noqa: BLE001 — WC block is enrichment; never blocks the answer
@@ -1420,7 +1546,7 @@ def _tool_get_match_players(args: dict) -> str:
                     f"| {int(p.get('key_passes', 0))} | {int(p.get('touches', 0))} |"
                 )
             result[label] = (
-                f"⚠️ VERIFIED SOFASCORE DATA — COPY EXACTLY.\n"
+                f"VERIFIED SOFASCORE DATA — COPY EXACTLY.\n"
                 f"Best rated: {best_player} ({best_rating})\n\n"
                 f"{header}\n" + "\n".join(rows)
             )
