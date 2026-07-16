@@ -172,6 +172,21 @@ faithful-but-imperfect rebuild is low risk. It mutates
  "message":"Odds API says 'first_half' but Sofascore has events at 90' \u2014 status may be lagging"}
 ```
 
+⚠️ **`timing_mismatch`'s rule is NOT recovered — and a minute-tolerance is REFUTED.**
+Swept "goal aligns if an odds_api score-change is within TOL" for TOL = 0..15′
+against the oracle: **none reproduce it.** The truth flags **5 of 104** sofascore
+goals in dual-source matches; the tolerance rule flags **98 at 0′ and still 22 at
+15′** — wrong shape, not a mistuning. The real rule aligns nearly every goal and
+flags a rare few. **Do not implement a tolerance window.** Ship
+`score_mismatch` (exact) + `status_mismatch` and either omit `timing_mismatch` or
+find its real trigger first — it is `info` severity and does not affect
+`scores_agree`, so omitting it is the safe default. Say which you chose.
+
+**What IS exact:** `score_mismatch` reproduces all **7/7** criticals — sofascore
+score = count of `live_events` where `type=="goal"` grouped by `is_home`;
+odds_api score = `_last_home_score`/`_last_away_score`; flag when they differ,
+odds_api always primary.
+
 **Verify by replaying**: feed each stored matchday back through the rebuild and
 require the regenerated block to equal the stored one (ignore `checked_at`). 123
 blocks is a strong oracle — do not accept less than an exact match on the 112
