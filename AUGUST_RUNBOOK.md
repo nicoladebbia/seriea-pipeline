@@ -301,7 +301,7 @@ pipeline treats odds_api as primary.
 |---|---|---|
 | `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ✅ **REBUILT** — Odds API `/events`; schema verified, **live unverified until the key is reactivated** |
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
-| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
+| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ✅ **REBUILT** — replays the oracle exactly (events/stats/players); **not** live-tested vs a Serie A fixture (off-season) |
 | `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ✅ **REBUILT** — replays all 123 stored blocks exactly |
 | `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
 
@@ -644,8 +644,26 @@ it's harmless for a 1–6s tick — **but a post-matchday full refresh rate-limi
 at 2s/match and can exceed 300s, which would fire the ledger settler and spend
 Odds API credits from inside a watcher tick.** So: either extract the scraper
 out of `web/app.py` into a shared module (both callers import it), or give the
-watcher its own. **Requires a live (non-403) Sofascore to verify — that's why
-it wasn't built on 2026-07-16.**
+watcher its own.
+
+> **Ban is no longer the blocker (2026-07-16).** The 403 lifted, so the "requires
+> a live Sofascore to verify" caveat is discharged — `live_sofascore` was built
+> and specimens are committed under `tests/fixtures/sofascore/`. **The watcher is
+> still not built, for a different and better reason:** the fork above is a real
+> refactor, not a rebuild. `_live_standings_via_html` is **128 lines** and depends
+> on 4 module-level constants (`_HTML_SENTINEL_TEAM`, `_HTML_FAILURE_TTL`,
+> `_HTML_STANDINGS_TTL`, `_LEAGUE_SOFASCORE_PAGE`) and 3 helpers (`_fail`,
+> `_html_health_now`, `_sofascore_get_retry`), with 2 call sites in `web/app.py`
+> (`:744`, `:2527`) — and it is the dashboard's breaker-guarded resilience path.
+>
+> **Recommendation: extract, don't duplicate.** A second copy means two sentinel
+> lists and two breakers that will drift, and the sentinel is the only thing that
+> catches a Sofascore schema break. Do it as its own PR with the dashboard's
+> standings path re-checked, not bolted onto a rebuild.
+>
+> Note the watcher is a **10-minute** job whose only outputs are
+> `standings*.json`; nothing bets on it. It is the lowest-stakes of the phantoms —
+> do it when the extraction can get a clean review, not under time pressure.
 
 ## 4. Reload launchd (arms the T-30 timing mode)
 
