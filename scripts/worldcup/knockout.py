@@ -272,8 +272,16 @@ def _real_shootout_lookup() -> Callable[[str, str, str], str | None]:
             return None
         target = pd.Timestamp(date)
         dates = pd.to_datetime(df["date"])
-        rows = df[(df["home_team"] == canon_team(home))
-                  & (df["away_team"] == canon_team(away))
+        chome, caway = canon_team(home), canon_team(away)
+        # Match the unordered pair, for the same reason _find_result does: a
+        # neutral-venue tie can be stored home/away-swapped relative to the
+        # queried fixture, and an order-sensitive join then silently misses it.
+        # 'winner' is a team name, so unlike a score it needs no flipping back
+        # into the queried frame.
+        pair = ((df["home_team"] == chome) & (df["away_team"] == caway)) | (
+            (df["home_team"] == caway) & (df["away_team"] == chome)
+        )
+        rows = df[pair
                   & (dates >= target - pd.Timedelta(days=1))
                   & (dates <= target + pd.Timedelta(days=1))]
         return None if rows.empty else str(rows.iloc[0]["winner"])

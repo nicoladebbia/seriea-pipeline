@@ -614,6 +614,28 @@ class TestGrading:
         assert (hs, as_) == (0, 3)  # flipped into the queried (snapshot) frame
         assert ("home" if hs > as_ else "draw" if hs == as_ else "away") == "away"
 
+    def test_shootout_winner_found_when_swapped(self, tmp_path, monkeypatch) -> None:
+        # Same orientation trap as _find_result, one file over: shootouts.csv
+        # can store a neutral-venue tie home/away-swapped relative to the
+        # queried fixture. An order-sensitive join returns None, the knockout
+        # never resolves on its real advancer, and the bracket silently falls
+        # back to simulation.
+        import scripts.worldcup.knockout as ko
+
+        csv = tmp_path / "shootouts.csv"
+        csv.write_text(
+            "date,home_team,away_team,winner\n2026-07-04,Croatia,Brazil,Croatia\n"
+        )
+        monkeypatch.setattr(ko, "SHOOTOUTS_CSV", csv)
+        fn = ko._real_shootout_lookup()
+
+        # Queried in the opposite orientation from the CSV.
+        assert fn("Brazil", "Croatia", "2026-07-04") == "Croatia"
+        # Stored orientation still reads through unchanged.
+        assert fn("Croatia", "Brazil", "2026-07-04") == "Croatia"
+        # A pair that never met must still miss.
+        assert fn("Brazil", "Spain", "2026-07-04") is None
+
     def test_brier_math(self) -> None:
         from scripts.worldcup.grading import _brier
 
