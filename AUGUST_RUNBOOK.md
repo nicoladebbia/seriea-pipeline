@@ -107,7 +107,7 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
 | `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
 | `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ❌ not rebuilt — semantics unrecoverable |
-| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ⏳ buildable — source reachable |
+| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
 
 #### Triage of these five (2026-07-16)
 
@@ -155,12 +155,39 @@ Also unverified: `direction`'s `home_drifting`/`away_drifting` branches (the onl
 surviving per-match output is the all-`stable` run) and the
 `implied_prob_shift_*` formula (**0 consumers** — grep-verified, so harmless).
 
-**`backfill_historical_odds` — buildable, not yet built.** Reads
-football-data.co.uk (**HTTP 200**, 196KB — reachable), *not* the Odds API, so the
-dead key doesn't block it (`DATA_CATALOG.md:179`). Tracked helper
-`scraper/historical.py` already implements the import; oracle = the odds columns
-in `matches.parquet`. It writes to `matches.parquet` (ground truth), so treat it
-as a destructive path and dry-run first.
+**`backfill_historical_odds` — REBUILT.** It is the **closing-odds + Asian-handicap
+half of the football-data.co.uk CSV import**, established from the data, not the docs:
+`scripts/import_seriea_odds.py` (tracked, daily) maps **16** CSV columns; the parquet
+stores **28**; the **12** it omits (Pinnacle/B365 *closing* 1X2, B365 closing O/U 2.5,
+the AH block) are exactly this module's output. All 28 stored columns were verified to
+reproduce **exactly** from the 2024-25 CSV (380 matches, 0 mismatches).
+
+⚠️ **Two docs are wrong — don't "fix" the module to match them.** The call-site comment
+at `run_full_pipeline.py:1337` says *"Odds API since {since}"* / *"only if Odds API quota
+allows"*: **stale** — this reads the free CSV, no key, no quota. `DATA_CATALOG.md:172`
+credits `odds_PS_close_*` to an "Odds API historical backfill": also wrong, `PSCH` is a
+CSV column. (`DATA_CATALOG.md:179` is the one that's right.)
+
+🔑 **The real find: `scraper.odds.download_odds` is cache-first and NEVER refreshes a
+season it already cached.** The 2025-26 cache was captured **2026-05-01 with 346 of 380
+matches**, so cache-only permanently misses the season's tail. But the live CSV is *not*
+a superset either — football-data has since **dropped ~143 Pinnacle closing prices**
+(cached `PSCH` 341/346, live 198/380). Re-downloading alone would destroy real data.
+So this module **unions cache + live in memory** (it does not rewrite the cache file).
+Safe because absence ≠ revision *for these 12*: on the overlap they agree **100%**.
+⚠️ That does NOT generalise — `MaxH`/`AvgH` agree only **~78%** (football-data recomputes
+market aggregates), so anything unioning *those* must decide which wins. They belong to
+`import_seriea_odds`'s 16 and are never touched here.
+
+**This staleness also hits the DAILY import** (`import_seriea_odds` reads the same cached
+`data/external/odds/I1_*.csv`) — worth fixing separately; it likely explains part of the
+2025-26 odds gap in [[project_jul15_retrain_datagap]].
+
+Result (verified on a scratch copy, live parquet md5-unchanged): **1,663 cells filled,
+0 overwritten, 0 nulled, idempotent** (2nd run = 0). 2024-25 → **100% on all 12**;
+2025-26 → 100% on 10/12, `PS_close_*` reaching 89.7% (neither source has Pinnacle
+closing for 39 matches — a genuine source limit, not a bug). Fills NaN only, never
+overwrites, which is what makes the call site's "safe to run daily" true.
 
 **`live_sofascore` — blocked, do not build.** Needs Sofascore; **both** tiers are
 403 (api *and* www — the CLAUDE.md HTML fallback is currently dead too). Only its
