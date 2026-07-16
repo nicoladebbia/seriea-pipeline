@@ -676,15 +676,40 @@ importing `web.app` starts the auto-settle thread.~~
 > is not recoverable. **Reconstructing that is inventing policy into a live file —
 > the same line `fallback_sofascore_to_fbref` was held to.**
 >
-> **The three options (Nicola picks):**
+> **The three options — and option 2 is REFUTED, don't re-propose it:**
+>
 > 1. **EPL-only** — write `standings_premier_league.json` only, where the watcher
 >    is the sole writer and the oracle is exact. Serie A keeps its parquet
->    generator. Safest; matches the only evidence that survives.
-> 2. **Splice like the dashboard** — merge HTML totals over parquet form/splits
->    (reuse the `web/app.py:754` logic). Richest, but it's new behaviour the
->    original demonstrably did not have.
+>    generator. Safest; matches the only evidence that survives. **Tradeoff, in
+>    full:** the serie_a `standings.json` gets no 10-min HTML freshness for its
+>    *non-dashboard* consumers (`ensemble_prediction_engine`, `web/advisor.py`,
+>    `generate_epl_supplementary` read the **file**, not `_get_standings`); it
+>    stays pipeline-fresh. The dashboard is unaffected — it scrapes HTML live per
+>    request already.
+>
+> 2. ❌ **"Splice like the dashboard" — REFUTED 2026-07-16. Do not build it.**
+>    It sounds strictly better and is not. `_get_standings` (`web/app.py:599`)
+>    copies home/away splits **only when `parquet_max_played == html_max_played`**.
+>    When HTML leads the parquet — **precisely the window the watcher exists to
+>    serve** — the splits stay at the HTML payload's **zeros**. The dashboard
+>    tolerates that because it is *transient*: per-request, recomputed, never
+>    stored. A watcher **persists** it, zeroing the home/away records
+>    `web/app.py:7214` calls "single source of truth". Every parquet source lags
+>    the live table by construction, so this fires *whenever the scrape is fresher
+>    than the ingest* — it is intrinsic, not an edge. **And it cannot be guarded
+>    away:** the only fix is carrying forward the previous file's splits, which is
+>    a reconciliation **no oracle pins** — inventing policy into a live file, the
+>    same line `fallback_sofascore_to_fbref` was held to. The guard would trade a
+>    zeroing bug for an unbacked-staleness bug. **Cost was also mis-stated when
+>    first proposed** ("reuse proven logic"): the real closure of `_get_standings`
+>    is **251 lines / 4 functions / 7 module globals** (`_compute_standings` 128,
+>    `_read_parquet_cached`, `_load_json`, + `_LEAGUE_PARQUET`, `_standings_cache`,
+>    `_STANDINGS_TTL`, …), i.e. moving the standings subsystem out of `web/app.py`.
+>    If that richness is ever wanted it is a **fresh-session subsystem refactor
+>    plus a write-policy decision**, not a bolt-on.
+>
 > 3. **Separate file** — `standings_live.json`, no writer contention at all;
->    consumers opt in.
+>    consumers opt in. Diverges from the oracle's filenames.
 >
 > Note the watcher is a **10-minute** job whose only outputs are `standings*.json`;
 > nothing bets on it. Lowest-stakes phantom — do it when the write decision is
