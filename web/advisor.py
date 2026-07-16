@@ -84,12 +84,12 @@ def _resolve_team(query: str) -> str | None:
     """Fuzzy-resolve user input to canonical team name (Serie A + EPL)."""
     try:
         from config.team_names import (
-            normalize_team, SERIE_A_2025_26, PREMIER_LEAGUE_2025_26,
+            normalize_team, SERIE_A_2026_27, PREMIER_LEAGUE_2025_26,
         )
     except ImportError:
         return query
 
-    all_teams = set(SERIE_A_2025_26) | set(PREMIER_LEAGUE_2025_26)
+    all_teams = set(SERIE_A_2026_27) | set(PREMIER_LEAGUE_2025_26)
 
     # Exact match via normalize_team
     canonical = normalize_team(query)
