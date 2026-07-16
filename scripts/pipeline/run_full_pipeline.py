@@ -68,7 +68,7 @@ try:
 except ImportError:
     pass  # dotenv not required if env vars set externally
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, PROJECT_ROOT
 from scripts.utils.logging_config import (
     PipelineLogger,
     log_pipeline_start,
@@ -1304,7 +1304,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             except Exception:
                 pass
             print("  ABORTING: No odds data — cannot generate bet recommendations")
-            return summary
+            return None
 
         step(2, total_steps, "Syncing Matches from Odds API")
         try:
