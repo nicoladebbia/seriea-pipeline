@@ -271,13 +271,28 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 
 ### `data/parsed/understat_players.parquet`
 - **Season-aggregate player xG / xA / xGChain / xGBuildup**
-- **11,669 rows** across 8 seasons of Serie A + 6 seasons of Premier League
+- **11,706 rows** across 12 seasons of Serie A (2014-15..2025-26) + 9 of Premier
+  League (2017-18..2025-26) — recounted from the file 2026-07-16
 - **Schema:** league, season, team, player, league_id, season_id, team_id, player_id, position, matches, minutes, goals, xg, np_goals, np_xg, assists, xa, shots, key_passes, yellow_cards, red_cards, xg_chain, xg_buildup
 - **Writer:** `scripts/data/refresh_understat_players.py [--season YYYY-YYYY] [--leagues serie_a,premier_league] [--all-seasons]`
 - **Source:** `playersData` JS variable on Understat league pages (extracted via Selenium)
-- **Cadence:** Manual today (no plist installed). Drafts at `scripts/pipeline/com.seriea.refresh_understat.draft.plist`. Auto-refresh in `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()` which only fetches Serie A team-level data (not player-level)
+  - ⚠️ **Selenium is mandatory, and it is NOT an IP block.** Measured 2026-07-16:
+    plain HTTP GET returns **200** but `playersData` occurrences = **0** (the page
+    renders client-side). Understat is reachable — unlike Sofascore (403) and
+    FBref (Cloudflare). Don't "fix" this by retrying with requests.
+- **Cadence:** `com.seriea-pipeline.refresh-understat` plist (Tue 04:30) is
+  INSTALLED and invokes `-m scripts.data.refresh_understat_players --season 2025-2026`.
+  The draft path this section used to cite never existed; the real copy is
+  `scripts/pipeline/com.seriea-pipeline.refresh-understat.plist`. Auto-refresh in
+  `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()`
+  which only fetches Serie A team-level data (not player-level)
+- **Placeholders:** `team_id` is always 0 and `league_id` always null — `playersData`
+  carries neither. Don't build a join on them.
 - **Team naming quirk:** Players who transferred mid-season have comma-joined team strings (e.g. "Atalanta,Fiorentina"). Downstream `_team_match` fuzzy lookup handles this via substring match
-- **2025-26:** 1,086 player rows (561 SA, 525 EPL), refreshed 2026-04-24
+- **2025-26:** 1,123 player rows (586 SA, 537 EPL), stored 2026-05-31. Re-fetched
+  live 2026-07-16 and both leagues came back **identical to the stored rows**
+  (assert_frame_equal, same values and dtypes) — the season is complete, so the
+  file is final, not stale.
 
 ### `data/parsed/events.parquet`
 - **Goal + card events with minutes** (from FBref scorebox — only goals/reds/own-goals; full timelines aren't in match report HTML)
