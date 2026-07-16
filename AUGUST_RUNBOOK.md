@@ -101,13 +101,68 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 fail **loudly** (exit 1) but `run()` records the step and continues.
 
 **Imported by live code (raises ImportError at the call site):**
-| Module | Caller |
-|---|---|
-| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` |
-| `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565` |
-| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` |
-| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` |
-| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) |
+| Module | Caller | Status |
+|---|---|---|
+| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ❌ not rebuilt — source unknown |
+| `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
+| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
+| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ❌ not rebuilt — semantics unrecoverable |
+| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ⏳ buildable — source reachable |
+
+#### Triage of these five (2026-07-16)
+
+**`odds_tracker` — REBUILT.** Highest value of the five: every caller wraps the
+import in a bare `except`, so its absence is **silent** — no snapshots written,
+and `clv_tracker` (`:217` globs `bookmakers_*.json`, `:296` globs `extra_*.json`)
+loses closing odds. CLV is the only rock-solid edge signal in this repo, so the
+failure mode is "the edge signal quietly dies", not "a job errors".
+
+Reconstructed from 1,098 surviving snapshots + 17 timestamped log lines + the
+last `odds_movement.json`. Verified: reproduces that file **exactly** (85/85
+fields, 5 matches) and all **17/17** logged summaries, through the real
+entrypoint, with live data md5-confirmed untouched.
+
+⚠️ **The one thing NOT pinned — confirm on a live run.** The 48h window is
+uniquely identified (24h/36h/72h are refuted; it also reproduces the stored
+`snapshots_count`/`hours_tracked` exactly). The **thresholds are not**: sweeping
+the plane against all 17 runs leaves `LINE ∈ [0.09, 0.11]` and
+`STEAM ∈ [0.125, 0.155]`. Shipped values are the natural round ones (0.10 /
+0.15). Only 4 of the 17 runs are informative — the other 13 are the degenerate
+all-zero case any threshold satisfies. `is_steam_move` feeds a **0.8-weight**
+component in `features/market_intelligence.py` → `betting_unified`, so a wrong
+threshold shifts betting scores for matches moving in that narrow band. On the
+first live matchday, compare a real run's `summary` against the constants in
+`scripts/data/odds_tracker.py`.
+Also unverified: `direction`'s `home_drifting`/`away_drifting` branches (the only
+surviving per-match output is the all-`stable` run) and the
+`implied_prob_shift_*` formula (**0 consumers** — grep-verified, so harmless).
+
+**`backfill_historical_odds` — buildable, not yet built.** Reads
+football-data.co.uk (**HTTP 200**, 196KB — reachable), *not* the Odds API, so the
+dead key doesn't block it (`DATA_CATALOG.md:179`). Tracked helper
+`scraper/historical.py` already implements the import; oracle = the odds columns
+in `matches.parquet`. It writes to `matches.parquet` (ground truth), so treat it
+as a destructive path and dry-run first.
+
+**`live_sofascore` — blocked, do not build.** Needs Sofascore; **both** tiers are
+403 (api *and* www — the CLAUDE.md HTML fallback is currently dead too). Only its
+*output* (`data/live/*.json`) survives, not the raw inputs, so there is nothing to
+verify a parser against. Per the never-parse-an-unverified-source rule: recorded,
+not guessed.
+
+**`live_reconciliation` — genuine phantom, and a name trap.** ⚠️
+`scripts/analysis/live_reconciliation.py` **exists and is tracked** but is a
+*different module* that merely shares the name — it has no
+`reconcile_all_matches`. Repointing the import swaps `ModuleNotFoundError` for
+`ImportError`; it does **not** fix anything. The contract is
+`reconcile_all_matches(matchday) -> int` (discrepancy count), but what counts as a
+"discrepancy" is not recoverable from any artifact.
+
+**`fetch_upcoming_matches` — source unknown.** The only artifact,
+`data/upcoming/matches.json`, is a *synthetic fallback*: `"source": "manual"`,
+templated venues (`"Milan Stadium"`), and a `fetched_at` a week **after** the
+matches it lists. It records the fallback, not the real fetch — so it can't
+serve as an oracle.
 
 ⚠️ **NOT a phantom:** `scripts.pipeline.matchday_update` — `web/app.py:6517` is a
 comment recording its *intentional* removal. Don't "restore" it.
