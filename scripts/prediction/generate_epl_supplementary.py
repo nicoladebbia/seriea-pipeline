@@ -680,15 +680,6 @@ def generate_epl_sentiment() -> list:
                 break
 
         # --- Composite Scores ---
-        weights = {"fan": 0.35, "media": 0.25, "injury": 0.20, "transfer": 0.10, "derby": 0.10}
-        home_composite = round(
-            home_fan * weights["fan"] +
-            home_media_val * weights["media"] +   # Will fix below
-            home_injury * weights["injury"] +
-            home_transfer * weights["transfer"] +
-            derby_pressure * weights["derby"]
-        , 1) if False else 0  # placeholder
-
         # Manual composite (same as SentimentAnalyzer.calculate_composite_score)
         home_composite = round(
             home_fan * 0.35 + h_hype * 0.25 + home_injury * 0.20 +
