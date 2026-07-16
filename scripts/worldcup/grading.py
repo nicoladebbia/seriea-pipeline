@@ -63,21 +63,40 @@ def _base_rates(df: pd.DataFrame) -> tuple[float, float, float]:
     )
 
 
+def _pair_mask(df: pd.DataFrame, a: str, b: str) -> Any:
+    """Mask for the unordered team-pair {a, b}.
+
+    Neutral-venue matches are stored home/away-swapped between sources (the
+    fixture list says Switzerland vs Canada, results.csv says Canada vs
+    Switzerland). Every lookup here matches the unordered pair for the same
+    reason engine.load_results_with_live dedups on a frozenset.
+    """
+    return ((df["home_team"] == a) & (df["away_team"] == b)) | (
+        (df["home_team"] == b) & (df["away_team"] == a)
+    )
+
+
 def _find_result(
     df: pd.DataFrame, home: str, away: str, date: str
 ) -> tuple[int, int, pd.Timestamp] | None:
-    """FT score + result date, by canon names + date (±1 day for tz skew)."""
+    """FT score + result date, by canon names + date (±1 day for tz skew).
+
+    A row stored home/away-swapped is matched and its score returned in the
+    REQUESTED orientation, so callers always read the fixture's own frame.
+    """
+    ch, ca = canon_team(home), canon_team(away)
     target = pd.Timestamp(date)
     window = df[
-        (df["home_team"] == canon_team(home))
-        & (df["away_team"] == canon_team(away))
+        _pair_mask(df, ch, ca)
         & (df["date"] >= target - pd.Timedelta(days=1))
         & (df["date"] <= target + pd.Timedelta(days=1))
     ]
     if window.empty:
         return None
     row = window.iloc[0]
-    return int(row["home_score"]), int(row["away_score"]), row["date"]
+    if str(row["home_team"]) == ch:
+        return int(row["home_score"]), int(row["away_score"]), row["date"]
+    return int(row["away_score"]), int(row["home_score"]), row["date"]
 
 
 def _ninety_minute_score(
@@ -91,18 +110,17 @@ def _ninety_minute_score(
     """90' score for a knockout match. None = cannot reconstruct honestly."""
     if not shootouts.empty:
         pens = shootouts[
-            (shootouts["home_team"] == home_canon)
-            & (shootouts["away_team"] == away_canon)
+            _pair_mask(shootouts, home_canon, away_canon)
             & (pd.to_datetime(shootouts["date"]) == result_date)
         ]
         if not pens.empty:
             return (0, 0)  # went to penalties => level at 90' (score irrelevant)
     # team col = beneficiary, so own-goal rows count toward the credited
-    # team's score — include them.
+    # team's score — include them. Counting by team name is orientation-free,
+    # so only the row lookup needs the unordered pair.
     rows = scorers[
         (pd.to_datetime(scorers["date"]) == result_date)
-        & (scorers["home_team"] == home_canon)
-        & (scorers["away_team"] == away_canon)
+        & _pair_mask(scorers, home_canon, away_canon)
     ] if not scorers.empty else pd.DataFrame()
     if len(rows) != ft[0] + ft[1]:
         return None  # scorer coverage incomplete — refuse to grade wrong
@@ -130,8 +148,7 @@ def reconstruct_halftime(
         return None
     rows = scorers[
         (pd.to_datetime(scorers["date"]) == result_date)
-        & (scorers["home_team"] == home_canon)
-        & (scorers["away_team"] == away_canon)
+        & _pair_mask(scorers, home_canon, away_canon)
     ]
     if len(rows) != ft[0] + ft[1]:
         return None  # incomplete scorer coverage — cannot split halves honestly
