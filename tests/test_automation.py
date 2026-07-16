@@ -82,8 +82,11 @@ def test_scheduler_exists():
         # Check schedule config
         if "daily_runs" in SCHEDULE_CONFIG:
             runs = SCHEDULE_CONFIG["daily_runs"]
+            # Built outside the f-string: nesting the same quote character is
+            # 3.12+ syntax, and pyproject declares requires-python >= 3.11.
+            times = [f"{r['hour']:02d}:{r['minute']:02d}" for r in runs]
             results.add_pass(f"Scheduler has {len(runs)} daily runs configured",
-                           f"Times: {[f'{r['hour']:02d}:{r['minute']:02d}' for r in runs]}")
+                           f"Times: {times}")
         else:
             results.add_fail("Scheduler config", "No daily_runs configured")
 
