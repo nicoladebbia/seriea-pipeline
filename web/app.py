@@ -1042,6 +1042,310 @@ def api_performance():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/transfers")
+def transfers_page():
+    return render_template("transfers.html", active_page="transfers")
+
+
+@app.route("/api/transfers")
+def api_transfers():
+    """Per-club Serie A 2026-27 transfers + net-squad-delta + rumors.
+
+    Confirmed transfers and the net_squad_delta come from transfers_*.parquet.
+    The net_squad_delta is COMPUTED and shown here, but it is currently GATED OUT
+    of the live ML feature set (see get_ml_feature_columns in features/build.py)
+    pending a leak-free held-out backtest — so today it is a squad-tracking view,
+    not yet a model input. Rumors come from rumors_*.parquet and are returned in a
+    SEPARATE key, clearly flagged confirmed=False — they never touch the model and
+    the UI must render them as speculation.
+    """
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    tm_dir = DATA_DIR / "external" / "transfermarkt"
+    sfx = season.replace("-", "_")
+
+    def _load(name):
+        p = tm_dir / f"{name}_{sfx}.parquet"
+        if not p.exists():
+            return None
+        try:
+            return pd.read_parquet(p)
+        except Exception:  # noqa: BLE001 — missing/corrupt cache degrades to empty
+            return None
+
+    tf = _load("transfers")
+    rm = _load("rumors")
+
+    # net squad delta per club (model feature) — confirmed only
+    try:
+        from features.transfer_impact_analysis import compute_net_squad_delta
+        deltas = compute_net_squad_delta(season=season, league="serie_a")
+    except Exception:  # noqa: BLE001 — feature is optional for the dashboard view
+        deltas = {}
+
+    clubs: dict = {}
+    if tf is not None and not tf.empty:
+        for team, grp in tf.groupby("team"):
+            key = team.lower().strip()
+            ins = grp[grp["transfer_type"] == "in"]
+            outs = grp[grp["transfer_type"] == "out"]
+
+            def _rows(g):
+                out = []
+                for _, r in g.iterrows():
+                    mv = r.get("market_value_at_transfer")
+                    out.append({
+                        "player": r.get("player_name"),
+                        "age": None if pd.isna(r.get("age")) else int(r["age"]),
+                        "fee_text": r.get("fee_text"),
+                        "fee_eur": None if pd.isna(r.get("fee_eur")) else float(r["fee_eur"]),
+                        "is_loan": bool(r.get("is_loan")) if pd.notna(r.get("is_loan")) else False,
+                        # richer detail (2026-07-14): position/nationality/clubs from
+                        # the TM /plus/1 layout; date + n_sources from the Wikipedia
+                        # cross-source merge (n_sources=2 → confirmed by both feeds).
+                        "position": r.get("position") if pd.notna(r.get("position")) else None,
+                        "nationality": r.get("nationality") if pd.notna(r.get("nationality")) else None,
+                        "from_club": r.get("from_club") if pd.notna(r.get("from_club")) else None,
+                        "to_club": r.get("to_club") if pd.notna(r.get("to_club")) else None,
+                        "market_value_eur": None if pd.isna(mv) else float(mv),
+                        "transfer_date": r.get("transfer_date") if pd.notna(r.get("transfer_date")) else None,
+                        "n_sources": int(r.get("n_sources")) if pd.notna(r.get("n_sources")) else 1,
+                    })
+                return out
+
+            d = deltas.get(key, {})
+            clubs[team] = {
+                "in": _rows(ins),
+                "out": _rows(outs),
+                "net_squad_delta": d.get("net_squad_delta", 0.0),
+                "arrivals_weight": d.get("arrivals_weight", 0.0),
+                "departures_weight": d.get("departures_weight", 0.0),
+            }
+
+    rumors: dict = {}
+    if rm is not None and not rm.empty:
+        for team, grp in rm.groupby("team"):
+            rows = []
+            for _, r in grp.iterrows():
+                rows.append({
+                    "player": r.get("player_name"),
+                    "age": None if pd.isna(r.get("age")) else int(r["age"]),
+                    "current_club": r.get("current_club"),
+                    "market_value_text": r.get("market_value_text"),
+                    "source_date": r.get("source_date"),
+                    "source_url": r.get("source_url"),
+                    "confirmed": False,
+                })
+            rumors[team] = rows
+
+    return jsonify({
+        "season": season,
+        "clubs": clubs,
+        "rumors": rumors,
+        "note": (
+            "Net-squad-delta is computed and shown, but GATED OUT of the live "
+            "model pending a leak-free backtest. Rumors are speculation "
+            "(display-only) and never touch the model."
+        ),
+    })
+
+
+@app.route("/rosters")
+def rosters_page():
+    return render_template("rosters.html", active_page="rosters")
+
+
+@app.route("/api/rosters")
+def api_rosters():
+    """Current per-club Serie A squads for a season (the actual rosa, not deltas).
+
+    Live from the Transfermarkt squad pages (market_values_*.parquet) — this is
+    the resulting roster, distinct from the transfer-flow view on /transfers.
+    Players are grouped GK→DEF→MID→ATT and sorted by market value within each
+    group. A player is flagged `new` if a confirmed (non-loan-return) 2026-27
+    arrival row exists for them in transfers_*.parquet.
+    """
+    import re
+    import unicodedata
+
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    tm_dir = DATA_DIR / "external" / "transfermarkt"
+    sfx = season.replace("-", "_")
+
+    mv_path = tm_dir / f"market_values_{sfx}.parquet"
+    if not mv_path.exists():
+        return jsonify({"error": f"no squad data for {season}", "clubs": []})
+    try:
+        mv = pd.read_parquet(mv_path)
+    except Exception:  # noqa: BLE001 — corrupt cache degrades to empty, never 500s
+        return jsonify({"error": "squad data unreadable", "clubs": []})
+
+    def _pos_group(p: str) -> str:
+        p = (p or "").lower()
+        if "goalkeeper" in p:
+            return "GK"
+        if "back" in p or "defender" in p:
+            return "DEF"
+        if "midfield" in p:
+            return "MID"
+        if any(k in p for k in ("winger", "forward", "striker", "attack")):
+            return "ATT"
+        return "OTH"
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", str(s or ""))
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return re.sub(r"[^a-z ]", " ", s.lower()).strip()
+
+    # confirmed (non-loan-return) arrivals → the "new" flag
+    new_in: set = set()
+    tf_path = tm_dir / f"transfers_{sfx}.parquet"
+    if tf_path.exists():
+        try:
+            tf = pd.read_parquet(tf_path)
+            for _, r in tf[tf["transfer_type"] == "in"].iterrows():
+                if "end of loan" not in str(r.get("fee_text", "")).lower():
+                    new_in.add((r["team"], _norm(r.get("player_name"))))
+        except Exception:  # noqa: BLE001 — the flag is optional; squad still renders
+            new_in = set()
+
+    # Capology salary ESTIMATES — read-time join, kept in its own parquet and
+    # NEVER materialized into market_values (that would co-mingle an estimate
+    # unlabeled beside TM's real market value). Every number here is a Capology
+    # estimate of *fixed* gross salary (excludes bonuses) — surfaced as such in
+    # the UI, never as an official figure. Joined by (team, normalized name);
+    # ~79% of the roster matches (unmatched players simply show no salary).
+    sal_by_key: dict = {}          # exact (team, norm_name) → payload
+    sal_by_team: dict = {}         # team → [(name_token_set, norm_name, payload)] for subset fallback
+    sal_path = tm_dir / f"salaries_{sfx}.parquet"
+    if sal_path.exists():
+        try:
+            sal = pd.read_parquet(sal_path)
+            for _, s in sal.iterrows():
+                ann = s.get("annual_gross_eur")
+                if pd.isna(ann):
+                    continue
+                nn = _norm(s.get("player_name"))
+                payload = {
+                    "annual": int(ann),
+                    "monthly": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else None,
+                    "weekly": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else None,
+                    "verified": bool(s.get("verified")),
+                    # Capology's own contract read (independent of TM's contract_until):
+                    # years remaining + expiry ISO date.
+                    "years": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
+                    "expires": s.get("contract_expiration") if pd.notna(s.get("contract_expiration")) else None,
+                }
+                sal_by_key[(s["team"], nn)] = payload
+                sal_by_team.setdefault(s["team"], []).append((frozenset(nn.split()), nn, payload))
+        except Exception:  # noqa: BLE001 — salaries are optional garnish; squad still renders
+            sal_by_key = {}
+            sal_by_team = {}
+
+    def _salary_for(team: str, name: str):
+        """Exact (team, normalized-name) match first; then a SAFE subset fallback —
+        Capology often carries an extra middle name (TM "Yann Bisseck" vs Capology
+        "Yann Aurel Bisseck", "Pio Esposito" vs "Francesco Pio Esposito"). Accept
+        only when one name's tokens are a subset of the other AND they share the
+        same last name AND exactly ONE Capology row qualifies (never ambiguous).
+        Recovers ~7 real players with zero false matches; a wrong wage is worse
+        than none, so ambiguity → no match."""
+        nn = _norm(name)
+        hit = sal_by_key.get((team, nn))
+        if hit is not None:
+            return hit
+        toks = frozenset(nn.split())
+        last = nn.split()[-1] if nn.split() else ""
+        cands = [
+            pl for (ctoks, cnn, pl) in sal_by_team.get(team, [])
+            if toks and ctoks
+            and cnn.split()[-1] == last
+            and (toks <= ctoks or ctoks <= toks)
+        ]
+        return cands[0] if len(cands) == 1 else None
+
+    order = {"GK": 0, "DEF": 1, "MID": 2, "ATT": 3, "OTH": 4}
+    mv = mv.copy()
+    mv["pg"] = mv["position"].map(_pos_group)
+
+    clubs = []
+    for team, grp in mv.groupby("team"):
+        players = []
+        for _, p in grp.iterrows():
+            val = float(p["market_value_eur"]) if pd.notna(p.get("market_value_eur")) else 0.0
+            wage = _salary_for(team, p.get("player_name"))
+            players.append({
+                "name": p.get("player_name"),
+                "pos": p.get("position") or "",
+                "pg": p["pg"],
+                "age": None if pd.isna(p.get("age")) else int(p["age"]),
+                "val": val,
+                "nat": p.get("nationality") or "",
+                "new": (team, _norm(p.get("player_name"))) in new_in,
+                "contract_until": p.get("contract_until") if pd.notna(p.get("contract_until")) else None,
+                # Capology salary estimate (fixed gross) — null if no match.
+                "salary": wage,
+            })
+        players.sort(key=lambda x: (order.get(x["pg"], 9), -x["val"]))
+        # Flag the team's TOP EARNER — the single highest fixed annual among
+        # matched players — so the UI can highlight it. On a tie, exactly ONE is
+        # flagged (first in display order), since the user wants "the most paid one".
+        top_pl = max(
+            (pl for pl in players if pl.get("salary") and pl["salary"].get("annual")),
+            key=lambda pl: pl["salary"]["annual"],
+            default=None,
+        )
+        for pl in players:
+            pl["top_earner"] = pl is top_pl
+        total = float(grp["market_value_eur"].sum())
+        clubs.append({
+            "team": team,
+            "players": players,
+            "squad_size": len(players),
+            "total_value": total,
+            "new_count": sum(1 for pl in players if pl["new"]),
+        })
+    clubs.sort(key=lambda c: -c["total_value"])
+
+    return jsonify({
+        "season": season,
+        "clubs": clubs,
+        "league_total": float(mv["market_value_eur"].sum()),
+        "total_players": int(len(mv)),
+    })
+
+
+@app.route("/api/transfer-changes")
+def api_transfer_changes():
+    """Recent squad changes (signings, departures, value/contract moves) for the feed.
+
+    Reads the append-only log written by the change detector on each refresh. Pure
+    display — never a model input. Returns newest-first, capped for the UI.
+    """
+    import pandas as pd
+
+    from config.settings import DATA_DIR
+
+    season = flask_request.args.get("season", "2026-2027")
+    limit = min(int(flask_request.args.get("limit", 100)), 500)
+    path = DATA_DIR / "external" / "transfermarkt" / f"transfer_changes_{season.replace('-', '_')}.json"
+    if not path.exists():
+        return jsonify({"season": season, "changes": [], "count": 0})
+    try:
+        import json as _json
+        changes = _json.loads(path.read_text())
+    except Exception:  # noqa: BLE001 — corrupt/missing log degrades to empty
+        changes = []
+    return jsonify({"season": season, "changes": changes[:limit], "count": len(changes)})
+
+
 @app.route("/api/quota")
 def api_quota():
     """The Odds API quota snapshot: remaining credits, days to reset, undercount warnings.

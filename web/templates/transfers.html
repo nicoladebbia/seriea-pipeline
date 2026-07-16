@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Transfers — SerieAI{% endblock %}
+{% block page_title %}Serie A Transfers 2026-27{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Squad tracker: net delta computed per club (gated out of the live model pending backtest) · rumors shown separately · updated daily
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  .tf-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-left: 3px solid var(--accent);
+             border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
+  .tf-note b { color: var(--text-secondary); }
+
+  .tf-club { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+             margin-bottom: 16px; overflow: hidden; }
+  .tf-club__head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+                   padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); background: rgba(255,255,255,0.02); }
+  .tf-club__name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .tf-delta { font-family: var(--font-mono); font-size: 12px; font-weight: 800; border-radius: 6px; padding: 3px 10px; }
+  .tf-delta.pos { color: #4ade80; background: rgba(74,222,128,0.12); }
+  .tf-delta.neg { color: #f87171; background: rgba(248,113,113,0.12); }
+  .tf-delta.flat { color: var(--text-tertiary); background: rgba(255,255,255,0.04); }
+  .tf-delta small { font-weight: 500; opacity: 0.7; }
+
+  .tf-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  @media (max-width: 700px) { .tf-cols { grid-template-columns: 1fr; } }
+  .tf-col { padding: 10px 16px; }
+  .tf-col.in { border-right: 1px solid var(--border-subtle); }
+  .tf-col__label { font-size: 10px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+  .tf-col.in .tf-col__label { color: #4ade80; }
+  .tf-col.out .tf-col__label { color: #f87171; }
+  .tf-row { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; padding: 5px 0; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .tf-row__main { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .tf-row__name { color: var(--text-primary); }
+  .tf-row__money { text-align: right; white-space: nowrap; }
+  .tf-row__meta { grid-column: 1 / 2; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 1px; }
+  .tf-row__fee { font-family: var(--font-mono); font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
+  .tf-loan { font-size: 9px; color: var(--accent); border: 1px solid var(--border-subtle); border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+  .tf-pos { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; }
+  .tf-club-tag { font-size: 10px; color: var(--text-secondary); }
+  .tf-date { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .tf-mv { display: block; font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .tf-dual { font-size: 9px; color: #4ade80; margin-left: 4px; letter-spacing: -1px; }
+
+  /* Rumors — deliberately visually distinct: dashed, muted, "speculation" */
+  .tf-rumors-wrap { margin-top: 28px; }
+  .tf-rumors-head { font-size: 13px; font-weight: 800; color: #facc15; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .tf-rumors-sub { font-size: 10px; color: var(--text-tertiary); margin-bottom: 14px; }
+  .tf-rumor-club { border: 1px dashed rgba(250,204,21,0.35); border-radius: var(--radius-md);
+                   background: rgba(250,204,21,0.03); margin-bottom: 12px; padding: 8px 14px; }
+  .tf-rumor-club__name { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
+  .tf-rumor-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 11px; }
+  .tf-rumor-row__name { color: var(--text-primary); }
+  .tf-rumor-row__meta { font-family: var(--font-mono); font-size: 9px; color: var(--text-tertiary); white-space: nowrap; }
+  .tf-rumor-flag { font-size: 8px; font-weight: 800; color: #facc15; background: rgba(250,204,21,0.12);
+                   border-radius: 3px; padding: 1px 5px; margin-left: 6px; letter-spacing: 0.5px; }
+  .tf-empty { font-size: 11px; color: var(--text-tertiary); padding: 20px; text-align: center; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="tf-note">
+  <b>What this is:</b> confirmed ins/outs per Serie A club for 2026-27, each weighted by market value + last-season minutes.
+  The <b>net squad delta</b> (arrivals − departures) is computed and shown here, but is
+  <b>gated out of the live prediction model</b> until a leak-free held-out backtest proves it adds skill — so today it is a squad-tracking view, not a model input. The
+  <b>Rumors</b> section below is <b>speculation only</b> — it never touches a prediction.
+</div>
+<div id="tf-clubs"><div class="tf-empty">Loading transfers…</div></div>
+<div id="tf-rumors" class="tf-rumors-wrap"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  const clubsEl = document.getElementById("tf-clubs");
+  const rumorsEl = document.getElementById("tf-rumors");
+
+  function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function feeLabel(r) {
+    if (r.is_loan) return "loan";
+    if (r.fee_eur) return "€" + (r.fee_eur / 1e6).toFixed(1) + "m";
+    return r.fee_text && r.fee_text !== "-" ? esc(r.fee_text) : "free/—";
+  }
+  function mvLabel(r) {
+    return r.market_value_eur ? "MV €" + (r.market_value_eur / 1e6).toFixed(1) + "m" : "";
+  }
+  function fmtDate(iso) {
+    if (!iso) return "";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d)) return esc(iso);
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  }
+  // Rich transfer row: name + position, other club, fee, market value, date, and a
+  // dual-source badge (✓✓ = confirmed by both Transfermarkt AND Wikipedia).
+  function transferRow(r, dir) {
+    const otherClub = dir === "in" ? r.from_club : r.to_club;
+    const pos = r.position ? `<span class="tf-pos">${esc(r.position)}</span>` : "";
+    const club = otherClub ? `<span class="tf-club-tag">${dir === "in" ? "←" : "→"} ${esc(otherClub)}</span>` : "";
+    const mv = mvLabel(r) ? `<span class="tf-mv">${mvLabel(r)}</span>` : "";
+    const date = r.transfer_date ? `<span class="tf-date" title="exact date from Wikipedia">${fmtDate(r.transfer_date)}</span>` : "";
+    const dual = r.n_sources >= 2 ? `<span class="tf-dual" title="confirmed by Transfermarkt and Wikipedia">✓✓</span>` : "";
+    const loan = r.is_loan ? '<span class="tf-loan">loan</span>' : "";
+    return `<div class="tf-row">
+      <div class="tf-row__main"><span class="tf-row__name">${esc(r.player)}${loan}${dual}</span>${pos}</div>
+      <div class="tf-row__meta">${club}${date}</div>
+      <div class="tf-row__money"><span class="tf-row__fee">${feeLabel(r)}</span>${mv}</div>
+    </div>`;
+  }
+
+  function renderClubs(clubs) {
+    const names = Object.keys(clubs).sort((a, b) => clubs[b].net_squad_delta - clubs[a].net_squad_delta);
+    if (!names.length) { clubsEl.innerHTML = '<div class="tf-empty">No confirmed transfers on disk yet — the daily scrape populates this.</div>'; return; }
+    clubsEl.innerHTML = names.map(function (name) {
+      const c = clubs[name];
+      const d = c.net_squad_delta || 0;
+      const cls = d > 0.05 ? "pos" : d < -0.05 ? "neg" : "flat";
+      const sign = d > 0 ? "+" : "";
+      const rowsIn = (c.in || []).map(r => transferRow(r, "in")).join("") || '<div class="tf-row__fee">—</div>';
+      const rowsOut = (c.out || []).map(r => transferRow(r, "out")).join("") || '<div class="tf-row__fee">—</div>';
+      return `<div class="tf-club">
+        <div class="tf-club__head">
+          <span class="tf-club__name">${esc(name)}</span>
+          <span class="tf-delta ${cls}">net ${sign}${d.toFixed(2)} <small>(in ${(c.arrivals_weight||0).toFixed(1)} / out ${(c.departures_weight||0).toFixed(1)})</small></span>
+        </div>
+        <div class="tf-cols">
+          <div class="tf-col in"><div class="tf-col__label">In (${(c.in||[]).length})</div>${rowsIn}</div>
+          <div class="tf-col out"><div class="tf-col__label">Out (${(c.out||[]).length})</div>${rowsOut}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderRumors(rumors) {
+    const names = Object.keys(rumors).sort();
+    if (!names.length) { rumorsEl.innerHTML = ""; return; }
+    const blocks = names.map(function (name) {
+      const rows = (rumors[name] || []).map(r => `<div class="tf-rumor-row">
+        <span class="tf-rumor-row__name">${esc(r.player)}<span class="tf-rumor-flag">RUMOR</span></span>
+        <span class="tf-rumor-row__meta">${esc(r.current_club || "")} · ${esc(r.market_value_text || "")} · ${esc(r.source_date || "")}</span>
+      </div>`).join("");
+      return `<div class="tf-rumor-club"><div class="tf-rumor-club__name">${esc(name)}</div>${rows}</div>`;
+    }).join("");
+    rumorsEl.innerHTML = `<div class="tf-rumors-head">🔶 Rumors — speculation, NOT in the model</div>
+      <div class="tf-rumors-sub">Unconfirmed links from Transfermarkt. Shown with the player's market value and the most-recent-source date for traceability. These do not affect any prediction.</div>${blocks}`;
+  }
+
+  fetch("/api/transfers")
+    .then(r => r.json())
+    .then(function (data) {
+      if (data.error) { clubsEl.innerHTML = '<div class="tf-empty">Error: ' + esc(data.error) + '</div>'; return; }
+      renderClubs(data.clubs || {});
+      renderRumors(data.rumors || {});
+    })
+    .catch(e => { clubsEl.innerHTML = '<div class="tf-empty">Failed to load transfers.</div>'; });
+})();
+</script>
+{% endblock %}

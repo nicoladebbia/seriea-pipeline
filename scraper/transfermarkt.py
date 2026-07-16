@@ -160,6 +160,41 @@ def _get_league_teams(league: str) -> dict[str, tuple[str, int]]:
     return teams
 
 
+_COMPETITION_IDS: dict[str, str] = {"serie_a": "IT1", "premier_league": "GB1"}
+
+
+def current_league_teams(season: str, league: str = "serie_a") -> set[str] | None:
+    """Team names actually in a league for a season, from TM's competition page.
+
+    The static team maps are historical supersets; this resolves the ACTUAL
+    member clubs for ``season`` by matching TM verein IDs on the competition
+    page against the map. Returns None on any failure so callers fall back to
+    the full map rather than silently scraping nothing.
+    """
+    comp = _COMPETITION_IDS.get(league)
+    if comp is None:
+        return None
+    tm_season = season.split("-")[0]
+    url = f"{TM_BASE}/x/startseite/wettbewerb/{comp}/saison_id/{tm_season}"
+    try:
+        resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("Could not fetch %s %s competition page (%s) — using full map",
+                    league, season, e)
+        return None
+    ids_on_page = {
+        int(cid)
+        for cid in re.findall(rf"/startseite/verein/(\d+)/saison_id/{tm_season}", resp.text)
+    }
+    if not ids_on_page:
+        log.warning("No club IDs parsed from %s competition page — using full map", league)
+        return None
+    names = {name for name, (_slug, cid) in _get_league_teams(league).items()
+             if cid in ids_on_page}
+    return names or None
+
+
 def _league_cache_prefix(league: str) -> str:
     """Return file prefix for league-specific cache files.
 
@@ -173,17 +208,22 @@ def _league_cache_prefix(league: str) -> str:
 def scrape_squad_market_values(
     season: str = "2024-2025",
     league: str = "serie_a",
+    only_teams: set[str] | None = None,
 ) -> pd.DataFrame:
     """Scrape market values for all squads in a league from Transfermarkt.
 
     Args:
         season: Season string, e.g. "2024-2025"
         league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
+        only_teams: optional set of team names to restrict to (the map is a
+            historical superset — pass the current clubs to avoid wasted fetches).
 
     Returns DataFrame with columns:
         team, player_name, position, market_value_eur, age, nationality
     """
     league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
     prefix = _league_cache_prefix(league)
     cache_path = TM_DIR / f"{prefix}market_values_{season.replace('-', '_')}.parquet"
     cached_df = None
@@ -267,12 +307,42 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
             if pos_span:
                 player_data["position"] = pos_span.get_text(strip=True)
 
-        # Age
+        # Age — on the squad page the age is the parenthesized number in the
+        # date-of-birth cell, e.g. "01/07/2000 (26)". The OLD code grabbed the
+        # first standalone 1-2 digit cell, which is the SHIRT NUMBER
+        # (td.rueckennummer, e.g. "9") — so Scamacca (shirt 9) got age 9. Parse
+        # "(NN)" instead; fall back to a plausible bare age only if no DOB found.
+        player_data["age"] = None
         for td in cells:
-            text = td.get_text(strip=True)
-            if re.match(r"^\d{1,2}$", text):
-                player_data["age"] = int(text)
+            m = re.search(r"\((\d{1,2})\)", td.get_text(strip=True))
+            if m:
+                player_data["age"] = int(m.group(1))
                 break
+        if player_data["age"] is None:
+            for td in cells:
+                # skip the shirt-number cell explicitly
+                if "rueckennummer" in (td.get("class") or []):
+                    continue
+                text = td.get_text(strip=True)
+                if re.match(r"^\d{2}$", text) and 15 <= int(text) <= 45:
+                    player_data["age"] = int(text)
+                    break
+
+        # Joined date + contract expiry — both render as dd/mm/yyyy in centered
+        # cells (joined comes before contract-until). Collect all full-date cells
+        # in row order: [-1] is the contract expiry, [-2] the joined date. The DOB
+        # cell is "dd/mm/yyyy (NN)" so it carries a "(" — exclude it so it isn't
+        # mistaken for the joined date. Verified 2026-07-14: cell[9]=joined,
+        # cell[11]=contract-until on the /plus/1 squad layout.
+        date_cells = []
+        for td in cells:
+            t = td.get_text(strip=True)
+            if re.fullmatch(r"\d{2}/\d{2}/\d{4}", t):  # bare date, no "(age)"
+                date_cells.append(t)
+        if date_cells:
+            player_data["contract_until"] = _tm_date_iso(date_cells[-1])
+            if len(date_cells) >= 2:
+                player_data["joined_date"] = _tm_date_iso(date_cells[-2])
 
         # Market value (last cell typically)
         mv_cell = row.select_one("td.rechts.hauptlink")
@@ -291,11 +361,35 @@ def _parse_squad_page(html: str, team_name: str) -> list[dict]:
     return rows
 
 
+def _tm_date_iso(text: str) -> Optional[str]:
+    """Convert a Transfermarkt 'dd/mm/yyyy' date to ISO 'yyyy-mm-dd', else None."""
+    m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", (text or "").strip())
+    if not m:
+        return None
+    d, mth, y = m.groups()
+    return f"{y}-{mth}-{d}"
+
+
 def scrape_transfers(
     season: str = "2024-2025",
     league: str = "serie_a",
+    only_teams: set[str] | None = None,
+    window: str = "both",
 ) -> pd.DataFrame:
     """Scrape all transfers for a league/season.
+
+    window: which transfer window(s) to fetch, and how to TAG each row.
+        "both"   → fetch summer + winter separately and tag every row with a
+                   ``window`` column ("summer"/"winter"). This is the default and
+                   the form the daily cron uses so the file always carries the
+                   window flag (the leak-free net_squad_delta filter and the live
+                   jan_* features both depend on being able to tell them apart).
+        "summer" → summer window only (w_s=s), rows tagged "summer".
+        "winter" → winter window only (w_s=w), rows tagged "winter".
+    Tagging matters: net_squad_delta must exclude winter (a January signing must
+    not retroactively inflate that season's August matches — training leak), while
+    the jan_* features specifically read winter rows. A single untagged file can
+    serve neither correctly.
 
     Fetches each team's transfer page once and parses both the Arrivals
     and Departures tables separately (they appear as table[0] and table[1]).
@@ -303,12 +397,19 @@ def scrape_transfers(
     Args:
         season: Season string, e.g. "2024-2025"
         league: League key from LEAGUE_TEAMS_TM (e.g. "serie_a", "premier_league")
+        only_teams: optional set of team names to restrict the scrape to. The
+            Serie A map is a historical superset (relegated clubs kept for
+            backfilling old seasons); pass the current season's clubs so a
+            daily run doesn't waste ~12 requests on clubs no longer in the
+            league (see current_league_teams()).
 
     Returns DataFrame with columns:
         team, player_name, age, transfer_type (in/out),
         from_club, to_club, fee_eur, fee_text, is_loan
     """
     league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
     prefix = _league_cache_prefix(league)
     cache_path = TM_DIR / f"{prefix}transfers_{season.replace('-', '_')}.parquet"
     cached_df = None
@@ -329,23 +430,42 @@ def scrape_transfers(
     all_rows = []
     tm_season = season.split("-")[0]
 
+    # (window label, w_s query value) pairs to fetch. TM's w_s param filters the
+    # transfer window: s=summer, w=winter. "both" fetches each separately so every
+    # row is unambiguously tagged (parsing a merged page's section order is
+    # fragile; two explicit fetches are not).
+    _WS = {"summer": "s", "winter": "w"}
+    if window == "both":
+        windows = [("summer", "s"), ("winter", "w")]
+    elif window in _WS:
+        windows = [(window, _WS[window])]
+    else:
+        raise ValueError(f"window must be 'both'/'summer'/'winter', got {window!r}")
+
     for team_name, (slug, verein_id) in teams_to_scrape.items():
-        url = f"{TM_BASE}/{slug}/transfers/verein/{verein_id}/saison_id/{tm_season}"
-        log.info("Fetching %s transfers: %s", team_name, url)
+        n_in = n_out = 0
+        for win_label, ws in windows:
+            url = (
+                f"{TM_BASE}/{slug}/transfers/verein/{verein_id}/saison_id/{tm_season}"
+                f"/pos//detailpos/0/w_s/{ws}/plus/1"
+            )
+            try:
+                resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                log.warning("Failed to fetch %s %s transfers: %s", team_name, win_label, e)
+                time.sleep(5)
+                continue
 
-        try:
-            resp = requests.get(url, headers=TM_HEADERS, timeout=30)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            log.warning("Failed to fetch %s transfers: %s", team_name, e)
-            time.sleep(5)
-            continue
-
-        arrivals, departures = _parse_transfers_page(resp.text, team_name)
-        all_rows.extend(arrivals)
-        all_rows.extend(departures)
-        log.info("  %s: %d arrivals, %d departures", team_name, len(arrivals), len(departures))
-        time.sleep(4)
+            arrivals, departures = _parse_transfers_page(resp.text, team_name)
+            for r in arrivals + departures:
+                r["window"] = win_label
+            all_rows.extend(arrivals)
+            all_rows.extend(departures)
+            n_in += len(arrivals)
+            n_out += len(departures)
+            time.sleep(4)
+        log.info("  %s: %d arrivals, %d departures", team_name, n_in, n_out)
 
     new_df = pd.DataFrame(all_rows)
 
@@ -360,6 +480,116 @@ def scrape_transfers(
     df.to_parquet(cache_path, index=False)
     log.info("Saved %d transfers to %s", len(df), cache_path)
     return df
+
+
+def scrape_rumors(
+    season: str = "2026-2027",
+    league: str = "serie_a",
+    only_teams: set[str] | None = None,
+) -> pd.DataFrame:
+    """Scrape UNCONFIRMED transfer rumors per club (Transfermarkt /geruechte).
+
+    Rumors are SPECULATION, not done deals — this data is display-only and must
+    NEVER feed the model (compute_net_squad_delta reads transfers_*, never
+    rumors_*). Each rumor carries the honest signals TM actually provides:
+    the player's market value, the linked club, the most-recent-source date and
+    URL (freshness/traceability). No fabricated probability — TM's per-rumor
+    "assessment" is frequently blank, so we do not invent a number.
+
+    Rumors change and expire, so this OVERWRITES rumors_<season>.parquet each
+    run (no incremental cache) and stamps scraped_at. All rows are confirmed=False.
+
+    Returns columns: team, player_name, age, current_club, market_value_eur,
+    market_value_text, source_date, source_url, confirmed, scraped_at.
+    """
+    league_teams = _get_league_teams(league)
+    if only_teams is not None:
+        league_teams = {k: v for k, v in league_teams.items() if k in only_teams}
+    prefix = _league_cache_prefix(league)
+    cache_path = TM_DIR / f"{prefix}rumors_{season.replace('-', '_')}.parquet"
+    scraped_at = pd.Timestamp.utcnow().isoformat()
+
+    all_rows: list[dict] = []
+    for team_name, (slug, verein_id) in league_teams.items():
+        url = f"{TM_BASE}/{slug}/geruechte/verein/{verein_id}"
+        try:
+            resp = requests.get(url, headers=TM_HEADERS, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.warning("Failed to fetch %s rumors: %s", team_name, e)
+            time.sleep(5)
+            continue
+        rows = _parse_rumors_page(resp.text, team_name)
+        for r in rows:
+            r["confirmed"] = False
+            r["scraped_at"] = scraped_at
+        all_rows.extend(rows)
+        log.info("  %s: %d rumors", team_name, len(rows))
+        time.sleep(4)
+
+    df = pd.DataFrame(all_rows)
+    TM_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(cache_path, index=False)
+    log.info("Saved %d rumors to %s", len(df), cache_path)
+    return df
+
+
+def _parse_rumors_page(html: str, team_name: str) -> list[dict]:
+    """Parse a Transfermarkt rumors (/geruechte) page → list of rumor dicts.
+
+    Columns per row: Player, Nat., Age, Club (current club), Market value,
+    Most recent source (a dated forum-thread link), Assessment (often '-').
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.select_one("table.items")
+    if table is None:
+        return []
+    rows: list[dict] = []
+    for tr in table.select("tbody tr"):
+        name_link = tr.select_one("td.hauptlink a")
+        if not name_link:
+            continue
+        player = name_link.get_text(strip=True)
+        if not player:
+            continue
+        # TM renders a spacer/detail sub-row per player that also carries a
+        # hauptlink; it has no age cell. Skip it to avoid duplicate all-NaN rows.
+        has_age = any(
+            re.match(r"^\d{1,2}$", td.get_text(strip=True)) for td in tr.find_all("td")
+        )
+        if not has_age:
+            continue
+        rumor: dict = {"team": team_name, "player_name": player}
+
+        # Age — first standalone 1-2 digit cell
+        for td in tr.find_all("td"):
+            t = td.get_text(strip=True)
+            if re.match(r"^\d{1,2}$", t):
+                rumor["age"] = int(t)
+                break
+
+        # Current club (an image/link with a /verein/ href, title = club name)
+        club_link = tr.select_one("td.zentriert a[href*='/verein/'] img")
+        if club_link and club_link.get("alt"):
+            rumor["current_club"] = club_link["alt"].strip()
+
+        # Market value: a /marktwertverlauf/ link cell
+        mv_cell = tr.select_one("td.rechts a[href*='/marktwertverlauf/']")
+        if mv_cell:
+            mv_text = mv_cell.get_text(strip=True)
+            rumor["market_value_text"] = mv_text
+            rumor["market_value_eur"] = _parse_market_value(mv_text)
+
+        # Most-recent-source: dated forum link (freshness + traceability)
+        for a in tr.select("td.zentriert a[href*='/thread/']"):
+            date_txt = a.get_text(strip=True)
+            if re.match(r"\d{2}/\d{2}/\d{4}", date_txt):
+                rumor["source_date"] = date_txt
+                rumor["source_url"] = a.get("href")
+                break
+
+        rows.append(rumor)
+    return rows
 
 
 def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[dict]]:
@@ -402,6 +632,23 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
             else:
                 continue
 
+            # Position — the 2nd row of the inline name table holds the role
+            # subtext ("Centre-Forward"); the 1st row is the name itself.
+            position = None
+            inline = row.select_one("table.inline-table")
+            if inline:
+                inline_rows = inline.select("tr")
+                if len(inline_rows) >= 2:
+                    pos_text = inline_rows[1].get_text(strip=True)
+                    if pos_text:
+                        position = pos_text
+            transfer["position"] = position
+
+            # Nationality — first flag image title is the player's nation (later
+            # flags are the club's country); skip if absent.
+            flag = row.select_one("img.flaggenrahmen")
+            transfer["nationality"] = flag.get("title") if flag else None
+
             # Age
             for td in cells:
                 text = td.get_text(strip=True)
@@ -409,10 +656,24 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
                     transfer["age"] = int(text)
                     break
 
-            # From/To club
-            club_links = row.select("td.zentriert a[href*='/verein/']")
-            if club_links:
-                other_club = club_links[0].get_text(strip=True)
+            # From/To club — on the /plus/1 layout the club link is NOT inside
+            # td.zentriert (the sibling parser's selector finds 0 here). Each real
+            # transfer row carries the other club TWICE: a crest <img> (full name,
+            # e.g. "Manchester United") and a text link (short "Man Utd"), both
+            # pointing at the same /verein/ id. Verified 2026-07-14 on a live page:
+            # the two always resolve to the same club, so grabbing the crest's
+            # full-name title is unambiguous. Prefer the FIRST crest img whose link
+            # is a /verein/ link; fall back to the first verein link's text.
+            other_club = None
+            for a in row.select("a[href*='/verein/']"):
+                img = a.select_one("img[title], img[alt]")
+                if img is not None:
+                    other_club = img.get("title") or img.get("alt")
+                    break
+            if not other_club:
+                link = row.select_one("a[href*='/verein/']")
+                other_club = link.get_text(strip=True) or None if link is not None else None
+            if other_club:
                 if direction == "in":
                     transfer["from_club"] = other_club
                     transfer["to_club"] = team_name
@@ -420,10 +681,22 @@ def _parse_transfers_page(html: str, team_name: str) -> tuple[list[dict], list[d
                     transfer["from_club"] = team_name
                     transfer["to_club"] = other_club
 
-            # Fee
-            fee_cell = row.select_one("td.rechts")
-            if fee_cell:
-                fee_text = fee_cell.get_text(strip=True)
+            # Market value AND fee both render as td.rechts. On the /plus/1 layout
+            # the FIRST td.rechts is the player's market value at the move and the
+            # LAST is the transfer fee. The old code took the first (select_one) →
+            # it silently stored MARKET VALUE as the fee whenever both were present
+            # (e.g. Højlund fee €44m was recorded as his €60m value). Take the last
+            # for the fee, keep the first as market_value_at_transfer.
+            rechts = row.select("td.rechts")
+            if rechts:
+                if len(rechts) >= 2:
+                    mv_text = rechts[0].get_text(strip=True)
+                    transfer["market_value_at_transfer"] = _parse_market_value(mv_text)
+                    fee_text = rechts[-1].get_text(strip=True)
+                else:
+                    # single value → it's the fee column; no separate MV shown
+                    transfer["market_value_at_transfer"] = None
+                    fee_text = rechts[0].get_text(strip=True)
                 transfer["fee_text"] = fee_text
                 transfer["fee_eur"] = _parse_market_value(fee_text)
                 transfer["is_loan"] = "loan" in fee_text.lower()
