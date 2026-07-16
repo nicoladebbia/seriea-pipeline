@@ -1905,6 +1905,21 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
         "ref_xg_vs_league", "ref_matches",
         # Weather: not reliably available at prediction time
         "weather_relative_humidity_2m_mean",
+        # Transfer net-squad-delta (2026-27 build): GATED OUT of live ML until a
+        # leak-free held-out backtest clears skill > 0. Two reasons it is not yet
+        # trustworthy as a model input: (1) compute_net_squad_delta reads the
+        # WHOLE season transfer file with no as-of-date cutoff, so a winter-window
+        # signing retroactively inflates the delta on that season's August matches
+        # (training leakage — see the sibling compute_january_window_features which
+        # respects date windows); (2) market_values_2026_2027.parquet does not yet
+        # exist, so live-signing talent weight falls through to the 0.15 floor and
+        # the feature degrades to "net count of signings" rather than net talent.
+        # The columns are still COMPUTED and drive the /transfers dashboard; they
+        # are only withheld from get_ml_feature_columns. Remove these three lines
+        # to re-enable ONCE the backtest passes (project cardinal rule: a feature
+        # is production after a held-out backtest beats base rate, not before).
+        "net_squad_delta_diff",
+        "home_net_squad_delta", "away_net_squad_delta",
     }
 
     # Raw match-day stat columns that leak current-match info

@@ -1,0 +1,365 @@
+{% extends "base.html" %}
+{% block title %}Squads — SerieAI{% endblock %}
+{% block page_title %}Serie A Squads 2026-27{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  The actual rosa per club — live from Transfermarkt squad pages, not reconstructed from transfer flows
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  /* Position semantic colors — muted, legible on the dark ground */
+  .rs { --gk:#e0913f; --def:#6f93bd; --mid:#3fae95; --att:#e0654a; }
+
+  .rs-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--accent); border-radius: var(--radius-md);
+    padding: 10px 14px; margin-bottom: 18px; font-size: 11px; color: var(--text-tertiary); }
+  .rs-note b { color: var(--text-secondary); }
+  .rs-note .new { color: var(--accent); font-weight: 700; }
+
+  /* summary strip */
+  .rs-summary { display: flex; gap: 22px; flex-wrap: wrap; padding: 4px 2px 18px; font-size: 12px; color: var(--text-tertiary); }
+  .rs-summary b { color: var(--text-primary); font-variant-numeric: tabular-nums; font-size: 15px; margin-right: 4px; }
+
+  /* recent-changes feed */
+  .rs-changes { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 14px 16px; margin-bottom: 18px; }
+  .rs-changes__head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rs-changes__title { font-size: 13px; font-weight: 800; color: var(--text-primary);
+    text-transform: uppercase; letter-spacing: .06em; }
+  .rs-changes__sub { font-size: 11px; color: var(--text-tertiary); }
+  .rs-changes__list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+  .rs-chg { display: grid; grid-template-columns: 70px 1fr auto; gap: 10px; align-items: baseline;
+    padding: 6px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
+  .rs-chg__type { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em;
+    padding: 2px 6px; border-radius: 4px; text-align: center; align-self: center; }
+  .chg-signing .rs-chg__type { background: rgba(63,174,149,.16); color: var(--mid); }
+  .chg-departure .rs-chg__type { background: rgba(224,101,74,.16); color: var(--att); }
+  .chg-value_change .rs-chg__type { background: var(--accent-muted); color: var(--accent); }
+  .chg-contract_change .rs-chg__type { background: rgba(224,145,63,.16); color: var(--gk, #e0913f); }
+  .rs-chg__body { min-width: 0; }
+  .rs-chg__player { color: var(--text-primary); font-weight: 600; }
+  .rs-chg__detail { font-size: 11px; color: var(--text-tertiary); }
+  .rs-chg__when { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rs-contract { color: var(--text-tertiary); white-space: nowrap; }
+
+  /* toolbar */
+  .rs-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .rs-search { flex: 1 1 260px; position: relative; }
+  .rs-search input { width: 100%; padding: 10px 14px 10px 36px; border: 1px solid var(--border-default);
+    background: var(--bg-secondary); color: var(--text-primary); border-radius: var(--radius-md);
+    font-size: 14px; font-family: inherit; }
+  .rs-search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .rs-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); }
+  .rs-btn { padding: 9px 13px; border: 1px solid var(--border-default); background: var(--bg-secondary);
+    color: var(--text-secondary); border-radius: var(--radius-md); font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit; }
+  .rs-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+
+  /* club card */
+  .rs-clubs { display: flex; flex-direction: column; gap: 8px; }
+  .rs-club { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); overflow: hidden; }
+  .rs-club__head { display: grid; grid-template-columns: 30px 1fr auto 18px; gap: 14px;
+    align-items: center; padding: 14px 18px; cursor: pointer; user-select: none; }
+  .rs-club__head:hover { background: var(--bg-tertiary); }
+  .rs-rank { font-size: 20px; font-weight: 800; color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums; text-align: center; letter-spacing: -.03em; }
+  .rs-id { min-width: 0; }
+  .rs-name { font-size: clamp(17px, 2.4vw, 21px); font-weight: 800; letter-spacing: -.01em;
+    text-transform: uppercase; line-height: 1; color: var(--text-primary); }
+  .rs-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 5px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .rs-sub b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .rs-sub .new { color: var(--accent); font-weight: 700; }
+  .rs-val { text-align: right; }
+  .rs-val .num { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em; color: var(--text-primary); }
+  .rs-val .lab { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .1em; }
+  .rs-valbar { grid-column: 1 / -1; height: 3px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
+  .rs-valbar > i { display: block; height: 100%;
+    background: linear-gradient(90deg, var(--accent-muted), var(--accent)); }
+  .rs-chev { transition: transform .2s ease; color: var(--text-tertiary); }
+  .rs-club.open .rs-chev { transform: rotate(90deg); }
+
+  /* squad body */
+  .rs-squad { display: none; padding: 2px 18px 20px; border-top: 1px solid var(--border-subtle); }
+  .rs-club.open .rs-squad { display: block; }
+  .rs-pg { margin-top: 16px; }
+  .rs-pg__lab { font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .rs-dot { width: 8px; height: 8px; border-radius: 2px; }
+  .pg-GK .rs-dot { background: var(--gk); } .pg-GK .rs-pg__lab { color: var(--gk); }
+  .pg-DEF .rs-dot { background: var(--def); } .pg-DEF .rs-pg__lab { color: var(--def); }
+  .pg-MID .rs-dot { background: var(--mid); } .pg-MID .rs-pg__lab { color: var(--mid); }
+  .pg-ATT .rs-dot { background: var(--att); } .pg-ATT .rs-pg__lab { color: var(--att); }
+  .pg-OTH .rs-dot { background: var(--text-tertiary); } .pg-OTH .rs-pg__lab { color: var(--text-tertiary); }
+
+  /* Player card: wider min so nothing clips; each datum has its own row. */
+  .rs { --gold:#e5b567; }
+  .rs-plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 8px 20px; }
+  .rs-row { padding: 9px 11px; border: 1px solid var(--border-subtle); border-radius: 9px;
+    background: var(--bg-tertiary); font-size: 13px;
+    transition: border-color .12s ease, background .12s ease; }
+  .rs-row:hover { border-color: var(--border-default); background: var(--bg-secondary); }
+  /* top earner of the club — gold left rail + tinted ground */
+  .rs-row.is-top { border-color: rgba(229,181,103,.45);
+    box-shadow: inset 3px 0 0 var(--gold); background: rgba(229,181,103,.06); }
+  .rs-row.is-top:hover { background: rgba(229,181,103,.1); }
+  .rs-top { margin-right: 4px; font-size: 11px; vertical-align: 1px; }
+  /* line 1 — name + market value */
+  .rs-row__top { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 8px; }
+  .rs-row__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-primary); font-weight: 600; }
+  .rs-row__name .nw { color: var(--accent); font-size: 9px; font-weight: 800; margin-left: 5px;
+    border: 1px solid var(--accent-muted); border-radius: 3px; padding: 0 3px; vertical-align: 1px; }
+  .rs-row__val { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12px;
+    font-weight: 700; white-space: nowrap; }
+  /* line 2 — pos · age · nat · contract, wraps cleanly, no clip */
+  .rs-row__meta { font-size: 10px; color: var(--text-tertiary); margin-top: 4px;
+    display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  /* line 3 — wage strip: its own space, chips laid out with gaps */
+  .rs-wage { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    font-variant-numeric: tabular-nums; }
+  .rs-wage__chip { font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
+  .rs-wage__chip b { color: var(--text-primary); font-weight: 700; }
+  .rs-wage__chip .u { color: var(--text-tertiary); font-size: 9px; margin-left: 1px; }
+  /* on the top-earner card the /yr chip (first) reads gold */
+  .rs-row.is-top .rs-wage__chip:first-of-type { border-color: rgba(229,181,103,.5); }
+  .rs-row.is-top .rs-wage__chip:first-of-type b { color: var(--gold); }
+  .rs-wage__mark { font-size: 12px; line-height: 1; }
+  .rs-wage__mark.v { color: var(--mid); }        /* ✓ verified */
+  .rs-wage__mark.e { color: var(--text-tertiary); } /* ≈ estimated */
+  .rs-nowage { margin-top: 7px; font-size: 10px; color: var(--text-tertiary); font-style: italic; opacity: .65; }
+  .rs-row.hl { border-color: var(--accent); }
+
+  .rs-empty { color: var(--text-tertiary); font-size: 14px; padding: 30px 0; text-align: center; }
+
+  @media (max-width: 560px) {
+    .rs-club__head { grid-template-columns: 24px 1fr auto 16px; gap: 9px; padding: 12px; }
+    .rs-plist { grid-template-columns: 1fr; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="rs">
+  <div class="rs-note">
+    <b>What this is:</b> the actual current squad per Serie A club for 2026-27 — live from Transfermarkt squad pages,
+    not reconstructed from transfer flows. Players sorted by market value within GK → DEF → MID → ATT.
+    <span class="new">“NEW”</span> marks a confirmed 2026-27 arrival (loan returns excluded).
+    Values are Transfermarkt market values, not fees. Squad lists include primavera/youth on the senior page.
+    <br><b>💶 Salaries</b> are <b>Capology estimates</b> of <b>fixed gross</b> pay (excludes bonuses/image rights) —
+    <i>estimates, not official figures</i>. <b>✓</b> = Capology-verified, <b>≈</b> = estimated.
+    <br><b>~79%</b> of players show a wage; the remaining <b>~21%</b> are marked
+    <span class="rs-nowage">no wage data</span> — Capology doesn't publish an estimate for them
+    (mostly primavera/youth and deep-squad players). It means <i>no data</i>, <b>not</b> that they play for free.
+  </div>
+
+  <div class="rs-summary" id="rs-summary"></div>
+
+  <div class="rs-changes" id="rs-changes" hidden>
+    <div class="rs-changes__head">
+      <span class="rs-changes__title">Recent changes</span>
+      <span class="rs-changes__sub">auto-detected each refresh · signings · departures · value &amp; contract moves</span>
+    </div>
+    <div class="rs-changes__list" id="rs-changes-list"></div>
+  </div>
+
+  <div class="rs-tools">
+    <label class="rs-search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="rs-q" type="search" placeholder="Search any player across all 20 squads…" autocomplete="off" />
+    </label>
+    <button class="rs-btn" id="rs-expand">Expand all</button>
+    <button class="rs-btn" id="rs-collapse">Collapse all</button>
+  </div>
+
+  <div class="rs-clubs" id="rs-clubs"><div class="rs-empty">Loading squads…</div></div>
+  <div class="rs-empty" id="rs-noresult" hidden>No player matches that search.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var clubsEl = document.getElementById("rs-clubs");
+  var summaryEl = document.getElementById("rs-summary");
+  var noresult = document.getElementById("rs-noresult");
+  var POS = { GK: "Goalkeepers", DEF: "Defenders", MID: "Midfielders", ATT: "Forwards", OTH: "Other" };
+  var ORDER = ["GK", "DEF", "MID", "ATT", "OTH"];
+
+  function eur(v) {
+    if (v >= 1e9) return "€" + (v / 1e9).toFixed(2) + "bn";
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(v >= 1e8 ? 0 : 1) + "m";
+    if (v >= 1e3) return "€" + Math.round(v / 1e3) + "k";
+    return v ? "€" + v : "—";
+  }
+  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  // Compact salary, e.g. 11110000 → "€11.1m". Used for the yearly figure.
+  function wageYr(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    if (v >= 1e3) return "€" + Math.round(v / 1e3) + "k";
+    return "€" + v;
+  }
+  // Monthly figure, e.g. 925833 → "€926k" / "€1.4m".
+  function wageMo(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    return "€" + Math.round(v / 1e3) + "k";
+  }
+  // Weekly figure, e.g. 213653 → "€214k" / "€45k".
+  function wageWk(v) {
+    if (v >= 1e6) return "€" + (v / 1e6).toFixed(1) + "m";
+    return "€" + Math.round(v / 1e3) + "k";
+  }
+  // A single labeled wage chip.
+  function chip(val, unit) {
+    return '<span class="rs-wage__chip"><b>' + val + '</b> <span class="u">' + unit + '</span></span>';
+  }
+  // "2028-06-30" → "'28 · 2y left" (or "8mo left" / "expired"); shows remaining term
+  function contractLabel(iso) {
+    var end = new Date(iso + "T00:00:00");
+    if (isNaN(end)) return esc(iso);
+    var now = new Date();
+    var months = (end.getFullYear() - now.getFullYear()) * 12 + (end.getMonth() - now.getMonth());
+    var yr = "'" + String(end.getFullYear()).slice(-2);
+    if (months <= 0) return yr + " · expired";
+    if (months < 12) return yr + " · " + months + "mo left";
+    var y = Math.floor(months / 12), m = months % 12;
+    return yr + " · " + y + "y" + (m ? " " + m + "mo" : "") + " left";
+  }
+
+  function render(data) {
+    var clubs = data.clubs || [];
+    if (!clubs.length) { clubsEl.innerHTML = '<div class="rs-empty">' + esc(data.error || "No squad data on disk yet.") + '</div>'; return; }
+    var maxVal = Math.max.apply(null, clubs.map(function (c) { return c.total_value; }));
+
+    summaryEl.innerHTML =
+      '<span><b>' + clubs.length + '</b>clubs</span>' +
+      '<span><b>' + (data.total_players || 0) + '</b>players</span>' +
+      '<span><b>' + eur(data.league_total || 0) + '</b>combined value</span>';
+
+    clubsEl.innerHTML = clubs.map(function (c, i) {
+      var groups = {};
+      c.players.forEach(function (p) { (groups[p.pg] = groups[p.pg] || []).push(p); });
+      var squad = ORDER.filter(function (g) { return groups[g]; }).map(function (g) {
+        var rows = groups[g].map(function (p) {
+          // line 2 — pos · age · nat, then contract as its own chip (wraps, never clips)
+          var meta = [p.pos, p.age != null ? p.age + "y" : "", p.nat].filter(Boolean).join(" · ");
+          var contract = p.contract_until
+            ? '<span class="rs-contract" title="contract until">📄 ' + contractLabel(p.contract_until) + "</span>"
+            : "";
+          // line 3 — Capology salary estimate (fixed gross): yr / mo / wk + years-left.
+          // ✓ = Capology-verified, ≈ = estimated. No estimate → say so, don't blank out.
+          var wage;
+          if (p.salary && p.salary.annual) {
+            var s = p.salary, mk = s.verified ? "✓" : "≈", mkc = s.verified ? "v" : "e";
+            var chips = chip(wageYr(s.annual), "/yr");
+            if (s.monthly) chips += chip(wageMo(s.monthly), "/mo");
+            if (s.weekly) chips += chip(wageWk(s.weekly), "/wk");
+            if (s.years) chips += chip(s.years + "y", "left");
+            wage = '<div class="rs-wage" title="Capology estimate · fixed gross salary (excl. bonuses) · ' +
+              (s.verified ? "verified" : "estimated") + '">' +
+              '<span class="rs-wage__mark ' + mkc + '">' + mk + '</span>' + chips + '</div>';
+          } else {
+            wage = '<div class="rs-nowage" title="Capology publishes no salary estimate for this player">no wage data</div>';
+          }
+          // Top earner of the club — a crown badge on the name + a card accent.
+          var crown = p.top_earner
+            ? '<span class="rs-top" title="Top earner at this club (Capology fixed-salary estimate)">👑</span>'
+            : "";
+          return '<div class="rs-row' + (p.top_earner ? " is-top" : "") + '" data-name="' + esc((p.name || "").toLowerCase()) + '">' +
+            '<div class="rs-row__top">' +
+              '<span class="rs-row__name">' + crown + esc(p.name) + (p.new ? '<span class="nw">NEW</span>' : "") + '</span>' +
+              '<span class="rs-row__val">' + eur(p.val) + '</span>' +
+            '</div>' +
+            '<div class="rs-row__meta">' + esc(meta) + contract + '</div>' +
+            wage + '</div>';
+        }).join("");
+        return '<div class="rs-pg pg-' + g + '"><div class="rs-pg__lab"><span class="rs-dot"></span>' +
+          POS[g] + ' <span style="color:var(--text-tertiary);font-weight:600">(' + groups[g].length + ')</span></div>' +
+          '<div class="rs-plist">' + rows + '</div></div>';
+      }).join("");
+
+      return '<article class="rs-club" data-team="' + esc(c.team.toLowerCase()) + '">' +
+        '<div class="rs-club__head">' +
+          '<div class="rs-rank">' + (i + 1) + '</div>' +
+          '<div class="rs-id"><div class="rs-name">' + esc(c.team) + '</div>' +
+            '<div class="rs-sub"><span><b>' + c.squad_size + '</b> players</span>' +
+            (c.new_count ? '<span class="new">' + c.new_count + ' new</span>' : "") +
+            '<span>avg ' + eur(c.total_value / c.squad_size) + '</span></div></div>' +
+          '<div class="rs-val"><div class="num">' + eur(c.total_value) + '</div><div class="lab">squad value</div></div>' +
+          '<svg class="rs-chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m9 18 6-6-6-6"/></svg>' +
+          '<div class="rs-valbar"><i style="width:' + (100 * c.total_value / maxVal).toFixed(1) + '%"></i></div>' +
+        '</div>' +
+        '<div class="rs-squad">' + squad + '</div></article>';
+    }).join("");
+
+    Array.prototype.forEach.call(clubsEl.querySelectorAll(".rs-club__head"), function (h) {
+      h.addEventListener("click", function () { h.parentNode.classList.toggle("open"); });
+    });
+  }
+
+  document.getElementById("rs-q").addEventListener("input", function () {
+    var term = this.value.trim().toLowerCase();
+    var any = false;
+    Array.prototype.forEach.call(clubsEl.children, function (card) {
+      if (!term) {
+        card.hidden = false; card.classList.remove("open");
+        card.querySelectorAll(".rs-row").forEach(function (r) { r.classList.remove("hl"); r.style.display = ""; });
+        return;
+      }
+      var hit = false;
+      card.querySelectorAll(".rs-row").forEach(function (r) {
+        var m = (r.dataset.name || "").indexOf(term) !== -1;
+        r.classList.toggle("hl", m); r.style.display = m ? "" : "none";
+        if (m) hit = true;
+      });
+      card.hidden = !hit; card.classList.toggle("open", hit);
+      if (hit) any = true;
+    });
+    noresult.hidden = !term || any;
+  });
+
+  document.getElementById("rs-expand").addEventListener("click", function () {
+    Array.prototype.forEach.call(clubsEl.children, function (c) { c.classList.add("open"); });
+  });
+  document.getElementById("rs-collapse").addEventListener("click", function () {
+    Array.prototype.forEach.call(clubsEl.children, function (c) { c.classList.remove("open"); });
+  });
+
+  // Recent-changes feed
+  function renderChanges(data) {
+    var changes = (data && data.changes) || [];
+    var wrap = document.getElementById("rs-changes");
+    var list = document.getElementById("rs-changes-list");
+    if (!changes.length) { wrap.hidden = true; return; }
+    var LABEL = { signing: "Signed", departure: "Left", value_change: "Value", contract_change: "Contract" };
+    list.innerHTML = changes.map(function (c) {
+      var when = "";
+      if (c.at) { var d = new Date(c.at); if (!isNaN(d)) when = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); }
+      return '<div class="rs-chg chg-' + esc(c.type) + '">' +
+        '<span class="rs-chg__type">' + esc(LABEL[c.type] || c.type) + '</span>' +
+        '<div class="rs-chg__body"><span class="rs-chg__player">' + esc(c.player) + '</span> ' +
+          '<span style="color:var(--text-tertiary)">· ' + esc(c.club) + '</span>' +
+          '<div class="rs-chg__detail">' + esc(c.detail || "") + '</div></div>' +
+        '<span class="rs-chg__when">' + when + '</span></div>';
+    }).join("");
+    wrap.hidden = false;
+  }
+
+  fetch("/api/transfer-changes?limit=60")
+    .then(function (r) { return r.json(); })
+    .then(renderChanges)
+    .catch(function () { /* feed is optional; silent */ });
+
+  fetch("/api/rosters")
+    .then(function (r) { return r.json(); })
+    .then(render)
+    .catch(function () { clubsEl.innerHTML = '<div class="rs-empty">Failed to load squads.</div>'; });
+})();
+</script>
+{% endblock %}

@@ -14,6 +14,7 @@ Data sources:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -256,13 +257,21 @@ def compute_january_window_features(
             "signing_integration": 1.0,
         }
 
-    # Filter to January window (Jan 1 - Jan 31)
-    if "date" in team_transfers.columns:
-        team_transfers["_date"] = pd.to_datetime(team_transfers["date"], errors="coerce")
-        jan_mask = team_transfers["_date"].dt.month == 1
-        jan_transfers = team_transfers[jan_mask]
+    # Filter to the WINTER (January) window via the scraped `window` tag. The
+    # transfers parquet has NO date column, so the old `else: assume all January`
+    # fallback ingested the WHOLE season as January — a within-row temporal leak
+    # (a September match got January signings). Filter on `window` instead:
+    # keep only winter. Untagged legacy rows default to summer → excluded (0), so
+    # a pre-backfill file yields no jan_* signal rather than re-leaking the season.
+    if "window" in team_transfers.columns:
+        winter_mask = team_transfers["window"].fillna("summer") == "winter"
+        jan_transfers = team_transfers[winter_mask]
     else:
-        jan_transfers = team_transfers  # Assume all are January if no date
+        # no window tag (file predates the backfill) → no winter signal, no leak
+        jan_transfers = team_transfers.iloc[0:0]
+
+    # phantom "End of loan" OUTs for bought-back loanees → drop from disruption
+    phantom_outs = _loan_to_permanent_outs(jan_transfers)
 
     # Arrivals
     type_col = "transfer_type" if "transfer_type" in jan_transfers.columns else "direction"
@@ -278,6 +287,10 @@ def compute_january_window_features(
     # Squad disruption from departures
     disruption = 0.0
     for _, dep in departures.iterrows():
+        # a bought-back loanee's "End of loan" OUT is a phantom departure — skip
+        dep_cat, _ = _transfer_materiality(dep.get("fee_text"), bool(dep.get("is_loan")))
+        if dep_cat == "loan_return" and _normalize_name(dep.get("player_name", "")) in phantom_outs:
+            continue
         minutes = pd.to_numeric(dep.get("minutes_played", 0), errors="coerce")
         if pd.isna(minutes):
             minutes = 0
@@ -385,6 +398,249 @@ def _build_squad_value_lookup(
     return lookup
 
 
+# --- Net squad delta (2026-27 window feature) -------------------------------
+
+# Materiality of a transfer to the squad for the upcoming season. End-of-loan
+# returns are re-integrations, not fresh squad changes, so they count at a
+# reduced weight (and only when the player isn't ALSO leaving this window — see
+# the double-count guard in compute_net_squad_delta).
+_LOAN_RETURN_WEIGHT = 0.3   # user decision 2026-07-14: include returns, reduced
+_MATERIAL_WEIGHT = 1.0      # paid, free, and fresh loan moves
+
+
+def _transfer_materiality(fee_text: str, is_loan: bool) -> tuple[str, float]:
+    """Classify a transfer row → (category, materiality_weight).
+
+    Categories: loan_return (a player coming back from / going out on the
+    *return* leg), loan_move (a fresh loan for the season), paid, free.
+    Only loan_return is discounted; every other move is a real squad change.
+    """
+    ft = str(fee_text or "").strip().lower()
+    if "end of loan" in ft:
+        return "loan_return", _LOAN_RETURN_WEIGHT
+    if is_loan or "loan" in ft:
+        return "loan_move", _MATERIAL_WEIGHT
+    return ("free" if ft in ("-", "", "free transfer", "?", "nan") else "paid",
+            _MATERIAL_WEIGHT)
+
+
+def _loan_to_permanent_outs(team_transfers: pd.DataFrame) -> set[str]:
+    """Normalized names of players whose OUT row is a PHANTOM 'End of loan'.
+
+    A player loaned in season N-1 then bought permanently in the summer gets BOTH
+    an "End of loan" OUT row (returning to the parent club) AND a real paid/free
+    IN row (the permanent purchase). The OUT is a phantom departure — the club
+    KEPT the player. This returns those names so both the net_squad_delta and the
+    squad_disruption departure loops can drop them (a bought-back loanee is an
+    arrival, not a departure).
+
+    Only the OUT that is specifically an "End of loan" AND paired with a
+    non-loan-return IN for the same player is dropped — a genuine sale still
+    counts, and a player who leaves on a fresh loan still counts.
+    """
+    tc = "transfer_type" if "transfer_type" in team_transfers.columns else "direction"
+    if tc not in team_transfers.columns:
+        return set()
+    # players with a REAL (non-return) arrival this club/window
+    real_in: set[str] = set()
+    end_of_loan_out: set[str] = set()
+    for _, row in team_transfers.iterrows():
+        cat, _ = _transfer_materiality(row.get("fee_text"), bool(row.get("is_loan")))
+        name = _normalize_name(row.get("player_name", ""))
+        if row.get(tc) == "in" and cat != "loan_return":
+            real_in.add(name)
+        elif row.get(tc) == "out" and cat == "loan_return":
+            end_of_loan_out.add(name)
+    return end_of_loan_out & real_in
+
+
+def _player_importance_lookup(
+    season: str, minutes_path: Path | None = None
+) -> dict[str, float]:
+    """Per-player on-pitch importance for a season, keyed by normalized name.
+
+    importance = minutes_share (share of a full season of minutes) blended with
+    normalized average rating — "how heavy the player was in the team". Used to
+    weight departures by how central the player actually was, not just his fee.
+    Returns {} if the source is unavailable (feature degrades to value-only).
+    """
+    path = minutes_path or (
+        DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+    )
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_parquet(
+            path, columns=["season", "player_name", "minutes", "rating"]
+        )
+    except Exception as e:  # noqa: BLE001 — importance is optional; degrade to value-only
+        log.warning("player importance parquet unreadable (%s)", e)
+        return {}
+    df = df[df["season"].astype(str) == str(season)]
+    if df.empty:
+        return {}
+    df["minutes"] = pd.to_numeric(df["minutes"], errors="coerce").fillna(0)
+    df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    agg = df.groupby("player_name").agg(
+        total_minutes=("minutes", "sum"), avg_rating=("rating", "mean")
+    )
+    if agg.empty:
+        return {}
+    # minutes_share: relative to the busiest player in the league that season
+    max_min = agg["total_minutes"].max() or 1.0
+    minutes_share = (agg["total_minutes"] / max_min).clip(0, 1)
+    # rating normalized to [0,1] over the observed 6.0–8.0 band (SA typical)
+    rating_norm = ((agg["avg_rating"] - 6.0) / 2.0).clip(0, 1).fillna(0.3)
+    importance = (0.6 * minutes_share + 0.4 * rating_norm)
+    return {
+        _normalize_name(name): float(v)
+        for name, v in importance.items()
+    }
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip accents/punctuation for cross-source name joins."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.lower().replace(".", " ").split())
+
+
+def compute_net_squad_delta(
+    season: str = "2026-2027",
+    league: str = "serie_a",
+    tm_dir: Path | None = None,
+) -> dict[str, dict]:
+    """Per-club net squad delta from the season's confirmed transfers.
+
+    weight(player) blends market value (talent) with last-season on-pitch
+    importance (centrality). net_delta = Σ weight(material arrivals) −
+    Σ weight(material departures), with end-of-loan returns discounted and a
+    guard against double-counting a loanee who returns AND then leaves.
+
+    Confirmed transfers ONLY — rumors never reach this path.
+
+    Returns {team_lower: {net_squad_delta, arrivals_weight, departures_weight,
+    material_in, material_out}}.
+    """
+    tm_dir = tm_dir or (DATA_DIR / "external" / "transfermarkt")
+    prefix = "" if league == "serie_a" else f"{league}_"
+    tpath = tm_dir / f"{prefix}transfers_{season.replace('-', '_')}.parquet"
+    if not tpath.exists():
+        log.warning("No transfers parquet at %s — net_squad_delta empty", tpath)
+        return {}
+    tf = pd.read_parquet(tpath)
+    if tf.empty or "team" not in tf.columns:
+        return {}
+
+    # Leak-free by construction: exclude WINTER-window transfers. This is a
+    # PRE-SEASON squad delta — the net talent present at match 1, applied to every
+    # match of the season. A summer signing is legitimately on the roster at match
+    # 38; a January signing must NOT retroactively inflate that season's August
+    # matches (training leak). Written as exclude-winter WITH A DEFAULT, never
+    # `== "summer"`: legacy files scraped before the window tag existed have no
+    # `window` column, and `.get("summer")` defaulting to "summer" keeps all their
+    # rows rather than silently zeroing the whole season.
+    if "window" in tf.columns:
+        tf = tf[tf["window"].fillna("summer") != "winter"]
+        if tf.empty:
+            return {}
+
+    # last completed season's on-pitch importance (2026-27 window ⇒ 2025-2026)
+    start = int(season.split("-")[0])
+    prev_season = f"{start - 1}-{start}"
+    importance = _player_importance_lookup(prev_season)
+
+    # market-value lookup (talent proxy). MUST be the season-matched file, not
+    # the latest one: using the newest valuations for a historical season leaks
+    # future information (a 2019 transfer weighted by 2026 prices) and fabricates
+    # every historical delta — a walk-forward violation. Prefer the season's own
+    # file; if it is missing (older seasons), fall back to the nearest-PRIOR
+    # season's file, never a future one. For the live 2026-27 season this resolves
+    # to market_values_2026_2027 exactly, so the live signal is unaffected.
+    mv_lookup: dict[str, float] = {}
+    season_key = season.replace("-", "_")
+    exact = tm_dir / f"{prefix}market_values_{season_key}.parquet"
+    if exact.exists():
+        mv_path: Path | None = exact
+    else:
+        # nearest-prior: largest start-year <= this season's start year
+        candidates = []
+        for p in tm_dir.glob(f"{prefix}market_values_*.parquet"):
+            m = re.search(r"market_values_(\d{4})_\d{4}", p.name)
+            if m and int(m.group(1)) <= start:
+                candidates.append((int(m.group(1)), p))
+        mv_path = max(candidates)[1] if candidates else None
+    if mv_path is not None:
+        try:
+            mv = pd.read_parquet(mv_path)
+            mv["market_value_eur"] = pd.to_numeric(
+                mv.get("market_value_eur"), errors="coerce"
+            )
+            vmax = mv["market_value_eur"].max() or 1.0
+            for _, r in mv.iterrows():
+                v = r["market_value_eur"]
+                if pd.notna(v) and v > 0:
+                    mv_lookup[_normalize_name(r["player_name"])] = float(v / vmax)
+        except Exception as e:  # noqa: BLE001 — value-only fallback is acceptable
+            log.warning("market-value lookup failed (%s) — using importance-only weights", e)
+
+    def player_weight(name: str) -> float:
+        key = _normalize_name(name)
+        imp = importance.get(key)               # 0..1 centrality (may be None)
+        val = mv_lookup.get(key)                # 0..1 talent (may be None)
+        if imp is not None and val is not None:
+            return 0.5 * imp + 0.5 * val
+        if val is not None:                     # new signing: value-only
+            return val
+        if imp is not None:                     # in our data but no TM value
+            return imp
+        return 0.15                             # unknown player: small floor
+
+    # double-count guard: a player who both returns from loan AND leaves this
+    # window is only counted on the departure side.
+    out_names = {
+        _normalize_name(n)
+        for n in tf.loc[tf["transfer_type"] == "out", "player_name"]
+    }
+
+    result: dict[str, dict] = {}
+    for team, grp in tf.groupby("team"):
+        arrivals_w = departures_w = 0.0
+        n_in = n_out = 0
+        # phantom "End of loan" OUTs for players the club actually bought → drop
+        # them from the departure side (a bought-back loanee is not a departure).
+        phantom_outs = _loan_to_permanent_outs(grp)
+        for _, row in grp.iterrows():
+            cat, mat = _transfer_materiality(
+                row.get("fee_text"), bool(row.get("is_loan"))
+            )
+            w = player_weight(row["player_name"]) * mat
+            direction = row["transfer_type"]
+            name = _normalize_name(row["player_name"])
+            if direction == "in":
+                # skip a loan-return that is also leaving this window
+                if cat == "loan_return" and name in out_names:
+                    continue
+                arrivals_w += w
+                n_in += 1
+            elif direction == "out":
+                # skip a phantom "End of loan" OUT for a bought-back loanee
+                if cat == "loan_return" and name in phantom_outs:
+                    continue
+                departures_w += w
+                n_out += 1
+        result[team.lower().strip()] = {
+            "net_squad_delta": round(arrivals_w - departures_w, 4),
+            "arrivals_weight": round(arrivals_w, 4),
+            "departures_weight": round(departures_w, 4),
+            "material_in": n_in,
+            "material_out": n_out,
+        }
+    log.info("Computed net_squad_delta for %d clubs (%s)", len(result), season)
+    return result
+
+
 def add_transfer_impact_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     """Add transfer impact features to the match-level DataFrame.
 
@@ -407,6 +663,7 @@ def add_transfer_impact_features(feature_df: pd.DataFrame) -> pd.DataFrame:
         df[f"{prefix}_signing_integration"] = 1.0
         df[f"{prefix}_squad_value"] = np.nan
         df[f"{prefix}_squad_avg_age"] = np.nan
+        df[f"{prefix}_net_squad_delta"] = 0.0
 
     # Load transfers
     tm_dir = DATA_DIR / "external" / "transfermarkt"
@@ -493,6 +750,39 @@ def add_transfer_impact_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     n_with_data = (df["home_jan_arrivals"] + df["away_jan_arrivals"] > 0).sum()
     log.info(f"Added transfer impact features ({n_with_data} matches with transfer data, "
              f"{len(squad_lookup)} team-seasons with squad value)")
+
+    # ── Net squad delta (materiality- and importance-weighted) ───────────
+    # Per-club net talent gained/lost from that season's confirmed transfers,
+    # applied to every match of the season. Confirmed transfers only.
+    league_arg = league_key if league_key in ("serie_a", "premier_league") else "serie_a"
+    delta_cache: dict[str, dict[str, dict]] = {}
+    for season in seasons:
+        try:
+            delta_cache[season] = compute_net_squad_delta(
+                season=season, league=league_arg, tm_dir=tm_dir
+            )
+        except Exception as e:  # noqa: BLE001 — feature must never break the pipeline
+            log.warning("net_squad_delta failed for %s: %s", season, e)
+            delta_cache[season] = {}
+
+    if any(delta_cache.values()):
+        for idx, row in df.iterrows():
+            season = row.get("season", "")
+            per_club = delta_cache.get(season, {})
+            if not per_club:
+                continue
+            for prefix in ("home", "away"):
+                team = str(row.get(f"{prefix}_team", "")).lower().strip()
+                d = per_club.get(team)
+                if d:
+                    df.at[idx, f"{prefix}_net_squad_delta"] = d["net_squad_delta"]
+        df["net_squad_delta_diff"] = (
+            df["home_net_squad_delta"] - df["away_net_squad_delta"]
+        )
+        n_delta = (df["home_net_squad_delta"] != 0).sum()
+        log.info("Net squad delta: %d/%d matches with home-side data", n_delta, len(df))
+    else:
+        df["net_squad_delta_diff"] = 0.0
 
     return df
 
