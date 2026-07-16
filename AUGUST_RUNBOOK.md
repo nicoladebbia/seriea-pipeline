@@ -49,6 +49,26 @@ Three teams come up from Serie B. For each:
 - Verify: run one incremental pipeline, grep logs for the three team names,
   confirm fixtures + odds + features rows exist for each.
 
+## 3a. 🚨 Two plists hardcode `--season 2025-2026` — bump BEFORE §4 reload
+
+Found 2026-07-16 while exercising the jobs. Both of these pin the season in
+`ProgramArguments`, so on reload they refresh the **completed 2025-26 season**
+and never touch 2026-27. They exit 0 and log success — green, and useless.
+The modules are fine; the *invocation* is the bug.
+
+- [ ] `scripts/pipeline/com.seriea-pipeline.scrape-epl-current.plist`
+      → `--season 2025-2026` → `2026-2027`
+- [ ] `scripts/pipeline/com.seriea-pipeline.refresh-understat.plist`
+      → `--season 2025-2026` → `2026-2027`
+- [ ] Edit the **installed** copies in `~/Library/LaunchAgents/` too, or
+      reinstall from the repo copies — launchd reads the installed ones.
+      Edit XML form only; never `plutil -convert json` a launchd plist.
+
+Check every plist for a pinned season while you're in here:
+```bash
+grep -l "2025-2026" ~/Library/LaunchAgents/com.seriea-pipeline.*.plist
+```
+
 ## 3b. 🚨 PHANTOM MODULES — 15 missing files. FIX BEFORE §4 RELOAD
 
 **Discovered 2026-07-16.** 15 modules that live jobs invoke **do not exist on
