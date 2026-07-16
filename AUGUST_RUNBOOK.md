@@ -96,7 +96,7 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 |---|---|---|
 | `sofascore-watcher` | `scripts.data.sofascore_watcher` | spec recovered — see §3c |
 | `refresh-understat` | `scripts.data.refresh_understat_players` | writer of `understat_players.parquet` (11.7k rows, LIVE — read by `features/understat_features.py`, `features/lineup_xg.py`, `web/app.py`) |
-| `transfer-refresh` | `scripts.data.refresh_transfers` | **PR #7 (draft) adds this one** — land it |
+| `transfer-refresh` | `scripts.data.refresh_transfers` | ✅ **LANDED 2026-07-16** (PR #14 — the transfers half of #7, split out). Job re-verified: `launchctl list` exit **0**, was 1. |
 
 **`refresh_weekly_data.py` (weekly-data-refresh.plist, Mon 04:00) — the whole FBref path:**
 `scrape_fbref_missing` (Step 2) · `parse_all_player_stats` · `parse_all_lineups`
@@ -299,11 +299,51 @@ pipeline treats odds_api as primary.
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller | Status |
 |---|---|---|
-| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ❌ not rebuilt — source unknown |
+| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ✅ **REBUILT** — Odds API `/events`; schema verified, **live unverified until the key is reactivated** |
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
 | `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
 | `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ✅ **REBUILT** — replays all 123 stored blocks exactly |
 | `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
+
+#### PR #7 — transfers half LANDED, WorldCup half still open (2026-07-16)
+
+PR #7 was split. **PR #14 landed the 9 transfers/rosters commits** — they replay
+onto main with zero conflicts, add 33 passing tests, 0 regressions, and fixed
+`transfer-refresh` (exit 1 → exit 0, verified under launchd). Phantom modules
+**9/15 → 10/15**.
+
+**#7 stays open for its WorldCup half only.** Its own safety argument is
+**stale** — it was written when main was 2 commits past the merge base; main is
+now 33 past (the #10–#13 stack). Both sides independently fixed the same
+home/away-swap grading bug (`3574968` on main vs `72fa866` on the branch), which
+is what turned into the conflict. There is **no urgency**: the World Cup is over.
+
+If you ever do land it, the 4 conflicts need **per-file judgement, not a blanket
+pick** (the original PR resolved everything to the branch, which was safe then
+and is not now):
+
+| File | Take | Why |
+|---|---|---|
+| `tests/test_bet_journal.py` | **MAIN** | ⚠️ The branch's fix stops the write to the real `bankroll.json` but never patches `DATA_DIR`, so `generate_report()` still reads the production path — the mock is never read back. It only passes because the assertions check unconditional substrings and a missing bankroll silently falls back to `1000.0`. **Resolving this to the branch re-opens the ledger-drift leak main fixed in `8d03831`.** |
+| `scripts/worldcup/grading.py` | MAIN | `_pair_mask` is DRY and fixes 2 more call sites the branch missed (`reconstruct_halftime` is live at `web/app.py:1593`) |
+| `scripts/worldcup/knockout.py` | BRANCH | Both hunks together — a per-hunk mix `NameError`s |
+| `tests/test_worldcup.py` | UNION | Purely additive, 3 tests, no collision |
+
+#### ⚠️ Pre-existing: 4 `test_worldcup.py` failures on main (2026-07-16)
+
+`TestRealArtifacts` / `TestResultConditioning` fail on **main**, unrelated to any
+of the above (verified: the worldcup code and test are byte-identical between
+main and the rebuild branch). They assert fixed expectations against **live**
+bracket data that the wc-refresh job keeps rewriting — e.g.
+`third-place teams == semifinal losers` now reads `{England, France}` vs
+`{Argentina, Spain}`. Flaky by construction, not a regression. The WC is over, so
+this is cosmetic — but the suite is not green on main, and that will mask a real
+failure later. Either pin the fixture or drop the assertions.
+
+Separately: `TestLiveResultsOverlay` / `TestFbrefResults` (6 tests) hard-depend
+on gitignored `data/worldcup/international_results.csv`, so they fail on any
+fresh clone. `tests/test_live_reconciliation.py` shows the fix pattern
+(`pytest.mark.skipif` when the data is absent).
 
 #### Triage of these five (2026-07-16)
 
@@ -447,11 +487,42 @@ its values, independently confirming the own-goal rule found via the reconciliat
 `reconcile_all_matches(matchday) -> int` (discrepancy count), but what counts as a
 "discrepancy" is not recoverable from any artifact.
 
-**`fetch_upcoming_matches` — source unknown.** The only artifact,
-`data/upcoming/matches.json`, is a *synthetic fallback*: `"source": "manual"`,
-templated venues (`"Milan Stadium"`), and a `fetched_at` a week **after** the
-matches it lists. It records the fallback, not the real fetch — so it can't
-serve as an oracle.
+**`fetch_upcoming_matches` — ✅ REBUILT 2026-07-16. Schema verified, live NOT.**
+
+The oracle problem was real and stands: the only artifact,
+`data/upcoming/matches.json`, is a *synthetic fallback* (`"source": "manual"`,
+templated venues `"Milan Stadium"`, a `fetched_at` a week **after** the matches
+it lists, and **no `league` key**). It records the fallback, not the real fetch,
+so it could not serve as an oracle. The source was therefore **chosen
+deliberately** instead of recovered.
+
+**Chosen: The Odds API `/events`.** Corroborated after the fact —
+`notify.py:1931` calls this file the "raw Odds API schedule". Rationale: already
+wired and authenticated (`odds_fetcher.py:754`); its `id` is the same event id
+the odds layer joins on, so no name-match layer; listing is billed **0 credits**
+(`odds_fetcher.py:759`). The fetch mirrors `odds_fetcher.py:754-763`.
+
+⚠️ **What August must close.** The API key is **deactivated**
+(`DEACTIVATED_KEY`, HTTP 401) for the off-season, so **no live call was ever
+made**. Do not read the green test suite as live verification:
+
+- **Verified:** the four fields read (`id`, `home_team`, `away_team`,
+  `commence_time`), confirmed twice — a real cached Odds API envelope this repo
+  fetched itself (`tests/fixtures/odds_api/event_envelope.json`, `bookmakers`
+  stripped = the `/events` shape) and the working consumer at
+  `odds_fetcher.py:776-783`.
+- **NOT verified:** that live `/events` matches that envelope (it is that
+  envelope minus `bookmakers`, so it should — but unconfirmed); the reactivated
+  key; real fixtures existing.
+
+**August step:** reactivate the key, run `python3 -m scripts.data.fetch_upcoming_matches`,
+confirm non-zero `count` and that `matches[0]` carries a real `event_id` and a
+`league` that is not `"unknown"`. Then re-capture the fixture from a true
+`/events` call.
+
+`venue`/`matchweek` are deliberately **not** emitted — the API supplies neither
+and no consumer reads them from this file. Templating them is exactly what made
+the old artifact worthless. Don't "restore" them.
 
 ⚠️ **NOT a phantom:** `scripts.pipeline.matchday_update` — `web/app.py:6517` is a
 comment recording its *intentional* removal. Don't "restore" it.
