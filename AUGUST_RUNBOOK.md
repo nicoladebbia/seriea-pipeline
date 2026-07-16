@@ -105,11 +105,35 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 fail **loudly** (exit 1) but `run()` records the step and continues.
 
 > ✅ **Step 3's five parsers are REBUILT** (2026-07-16). They only read cached
-> HTML, so they work with FBref blocked. Each reproduces its Jun-1 parquet under
-> `assert_frame_equal`. **`--append` replaces only the parsed *matches*, never a
-> whole season** — `lineups`/`events` hold hundreds of matches under the
-> canonical `date_Home_Away` id that FBref parsing does not own, and
+> HTML, so they work with FBref blocked. **`--append` replaces only the parsed
+> *matches*, never a whole season** — `lineups`/`events` hold hundreds of matches
+> under the canonical `date_Home_Away` id that FBref parsing does not own, and
 > `player_stats` holds the `sofascore_fallback` rows.
+>
+> **What was actually verified** (state it precisely — the earlier wording here
+> claimed more than was proven):
+> - **2025-2026 — the only season the job parses — is exact for all five.** Each
+>   module's `main()` was run through the real CLI (`--season 2025-2026 --append`)
+>   with `OUTPUT_PATH` redirected to a scratch copy; the written file matched the
+>   stored parquet under `assert_frame_equal`, column order included. Every live
+>   parquet was md5-confirmed unchanged.
+> - **2024-2025 re-parse:** `lineups` and `events` reproduce; `player_stats`
+>   **does not** (see below); `shots` reproduces (it is that module's only season).
+> - Rows from *other* seasons in a passing full-file check were **preserved by the
+>   merge, not re-parsed** — that is not evidence those seasons re-parse.
+>
+> ⚠️ **`--season` is REQUIRED on all five (no all-seasons default).** The stored
+> 2024-25 `player_stats` slice was written by an earlier parser against an HTML
+> capture that no longer exists: it holds **coarse** positions (`DF`) and the
+> prefixed `misc_`/`possession_`/`defense_` columns, where every other season —
+> including 2025-26, which we reproduce byte-exact — holds **fine** positions
+> (`CB`) and the unprefixed `fouls`/`fouled`/… columns. Today's cached 2024-25
+> HTML parses to fine positions, so the stored slice is **not reproducible from
+> surviving inputs**. A bare run would have silently rewritten 10,096 position
+> values in a *training* season. It now fails loudly instead. Do **not** "fix"
+> this by mapping fine→coarse: that invents provenance and would corrupt 2025-26.
+> (DATA_CATALOG.md's step table showed the bare form until 2026-07-16 — corrected,
+> since following the doc was itself the path into this.)
 >
 > ⚠️ **`parse_all_shots` has nothing to parse for 2025-26**: those cached reports
 > carry no `shots_all` table (0/40 sampled vs 40/40 for 2024-25 — they carry only
@@ -117,6 +141,16 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 > 2024-25 has 133). Step 3's shots call therefore exits 1 until the HTML is
 > re-downloaded. Not a parser bug; matches what DATA_CATALOG.md says about
 > `shots.parquet`.
+>
+> ⚠️ **`parse_all_lineups` lost `--include-epl` / `--epl-only`** — DATA_CATALOG.md
+> documented both on the original (swept) module; the rebuild reconstructs only
+> the Serie A path `refresh_weekly_data.py` invokes. **Existing EPL rows are
+> safe** (the merge replaces only parsed match_ids — 271,530 rows / 6,427
+> other-convention matches verified surviving a 2025-26 run). What is missing is
+> *refreshing* EPL lineups from `{season}_epl/` HTML. The oracle for building it
+> exists locally (`data/raw/html/2025_2026_epl/` + the EPL rows already in
+> `lineups.parquet`), so this is buildable offline — it was left out to keep the
+> rebuild scoped to what the live job runs. Old flag now errors loudly.
 >
 > Still missing: **`scrape_fbref_missing`** (Step 2 — needs FBref reachable, so
 > it is genuinely August work) and **`fallback_sofascore_to_fbref`** (:219, see

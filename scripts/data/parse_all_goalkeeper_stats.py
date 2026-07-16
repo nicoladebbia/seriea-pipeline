@@ -50,13 +50,6 @@ def _season_dir(season: str) -> Path:
     return RAW_HTML_DIR / season
 
 
-def discover_seasons() -> list[str]:
-    return sorted(
-        d.name for d in RAW_HTML_DIR.iterdir()
-        if d.is_dir() and "_" not in d.name and d.name[:4].isdigit()
-    )
-
-
 def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
     try:
         html = html_path.read_text(encoding="utf-8", errors="replace")
@@ -159,7 +152,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parse cached FBref match reports into goalkeeper_stats.parquet",
     )
-    parser.add_argument("--season", help="Only this season (e.g. 2025-2026)")
+    # Required, deliberately: no safe all-seasons default. Only the season
+    # the caller names is verified reproducible from the cached HTML; see
+    # parse_all_player_stats for the 2024-25 case that proves the point.
+    parser.add_argument(
+        "--season", required=True, help="Season to parse (e.g. 2025-2026)",
+    )
     parser.add_argument(
         "--append",
         action="store_true",
@@ -178,7 +176,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(message)s")
 
-    seasons = [args.season] if args.season else discover_seasons()
+    seasons = [args.season]
     log.info("Seasons: %s", seasons)
 
     df = parse_seasons(seasons)

@@ -65,14 +65,6 @@ def _season_dir(season: str) -> Path:
     return RAW_HTML_DIR / season
 
 
-def discover_seasons() -> list[str]:
-    """Every season dir holding match reports, oldest first."""
-    return sorted(
-        d.name for d in RAW_HTML_DIR.iterdir()
-        if d.is_dir() and "_" not in d.name and d.name[:4].isdigit()
-    )
-
-
 def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
     """Parse one match report into per-player records (both teams)."""
     try:
@@ -196,7 +188,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parse cached FBref match reports into player_stats.parquet",
     )
-    parser.add_argument("--season", help="Only this season (e.g. 2025-2026)")
+    # Required, deliberately: there is no safe all-seasons default. The stored
+    # 2024-2025 rows were written by an earlier parser against an HTML capture
+    # that no longer exists — they carry coarse positions (DF) and the prefixed
+    # misc_/possession_/defense_ columns, where every other season carries fine
+    # positions (CB) and the unprefixed ones. Re-parsing today's cached 2024-25
+    # HTML reproduces neither. A bare run would silently rewrite 10,096 position
+    # values in a training season, so make the caller name the season.
+    parser.add_argument(
+        "--season", required=True, help="Season to parse (e.g. 2025-2026)",
+    )
     parser.add_argument(
         "--append",
         action="store_true",
@@ -222,7 +223,7 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
-    seasons = [args.season] if args.season else discover_seasons()
+    seasons = [args.season]
     log.info("Seasons: %s", seasons)
 
     df = parse_seasons(seasons)
