@@ -100,6 +100,37 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 · `fallback_sofascore_to_fbref` (:219). Steps 2–3 are subprocess calls, so they
 fail **loudly** (exit 1) but `run()` records the step and continues.
 
+#### `fallback_sofascore_to_fbref` — REBUILT 2026-07-16 (reimplemented, NOT recovered)
+
+Plan-B for match stats: every logged weekly run (04-27 → 06-01) shows
+`✗ fbref_fixtures` / `✗ fbref_htmls`, so FBref never delivered. Reads **cached
+parquets**, so the Sofascore 403 does not block it.
+
+⚠️ **The stored output is run history, not a spec** — 94 of the 120 matches in its
+window, 26 holes *inside* the window, 260 before it untouched. No rule reproduces
+that; don't try. What IS recoverable is the **transform**, and every mapping was
+*derived by searching all candidate columns against those 94 rows*, keeping only
+exact reproductions: 46 identity cols from `match_team_stats` (period=ALL),
+`passing_accuracy` = round(acc/total*100,1), `cards` = yellow+red, `ht_score` =
+goals with minute<=45 from `match_incidents` (94/94). `venue`/`manager`/`captain`
+are **empty strings** in the original — reproduced faithfully.
+
+Held-out test: blanking the 94 and refilling reproduces **all 52 columns' values
+exactly**; 4 columns fill *more* than the original (source has grown since).
+**Result: 286/286 previously-empty Serie A 2025-26 matches filled** — xG,
+possession, ht_score, passing accuracy all 0% → 100%.
+
+🚨 **Two deliberate deviations:**
+1. **`match_id` left alone.** The original *overwrote* it with Sofascore's numeric
+   id, so `matches.parquet` holds two id formats (94 numeric vs 286 canonical
+   `{date}_{home}_{away}`) — join-breaking. Reproducing it would spread the bug to
+   286 more rows. **The repair is a separate multi-file migration:** it must also
+   fix `lineups.parquet` (4,577 rows / 99 numeric ids; 86 of the 94 appear there),
+   bridged via `match_id_mapping.parquet:sofascore_id`. Canonical formula verified
+   100% on the 286. **Nicola approved this repair — it is the next task.**
+2. **`formation` not filled** — `lineups.parquet` reproduces it only 91.5%, below
+   the bar every other column here clears.
+
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller | Status |
 |---|---|---|
