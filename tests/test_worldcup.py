@@ -584,6 +584,32 @@ class TestGrading:
         assert r2 is not None and (r2[0], r2[1]) == (2, 0)
         assert _find_result(df, "Mexico", "South Africa", "2026-06-20") is None
 
+    def test_find_result_matches_swapped_orientation(self) -> None:
+        from scripts.worldcup.grading import _find_result
+
+        # Neutral-venue matches are stored home/away-swapped between sources:
+        # the fixture list says 'Switzerland vs Canada', results.csv stored
+        # 'Canada 1-2 Switzerland'. Same match — it must grade, and the score
+        # must come back in the FIXTURE's orientation (2-1), not the row's.
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-24"]),
+                "home_team": ["Canada"],
+                "away_team": ["Switzerland"],
+                "home_score": [1],
+                "away_score": [2],
+                "tournament": ["FIFA World Cup"],
+                "city": ["x"],
+                "country": ["x"],
+                "neutral": [True],
+            }
+        )
+        r = _find_result(df, "Switzerland", "Canada", "2026-06-24")
+        assert r is not None and (r[0], r[1]) == (2, 1)
+        # the stored orientation still reads straight through, unswapped
+        r2 = _find_result(df, "Canada", "Switzerland", "2026-06-24")
+        assert r2 is not None and (r2[0], r2[1]) == (1, 2)
+
     def test_brier_math(self) -> None:
         from scripts.worldcup.grading import _brier
 
@@ -649,6 +675,45 @@ class TestNinetyMinuteReconstruction:
             pd.Timestamp("2026-06-29"), (2, 1),  # 3 goals, only 1 scorer row
         )
         assert r is None  # refuse to grade rather than grade wrong
+
+    def test_swapped_orientation_still_reconstructs(self) -> None:
+        from scripts.worldcup.grading import _ninety_minute_score
+
+        # goalscorers.csv stores the tie as 'Brazil vs France' while the
+        # fixture asks for 'France vs Brazil'. Goals are credited by team
+        # name, so the 90' score must still come back correctly — a swapped
+        # knockout must not silently fall into the skipped_ko bucket.
+        scorers = pd.DataFrame(
+            {
+                "date": ["2026-06-29"] * 3,
+                "home_team": ["Brazil"] * 3,
+                "away_team": ["France"] * 3,
+                "team": ["France", "Brazil", "France"],
+                "scorer": ["A", "B", "C"],
+                "minute": [40.0, 88.0, 104.0],
+                "own_goal": [False, False, False],
+                "penalty": [False, False, False],
+            }
+        )
+        r = _ninety_minute_score(
+            scorers, pd.DataFrame(), "France", "Brazil",
+            pd.Timestamp("2026-06-29"), (2, 1),
+        )
+        assert r == (1, 1)
+
+    def test_penalties_found_when_swapped(self) -> None:
+        from scripts.worldcup.grading import _ninety_minute_score
+
+        shootouts = pd.DataFrame(
+            {"date": ["2026-06-29"], "home_team": ["Brazil"],
+             "away_team": ["France"], "winner": ["France"],
+             "first_shooter": ["France"]}
+        )
+        r = _ninety_minute_score(
+            pd.DataFrame(), shootouts, "France", "Brazil",
+            pd.Timestamp("2026-06-29"), (4, 3),
+        )
+        assert r == (0, 0)  # level at 90' — orientation must not hide the pens
 
 
 @pytest.mark.integration

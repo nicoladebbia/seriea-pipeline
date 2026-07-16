@@ -265,6 +265,8 @@ def _real_result_lookup() -> ResultFn:
 def _real_shootout_lookup() -> Callable[[str, str, str], str | None]:
     import pandas as pd
 
+    from scripts.worldcup.grading import _pair_mask
+
     df = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else None
 
     def shootout_winner(home: str, away: str, date: str) -> str | None:
@@ -272,8 +274,9 @@ def _real_shootout_lookup() -> Callable[[str, str, str], str | None]:
             return None
         target = pd.Timestamp(date)
         dates = pd.to_datetime(df["date"])
-        rows = df[(df["home_team"] == canon_team(home))
-                  & (df["away_team"] == canon_team(away))
+        # 'winner' is a team name, so only the row lookup needs the unordered
+        # pair — shootouts.csv can store the tie home/away-swapped.
+        rows = df[_pair_mask(df, canon_team(home), canon_team(away))
                   & (dates >= target - pd.Timedelta(days=1))
                   & (dates <= target + pd.Timedelta(days=1))]
         return None if rows.empty else str(rows.iloc[0]["winner"])

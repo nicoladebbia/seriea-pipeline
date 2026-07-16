@@ -312,9 +312,14 @@ class TestReport:
         report = generate_report()
         assert "No bets" in report
 
-    def test_report_contains_bankroll(self, populated_journal, monkeypatch):
-        # Create a mock bankroll file
-        bankroll_path = JOURNAL_PATH.parent / "bankroll.json"
+    def test_report_contains_bankroll(self, populated_journal, monkeypatch, tmp_path):
+        # Redirect DATA_DIR, don't derive the path from JOURNAL_PATH: the name
+        # imported into this module at line 10 is a *copy* that clean_journal's
+        # monkeypatch (which sets the attribute on scripts.betting.bet_journal)
+        # does not touch. Deriving from it wrote the REAL data/betting/
+        # bankroll.json and overwrote the live ledger with this fixture.
+        monkeypatch.setattr("scripts.betting.bet_journal.DATA_DIR", tmp_path)
+        bankroll_path = tmp_path / "betting" / "bankroll.json"
         bankroll_path.parent.mkdir(parents=True, exist_ok=True)
         with open(bankroll_path, "w") as f:
             json.dump({"initial_balance": 1000.0, "current_balance": 1050.0}, f)
@@ -322,11 +327,14 @@ class TestReport:
         report = generate_report()
         assert "BANKROLL" in report
 
-    def test_report_contains_sections(self, populated_journal, monkeypatch):
+    def test_report_contains_sections(self, populated_journal, monkeypatch, tmp_path):
         pending = get_pending_bets()
         settle_bet(pending[0]["bet_id"], "won", "2-1", profit=60.0)
 
-        bankroll_path = JOURNAL_PATH.parent / "bankroll.json"
+        # See test_report_contains_bankroll: redirect DATA_DIR rather than
+        # deriving from the module-level JOURNAL_PATH copy.
+        monkeypatch.setattr("scripts.betting.bet_journal.DATA_DIR", tmp_path)
+        bankroll_path = tmp_path / "betting" / "bankroll.json"
         bankroll_path.parent.mkdir(parents=True, exist_ok=True)
         with open(bankroll_path, "w") as f:
             json.dump({"initial_balance": 1000.0, "current_balance": 1060.0}, f)

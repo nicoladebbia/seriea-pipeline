@@ -150,6 +150,40 @@ loud-exclude dry-run also REJECTED (acc 0.489 < 0.50, ll 1.008 > 1.00) — the 2
 is the anchor because the season is incomplete (367/380). Incumbent stays production.
 August's normal backfill→rebuild→retrain on 380/380 fixes this cleanly.
 
+## 8c. Backfill the 13 missing 2025-26 scores — BEFORE the first retrain
+
+The 2025-26 season is incomplete in the data: 13 final-round matches
+(2026-05-03 → 05-11, rounds 35-36) were PLAYED but their scores never got
+parsed — the pipeline hibernated mid-May. In `matches.parquet` they are the
+only rows with NaN `home_score`/`away_score`; downstream they surface as
+`result="U"` in `features_serie_a.parquet` (380 rows, 367 labelled).
+
+**The scores are already captured** — `data/parsed/staged_sa_2025-26_missing_scores.json`
+(scraped 2026-07-16 from Sofascore season 76457, VERIFIED: 342 known-true
+matches.parquet rows agreed, 0 disagreements). Re-scraping in August is fine
+too; the staged file exists because the source had been unreachable for a
+month and might have been again.
+
+Do NOT hand-write the parquet. Apply through the normal flow:
+1. Write the 13 scores into `matches.parquet` via the normal parser path.
+2. `build_features(use_cache=False)` — a FULL rebuild. This is destructive
+   (overwrites `features_serie_a.parquet`) and it is REQUIRED: 20 real-result
+   matches (05-17 → 05-24) had elo/form computed while the 13 upstream rows
+   were unlabelled, so the corruption is ≥33 rows, not 13. Model `--rollback`
+   covers `data/models/` ONLY, not features — take a backup first.
+3. Retrain: `python3 -m scripts.models.retrain_no_odds_catboost --walkforward-final --n-seeds 3 --fit-calibrator`
+4. Verify: `features_serie_a.parquet` 2025-26 must show 380/380 labelled, 0 "U".
+
+⚠️ Separately, 30 rows in `matches.parquet` 2025-26 HAVE scores but a null
+`result` (e.g. Roma 2-0 Lazio on 05-17). The features build derives `result`
+from the scores so this is currently harmless, but anything reading
+`matches.parquet:result` directly would see 43 nulls, not 13. Worth a look
+during the backfill.
+
+The 2026-07-15 loud-exclude retrain REJECTED (acc 0.489 < 0.50) precisely
+because the 2025-26 fold is the newest, most-weighted AND the compromised
+one. On complete data this fold stops being the anchor.
+
 ## 9. First-week sanity watchlist
 
 - `logs/launchd-morning-err.log` — no duplicate STARTING lines at odd hours
