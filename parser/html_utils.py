@@ -58,10 +58,12 @@ def extract_team_info_from_html(soup: BeautifulSoup) -> list[dict]:
     if scorebox is None:
         return []
 
+    # FBref's markup drifted: reports captured from ~2025-26 wrap each side in
+    # div.scorebox_team, older captures leave those divs unclassed. Both put the
+    # two squad links in the first two direct div children, home first, so
+    # select on "direct child holding a squad link" rather than on the class.
     teams: list[dict] = []
-    for idx, team_div in enumerate(
-        scorebox.find_all("div", class_="scorebox_team", recursive=False)
-    ):
+    for team_div in scorebox.find_all("div", recursive=False):
         link = team_div.find("a", href=_SQUAD_HREF_RE)
         if link is None:
             continue
@@ -71,8 +73,10 @@ def extract_team_info_from_html(soup: BeautifulSoup) -> list[dict]:
         teams.append({
             "hash": found.group(1),
             "name": link.get_text(strip=True),
-            "is_home": idx == 0,
+            "is_home": not teams,
         })
+        if len(teams) == 2:
+            break
     return teams
 
 
