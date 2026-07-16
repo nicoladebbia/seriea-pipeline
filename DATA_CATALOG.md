@@ -254,7 +254,8 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 ### `data/parsed/lineups.parquet`
 - **Starting XI + formation + subs**
 - **266,386 rows (SA + EPL, both leagues all seasons)** — columns: match_id, team, is_home, formation, player_name, shirt_number, role, season
-- **Writer:** `scripts/data/parse_all_lineups.py` — flags: `--include-epl` (walks both `{season}/` and `{season}_epl/`), `--epl-only`, `--append`
+- **Writer:** `scripts/data/parse_all_lineups.py` — flags: `--season` (**required**), `--append`, `--replace-all`, `--dry-run`
+- ⚠️ **`--include-epl` / `--epl-only` no longer exist** (noted 2026-07-16). The original module was one of the 15 phantoms (never git-added, swept after 2026-06-01) and the rebuild reconstructs only the Serie A path that `refresh_weekly_data.py` actually invokes. The EPL rows already in this parquet are **preserved** — the merge replaces only the match_ids it parsed (verified: 271,530 rows across 6,427 other-convention matches survive a 2025-26 run). What is gone is the ability to *refresh* EPL lineups from `{season}_epl/` HTML; that path is unbuilt, and calling the old flag now errors loudly rather than silently doing nothing. See AUGUST_RUNBOOK §3b.
 - **Fallback:** Sofascore JSON dumps in `data/external/sofascore/matches/{season}/*.json` have `home_lineup`/`away_lineup` objects
 - **2025-26:** 569 matches (260 SA + 309 EPL), 40 teams, formation 100% populated for both leagues
 - **Append safety:** `--append` keys on `(season, team)` so partial-league input does NOT wipe other-league rows for the same season (fixed 2026-04-25 after data-loss incident)
@@ -271,13 +272,28 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 
 ### `data/parsed/understat_players.parquet`
 - **Season-aggregate player xG / xA / xGChain / xGBuildup**
-- **11,669 rows** across 8 seasons of Serie A + 6 seasons of Premier League
+- **11,706 rows** across 12 seasons of Serie A (2014-15..2025-26) + 9 of Premier
+  League (2017-18..2025-26) — recounted from the file 2026-07-16
 - **Schema:** league, season, team, player, league_id, season_id, team_id, player_id, position, matches, minutes, goals, xg, np_goals, np_xg, assists, xa, shots, key_passes, yellow_cards, red_cards, xg_chain, xg_buildup
 - **Writer:** `scripts/data/refresh_understat_players.py [--season YYYY-YYYY] [--leagues serie_a,premier_league] [--all-seasons]`
 - **Source:** `playersData` JS variable on Understat league pages (extracted via Selenium)
-- **Cadence:** Manual today (no plist installed). Drafts at `scripts/pipeline/com.seriea.refresh_understat.draft.plist`. Auto-refresh in `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()` which only fetches Serie A team-level data (not player-level)
+  - ⚠️ **Selenium is mandatory, and it is NOT an IP block.** Measured 2026-07-16:
+    plain HTTP GET returns **200** but `playersData` occurrences = **0** (the page
+    renders client-side). Understat is reachable — unlike Sofascore (403) and
+    FBref (Cloudflare). Don't "fix" this by retrying with requests.
+- **Cadence:** `com.seriea-pipeline.refresh-understat` plist (Tue 04:30) is
+  INSTALLED and invokes `-m scripts.data.refresh_understat_players --season 2025-2026`.
+  The draft path this section used to cite never existed; the real copy is
+  `scripts/pipeline/com.seriea-pipeline.refresh-understat.plist`. Auto-refresh in
+  `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()`
+  which only fetches Serie A team-level data (not player-level)
+- **Placeholders:** `team_id` is always 0 and `league_id` always null — `playersData`
+  carries neither. Don't build a join on them.
 - **Team naming quirk:** Players who transferred mid-season have comma-joined team strings (e.g. "Atalanta,Fiorentina"). Downstream `_team_match` fuzzy lookup handles this via substring match
-- **2025-26:** 1,086 player rows (561 SA, 525 EPL), refreshed 2026-04-24
+- **2025-26:** 1,123 player rows (586 SA, 537 EPL), stored 2026-05-31. Re-fetched
+  live 2026-07-16 and both leagues came back **identical to the stored rows**
+  (assert_frame_equal, same values and dtypes) — the season is complete, so the
+  file is final, not stale.
 
 ### `data/parsed/events.parquet`
 - **Goal + card events with minutes** (from FBref scorebox — only goals/reds/own-goals; full timelines aren't in match report HTML)
@@ -497,11 +513,17 @@ Runs `scripts/pipeline/refresh_weekly_data.py` which does 13 steps:
 |---|------|--------|--------|
 | 1 | FBref fixtures.html refresh | botasaurus → fbref.com | `data/raw/html/2025_2026/fixtures.html` |
 | 2 | FBref missing match HTMLs | `scrape_fbref_missing.py --headless` | `data/raw/html/2025-2026/*.html` |
-| 3 | Parse player_stats | `parse_all_player_stats --append` | player_stats.parquet |
-| 4 | Parse lineups | `parse_all_lineups --append` | lineups.parquet |
-| 5 | Parse events | `parse_all_events --append` | events.parquet |
-| 6 | Parse goalkeeper_stats | `parse_all_goalkeeper_stats --append` | goalkeeper_stats.parquet |
-| 7 | Parse shots | `parse_all_shots --append` | shots.parquet (0 rows for 2025-26) |
+| 3 | Parse player_stats | `parse_all_player_stats --season 2025-2026 --append` | player_stats.parquet |
+| 4 | Parse lineups | `parse_all_lineups --season 2025-2026 --append` | lineups.parquet |
+| 5 | Parse events | `parse_all_events --season 2025-2026 --append` | events.parquet |
+| 6 | Parse goalkeeper_stats | `parse_all_goalkeeper_stats --season 2025-2026 --append` | goalkeeper_stats.parquet |
+| 7 | Parse shots | `parse_all_shots --season 2025-2026 --append` | shots.parquet (exits 1 — no shots tables cached for 2025-26) |
+
+> ⚠️ `--season` is **required** on all five parsers — there is no all-seasons
+> default. `refresh_weekly_data.py` passes `--season CURRENT_SEASON`; the bare
+> form shown here before 2026-07-16 was never what the job ran, and running it
+> would rewrite the legacy 2024-25 `player_stats` slice (see that file's
+> `--season` comment). Only the named season is parsed.
 | 8 | Sofascore refresh | `scrape_sofascore.py --season 2025-2026` | 4 sofascore parquets |
 | 9 | Understat refresh | `scrape_understat_xg()` + `parse_all_understat` | understat/matches_xg.parquet |
 | 10 | Referee refresh | `scrape_all_referee_assignments` | referee_assignments.parquet |
