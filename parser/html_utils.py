@@ -40,6 +40,54 @@ def find_tables_by_pattern(soup: BeautifulSoup, pattern: str) -> list[Tag]:
     return soup.find_all("table", id=re.compile(pattern))
 
 
+# FBref squad ids are 8 hex chars: /en/squads/47c64c55/Crystal-Palace-Stats.
+# The same id keys the per-team stat tables (stats_47c64c55_summary).
+_SQUAD_HREF_RE = re.compile(r"/squads/([0-9a-f]{8})/")
+
+
+def extract_team_info_from_html(soup: BeautifulSoup) -> list[dict]:
+    """Extract both teams from an FBref match-report scorebox.
+
+    Returns one dict per team: the FBref squad hash, the team name as printed,
+    and whether it is the home side. The hash is what parse_player_stats needs
+    to locate that team's tables. Scorebox order is home first, away second.
+
+    Returns [] when the scorebox is absent or carries no squad links.
+    """
+    scorebox = soup.find("div", class_="scorebox")
+    if scorebox is None:
+        return []
+
+    teams: list[dict] = []
+    for idx, team_div in enumerate(
+        scorebox.find_all("div", class_="scorebox_team", recursive=False)
+    ):
+        link = team_div.find("a", href=_SQUAD_HREF_RE)
+        if link is None:
+            continue
+        found = _SQUAD_HREF_RE.search(link.get("href", ""))
+        if found is None:
+            continue
+        teams.append({
+            "hash": found.group(1),
+            "name": link.get_text(strip=True),
+            "is_home": idx == 0,
+        })
+    return teams
+
+
+def extract_match_date(soup: BeautifulSoup) -> str:
+    """Extract the match date as YYYY-MM-DD from an FBref match report.
+
+    The visible .venuetime text is only the kickoff time; the date lives in the
+    data-venue-date attribute. Returns "" when absent.
+    """
+    element = soup.find(class_="venuetime")
+    if element is None:
+        return ""
+    return element.get("data-venue-date", "")
+
+
 def table_to_dataframe(table: Tag) -> pd.DataFrame:
     """Convert a FBref stat table to a DataFrame using data-stat attributes.
 

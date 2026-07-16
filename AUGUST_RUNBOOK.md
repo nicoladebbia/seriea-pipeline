@@ -49,7 +49,144 @@ Three teams come up from Serie B. For each:
 - Verify: run one incremental pipeline, grep logs for the three team names,
   confirm fixtures + odds + features rows exist for each.
 
+## 3b. 🚨 PHANTOM MODULES — 15 missing files. FIX BEFORE §4 RELOAD
+
+**Discovered 2026-07-16.** 15 modules that live jobs invoke **do not exist on
+disk and were never committed**. Hibernation hides this: nothing has run since
+2026-06-01, so the §4 reload is the moment it all detonates.
+
+### Mechanism (so it doesn't recur)
+
+These were written locally, ran fine, and were **never `git add`ed** — no
+`.gitignore` involvement (checked: `git check-ignore` says NOT ignored; only
+`/data/` and `*.pyc` are). They were swept **after 2026-06-01** by a cleanup
+deleting "untracked" files. Evidence they were alive on Jun 1:
+`logs/launchd-weekly-data-refresh.log` reports **"11/13 steps OK"** at
+2026-06-01 07:59 with **zero** `No module named` errors, and
+`data/parsed/player_stats.parquet` is stamped Jun 1 07:59.
+
+### The list (verified 2026-07-16 — file absent AND never in git history)
+
+**Plist-invoked (job dies on first tick):**
+| Job | Module | Note |
+|---|---|---|
+| `sofascore-watcher` | `scripts.data.sofascore_watcher` | spec recovered — see §3c |
+| `refresh-understat` | `scripts.data.refresh_understat_players` | writer of `understat_players.parquet` (11.7k rows, LIVE — read by `features/understat_features.py`, `features/lineup_xg.py`, `web/app.py`) |
+| `transfer-refresh` | `scripts.data.refresh_transfers` | **PR #7 (draft) adds this one** — land it |
+
+**`refresh_weekly_data.py` (weekly-data-refresh.plist, Mon 04:00) — the whole FBref path:**
+`scrape_fbref_missing` (Step 2) · `parse_all_player_stats` · `parse_all_lineups`
+· `parse_all_events` · `parse_all_goalkeeper_stats` · `parse_all_shots` (Step 3)
+· `fallback_sofascore_to_fbref` (:219). Steps 2–3 are subprocess calls, so they
+fail **loudly** (exit 1) but `run()` records the step and continues.
+
+**Imported by live code (raises ImportError at the call site):**
+| Module | Caller |
+|---|---|
+| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` |
+| `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565` |
+| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` |
+| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` |
+| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) |
+
+⚠️ **NOT a phantom:** `scripts.pipeline.matchday_update` — `web/app.py:6517` is a
+comment recording its *intentional* removal. Don't "restore" it.
+
+### Source reachability (measured 2026-07-16 — gates what can be rebuilt)
+
+| Source | State | Consequence |
+|---|---|---|
+| FBref | Cloudflare-blocked | `scrape_fbref_missing` can't fetch new HTML. **But 309 cached EPL match reports** in `data/raw/html/2025_2026_epl/` parse fine offline. |
+| Sofascore | **HTTP 403** (IP ban, still active) | `sofascore_watcher` standings scrape unverifiable. |
+| Understat | **HTTP 200 but JS shell** (`playersData` count = 0 via plain HTTP) | needs Selenium — catalog confirms. Not an IP ban. |
+
+### Prevention rule (worth more than the modules)
+
+Nothing checks that an invoked module exists. This one-liner would have caught
+all 15 on day one — run it before any reload, and consider wiring it into the
+health check:
+
+```bash
+# Every scripts.* module referenced in code or plists must exist on disk.
+# Resolves packages, and skips a trailing segment that is a symbol not a module.
+{ grep -rhoE '\bscripts\.[a-z_][a-z0-9_.]*' --include="*.py" scripts/ web/ ;
+  grep -rhoE '\bscripts\.[a-z_][a-z0-9_.]*' ~/Library/LaunchAgents/com.seriea-pipeline.*.plist ; } \
+| sed 's/\.$//' | sort -u | while read m; do
+    p="$(echo "$m" | tr '.' '/')"
+    [ -f "$p.py" ] && continue          # module
+    [ -d "$p" ] && continue             # package
+    par="${p%/*}"; [ -f "$par.py" ] && continue   # symbol imported from a module
+    echo "MISSING: $m"
+  done
+```
+**Known limits — triage each hit, don't act blind (tested 2026-07-16, 22 hits):**
+- **False positives:** stale *docstring* examples. 9 of the 22 hits (e.g.
+  `scripts.learning_loop`, `scripts.feedback_analyzer`, `scripts.scrape_sofascore`)
+  are files that moved into subpackages while their docstrings still say the old
+  `python3 -m scripts.X`. The file exists; the doc is wrong. Same for
+  `scripts.pipeline.matchday_update` (a comment about its removal).
+- **False negatives:** it CANNOT see modules named via f-string. That is exactly
+  how `refresh_weekly_data.py` builds the 5 `parse_all_*` parsers
+  (`f"scripts.data.{parser_name}"`), so those never appear. Check Step 3's list
+  by hand.
+- Don't use `\s` in `sed` on macOS (BSD sed lacks it) — it silently fails to
+  strip and every line reports MISSING.
+
+**And: `git status` before ending any session that adds a script.** Untracked
+load-bearing code is the actual root cause here, not the cleanup that swept it.
+
+### ⚠️ Do NOT create stub modules to silence this
+
+A stub that imports but has no `__main__` turns a **loud** `No module named`
+(exit 1, visible) into a **silent no-op that `run()` logs as OK**. Missing is
+strictly better than fake. Rebuild properly or leave absent.
+
+## 3c. `sofascore_watcher` — recovered spec (rebuild from this)
+
+The module is gone but its behaviour is fully documented. **This spec was
+reverse-engineered 2026-07-16 from the plist comment + a 55-tick log + the
+surviving state file; the logs can rotate away, so this is now the record.**
+
+- **Spec** (from `scripts/pipeline/com.seriea-pipeline.sofascore-watcher.plist`,
+  whose XML comment survived — the `~/Library/LaunchAgents` copy lost it):
+  every 10 min; refresh standings each tick (cheap HTML scrape); full API
+  refresh when a match just ended (kickoff +110–140min), a match kicks off soon
+  (kickoff −30 to −90min), or **every 18th tick** (~3h heartbeat). It replaced
+  `sofascore-refresh` (3h) and `match-end-refresh` (10m), neither now installed.
+- **Proven behaviour** (`logs/sofascore_watcher-err.log`, 55 ticks 2026-04-30
+  14:42 → 05-01 00:18, zero errors). `full=True` fired at exactly ticks 18/36/54
+  — the heartbeat, confirmed. Its three log lines were:
+  `standings json refresh {league}: wrote {n} teams` ·
+  `running full API refresh — reason: periodic` ·
+  `watcher tick={n} done in {t}s (full={bool}, post={n}, pre={n})`
+- **Collaborators** (from logger names in that log): `scripts.data.scrape_sofascore`
+  (fixtures cache) and `scraper.sofascore_events` (incidents). It did **NOT**
+  import `web.app` — zero `Auto-settle scheduler started` lines.
+- **State:** `data/external/sofascore/.watcher_tick.json` — `{"tick": N,
+  "updated_at": ISO}`. Survives at tick 3055 (2026-06-01), so the counter
+  persists across the per-tick process launches. Ticks ran 1.1–5.9s.
+- **Writes:** `data/upcoming/standings.json` (serie_a) and
+  `standings_premier_league.json` — the convention in
+  `ensemble_prediction_engine.py:1238-1240`. 20 teams each.
+
+**Open question for August (the one real design fork):** the standings HTML
+scraper lived inside the watcher and is gone. The only surviving one is
+`web/app.py:_live_standings_via_html` (sentinel-checked, breaker-guarded) — but
+**importing `web.app` starts the auto-settle thread** (measured: 0.22s import,
+logs "Auto-settle scheduler started"). It sleeps 300s first and is a daemon, so
+it's harmless for a 1–6s tick — **but a post-matchday full refresh rate-limits
+at 2s/match and can exceed 300s, which would fire the ledger settler and spend
+Odds API credits from inside a watcher tick.** So: either extract the scraper
+out of `web/app.py` into a shared module (both callers import it), or give the
+watcher its own. **Requires a live (non-403) Sofascore to verify — that's why
+it wasn't built on 2026-07-16.**
+
 ## 4. Reload launchd (arms the T-30 timing mode)
+
+🚨 **Do §3b first.** 3 of these jobs (`sofascore-watcher`, `refresh-understat`,
+`transfer-refresh`) point at modules that no longer exist and will die on their
+first tick, and `weekly-data-refresh` will fail its whole FBref path. The
+`launchctl list` check below shows nonzero exit codes — that's what they mean.
 
 ```bash
 for p in ~/Library/LaunchAgents/com.seriea-pipeline.*.plist; do
