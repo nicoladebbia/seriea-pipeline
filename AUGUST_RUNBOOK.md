@@ -131,6 +131,57 @@ possession, ht_score, passing accuracy all 0% → 100%.
 2. **`formation` not filled** — `lineups.parquet` reproduces it only 91.5%, below
    the bar every other column here clears.
 
+#### `live_reconciliation` — SPEC FULLY RECOVERED 2026-07-16 (rebuild from this)
+
+⚠️ **Supersedes the earlier "semantics unrecoverable" verdict — that was wrong.**
+I had only checked that `scripts/analysis/live_reconciliation.py` (a *different*,
+tracked module sharing the name — it has no `reconcile_all_matches`) didn't fit.
+The real evidence was in the data all along: **`data/live/*.json` stores this
+module's own output** in `matches[k]["reconciliation"]` — **123 blocks across 33
+snapshots, including 11 non-empty discrepancy lists**. Rebuild against that oracle.
+
+**Contract:** `reconcile_all_matches(matchday) -> int`, called at
+`live_monitor.py:1181`, wrapped in try/except and the return value is **only
+logged** ("Reconciliation: %d discrepancy(ies) found"). No writes, no gates — so a
+faithful-but-imperfect rebuild is low risk. It mutates
+`matchday["matches"][k]["reconciliation"]`; the caller persists the matchday.
+
+**Output block (schema exact, n=123):**
+```json
+{"scores_agree": bool, "sources_checked": ["odds_api"] | ["odds_api","sofascore"],
+ "discrepancies": [...], "score_used": {"home": int, "away": int, "source": "odds_api"|"consensus"},
+ "all_scores": {"odds_api": [h,a], "sofascore": [h,a]},
+ "severity": "ok"|"info"|"critical", "checked_at": "<UTC-aware ISO>"}
+```
+
+**Rules (derived from all 123):**
+- `sources_checked` = `["odds_api"]`, plus `"sofascore"` when the match has Sofascore data (`sofascore_id`/`live_events` present — 45 of 123 blocks).
+- odds_api score = `_last_home_score`/`_last_away_score`; sofascore score = goals counted from `live_events` by side.
+- `scores_agree` = no `score_mismatch` (all sources equal).
+- `severity` = `critical` if any critical, else `info` if any info, else `ok`.
+- `score_used.source` = `"consensus"` when >1 source **and** they agree; otherwise `"odds_api"` (it is always primary on disagreement).
+- Return = number of discrepancy **items** (13 across the 11 flagged matches) — *ambiguous vs. flagged-match count (11); the caller only logs it, so either is tolerable. Say which you chose.*
+
+**Discrepancy shapes (verbatim from the oracle):**
+```json
+{"type":"score_mismatch","severity":"critical","source":"sofascore","reported":[1,2],"expected":[0,3],
+ "message":"All sources disagree: sofascore reports 1-2, using odds_api 0-3 as primary"}
+{"type":"timing_mismatch","severity":"info","goal_minute":58,"player":"Denzel Dumfries","side":"away",
+ "message":"Sofascore goal at 58' (away, Denzel Dumfries) doesn't align with any Odds API score change window"}
+{"type":"status_mismatch","severity":"info","odds_api_status":"first_half","latest_event_minute":90,
+ "message":"Odds API says 'first_half' but Sofascore has events at 90' \u2014 status may be lagging"}
+```
+
+**Verify by replaying**: feed each stored matchday back through the rebuild and
+require the regenerated block to equal the stored one (ignore `checked_at`). 123
+blocks is a strong oracle — do not accept less than an exact match on the 112
+`ok` blocks and all 11 flagged ones.
+
+🔎 **Real finding worth acting on independently:** the 7 `critical` score_mismatches
+are all **Sofascore under-reporting vs Odds API** (e.g. Bologna–Inter 2-3 vs 3-3,
+Verona–Roma 0-1 vs 0-2). Sofascore lagging on live goals is a known-good reason the
+pipeline treats odds_api as primary.
+
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller | Status |
 |---|---|---|
