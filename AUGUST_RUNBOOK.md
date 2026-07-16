@@ -187,7 +187,32 @@ possession, ht_score, passing accuracy all 0% → 100%.
 2. **`formation` not filled** — `lineups.parquet` reproduces it only 91.5%, below
    the bar every other column here clears.
 
-#### `live_reconciliation` — SPEC FULLY RECOVERED 2026-07-16 (rebuild from this)
+#### `live_reconciliation` — ✅ **REBUILT + REPLAY-VERIFIED 2026-07-16**
+
+**Status: DONE.** `scripts/data/live_reconciliation.py` is rebuilt and
+`tests/test_live_reconciliation.py` replays **all 123 stored blocks exactly**
+(129 tests green). Two claims in the spec below were **refuted by the data during
+the rebuild** — the corrections are authoritative, the original text is kept for
+provenance:
+
+1. **The odds_api score is NOT `_last_home_score`/`_last_away_score`.** Those keys
+   are absent from 45 of the 123 persisted blocks and reproduce only 78/123. The
+   **last snapshot carrying a `score`** reproduces **123/123**. Snapshots use
+   `min` + `score: [h, a]` — not `minute`/`home_score`/`away_score`.
+2. **Sofascore's `is_home` marks the *scorer's* side, so an own goal credits the
+   opponent.** `goal_type == "ownGoal"` must flip the side. Without this the 4
+   asymmetric `score_mismatch` blocks replay backwards (e.g. Bologna–Inter
+   computes 3-2 where truth is 2-3). Only the replay oracle surfaces this.
+
+Also sharpened: `sofascore` enters `sources_checked` **iff `live_events` is
+non-empty** (45/45 with, 78/78 without). A bare `sofascore_id` is *not* enough —
+2 blocks have the id and no events and stay single-source.
+
+**Choices made (the spec asked to state them):** return value = **discrepancy
+items** (13), not flagged-match count (11). `timing_mismatch` = **omitted** (see
+the second refutation below). `status_mismatch` = **implemented**, but its rule is
+derived from **n=1** (the only stored case is `first_half` + events at 90'); it is
+checked only for `first_half`/`half_time`, since no block exercises another status.
 
 ⚠️ **Supersedes the earlier "semantics unrecoverable" verdict — that was wrong.**
 I had only checked that `scripts/analysis/live_reconciliation.py` (a *different*,
@@ -238,6 +263,24 @@ flags a rare few. **Do not implement a tolerance window.** Ship
 find its real trigger first — it is `info` severity and does not affect
 `scores_agree`, so omitting it is the safe default. Say which you chose.
 
+**SECOND hypothesis family — also REFUTED 2026-07-16. Chose: OMIT.**
+The tolerance sweep's *shape* error looked explainable: it flags goals that have
+no score-change window **at all**, but truth doesn't. Motivating case —
+**Cagliari–Napoli**: goal at 2', snapshots start at 9' with the score already
+0-1, so no window can exist, and truth does **not** flag it. So the sweep was
+re-run with a **coverage guard** (skip any goal before the first snapshot minute,
+as unjudgeable). Result: still refuted. Best case TOL=6 catches 5/5 but drags in
+**39 false positives**; the guard only trims 98→79 at TOL=0. Control reproduced
+the prior numbers (98 at 0', 26 at 15'), confirming the harness agrees.
+
+A third angle was checked and closed: the own-goal discovery above means both
+sweeps matched goals to score-changes on the **wrong side** for own goals — but
+only **1 of the 5** flagged goals is an own goal (4 own goals exist among all 104),
+so a correction touching ≤4 goals cannot explain a 5-vs-99 split. **The trigger
+remains unrecovered after three families. Stop searching from this oracle** — it
+does not contain the discriminating signal. If it ever matters, instrument the
+live path and capture the real trigger (`info` severity; it has never mattered yet).
+
 **What IS exact:** `score_mismatch` reproduces all **7/7** criticals — sofascore
 score = count of `live_events` where `type=="goal"` grouped by `is_home`;
 odds_api score = `_last_home_score`/`_last_away_score`; flag when they differ,
@@ -259,7 +302,7 @@ pipeline treats odds_api as primary.
 | `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ❌ not rebuilt — source unknown |
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
 | `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
-| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ❌ not rebuilt — semantics unrecoverable |
+| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ✅ **REBUILT** — replays all 123 stored blocks exactly |
 | `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
 
 #### Triage of these five (2026-07-16)
@@ -335,6 +378,22 @@ market aggregates), so anything unioning *those* must decide which wins. They be
 **This staleness also hits the DAILY import** (`import_seriea_odds` reads the same cached
 `data/external/odds/I1_*.csv`) — worth fixing separately; it likely explains part of the
 2025-26 odds gap in [[project_jul15_retrain_datagap]].
+
+✅ **NOT A BUG — `compute_implied_probabilities`'s O/U block (`scraper/odds.py:269-271`).
+Claim REFUTED 2026-07-16; do not re-investigate.** It reads `odds_P>2.5`/`odds_Avg>2.5`,
+which look like names that "never exist" because the stored parquet holds
+`odds_P_gt_2.5`. **The block still fires.** Order is what matters: `_add_odds`
+(`features/build.py:1191`) merges the odds and calls `compute_implied_probabilities`
+while the columns are still the **raw, freshly-merged** `odds_P>2.5`; the `>`→`_gt_`
+sanitizer runs later, at `build.py:1639`, only because XGBoost rejects `<>[]`. The
+`_gt_` names in the parquet are the post-hoc rename, not the merge convention.
+**Evidence:** `pinnacle_ou_over_prob` has **2,512 non-null** in
+`features_serie_a.parquet` — exactly matching `odds_P_gt_2.5`'s 2,512 — with mean
+overround **1.032** (a clean ~3.2% Pinnacle O/U vig). It computed those from that column.
+(Why the outputs look sparse: `odds_Avg_gt_2.5`, `pinnacle_ou_under_prob` and
+`market_home/away_prob` are absent because the **exact-duplicate pruner** at
+`build.py:~1620` drops them — `under_prob ≡ 1 − over_prob` is perfectly collinear.
+Dropped *after* being used, not missing.)
 
 Result (verified on a scratch copy, live parquet md5-unchanged): **1,663 cells filled,
 0 overwritten, 0 nulled, idempotent** (2nd run = 0). 2024-25 → **100% on all 12**;
