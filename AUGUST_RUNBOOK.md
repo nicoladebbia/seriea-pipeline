@@ -130,9 +130,27 @@ the plane against all 17 runs leaves `LINE ∈ [0.09, 0.11]` and
 0.15). Only 4 of the 17 runs are informative — the other 13 are the degenerate
 all-zero case any threshold satisfies. `is_steam_move` feeds a **0.8-weight**
 component in `features/market_intelligence.py` → `betting_unified`, so a wrong
-threshold shifts betting scores for matches moving in that narrow band. On the
-first live matchday, compare a real run's `summary` against the constants in
-`scripts/data/odds_tracker.py`.
+threshold shifts betting scores for matches moving in that narrow band.
+
+⚠️ **Do NOT try to confirm this on the first run after reload — it cannot work.**
+All 3,294 existing snapshots will be ~2 months stale, so every one falls outside
+the 48h window. The first runs see only the snapshot just written → all movements
+`0.0` → `line_moves: 0, steam_moves: 0` **whatever the thresholds are**. That is
+the degenerate case that validates nothing (it's why only 4 of the original 17
+runs were informative). A `0/0` summary post-reload is **expected and healthy**,
+not a bug — do not "fix" it.
+
+The confirmation needs **both** preconditions:
+1. **≥48h of fresh post-reload snapshots** have accumulated (i.e. ≥2 snapshots
+   for the same match spanning >0h), and
+2. **at least one match actually moved ≥0.10** in-window — otherwise there is
+   still nothing to separate.
+
+Only then does comparing a live `summary` against the constants mean anything.
+The cheap way to get a real check: once (1) holds, recompute `max(|dH|,|dD|,|dA|)`
+per match straight from `data/odds_snapshots/` and confirm the count crossing
+0.10/0.15 equals the logged `line_moves`/`steam_moves` — same method as the
+original sweep, which is reproducible from the snapshots alone.
 Also unverified: `direction`'s `home_drifting`/`away_drifting` branches (the only
 surviving per-match output is the all-`stable` run) and the
 `implied_prob_shift_*` formula (**0 consumers** — grep-verified, so harmless).
