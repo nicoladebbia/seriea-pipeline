@@ -16,9 +16,29 @@ unverified source.
 | `event_lineups.json` | `/event/{id}/lineups` | **13981681** | Same match. Includes Laurienté, who has a real assist — the only way to tell `goalAssist` from `assists` |
 | `event_incidents_var.json` | `/event/{id}/incidents` | **13981716** Genoa v Udinese | The only specimen carrying a `varDecision` incident |
 | `live_events.json` | `/sport/football/events/live` | — | Match-list shape; proves the endpoint was live when captured |
+| `tournament_standings_serie_a.json` | `www.sofascore.com/tournament/football/italy/serie-a/23` | — | The **HTML** path, not the API. See below. |
 
 `tests/test_live_sofascore.py` maps all of these through the real parsers and
 compares against the oracle in `data/live/*.json`.
+`tests/test_sofascore_standings.py` does the same for the standings scraper.
+
+## `tournament_standings_serie_a.json` — the HTML fallback specimen
+
+The untouched `props.pageProps.standings` subtree lifted from the tournament
+page (the whole page is 675 KB; this subtree is 24 KB and is all the parser
+reads). The tests rebuild the `<script id="__NEXT_DATA__">` wrapper around it,
+so the regex extraction, the pageProps path, the row mapping and the sentinel
+are all exercised — only the live HTTP call is not.
+
+It establishes two things worth stating plainly:
+
+- **`standings` sits directly on `pageProps`; there is no `initialProps`.** The
+  2026-06 hoisting the scraper comments about is confirmed live — the nested
+  path is now legacy, kept only as a fallback.
+- **The page serves `Serie A 26/27`, all rows `played=0`.** Captured
+  2026-07-16, while `get_current_season()` still returned `2025-2026`. That
+  disagreement is real and the scraper ignores it (it stamps the clock, not the
+  page) — `test_season_is_stamped_from_the_clock_not_the_page` pins it.
 
 ## What they establish
 

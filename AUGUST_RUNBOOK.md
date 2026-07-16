@@ -635,35 +635,60 @@ surviving state file; the logs can rotate away, so this is now the record.**
   `standings_premier_league.json` — the convention in
   `ensemble_prediction_engine.py:1238-1240`. 20 teams each.
 
-**Open question for August (the one real design fork):** the standings HTML
-scraper lived inside the watcher and is gone. The only surviving one is
-`web/app.py:_live_standings_via_html` (sentinel-checked, breaker-guarded) — but
-**importing `web.app` starts the auto-settle thread** (measured: 0.22s import,
-logs "Auto-settle scheduler started"). It sleeps 300s first and is a daemon, so
-it's harmless for a 1–6s tick — **but a post-matchday full refresh rate-limits
-at 2s/match and can exceed 300s, which would fire the ledger settler and spend
-Odds API credits from inside a watcher tick.** So: either extract the scraper
-out of `web/app.py` into a shared module (both callers import it), or give the
-watcher its own.
+**✅ The design fork is RESOLVED — the scraper is extracted (2026-07-16).**
+`scraper/sofascore_standings.py` now owns it; `web/app.py` imports it back under
+the original private names, so every dashboard call site is unchanged. The move
+is proven **byte-identical**: all 190 moved lines reproduce under a 9-name
+rename map, so no logic changed. Suite `765 passed` (+16 new), the 4
+`test_worldcup.py` failures are pre-existing on main.
 
-> **Ban is no longer the blocker (2026-07-16).** The 403 lifted, so the "requires
-> a live Sofascore to verify" caveat is discharged — `live_sofascore` was built
-> and specimens are committed under `tests/fixtures/sofascore/`. **The watcher is
-> still not built, for a different and better reason:** the fork above is a real
-> refactor, not a rebuild. `_live_standings_via_html` is **128 lines** and depends
-> on 4 module-level constants (`_HTML_SENTINEL_TEAM`, `_HTML_FAILURE_TTL`,
-> `_HTML_STANDINGS_TTL`, `_LEAGUE_SOFASCORE_PAGE`) and 3 helpers (`_fail`,
-> `_html_health_now`, `_sofascore_get_retry`), with 2 call sites in `web/app.py`
-> (`:744`, `:2527`) — and it is the dashboard's breaker-guarded resilience path.
+**The import side-effect was WORSE than recorded, which is why extraction was
+right.** Measured: `import web.app` = 134ms and starts **two** threads —
+`_auto_settle_loop` *and* `_maybe_start_live_poll`, the odds auto-poll the
+project CLAUDE.md documents as a credit burn. Only the settler was known before.
+`import scraper.sofascore_standings` = **9ms, zero threads, no Flask.**
+
+~~Open question: the standings HTML scraper lived inside the watcher and is
+gone; the only surviving one is `web/app.py:_live_standings_via_html`, but
+importing `web.app` starts the auto-settle thread.~~
+
+> **Ban is not the blocker (2026-07-16)** — the 403 lifted. **The extraction is
+> not the blocker either** — done, see above. **What blocks the watcher now is a
+> DECISION about what it writes, and it needs Nicola, not more archaeology.**
 >
-> **Recommendation: extract, don't duplicate.** A second copy means two sentinel
-> lists and two breakers that will drift, and the sentinel is the only thing that
-> catches a Sofascore schema break. Do it as its own PR with the dashboard's
-> standings path re-checked, not bolted onto a rebuild.
+> **The conflict:** two writers, one file. `scripts/prediction/standings_generator.py:155`
+> writes `data/upcoming/standings.json` from **matches.parquet** — rich: real
+> `form_last5`, real home/away splits with `ppg`. The HTML scraper's payload has
+> `form_last5: ""` and home/away **all zeros** (the page doesn't expose them; the
+> dashboard splices them from the parquet at `web/app.py:754` before serving).
+> A watcher that writes the raw HTML payload to `standings.json` every 10 min
+> **zeroes the home/away records that `web/app.py:7214` calls "single source of
+> truth"** — a silent live-UI regression.
 >
-> Note the watcher is a **10-minute** job whose only outputs are
-> `standings*.json`; nothing bets on it. It is the lowest-stakes of the phantoms —
-> do it when the extraction can get a clean review, not under time pressure.
+> **What the oracle does and does not pin.** It pins the EPL write exactly:
+> `standings_premier_league.json` carries `source: "sofascore_html"`,
+> `season: "2025-2026"`, a **tz-aware** `generated_at` landing **4s after** the
+> tick-3055 state write — i.e. `{generated_at, season, source, standings}` with
+> the scraper's per-team shape. It pins **nothing** about how the watcher
+> reconciled with `standings_generator` on the serie_a file: the serie_a
+> `standings.json` on disk is `standings_generator`'s shape (naive `generated_at`,
+> `team_count`, no `source`), because that writer ran last. Both wrote it; who won
+> is not recoverable. **Reconstructing that is inventing policy into a live file —
+> the same line `fallback_sofascore_to_fbref` was held to.**
+>
+> **The three options (Nicola picks):**
+> 1. **EPL-only** — write `standings_premier_league.json` only, where the watcher
+>    is the sole writer and the oracle is exact. Serie A keeps its parquet
+>    generator. Safest; matches the only evidence that survives.
+> 2. **Splice like the dashboard** — merge HTML totals over parquet form/splits
+>    (reuse the `web/app.py:754` logic). Richest, but it's new behaviour the
+>    original demonstrably did not have.
+> 3. **Separate file** — `standings_live.json`, no writer contention at all;
+>    consumers opt in.
+>
+> Note the watcher is a **10-minute** job whose only outputs are `standings*.json`;
+> nothing bets on it. Lowest-stakes phantom — do it when the write decision is
+> made, not under time pressure.
 
 ## 4. Reload launchd (arms the T-30 timing mode)
 

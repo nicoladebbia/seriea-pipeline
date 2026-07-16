@@ -1,0 +1,1150 @@
+[
+ {
+  "id": 277180,
+  "type": "total",
+  "tournament": {
+   "name": "Serie A",
+   "slug": "serie-a",
+   "category": {
+    "name": "Italy",
+    "slug": "italy",
+    "sport": {
+     "name": "Football",
+     "slug": "football",
+     "id": 1
+    },
+    "priority": 7,
+    "country": {
+     "alpha2": "IT",
+     "alpha3": "ITA",
+     "name": "Italy",
+     "slug": "italy"
+    },
+    "id": 31,
+    "flag": "italy",
+    "alpha2": "IT",
+    "fieldTranslations": {
+     "nameTranslation": {
+      "ar": "إيطاليا",
+      "bn": "ইতালি",
+      "hi": "इटली",
+      "ru": "Италия"
+     },
+     "shortNameTranslation": {}
+    }
+   },
+   "uniqueTournament": {
+    "name": "Serie A",
+    "slug": "serie-a",
+    "primaryColorHex": "#09519e",
+    "secondaryColorHex": "#008fd7",
+    "category": {
+     "name": "Italy",
+     "slug": "italy",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "priority": 7,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 31,
+     "flag": "italy",
+     "alpha2": "IT",
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "إيطاليا",
+       "bn": "ইতালি",
+       "hi": "इटली",
+       "ru": "Италия"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "userCount": 668493,
+    "hasPerformanceGraphFeature": true,
+    "country": {},
+    "id": 23,
+    "displayInverseHomeAwayTeams": false,
+    "fieldTranslations": {
+     "nameTranslation": {
+      "ar": "الدوري الإيطالي",
+      "hi": "सीरी ए",
+      "bn": "সিরি আ",
+      "ru": "Серия А"
+     },
+     "shortNameTranslation": {}
+    }
+   },
+   "priority": 702,
+   "isGroup": false,
+   "isLive": false,
+   "id": 33,
+   "fieldTranslations": {
+    "nameTranslation": {
+     "hi": "सीरी ए",
+     "ar": "الدوري الإيطالي",
+     "bn": "সিরি আ",
+     "ru": "Серия А"
+    },
+    "shortNameTranslation": {}
+   }
+  },
+  "name": "Serie A 26/27",
+  "descriptions": [],
+  "tieBreakingRule": {
+   "id": 1239,
+   "text": "In the event that two (or more) teams have an equal number of points, the following rules break the tie:\n\n1. Head-to-head if all tied teams have paired matches\n2. Goal difference\n3. Goals scored"
+  },
+  "rows": [
+   {
+    "id": 2330448,
+    "team": {
+     "name": "AC Milan",
+     "slug": "milan",
+     "shortName": "Milan",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 1776599,
+     "nameCode": "ACM",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2692,
+     "teamColors": {
+      "primary": "#000000",
+      "secondary": "#cc0000",
+      "text": "#cc0000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ميلان",
+       "bn": "মিলান",
+       "hi": "मिलान",
+       "ru": "Милан"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 804,
+     "text": "Champions League"
+    },
+    "position": 1,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330449,
+    "team": {
+     "name": "Monza",
+     "slug": "monza",
+     "shortName": "Monza",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 80876,
+     "nameCode": "MON",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2729,
+     "teamColors": {
+      "primary": "#d71742",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "مونزا",
+       "bn": "মনজা",
+       "hi": "मॉन्ज़ा",
+       "ru": "Монца"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 804,
+     "text": "Champions League"
+    },
+    "position": 2,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330450,
+    "team": {
+     "name": "Fiorentina",
+     "slug": "fiorentina",
+     "shortName": "Fiorentina",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 315870,
+     "nameCode": "FIO",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2693,
+     "teamColors": {
+      "primary": "#542baa",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "فيورنتينا",
+       "bn": "ফিওরেন্টিনা",
+       "hi": "फियोरेंटीना",
+       "ru": "Фиорентина"
+      },
+      "shortNameTranslation": {
+       "ar": "فيورنتينا"
+      }
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 804,
+     "text": "Champions League"
+    },
+    "position": 3,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330451,
+    "team": {
+     "name": "AS Roma",
+     "slug": "roma",
+     "shortName": "Roma",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 789719,
+     "nameCode": "ASR",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2702,
+     "teamColors": {
+      "primary": "#990000",
+      "secondary": "#eaca15",
+      "text": "#eaca15"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "روما",
+       "bn": "রোমা",
+       "hi": "रोमा",
+       "ru": "Рома"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 804,
+     "text": "Champions League"
+    },
+    "position": 4,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330452,
+    "team": {
+     "name": "Atalanta",
+     "slug": "atalanta",
+     "shortName": "Atalanta",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 655290,
+     "nameCode": "ATA",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2686,
+     "teamColors": {
+      "primary": "#0000cc",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أتالانتا",
+       "bn": "আটলান্টা",
+       "hi": "अटलांटा",
+       "ru": "Аталанта"
+      },
+      "shortNameTranslation": {
+       "ar": "أتالانتا"
+      }
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 808,
+     "text": "UEFA Europa League"
+    },
+    "position": 5,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330453,
+    "team": {
+     "name": "Bologna",
+     "slug": "bologna",
+     "shortName": "Bologna",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 242974,
+     "nameCode": "BOL",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2685,
+     "teamColors": {
+      "primary": "#003366",
+      "secondary": "#cc0000",
+      "text": "#cc0000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "بولونيا",
+       "bn": "বোলোগনা",
+       "hi": "बोलोग्ना",
+       "ru": "Болонья"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 503,
+     "text": "Conference League Qualification"
+    },
+    "position": 6,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330454,
+    "team": {
+     "name": "Cagliari",
+     "slug": "cagliari",
+     "shortName": "Cagliari",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 116203,
+     "nameCode": "CAG",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2719,
+     "teamColors": {
+      "primary": "#990000",
+      "secondary": "#242766",
+      "text": "#242766"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "كالياري",
+       "bn": "ক্যাগলিয়ারি",
+       "hi": "काग्लियारी",
+       "ru": "Кальяри"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 7,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330455,
+    "team": {
+     "name": "Como",
+     "slug": "como",
+     "shortName": "Como",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 279111,
+     "nameCode": "COM",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2704,
+     "teamColors": {
+      "primary": "#09436b",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "كومو 1907",
+       "ru": "Комо"
+      },
+      "shortNameTranslation": {
+       "ru": "Комо"
+      }
+     }
+    },
+    "descriptions": [],
+    "position": 8,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330456,
+    "team": {
+     "name": "Frosinone",
+     "slug": "frosinone",
+     "shortName": "Frosinone",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 41433,
+     "nameCode": "FRO",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2801,
+     "teamColors": {
+      "primary": "#ffff00",
+      "secondary": "#0033cc",
+      "text": "#0033cc"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "فروزينوني",
+       "bn": "ফ্রোসিনোন",
+       "hi": "फ्रोसिनोन",
+       "ru": "Фрозиноне"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 9,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330457,
+    "team": {
+     "name": "Genoa",
+     "slug": "genoa",
+     "shortName": "Genoa",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 127629,
+     "nameCode": "GEN",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2713,
+     "teamColors": {
+      "primary": "#000033",
+      "secondary": "#660000",
+      "text": "#660000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "جنوة",
+       "bn": "জেনোয়া",
+       "hi": "जेनोआ",
+       "ru": "Дженоа"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 10,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330458,
+    "team": {
+     "name": "Inter",
+     "slug": "inter",
+     "shortName": "Inter",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 2019093,
+     "nameCode": "INT",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2697,
+     "teamColors": {
+      "primary": "#1a57cc",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "انتر",
+       "bn": "ইন্টার",
+       "hi": "इंटर",
+       "ru": "Интер"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 11,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330459,
+    "team": {
+     "name": "Juventus",
+     "slug": "juventus",
+     "shortName": "Juventus",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 1678658,
+     "nameCode": "JUV",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2687,
+     "teamColors": {
+      "primary": "#ffffff",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "يوفنتوس",
+       "bn": "জুভেন্টাস",
+       "hi": "जुवेंटस",
+       "ru": "Ювентус"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 12,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330460,
+    "team": {
+     "name": "Lazio",
+     "slug": "lazio",
+     "shortName": "Lazio",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 395511,
+     "nameCode": "LAZ",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2699,
+     "teamColors": {
+      "primary": "#64b6e1",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "لاتسيو",
+       "bn": "ল্যাজিও",
+       "hi": "लाज़ियो",
+       "ru": "Лацио"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 13,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330461,
+    "team": {
+     "name": "Parma",
+     "slug": "parma",
+     "shortName": "Parma",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 106466,
+     "nameCode": "PAR",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2690,
+     "teamColors": {
+      "primary": "#ffffff",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "بارما",
+       "bn": "পরমা",
+       "hi": "पर्मा",
+       "ru": "Парма Кальчо"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 14,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330462,
+    "team": {
+     "name": "Sassuolo",
+     "slug": "sassuolo",
+     "shortName": "Sassuolo",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 119196,
+     "nameCode": "SAS",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2793,
+     "teamColors": {
+      "primary": "#006600",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ساسولو",
+       "bn": "সাসুওলো",
+       "hi": "ससुओलो",
+       "ru": "Сассуоло"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 15,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330463,
+    "team": {
+     "name": "SSC Napoli",
+     "slug": "napoli",
+     "shortName": "Napoli",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 1143830,
+     "nameCode": "NAP",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2714,
+     "teamColors": {
+      "primary": "#008cea",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "نابولي",
+       "bn": "নাপোলি",
+       "hi": "नेपोली",
+       "ru": "Наполи"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 16,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330464,
+    "team": {
+     "name": "Torino",
+     "slug": "torino",
+     "shortName": "Torino",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 146291,
+     "nameCode": "TOR",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2696,
+     "teamColors": {
+      "primary": "#6d1b1d",
+      "secondary": "#ffffff",
+      "text": "#ffffff"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "تورينو",
+       "bn": "টরিনো",
+       "hi": "टोरीनो",
+       "ru": "Торино"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "position": 17,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330465,
+    "team": {
+     "name": "Udinese",
+     "slug": "udinese",
+     "shortName": "Udinese",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 127199,
+     "nameCode": "UDI",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2695,
+     "teamColors": {
+      "primary": "#ffffff",
+      "secondary": "#000000",
+      "text": "#000000"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أودينيزي",
+       "bn": "উদিনিজ",
+       "hi": "उडिनेज़े",
+       "ru": "Удинезе"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 3,
+     "text": "Relegation"
+    },
+    "position": 18,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330466,
+    "team": {
+     "name": "Lecce",
+     "slug": "lecce",
+     "shortName": "Lecce",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 117127,
+     "nameCode": "LEC",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2689,
+     "teamColors": {
+      "primary": "#f6ea00",
+      "secondary": "#db2d1f",
+      "text": "#db2d1f"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ليتشي",
+       "bn": "লেচে",
+       "hi": "लेच्चे",
+       "ru": "Лечче"
+      },
+      "shortNameTranslation": {}
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 3,
+     "text": "Relegation"
+    },
+    "position": 19,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   },
+   {
+    "id": 2330467,
+    "team": {
+     "name": "Venezia",
+     "slug": "venezia",
+     "shortName": "Venezia",
+     "gender": "M",
+     "sport": {
+      "name": "Football",
+      "slug": "football",
+      "id": 1
+     },
+     "userCount": 66729,
+     "nameCode": "VEN",
+     "disabled": false,
+     "national": false,
+     "type": 0,
+     "country": {
+      "alpha2": "IT",
+      "alpha3": "ITA",
+      "name": "Italy",
+      "slug": "italy"
+     },
+     "id": 2688,
+     "teamColors": {
+      "primary": "#231f20",
+      "secondary": "#ed7d01",
+      "text": "#ed7d01"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "فينيسيا",
+       "bn": "ভেনেজিয়া",
+       "hi": "वेनेज़िया",
+       "ru": "Венеция"
+      },
+      "shortNameTranslation": {
+       "ar": "فينيسيا"
+      }
+     }
+    },
+    "descriptions": [],
+    "promotion": {
+     "id": 3,
+     "text": "Relegation"
+    },
+    "position": 20,
+    "matches": 0,
+    "wins": 0,
+    "losses": 0,
+    "draws": 0,
+    "scoresFor": 0,
+    "scoresAgainst": 0,
+    "points": 0,
+    "scoreDiffFormatted": "0"
+   }
+  ],
+  "updatedAtTimestamp": 1780722026
+ }
+]
