@@ -63,6 +63,10 @@ The modules are fine; the *invocation* is the bug.
 - [ ] Edit the **installed** copies in `~/Library/LaunchAgents/` too, or
       reinstall from the repo copies — launchd reads the installed ones.
       Edit XML form only; never `plutil -convert json` a launchd plist.
+- [ ] `scripts/pipeline/refresh_weekly_data.py:27` — `CURRENT_SEASON =
+      "2025-2026"`. Same trap, module constant instead of a plist arg: it is
+      what Step 2/3 pass to all five parsers, so the whole weekly FBref path
+      refreshes the completed season until this is bumped.
 
 Check every plist for a pinned season while you're in here:
 ```bash
@@ -100,6 +104,24 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 · `fallback_sofascore_to_fbref` (:219). Steps 2–3 are subprocess calls, so they
 fail **loudly** (exit 1) but `run()` records the step and continues.
 
+> ✅ **Step 3's five parsers are REBUILT** (2026-07-16). They only read cached
+> HTML, so they work with FBref blocked. Each reproduces its Jun-1 parquet under
+> `assert_frame_equal`. **`--append` replaces only the parsed *matches*, never a
+> whole season** — `lineups`/`events` hold hundreds of matches under the
+> canonical `date_Home_Away` id that FBref parsing does not own, and
+> `player_stats` holds the `sofascore_fallback` rows.
+>
+> ⚠️ **`parse_all_shots` has nothing to parse for 2025-26**: those cached reports
+> carry no `shots_all` table (0/40 sampled vs 40/40 for 2024-25 — they carry only
+> the summary player table, which is also why 2025-26 has 29 filled columns where
+> 2024-25 has 133). Step 3's shots call therefore exits 1 until the HTML is
+> re-downloaded. Not a parser bug; matches what DATA_CATALOG.md says about
+> `shots.parquet`.
+>
+> Still missing: **`scrape_fbref_missing`** (Step 2 — needs FBref reachable, so
+> it is genuinely August work) and **`fallback_sofascore_to_fbref`** (:219, see
+> below).
+
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller |
 |---|---|
@@ -111,6 +133,37 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 
 ⚠️ **NOT a phantom:** `scripts.pipeline.matchday_update` — `web/app.py:6517` is a
 comment recording its *intentional* removal. Don't "restore" it.
+
+### `fallback_sofascore_to_fbref` — mapping recovered, selection rule NOT
+
+Investigated 2026-07-16 and **deliberately not rebuilt**. It needs no network
+(`data/external/sofascore/player_match_stats.parquet` covers 64/64 of its
+matches locally), so it is not blocked — but **it has no reproducible oracle**,
+which is a different and more interesting problem.
+
+It owns the `data_source="sofascore_fallback"` rows of `player_stats.parquet`
+(2025-26: 2,020 rows across 64 matches, keyed by Sofascore numeric id — zero
+overlap with FBref's 8-hex ids). The **column mapping is recovered and exact**
+(row counts match per match, e.g. 32↔32):
+
+| player_stats | ← player_match_stats.parquet |
+|---|---|
+| `player` | `player_name` |
+| `shirtnumber` | `shirt_number` |
+| `shots` | `total_shots` |
+| `fouled` | `was_fouled` |
+| `team` / `is_home` / `position` / `minutes` / `goals` / `assists` / `shots_on_target` / `fouls` / `interceptions` / `tackles` / `season` | same name |
+| `data_source` | literal `"sofascore_fallback"` |
+
+**Why it was not rebuilt:** the *selection* rule can't be recovered. For 2025-26
+Sofascore has 380 SA matches and FBref parsing covers 260, leaving 120
+uncovered — yet only **64** carry fallback rows, and **3 fallback ids are not in
+the uncovered set at all**. So the stored set is an artifact of *run history*
+(what was missing on the day each weekly run fired), not a function of today's
+data. Any rule written now would produce a different set (~120) and write it
+into a live parquet. That is inventing policy, not restoring a module — so the
+finding is recorded instead. Decide the intended rule explicitly in August, then
+build to it; the transform above can be verified exactly against the 64.
 
 ### Source reachability (measured 2026-07-16 — gates what can be rebuilt)
 
