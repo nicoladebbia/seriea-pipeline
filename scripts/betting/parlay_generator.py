@@ -2421,7 +2421,7 @@ def generate_draw_parlays(legs: list, predictions_data: dict = None,
             kelly_frac = 0.03
             if combined_odds <= 1.01 or adj_prob <= 0:
                 combo["stake"] = 0
-                draw_combos.append(combo)
+                combos.append(combo)
                 continue
             full_kelly = (adj_prob * combined_odds - 1) / (combined_odds - 1)
             if full_kelly > 0:
