@@ -1,0 +1,285 @@
+{
+ "incidents": [
+  {
+   "text": "First half",
+   "homeScore": 0,
+   "awayScore": 1,
+   "isLive": true,
+   "time": 45,
+   "addedTime": 999,
+   "timeSeconds": 2700,
+   "incidentType": "period",
+   "reversedPeriodTime": 1,
+   "reversedPeriodTimeSeconds": 0,
+   "periodTimeSeconds": 2700
+  },
+  {
+   "homeScore": 0,
+   "awayScore": 1,
+   "player": {
+    "name": "Emerson Pata",
+    "firstName": "Emerson Pata",
+    "slug": "emerson-pata",
+    "shortName": "E. Pata",
+    "position": "M",
+    "jerseyNumber": "31",
+    "height": 175,
+    "userCount": 259,
+    "gender": "M",
+    "sofascoreId": "wrtt6v",
+    "id": 1201005,
+    "marketValueCurrency": "EUR",
+    "dateOfBirthTimestamp": 1089504000,
+    "proposedMarketValueRaw": {
+     "value": 1500000,
+     "currency": "EUR"
+    },
+    "fieldTranslations": {
+     "nameTranslation": {
+      "ar": "هـ. فرنانديز رويز / ج. ميروكنيك مرزا",
+      "ru": "Эмерсон Пата"
+     },
+     "shortNameTranslation": {
+      "ar": "ه. مرزا",
+      "ru": "Э. Пата"
+     }
+    }
+   },
+   "assist1": {
+    "name": "Daykol Romero",
+    "firstName": "Daykol Romero",
+    "lastName": "",
+    "slug": "daykol-romero",
+    "shortName": "D. Romero",
+    "position": "D",
+    "jerseyNumber": "13",
+    "height": 176,
+    "userCount": 62,
+    "gender": "M",
+    "sofascoreId": "iwr268",
+    "id": 1066555,
+    "marketValueCurrency": "EUR",
+    "dateOfBirthTimestamp": 989193600,
+    "proposedMarketValueRaw": {
+     "value": 1300000,
+     "currency": "EUR"
+    },
+    "fieldTranslations": {
+     "nameTranslation": {
+      "ar": "دايكول روميرو",
+      "ru": "Дайкол Ромеро"
+     },
+     "shortNameTranslation": {
+      "ar": "د. روميرو",
+      "ru": "Д. Ромеро"
+     }
+    }
+   },
+   "footballPassingNetworkAction": [
+    {
+     "player": {
+      "name": "Daykol Romero",
+      "firstName": "Daykol Romero",
+      "lastName": "",
+      "slug": "daykol-romero",
+      "shortName": "D. Romero",
+      "position": "D",
+      "jerseyNumber": "13",
+      "height": 176,
+      "userCount": 62,
+      "gender": "M",
+      "sofascoreId": "iwr268",
+      "id": 1066555,
+      "marketValueCurrency": "EUR",
+      "dateOfBirthTimestamp": 989193600,
+      "proposedMarketValueRaw": {
+       "value": 1300000,
+       "currency": "EUR"
+      },
+      "fieldTranslations": {
+       "nameTranslation": {
+        "ar": "دايكول روميرو",
+        "ru": "Дайкол Ромеро"
+       },
+       "shortNameTranslation": {
+        "ar": "د. روميرو",
+        "ru": "Д. Ромеро"
+       }
+      }
+     },
+     "eventType": "cross",
+     "isAssist": true,
+     "time": 14,
+     "playerCoordinates": {
+      "x": 20,
+      "y": 73
+     },
+     "passEndCoordinates": {
+      "x": 7.6,
+      "y": 30.2
+     },
+     "isHome": false
+    },
+    {
+     "player": {
+      "name": "Emerson Pata",
+      "firstName": "Emerson Pata",
+      "slug": "emerson-pata",
+      "shortName": "E. Pata",
+      "position": "M",
+      "jerseyNumber": "31",
+      "height": 175,
+      "userCount": 259,
+      "gender": "M",
+      "sofascoreId": "wrtt6v",
+      "id": 1201005,
+      "marketValueCurrency": "EUR",
+      "dateOfBirthTimestamp": 1089504000,
+      "proposedMarketValueRaw": {
+       "value": 1500000,
+       "currency": "EUR"
+      },
+      "fieldTranslations": {
+       "nameTranslation": {
+        "ar": "هـ. فرنانديز رويز / ج. ميروكنيك مرزا",
+        "ru": "Эмерсон Пата"
+       },
+       "shortNameTranslation": {
+        "ar": "ه. مرزا",
+        "ru": "Э. Пата"
+       }
+      }
+     },
+     "eventType": "goal",
+     "bodyPart": "right-foot",
+     "time": 14,
+     "playerCoordinates": {
+      "x": 7.6,
+      "y": 30.2
+     },
+     "gkCoordinates": {
+      "x": 1.5,
+      "y": 47.5
+     },
+     "goalShotCoordinates": {
+      "x": 0,
+      "y": 54.4
+     },
+     "goalMouthCoordinates": {
+      "x": 73.66,
+      "y": 52.5
+     },
+     "goalkeeper": {
+      "name": "Hamilton Piedra",
+      "firstName": "Hamilton",
+      "lastName": "Piedra",
+      "slug": "hamilton-piedra",
+      "shortName": "H. Piedra",
+      "position": "G",
+      "jerseyNumber": "13",
+      "height": 182,
+      "userCount": 12,
+      "gender": "M",
+      "sofascoreId": "8cas4w",
+      "id": 794921,
+      "marketValueCurrency": "EUR",
+      "dateOfBirthTimestamp": 730166400,
+      "proposedMarketValueRaw": {
+       "value": 385000,
+       "currency": "EUR"
+      },
+      "fieldTranslations": {
+       "nameTranslation": {
+        "ar": "هاميلتون بيدرا",
+        "ru": "Гамильтон Пьедра"
+       },
+       "shortNameTranslation": {
+        "ar": "ه. بيدرا",
+        "ru": "Г. Пьедра"
+       }
+      }
+     },
+     "isHome": false,
+     "goalType": "regular"
+    }
+   ],
+   "id": 354723835,
+   "time": 14,
+   "isHome": false,
+   "incidentClass": "regular",
+   "incidentType": "goal",
+   "reversedPeriodTime": 32
+  },
+  {
+   "player": {
+    "name": "Ayrton Preciado",
+    "slug": "ayrton-preciado",
+    "shortName": "A. Preciado",
+    "position": "M",
+    "jerseyNumber": "10",
+    "height": 182,
+    "userCount": 160,
+    "gender": "M",
+    "sofascoreId": "ixfwxe",
+    "id": 343119,
+    "marketValueCurrency": "EUR",
+    "dateOfBirthTimestamp": 774403200,
+    "proposedMarketValueRaw": {
+     "value": 240000,
+     "currency": "EUR"
+    },
+    "fieldTranslations": {
+     "nameTranslation": {
+      "ar": "أيرتون بريسيادو",
+      "bn": "আয়ারটন প্রেসিয়াডো",
+      "hi": "आयर्टन प्रीसियाडो",
+      "ru": "Айртон Пресиадо"
+     },
+     "shortNameTranslation": {
+      "ar": "أ. بريسيادو",
+      "bn": "এ. প্রেসিয়াডো",
+      "hi": "ए. प्रीसियाडो",
+      "ru": "А. Пресиадо"
+     }
+    }
+   },
+   "playerName": "Ayrton Preciado",
+   "reason": "Foul",
+   "rescinded": false,
+   "id": 125351480,
+   "time": 6,
+   "isHome": true,
+   "incidentClass": "yellow",
+   "incidentType": "card",
+   "reversedPeriodTime": 40
+  }
+ ],
+ "home": {
+  "goalkeeperColor": {
+   "primary": "212425",
+   "number": "b2ab3f",
+   "outline": "212425",
+   "fancyNumber": "ffffff"
+  },
+  "playerColor": {
+   "primary": "fdd92b",
+   "number": "d3342c",
+   "outline": "fdd92b",
+   "fancyNumber": "222226"
+  }
+ },
+ "away": {
+  "goalkeeperColor": {
+   "primary": "95c04e",
+   "number": "fdfcfc",
+   "outline": "95c04e",
+   "fancyNumber": "222226"
+  },
+  "playerColor": {
+   "primary": "1c1b1f",
+   "number": "ffffff",
+   "outline": "1c1b1f",
+   "fancyNumber": "ffffff"
+  }
+ }
+}

@@ -1,0 +1,2604 @@
+{
+ "confirmed": true,
+ "home": {
+  "players": [
+   {
+    "player": {
+     "name": "Hamilton Piedra",
+     "firstName": "Hamilton",
+     "lastName": "Piedra",
+     "slug": "hamilton-piedra",
+     "shortName": "H. Piedra",
+     "position": "G",
+     "jerseyNumber": "13",
+     "height": 182,
+     "userCount": 12,
+     "gender": "M",
+     "sofascoreId": "8cas4w",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 794921,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 730166400,
+     "proposedMarketValueRaw": {
+      "value": 385000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "هاميلتون بيدرا",
+       "ru": "Гамильтон Пьедра"
+      },
+      "shortNameTranslation": {
+       "ar": "ه. بيدرا",
+       "ru": "Г. Пьедра"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 13,
+    "jerseyNumber": "13",
+    "position": "G",
+    "substitute": false,
+    "captain": true,
+    "statistics": {
+     "totalPass": 5,
+     "accuratePass": 3,
+     "totalLongBalls": 5,
+     "accurateLongBalls": 3,
+     "accurateOwnHalfPasses": 2,
+     "totalOwnHalfPasses": 2,
+     "accurateOppositionHalfPasses": 1,
+     "totalOppositionHalfPasses": 3,
+     "ballRecovery": 2,
+     "saves": 1,
+     "minutesPlayed": 29,
+     "touches": 7,
+     "rating": 6.5,
+     "possessionLostCtrl": 2,
+     "keeperSaveValue": -0.0057,
+     "ratingVersions": {
+      "original": 6.5,
+      "alternative": 6.4
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0,
+     "defensiveValueNormalized": -0.07,
+     "goalkeeperValueNormalized": -0.04,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Alex Zova",
+     "firstName": "Alex Zova",
+     "slug": "alex-zova",
+     "shortName": "A. Zova",
+     "position": "D",
+     "jerseyNumber": "37",
+     "height": 175,
+     "userCount": 28,
+     "gender": "M",
+     "sofascoreId": "p95m46",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1653886,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1153699200,
+     "proposedMarketValueRaw": {
+      "value": 580000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أليكس زوفا",
+       "ru": "Алекс Зова"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. زوفا",
+       "ru": "А. Зова"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 37,
+    "jerseyNumber": "37",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 11,
+     "accuratePass": 9,
+     "totalLongBalls": 1,
+     "accurateOwnHalfPasses": 6,
+     "totalOwnHalfPasses": 6,
+     "accurateOppositionHalfPasses": 3,
+     "totalOppositionHalfPasses": 5,
+     "aerialWon": 1,
+     "duelLost": 2,
+     "duelWon": 2,
+     "challengeLost": 1,
+     "totalContest": 1,
+     "totalClearance": 2,
+     "outfielderBlock": 2,
+     "ballRecovery": 1,
+     "totalTackle": 1,
+     "wonTackle": 1,
+     "minutesPlayed": 29,
+     "touches": 21,
+     "rating": 6.6,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 41.532244663535,
+     "ballCarriesCount": 7,
+     "totalProgression": 19.584384797844,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.7
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.01,
+     "dribbleValueNormalized": 0.05,
+     "defensiveValueNormalized": 0.17,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Luis Gustavino",
+     "firstName": "Luis Gustavino",
+     "slug": "luis-gustavino",
+     "shortName": "L. Gustavino",
+     "position": "D",
+     "jerseyNumber": "16",
+     "height": 178,
+     "userCount": 10,
+     "gender": "M",
+     "sofascoreId": "ek7sxe",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1495656,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 926208000,
+     "proposedMarketValueRaw": {
+      "value": 875000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "لويس غوستافينو",
+       "ru": "Луис Густавино"
+      },
+      "shortNameTranslation": {
+       "ar": "ل. غوستافينو",
+       "ru": "Л. Густавино"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 16,
+    "jerseyNumber": "16",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 12,
+     "accuratePass": 9,
+     "totalLongBalls": 3,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 7,
+     "totalOwnHalfPasses": 8,
+     "accurateOppositionHalfPasses": 2,
+     "totalOppositionHalfPasses": 4,
+     "duelWon": 1,
+     "outfielderBlock": 1,
+     "totalTackle": 1,
+     "wonTackle": 1,
+     "minutesPlayed": 29,
+     "touches": 14,
+     "rating": 6.4,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 20.992024885506,
+     "ballCarriesCount": 4,
+     "totalProgression": 16.824788869826,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.4,
+      "alternative": 6.6
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.01,
+     "dribbleValueNormalized": 0.01,
+     "defensiveValueNormalized": -0.15,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Ariel García",
+     "firstName": "Ariel",
+     "lastName": "Garcia",
+     "slug": "ariel-garcia",
+     "shortName": "A. García",
+     "position": "D",
+     "jerseyNumber": "63",
+     "height": 187,
+     "userCount": 8,
+     "gender": "M",
+     "sofascoreId": "q4ctzw",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1185732,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 949968000,
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أرييل غارثيا",
+       "ru": "Ариэль Гарсия"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. غارثيا",
+       "ru": "А. Гарсия"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 63,
+    "jerseyNumber": "63",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 16,
+     "accuratePass": 13,
+     "totalLongBalls": 2,
+     "accurateOwnHalfPasses": 10,
+     "totalOwnHalfPasses": 12,
+     "accurateOppositionHalfPasses": 3,
+     "totalOppositionHalfPasses": 4,
+     "totalClearance": 2,
+     "ballRecovery": 1,
+     "minutesPlayed": 29,
+     "touches": 21,
+     "rating": 6.3,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 61.466024797532,
+     "ballCarriesCount": 9,
+     "totalProgression": 28.239452774324,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.3,
+      "alternative": 6.4
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.05,
+     "dribbleValueNormalized": 0.03,
+     "defensiveValueNormalized": -0.14,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Ederson Quiñónez",
+     "firstName": "Ederson Quiñónez",
+     "slug": "ederson-quinonez",
+     "shortName": "E. Quiñónez",
+     "position": "M",
+     "jerseyNumber": "28",
+     "height": 186,
+     "userCount": 40,
+     "gender": "M",
+     "sofascoreId": "kvnqd9",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 2039601,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1070064000,
+     "proposedMarketValueRaw": {
+      "value": 660000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "إيدرسون كينيوز",
+       "ru": "Эдерсон Киньонес"
+      },
+      "shortNameTranslation": {
+       "ar": "إ. كينيوز",
+       "ru": "Э. Киньонес"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 28,
+    "jerseyNumber": "28",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 14,
+     "accuratePass": 13,
+     "totalLongBalls": 1,
+     "accurateOwnHalfPasses": 7,
+     "totalOwnHalfPasses": 7,
+     "accurateOppositionHalfPasses": 6,
+     "totalOppositionHalfPasses": 7,
+     "interceptionWon": 1,
+     "ballRecovery": 3,
+     "minutesPlayed": 29,
+     "touches": 15,
+     "rating": 6.3,
+     "possessionLostCtrl": 1,
+     "totalBallCarriesDistance": 49.168882015589,
+     "ballCarriesCount": 6,
+     "totalProgression": 22.011478330613,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.3,
+      "alternative": 6.4
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.05,
+     "dribbleValueNormalized": 0.04,
+     "defensiveValueNormalized": -0.17,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Stiven Tapiero",
+     "firstName": "Stiven",
+     "lastName": "Tapiero",
+     "slug": "stiven-tapiero",
+     "shortName": "S. Tapiero",
+     "position": "M",
+     "jerseyNumber": "14",
+     "height": 183,
+     "userCount": 56,
+     "gender": "M",
+     "sofascoreId": "tdb484",
+     "country": {
+      "alpha2": "CO",
+      "alpha3": "COL",
+      "name": "Colombia",
+      "slug": "colombia"
+     },
+     "id": 1020186,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 680659200,
+     "proposedMarketValueRaw": {
+      "value": 120000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ستيفن تابيرو",
+       "ru": "Стивен Тапиеро"
+      },
+      "shortNameTranslation": {
+       "ar": "س. تابيرو",
+       "ru": "С. Тапиеро"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 14,
+    "jerseyNumber": "14",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 11,
+     "accuratePass": 11,
+     "totalLongBalls": 1,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 7,
+     "totalOwnHalfPasses": 7,
+     "accurateOppositionHalfPasses": 4,
+     "totalOppositionHalfPasses": 4,
+     "duelLost": 1,
+     "totalClearance": 1,
+     "ballRecovery": 1,
+     "fouls": 1,
+     "minutesPlayed": 29,
+     "touches": 12,
+     "rating": 6.5,
+     "totalBallCarriesDistance": 28.533147911023,
+     "ballCarriesCount": 6,
+     "totalProgression": 10.588729276743,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.5,
+      "alternative": 6.5
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.04,
+     "dribbleValueNormalized": 0.02,
+     "defensiveValueNormalized": -0.03,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Maverick Vera",
+     "firstName": "Maverick",
+     "lastName": "Vera",
+     "slug": "maverick-vera",
+     "shortName": "M. Vera",
+     "position": "F",
+     "jerseyNumber": "57",
+     "userCount": 17,
+     "gender": "M",
+     "sofascoreId": "c8x8xu",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 2236661,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1176681600,
+     "proposedMarketValueRaw": {
+      "value": 165000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "مافريك فيرا",
+       "ru": "Вера, Маверик"
+      },
+      "shortNameTranslation": {
+       "ar": "م. فيرا",
+       "ru": "М. Вера"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 57,
+    "jerseyNumber": "57",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 6,
+     "accuratePass": 5,
+     "accurateOwnHalfPasses": 1,
+     "totalOwnHalfPasses": 2,
+     "accurateOppositionHalfPasses": 4,
+     "totalOppositionHalfPasses": 4,
+     "aerialLost": 2,
+     "duelLost": 4,
+     "challengeLost": 1,
+     "dispossessed": 1,
+     "blockedScoringAttempt": 1,
+     "ballRecovery": 2,
+     "unsuccessfulTouch": 1,
+     "totalOffside": 1,
+     "minutesPlayed": 29,
+     "touches": 10,
+     "rating": 6.2,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 38.141032396971,
+     "ballCarriesCount": 3,
+     "totalProgression": 35.931415181348,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.2,
+      "alternative": 6.2
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.05,
+     "passValueNormalized": 0.03,
+     "dribbleValueNormalized": 0.04,
+     "defensiveValueNormalized": -0.1,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Piero Guzmán",
+     "firstName": "Piero Guzmán",
+     "lastName": "",
+     "slug": "piero-guzman",
+     "shortName": "P. Guzmán",
+     "position": "M",
+     "jerseyNumber": "21",
+     "height": 175,
+     "userCount": 72,
+     "gender": "M",
+     "sofascoreId": "fprn2a",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1483014,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1055462400,
+     "proposedMarketValueRaw": {
+      "value": 560000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "بييرو غوزمان",
+       "ru": "Пьеро Гусман"
+      },
+      "shortNameTranslation": {
+       "ar": "ب. غوزمان",
+       "ru": "П. Гусман"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 21,
+    "jerseyNumber": "21",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 6,
+     "accuratePass": 5,
+     "totalLongBalls": 1,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 2,
+     "totalOwnHalfPasses": 3,
+     "accurateOppositionHalfPasses": 3,
+     "totalOppositionHalfPasses": 3,
+     "duelWon": 1,
+     "totalTackle": 1,
+     "wonTackle": 1,
+     "unsuccessfulTouch": 1,
+     "minutesPlayed": 29,
+     "touches": 9,
+     "rating": 6.6,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 37.370194297624,
+     "ballCarriesCount": 3,
+     "totalProgression": 29.698710815299,
+     "progressiveBallCarriesCount": 0,
+     "keyPass": 2,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.7
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.06,
+     "dribbleValueNormalized": 0.02,
+     "defensiveValueNormalized": -0.04,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Andres Mena",
+     "firstName": "Andres",
+     "lastName": "Mena",
+     "slug": "andres-mena",
+     "shortName": "A. Mena",
+     "position": "M",
+     "jerseyNumber": "18",
+     "height": 180,
+     "userCount": 29,
+     "gender": "M",
+     "sofascoreId": "utt7yj",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 962419,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 968284800,
+     "proposedMarketValueRaw": {
+      "value": 750000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أندريس مينا",
+       "ru": "Андрес Мена"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. مينا",
+       "ru": "А. Мена"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 18,
+    "jerseyNumber": "18",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 10,
+     "accuratePass": 9,
+     "accurateOwnHalfPasses": 3,
+     "totalOwnHalfPasses": 3,
+     "accurateOppositionHalfPasses": 6,
+     "totalOppositionHalfPasses": 7,
+     "onTargetScoringAttempt": 1,
+     "totalClearance": 1,
+     "minutesPlayed": 29,
+     "touches": 14,
+     "rating": 6.4,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 20.430809329495,
+     "ballCarriesCount": 4,
+     "totalProgression": 14.521164442311,
+     "progressiveBallCarriesCount": 0,
+     "keyPass": 1,
+     "ratingVersions": {
+      "original": 6.4,
+      "alternative": 6.7
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.1,
+     "passValueNormalized": 0.02,
+     "dribbleValueNormalized": 0.03,
+     "defensiveValueNormalized": -0.05,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Ayrton Preciado",
+     "slug": "ayrton-preciado",
+     "shortName": "A. Preciado",
+     "position": "M",
+     "jerseyNumber": "10",
+     "height": 182,
+     "userCount": 160,
+     "gender": "M",
+     "sofascoreId": "ixfwxe",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 343119,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 774403200,
+     "proposedMarketValueRaw": {
+      "value": 240000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أيرتون بريسيادو",
+       "bn": "আয়ারটন প্রেসিয়াডো",
+       "hi": "आयर्टन प्रीसियाडो",
+       "ru": "Айртон Пресиадо"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. بريسيادو",
+       "bn": "এ. প্রেসিয়াডো",
+       "hi": "ए. प्रीसियाडो",
+       "ru": "А. Пресиадо"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 10,
+    "jerseyNumber": "10",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 6,
+     "accuratePass": 4,
+     "totalLongBalls": 1,
+     "accurateOwnHalfPasses": 2,
+     "totalOwnHalfPasses": 2,
+     "accurateOppositionHalfPasses": 2,
+     "totalOppositionHalfPasses": 4,
+     "duelLost": 1,
+     "duelWon": 1,
+     "onTargetScoringAttempt": 1,
+     "ballRecovery": 1,
+     "totalTackle": 1,
+     "unsuccessfulTouch": 2,
+     "fouls": 1,
+     "minutesPlayed": 29,
+     "touches": 10,
+     "rating": 6.4,
+     "possessionLostCtrl": 4,
+     "totalBallCarriesDistance": 20.240828638949,
+     "ballCarriesCount": 4,
+     "totalProgression": 4.9127038762162,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.4,
+      "alternative": 6.5
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.03,
+     "passValueNormalized": -0.01,
+     "dribbleValueNormalized": 0.03,
+     "defensiveValueNormalized": -0.06,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Luis Arroyo",
+     "firstName": "Luis",
+     "lastName": "Arroyo",
+     "slug": "luis-arroyo",
+     "shortName": "L. Arroyo",
+     "position": "F",
+     "jerseyNumber": "29",
+     "height": 177,
+     "userCount": 42,
+     "gender": "M",
+     "sofascoreId": "q44bhk",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 981412,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 829008000,
+     "proposedMarketValueRaw": {
+      "value": 270000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "لويس أرويو",
+       "ru": "Луис Арройо"
+      },
+      "shortNameTranslation": {
+       "ar": "ل. أرويو",
+       "ru": "Л. Арройо"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 29,
+    "jerseyNumber": "29",
+    "position": "F",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 8,
+     "accuratePass": 7,
+     "accurateOwnHalfPasses": 3,
+     "totalOwnHalfPasses": 3,
+     "accurateOppositionHalfPasses": 4,
+     "totalOppositionHalfPasses": 5,
+     "duelWon": 1,
+     "totalClearance": 1,
+     "ballRecovery": 1,
+     "unsuccessfulTouch": 1,
+     "wasFouled": 1,
+     "minutesPlayed": 29,
+     "touches": 11,
+     "rating": 6.6,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 19.100577145275,
+     "ballCarriesCount": 3,
+     "totalProgression": -12.762804999733,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.6
+     },
+     "totalShots": 0,
+     "passValueNormalized": -0.01,
+     "dribbleValueNormalized": -0.06,
+     "defensiveValueNormalized": 0.16,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Jefferson Cabezas",
+     "firstName": "Jefferson",
+     "lastName": "Cabezas",
+     "slug": "cabezas-jefferson",
+     "shortName": "J. Cabezas",
+     "position": "G",
+     "jerseyNumber": "12",
+     "userCount": 1,
+     "gender": "M",
+     "sofascoreId": "ut5p78",
+     "country": {},
+     "id": 991091,
+     "marketValueCurrency": "EUR",
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "كابياس، جيفرسون",
+       "ru": "Кабесас, Джефферсон"
+      },
+      "shortNameTranslation": {
+       "ar": "ج. كابياس",
+       "ru": "Д. Кабесас"
+      }
+     }
+    },
+    "teamId": 248188,
+    "shirtNumber": 12,
+    "jerseyNumber": "12",
+    "position": "G",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Byron Carabalí",
+     "firstName": "Byron Carabalí",
+     "lastName": "",
+     "slug": "byron-carabali",
+     "shortName": "B. Carabalí",
+     "position": "D",
+     "jerseyNumber": "31",
+     "height": 183,
+     "userCount": 8,
+     "gender": "M",
+     "sofascoreId": "hidwqi",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1464255,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1050969600,
+     "proposedMarketValueRaw": {
+      "value": 120000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "بايرون كارابالي",
+       "ru": "Байрон Карабали"
+      },
+      "shortNameTranslation": {
+       "ar": "ب. كارابالي",
+       "ru": "Б. Карабали"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 31,
+    "jerseyNumber": "31",
+    "position": "D",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Thiago Serpa",
+     "firstName": "Thiago",
+     "lastName": "Serpa",
+     "slug": "thiago-serpa",
+     "shortName": "T. Serpa",
+     "position": "M",
+     "jerseyNumber": "5",
+     "height": 178,
+     "userCount": 14,
+     "gender": "M",
+     "sofascoreId": "6giban",
+     "country": {
+      "alpha2": "BR",
+      "alpha3": "BRA",
+      "name": "Brazil",
+      "slug": "brazil"
+     },
+     "id": 1004135,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 932774400,
+     "proposedMarketValueRaw": {
+      "value": 145000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "تياجو سيربا",
+       "ru": "Тьяго Серпа"
+      },
+      "shortNameTranslation": {
+       "ar": "ت. سيربا",
+       "ru": "Т. Серпа"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 5,
+    "jerseyNumber": "5",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Snayder Porozo",
+     "firstName": "Snayder Porozo",
+     "slug": "snayder-porozo",
+     "shortName": "S. Porozo",
+     "position": "M",
+     "jerseyNumber": "33",
+     "height": 189,
+     "userCount": 98,
+     "gender": "M",
+     "sofascoreId": "q94rj9",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1892676,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1178928000,
+     "proposedMarketValueRaw": {
+      "value": 1000000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "سنايدر بوروذو",
+       "ru": "Снайдер Порозо"
+      },
+      "shortNameTranslation": {
+       "ar": "س. بوروذو",
+       "ru": "С. Порозо"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 33,
+    "jerseyNumber": "33",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Alexander Bolaños",
+     "slug": "alexander-bolanos",
+     "shortName": "A. Bolaños",
+     "position": "F",
+     "jerseyNumber": "11",
+     "height": 178,
+     "userCount": 30,
+     "gender": "M",
+     "sofascoreId": "p99wr9",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 965310,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 944956800,
+     "proposedMarketValueRaw": {
+      "value": 105000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ألكسندر بولانيوس",
+       "ru": "Александр Боланьос"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. بولانيوس",
+       "ru": "А. Боланьос"
+      }
+     }
+    },
+    "teamId": 5249,
+    "shirtNumber": 11,
+    "jerseyNumber": "11",
+    "position": "F",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Diego Espinosa",
+     "firstName": "",
+     "lastName": "",
+     "slug": "diego-espinosa",
+     "shortName": "D. Espinosa",
+     "position": "F",
+     "jerseyNumber": "20",
+     "height": 183,
+     "userCount": 8,
+     "gender": "M",
+     "sofascoreId": "pft8k7",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 826814,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 866332800,
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "دييغو إسبينوزا",
+       "ru": "Диего Эспиноса"
+      },
+      "shortNameTranslation": {
+       "ar": "د. إسبينوزا",
+       "ru": "Д. Эспиноса"
+      }
+     }
+    },
+    "teamId": 5253,
+    "shirtNumber": 20,
+    "jerseyNumber": "20",
+    "position": "F",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   }
+  ],
+  "supportStaff": [],
+  "formation": "4-1-4-1",
+  "playerColor": {
+   "primary": "fdd92b",
+   "number": "d3342c",
+   "outline": "fdd92b",
+   "fancyNumber": "222226"
+  },
+  "goalkeeperColor": {
+   "primary": "212425",
+   "number": "b2ab3f",
+   "outline": "212425",
+   "fancyNumber": "ffffff"
+  }
+ },
+ "away": {
+  "players": [
+   {
+    "player": {
+     "name": "Aldair Quintana",
+     "slug": "aldair-quintana",
+     "shortName": "A. Quintana",
+     "position": "G",
+     "jerseyNumber": "1",
+     "height": 194,
+     "userCount": 498,
+     "gender": "M",
+     "sofascoreId": "egxh48",
+     "country": {
+      "alpha2": "CO",
+      "alpha3": "COL",
+      "name": "Colombia",
+      "slug": "colombia"
+     },
+     "id": 844584,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 773884800,
+     "proposedMarketValueRaw": {
+      "value": 930000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ألدير كوينتانا",
+       "ru": "Алдаир Кинтана"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. كوينتانا",
+       "ru": "А. Кинтана"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 1,
+    "jerseyNumber": "1",
+    "position": "G",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 9,
+     "accuratePass": 9,
+     "accurateOwnHalfPasses": 9,
+     "totalOwnHalfPasses": 9,
+     "totalClearance": 1,
+     "ballRecovery": 1,
+     "savedShotsFromInsideTheBox": 1,
+     "saves": 2,
+     "minutesPlayed": 29,
+     "touches": 12,
+     "rating": 6.6,
+     "totalBallCarriesDistance": 19.021745024852,
+     "ballCarriesCount": 3,
+     "totalProgression": 15.486880438262,
+     "progressiveBallCarriesCount": 0,
+     "keeperSaveValue": 0.0254,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.8
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.03,
+     "dribbleValueNormalized": 0.01,
+     "defensiveValueNormalized": 0.17,
+     "goalkeeperValueNormalized": 0.03,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Daykol Romero",
+     "firstName": "Daykol Romero",
+     "lastName": "",
+     "slug": "daykol-romero",
+     "shortName": "D. Romero",
+     "position": "D",
+     "jerseyNumber": "13",
+     "height": 176,
+     "userCount": 62,
+     "gender": "M",
+     "sofascoreId": "iwr268",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1066555,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 989193600,
+     "proposedMarketValueRaw": {
+      "value": 1300000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "دايكول روميرو",
+       "ru": "Дайкол Ромеро"
+      },
+      "shortNameTranslation": {
+       "ar": "د. روميرو",
+       "ru": "Д. Ромеро"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 13,
+    "jerseyNumber": "13",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 11,
+     "accuratePass": 8,
+     "goalAssist": 1,
+     "accurateOwnHalfPasses": 3,
+     "totalOwnHalfPasses": 3,
+     "accurateOppositionHalfPasses": 5,
+     "totalOppositionHalfPasses": 8,
+     "totalCross": 1,
+     "accurateCross": 1,
+     "shotOffTarget": 1,
+     "minutesPlayed": 29,
+     "touches": 17,
+     "rating": 6.7,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 36.057386670724,
+     "ballCarriesCount": 6,
+     "totalProgression": 17.101563361401,
+     "progressiveBallCarriesCount": 0,
+     "keyPass": 1,
+     "ratingVersions": {
+      "original": 6.7,
+      "alternative": 6.9
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.07,
+     "passValueNormalized": 0.26,
+     "dribbleValueNormalized": 0,
+     "defensiveValueNormalized": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Mateo Carabajal",
+     "slug": "mateo-carabajal",
+     "shortName": "M. Carabajal",
+     "position": "D",
+     "jerseyNumber": "14",
+     "height": 180,
+     "userCount": 163,
+     "gender": "M",
+     "sofascoreId": "iij8ne",
+     "country": {
+      "alpha2": "AR",
+      "alpha3": "ARG",
+      "name": "Argentina",
+      "slug": "argentina"
+     },
+     "id": 896623,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 856483200,
+     "proposedMarketValueRaw": {
+      "value": 815000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ماتيو كاراباخال",
+       "ru": "Матео Карабахаль"
+      },
+      "shortNameTranslation": {
+       "ar": "م. كاراباخال",
+       "ru": "М. Карабахаль"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 14,
+    "jerseyNumber": "14",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 31,
+     "accuratePass": 29,
+     "totalLongBalls": 3,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 23,
+     "totalOwnHalfPasses": 23,
+     "accurateOppositionHalfPasses": 6,
+     "totalOppositionHalfPasses": 8,
+     "duelWon": 1,
+     "ballRecovery": 2,
+     "wasFouled": 1,
+     "minutesPlayed": 29,
+     "touches": 32,
+     "rating": 6.8,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 78.663460509035,
+     "ballCarriesCount": 10,
+     "totalProgression": 57.019630827603,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.8,
+      "alternative": 6.6
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.13,
+     "dribbleValueNormalized": 0.05,
+     "defensiveValueNormalized": 0.14,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Richard Schunke",
+     "firstName": "Richard",
+     "lastName": "Schunke",
+     "slug": "richard-schunke",
+     "shortName": "R. Schunke",
+     "position": "D",
+     "jerseyNumber": "5",
+     "height": 185,
+     "userCount": 113,
+     "gender": "M",
+     "sofascoreId": "h6xiuc",
+     "country": {
+      "alpha2": "AR",
+      "alpha3": "ARG",
+      "name": "Argentina",
+      "slug": "argentina"
+     },
+     "id": 877436,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 691113600,
+     "proposedMarketValueRaw": {
+      "value": 230000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ريتشارد شونكي",
+       "ru": "Ричард Шунке"
+      },
+      "shortNameTranslation": {
+       "ar": "ر. شونكي",
+       "ru": "Р. Шунке"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 5,
+    "jerseyNumber": "5",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 29,
+     "accuratePass": 27,
+     "totalLongBalls": 4,
+     "accurateLongBalls": 3,
+     "accurateOwnHalfPasses": 17,
+     "totalOwnHalfPasses": 17,
+     "accurateOppositionHalfPasses": 10,
+     "totalOppositionHalfPasses": 12,
+     "aerialWon": 1,
+     "duelLost": 1,
+     "duelWon": 3,
+     "totalContest": 1,
+     "wonContest": 1,
+     "outfielderBlock": 1,
+     "ballRecovery": 1,
+     "totalTackle": 1,
+     "fouls": 1,
+     "minutesPlayed": 29,
+     "touches": 32,
+     "rating": 7,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 89.188590549107,
+     "ballCarriesCount": 14,
+     "totalProgression": 33.362200294705,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 7,
+      "alternative": 6.9
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.16,
+     "dribbleValueNormalized": 0.04,
+     "defensiveValueNormalized": 0.21,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Layan Loor",
+     "firstName": "Layan Loor",
+     "lastName": "",
+     "slug": "layan-loor",
+     "shortName": "L. Loor",
+     "position": "D",
+     "jerseyNumber": "19",
+     "height": 180,
+     "userCount": 141,
+     "gender": "M",
+     "sofascoreId": "xz4md4",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1184983,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 990576000,
+     "proposedMarketValueRaw": {
+      "value": 1500000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "إ. فال لوبيز / ل. باهورييل",
+       "ru": "Лаян Лур"
+      },
+      "shortNameTranslation": {
+       "ar": "إ. باهورييل",
+       "ru": "Л. Лур"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 19,
+    "jerseyNumber": "19",
+    "position": "D",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 18,
+     "accuratePass": 16,
+     "accurateOwnHalfPasses": 6,
+     "totalOwnHalfPasses": 8,
+     "accurateOppositionHalfPasses": 10,
+     "totalOppositionHalfPasses": 10,
+     "totalCross": 1,
+     "accurateCross": 1,
+     "aerialWon": 1,
+     "duelLost": 1,
+     "duelWon": 1,
+     "totalContest": 1,
+     "interceptionWon": 1,
+     "ballRecovery": 1,
+     "minutesPlayed": 29,
+     "touches": 27,
+     "rating": 6.6,
+     "possessionLostCtrl": 3,
+     "totalBallCarriesDistance": 64.540135991631,
+     "ballCarriesCount": 9,
+     "totalProgression": 11.184289634736,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.5
+     },
+     "totalShots": 0,
+     "passValueNormalized": 0.05,
+     "dribbleValueNormalized": 0.05,
+     "defensiveValueNormalized": -0.01,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Jordy Alcivar",
+     "firstName": "Jordy",
+     "lastName": "Alcivar",
+     "slug": "jordy-alcivar",
+     "shortName": "J. Alcivar",
+     "position": "M",
+     "jerseyNumber": "6",
+     "height": 173,
+     "userCount": 753,
+     "gender": "M",
+     "sofascoreId": "ekwjnp",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 925740,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 933811200,
+     "proposedMarketValueRaw": {
+      "value": 1800000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "جوردي السيفار",
+       "bn": "জর্ডি আলসিভার",
+       "hi": "जोर्डी अलसीवर",
+       "ru": "Джорди Альсивар"
+      },
+      "shortNameTranslation": {
+       "ar": "ج. السيفار",
+       "bn": "জে. আলসিভার",
+       "hi": "जे. अलसीवर",
+       "ru": "Д. Альсивар"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 6,
+    "jerseyNumber": "6",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 34,
+     "accuratePass": 32,
+     "totalLongBalls": 4,
+     "accurateLongBalls": 3,
+     "accurateOwnHalfPasses": 18,
+     "totalOwnHalfPasses": 18,
+     "accurateOppositionHalfPasses": 14,
+     "totalOppositionHalfPasses": 16,
+     "duelWon": 1,
+     "blockedScoringAttempt": 1,
+     "totalClearance": 1,
+     "interceptionWon": 1,
+     "ballRecovery": 1,
+     "wasFouled": 1,
+     "minutesPlayed": 29,
+     "touches": 38,
+     "rating": 7.1,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 61.829556401649,
+     "ballCarriesCount": 11,
+     "totalProgression": -15.242311922449,
+     "progressiveBallCarriesCount": 0,
+     "keyPass": 1,
+     "ratingVersions": {
+      "original": 7.1,
+      "alternative": 6.9
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.04,
+     "passValueNormalized": 0.29,
+     "dribbleValueNormalized": 0.02,
+     "defensiveValueNormalized": 0.23,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Arón Rodríguez",
+     "slug": "aron-rodriguez",
+     "shortName": "A. Rodríguez",
+     "position": "M",
+     "jerseyNumber": "17",
+     "height": 174,
+     "userCount": 85,
+     "gender": "M",
+     "sofascoreId": "g8wc5m",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1011412,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 933897600,
+     "proposedMarketValueRaw": {
+      "value": 1000000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "أرون رودريغيز",
+       "ru": "Арон Родригес"
+      },
+      "shortNameTranslation": {
+       "ar": "أ. رودريغيز",
+       "ru": "А. Родригес"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 17,
+    "jerseyNumber": "17",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 9,
+     "accuratePass": 6,
+     "accurateOwnHalfPasses": 1,
+     "totalOwnHalfPasses": 1,
+     "accurateOppositionHalfPasses": 5,
+     "totalOppositionHalfPasses": 8,
+     "totalCross": 1,
+     "shotOffTarget": 1,
+     "onTargetScoringAttempt": 1,
+     "blockedScoringAttempt": 1,
+     "unsuccessfulTouch": 1,
+     "minutesPlayed": 29,
+     "touches": 14,
+     "rating": 6.4,
+     "possessionLostCtrl": 5,
+     "totalBallCarriesDistance": 13.576529180128,
+     "ballCarriesCount": 3,
+     "totalProgression": -3.8875630605619,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.4,
+      "alternative": 6.9
+     },
+     "totalShots": 3,
+     "shotValueNormalized": 0,
+     "passValueNormalized": -0.01,
+     "dribbleValueNormalized": -0.08,
+     "defensiveValueNormalized": -0.01,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Ronald Briones",
+     "firstName": "Ronald Briones",
+     "lastName": "",
+     "slug": "ronald-briones",
+     "shortName": "R. Briones",
+     "position": "M",
+     "jerseyNumber": "16",
+     "height": 177,
+     "userCount": 75,
+     "gender": "M",
+     "sofascoreId": "cerr59",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1108522,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 961027200,
+     "proposedMarketValueRaw": {
+      "value": 860000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "رونالد بريونس",
+       "ru": "Рональд Брионес"
+      },
+      "shortNameTranslation": {
+       "ar": "ر. بريونس",
+       "ru": "Р. Брионес"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 16,
+    "jerseyNumber": "16",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 11,
+     "accuratePass": 10,
+     "accurateOwnHalfPasses": 5,
+     "totalOwnHalfPasses": 5,
+     "accurateOppositionHalfPasses": 5,
+     "totalOppositionHalfPasses": 6,
+     "aerialLost": 1,
+     "duelLost": 1,
+     "duelWon": 1,
+     "totalContest": 1,
+     "wonContest": 1,
+     "blockedScoringAttempt": 1,
+     "ballRecovery": 2,
+     "unsuccessfulTouch": 1,
+     "minutesPlayed": 29,
+     "touches": 15,
+     "rating": 6.5,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 16.922169129248,
+     "ballCarriesCount": 2,
+     "totalProgression": -14.419617544912,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.5,
+      "alternative": 6.7
+     },
+     "totalShots": 1,
+     "shotValueNormalized": 0.03,
+     "passValueNormalized": -0.2,
+     "dribbleValueNormalized": 0.01,
+     "defensiveValueNormalized": 0.13,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Junior Sornoza",
+     "firstName": "Junior",
+     "lastName": "Sornoza",
+     "slug": "junior-sornoza",
+     "shortName": "J. Sornoza",
+     "position": "M",
+     "jerseyNumber": "10",
+     "height": 166,
+     "userCount": 350,
+     "gender": "M",
+     "sofascoreId": "cjmwug",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 155786,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 759715200,
+     "proposedMarketValueRaw": {
+      "value": 855000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "جونيور سورنوزا",
+       "bn": "জুনিয়র সোর্নোজা",
+       "hi": "जूनियर सोर्नोज़ा",
+       "ru": "Джуниор Сорноза"
+      },
+      "shortNameTranslation": {
+       "ar": "ج. سورنوزا",
+       "bn": "জে. সোর্নোজা",
+       "hi": "जे. सोर्नोज़ा",
+       "ru": "Д. Сорноза"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 10,
+    "jerseyNumber": "10",
+    "position": "M",
+    "substitute": false,
+    "captain": true,
+    "statistics": {
+     "totalPass": 13,
+     "accuratePass": 13,
+     "totalLongBalls": 1,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 9,
+     "totalOwnHalfPasses": 9,
+     "accurateOppositionHalfPasses": 4,
+     "totalOppositionHalfPasses": 4,
+     "totalCross": 2,
+     "duelWon": 1,
+     "ballRecovery": 1,
+     "totalTackle": 1,
+     "minutesPlayed": 29,
+     "touches": 17,
+     "rating": 6.6,
+     "possessionLostCtrl": 2,
+     "totalBallCarriesDistance": 33.343109834705,
+     "ballCarriesCount": 2,
+     "totalProgression": -1.2878183876842,
+     "progressiveBallCarriesCount": 0,
+     "ratingVersions": {
+      "original": 6.6,
+      "alternative": 6.6
+     },
+     "totalShots": 0,
+     "passValueNormalized": -0.08,
+     "dribbleValueNormalized": -0.01,
+     "defensiveValueNormalized": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Emerson Pata",
+     "firstName": "Emerson Pata",
+     "slug": "emerson-pata",
+     "shortName": "E. Pata",
+     "position": "M",
+     "jerseyNumber": "31",
+     "height": 175,
+     "userCount": 259,
+     "gender": "M",
+     "sofascoreId": "wrtt6v",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1201005,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1089504000,
+     "proposedMarketValueRaw": {
+      "value": 1500000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "هـ. فرنانديز رويز / ج. ميروكنيك مرزا",
+       "ru": "Эмерсон Пата"
+      },
+      "shortNameTranslation": {
+       "ar": "ه. مرزا",
+       "ru": "Э. Пата"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 31,
+    "jerseyNumber": "31",
+    "position": "M",
+    "substitute": false,
+    "statistics": {
+     "totalPass": 14,
+     "accuratePass": 13,
+     "totalLongBalls": 1,
+     "accurateLongBalls": 1,
+     "accurateOwnHalfPasses": 5,
+     "totalOwnHalfPasses": 5,
+     "accurateOppositionHalfPasses": 8,
+     "totalOppositionHalfPasses": 9,
+     "totalCross": 1,
+     "duelLost": 2,
+     "dispossessed": 1,
+     "totalContest": 1,
+     "onTargetScoringAttempt": 1,
+     "goals": 1,
+     "totalClearance": 1,
+     "ballRecovery": 2,
+     "unsuccessfulTouch": 3,
+     "minutesPlayed": 29,
+     "touches": 22,
+     "rating": 7.3,
+     "possessionLostCtrl": 7,
+     "totalBallCarriesDistance": 64.458000824328,
+     "ballCarriesCount": 8,
+     "totalProgression": -43.145191079471,
+     "progressiveBallCarriesCount": 0,
+     "keyPass": 1,
+     "ratingVersions": {
+      "original": 7.3,
+      "alternative": 7.2
+     },
+     "totalShots": 1,
+     "shotValueNormalized": 0.51,
+     "passValueNormalized": 0.1,
+     "dribbleValueNormalized": -0.62,
+     "defensiveValueNormalized": 0.13,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Djorkaeff Reasco",
+     "firstName": "Djorkaeff",
+     "lastName": "Reasco",
+     "slug": "djorkaeff-reasco",
+     "shortName": "D. Reasco",
+     "position": "F",
+     "jerseyNumber": "99",
+     "height": 172,
+     "userCount": 660,
+     "gender": "M",
+     "sofascoreId": "rjfbvm",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 873890,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 916617600,
+     "proposedMarketValueRaw": {
+      "value": 875000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "دجوركاف رياسكو",
+       "bn": "জোর্কেফ রেসকো",
+       "hi": "ज़ोर्केफ़ रीस्को",
+       "ru": "Джоркаефф Реаско"
+      },
+      "shortNameTranslation": {
+       "ar": "د. رياسكو",
+       "bn": "ডি. রেসকো",
+       "hi": "डी. रीस्को",
+       "ru": "Д. Реаско"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 99,
+    "jerseyNumber": "99",
+    "position": "F",
+    "substitute": false,
+    "statistics": {
+     "duelLost": 1,
+     "dispossessed": 1,
+     "shotOffTarget": 1,
+     "minutesPlayed": 29,
+     "touches": 2,
+     "rating": 6.4,
+     "possessionLostCtrl": 1,
+     "ratingVersions": {
+      "original": 6.4,
+      "alternative": 6.5
+     },
+     "totalShots": 1,
+     "shotValueNormalized": -0.32,
+     "defensiveValueNormalized": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Miguel Peralta",
+     "firstName": "Miguel Peralta",
+     "slug": "miguel-peralta",
+     "shortName": "M. Peralta",
+     "position": "G",
+     "jerseyNumber": "70",
+     "height": 185,
+     "userCount": 73,
+     "gender": "M",
+     "sofascoreId": "kmk2fn",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1836849,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1209168000,
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ميغيل بيرالتا",
+       "ru": "Мигель Перальта"
+      },
+      "shortNameTranslation": {
+       "ar": "م. بيرالتا",
+       "ru": "М. Перальта"
+      }
+     }
+    },
+    "teamId": 213476,
+    "shirtNumber": 70,
+    "jerseyNumber": "70",
+    "position": "G",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Jhon Espinoza",
+     "firstName": "Jhon",
+     "lastName": "Espinoza",
+     "slug": "jhon-espinoza",
+     "shortName": "J. Espinoza",
+     "position": "D",
+     "jerseyNumber": "4",
+     "height": 177,
+     "userCount": 138,
+     "gender": "M",
+     "sofascoreId": "ceij96",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 929098,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 919814400,
+     "proposedMarketValueRaw": {
+      "value": 565000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "اسبينوزا، جون",
+       "bn": "এস্পিনোজা, জন",
+       "hi": "एस्पिनोज़ा, जॉन",
+       "ru": "Джон Эспиноса"
+      },
+      "shortNameTranslation": {
+       "ar": "ج. اسبينوزا",
+       "bn": "জে. এস্পিনোজা",
+       "hi": "जे. एस्पिनोज़ा",
+       "ru": "Д. Эспиноса"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 4,
+    "jerseyNumber": "4",
+    "position": "D",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Andy Velasco",
+     "firstName": "Andy Velasco",
+     "slug": "andy-velasco",
+     "shortName": "A. Velasco",
+     "position": "D",
+     "jerseyNumber": "33",
+     "height": 178,
+     "userCount": 62,
+     "gender": "M",
+     "sofascoreId": "ut78d4",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1211955,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 909619200,
+     "proposedMarketValueRaw": {
+      "value": 535000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "فيلاسكو، آندي",
+       "ru": "Энди Веласко"
+      },
+      "shortNameTranslation": {
+       "ar": "آ. فيلاسكو",
+       "ru": "Э. Веласко"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 33,
+    "jerseyNumber": "33",
+    "position": "D",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Gustavo Cortez",
+     "firstName": "Gustavo",
+     "lastName": "Cortez",
+     "slug": "gustavo-cortez",
+     "shortName": "G. Cortez",
+     "position": "D",
+     "jerseyNumber": "15",
+     "height": 178,
+     "userCount": 50,
+     "gender": "M",
+     "sofascoreId": "fzeqsb",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 846662,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 876528000,
+     "proposedMarketValueRaw": {
+      "value": 930000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "غوستافو كورتيز",
+       "ru": "Густаво Кортес"
+      },
+      "shortNameTranslation": {
+       "ar": "غ. كورتيز",
+       "ru": "Г. Кортес"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 15,
+    "jerseyNumber": "15",
+    "position": "D",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Juan Viacava",
+     "firstName": "Juan",
+     "lastName": "Viacava",
+     "slug": "juan-viacava",
+     "shortName": "J. Viacava",
+     "position": "D",
+     "jerseyNumber": "23",
+     "height": 183,
+     "userCount": 81,
+     "gender": "M",
+     "sofascoreId": "kmvukd",
+     "country": {
+      "alpha2": "UY",
+      "alpha3": "URY",
+      "name": "Uruguay",
+      "slug": "uruguay"
+     },
+     "id": 988849,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 919468800,
+     "proposedMarketValueRaw": {
+      "value": 485000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "خوان فياكافا",
+       "ru": "Хуан Виакава"
+      },
+      "shortNameTranslation": {
+       "ar": "خ. فياكافا",
+       "ru": "Х. Виакава"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 23,
+    "jerseyNumber": "23",
+    "position": "D",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Hólger Quintero",
+     "firstName": "Hólger Quintero",
+     "slug": "holger-quintero",
+     "shortName": "H. Quintero",
+     "position": "M",
+     "jerseyNumber": "56",
+     "height": 172,
+     "userCount": 743,
+     "gender": "M",
+     "sofascoreId": "q94ryt",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1892388,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1250208000,
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "هولجر كوينتيرو",
+       "ru": "Хольгер Кинтеро"
+      },
+      "shortNameTranslation": {
+       "ar": "ه. كوينتيرو",
+       "ru": "Х. Кинтеро"
+      }
+     }
+    },
+    "teamId": 213476,
+    "shirtNumber": 56,
+    "jerseyNumber": "56",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Darwin Guagua",
+     "firstName": "Darwin Guagua",
+     "slug": "darwin-guagua",
+     "shortName": "D. Guagua",
+     "position": "M",
+     "jerseyNumber": "55",
+     "height": 174,
+     "userCount": 712,
+     "gender": "M",
+     "sofascoreId": "r3s9xc",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1892386,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1194307200,
+     "proposedMarketValueRaw": {
+      "value": 2100000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "غواغا، داروين",
+       "ru": "Дарвин Гуагуа"
+      },
+      "shortNameTranslation": {
+       "ar": "د. غواغا",
+       "ru": "Д. Гуагуа"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 55,
+    "jerseyNumber": "55",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Hugo Quintana",
+     "firstName": "Hugo",
+     "lastName": "Quintana",
+     "slug": "hugo-quintana",
+     "shortName": "H. Quintana",
+     "position": "M",
+     "jerseyNumber": "28",
+     "height": 175,
+     "userCount": 448,
+     "gender": "M",
+     "sofascoreId": "dqqsuu",
+     "country": {
+      "alpha2": "PY",
+      "alpha3": "PRY",
+      "name": "Paraguay",
+      "slug": "paraguay"
+     },
+     "id": 975222,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1005350400,
+     "proposedMarketValueRaw": {
+      "value": 2300000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "كينتانا هوغو",
+       "ru": "Уго Кинтана"
+      },
+      "shortNameTranslation": {
+       "ar": "ك. هوغو",
+       "ru": "У. Кинтана"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 28,
+    "jerseyNumber": "28",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Matías Perello",
+     "firstName": "Matías Perello",
+     "lastName": "",
+     "slug": "matias-perello",
+     "shortName": "M. Perello",
+     "position": "M",
+     "jerseyNumber": "11",
+     "height": 165,
+     "userCount": 227,
+     "gender": "M",
+     "sofascoreId": "hijtuh",
+     "country": {
+      "alpha2": "AR",
+      "alpha3": "ARG",
+      "name": "Argentina",
+      "slug": "argentina"
+     },
+     "id": 1117084,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1005955200,
+     "proposedMarketValueRaw": {
+      "value": 2100000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "ماتياس بيريلو",
+       "ru": "Матиас Перелло"
+      },
+      "shortNameTranslation": {
+       "ar": "م. بيريلو",
+       "ru": "М. Перелло"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 11,
+    "jerseyNumber": "11",
+    "position": "F",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Youri Ochoa",
+     "firstName": "Youri Ochoa",
+     "lastName": "",
+     "slug": "youri-ochoa",
+     "shortName": "Y. Ochoa",
+     "position": "M",
+     "jerseyNumber": "8",
+     "height": 173,
+     "userCount": 51,
+     "gender": "M",
+     "sofascoreId": "q4ggxz",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1201028,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1105315200,
+     "proposedMarketValueRaw": {
+      "value": 470000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "يوري أوتشوا",
+       "ru": "Юри Охота"
+      },
+      "shortNameTranslation": {
+       "ar": "ي. أوتشوا",
+       "ru": "Ю. Охота"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 8,
+    "jerseyNumber": "8",
+    "position": "M",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Yandri Vasquez",
+     "firstName": "Yandri",
+     "lastName": "Vásquez",
+     "slug": "yandri-vasquez",
+     "shortName": "Y. Vásquez",
+     "position": "F",
+     "jerseyNumber": "52",
+     "height": 179,
+     "userCount": 94,
+     "gender": "M",
+     "sofascoreId": "km6ara",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 1597201,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1154390400,
+     "proposedMarketValueRaw": {
+      "value": 260000,
+      "currency": "EUR"
+     },
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "فاسكيز، ياندري",
+       "ru": "Яндри Васкес"
+      },
+      "shortNameTranslation": {
+       "ar": "ي. فاسكيز",
+       "ru": "Я. Васкес"
+      }
+     }
+    },
+    "teamId": 39723,
+    "shirtNumber": 52,
+    "jerseyNumber": "52",
+    "position": "F",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   },
+   {
+    "player": {
+     "name": "Juan Angulo",
+     "firstName": "Juan Angulo",
+     "slug": "juan-angulo",
+     "shortName": "J. Angulo",
+     "position": "F",
+     "jerseyNumber": "50",
+     "height": 193,
+     "userCount": 357,
+     "gender": "M",
+     "sofascoreId": "8rujgn",
+     "country": {
+      "alpha2": "EC",
+      "alpha3": "ECU",
+      "name": "Ecuador",
+      "slug": "ecuador"
+     },
+     "id": 2057385,
+     "marketValueCurrency": "EUR",
+     "dateOfBirthTimestamp": 1200096000,
+     "fieldTranslations": {
+      "nameTranslation": {
+       "ar": "خوان أنغولو",
+       "ru": "Хуан Ангуло"
+      },
+      "shortNameTranslation": {
+       "ar": "خ. أنغولو",
+       "ru": "Х. Ангуло"
+      }
+     }
+    },
+    "teamId": 1157670,
+    "shirtNumber": 50,
+    "jerseyNumber": "50",
+    "position": "F",
+    "substitute": true,
+    "statistics": {
+     "totalShots": 0,
+     "statisticsType": {
+      "sportSlug": "football",
+      "statisticsType": "player"
+     }
+    }
+   }
+  ],
+  "supportStaff": [],
+  "formation": "4-1-4-1",
+  "playerColor": {
+   "primary": "1c1b1f",
+   "number": "ffffff",
+   "outline": "1c1b1f",
+   "fancyNumber": "ffffff"
+  },
+  "goalkeeperColor": {
+   "primary": "95c04e",
+   "number": "fdfcfc",
+   "outline": "95c04e",
+   "fancyNumber": "222226"
+  }
+ },
+ "statisticalVersion": 3
+}
