@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 import numpy as np
 from scipy.stats import poisson
+
+if TYPE_CHECKING:  # annotations only — this module never uses pandas at runtime
+    import pandas as pd
 
 
 def poisson_probability(k: int, lambda_: float) -> float:

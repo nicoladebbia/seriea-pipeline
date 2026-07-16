@@ -994,6 +994,7 @@ class UnifiedTrainer:
         log.info("Top 10: %s", selected_features[:10])
 
         X = df[selected_features].fillna(0)
+        y_int = df["result"].map(LABEL_MAP)
 
         all_preds, all_true, all_proba = [], [], []
 
