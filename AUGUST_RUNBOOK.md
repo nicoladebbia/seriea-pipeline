@@ -401,11 +401,43 @@ Result (verified on a scratch copy, live parquet md5-unchanged): **1,663 cells f
 closing for 39 matches — a genuine source limit, not a bug). Fills NaN only, never
 overwrites, which is what makes the call site's "safe to run daily" true.
 
-**`live_sofascore` — blocked, do not build.** Needs Sofascore; **both** tiers are
-403 (api *and* www — the CLAUDE.md HTML fallback is currently dead too). Only its
-*output* (`data/live/*.json`) survives, not the raw inputs, so there is nothing to
-verify a parser against. Per the never-parse-an-unverified-source rule: recorded,
-not guessed.
+**`live_sofascore` — ⚠️ THE BLOCK IS GONE. Re-measured 2026-07-16: BUILDABLE.**
+
+~~blocked, do not build~~ — that verdict was correct when written and is now **stale**.
+Measured directly (not inferred):
+
+| probe | result |
+|---|---|
+| plain `curl` → api.sofascore.com | **403** |
+| plain `curl` → www.sofascore.com hub | **403** |
+| **curl_cffi `impersonate="chrome124"` → api** | **200**, 8 live matches, real in-progress scores + "1st half"/"2nd half" status |
+| **curl_cffi → www tournament hub** | **200**, 683 KB |
+| curl_cffi → `/event/{id}/incidents` | **200**, goal incidents present |
+| curl_cffi → fbref.com (chrome124/chrome120/safari17_0) | **403 on all** — still genuinely Cloudflare-blocked |
+
+**This means the ban LIFTED — it is not a new bypass.** `scraper/sofascore_events.py`
+already rotates curl_cffi impersonate profiles, i.e. the exact stack that the
+"403 across all curl-cffi profiles" note was measured with. Plain-`curl` 403 is
+Sofascore's *normal* always-on TLS-fingerprint protection, which curl_cffi has always
+handled; the June IP-level ban that also killed curl_cffi is what's gone.
+
+🔑 **The lesson worth keeping: a recorded ban is a snapshot, not a standing fact.**
+Both `live_sofascore` and `sofascore_watcher` were deferred as "403, do not build" —
+one cheap re-probe (`impersonate="chrome124"`) reopened both. **Re-measure a ban before
+inheriting its verdict.**
+
+⚠️ **Rate limiting is real and looks like a network error, not a 403.** Rapid successive
+requests → `CurlError (7) Failed to connect ... port 443`. That is throttling, not a ban;
+back off ~20s and it recovers. Do not read it as the ban returning.
+
+**The build path is now open and oracle-backed.** The contract is
+`fetch_live_data_for_matches(match_keys) -> {match_key: {events, statistics,
+player_stats, sofascore_id, fetched_at}}` (`live_monitor.py:1140`), and
+`data/live/*.json` holds the **output** schema for every field. The API→stored mapping
+is confirmed: `/event/{id}/incidents` returns `incidentType`/`incidentClass`/`isHome`/
+`time`/`player`/`assist1`, which map to the stored `type`/`goal_type`/`is_home`/
+`minute`/`player`/`assist`. **`goal_type` is `incidentClass`** — and `ownGoal` is one of
+its values, independently confirming the own-goal rule found via the reconciliation replay.
 
 **`live_reconciliation` — genuine phantom, and a name trap.** ⚠️
 `scripts/analysis/live_reconciliation.py` **exists and is tracked** but is a
