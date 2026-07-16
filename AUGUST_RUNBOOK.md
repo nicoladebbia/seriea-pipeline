@@ -156,6 +156,103 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 > it is genuinely August work) and **`fallback_sofascore_to_fbref`** (:219, see
 > below).
 
+#### `fallback_sofascore_to_fbref` — REBUILT 2026-07-16 (reimplemented, NOT recovered)
+
+Plan-B for match stats: every logged weekly run (04-27 → 06-01) shows
+`✗ fbref_fixtures` / `✗ fbref_htmls`, so FBref never delivered. Reads **cached
+parquets**, so the Sofascore 403 does not block it.
+
+⚠️ **The stored output is run history, not a spec** — 94 of the 120 matches in its
+window, 26 holes *inside* the window, 260 before it untouched. No rule reproduces
+that; don't try. What IS recoverable is the **transform**, and every mapping was
+*derived by searching all candidate columns against those 94 rows*, keeping only
+exact reproductions: 46 identity cols from `match_team_stats` (period=ALL),
+`passing_accuracy` = round(acc/total*100,1), `cards` = yellow+red, `ht_score` =
+goals with minute<=45 from `match_incidents` (94/94). `venue`/`manager`/`captain`
+are **empty strings** in the original — reproduced faithfully.
+
+Held-out test: blanking the 94 and refilling reproduces **all 52 columns' values
+exactly**; 4 columns fill *more* than the original (source has grown since).
+**Result: 286/286 previously-empty Serie A 2025-26 matches filled** — xG,
+possession, ht_score, passing accuracy all 0% → 100%.
+
+🚨 **Two deliberate deviations:**
+1. **`match_id` left alone.** The original *overwrote* it with Sofascore's numeric
+   id, so `matches.parquet` holds two id formats (94 numeric vs 286 canonical
+   `{date}_{home}_{away}`) — join-breaking. Reproducing it would spread the bug to
+   286 more rows. **The repair is a separate multi-file migration:** it must also
+   fix `lineups.parquet` (4,577 rows / 99 numeric ids; 86 of the 94 appear there),
+   bridged via `match_id_mapping.parquet:sofascore_id`. Canonical formula verified
+   100% on the 286. **Nicola approved this repair — it is the next task.**
+2. **`formation` not filled** — `lineups.parquet` reproduces it only 91.5%, below
+   the bar every other column here clears.
+
+#### `live_reconciliation` — SPEC FULLY RECOVERED 2026-07-16 (rebuild from this)
+
+⚠️ **Supersedes the earlier "semantics unrecoverable" verdict — that was wrong.**
+I had only checked that `scripts/analysis/live_reconciliation.py` (a *different*,
+tracked module sharing the name — it has no `reconcile_all_matches`) didn't fit.
+The real evidence was in the data all along: **`data/live/*.json` stores this
+module's own output** in `matches[k]["reconciliation"]` — **123 blocks across 33
+snapshots, including 11 non-empty discrepancy lists**. Rebuild against that oracle.
+
+**Contract:** `reconcile_all_matches(matchday) -> int`, called at
+`live_monitor.py:1181`, wrapped in try/except and the return value is **only
+logged** ("Reconciliation: %d discrepancy(ies) found"). No writes, no gates — so a
+faithful-but-imperfect rebuild is low risk. It mutates
+`matchday["matches"][k]["reconciliation"]`; the caller persists the matchday.
+
+**Output block (schema exact, n=123):**
+```json
+{"scores_agree": bool, "sources_checked": ["odds_api"] | ["odds_api","sofascore"],
+ "discrepancies": [...], "score_used": {"home": int, "away": int, "source": "odds_api"|"consensus"},
+ "all_scores": {"odds_api": [h,a], "sofascore": [h,a]},
+ "severity": "ok"|"info"|"critical", "checked_at": "<UTC-aware ISO>"}
+```
+
+**Rules (derived from all 123):**
+- `sources_checked` = `["odds_api"]`, plus `"sofascore"` when the match has Sofascore data (`sofascore_id`/`live_events` present — 45 of 123 blocks).
+- odds_api score = `_last_home_score`/`_last_away_score`; sofascore score = goals counted from `live_events` by side.
+- `scores_agree` = no `score_mismatch` (all sources equal).
+- `severity` = `critical` if any critical, else `info` if any info, else `ok`.
+- `score_used.source` = `"consensus"` when >1 source **and** they agree; otherwise `"odds_api"` (it is always primary on disagreement).
+- Return = number of discrepancy **items** (13 across the 11 flagged matches) — *ambiguous vs. flagged-match count (11); the caller only logs it, so either is tolerable. Say which you chose.*
+
+**Discrepancy shapes (verbatim from the oracle):**
+```json
+{"type":"score_mismatch","severity":"critical","source":"sofascore","reported":[1,2],"expected":[0,3],
+ "message":"All sources disagree: sofascore reports 1-2, using odds_api 0-3 as primary"}
+{"type":"timing_mismatch","severity":"info","goal_minute":58,"player":"Denzel Dumfries","side":"away",
+ "message":"Sofascore goal at 58' (away, Denzel Dumfries) doesn't align with any Odds API score change window"}
+{"type":"status_mismatch","severity":"info","odds_api_status":"first_half","latest_event_minute":90,
+ "message":"Odds API says 'first_half' but Sofascore has events at 90' \u2014 status may be lagging"}
+```
+
+⚠️ **`timing_mismatch`'s rule is NOT recovered — and a minute-tolerance is REFUTED.**
+Swept "goal aligns if an odds_api score-change is within TOL" for TOL = 0..15′
+against the oracle: **none reproduce it.** The truth flags **5 of 104** sofascore
+goals in dual-source matches; the tolerance rule flags **98 at 0′ and still 22 at
+15′** — wrong shape, not a mistuning. The real rule aligns nearly every goal and
+flags a rare few. **Do not implement a tolerance window.** Ship
+`score_mismatch` (exact) + `status_mismatch` and either omit `timing_mismatch` or
+find its real trigger first — it is `info` severity and does not affect
+`scores_agree`, so omitting it is the safe default. Say which you chose.
+
+**What IS exact:** `score_mismatch` reproduces all **7/7** criticals — sofascore
+score = count of `live_events` where `type=="goal"` grouped by `is_home`;
+odds_api score = `_last_home_score`/`_last_away_score`; flag when they differ,
+odds_api always primary.
+
+**Verify by replaying**: feed each stored matchday back through the rebuild and
+require the regenerated block to equal the stored one (ignore `checked_at`). 123
+blocks is a strong oracle — do not accept less than an exact match on the 112
+`ok` blocks and all 11 flagged ones.
+
+🔎 **Real finding worth acting on independently:** the 7 `critical` score_mismatches
+are all **Sofascore under-reporting vs Odds API** (e.g. Bologna–Inter 2-3 vs 3-3,
+Verona–Roma 0-1 vs 0-2). Sofascore lagging on live goals is a known-good reason the
+pipeline treats odds_api as primary.
+
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller | Status |
 |---|---|---|
@@ -163,7 +260,7 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
 | `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
 | `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ❌ not rebuilt — semantics unrecoverable |
-| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ⏳ buildable — source reachable |
+| `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
 
 #### Triage of these five (2026-07-16)
 
@@ -211,12 +308,39 @@ Also unverified: `direction`'s `home_drifting`/`away_drifting` branches (the onl
 surviving per-match output is the all-`stable` run) and the
 `implied_prob_shift_*` formula (**0 consumers** — grep-verified, so harmless).
 
-**`backfill_historical_odds` — buildable, not yet built.** Reads
-football-data.co.uk (**HTTP 200**, 196KB — reachable), *not* the Odds API, so the
-dead key doesn't block it (`DATA_CATALOG.md:179`). Tracked helper
-`scraper/historical.py` already implements the import; oracle = the odds columns
-in `matches.parquet`. It writes to `matches.parquet` (ground truth), so treat it
-as a destructive path and dry-run first.
+**`backfill_historical_odds` — REBUILT.** It is the **closing-odds + Asian-handicap
+half of the football-data.co.uk CSV import**, established from the data, not the docs:
+`scripts/import_seriea_odds.py` (tracked, daily) maps **16** CSV columns; the parquet
+stores **28**; the **12** it omits (Pinnacle/B365 *closing* 1X2, B365 closing O/U 2.5,
+the AH block) are exactly this module's output. All 28 stored columns were verified to
+reproduce **exactly** from the 2024-25 CSV (380 matches, 0 mismatches).
+
+⚠️ **Two docs are wrong — don't "fix" the module to match them.** The call-site comment
+at `run_full_pipeline.py:1337` says *"Odds API since {since}"* / *"only if Odds API quota
+allows"*: **stale** — this reads the free CSV, no key, no quota. `DATA_CATALOG.md:172`
+credits `odds_PS_close_*` to an "Odds API historical backfill": also wrong, `PSCH` is a
+CSV column. (`DATA_CATALOG.md:179` is the one that's right.)
+
+🔑 **The real find: `scraper.odds.download_odds` is cache-first and NEVER refreshes a
+season it already cached.** The 2025-26 cache was captured **2026-05-01 with 346 of 380
+matches**, so cache-only permanently misses the season's tail. But the live CSV is *not*
+a superset either — football-data has since **dropped ~143 Pinnacle closing prices**
+(cached `PSCH` 341/346, live 198/380). Re-downloading alone would destroy real data.
+So this module **unions cache + live in memory** (it does not rewrite the cache file).
+Safe because absence ≠ revision *for these 12*: on the overlap they agree **100%**.
+⚠️ That does NOT generalise — `MaxH`/`AvgH` agree only **~78%** (football-data recomputes
+market aggregates), so anything unioning *those* must decide which wins. They belong to
+`import_seriea_odds`'s 16 and are never touched here.
+
+**This staleness also hits the DAILY import** (`import_seriea_odds` reads the same cached
+`data/external/odds/I1_*.csv`) — worth fixing separately; it likely explains part of the
+2025-26 odds gap in [[project_jul15_retrain_datagap]].
+
+Result (verified on a scratch copy, live parquet md5-unchanged): **1,663 cells filled,
+0 overwritten, 0 nulled, idempotent** (2nd run = 0). 2024-25 → **100% on all 12**;
+2025-26 → 100% on 10/12, `PS_close_*` reaching 89.7% (neither source has Pinnacle
+closing for 39 matches — a genuine source limit, not a bug). Fills NaN only, never
+overwrites, which is what makes the call site's "safe to run daily" true.
 
 **`live_sofascore` — blocked, do not build.** Needs Sofascore; **both** tiers are
 403 (api *and* www — the CLAUDE.md HTML fallback is currently dead too). Only its
