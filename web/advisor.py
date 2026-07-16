@@ -569,7 +569,7 @@ def _tool_get_player_stats(args: dict) -> str:
     # 2. Per-match detailed performance from Sofascore (80 columns, includes today)
     try:
         import pandas as pd
-        sof_path = _BASE / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+        sof_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
         if sof_path.exists():
             sof = pd.read_parquet(sof_path)
             sof_mask = _player_name_match(sof["player_name"], player_q)
@@ -652,7 +652,7 @@ def _tool_get_player_stats(args: dict) -> str:
                     )
 
                     # Match events (goals, cards, subs)
-                    inc_path = _BASE / "data" / "external" / "sofascore" / "match_incidents.parquet"
+                    inc_path = DATA_DIR / "external" / "sofascore" / "match_incidents.parquet"
                     if inc_path.exists():
                         try:
                             inc = pd.read_parquet(inc_path)
@@ -950,7 +950,7 @@ def _tool_get_match_players(args: dict) -> str:
 
     try:
         import pandas as pd
-        sof_path = _BASE / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+        sof_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
         if not sof_path.exists():
             return json.dumps({"error": "Player match stats not available."})
 
@@ -1057,7 +1057,7 @@ def _tool_get_match_players(args: dict) -> str:
             )
 
         # Match events
-        inc_path = _BASE / "data" / "external" / "sofascore" / "match_incidents.parquet"
+        inc_path = DATA_DIR / "external" / "sofascore" / "match_incidents.parquet"
         if inc_path.exists():
             try:
                 inc = pd.read_parquet(inc_path)
@@ -2109,7 +2109,7 @@ def _tool_query_history(args: dict) -> str:
     opponent = _resolve_team(opponent_query) if opponent_query else None
 
     # Load matches
-    matches_path = _BASE / "data" / "parsed" / "matches.parquet"
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
     if not matches_path.exists():
         return json.dumps({"error": "matches.parquet not found."})
 
@@ -2152,7 +2152,7 @@ def _tool_query_history(args: dict) -> str:
 
     # Situational filters — need features.parquet
     if situation:
-        features_path = _BASE / "data" / "features" / "features.parquet"
+        features_path = DATA_DIR / "features" / "features.parquet"
         if features_path.exists():
             try:
                 feat_cols = ["match_id"]
