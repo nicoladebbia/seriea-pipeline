@@ -125,6 +125,20 @@ def main() -> int:
         )
     results["sofascore"] = all(sofascore_results.values())
 
+    # --- Step 4b: Shot-level xG (re-derive all_shots_with_xg from the Sofascore cache) ---
+    # Step 4 fetches every match's full shotmap but only persists the per-team AGGREGATE
+    # (shotmap_stats.parquet). This rebuilds the shot-LEVEL file that features/shot_level_xg
+    # and features/situational_xg read. Its original one-shot writer stopped in Feb 2026,
+    # freezing 2025-26 coverage at 206/380 and sending 64 shot features to ~46% NaN — this
+    # step keeps it current. Zero network: it reads the json Step 4 just cached.
+    shot_level_results = {}
+    for _league in ACTIVE_LEAGUES:
+        shot_level_results[_league] = run(
+            [py, "-m", "scripts.data.write_shot_level_xg", "--league", _league, "--season", CURRENT_SEASON],
+            f"Shot-level xG rebuild ({_league})",
+        )
+    results["shot_level_xg"] = all(shot_level_results.values())
+
     # --- Step 5: Understat refresh (best-effort — scraper may fail on schema changes) ---
     try:
         from scraper.understat_scraper import scrape_understat_xg

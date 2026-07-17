@@ -164,7 +164,7 @@
 | 9 | `data/external/sofascore/player_match_stats.parquet` | 101,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 11 | `data/external/sofascore/shotmap_stats.parquet` | 6,684 | **378/380** (2 rows/match — per-**team aggregate**, not shot-level) | ✅ | `scrape_sofascore.py` weekly | 6h ago |
-| 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 82,432 | 206 (legacy) | ⚠ Legacy | No active writer | 71 days ago |
+| 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 86,628 | **380/380** | ✅ shot-level (per-shot xg/xgot/coords) | `write_shot_level_xg.py` (weekly Step 4b) | 2026-07-17 |
 | 13 | `data/external/sofascore/match_incidents.parquet` | 44,184 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 14 | `data/external/sofascore/captains.parquet` | 6,650 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 15 | `data/external/understat/matches_xg.parquet` | 3,370 | 330/330 | ✅ | `scrape_understat_xg()` + `parse_all_understat` | 5h ago |
@@ -372,32 +372,27 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 - **Individual shot events w/ xG** (15 cols: minute, player, xg_shot, psxg_shot, outcome, distance)
 - **9,213 rows — ONLY 2024-2025 season**
 - **Writer:** `scripts/data/parse_all_shots.py` (NEW today but produces 0 rows for 2025-26)
-- **Status:** ❌ **FBref removed `shots_all` table from 2025-26 match reports.** Confirmed
-  source-side 2026-07-16: `shots_all` is absent from the raw text of all 380 cached
-  2025-26 reports and present in 2024-25. A deliberately scrolled re-fetch came back
-  *larger* (483,737 vs 405,954 bytes) and still lacked it. Parsing cannot invent it.
-- **Plan B is NOT equivalent — measured 2026-07-17.** `shotmap_stats.parquet` covers
-  378/380 for 2025-26, but it is a **per-team aggregate: 2 rows per match**, 30
-  pre-computed columns (`total_xg`, `total_xgot`, `avg_shot_distance`,
-  `big_chance_shots`, `shots_set_piece`…). `shots.parquet` was **shot-level: 24.2 rows
-  per match** with per-shot `xg_shot`, `psxg_shot`, `body_part` and the SCA chain
-  (`sca_1_player`, `sca_1_type`). For team-level shot aggregates the Sofascore file is
-  a fine — arguably richer (xGOT, big chances) — substitute. **Per-shot granularity and
-  shot-creating-action chains are simply gone for 2025-26.**
-- **The gap is live in the features, not hypothetical:** 64 `{home,away}_shot_*`
-  columns (`shot_xg_mean_roll_*`, `shot_dist_mean_roll_*`, `setpiece_xg_roll_*`,
-  `openplay_xg_roll_*`, `counter_xg_roll_*`, `penalty_xg_roll_*`) are **45.8% NaN in
-  2025-26 vs 0.8% in 2024-25**, because `features/build.py` still reads
-  `shots.parquet`. Nothing rewired them to Sofascore.
-- **Rewiring is possible but lossy and needs a gate:** the shotmap has *counts* per
-  situation (`shots_open_play`, `shots_set_piece`, `shots_counter`, `shots_penalty`),
-  not xG per situation, so `*_xg_roll_*` cannot be reproduced 1:1 — only approximated.
-  That changes model input semantics mid-season, so it requires a retrain + held-out
-  backtest before shipping, per the skill-score rule in `CLAUDE.md`. Do not silently
-  swap the source.
-- **Plan C:** `data/external/sofascore/all_shots_with_xg.parquet` (82,432 shots) IS
-  shot-level, but has **no active writer** and stops at 206 legacy matches — it is not
-  a 2025-26 answer without reviving the scraper.
+- **Status:** ❌ **FBref removed `shots_all` from 2025-26 reports — but this file has NO
+  live reader, so that removal has zero downstream impact.** The only code that touches
+  `parsed/shots.parquet` is its own writer (`parse_all_shots.py`). Every shot-level
+  *feature* reads the Sofascore file below, not this one. (Removal confirmed source-side
+  2026-07-16: `shots_all` absent from all 380 cached 2025-26 reports, present in 2024-25,
+  and a scrolled re-fetch came back larger and still lacked it.) What is genuinely lost
+  for 2025-26 is FBref's shot-creating-action chain (`sca_1_player`, `sca_1_type`) and
+  `psxg_shot` — neither is consumed by any current feature.
+- ⚠️ **Earlier versions of this section were WRONG** (corrected 2026-07-17): they said the
+  64 shot features read `shots.parquet` and that the Sofascore shotmap could only
+  "approximate" them. Both false. The features read `all_shots_with_xg.parquet`, which is
+  true shot-level (per-shot xg/xgot/coordinates), and it has now been fully restored — see
+  its entry under §4.
+- **The real cause was a dead writer, now fixed.** The 64 `{home,away}_shot_*` features
+  (`shot_xg_mean_roll_*`, `openplay_xg_roll_*`, `setpiece_xg_roll_*`, `counter_xg_roll_*`,
+  `penalty_xg_roll_*`) were **45.8% NaN in 2025-26** because their source,
+  `all_shots_with_xg.parquet`, stopped updating at 2026-02-08 (206/380) when its one-shot
+  writer died. `scripts/data/write_shot_level_xg.py` (built 2026-07-17) re-derives the
+  file from the Sofascore shotmap cache — restored to **380/380**, and the 64 features
+  dropped to **2.8% NaN** overall (post-Feb-8 window: 100% → 0.3%; residual is legitimate
+  rolling-window warmup, not a gap).
 
 ---
 
