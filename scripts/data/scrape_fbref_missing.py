@@ -44,6 +44,23 @@ Exit 0 on a wall is deliberate and matches the caller, whose own comment says
 the Sofascore fallback covers the results either way. The job going red weekly
 for a known, unfixable-from-cron condition trains everyone to ignore it.
 
+The reused session wears out around ~100 fetches — re-run, don't re-engineer
+----------------------------------------------------------------------------
+Observed on the 2026-07-16 backfill of 119 matches: the first pass took 103,
+then every remaining fetch returned **0 bytes** (not the 27 KB wall — the driver
+itself was gone, alongside "Connection to remote host was lost"). A second run
+with a fresh driver took the remaining 16, **0 failed** — including the one that
+had already failed. Same URLs, different driver, so it is the session, not the
+pages.
+
+The backoff already handles this: repeated failures abort the run, and the
+incremental skip means re-running resumes exactly where it stopped. No partial
+file is ever written — ``is_real_report`` rejects a short page before the write.
+That is why this is documented rather than fixed. A weekly run fetches ~10 new
+matches, nowhere near the limit; cycling the driver mid-batch would add an
+untested moving part to buy nothing the re-run does not already give. If a
+future backfill of this size is needed, expect two passes.
+
 Two landmines this module is shaped around
 ------------------------------------------
 * **The filename stem IS the match_id.** ``parse_all_player_stats`` calls
