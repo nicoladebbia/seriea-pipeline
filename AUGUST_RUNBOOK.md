@@ -158,8 +158,7 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 > (`_refresh_fbref_fixtures`) was **also broken**, silently, since April: it
 > fetched headless and reported the wall as `TypeError: data must be str, not
 > NoneType`, so fixtures.html froze at its 2026-04-21 copy and hid 50 published
-> matches from Step 2. Both fixed. Still missing: **`fallback_sofascore_to_fbref`**
-> (:219, see below).
+> matches from Step 2. Both fixed.
 
 #### `fallback_sofascore_to_fbref` — REBUILT 2026-07-16 (reimplemented, NOT recovered)
 

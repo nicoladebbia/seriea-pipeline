@@ -94,14 +94,14 @@
 
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
-| 1 | `data/parsed/matches.parquet` | 15,839 (7,930 SA) | **380/380** | ✅ | Daily morning/evening pipeline | 2026-07-16 |
-| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380** | ✅ | Daily `features/build.py` (24h gate) | 2026-07-16 |
+| 1 | `data/parsed/matches.parquet` | 15,889 | **380/380**, all canonical | ✅ | Daily morning/evening pipeline | 2026-07-17 |
+| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380** | ✅ (64 shot cols degraded — row 7) | Daily `features/build.py` (24h gate) | 2026-07-17 |
 | 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
-| 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380 SA fbref + EPL + legacy ids | ⚠ id conventions | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-16 |
-| 5 | `data/parsed/events.parquet` | **12,095** | 380 SA fbref + EPL + legacy ids | ⚠ id conventions | FBref scorebox + Sofascore incidents | 2026-07-16 |
+| 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380/380 union | ⚠ dual-keyed — see callout | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-17 |
+| 5 | `data/parsed/events.parquet` | **12,095** | 373/380 union | ⚠ dual-keyed — see callout | FBref scorebox + Sofascore incidents | 2026-07-17 |
 | 6 | `data/parsed/goalkeeper_stats.parquet` | **6,897** | **380/380** | ✅ | FBref HTMLs (no fallback yet) | 2026-07-16 |
-| 7 | `data/parsed/shots.parquet` | 9,213 | 0 | ❌ FBref stopped serving `shots_all` | Use Sofascore shotmap instead | 64 days ago |
-| 8 | `data/parsed/match_id_mapping.parquet` | 15,889 | 380 SA rows but only **330 `fbref_hash`** | ⚠ **stale — rebuild** | `build_match_id_mapping.py` | 2026-07-16 |
+| 7 | `data/parsed/shots.parquet` | 9,213 | **0** | ❌ FBref stopped serving `shots_all` | **Sofascore shotmap does NOT replace it** — see §`shots.parquet` | 64 days ago |
+| 8 | `data/parsed/match_id_mapping.parquet` | 15,889 | **380/380** hash + sofascore + understat | ✅ rebuilt 2026-07-17 | `build_match_id_mapping.py` | 2026-07-17 |
 
 > ⚠️ **"330" was never the season — a Serie A season is 380.** Until 2026-07-16 this
 > table read `330/330 ✅` in several rows, which looks like *complete* and was not:
@@ -114,9 +114,41 @@
 > (380/380 on disk) and re-parsed. `matches.parquet` itself was always complete at
 > 380 — the gap was in the FBref-derived parquets and in this table. **If you see a
 > `/330` anywhere, it is a stale number, not a target.**
+
+> ✅ **`match_id` is now one format (migrated 2026-07-17).** `matches.parquet` held
+> 94 rows keyed on Sofascore's numeric fixture id (`13981687`) beside 15,795
+> canonical `{date}_{home}_{away}` ones — two incompatible formats in the
+> ground-truth id column. The 94 were normalised across **62 files** (matches,
+> features, lineups, events, weather, the 50+ `data/cache/features/serie_a/*`
+> caches, the mapping). The `data/external/sofascore/*` files were deliberately
+> **left alone**: they are natively keyed by Sofascore ids, so those keys are
+> correct for what they are — renaming them would have been the actual bug.
+> The formula was proven by reconstructing the 286 known-good ids byte-for-byte
+> before writing. **The live writer was the real defect**:
+> `matchday_updater.py:454` did `match_id = str(fixture.get("id"))` every
+> matchday, so the data fix alone would have reverted on the next run — it now
+> mints the canonical key, pinned by `tests/test_matchday_updater.py`.
+>
+> ⚠️ Note the id **shape trap**: an 8-char Sofascore id and an 8-hex FBref hash
+> are indistinguishable (`13980098` is valid hex; `02493616` is an FBref hash
+> that `.isdigit()` calls numeric). **Classify ids via `match_id_mapping.parquet`,
+> never by shape** — shape-guessing produced four wrong readings in one session.
+
+> ⚠️ **`lineups` and `events` are DUAL-KEYED — the same match appears under two
+> keys** (found 2026-07-17, **not fixed**). 370 lineups / 305 events matches exist
+> both under the canonical id and under their FBref hash. For events the two sets
+> are **complementary, not duplicates**: canonical-keyed rows carry `yellow_card`
+> (1,264) and `second_yellow` (17) but **no** own-goals; hash-keyed rows carry
+> `own_goal` (22) but **no** yellows — the same 79′ dismissal is `second_yellow`
+> under one key and `red_card` under the other. **Dropping either side destroys
+> real data.** A correct fix is a union-merge with dedup, complicated by name
+> spellings differing across sources (`Ismael Koné` vs `Ismaël Koné`), so it needs
+> its own decision rather than a rename. Until then: a consumer joining on the
+> canonical id gets yellows but no own-goals and 330/380 coverage; joining on the
+> hash gets the reverse. Union coverage is 380/380 (lineups) and 373/380 (events).
 | 9 | `data/external/sofascore/player_match_stats.parquet` | 101,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
-| 11 | `data/external/sofascore/shotmap_stats.parquet` | 2,926 | 328/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
+| 11 | `data/external/sofascore/shotmap_stats.parquet` | 6,684 | **378/380** (2 rows/match — per-**team aggregate**, not shot-level) | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 82,432 | 206 (legacy) | ⚠ Legacy | No active writer | 71 days ago |
 | 13 | `data/external/sofascore/match_incidents.parquet` | 44,184 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 14 | `data/external/sofascore/captains.parquet` | 6,650 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
@@ -325,10 +357,32 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 - **Individual shot events w/ xG** (15 cols: minute, player, xg_shot, psxg_shot, outcome, distance)
 - **9,213 rows — ONLY 2024-2025 season**
 - **Writer:** `scripts/data/parse_all_shots.py` (NEW today but produces 0 rows for 2025-26)
-- **Status:** ❌ **FBref removed `shots_all` table from 2025-26 match reports.**
-- **Plan B:** Use `data/external/sofascore/shotmap_stats.parquet` (2,926 rows, 328/330 matches for 2025-26)
-- **Plan C:** Use `data/external/sofascore/all_shots_with_xg.parquet` (82,432 shots historical) for older data
-- **Migration needed:** downstream code still reading shots.parquet should be updated to use Sofascore
+- **Status:** ❌ **FBref removed `shots_all` table from 2025-26 match reports.** Confirmed
+  source-side 2026-07-16: `shots_all` is absent from the raw text of all 380 cached
+  2025-26 reports and present in 2024-25. A deliberately scrolled re-fetch came back
+  *larger* (483,737 vs 405,954 bytes) and still lacked it. Parsing cannot invent it.
+- **Plan B is NOT equivalent — measured 2026-07-17.** `shotmap_stats.parquet` covers
+  378/380 for 2025-26, but it is a **per-team aggregate: 2 rows per match**, 30
+  pre-computed columns (`total_xg`, `total_xgot`, `avg_shot_distance`,
+  `big_chance_shots`, `shots_set_piece`…). `shots.parquet` was **shot-level: 24.2 rows
+  per match** with per-shot `xg_shot`, `psxg_shot`, `body_part` and the SCA chain
+  (`sca_1_player`, `sca_1_type`). For team-level shot aggregates the Sofascore file is
+  a fine — arguably richer (xGOT, big chances) — substitute. **Per-shot granularity and
+  shot-creating-action chains are simply gone for 2025-26.**
+- **The gap is live in the features, not hypothetical:** 64 `{home,away}_shot_*`
+  columns (`shot_xg_mean_roll_*`, `shot_dist_mean_roll_*`, `setpiece_xg_roll_*`,
+  `openplay_xg_roll_*`, `counter_xg_roll_*`, `penalty_xg_roll_*`) are **45.8% NaN in
+  2025-26 vs 0.8% in 2024-25**, because `features/build.py` still reads
+  `shots.parquet`. Nothing rewired them to Sofascore.
+- **Rewiring is possible but lossy and needs a gate:** the shotmap has *counts* per
+  situation (`shots_open_play`, `shots_set_piece`, `shots_counter`, `shots_penalty`),
+  not xG per situation, so `*_xg_roll_*` cannot be reproduced 1:1 — only approximated.
+  That changes model input semantics mid-season, so it requires a retrain + held-out
+  backtest before shipping, per the skill-score rule in `CLAUDE.md`. Do not silently
+  swap the source.
+- **Plan C:** `data/external/sofascore/all_shots_with_xg.parquet` (82,432 shots) IS
+  shot-level, but has **no active writer** and stops at 206 legacy matches — it is not
+  a 2025-26 answer without reviving the scraper.
 
 ---
 
@@ -340,7 +394,7 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 |------|------|------|------|
 | `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
-| `shotmap_stats.parquet` | 2,926 | 30 | Shot events (location x/y, situation, body part, outcome) |
+| `shotmap_stats.parquet` | 6,684 | 30 | Per-**team** shot aggregate, 2 rows/match (totals, xG, xGOT, situation counts, distance stats) — **not** shot-level |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
 | `match_incidents.parquet` | 44,184 | 13 | Full event timeline (goal, card, sub, VAR) |
 | `captains.parquet` | 6,650 | 5 | Team captain per match |
