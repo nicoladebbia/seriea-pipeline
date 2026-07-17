@@ -94,7 +94,7 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 **Plist-invoked (job dies on first tick):**
 | Job | Module | Note |
 |---|---|---|
-| `sofascore-watcher` | `scripts.data.sofascore_watcher` | spec recovered — see §3c |
+| `sofascore-watcher` | `scripts.data.sofascore_watcher` | ✅ **BUILT 2026-07-16**, EPL-only, exits 0 — see §3c |
 | `refresh-understat` | `scripts.data.refresh_understat_players` | writer of `understat_players.parquet` (11.7k rows, LIVE — read by `features/understat_features.py`, `features/lineup_xg.py`, `web/app.py`) |
 | `transfer-refresh` | `scripts.data.refresh_transfers` | ✅ **LANDED 2026-07-16** (PR #14 — the transfers half of #7, split out). Job re-verified: `launchctl list` exit **0**, was 1. |
 
@@ -563,7 +563,7 @@ build to it; the transform above can be verified exactly against the 64.
 | Source | State | Consequence |
 |---|---|---|
 | FBref | Cloudflare-blocked | `scrape_fbref_missing` can't fetch new HTML. **But 309 cached EPL match reports** in `data/raw/html/2025_2026_epl/` parse fine offline. |
-| Sofascore | **HTTP 403** (IP ban, still active) | `sofascore_watcher` standings scrape unverifiable. |
+| Sofascore | **200 via curl_cffi** — the June 403 lifted, re-measured 2026-07-16 | `sofascore_watcher` standings scrape verified live end-to-end. A ban is a timestamped measurement, not a standing fact — re-probe before believing one. Plain `curl` 403s even when nothing is banned. |
 | Understat | **HTTP 200 but JS shell** (`playersData` count = 0 via plain HTTP) | needs Selenium — catalog confirms. Not an IP ban. |
 
 ### Prevention rule (worth more than the modules)
@@ -652,11 +652,45 @@ project CLAUDE.md documents as a credit burn. Only the settler was known before.
 gone; the only surviving one is `web/app.py:_live_standings_via_html`, but
 importing `web.app` starts the auto-settle thread.~~
 
-> **Ban is not the blocker (2026-07-16)** — the 403 lifted. **The extraction is
-> not the blocker either** — done, see above. **What blocks the watcher now is a
-> DECISION about what it writes, and it needs Nicola, not more archaeology.**
+> ## ✅ BUILT 2026-07-16 — `scripts/data/sofascore_watcher.py`, EPL-only
 >
-> **The conflict:** two writers, one file. `scripts/prediction/standings_generator.py:155`
+> Nicola's call: **option 1, EPL-only.** Option 2 was refuted before he chose
+> (see below). The job now exits **0** under `launchctl kickstart`; it had been
+> exiting 1 every 600s since the sweep. Phantom count: **14 of 15**.
+>
+> **Two things a live probe caught that the archaeology and the mocks could not:**
+>
+> 1. **The plist was never hibernated.** `launchctl list` showed
+>    `-  1  com.seriea-pipeline.sofascore-watcher` — loaded and firing every
+>    600s, failing only because the module was missing. So the moment the file
+>    existed, the next tick would run for real. The memo saying all 15 jobs are
+>    hibernated is wrong about this one; **re-measure, don't assume.**
+> 2. **MW0 would have destroyed the table.** Sofascore already serves the
+>    **26/27** table (20 rows, every `played=0`) while `get_current_season()`
+>    says `2025-2026` until Aug 1. A tick would have replaced the real 38-played
+>    25/26 final table with an all-zeros one stamped with the wrong season. The
+>    watcher now refuses MW0 — keyed on **matchweek, not season**, because the
+>    season stamp is the broken field (gap #1) and cannot arbitrate. Verified: a
+>    real tick left the file byte-identical.
+>
+> **The one deliberate deviation — no `home`/`away` blocks.** There was no
+> faithful option that was not buggy. `web/app.py:7528` overrides the *computed*
+> `_split_stats` record whenever `if s_home:` passes, and a dict is truthy on
+> **presence**, not on whether its values mean anything. So the oracle's
+> `{played: 19, wins: 0, ...}` renders "19 played, 0-0-0" on the EPL team page,
+> and an all-zero block renders "0 played". Only omission makes
+> `app.py:7259` return `{}` and skip the override. `7528` is left alone — for
+> Serie A the parquet splits it applies are real. The original's `played//2` is
+> also unpinned by its own output: every oracle team sits at `played=38`, the one
+> point where home and away are *necessarily* 19.
+>
+> Both oracles are now committed fixtures (`tests/fixtures/sofascore/watcher_*`).
+> They were self-destructing evidence — the watcher overwrites both every 10 min.
+>
+> ---
+>
+> **The conflict that made this a decision (kept for the record):** two writers,
+> one file. `scripts/prediction/standings_generator.py:155`
 > writes `data/upcoming/standings.json` from **matches.parquet** — rich: real
 > `form_last5`, real home/away splits with `ppg`. The HTML scraper's payload has
 > `form_last5: ""` and home/away **all zeros** (the page doesn't expose them; the
