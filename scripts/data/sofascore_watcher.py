@@ -58,6 +58,36 @@ computed record survives.
 There was no faithful-and-correct option: every reproduction of the original's
 shape is buggy. Omission is the only correct one. ``form_last5: ""`` *is* kept
 — it matches the oracle and no consumer reads it.
+
+Omission is safe because every reader of a split block defaults or guards.
+Enumerated 2026-07-16 over both leagues' files, not sampled:
+
+===========================  ==========================  ====================
+Site                         Access                      Absent →
+===========================  ==========================  ====================
+``web/app.py:7038``          ``.get("home", {})`` then   zeros → the frontend
+                             ``.get("wins", 0)``         renders ``-``
+``web/app.py:7527``          ``if s_home:``              override skipped —
+                                                         the real record lives
+``web/app.py:600``           ``if pq_row.get("home")``   guarded
+``teams.html:481``           ``st.home || {}`` then      ``-``
+                             ``hr.played ? … : '-'``
+``teams.html:745``           ``st.home ? … : '-'``       ``-``
+``web/advisor.py:3011``      position/points/W-D-L/gd    never touches splits
+``web/app.py:3637``          position/points/form        never touches splits
+``generate_epl_supp``        ``form_last5``              never touches splits
+``web/app.py:6880``          ``entry.get("team")``       never touches splits
+===========================  ==========================  ====================
+
+No unguarded ``entry["home"]`` exists, so no KeyError path opens when this
+finally writes a real table at MW≥1. The visible change is a dash where the
+original showed a fabricated number.
+
+Note ``generate_epl_supplementary.py:1515`` is a *second writer* of this same
+file (a read-modify-write that replaces the ``standings`` key to add
+``position``). It preserves entries verbatim, so it neither restores nor
+objects to the missing splits. The two writers racing is pre-existing and out
+of scope here.
 """
 
 from __future__ import annotations

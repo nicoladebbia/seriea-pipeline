@@ -115,6 +115,29 @@ def test_a_present_block_would_override_a_real_record(scraped):
     assert not would_override(ours), "the real computed record would be overridden"
 
 
+def test_the_display_path_degrades_to_a_dash_rather_than_raising():
+    """The other consumer of the splits, reproduced: web/app.py:7038.
+
+    Enumerating the readers (2026-07-16) found nine, and every one either
+    defaults or guards — this is the one that would raise if someone ever
+    tightened it to `entry["home"]["wins"]`. Absent splits must arrive at the
+    frontend as played=0, which `teams.html:481` (`hr.played ? … : '-'`)
+    renders as a dash. A dash is the honest answer; the original rendered a
+    fabricated one.
+    """
+    def home_rec(entry: dict) -> dict:
+        s_home = entry.get("home", {})  # web/app.py:7038
+        return {  # web/app.py:7041-7045
+            "w": s_home.get("wins", 0), "d": s_home.get("draws", 0),
+            "l": s_home.get("losses", 0), "played": s_home.get("played", 0),
+            "ppg": s_home.get("ppg", 0),
+        }
+
+    ours = w.shape_payload(_payload())["standings"]["Arsenal"]
+    assert home_rec(ours) == {"w": 0, "d": 0, "l": 0, "played": 0, "ppg": 0}
+    assert not home_rec(ours)["played"], "teams.html:481 renders '-' only on a falsy played"
+
+
 def test_the_oracle_block_is_internally_incoherent():
     """Why the original's shape is not a contract worth honouring.
 
