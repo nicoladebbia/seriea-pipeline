@@ -94,18 +94,90 @@
 
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
-| 1 | `data/parsed/matches.parquet` | 15,839 (7,930 SA) | 330/330 | ✅ | Daily morning/evening pipeline | 4h ago |
-| 2 | `data/features/features_serie_a.parquet` | 7,930 | 330/330 | ✅ | Daily `features/build.py` (24h gate) | 4h ago |
-| 3 | `data/parsed/player_stats.parquet` | 100,441 | 295/330 | ⚠ FBref gap | FBref HTMLs + Sofascore fallback | 4h ago |
-| 4 | `data/parsed/lineups.parquet` | 266,386 (SA + EPL) | 569 matches (260 SA + 309 EPL) | ✅ | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-04-25 |
-| 5 | `data/parsed/events.parquet` | 11,781 | 569 records | ✅ | FBref scorebox + Sofascore incidents | 4h ago |
-| 6 | `data/parsed/goalkeeper_stats.parquet` | 6,651 | 260/330 | ⚠ | FBref HTMLs (no fallback yet) | 6h ago |
-| 7 | `data/parsed/shots.parquet` | 9,213 | 0 | ❌ FBref deprecated | Use Sofascore shotmap instead | 64 days ago |
-| 8 | `data/parsed/match_id_mapping.parquet` | 7,930 | 330 | ✅ | `build_match_id_mapping.py` | 5h ago |
+| 1 | `data/parsed/matches.parquet` | 15,889 | **380/380**, all canonical | ✅ | Daily morning/evening pipeline | 2026-07-17 |
+| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380 canonical** (0 numeric, verified 2026-07-17 — see callout) | ✅ (was ⚠ until FBref backfill) | Daily `features/build.py` (24h gate) | 2026-07-17 |
+| 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
+| 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380/380 union | ⚠ dual-keyed — see callout | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-17 |
+| 5 | `data/parsed/events.parquet` | **12,095** | 373/380 union | ⚠ dual-keyed — see callout | FBref scorebox + Sofascore incidents | 2026-07-17 |
+| 6 | `data/parsed/goalkeeper_stats.parquet` | **6,897** | **380/380** | ✅ | FBref HTMLs (no fallback yet) | 2026-07-16 |
+| 7 | `data/parsed/shots.parquet` | 9,213 | **0** | ❌ FBref stopped serving `shots_all` | **Sofascore shotmap does NOT replace it** — see §`shots.parquet` | 64 days ago |
+| 8 | `data/parsed/match_id_mapping.parquet` | 15,889 | **380/380** hash + sofascore + understat | ✅ rebuilt 2026-07-17 | `build_match_id_mapping.py` | 2026-07-17 |
+
+> ⚠️ **"330" was never the season — a Serie A season is 380.** Until 2026-07-16 this
+> table read `330/330 ✅` in several rows, which looks like *complete* and was not:
+> 330 is how many matches the **frozen `fixtures.html`** had published back on
+> 2026-04-21, and `_refresh_fbref_fixtures.py` had been failing silently since (it
+> fetched headless, which Cloudflare Turnstile refuses, and reported it as a
+> `TypeError` about the write). Every count derived from that page inherited the
+> cap, and a stale *input* shrinks a coverage figure instead of failing it — so
+> nothing looked wrong. Fixed 2026-07-16; the 119 absent FBref reports were fetched
+> (380/380 on disk) and re-parsed. `matches.parquet` itself was always complete at
+> 380 — the gap was in the FBref-derived parquets and in this table. **If you see a
+> `/330` anywhere, it is a stale number, not a target.**
+
+> ✅ **GROUND TRUTH `match_id` is now one format (fixed 2026-07-17, durable).**
+> `matches.parquet` held 94 rows keyed on Sofascore's numeric fixture id
+> (`13981687`) beside 15,795 canonical `{date}_{home}_{away}` ones — two
+> incompatible formats in the ground-truth id column, the thing everything joins
+> **to**. Now 0 numeric, 380/380 canonical for SA 2025-26, and it stays that way:
+> the real defect was a live writer, `matchday_updater.py:454`, which did
+> `match_id = str(fixture.get("id"))` every matchday. It now mints the canonical
+> key (dedup was always on `(home,away,date,season)`, so the id was never
+> load-bearing), pinned by `tests/test_matchday_updater.py`. `match_id_mapping`
+> is likewise clean (380/380). The formula was proven by reconstructing the 286
+> known-good ids byte-for-byte before writing. `data/external/sofascore/*` was
+> deliberately **left alone** — natively Sofascore-keyed, so those keys are
+> correct; renaming them would be the actual bug.
+>
+> ✅ **The DERIVED-layer re-mint is RESOLVED by the FBref backfill (verified
+> 2026-07-17).** It used to come back numeric for these 94 after each
+> `features/build.py` run **because** until the backfill those 94 late-season
+> matches had **only** a Sofascore source, so multiple feature writers re-derived
+> a numeric key for them independently. The backfill gave all 380 matches a
+> canonical-keyed FBref source, removing the root cause. Verified 0 numeric across
+> the whole derived layer, N>1 under fixed conditions (different code paths, built
+> at different times today): `features_serie_a.parquet` (0/380, built 14:19), all
+> **54** `data/cache/features/serie_a/*` caches (0 total), and
+> `data/external/weather.parquet` (0, built 10:36). **Residual risk (a guard, not
+> a bug):** a *new* matchday match that arrives Sofascore-only — before that
+> week's FBref report lands — could transiently re-mint a numeric key until the
+> weekly backfill catches it. This matters because the shot-level features join
+> **canonical-only** (see `all_shots_with_xg` §, and `_map_to_canonical` in
+> `features/shot_level_xg.py`): a numeric-keyed feature row silently receives
+> **zero** shot columns, not partial NaN. **This is now guarded (2026-07-17):**
+> `health_check.py:check_data_quality` emits `feature_id_keying` — for each
+> ACTIVE_LEAGUES `features_{league}.parquet` it flags any current-season
+> `match_id` absent from `matches.parquet` (classified by membership, not id
+> shape). >1 matchweek mis-keyed = **CRITICAL** (systemic revert); a handful =
+> WARNING (the transient new-match window above). Runs every 30 min via
+> `monitor.py`, so a re-mint fails loud instead of silently emptying the shot
+> features; pinned by `tests/test_feature_id_keying.py`. Note `match_id` is in
+> `build.py:get_ml_feature_columns`'s EXCLUDE set, so a transient numeric id does
+> **not** affect model training/prediction — only the feature/prediction ↔
+> `matches.parquet` join (and, per the coupling above, the shot features) for the
+> affected rows. Do **not** "fix" a transient re-mint by rewriting the parquet.
+>
+> ⚠️ Note the id **shape trap**: an 8-char Sofascore id and an 8-hex FBref hash
+> are indistinguishable (`13980098` is valid hex; `02493616` is an FBref hash
+> that `.isdigit()` calls numeric). **Classify ids via `match_id_mapping.parquet`,
+> never by shape** — shape-guessing produced four wrong readings in one session.
+
+> ⚠️ **`lineups` and `events` are DUAL-KEYED — the same match appears under two
+> keys** (found 2026-07-17, **not fixed**). 370 lineups / 305 events matches exist
+> both under the canonical id and under their FBref hash. For events the two sets
+> are **complementary, not duplicates**: canonical-keyed rows carry `yellow_card`
+> (1,264) and `second_yellow` (17) but **no** own-goals; hash-keyed rows carry
+> `own_goal` (22) but **no** yellows — the same 79′ dismissal is `second_yellow`
+> under one key and `red_card` under the other. **Dropping either side destroys
+> real data.** A correct fix is a union-merge with dedup, complicated by name
+> spellings differing across sources (`Ismael Koné` vs `Ismaël Koné`), so it needs
+> its own decision rather than a rename. Until then: a consumer joining on the
+> canonical id gets yellows but no own-goals and 330/380 coverage; joining on the
+> hash gets the reverse. Union coverage is 380/380 (lineups) and 373/380 (events).
 | 9 | `data/external/sofascore/player_match_stats.parquet` | 101,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
-| 11 | `data/external/sofascore/shotmap_stats.parquet` | 2,926 | 328/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
-| 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 82,432 | 206 (legacy) | ⚠ Legacy | No active writer | 71 days ago |
+| 11 | `data/external/sofascore/shotmap_stats.parquet` | 6,684 | **378/380** (2 rows/match — per-**team aggregate**, not shot-level) | ✅ | `scrape_sofascore.py` weekly | 6h ago |
+| 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 86,628 | **380/380** | ✅ shot-level (per-shot xg/xgot/coords) | `write_shot_level_xg.py` (weekly Step 4b) | 2026-07-17 |
 | 13 | `data/external/sofascore/match_incidents.parquet` | 44,184 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 14 | `data/external/sofascore/captains.parquet` | 6,650 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 15 | `data/external/understat/matches_xg.parquet` | 3,370 | 330/330 | ✅ | `scrape_understat_xg()` + `parse_all_understat` | 5h ago |
@@ -254,7 +326,8 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 ### `data/parsed/lineups.parquet`
 - **Starting XI + formation + subs**
 - **266,386 rows (SA + EPL, both leagues all seasons)** — columns: match_id, team, is_home, formation, player_name, shirt_number, role, season
-- **Writer:** `scripts/data/parse_all_lineups.py` — flags: `--include-epl` (walks both `{season}/` and `{season}_epl/`), `--epl-only`, `--append`
+- **Writer:** `scripts/data/parse_all_lineups.py` — flags: `--season` (**required**), `--append`, `--replace-all`, `--dry-run`
+- ⚠️ **`--include-epl` / `--epl-only` no longer exist** (noted 2026-07-16). The original module was one of the 15 phantoms (never git-added, swept after 2026-06-01) and the rebuild reconstructs only the Serie A path that `refresh_weekly_data.py` actually invokes. The EPL rows already in this parquet are **preserved** — the merge replaces only the match_ids it parsed (verified: 271,530 rows across 6,427 other-convention matches survive a 2025-26 run). What is gone is the ability to *refresh* EPL lineups from `{season}_epl/` HTML; that path is unbuilt, and calling the old flag now errors loudly rather than silently doing nothing. See AUGUST_RUNBOOK §3b.
 - **Fallback:** Sofascore JSON dumps in `data/external/sofascore/matches/{season}/*.json` have `home_lineup`/`away_lineup` objects
 - **2025-26:** 569 matches (260 SA + 309 EPL), 40 teams, formation 100% populated for both leagues
 - **Append safety:** `--append` keys on `(season, team)` so partial-league input does NOT wipe other-league rows for the same season (fixed 2026-04-25 after data-loss incident)
@@ -271,13 +344,28 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 
 ### `data/parsed/understat_players.parquet`
 - **Season-aggregate player xG / xA / xGChain / xGBuildup**
-- **11,669 rows** across 8 seasons of Serie A + 6 seasons of Premier League
+- **11,706 rows** across 12 seasons of Serie A (2014-15..2025-26) + 9 of Premier
+  League (2017-18..2025-26) — recounted from the file 2026-07-16
 - **Schema:** league, season, team, player, league_id, season_id, team_id, player_id, position, matches, minutes, goals, xg, np_goals, np_xg, assists, xa, shots, key_passes, yellow_cards, red_cards, xg_chain, xg_buildup
 - **Writer:** `scripts/data/refresh_understat_players.py [--season YYYY-YYYY] [--leagues serie_a,premier_league] [--all-seasons]`
 - **Source:** `playersData` JS variable on Understat league pages (extracted via Selenium)
-- **Cadence:** Manual today (no plist installed). Drafts at `scripts/pipeline/com.seriea.refresh_understat.draft.plist`. Auto-refresh in `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()` which only fetches Serie A team-level data (not player-level)
+  - ⚠️ **Selenium is mandatory, and it is NOT an IP block.** Measured 2026-07-16:
+    plain HTTP GET returns **200** but `playersData` occurrences = **0** (the page
+    renders client-side). Understat is reachable — unlike Sofascore (403) and
+    FBref (Cloudflare). Don't "fix" this by retrying with requests.
+- **Cadence:** `com.seriea-pipeline.refresh-understat` plist (Tue 04:30) is
+  INSTALLED and invokes `-m scripts.data.refresh_understat_players --season 2025-2026`.
+  The draft path this section used to cite never existed; the real copy is
+  `scripts/pipeline/com.seriea-pipeline.refresh-understat.plist`. Auto-refresh in
+  `run_full_pipeline.py` only triggers when stale, and uses `scrape_understat_xg()`
+  which only fetches Serie A team-level data (not player-level)
+- **Placeholders:** `team_id` is always 0 and `league_id` always null — `playersData`
+  carries neither. Don't build a join on them.
 - **Team naming quirk:** Players who transferred mid-season have comma-joined team strings (e.g. "Atalanta,Fiorentina"). Downstream `_team_match` fuzzy lookup handles this via substring match
-- **2025-26:** 1,086 player rows (561 SA, 525 EPL), refreshed 2026-04-24
+- **2025-26:** 1,123 player rows (586 SA, 537 EPL), stored 2026-05-31. Re-fetched
+  live 2026-07-16 and both leagues came back **identical to the stored rows**
+  (assert_frame_equal, same values and dtypes) — the season is complete, so the
+  file is final, not stale.
 
 ### `data/parsed/events.parquet`
 - **Goal + card events with minutes** (from FBref scorebox — only goals/reds/own-goals; full timelines aren't in match report HTML)
@@ -297,10 +385,42 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 - **Individual shot events w/ xG** (15 cols: minute, player, xg_shot, psxg_shot, outcome, distance)
 - **9,213 rows — ONLY 2024-2025 season**
 - **Writer:** `scripts/data/parse_all_shots.py` (NEW today but produces 0 rows for 2025-26)
-- **Status:** ❌ **FBref removed `shots_all` table from 2025-26 match reports.**
-- **Plan B:** Use `data/external/sofascore/shotmap_stats.parquet` (2,926 rows, 328/330 matches for 2025-26)
-- **Plan C:** Use `data/external/sofascore/all_shots_with_xg.parquet` (82,432 shots historical) for older data
-- **Migration needed:** downstream code still reading shots.parquet should be updated to use Sofascore
+- **Status:** ❌ **FBref removed `shots_all` from 2025-26 reports — but this file has NO
+  live reader, so that removal has zero downstream impact.** The only code that touches
+  `parsed/shots.parquet` is its own writer (`parse_all_shots.py`). Every shot-level
+  *feature* reads the Sofascore file below, not this one. (Removal confirmed source-side
+  2026-07-16: `shots_all` absent from all 380 cached 2025-26 reports, present in 2024-25,
+  and a scrolled re-fetch came back larger and still lacked it.) What is genuinely lost
+  for 2025-26 is FBref's shot-creating-action chain (`sca_1_player`, `sca_1_type`) and
+  `psxg_shot` — neither is consumed by any current feature.
+- ⚠️ **Earlier versions of this section were WRONG** (corrected 2026-07-17): they said the
+  64 shot features read `shots.parquet` and that the Sofascore shotmap could only
+  "approximate" them. Both false. The features read `all_shots_with_xg.parquet`, which is
+  true shot-level (per-shot xg/xgot/coordinates), and it has now been fully restored — see
+  its entry under §4.
+- **The real cause was a dead writer, now fixed.** The 64 `{home,away}_shot_*` features
+  (`shot_xg_mean_roll_*`, `openplay_xg_roll_*`, `setpiece_xg_roll_*`, `counter_xg_roll_*`,
+  `penalty_xg_roll_*`) were **45.8% NaN in 2025-26** because their source,
+  `all_shots_with_xg.parquet`, stopped updating at 2026-02-08 (206/380) when its one-shot
+  writer died. `scripts/data/write_shot_level_xg.py` (built 2026-07-17) re-derives the
+  file from the Sofascore shotmap cache — restored to **380/380**, and the 64 features
+  dropped to **2.8% NaN** overall (post-Feb-8 window: 100% → 0.3%; residual is legitimate
+  rolling-window warmup, not a gap).
+- **Scope: Serie A only.** `all_shots_with_xg.parquet` is SA across all 9 seasons; the shot
+  plugins read that single file, so **EPL shot features are empty and always have been** —
+  giving EPL shot features is a separate, un-built feature (it would mean adding EPL shots to
+  this file and validating cross-league rolling). The weekly rebuild (Step 4b) therefore runs
+  `serie_a` only; `write_shot_level_xg.cache_dir` is league-aware so a future EPL run reads
+  the EPL cache, but nothing is wired to consume an EPL shot file today.
+- ⚠️ **The 2.8% is verified on the real, canonical-keyed feature table — and it depends on
+  that keying.** The shot plugins (`features/shot_level_xg.py`, `features/situational_xg.py`)
+  bridge the natively-Sofascore-keyed shot file to canonical ids via
+  `match_id_mapping.parquet`, then `_map_to_canonical` **inner-joins on the canonical
+  `match_id`**. A feature row keyed by a numeric Sofascore id therefore receives **zero**
+  shot columns (measured: an all-sofascore-keyed frame produced "no matches matched" — total
+  failure, not partial NaN), whereas the current all-canonical table fills at 2.8%. This is
+  why the derived-layer re-mint callout (features row 2) is coupled to this fix: the fix
+  lands today only because the FBref backfill made the feature table 0-numeric.
 
 ---
 
@@ -312,7 +432,7 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 |------|------|------|------|
 | `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
-| `shotmap_stats.parquet` | 2,926 | 30 | Shot events (location x/y, situation, body part, outcome) |
+| `shotmap_stats.parquet` | 6,684 | 30 | Per-**team** shot aggregate, 2 rows/match (totals, xG, xGOT, situation counts, distance stats) — **not** shot-level |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
 | `match_incidents.parquet` | 44,184 | 13 | Full event timeline (goal, card, sub, VAR) |
 | `captains.parquet` | 6,650 | 5 | Team captain per match |
@@ -540,12 +660,18 @@ Runs `scripts/pipeline/refresh_weekly_data.py` which does 13 steps:
 | # | Step | Source | Output |
 |---|------|--------|--------|
 | 1 | FBref fixtures.html refresh | botasaurus → fbref.com | `data/raw/html/2025_2026/fixtures.html` |
-| 2 | FBref missing match HTMLs | `scrape_fbref_missing.py --headless` | `data/raw/html/2025-2026/*.html` |
-| 3 | Parse player_stats | `parse_all_player_stats --append` | player_stats.parquet |
-| 4 | Parse lineups | `parse_all_lineups --append` | lineups.parquet |
-| 5 | Parse events | `parse_all_events --append` | events.parquet |
-| 6 | Parse goalkeeper_stats | `parse_all_goalkeeper_stats --append` | goalkeeper_stats.parquet |
-| 7 | Parse shots | `parse_all_shots --append` | shots.parquet (0 rows for 2025-26) |
+| 2 | FBref missing match HTMLs | `scrape_fbref_missing.py` — **run it visible; `--headless` cannot pass Cloudflare Turnstile** (measured 2026-07-16: headless = a 27 KB wall, visible = a 426 KB report in ~6s). The weekly job passes `--headless`, probes one page, reports, and exits 0. | `data/raw/html/2025-2026/{fbref_8hex}.html` |
+| 3 | Parse player_stats | `parse_all_player_stats --season 2025-2026 --append` | player_stats.parquet |
+| 4 | Parse lineups | `parse_all_lineups --season 2025-2026 --append` | lineups.parquet |
+| 5 | Parse events | `parse_all_events --season 2025-2026 --append` | events.parquet |
+| 6 | Parse goalkeeper_stats | `parse_all_goalkeeper_stats --season 2025-2026 --append` | goalkeeper_stats.parquet |
+| 7 | Parse shots | `parse_all_shots --season 2025-2026 --append` | shots.parquet (exits 1 — no shots tables cached for 2025-26) |
+
+> ⚠️ `--season` is **required** on all five parsers — there is no all-seasons
+> default. `refresh_weekly_data.py` passes `--season CURRENT_SEASON`; the bare
+> form shown here before 2026-07-16 was never what the job ran, and running it
+> would rewrite the legacy 2024-25 `player_stats` slice (see that file's
+> `--season` comment). Only the named season is parsed.
 | 8 | Sofascore refresh | `scrape_sofascore.py --season 2025-2026` | 4 sofascore parquets |
 | 9 | Understat refresh | `scrape_understat_xg()` + `parse_all_understat` | understat/matches_xg.parquet |
 | 10 | Referee refresh | `scrape_all_referee_assignments` | referee_assignments.parquet |

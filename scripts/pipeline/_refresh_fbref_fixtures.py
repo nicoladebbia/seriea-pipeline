@@ -27,7 +27,11 @@ def main(season: str) -> None:
     log.info(f"Fetching: {url}")
 
     @browser(
-        headless=True,
+        # Was headless=True, which silently could not work: measured 2026-07-16,
+        # Cloudflare Turnstile turns a headless browser away from FBref (a ~27 KB
+        # wall page) while a visible one passes in ~6s. That is why fixtures.html
+        # sat at its 2026-04-21 copy for three months while this ran weekly.
+        headless=False,
         block_images_and_css=False,
         wait_for_complete_page_load=True,
         reuse_driver=False,
@@ -64,6 +68,17 @@ def main(season: str) -> None:
         return html
 
     html = fetch({"url": url})
+
+    # botasaurus swallows the RuntimeError above and hands back None, which
+    # write_text then reported as "TypeError: data must be str, not NoneType" —
+    # an error about the write, naming nothing about Cloudflare. Say what
+    # happened, and never truncate a good fixtures.html with a wall page.
+    if not html or len(html) < 50000:
+        raise RuntimeError(
+            f"FBref returned no usable schedule page ({len(html or '')} bytes) — "
+            "Cloudflare Turnstile. The existing fixtures.html is left untouched."
+        )
+
     out_path.write_text(html, encoding="utf-8")
     log.info(f"Saved {len(html):,} bytes to {out_path}")
 

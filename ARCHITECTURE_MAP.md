@@ -36,6 +36,21 @@
 ## Per-file map by module
 Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdict: keep / **delete** / edit / merge / rename.
 
+> ⚠️ **Known gap: `scripts/data/` has no section below** (~30 files, incl. every
+> Sofascore/odds/backfill module). Noticed 2026-07-16. This is not cosmetic —
+> it is plausibly *why* the 15 phantom modules stayed invisible: a launchd job
+> invoking `scripts.data.X` had no map entry to contradict, so a file that did
+> not exist looked no different from one that did. Treat "not in the map" as
+> "unknown", never as "absent" — the map is authoritative only where it has
+> coverage. Regenerating this section is worth a session of its own.
+>
+> It cost again on 2026-07-16. `scripts/data/scrape_fbref_missing.py` (weekly,
+> step 2 of `refresh_weekly_data.py`) was the last phantom — and its *input*,
+> `scripts/pipeline/_refresh_fbref_fixtures.py`, had been failing silently since
+> April behind a `TypeError` that named the write and not Cloudflare. Neither had
+> a map entry. The pattern is not "files go missing", it is **a whole directory
+> nobody can see, so nothing in it can be missed.**
+
 ### `cli.py/` — 1 files
 
 #### 🟢 `cli.py` — grade B · keep
@@ -104,7 +119,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imports from: config.settings (atomic_write_parquet), config.team_names (normalize_team), models.schemas (MatchData), parser.events (events_to_records), parser.lineups (lineups_to_records), storage.paths (parsed_path). Imported by: cli.py.
 - **Quality signals:** Type hints on key functions (list[MatchData], list[dict], pd.DataFrame). Docstrings on public and private functions. 369 LOC with substantial logic: _coerce_numeric_columns handles FBref data type issues, _fill_missing_matchweeks implements two-tier fallback (Sofascore lookup + chronological inference), _append_or_create uses fcntl advisory locking to prevent concurrent R-M-W races and atomic writes (tmp+rename). Logging throughout. Exception handling around Sofascore fixture loading. Minor: optional conditional import of normalize_team (lines 102-104) is defensive but slightly verbose; hardcoded KNOWN_NUMERIC list (lines 51-59) could drift from schema.
 
-### `scraper/` — 23 files
+### `scraper/` — 24 files
 
 #### ⚫ `scraper/__init__.py` — grade F · **delete**
 - **Does:** Empty module initialization file.
@@ -191,6 +206,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Does:** Fetch confirmed starting XIs from Sofascore API ~60 minutes before kickoff using existing curl_cffi + Cloudflare bypass infrastructure.
 - **Talks to:** imported_by: scraper/lineup_fetcher.py; imports: config/settings.py (DATA_DIR, UPCOMING_DIR), config/team_names.py (normalize_team), config/leagues.py (get_league_config, LEAGUE_REGISTRY), scraper/sofascore_events.py (_get_json, _jitter_delay, _BASE_URL)
 - **Quality signals:** 100+ LOC (partial read), _normalize_sofascore_team() with explicit mapping, get_sofascore_match_ids() builds match key → sofascore_id lookup, reuses sofascore_events infra for API calls.
+
+#### 🟢 `scraper/sofascore_standings.py` — grade A · keep *(added 2026-07-16)*
+- **Does:** Scrape a league table off Sofascore's ISR-fresh **HTML** tournament page (`__NEXT_DATA__` blob) — the canonical fallback when the API 403s. Owns the retry/backoff, the sentinel schema-break check, the negative cache and the failure breaker.
+- **Talks to:** imports: config/settings.py (get_current_season); imported_by: web/app.py (aliased to the original private `_live_standings_via_html` names — every call site unchanged), scripts/data/sofascore_watcher.py
+- **Why it exists:** extracted verbatim out of `web/app.py:335-524` so the watcher could share it — **importing `web.app` costs 134ms and starts TWO daemon threads** (`_auto_settle_loop` and the odds auto-poll the project CLAUDE.md documents as a credit burn). This module: 9ms, zero threads, no Flask. Proven a pure move — all 190 lines reproduce byte-for-byte under a 9-name rename map.
+- **Two known gaps, pinned by tests, deliberately not fixed (a move is not a behaviour change):** season is stamped from `get_current_season()` (boundary Aug 1), **not read off the page** — they disagree until Aug 1; and the sentinel checks one team, so it cannot catch a partial table (the 14-of-20 oracle is how).
+- **Quality signals:** 190 LOC, 16 tests against a committed real specimen (`tests/fixtures/sofascore/tournament_standings_serie_a.json`). No network in tests.
 
 #### 🟢 `scraper/squad_fetcher.py` — grade B · keep
 - **Does:** Live squad roster fetcher from API-Football (primary) and Football-Data.org (fallback) with 7-day cache TTL.

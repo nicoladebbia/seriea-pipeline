@@ -42,12 +42,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config.settings import DATA_DIR, RAW_HTML_DIR
 from config.team_names import normalize_team
-from parser.html_utils import _uncomment_tables
-from parser.player_stats import parse_player_stats
-from scripts.data.parse_all_player_stats import (
+from parser.html_utils import (
+    _uncomment_tables,
     extract_match_date,
     extract_team_info_from_html,
 )
+from parser.player_stats import parse_player_stats
 
 log = logging.getLogger(__name__)
 

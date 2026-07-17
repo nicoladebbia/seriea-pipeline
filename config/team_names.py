@@ -461,28 +461,30 @@ for _canon in set(TEAM_NAME_MAP.values()):
 #
 # When promoted/relegated teams change between seasons, update this list
 # and verify all scrapers produce the correct canonical names.
-SERIE_A_2025_26: list[str] = [
+SERIE_A_2026_27: list[str] = [
     "Atalanta",
     "Bologna",
     "Cagliari",
     "Como",
-    "Cremonese",   # promoted from Serie B
     "Fiorentina",
+    "Frosinone",    # promoted from Serie B (last in Serie A 2023-24)
     "Genoa",
     "Inter",
     "Juventus",
     "Lazio",
     "Lecce",
     "Milan",
+    "Monza",        # promoted from Serie B (last in Serie A 2024-25)
     "Napoli",
     "Parma",
-    "Pisa",         # promoted from Serie B
     "Roma",
-    "Sassuolo",     # promoted from Serie B
+    "Sassuolo",
     "Torino",
     "Udinese",
-    "Verona",       # canonical name (Sofascore uses "Hellas Verona")
+    "Venezia",      # promoted from Serie B (last in Serie A 2024-25)
 ]
+# Relegated after 2025-26: Cremonese, Pisa, Verona. They keep their
+# normalize_team() aliases above — historical rows still need resolving.
 
 PREMIER_LEAGUE_2025_26: list[str] = [
     "Arsenal",

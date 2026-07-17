@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
-from config.team_names import SERIE_A_2025_26, normalize_team
+from config.team_names import SERIE_A_2026_27, normalize_team
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ UNDERSTAT_TEAM_MAP = {
 }
 
 # Use the canonical list from config/team_names.py (single source of truth)
-SERIE_A_2025_26_TEAMS = set(SERIE_A_2025_26)
+SERIE_A_2026_27_TEAMS = set(SERIE_A_2026_27)
 
 
 def check_freshness():
@@ -65,8 +65,8 @@ def check_freshness():
     print(f"  Fetched: {fetched_at} ({age_str})")
     print(f"  Teams: {len(teams)}")
 
-    missing = SERIE_A_2025_26_TEAMS - set(teams.keys())
-    extra = set(teams.keys()) - SERIE_A_2025_26_TEAMS
+    missing = SERIE_A_2026_27_TEAMS - set(teams.keys())
+    extra = set(teams.keys()) - SERIE_A_2026_27_TEAMS
     if missing:
         print(f"  ❌ Missing teams: {', '.join(sorted(missing))}")
     if extra:
@@ -114,7 +114,7 @@ def sync_with_understat():
         team = teams[-1]
         team = UNDERSTAT_TEAM_MAP.get(team, team)
 
-        if team in SERIE_A_2025_26_TEAMS:
+        if team in SERIE_A_2026_27_TEAMS:
             if team not in understat_players:
                 understat_players[team] = set()
             understat_players[team].add(player)
@@ -125,7 +125,7 @@ def sync_with_understat():
     total_in_understat_only = 0
     total_in_squad_only = 0
 
-    for team in sorted(SERIE_A_2025_26_TEAMS):
+    for team in sorted(SERIE_A_2026_27_TEAMS):
         us_players = understat_players.get(team, set())
         sq_data = squads.get(team, {})
         sq_players_list = sq_data.get("players", []) if isinstance(sq_data, dict) else []

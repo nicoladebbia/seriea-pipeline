@@ -206,7 +206,17 @@ Organised by *symptom-first* so you can grep for what you're seeing:
 
 ### Symptom: "Sofascore API blocks (HTTP 403) but I need fresh data"
 
-- **What you'll see**: `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
+- **FIRST: re-measure the ban before believing it.** A recorded ban is a *snapshot*, not a
+  standing fact — they lift in hours-to-days. Probe with `curl_cffi` + `impersonate="chrome124"`,
+  **not plain `curl`**: plain curl gets 403 from Sofascore *even when nothing is banned*
+  (that's their normal always-on TLS-fingerprint protection), so a plain-curl 403 proves
+  nothing. Measured 2026-07-16: api + www both **200** with live data via curl_cffi while
+  plain curl still 403 — the June ban was gone, and two modules deferred as "403, do not
+  build" (`live_sofascore`, `sofascore_watcher`) were buildable all along. One cheap probe.
+- **Throttling ≠ ban.** Rapid successive requests return `CurlError (7) Failed to connect
+  ... port 443` — a *connection* error, not a 403. Back off ~20s; it recovers. Don't read it
+  as the ban returning.
+- **What you'll see** (a real ban): `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
 - **Why**: Cloudflare IP-fingerprint ban, often after heavy scraping. Lasts hours to days.
 - **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance live directly under `props.pageProps` (since ~2026-06; previously nested in `props.pageProps.initialProps` — the web/app.py parsers support both paths).
 - **Page-tier map (measured 2026-06-11, mid-ban)**: NOT all www pages are equal. **Tournament hub pages** are ISR-rendered FRESH (live scores within minutes — use these; WC: `scripts/worldcup/sofascore_fetch.WC_TOURNAMENT_PAGE`). **Daily-schedule pages** (`/football/{date}`) are stale prerenders (opener showed `notstarted` 75 min after kickoff) — last resort only. **Match pages** are client-rendered shells: `__NEXT_DATA__` carries i18n strings only, NO event/lineups/statistics payloads — an HTML fallback for lineups or player stats is IMPOSSIBLE; during bans, lineups degrade to caps-fallback XIs and the stats parquet catches up on the first healthy API run (`events/last` re-serves history).
