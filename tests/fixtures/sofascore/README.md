@@ -22,6 +22,27 @@ unverified source.
 compares against the oracle in `data/live/*.json`.
 `tests/test_sofascore_standings.py` does the same for the standings scraper.
 
+## The watcher oracles — output, not input
+
+Two files here are **not** Sofascore responses. They are the lost watcher's own
+output, byte-copied out of gitignored `data/` on 2026-07-16, before the rebuilt
+`scripts/data/sofascore_watcher.py` could overwrite them.
+
+| File | Copied from | What it pins |
+|---|---|---|
+| `watcher_standings_premier_league_2026_06_01.json` | `data/upcoming/standings_premier_league.json` | The watcher's write shape. Its tz-aware `generated_at` lands **4s after** the tick-3055 state write, which is what proves it authored the file. |
+| `watcher_last_refresh_2026_06_01.json` | `data/external/sofascore/.last_refresh.json` | The tick-3055 heartbeat `/api/data-freshness` (`web/app.py:2262`) reads. Also the evidence the original did far more than standings — `incidents_scraped`, `matches_live`, pre/post windows. |
+
+They are committed because the live files were **self-destructing evidence**:
+the watcher overwrites both every 10 minutes, so a test reading them was green
+only until the module it tests actually ran. Copying them also killed a
+`skipif` that silently disabled the check on any fresh clone.
+
+Read `tests/test_sofascore_watcher.py` for what they establish and — more
+importantly — what they *cannot*: every oracle team sits at `played=38`, the
+one point in a season where home and away are necessarily equal, so the
+original's `played//2` split is unpinned by its own output.
+
 ## `tournament_standings_serie_a.json` — the HTML fallback specimen
 
 The untouched `props.pageProps.standings` subtree lifted from the tournament

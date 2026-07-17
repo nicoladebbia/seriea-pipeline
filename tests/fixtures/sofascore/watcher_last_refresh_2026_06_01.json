@@ -1,0 +1,20 @@
+{
+  "started_at": "2026-06-01T16:49:02.157553+00:00",
+  "tick": 3055,
+  "leagues": {},
+  "incidents_scraped": 0,
+  "any_failure": false,
+  "matches_post_window": [],
+  "matches_pre_window": [],
+  "did_full_refresh": false,
+  "did_standings_refresh": true,
+  "standings_json_teams": {
+    "serie_a": 0,
+    "premier_league": 20
+  },
+  "matches_live": [],
+  "api_failure": false,
+  "standings_html_failure": true,
+  "completed_at": "2026-06-01T16:49:06.507627+00:00",
+  "duration_s": 4.3
+}

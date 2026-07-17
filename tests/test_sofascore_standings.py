@@ -276,16 +276,18 @@ def test_failures_are_negative_cached_so_sofascore_is_not_hammered(serve):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (UPCOMING / "standings_premier_league.json").exists(),
-    reason="oracle unavailable: data/ is gitignored",
-)
 def test_per_team_shape_matches_what_the_watcher_wrote(serve):
-    """The stored EPL file was written by the (lost) watcher from this
-    scraper's payload — its tz-aware generated_at lands 4s after the tick 3055
-    state write. So its per-team keys are this function's output contract.
+    """The EPL file the (lost) watcher wrote at tick 3055 — its tz-aware
+    generated_at lands 4s after that tick's state write, which is what proves
+    it authored the file. So its per-team keys are this function's output
+    contract.
+
+    Reads the committed fixture, NOT data/upcoming/. The live file is the one
+    the rebuilt watcher overwrites every 10 minutes, so pointing at it made
+    this test both skippable on a fresh clone and self-destructing on the first
+    tick. The fixture is a byte copy taken before the rebuild shipped.
     """
-    stored = json.loads((UPCOMING / "standings_premier_league.json").read_text())
+    stored = json.loads((FIXTURES / "watcher_standings_premier_league_2026_06_01.json").read_text())
     assert stored["source"] == "sofascore_html"
 
     serve(_Resp(_page(SPECIMEN)))
