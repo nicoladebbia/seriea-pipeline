@@ -144,9 +144,14 @@
 > weekly backfill catches it. This matters because the shot-level features join
 > **canonical-only** (see `all_shots_with_xg` §, and `_map_to_canonical` in
 > `features/shot_level_xg.py`): a numeric-keyed feature row silently receives
-> **zero** shot columns, not partial NaN. A cheap durable protection is a health
-> check that fails loud if `features_serie_a` ever carries a numeric SA id, rather
-> than letting it re-mint silently. Note `match_id` is in
+> **zero** shot columns, not partial NaN. **This is now guarded (2026-07-17):**
+> `health_check.py:check_data_quality` emits `feature_id_keying` — for each
+> ACTIVE_LEAGUES `features_{league}.parquet` it flags any current-season
+> `match_id` absent from `matches.parquet` (classified by membership, not id
+> shape). >1 matchweek mis-keyed = **CRITICAL** (systemic revert); a handful =
+> WARNING (the transient new-match window above). Runs every 30 min via
+> `monitor.py`, so a re-mint fails loud instead of silently emptying the shot
+> features; pinned by `tests/test_feature_id_keying.py`. Note `match_id` is in
 > `build.py:get_ml_feature_columns`'s EXCLUDE set, so a transient numeric id does
 > **not** affect model training/prediction — only the feature/prediction ↔
 > `matches.parquet` join (and, per the coupling above, the shot features) for the
