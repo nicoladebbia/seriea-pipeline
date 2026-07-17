@@ -94,14 +94,26 @@
 
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
-| 1 | `data/parsed/matches.parquet` | 15,839 (7,930 SA) | 330/330 | ✅ | Daily morning/evening pipeline | 4h ago |
-| 2 | `data/features/features_serie_a.parquet` | 7,930 | 330/330 | ✅ | Daily `features/build.py` (24h gate) | 4h ago |
-| 3 | `data/parsed/player_stats.parquet` | 100,441 | 295/330 | ⚠ FBref gap | FBref HTMLs + Sofascore fallback | 4h ago |
-| 4 | `data/parsed/lineups.parquet` | 266,386 (SA + EPL) | 569 matches (260 SA + 309 EPL) | ✅ | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-04-25 |
-| 5 | `data/parsed/events.parquet` | 11,781 | 569 records | ✅ | FBref scorebox + Sofascore incidents | 4h ago |
-| 6 | `data/parsed/goalkeeper_stats.parquet` | 6,651 | 260/330 | ⚠ | FBref HTMLs (no fallback yet) | 6h ago |
-| 7 | `data/parsed/shots.parquet` | 9,213 | 0 | ❌ FBref deprecated | Use Sofascore shotmap instead | 64 days ago |
-| 8 | `data/parsed/match_id_mapping.parquet` | 7,930 | 330 | ✅ | `build_match_id_mapping.py` | 5h ago |
+| 1 | `data/parsed/matches.parquet` | 15,839 (7,930 SA) | **380/380** | ✅ | Daily morning/evening pipeline | 2026-07-16 |
+| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380** | ✅ | Daily `features/build.py` (24h gate) | 2026-07-16 |
+| 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
+| 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380 SA fbref + EPL + legacy ids | ⚠ id conventions | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-16 |
+| 5 | `data/parsed/events.parquet` | **12,095** | 380 SA fbref + EPL + legacy ids | ⚠ id conventions | FBref scorebox + Sofascore incidents | 2026-07-16 |
+| 6 | `data/parsed/goalkeeper_stats.parquet` | **6,897** | **380/380** | ✅ | FBref HTMLs (no fallback yet) | 2026-07-16 |
+| 7 | `data/parsed/shots.parquet` | 9,213 | 0 | ❌ FBref stopped serving `shots_all` | Use Sofascore shotmap instead | 64 days ago |
+| 8 | `data/parsed/match_id_mapping.parquet` | 15,889 | 380 SA rows but only **330 `fbref_hash`** | ⚠ **stale — rebuild** | `build_match_id_mapping.py` | 2026-07-16 |
+
+> ⚠️ **"330" was never the season — a Serie A season is 380.** Until 2026-07-16 this
+> table read `330/330 ✅` in several rows, which looks like *complete* and was not:
+> 330 is how many matches the **frozen `fixtures.html`** had published back on
+> 2026-04-21, and `_refresh_fbref_fixtures.py` had been failing silently since (it
+> fetched headless, which Cloudflare Turnstile refuses, and reported it as a
+> `TypeError` about the write). Every count derived from that page inherited the
+> cap, and a stale *input* shrinks a coverage figure instead of failing it — so
+> nothing looked wrong. Fixed 2026-07-16; the 119 absent FBref reports were fetched
+> (380/380 on disk) and re-parsed. `matches.parquet` itself was always complete at
+> 380 — the gap was in the FBref-derived parquets and in this table. **If you see a
+> `/330` anywhere, it is a stale number, not a target.**
 | 9 | `data/external/sofascore/player_match_stats.parquet` | 101,875 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 11 | `data/external/sofascore/shotmap_stats.parquet` | 2,926 | 328/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
