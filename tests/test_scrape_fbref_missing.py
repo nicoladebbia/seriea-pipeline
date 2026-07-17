@@ -44,6 +44,24 @@ def test_the_two_dirs_are_not_the_same_place():
     assert s.fixtures_path("2025-2026").parent != s.reports_dir("2025-2026")
 
 
+def test_the_fixtures_writer_and_this_reader_agree_on_the_path():
+    """_refresh_fbref_fixtures.py writes the file this module reads.
+
+    They derive the location independently — the writer from its own
+    PROJECT/data/raw/html, this module from config.settings.RAW_HTML_DIR — so
+    nothing but this test stops them drifting apart. A drift would be silent in
+    the worst way: the writer writes, this module finds no fixtures.html, and
+    the gap reads as "nothing missing" rather than as an error. That failure
+    shape already cost three months here, when a stale fixtures.html quietly
+    shrank the gap from 119 to 69 instead of failing.
+    """
+    from scripts.pipeline import _refresh_fbref_fixtures as writer
+
+    season = "2025-2026"
+    written = writer.HTML_DIR / season.replace("-", "_") / "fixtures.html"
+    assert written == s.fixtures_path(season)
+
+
 # --------------------------------------------------------------------------
 # Extraction — the league-poisoning guard
 # --------------------------------------------------------------------------
