@@ -95,7 +95,7 @@
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
 | 1 | `data/parsed/matches.parquet` | 15,889 | **380/380**, all canonical | ✅ | Daily morning/evening pipeline | 2026-07-17 |
-| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380** | ✅ (64 shot cols degraded — row 7) | Daily `features/build.py` (24h gate) | 2026-07-17 |
+| 2 | `data/features/features_serie_a.parquet` | 7,980 | 286 canonical + **94 numeric** (re-minted every build — see callout) | ⚠ derived-layer re-keys | Daily `features/build.py` (24h gate) | 2026-07-17 |
 | 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
 | 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380/380 union | ⚠ dual-keyed — see callout | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-17 |
 | 5 | `data/parsed/events.parquet` | **12,095** | 373/380 union | ⚠ dual-keyed — see callout | FBref scorebox + Sofascore incidents | 2026-07-17 |
@@ -115,19 +115,34 @@
 > 380 — the gap was in the FBref-derived parquets and in this table. **If you see a
 > `/330` anywhere, it is a stale number, not a target.**
 
-> ✅ **`match_id` is now one format (migrated 2026-07-17).** `matches.parquet` held
-> 94 rows keyed on Sofascore's numeric fixture id (`13981687`) beside 15,795
-> canonical `{date}_{home}_{away}` ones — two incompatible formats in the
-> ground-truth id column. The 94 were normalised across **62 files** (matches,
-> features, lineups, events, weather, the 50+ `data/cache/features/serie_a/*`
-> caches, the mapping). The `data/external/sofascore/*` files were deliberately
-> **left alone**: they are natively keyed by Sofascore ids, so those keys are
-> correct for what they are — renaming them would have been the actual bug.
-> The formula was proven by reconstructing the 286 known-good ids byte-for-byte
-> before writing. **The live writer was the real defect**:
-> `matchday_updater.py:454` did `match_id = str(fixture.get("id"))` every
-> matchday, so the data fix alone would have reverted on the next run — it now
-> mints the canonical key, pinned by `tests/test_matchday_updater.py`.
+> ✅ **GROUND TRUTH `match_id` is now one format (fixed 2026-07-17, durable).**
+> `matches.parquet` held 94 rows keyed on Sofascore's numeric fixture id
+> (`13981687`) beside 15,795 canonical `{date}_{home}_{away}` ones — two
+> incompatible formats in the ground-truth id column, the thing everything joins
+> **to**. Now 0 numeric, 380/380 canonical for SA 2025-26, and it stays that way:
+> the real defect was a live writer, `matchday_updater.py:454`, which did
+> `match_id = str(fixture.get("id"))` every matchday. It now mints the canonical
+> key (dedup was always on `(home,away,date,season)`, so the id was never
+> load-bearing), pinned by `tests/test_matchday_updater.py`. `match_id_mapping`
+> is likewise clean (380/380). The formula was proven by reconstructing the 286
+> known-good ids byte-for-byte before writing. `data/external/sofascore/*` was
+> deliberately **left alone** — natively Sofascore-keyed, so those keys are
+> correct; renaming them would be the actual bug.
+>
+> ⚠️ **The DERIVED layer still re-mints 94 numeric ids on every build — NOT
+> fixed, and not a one-shot fix.** `features_serie_a.parquet`, ~20
+> `data/cache/features/serie_a/*` caches, and `data/external/weather.parquet`
+> come back numeric for these 94 after each `features/build.py` run. This is
+> systemic, not one writer: until today's FBref backfill these 94 late-season
+> matches had **only** a Sofascore source, so multiple feature writers re-derive
+> a numeric key for them independently (the pattern is scattered — `venue`/
+> `weather` revert, `elo`/`sofascore` don't). It is **lower severity than the
+> ground-truth bug was**: `match_id` is in `build.py:get_ml_feature_columns`'s
+> EXCLUDE set, so numeric ids do **not** affect model training or prediction —
+> they only break joining features/predictions back to `matches.parquet` for
+> those 94. A durable fix means making each feature writer key via
+> `match_id_mapping.parquet` (or re-ingesting now that FBref reports exist), and
+> is its own task — do not "fix" it by rewriting the parquet, which reverts.
 >
 > ⚠️ Note the id **shape trap**: an 8-char Sofascore id and an 8-hex FBref hash
 > are indistinguishable (`13980098` is valid hex; `02493616` is an FBref hash
