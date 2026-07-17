@@ -43,6 +43,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 > not exist looked no different from one that did. Treat "not in the map" as
 > "unknown", never as "absent" — the map is authoritative only where it has
 > coverage. Regenerating this section is worth a session of its own.
+>
+> It cost again on 2026-07-16. `scripts/data/scrape_fbref_missing.py` (weekly,
+> step 2 of `refresh_weekly_data.py`) was the last phantom — and its *input*,
+> `scripts/pipeline/_refresh_fbref_fixtures.py`, had been failing silently since
+> April behind a `TypeError` that named the write and not Cloudflare. Neither had
+> a map entry. The pattern is not "files go missing", it is **a whole directory
+> nobody can see, so nothing in it can be missed.**
 
 ### `cli.py/` — 1 files
 

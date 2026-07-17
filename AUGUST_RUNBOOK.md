@@ -152,9 +152,14 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 > `lineups.parquet`), so this is buildable offline — it was left out to keep the
 > rebuild scoped to what the live job runs. Old flag now errors loudly.
 >
-> Still missing: **`scrape_fbref_missing`** (Step 2 — needs FBref reachable, so
-> it is genuinely August work) and **`fallback_sofascore_to_fbref`** (:219, see
-> below).
+> ~~Still missing: **`scrape_fbref_missing`**~~ — ✅ **BUILT 2026-07-16.** It was
+> never "August work": FBref is *headless*-blocked, not banned, and a visible
+> browser fetches fine (measured — see the fallback matrix). Step 1
+> (`_refresh_fbref_fixtures`) was **also broken**, silently, since April: it
+> fetched headless and reported the wall as `TypeError: data must be str, not
+> NoneType`, so fixtures.html froze at its 2026-04-21 copy and hid 50 published
+> matches from Step 2. Both fixed. Still missing: **`fallback_sofascore_to_fbref`**
+> (:219, see below).
 
 #### `fallback_sofascore_to_fbref` — REBUILT 2026-07-16 (reimplemented, NOT recovered)
 
@@ -562,7 +567,7 @@ build to it; the transform above can be verified exactly against the 64.
 
 | Source | State | Consequence |
 |---|---|---|
-| FBref | Cloudflare-blocked | `scrape_fbref_missing` can't fetch new HTML. **But 309 cached EPL match reports** in `data/raw/html/2025_2026_epl/` parse fine offline. |
+| FBref | **Headless-blocked, not banned** — re-measured 2026-07-16 | Turnstile turns a *headless* browser away (a ~27 KB wall); a **visible** one passes in ~6s and fetches a real 426 KB report. `curl_cffi` is 403 either way. So `scrape_fbref_missing` works — **run it without `--headless`**; the weekly job's `--headless` call probes once, says so, and exits 0. Same fix applied to `_refresh_fbref_fixtures.py`, which had been failing since April behind a misleading `TypeError`. |
 | Sofascore | **200 via curl_cffi** — the June 403 lifted, re-measured 2026-07-16 | `sofascore_watcher` standings scrape verified live end-to-end. A ban is a timestamped measurement, not a standing fact — re-probe before believing one. Plain `curl` 403s even when nothing is banned. |
 | Understat | **HTTP 200 but JS shell** (`playersData` count = 0 via plain HTTP) | needs Selenium — catalog confirms. Not an IP ban. |
 

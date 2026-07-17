@@ -556,7 +556,7 @@ Runs `scripts/pipeline/refresh_weekly_data.py` which does 13 steps:
 | # | Step | Source | Output |
 |---|------|--------|--------|
 | 1 | FBref fixtures.html refresh | botasaurus → fbref.com | `data/raw/html/2025_2026/fixtures.html` |
-| 2 | FBref missing match HTMLs | `scrape_fbref_missing.py --headless` | `data/raw/html/2025-2026/*.html` |
+| 2 | FBref missing match HTMLs | `scrape_fbref_missing.py` — **run it visible; `--headless` cannot pass Cloudflare Turnstile** (measured 2026-07-16: headless = a 27 KB wall, visible = a 426 KB report in ~6s). The weekly job passes `--headless`, probes one page, reports, and exits 0. | `data/raw/html/2025-2026/{fbref_8hex}.html` |
 | 3 | Parse player_stats | `parse_all_player_stats --season 2025-2026 --append` | player_stats.parquet |
 | 4 | Parse lineups | `parse_all_lineups --season 2025-2026 --append` | lineups.parquet |
 | 5 | Parse events | `parse_all_events --season 2025-2026 --append` | events.parquet |
