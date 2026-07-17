@@ -95,7 +95,7 @@
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
 | 1 | `data/parsed/matches.parquet` | 15,889 | **380/380**, all canonical | ✅ | Daily morning/evening pipeline | 2026-07-17 |
-| 2 | `data/features/features_serie_a.parquet` | 7,980 | 286 canonical + **94 numeric** (re-minted every build — see callout) | ⚠ derived-layer re-keys | Daily `features/build.py` (24h gate) | 2026-07-17 |
+| 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380 canonical** (0 numeric, verified 2026-07-17 — see callout) | ✅ (was ⚠ until FBref backfill) | Daily `features/build.py` (24h gate) | 2026-07-17 |
 | 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
 | 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380/380 union | ⚠ dual-keyed — see callout | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-17 |
 | 5 | `data/parsed/events.parquet` | **12,095** | 373/380 union | ⚠ dual-keyed — see callout | FBref scorebox + Sofascore incidents | 2026-07-17 |
@@ -129,20 +129,28 @@
 > deliberately **left alone** — natively Sofascore-keyed, so those keys are
 > correct; renaming them would be the actual bug.
 >
-> ⚠️ **The DERIVED layer still re-mints 94 numeric ids on every build — NOT
-> fixed, and not a one-shot fix.** `features_serie_a.parquet`, ~20
-> `data/cache/features/serie_a/*` caches, and `data/external/weather.parquet`
-> come back numeric for these 94 after each `features/build.py` run. This is
-> systemic, not one writer: until today's FBref backfill these 94 late-season
-> matches had **only** a Sofascore source, so multiple feature writers re-derive
-> a numeric key for them independently (the pattern is scattered — `venue`/
-> `weather` revert, `elo`/`sofascore` don't). It is **lower severity than the
-> ground-truth bug was**: `match_id` is in `build.py:get_ml_feature_columns`'s
-> EXCLUDE set, so numeric ids do **not** affect model training or prediction —
-> they only break joining features/predictions back to `matches.parquet` for
-> those 94. A durable fix means making each feature writer key via
-> `match_id_mapping.parquet` (or re-ingesting now that FBref reports exist), and
-> is its own task — do not "fix" it by rewriting the parquet, which reverts.
+> ✅ **The DERIVED-layer re-mint is RESOLVED by the FBref backfill (verified
+> 2026-07-17).** It used to come back numeric for these 94 after each
+> `features/build.py` run **because** until the backfill those 94 late-season
+> matches had **only** a Sofascore source, so multiple feature writers re-derived
+> a numeric key for them independently. The backfill gave all 380 matches a
+> canonical-keyed FBref source, removing the root cause. Verified 0 numeric across
+> the whole derived layer, N>1 under fixed conditions (different code paths, built
+> at different times today): `features_serie_a.parquet` (0/380, built 14:19), all
+> **54** `data/cache/features/serie_a/*` caches (0 total), and
+> `data/external/weather.parquet` (0, built 10:36). **Residual risk (a guard, not
+> a bug):** a *new* matchday match that arrives Sofascore-only — before that
+> week's FBref report lands — could transiently re-mint a numeric key until the
+> weekly backfill catches it. This matters because the shot-level features join
+> **canonical-only** (see `all_shots_with_xg` §, and `_map_to_canonical` in
+> `features/shot_level_xg.py`): a numeric-keyed feature row silently receives
+> **zero** shot columns, not partial NaN. A cheap durable protection is a health
+> check that fails loud if `features_serie_a` ever carries a numeric SA id, rather
+> than letting it re-mint silently. Note `match_id` is in
+> `build.py:get_ml_feature_columns`'s EXCLUDE set, so a transient numeric id does
+> **not** affect model training/prediction — only the feature/prediction ↔
+> `matches.parquet` join (and, per the coupling above, the shot features) for the
+> affected rows. Do **not** "fix" a transient re-mint by rewriting the parquet.
 >
 > ⚠️ Note the id **shape trap**: an 8-char Sofascore id and an 8-hex FBref hash
 > are indistinguishable (`13980098` is valid hex; `02493616` is an FBref hash
@@ -393,6 +401,15 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
   file from the Sofascore shotmap cache — restored to **380/380**, and the 64 features
   dropped to **2.8% NaN** overall (post-Feb-8 window: 100% → 0.3%; residual is legitimate
   rolling-window warmup, not a gap).
+- ⚠️ **The 2.8% is verified on the real, canonical-keyed feature table — and it depends on
+  that keying.** The shot plugins (`features/shot_level_xg.py`, `features/situational_xg.py`)
+  bridge the natively-Sofascore-keyed shot file to canonical ids via
+  `match_id_mapping.parquet`, then `_map_to_canonical` **inner-joins on the canonical
+  `match_id`**. A feature row keyed by a numeric Sofascore id therefore receives **zero**
+  shot columns (measured: an all-sofascore-keyed frame produced "no matches matched" — total
+  failure, not partial NaN), whereas the current all-canonical table fills at 2.8%. This is
+  why the derived-layer re-mint callout (features row 2) is coupled to this fix: the fix
+  lands today only because the FBref backfill made the feature table 0-numeric.
 
 ---
 
