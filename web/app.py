@@ -9,7 +9,6 @@ import sys
 import threading
 import time as _time
 from collections import defaultdict
-from typing import Any
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -332,196 +331,19 @@ _LEAGUE_FIXTURES_FILE = {
     "premier_league": "data/external/sofascore/fixtures_2025_2026_premier_league.json",
 }
 
-# Sofascore tournament SEO slugs (used for HTML scraping fallback when API blocked)
-_LEAGUE_SOFASCORE_PAGE = {
-    "serie_a": ("italy/serie-a", 23),
-    "premier_league": ("england/premier-league", 17),
-}
-
-# Live HTML standings cache (5min TTL on success; 30s on failure for fast retry)
-_html_standings_cache: dict[str, tuple[float, dict]] = {}
-_HTML_STANDINGS_TTL = 300
-_HTML_FAILURE_TTL = 30  # negative-cache TTL: empty payload = recent failure marker
-
-# Sentinel teams — the league is broken if these don't appear
-_HTML_SENTINEL_TEAM = {
-    "serie_a": "Inter",
-    "premier_league": "Arsenal",
-}
-
-# Per-league HTML scrape health.
-# {league: {last_success_at, last_attempt_at, consecutive_failures, last_error}}
-_html_health: dict[str, dict] = {}
-_HTML_FAILURE_THRESHOLD = 3  # consecutive failures before "broken"
-
-
-def _html_health_now(league: str) -> dict:
-    """Return health entry for a league, creating it if missing."""
-    return _html_health.setdefault(league, {
-        "last_success_at": 0.0,
-        "last_attempt_at": 0.0,
-        "consecutive_failures": 0,
-        "last_error": "",
-        "schema_break": False,
-    })
-
-
-def _html_is_broken(league: str) -> bool:
-    """True if HTML scrape has been failing repeatedly OR schema-broke."""
-    h = _html_health_now(league)
-    return h["consecutive_failures"] >= _HTML_FAILURE_THRESHOLD or h["schema_break"]
-
-
-def _sofascore_get_retry(s: Any, url: str, timeout: int = 10, attempts: int = 3) -> tuple[Any, str]:
-    """GET with in-call retry on transient transport errors.
-
-    Retries connect failures, timeouts, and Cloudflare-mood statuses (403/429/5xx)
-    with 1s/2s backoff so a single blip never reaches the failure breaker.
-    Returns (response, "") on success or hard status (404 etc.); (None, err) when
-    all attempts were transient failures.
-    """
-    err = ""
-    for attempt in range(1, attempts + 1):
-        try:
-            r = s.get(url, timeout=timeout)
-        except Exception as e:  # noqa: BLE001 — transport errors vary by curl_cffi backend
-            err = f"{type(e).__name__}: {str(e)[:120]}"
-        else:
-            if r.status_code in (403, 429) or r.status_code >= 500:
-                err = f"HTTP {r.status_code}"
-            else:
-                return r, ""
-        if attempt < attempts:
-            _time.sleep(attempt)
-    return None, f"transport ({attempts} attempts): {err}"
-
-
-def _live_standings_via_html(league: str) -> dict:
-    """Scrape live standings from Sofascore tournament HTML page.
-
-    Self-instrumenting: tracks success/failure per league. Sentinel-checks the
-    parsed payload (must contain a known team) so silent schema breaks trip
-    the breaker. Returns {} on any failure — caller falls back to parquet.
-    """
-    import time as _t
-    now = _t.time()
-    h = _html_health_now(league)
-
-    # Cache hit — success payloads live 5min; failure markers ({}) 30s, so a
-    # flaky Sofascore isn't re-hammered by every caller
-    if league in _html_standings_cache:
-        cached_at, payload = _html_standings_cache[league]
-        ttl = _HTML_STANDINGS_TTL if payload else _HTML_FAILURE_TTL
-        if (now - cached_at) < ttl:
-            import copy
-            return copy.deepcopy(payload)
-
-    def _fail(err: str, *, schema: bool = False) -> dict:
-        (log.error if schema else log.warning)("HTML standings %s: %s", league, err)
-        h["last_error"] = err
-        if schema:
-            h["schema_break"] = True
-        h["consecutive_failures"] += 1
-        _html_standings_cache[league] = (now, {})
-        return {}
-
-    h["last_attempt_at"] = now
-    slug_info = _LEAGUE_SOFASCORE_PAGE.get(league)
-    if not slug_info:
-        h["last_error"] = "league not configured"
-        h["consecutive_failures"] += 1
-        return {}
-    slug, _tid = slug_info
-    url = f"https://www.sofascore.com/tournament/football/{slug}/{_tid}"
-
-    try:
-        from curl_cffi import requests as cffi  # type: ignore
-        s = cffi.Session(impersonate="chrome120")
-        s.headers.update({
-            "Referer": "https://www.google.com/",
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
-        r, terr = _sofascore_get_retry(s, url, timeout=10)
-        if r is None:
-            return _fail(terr)
-        if r.status_code != 200:
-            return _fail(f"HTTP {r.status_code}")
-
-        import re as _re
-        m = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, _re.DOTALL)
-        if not m:
-            return _fail("NEXT_DATA script not found", schema=True)
-
-        data = json.loads(m.group(1))
-        pp = data.get("props", {}).get("pageProps", {})
-        # 2026-06: Sofascore hoisted initialProps.* directly onto pageProps — support both
-        st_list = pp.get("standings") or (pp.get("initialProps") or {}).get("standings", [])
-        if not st_list or not isinstance(st_list, list):
-            return _fail("standings list missing in NEXT_DATA", schema=True)
-
-        rows = st_list[0].get("rows", [])
-        if not rows:
-            return _fail("rows array empty", schema=True)
-
-        teams: dict[str, dict] = {}
-        for row in rows:
-            t = row.get("team", {})
-            tname = t.get("name", "")
-            if not tname:
-                continue
-            played = int(row.get("matches", 0) or 0)
-            wins = int(row.get("wins", 0) or 0)
-            draws = int(row.get("draws", 0) or 0)
-            losses = int(row.get("losses", 0) or 0)
-            gf = int(row.get("scoresFor", 0) or 0)
-            ga = int(row.get("scoresAgainst", 0) or 0)
-            teams[tname] = {
-                "team": tname,
-                "position": int(row.get("position", 0) or 0),
-                "played": played,
-                "wins": wins,
-                "draws": draws,
-                "losses": losses,
-                "gf": gf,
-                "ga": ga,
-                "gd": gf - ga,
-                "points": int(row.get("points", 0) or 0),
-                "form_last5": "",
-                "home": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
-                "away": {"played": 0, "wins": 0, "draws": 0, "losses": 0, "gf": 0, "ga": 0, "ppg": 0.0},
-                "league": league,
-            }
-
-        # Sentinel: known team must be in the parsed standings.
-        sentinel = _HTML_SENTINEL_TEAM.get(league)
-        if sentinel and sentinel not in teams:
-            log.error("HTML standings %s: sentinel %r missing. Found teams: %s",
-                      league, sentinel, sorted(teams.keys())[:5])
-            return _fail(f"sentinel team {sentinel!r} missing — schema break", schema=True)
-
-        max_played = max((t["played"] for t in teams.values()), default=0)
-        payload = {
-            "standings": teams,
-            "current_matchweek": max_played,
-            "season": get_current_season(),
-            "league": league,
-            "_source": "sofascore_html",
-            "_scraped_at": now,
-        }
-        _html_standings_cache[league] = (now, payload)
-
-        # Success — reset breaker
-        h["last_success_at"] = now
-        h["consecutive_failures"] = 0
-        h["schema_break"] = False
-        h["last_error"] = ""
-
-        log.info("HTML standings %s: %d teams, MW%d", league, len(teams), max_played)
-        import copy
-        return copy.deepcopy(payload)
-    except Exception as e:
-        return _fail(f"{type(e).__name__}: {str(e)[:120]}")
+# Sofascore HTML standings scraping lives in scraper/sofascore_standings.py so
+# scripts.data.sofascore_watcher can share it: importing web.app starts the
+# auto-settle scheduler thread, which must never run inside a scrape tick.
+# Aliased to the original private names — every call site below is unchanged.
+# noqa I001: isort would split these into five separate `import ... as ...`
+# statements (combine-as-imports is off); the grouped form is the readable one.
+from scraper.sofascore_standings import (  # noqa: E402, I001
+    HTML_FAILURE_TTL as _HTML_FAILURE_TTL,
+    html_health_now as _html_health_now,
+    html_is_broken as _html_is_broken,
+    live_standings_via_html as _live_standings_via_html,
+    sofascore_get_retry as _sofascore_get_retry,
+)
 
 
 def _next_fixture_for_team(league: str, team: str) -> dict | None:
@@ -2581,7 +2403,8 @@ def api_data_freshness():
         )
         out["message"] = (
             f"Sofascore HTML schema break ({errs}). Check the NEXT_DATA paths in "
-            "_live_standings_via_html / _scrape_match_html (web/app.py)."
+            "live_standings_via_html (scraper/sofascore_standings.py) / "
+            "_scrape_match_html (web/app.py)."
         )
     elif any_hard_fail:
         out["severity"] = "hard_fail"

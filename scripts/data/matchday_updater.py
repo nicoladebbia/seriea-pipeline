@@ -451,8 +451,6 @@ def update_matches_parquet(
     rows = []
 
     for match_data, fixture in match_data_pairs:
-        match_id = str(fixture.get("id", ""))
-
         # Date from timestamp
         start_ts = fixture.get("startTimestamp", 0)
         if start_ts:
@@ -465,6 +463,17 @@ def update_matches_parquet(
 
         home_team = normalize_team(fixture.get("homeTeam", {}).get("name", ""))
         away_team = normalize_team(fixture.get("awayTeam", {}).get("name", ""))
+
+        # matches.parquet is keyed by {date}_{home}_{away}, never by Sofascore's
+        # fixture id. This wrote str(fixture["id"]) until 2026-07-17, which left
+        # 94 numeric keys in the ground-truth id column beside 15,795 canonical
+        # ones — two incompatible formats in one column. A dateless fixture can
+        # not produce that key, and a row with no date is unusable here anyway,
+        # so it is dropped rather than keyed on something that will not join.
+        if not (match_date and home_team and away_team):
+            continue
+        match_id = f"{match_date}_{home_team}_{away_team}"
+
         matchday = fixture.get("roundInfo", {}).get("round", None)
 
         home_score = fixture.get("homeScore", {}).get("current")

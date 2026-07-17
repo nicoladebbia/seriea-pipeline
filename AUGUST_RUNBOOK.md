@@ -94,9 +94,9 @@ deleting "untracked" files. Evidence they were alive on Jun 1:
 **Plist-invoked (job dies on first tick):**
 | Job | Module | Note |
 |---|---|---|
-| `sofascore-watcher` | `scripts.data.sofascore_watcher` | spec recovered — see §3c |
+| `sofascore-watcher` | `scripts.data.sofascore_watcher` | ✅ **BUILT 2026-07-16**, EPL-only, exits 0 — see §3c |
 | `refresh-understat` | `scripts.data.refresh_understat_players` | writer of `understat_players.parquet` (11.7k rows, LIVE — read by `features/understat_features.py`, `features/lineup_xg.py`, `web/app.py`) |
-| `transfer-refresh` | `scripts.data.refresh_transfers` | **PR #7 (draft) adds this one** — land it |
+| `transfer-refresh` | `scripts.data.refresh_transfers` | ✅ **LANDED 2026-07-16** (PR #14 — the transfers half of #7, split out). Job re-verified: `launchctl list` exit **0**, was 1. |
 
 **`refresh_weekly_data.py` (weekly-data-refresh.plist, Mon 04:00) — the whole FBref path:**
 `scrape_fbref_missing` (Step 2) · `parse_all_player_stats` · `parse_all_lineups`
@@ -152,9 +152,13 @@ fail **loudly** (exit 1) but `run()` records the step and continues.
 > `lineups.parquet`), so this is buildable offline — it was left out to keep the
 > rebuild scoped to what the live job runs. Old flag now errors loudly.
 >
-> Still missing: **`scrape_fbref_missing`** (Step 2 — needs FBref reachable, so
-> it is genuinely August work) and **`fallback_sofascore_to_fbref`** (:219, see
-> below).
+> ~~Still missing: **`scrape_fbref_missing`**~~ — ✅ **BUILT 2026-07-16.** It was
+> never "August work": FBref is *headless*-blocked, not banned, and a visible
+> browser fetches fine (measured — see the fallback matrix). Step 1
+> (`_refresh_fbref_fixtures`) was **also broken**, silently, since April: it
+> fetched headless and reported the wall as `TypeError: data must be str, not
+> NoneType`, so fixtures.html froze at its 2026-04-21 copy and hid 50 published
+> matches from Step 2. Both fixed.
 
 #### `fallback_sofascore_to_fbref` — REBUILT 2026-07-16 (reimplemented, NOT recovered)
 
@@ -187,7 +191,32 @@ possession, ht_score, passing accuracy all 0% → 100%.
 2. **`formation` not filled** — `lineups.parquet` reproduces it only 91.5%, below
    the bar every other column here clears.
 
-#### `live_reconciliation` — SPEC FULLY RECOVERED 2026-07-16 (rebuild from this)
+#### `live_reconciliation` — ✅ **REBUILT + REPLAY-VERIFIED 2026-07-16**
+
+**Status: DONE.** `scripts/data/live_reconciliation.py` is rebuilt and
+`tests/test_live_reconciliation.py` replays **all 123 stored blocks exactly**
+(129 tests green). Two claims in the spec below were **refuted by the data during
+the rebuild** — the corrections are authoritative, the original text is kept for
+provenance:
+
+1. **The odds_api score is NOT `_last_home_score`/`_last_away_score`.** Those keys
+   are absent from 45 of the 123 persisted blocks and reproduce only 78/123. The
+   **last snapshot carrying a `score`** reproduces **123/123**. Snapshots use
+   `min` + `score: [h, a]` — not `minute`/`home_score`/`away_score`.
+2. **Sofascore's `is_home` marks the *scorer's* side, so an own goal credits the
+   opponent.** `goal_type == "ownGoal"` must flip the side. Without this the 4
+   asymmetric `score_mismatch` blocks replay backwards (e.g. Bologna–Inter
+   computes 3-2 where truth is 2-3). Only the replay oracle surfaces this.
+
+Also sharpened: `sofascore` enters `sources_checked` **iff `live_events` is
+non-empty** (45/45 with, 78/78 without). A bare `sofascore_id` is *not* enough —
+2 blocks have the id and no events and stay single-source.
+
+**Choices made (the spec asked to state them):** return value = **discrepancy
+items** (13), not flagged-match count (11). `timing_mismatch` = **omitted** (see
+the second refutation below). `status_mismatch` = **implemented**, but its rule is
+derived from **n=1** (the only stored case is `first_half` + events at 90'); it is
+checked only for `first_half`/`half_time`, since no block exercises another status.
 
 ⚠️ **Supersedes the earlier "semantics unrecoverable" verdict — that was wrong.**
 I had only checked that `scripts/analysis/live_reconciliation.py` (a *different*,
@@ -238,6 +267,24 @@ flags a rare few. **Do not implement a tolerance window.** Ship
 find its real trigger first — it is `info` severity and does not affect
 `scores_agree`, so omitting it is the safe default. Say which you chose.
 
+**SECOND hypothesis family — also REFUTED 2026-07-16. Chose: OMIT.**
+The tolerance sweep's *shape* error looked explainable: it flags goals that have
+no score-change window **at all**, but truth doesn't. Motivating case —
+**Cagliari–Napoli**: goal at 2', snapshots start at 9' with the score already
+0-1, so no window can exist, and truth does **not** flag it. So the sweep was
+re-run with a **coverage guard** (skip any goal before the first snapshot minute,
+as unjudgeable). Result: still refuted. Best case TOL=6 catches 5/5 but drags in
+**39 false positives**; the guard only trims 98→79 at TOL=0. Control reproduced
+the prior numbers (98 at 0', 26 at 15'), confirming the harness agrees.
+
+A third angle was checked and closed: the own-goal discovery above means both
+sweeps matched goals to score-changes on the **wrong side** for own goals — but
+only **1 of the 5** flagged goals is an own goal (4 own goals exist among all 104),
+so a correction touching ≤4 goals cannot explain a 5-vs-99 split. **The trigger
+remains unrecovered after three families. Stop searching from this oracle** — it
+does not contain the discriminating signal. If it ever matters, instrument the
+live path and capture the real trigger (`info` severity; it has never mattered yet).
+
 **What IS exact:** `score_mismatch` reproduces all **7/7** criticals — sofascore
 score = count of `live_events` where `type=="goal"` grouped by `is_home`;
 odds_api score = `_last_home_score`/`_last_away_score`; flag when they differ,
@@ -256,11 +303,51 @@ pipeline treats odds_api as primary.
 **Imported by live code (raises ImportError at the call site):**
 | Module | Caller | Status |
 |---|---|---|
-| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ❌ not rebuilt — source unknown |
+| `scripts.data.fetch_upcoming_matches` | `scripts/pipeline/scheduler.py:923` | ✅ **REBUILT** — Odds API `/events`; schema verified, **live unverified until the key is reactivated** |
 | `scripts.data.odds_tracker` | `run_full_pipeline.py:362`, `betting_unified.py:3565`, `web/app.py:5506,5836` | ✅ **REBUILT** — see caveat below |
-| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ❌ not rebuilt — Sofascore 403 |
-| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ❌ not rebuilt — semantics unrecoverable |
+| `scripts.data.live_sofascore` | `scripts/data/live_monitor.py:1140` | ✅ **REBUILT** — replays the oracle exactly (events/stats/players); **not** live-tested vs a Serie A fixture (off-season) |
+| `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ✅ **REBUILT** — replays all 123 stored blocks exactly |
 | `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
+
+#### PR #7 — transfers half LANDED, WorldCup half still open (2026-07-16)
+
+PR #7 was split. **PR #14 landed the 9 transfers/rosters commits** — they replay
+onto main with zero conflicts, add 33 passing tests, 0 regressions, and fixed
+`transfer-refresh` (exit 1 → exit 0, verified under launchd). Phantom modules
+**9/15 → 10/15**.
+
+**#7 stays open for its WorldCup half only.** Its own safety argument is
+**stale** — it was written when main was 2 commits past the merge base; main is
+now 33 past (the #10–#13 stack). Both sides independently fixed the same
+home/away-swap grading bug (`3574968` on main vs `72fa866` on the branch), which
+is what turned into the conflict. There is **no urgency**: the World Cup is over.
+
+If you ever do land it, the 4 conflicts need **per-file judgement, not a blanket
+pick** (the original PR resolved everything to the branch, which was safe then
+and is not now):
+
+| File | Take | Why |
+|---|---|---|
+| `tests/test_bet_journal.py` | **MAIN** | ⚠️ The branch's fix stops the write to the real `bankroll.json` but never patches `DATA_DIR`, so `generate_report()` still reads the production path — the mock is never read back. It only passes because the assertions check unconditional substrings and a missing bankroll silently falls back to `1000.0`. **Resolving this to the branch re-opens the ledger-drift leak main fixed in `8d03831`.** |
+| `scripts/worldcup/grading.py` | MAIN | `_pair_mask` is DRY and fixes 2 more call sites the branch missed (`reconstruct_halftime` is live at `web/app.py:1593`) |
+| `scripts/worldcup/knockout.py` | BRANCH | Both hunks together — a per-hunk mix `NameError`s |
+| `tests/test_worldcup.py` | UNION | Purely additive, 3 tests, no collision |
+
+#### ⚠️ Pre-existing: 4 `test_worldcup.py` failures on main (2026-07-16)
+
+`TestRealArtifacts` / `TestResultConditioning` fail on **main**, unrelated to any
+of the above (verified: the worldcup code and test are byte-identical between
+main and the rebuild branch). They assert fixed expectations against **live**
+bracket data that the wc-refresh job keeps rewriting — e.g.
+`third-place teams == semifinal losers` now reads `{England, France}` vs
+`{Argentina, Spain}`. Flaky by construction, not a regression. The WC is over, so
+this is cosmetic — but the suite is not green on main, and that will mask a real
+failure later. Either pin the fixture or drop the assertions.
+
+Separately: `TestLiveResultsOverlay` / `TestFbrefResults` (6 tests) hard-depend
+on gitignored `data/worldcup/international_results.csv`, so they fail on any
+fresh clone. `tests/test_live_reconciliation.py` shows the fix pattern
+(`pytest.mark.skipif` when the data is absent).
 
 #### Triage of these five (2026-07-16)
 
@@ -336,17 +423,65 @@ market aggregates), so anything unioning *those* must decide which wins. They be
 `data/external/odds/I1_*.csv`) — worth fixing separately; it likely explains part of the
 2025-26 odds gap in [[project_jul15_retrain_datagap]].
 
+✅ **NOT A BUG — `compute_implied_probabilities`'s O/U block (`scraper/odds.py:269-271`).
+Claim REFUTED 2026-07-16; do not re-investigate.** It reads `odds_P>2.5`/`odds_Avg>2.5`,
+which look like names that "never exist" because the stored parquet holds
+`odds_P_gt_2.5`. **The block still fires.** Order is what matters: `_add_odds`
+(`features/build.py:1191`) merges the odds and calls `compute_implied_probabilities`
+while the columns are still the **raw, freshly-merged** `odds_P>2.5`; the `>`→`_gt_`
+sanitizer runs later, at `build.py:1639`, only because XGBoost rejects `<>[]`. The
+`_gt_` names in the parquet are the post-hoc rename, not the merge convention.
+**Evidence:** `pinnacle_ou_over_prob` has **2,512 non-null** in
+`features_serie_a.parquet` — exactly matching `odds_P_gt_2.5`'s 2,512 — with mean
+overround **1.032** (a clean ~3.2% Pinnacle O/U vig). It computed those from that column.
+(Why the outputs look sparse: `odds_Avg_gt_2.5`, `pinnacle_ou_under_prob` and
+`market_home/away_prob` are absent because the **exact-duplicate pruner** at
+`build.py:~1620` drops them — `under_prob ≡ 1 − over_prob` is perfectly collinear.
+Dropped *after* being used, not missing.)
+
 Result (verified on a scratch copy, live parquet md5-unchanged): **1,663 cells filled,
 0 overwritten, 0 nulled, idempotent** (2nd run = 0). 2024-25 → **100% on all 12**;
 2025-26 → 100% on 10/12, `PS_close_*` reaching 89.7% (neither source has Pinnacle
 closing for 39 matches — a genuine source limit, not a bug). Fills NaN only, never
 overwrites, which is what makes the call site's "safe to run daily" true.
 
-**`live_sofascore` — blocked, do not build.** Needs Sofascore; **both** tiers are
-403 (api *and* www — the CLAUDE.md HTML fallback is currently dead too). Only its
-*output* (`data/live/*.json`) survives, not the raw inputs, so there is nothing to
-verify a parser against. Per the never-parse-an-unverified-source rule: recorded,
-not guessed.
+**`live_sofascore` — ⚠️ THE BLOCK IS GONE. Re-measured 2026-07-16: BUILDABLE.**
+
+~~blocked, do not build~~ — that verdict was correct when written and is now **stale**.
+Measured directly (not inferred):
+
+| probe | result |
+|---|---|
+| plain `curl` → api.sofascore.com | **403** |
+| plain `curl` → www.sofascore.com hub | **403** |
+| **curl_cffi `impersonate="chrome124"` → api** | **200**, 8 live matches, real in-progress scores + "1st half"/"2nd half" status |
+| **curl_cffi → www tournament hub** | **200**, 683 KB |
+| curl_cffi → `/event/{id}/incidents` | **200**, goal incidents present |
+| curl_cffi → fbref.com (chrome124/chrome120/safari17_0) | **403 on all** — still genuinely Cloudflare-blocked |
+
+**This means the ban LIFTED — it is not a new bypass.** `scraper/sofascore_events.py`
+already rotates curl_cffi impersonate profiles, i.e. the exact stack that the
+"403 across all curl-cffi profiles" note was measured with. Plain-`curl` 403 is
+Sofascore's *normal* always-on TLS-fingerprint protection, which curl_cffi has always
+handled; the June IP-level ban that also killed curl_cffi is what's gone.
+
+🔑 **The lesson worth keeping: a recorded ban is a snapshot, not a standing fact.**
+Both `live_sofascore` and `sofascore_watcher` were deferred as "403, do not build" —
+one cheap re-probe (`impersonate="chrome124"`) reopened both. **Re-measure a ban before
+inheriting its verdict.**
+
+⚠️ **Rate limiting is real and looks like a network error, not a 403.** Rapid successive
+requests → `CurlError (7) Failed to connect ... port 443`. That is throttling, not a ban;
+back off ~20s and it recovers. Do not read it as the ban returning.
+
+**The build path is now open and oracle-backed.** The contract is
+`fetch_live_data_for_matches(match_keys) -> {match_key: {events, statistics,
+player_stats, sofascore_id, fetched_at}}` (`live_monitor.py:1140`), and
+`data/live/*.json` holds the **output** schema for every field. The API→stored mapping
+is confirmed: `/event/{id}/incidents` returns `incidentType`/`incidentClass`/`isHome`/
+`time`/`player`/`assist1`, which map to the stored `type`/`goal_type`/`is_home`/
+`minute`/`player`/`assist`. **`goal_type` is `incidentClass`** — and `ownGoal` is one of
+its values, independently confirming the own-goal rule found via the reconciliation replay.
 
 **`live_reconciliation` — genuine phantom, and a name trap.** ⚠️
 `scripts/analysis/live_reconciliation.py` **exists and is tracked** but is a
@@ -356,11 +491,42 @@ not guessed.
 `reconcile_all_matches(matchday) -> int` (discrepancy count), but what counts as a
 "discrepancy" is not recoverable from any artifact.
 
-**`fetch_upcoming_matches` — source unknown.** The only artifact,
-`data/upcoming/matches.json`, is a *synthetic fallback*: `"source": "manual"`,
-templated venues (`"Milan Stadium"`), and a `fetched_at` a week **after** the
-matches it lists. It records the fallback, not the real fetch — so it can't
-serve as an oracle.
+**`fetch_upcoming_matches` — ✅ REBUILT 2026-07-16. Schema verified, live NOT.**
+
+The oracle problem was real and stands: the only artifact,
+`data/upcoming/matches.json`, is a *synthetic fallback* (`"source": "manual"`,
+templated venues `"Milan Stadium"`, a `fetched_at` a week **after** the matches
+it lists, and **no `league` key**). It records the fallback, not the real fetch,
+so it could not serve as an oracle. The source was therefore **chosen
+deliberately** instead of recovered.
+
+**Chosen: The Odds API `/events`.** Corroborated after the fact —
+`notify.py:1931` calls this file the "raw Odds API schedule". Rationale: already
+wired and authenticated (`odds_fetcher.py:754`); its `id` is the same event id
+the odds layer joins on, so no name-match layer; listing is billed **0 credits**
+(`odds_fetcher.py:759`). The fetch mirrors `odds_fetcher.py:754-763`.
+
+⚠️ **What August must close.** The API key is **deactivated**
+(`DEACTIVATED_KEY`, HTTP 401) for the off-season, so **no live call was ever
+made**. Do not read the green test suite as live verification:
+
+- **Verified:** the four fields read (`id`, `home_team`, `away_team`,
+  `commence_time`), confirmed twice — a real cached Odds API envelope this repo
+  fetched itself (`tests/fixtures/odds_api/event_envelope.json`, `bookmakers`
+  stripped = the `/events` shape) and the working consumer at
+  `odds_fetcher.py:776-783`.
+- **NOT verified:** that live `/events` matches that envelope (it is that
+  envelope minus `bookmakers`, so it should — but unconfirmed); the reactivated
+  key; real fixtures existing.
+
+**August step:** reactivate the key, run `python3 -m scripts.data.fetch_upcoming_matches`,
+confirm non-zero `count` and that `matches[0]` carries a real `event_id` and a
+`league` that is not `"unknown"`. Then re-capture the fixture from a true
+`/events` call.
+
+`venue`/`matchweek` are deliberately **not** emitted — the API supplies neither
+and no consumer reads them from this file. Templating them is exactly what made
+the old artifact worthless. Don't "restore" them.
 
 ⚠️ **NOT a phantom:** `scripts.pipeline.matchday_update` — `web/app.py:6517` is a
 comment recording its *intentional* removal. Don't "restore" it.
@@ -400,8 +566,8 @@ build to it; the transform above can be verified exactly against the 64.
 
 | Source | State | Consequence |
 |---|---|---|
-| FBref | Cloudflare-blocked | `scrape_fbref_missing` can't fetch new HTML. **But 309 cached EPL match reports** in `data/raw/html/2025_2026_epl/` parse fine offline. |
-| Sofascore | **HTTP 403** (IP ban, still active) | `sofascore_watcher` standings scrape unverifiable. |
+| FBref | **Headless-blocked, not banned** — re-measured 2026-07-16 | Turnstile turns a *headless* browser away (a ~27 KB wall); a **visible** one passes in ~6s and fetches a real 426 KB report. `curl_cffi` is 403 either way. So `scrape_fbref_missing` works — **run it without `--headless`**; the weekly job's `--headless` call probes once, says so, and exits 0. Same fix applied to `_refresh_fbref_fixtures.py`, which had been failing since April behind a misleading `TypeError`. |
+| Sofascore | **200 via curl_cffi** — the June 403 lifted, re-measured 2026-07-16 | `sofascore_watcher` standings scrape verified live end-to-end. A ban is a timestamped measurement, not a standing fact — re-probe before believing one. Plain `curl` 403s even when nothing is banned. |
 | Understat | **HTTP 200 but JS shell** (`playersData` count = 0 via plain HTTP) | needs Selenium — catalog confirms. Not an IP ban. |
 
 ### Prevention rule (worth more than the modules)
@@ -473,17 +639,119 @@ surviving state file; the logs can rotate away, so this is now the record.**
   `standings_premier_league.json` — the convention in
   `ensemble_prediction_engine.py:1238-1240`. 20 teams each.
 
-**Open question for August (the one real design fork):** the standings HTML
-scraper lived inside the watcher and is gone. The only surviving one is
-`web/app.py:_live_standings_via_html` (sentinel-checked, breaker-guarded) — but
-**importing `web.app` starts the auto-settle thread** (measured: 0.22s import,
-logs "Auto-settle scheduler started"). It sleeps 300s first and is a daemon, so
-it's harmless for a 1–6s tick — **but a post-matchday full refresh rate-limits
-at 2s/match and can exceed 300s, which would fire the ledger settler and spend
-Odds API credits from inside a watcher tick.** So: either extract the scraper
-out of `web/app.py` into a shared module (both callers import it), or give the
-watcher its own. **Requires a live (non-403) Sofascore to verify — that's why
-it wasn't built on 2026-07-16.**
+**✅ The design fork is RESOLVED — the scraper is extracted (2026-07-16).**
+`scraper/sofascore_standings.py` now owns it; `web/app.py` imports it back under
+the original private names, so every dashboard call site is unchanged. The move
+is proven **byte-identical**: all 190 moved lines reproduce under a 9-name
+rename map, so no logic changed. Suite `765 passed` (+16 new), the 4
+`test_worldcup.py` failures are pre-existing on main.
+
+**The import side-effect was WORSE than recorded, which is why extraction was
+right.** Measured: `import web.app` = 134ms and starts **two** threads —
+`_auto_settle_loop` *and* `_maybe_start_live_poll`, the odds auto-poll the
+project CLAUDE.md documents as a credit burn. Only the settler was known before.
+`import scraper.sofascore_standings` = **9ms, zero threads, no Flask.**
+
+~~Open question: the standings HTML scraper lived inside the watcher and is
+gone; the only surviving one is `web/app.py:_live_standings_via_html`, but
+importing `web.app` starts the auto-settle thread.~~
+
+> ## ✅ BUILT 2026-07-16 — `scripts/data/sofascore_watcher.py`, EPL-only
+>
+> Nicola's call: **option 1, EPL-only.** Option 2 was refuted before he chose
+> (see below). The job now exits **0** under `launchctl kickstart`; it had been
+> exiting 1 every 600s since the sweep. Phantom count: **14 of 15**.
+>
+> **Two things a live probe caught that the archaeology and the mocks could not:**
+>
+> 1. **The plist was never hibernated.** `launchctl list` showed
+>    `-  1  com.seriea-pipeline.sofascore-watcher` — loaded and firing every
+>    600s, failing only because the module was missing. So the moment the file
+>    existed, the next tick would run for real. The memo saying all 15 jobs are
+>    hibernated is wrong about this one; **re-measure, don't assume.**
+> 2. **MW0 would have destroyed the table.** Sofascore already serves the
+>    **26/27** table (20 rows, every `played=0`) while `get_current_season()`
+>    says `2025-2026` until Aug 1. A tick would have replaced the real 38-played
+>    25/26 final table with an all-zeros one stamped with the wrong season. The
+>    watcher now refuses MW0 — keyed on **matchweek, not season**, because the
+>    season stamp is the broken field (gap #1) and cannot arbitrate. Verified: a
+>    real tick left the file byte-identical.
+>
+> **The one deliberate deviation — no `home`/`away` blocks.** There was no
+> faithful option that was not buggy. `web/app.py:7528` overrides the *computed*
+> `_split_stats` record whenever `if s_home:` passes, and a dict is truthy on
+> **presence**, not on whether its values mean anything. So the oracle's
+> `{played: 19, wins: 0, ...}` renders "19 played, 0-0-0" on the EPL team page,
+> and an all-zero block renders "0 played". Only omission makes
+> `app.py:7259` return `{}` and skip the override. `7528` is left alone — for
+> Serie A the parquet splits it applies are real. The original's `played//2` is
+> also unpinned by its own output: every oracle team sits at `played=38`, the one
+> point where home and away are *necessarily* 19.
+>
+> Both oracles are now committed fixtures (`tests/fixtures/sofascore/watcher_*`).
+> They were self-destructing evidence — the watcher overwrites both every 10 min.
+>
+> ---
+>
+> **The conflict that made this a decision (kept for the record):** two writers,
+> one file. `scripts/prediction/standings_generator.py:155`
+> writes `data/upcoming/standings.json` from **matches.parquet** — rich: real
+> `form_last5`, real home/away splits with `ppg`. The HTML scraper's payload has
+> `form_last5: ""` and home/away **all zeros** (the page doesn't expose them; the
+> dashboard splices them from the parquet at `web/app.py:754` before serving).
+> A watcher that writes the raw HTML payload to `standings.json` every 10 min
+> **zeroes the home/away records that `web/app.py:7214` calls "single source of
+> truth"** — a silent live-UI regression.
+>
+> **What the oracle does and does not pin.** It pins the EPL write exactly:
+> `standings_premier_league.json` carries `source: "sofascore_html"`,
+> `season: "2025-2026"`, a **tz-aware** `generated_at` landing **4s after** the
+> tick-3055 state write — i.e. `{generated_at, season, source, standings}` with
+> the scraper's per-team shape. It pins **nothing** about how the watcher
+> reconciled with `standings_generator` on the serie_a file: the serie_a
+> `standings.json` on disk is `standings_generator`'s shape (naive `generated_at`,
+> `team_count`, no `source`), because that writer ran last. Both wrote it; who won
+> is not recoverable. **Reconstructing that is inventing policy into a live file —
+> the same line `fallback_sofascore_to_fbref` was held to.**
+>
+> **The three options — and option 2 is REFUTED, don't re-propose it:**
+>
+> 1. **EPL-only** — write `standings_premier_league.json` only, where the watcher
+>    is the sole writer and the oracle is exact. Serie A keeps its parquet
+>    generator. Safest; matches the only evidence that survives. **Tradeoff, in
+>    full:** the serie_a `standings.json` gets no 10-min HTML freshness for its
+>    *non-dashboard* consumers (`ensemble_prediction_engine`, `web/advisor.py`,
+>    `generate_epl_supplementary` read the **file**, not `_get_standings`); it
+>    stays pipeline-fresh. The dashboard is unaffected — it scrapes HTML live per
+>    request already.
+>
+> 2. ❌ **"Splice like the dashboard" — REFUTED 2026-07-16. Do not build it.**
+>    It sounds strictly better and is not. `_get_standings` (`web/app.py:599`)
+>    copies home/away splits **only when `parquet_max_played == html_max_played`**.
+>    When HTML leads the parquet — **precisely the window the watcher exists to
+>    serve** — the splits stay at the HTML payload's **zeros**. The dashboard
+>    tolerates that because it is *transient*: per-request, recomputed, never
+>    stored. A watcher **persists** it, zeroing the home/away records
+>    `web/app.py:7214` calls "single source of truth". Every parquet source lags
+>    the live table by construction, so this fires *whenever the scrape is fresher
+>    than the ingest* — it is intrinsic, not an edge. **And it cannot be guarded
+>    away:** the only fix is carrying forward the previous file's splits, which is
+>    a reconciliation **no oracle pins** — inventing policy into a live file, the
+>    same line `fallback_sofascore_to_fbref` was held to. The guard would trade a
+>    zeroing bug for an unbacked-staleness bug. **Cost was also mis-stated when
+>    first proposed** ("reuse proven logic"): the real closure of `_get_standings`
+>    is **251 lines / 4 functions / 7 module globals** (`_compute_standings` 128,
+>    `_read_parquet_cached`, `_load_json`, + `_LEAGUE_PARQUET`, `_standings_cache`,
+>    `_STANDINGS_TTL`, …), i.e. moving the standings subsystem out of `web/app.py`.
+>    If that richness is ever wanted it is a **fresh-session subsystem refactor
+>    plus a write-policy decision**, not a bolt-on.
+>
+> 3. **Separate file** — `standings_live.json`, no writer contention at all;
+>    consumers opt in. Diverges from the oracle's filenames.
+>
+> Note the watcher is a **10-minute** job whose only outputs are `standings*.json`;
+> nothing bets on it. Lowest-stakes phantom — do it when the write decision is
+> made, not under time pressure.
 
 ## 4. Reload launchd (arms the T-30 timing mode)
 

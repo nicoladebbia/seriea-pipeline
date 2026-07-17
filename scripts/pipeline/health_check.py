@@ -392,6 +392,61 @@ def check_data_quality() -> Dict:
     else:
         checks["features_quality"] = {"status": "MISSING"}
 
+    # Feature id-keying guard (2026-07-17): every per-league feature row must be
+    # keyed by a canonical matches.parquet id. A re-minted Sofascore numeric id
+    # (see DATA_CATALOG features row 2) breaks the join back to matches.parquet
+    # AND silently empties the 64 shot features — features/shot_level_xg.py joins
+    # canonical-only (_map_to_canonical), so a numeric-keyed row receives ZERO
+    # shot columns, not partial NaN. Classify by membership in matches.parquet
+    # (ground truth), NEVER by id shape: an FBref hash can be all-digits, so a
+    # .isdigit() test would false-positive.
+    try:
+        import pandas as pd
+        from config.leagues import ACTIVE_LEAGUES
+        matches_path = DATA_DIR / "parsed" / "matches.parquet"
+        if matches_path.exists():
+            mdf = pd.read_parquet(matches_path, columns=["match_id", "league", "season"])
+            cur = str(mdf["season"].dropna().astype(str).max())  # self-updating; no hardcoded season
+            per_league = {}
+            keying_issues = []
+            levels = []
+            for league in ACTIVE_LEAGUES:
+                fpath = DATA_DIR / "features" / f"features_{league}.parquet"
+                if not fpath.exists():
+                    continue
+                fdf = pd.read_parquet(fpath, columns=["match_id", "season"])
+                canon = set(
+                    mdf.loc[(mdf["league"] == league) & (mdf["season"] == cur), "match_id"].astype(str)
+                )
+                feats = set(fdf.loc[fdf["season"] == cur, "match_id"].astype(str))
+                orphans = feats - canon
+                per_league[league] = {"feature_rows": len(feats), "orphan_ids": len(orphans)}
+                if orphans:
+                    # >1 full matchweek (10) mis-keyed = systemic revert of the
+                    # derived layer, not the documented transient new-match window
+                    # (a match added from Sofascore before its weekly FBref report
+                    # lands; self-heals at the Monday backfill).
+                    lvl = "CRITICAL" if len(orphans) > 10 else "WARNING"
+                    levels.append(lvl)
+                    note = (
+                        "systemic re-mint — derived layer reverted to Sofascore keys; "
+                        "64 shot features silently empty for these rows"
+                        if lvl == "CRITICAL"
+                        else "likely transient new-match window before the weekly FBref backfill"
+                    )
+                    keying_issues.append(
+                        f"{league}: {len(orphans)}/{len(feats)} current-season feature match_id(s) "
+                        f"absent from matches.parquet — {note}: {', '.join(sorted(orphans)[:3])}"
+                    )
+            checks["feature_id_keying"] = {
+                "status": "CRITICAL" if "CRITICAL" in levels else ("WARNING" if levels else "OK"),
+                "current_season": cur,
+                "per_league": per_league,
+                "issues": keying_issues,
+            }
+    except Exception as e:
+        checks["feature_id_keying"] = {"status": "ERROR", "error": str(e)}
+
     # Check predictions probability sums
     preds_path = DATA_DIR / "upcoming" / "predictions.json"
     if preds_path.exists():
