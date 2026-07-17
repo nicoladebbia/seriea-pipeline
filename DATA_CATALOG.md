@@ -406,6 +406,12 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
   file from the Sofascore shotmap cache — restored to **380/380**, and the 64 features
   dropped to **2.8% NaN** overall (post-Feb-8 window: 100% → 0.3%; residual is legitimate
   rolling-window warmup, not a gap).
+- **Scope: Serie A only.** `all_shots_with_xg.parquet` is SA across all 9 seasons; the shot
+  plugins read that single file, so **EPL shot features are empty and always have been** —
+  giving EPL shot features is a separate, un-built feature (it would mean adding EPL shots to
+  this file and validating cross-league rolling). The weekly rebuild (Step 4b) therefore runs
+  `serie_a` only; `write_shot_level_xg.cache_dir` is league-aware so a future EPL run reads
+  the EPL cache, but nothing is wired to consume an EPL shot file today.
 - ⚠️ **The 2.8% is verified on the real, canonical-keyed feature table — and it depends on
   that keying.** The shot plugins (`features/shot_level_xg.py`, `features/situational_xg.py`)
   bridge the natively-Sofascore-keyed shot file to canonical ids via

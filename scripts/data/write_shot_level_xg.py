@@ -61,8 +61,10 @@ def out_path(league: str = "serie_a") -> Path:
     return SOFA_DIR / f"all_shots_with_xg{_suffix(league)}.parquet"
 
 
-def cache_dir(season: str) -> Path:
-    return SOFA_DIR / "matches" / season
+def cache_dir(season: str, league: str = "serie_a") -> Path:
+    # EPL shotmaps cache under matches_premier_league/; keep the reader league-aware
+    # so a per-league run reads the right cache (never the Serie A one by accident).
+    return SOFA_DIR / f"matches{_suffix(league)}" / season
 
 
 def shot_rows_from_shotmap(shots: list[dict], sofascore_id: str,
@@ -145,7 +147,7 @@ def rebuild_from_cache(season: str, league: str = "serie_a") -> int:
     written. The filename stem of each cache file is the authoritative
     Sofascore id (never trust an id inside the json).
     """
-    cdir = cache_dir(season)
+    cdir = cache_dir(season, league)
     if not cdir.exists():
         log.error("no cache dir for season %s: %s", season, cdir)
         return 0

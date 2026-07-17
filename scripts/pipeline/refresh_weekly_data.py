@@ -131,13 +131,14 @@ def main() -> int:
     # and features/situational_xg read. Its original one-shot writer stopped in Feb 2026,
     # freezing 2025-26 coverage at 206/380 and sending 64 shot features to ~46% NaN — this
     # step keeps it current. Zero network: it reads the json Step 4 just cached.
-    shot_level_results = {}
-    for _league in ACTIVE_LEAGUES:
-        shot_level_results[_league] = run(
-            [py, "-m", "scripts.data.write_shot_level_xg", "--league", _league, "--season", CURRENT_SEASON],
-            f"Shot-level xG rebuild ({_league})",
-        )
-    results["shot_level_xg"] = all(shot_level_results.values())
+    # all_shots_with_xg.parquet is Serie A only — the shot plugins read that single
+    # file (features/shot_level_xg.py), and EPL matches have never been in it. EPL
+    # shot features are a separate, un-built feature; looping ACTIVE_LEAGUES here
+    # would only mint an all_shots_with_xg_premier_league.parquet that nothing reads.
+    results["shot_level_xg"] = run(
+        [py, "-m", "scripts.data.write_shot_level_xg", "--league", "serie_a", "--season", CURRENT_SEASON],
+        "Shot-level xG rebuild (serie_a)",
+    )
 
     # --- Step 5: Understat refresh (best-effort — scraper may fail on schema changes) ---
     try:
