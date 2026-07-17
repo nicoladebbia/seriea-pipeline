@@ -881,6 +881,7 @@ class TestRealArtifacts:
 
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = self._stub_engine_and_stats(fixtures)
         bracket = build_bracket(engine, fixtures, sim, spec)  # type: ignore[arg-type]
 
