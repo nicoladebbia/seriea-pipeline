@@ -31,7 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config.settings import DATA_DIR, RAW_HTML_DIR
 from config.team_names import normalize_team
-from parser.html_utils import extract_team_info_from_html, get_soup
+from parser.html_utils import (
+    extract_match_date,
+    extract_team_info_from_html,
+    get_soup,
+)
 from parser.lineups import lineups_to_records, parse_lineups
 
 log = logging.getLogger(__name__)
@@ -49,7 +53,7 @@ def _season_dir(season: str) -> Path:
     return RAW_HTML_DIR / season
 
 
-def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
+def parse_match_html(html_path: Path, season: str, fallback_id: str) -> list[dict]:
     try:
         html = html_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -66,13 +70,29 @@ def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
     if home is None or away is None:
         return []
 
+    home_team = normalize_team(home["name"])
+    away_team = normalize_team(away["name"])
+    # Canonical {date}_{home}_{away} from the report's own date+teams — NOT
+    # html_path.stem. FBref 2025-26 reports are saved as {hash}.html, so keying by
+    # the stem left these correct-team lineups hash-keyed while a Sofascore path
+    # wrote an empty-team ("") canonical copy; features/player_impact.py filters
+    # lineups by team on the canonical id, so it saw the empty-team rows and
+    # key_players/squad_rotation went to 0/null for the whole current season.
+    # fallback_id (the stem) is used only if date/teams can't be read. Fixed
+    # 2026-07-17.
+    match_date = extract_match_date(soup)
+    if match_date and home and away:
+        match_id = f"{match_date}_{home_team}_{away_team}"
+    else:
+        match_id = fallback_id
+
     home_lineup, away_lineup = parse_lineups(soup)
     records = lineups_to_records(
         home_lineup=home_lineup,
         away_lineup=away_lineup,
         match_id=match_id,
-        home_team=normalize_team(home["name"]),
-        away_team=normalize_team(away["name"]),
+        home_team=home_team,
+        away_team=away_team,
     )
     for r in records:
         r["season"] = season

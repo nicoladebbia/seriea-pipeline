@@ -447,6 +447,56 @@ def check_data_quality() -> Dict:
     except Exception as e:
         checks["feature_id_keying"] = {"status": "ERROR", "error": str(e)}
 
+    # --- Parsed-input keying guard -------------------------------------------
+    # feature_id_keying above is BLIND to this class: feature-table ids come from
+    # matches.parquet so they are always canonical, yet the per-player parsed
+    # inputs can be hash-keyed and silently drop out of the canonical join that
+    # builds those features. That is exactly what happened 2026-07-17 —
+    # player_stats + goalkeeper_stats were 100% FBref-hash-keyed for the current
+    # season, so player_impact / team_aggregates / advanced_player / gk_quality
+    # went null for the whole season with NO loud signal. This guard reads the
+    # inputs directly and classifies by membership in matches.parquet (ground
+    # truth), NEVER by id shape (an FBref hash can be all-digits).
+    try:
+        import pandas as pd
+        matches_path = DATA_DIR / "parsed" / "matches.parquet"
+        if matches_path.exists():
+            mdf = pd.read_parquet(matches_path, columns=["match_id", "season"])
+            cur = str(mdf["season"].dropna().astype(str).max())
+            canon = set(mdf.loc[mdf["season"] == cur, "match_id"].astype(str))
+            per_file = {}
+            issues = []
+            levels = []
+            for fname in ("player_stats.parquet", "goalkeeper_stats.parquet"):
+                fpath = DATA_DIR / "parsed" / fname
+                if not fpath.exists():
+                    continue
+                pdf = pd.read_parquet(fpath, columns=["match_id", "season"])
+                ids = set(pdf.loc[pdf["season"] == cur, "match_id"].astype(str))
+                if not ids:
+                    continue
+                orphans = ids - canon
+                per_file[fname] = {"current_ids": len(ids), "orphan_ids": len(orphans)}
+                if orphans:
+                    # >1 matchweek mis-keyed = the writer regressed to html_path.stem
+                    # (FBref {hash}.html); the whole current season joins to nothing.
+                    lvl = "CRITICAL" if len(orphans) > 10 else "WARNING"
+                    levels.append(lvl)
+                    issues.append(
+                        f"{fname}: {len(orphans)}/{len(ids)} current-season match_id(s) "
+                        f"absent from matches.parquet — hash-keyed input, canonical joins "
+                        f"(player_impact/gk_quality/team_aggregates) silently empty: "
+                        f"{', '.join(sorted(orphans)[:3])}"
+                    )
+            checks["parsed_input_keying"] = {
+                "status": "CRITICAL" if "CRITICAL" in levels else ("WARNING" if levels else "OK"),
+                "current_season": cur,
+                "per_file": per_file,
+                "issues": issues,
+            }
+    except Exception as e:
+        checks["parsed_input_keying"] = {"status": "ERROR", "error": str(e)}
+
     # Check predictions probability sums
     preds_path = DATA_DIR / "upcoming" / "predictions.json"
     if preds_path.exists():

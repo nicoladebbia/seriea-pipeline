@@ -30,7 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config.settings import DATA_DIR, RAW_HTML_DIR
 from config.team_names import normalize_team
 from parser.goalkeeper_stats import parse_goalkeeper_stats
-from parser.html_utils import extract_team_info_from_html, get_soup
+from parser.html_utils import (
+    extract_match_date,
+    extract_team_info_from_html,
+    get_soup,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +54,7 @@ def _season_dir(season: str) -> Path:
     return RAW_HTML_DIR / season
 
 
-def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
+def parse_match_html(html_path: Path, season: str, fallback_id: str) -> list[dict]:
     try:
         html = html_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -61,6 +65,20 @@ def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
     teams = extract_team_info_from_html(soup)
     if not teams:
         return []
+
+    # Canonical {date}_{home}_{away} from the report's own date+teams — NOT
+    # html_path.stem. FBref 2025-26 reports are saved as {hash}.html, so keying by
+    # the stem emits hash ids that never join matches.parquet; features/gk_quality.py
+    # merges goalkeeper_stats on canonical match_id, so hash keys silently drop the
+    # entire current season (GK features go null). fallback_id (the stem) is used
+    # only if date/teams can't be read. Fixed 2026-07-17.
+    home = next((t for t in teams if t["is_home"]), None)
+    away = next((t for t in teams if not t["is_home"]), None)
+    match_date = extract_match_date(soup)
+    if match_date and home and away:
+        match_id = f"{match_date}_{normalize_team(home['name'])}_{normalize_team(away['name'])}"
+    else:
+        match_id = fallback_id
 
     records: list[dict] = []
     for team in teams:

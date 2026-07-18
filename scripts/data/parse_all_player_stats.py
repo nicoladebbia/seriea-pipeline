@@ -65,7 +65,7 @@ def _season_dir(season: str) -> Path:
     return RAW_HTML_DIR / season
 
 
-def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
+def parse_match_html(html_path: Path, season: str, fallback_id: str) -> list[dict]:
     """Parse one match report into per-player records (both teams)."""
     try:
         html = html_path.read_text(encoding="utf-8", errors="replace")
@@ -81,6 +81,20 @@ def parse_match_html(html_path: Path, season: str, match_id: str) -> list[dict]:
         return []
 
     match_date = extract_match_date(soup)
+
+    # Canonical {date}_{home}_{away} from the report's own date+teams — the id
+    # matches.parquet uses — NOT html_path.stem. FBref 2025-26 reports are saved
+    # as {hash}.html, so keying by the stem emits hash ids that never join to
+    # matches.parquet; features/player_impact.py's canonical join then silently
+    # drops the whole current season, freezing key-player tracking at last season
+    # (promoted teams, with no prior history, go null for every match). fallback_id
+    # (the stem) is used only if date/teams can't be read. Fixed 2026-07-17.
+    home = next((t for t in teams if t["is_home"]), None)
+    away = next((t for t in teams if not t["is_home"]), None)
+    if match_date and home and away:
+        match_id = f"{match_date}_{normalize_team(home['name'])}_{normalize_team(away['name'])}"
+    else:
+        match_id = fallback_id
 
     records: list[dict] = []
     for team in teams:
