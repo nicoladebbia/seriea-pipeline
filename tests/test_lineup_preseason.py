@@ -219,3 +219,126 @@ def test_the_loader_reads_only_our_own_club_rows(tmp_path, monkeypatch):
     sig = lp.load_preseason_signal(TEAM)
     assert set(sig["players"]) == {500}, "opposition players must never enter the pool"
     assert sig["club_friendlies"] == 1
+
+
+# --------------------------------------------------------------------------
+# 6. the signal must EXPIRE once the league season is under way
+# --------------------------------------------------------------------------
+# Without this it inverts into the very error it was built to fix. Simulated at
+# 8 matchweeks played, the un-faded signal injected 32 players at 80% who had
+# not played a league minute all season, and permanently docked every regular
+# who missed July.
+
+def _season_stats(n_mw: int, season: str) -> pd.DataFrame:
+    rows = []
+    for m in range(n_mw):
+        for p in range(14):
+            rows.append({
+                "team": TEAM, "match_id": 9000 + m,
+                "date": pd.Timestamp("2026-08-24") + pd.Timedelta(days=7 * m),
+                "player_id": 600 + p, "player_name": f"Reg {p}",
+                "is_starter": p < 11, "minutes": 90 if p < 11 else 10,
+                "rating": 6.8, "position": "M", "shirt_number": p + 1,
+                "round": m + 1, "season": season,
+            })
+    return pd.DataFrame(rows).sort_values("date")
+
+
+def _sig(season="2026-2027"):
+    return {"players": {9001: _entry(4, 4)}, "club_friendlies": 4, "season": season}
+
+
+def test_the_signal_is_fully_retired_once_enough_league_matches_exist():
+    """A player who has featured in no league match all season must not sit at
+    80% off July friendlies."""
+    df = _season_stats(int(lp.PRESEASON_FADE_MATCHES), "2026-2027")
+    before = lp.get_starter_frequency(df, TEAM, n_matches=10)
+    after = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=_sig())
+    assert json.dumps(before, sort_keys=True, default=str) == \
+           json.dumps(after, sort_keys=True, default=str)
+
+
+def test_a_stale_previous_season_table_does_not_fade_the_signal():
+    """The fade must key on SEASON, not match count.
+
+    During pre-season the 10-match window is full of LAST season's matches, so
+    fading on count alone would silence the signal exactly when it is the only
+    evidence there is.
+    """
+    df = _season_stats(10, "2025-2026")          # last season, complete
+    freq = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=_sig())
+    assert _by_name(freq, "New Guy") is not None
+
+
+def test_the_injected_players_influence_decays_monotonically():
+    pcts = []
+    for mw in range(1, int(lp.PRESEASON_FADE_MATCHES) + 1):
+        df = _season_stats(mw, "2026-2027")
+        freq = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=_sig())
+        p = _by_name(freq, "New Guy")
+        pcts.append(p["start_pct"] if p else 0.0)
+    assert pcts == sorted(pcts, reverse=True), pcts
+    assert pcts[-1] == 0.0
+
+
+def test_the_absence_penalty_never_bites_harder_in_season_than_in_preseason():
+    """Scaling the inertia bonus by the fade made MW1 (-32) harsher than
+    pre-season (-23): a player was docked for missing July immediately after
+    starting the opening fixture."""
+    sig = {"players": {9001: _entry(4, 4)}, "club_friendlies": 4,
+           "season": "2026-2027"}
+
+    def worst(df):
+        b = lp.get_starter_frequency(df, TEAM, n_matches=10)
+        w = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig)
+        bd = {p["player_id"]: p["start_pct"] for p in b}
+        return min([p["start_pct"] - bd[p["player_id"]]
+                    for p in w if p["player_id"] in bd], default=0.0)
+
+    pre = worst(_season_stats(10, "2025-2026"))
+    mw1 = worst(_season_stats(1, "2026-2027"))
+    assert pre <= mw1, f"pre-season {pre} must be the strongest, got MW1 {mw1}"
+
+
+# --------------------------------------------------------------------------
+# 7. the promoted club -- no league history AT ALL
+# --------------------------------------------------------------------------
+# Venezia, Frosinone and Monza came up for 2026-27. They have 25-28 friendly
+# players each and zero rows in the league table, so `get_starter_frequency`
+# early-returned [] before the injection could run: an empty XI for exactly the
+# three clubs where friendlies are the only evidence in existence.
+
+def test_a_promoted_club_with_no_league_history_still_gets_a_squad():
+    empty = pd.DataFrame(columns=["team", "match_id", "date", "player_id",
+                                  "player_name", "is_starter", "minutes",
+                                  "rating", "position", "shirt_number", "round"])
+    sig = _signal({9001: _entry(4, 4), 9002: _entry(3, 4, name="Other", shirt=7)},
+                  club_friendlies=4)
+    freq = lp.get_starter_frequency(empty, TEAM, n_matches=10, preseason=sig)
+
+    assert len(freq) == 2
+    assert all(p["preseason_only"] for p in freq)
+    assert freq == sorted(freq, key=lambda p: (p["start_pct"], p["avg_minutes"]),
+                          reverse=True)
+
+
+def test_a_club_with_neither_league_history_nor_friendlies_stays_empty():
+    empty = pd.DataFrame(columns=["team", "match_id", "date", "player_id",
+                                  "player_name", "is_starter", "minutes",
+                                  "rating", "position", "shirt_number", "round"])
+    assert lp.get_starter_frequency(empty, TEAM, n_matches=10) == []
+    assert lp.get_starter_frequency(_stats(), "Nonexistent FC", n_matches=10) == []
+
+
+def test_predict_formation_returns_the_same_keys_with_and_without_history():
+    """predict_team_lineup reads formation_pred["last_used"] unconditionally, so
+    a missing key took the whole lineup step down for promoted clubs."""
+    empty = lp.predict_formation([])
+    populated = lp.predict_formation([{"formation": "4-3-3"}, {"formation": "3-5-2"}])
+    assert set(empty) == set(populated)
+    assert empty["last_used"] is None
+
+
+def test_preseason_formations_are_used_when_there_is_no_league_history():
+    hist = [{"formation": f} for f in ("3-4-1-2", "3-4-1-2", "4-2-3-1")]
+    assert lp.predict_formation(hist)["predicted"] == "3-4-1-2"
