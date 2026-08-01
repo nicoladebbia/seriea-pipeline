@@ -321,12 +321,13 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 - **100,441 rows, 9 seasons**
 - **Writer:** `scripts/data/parse_all_player_stats.py` (walks HTML, runs `parser/player_stats.py`)
 - **Fallback (NEW today):** `scripts/data/fallback_sofascore_to_fbref.py` adds Sofascore `player_match_stats` rows when FBref HTMLs missing (+2,020 rows added today)
-- **2025-26 coverage:** 295/330 matches (89% — FBref Cloudflare blocks the last 35 matches)
+- **Keying (FIXED 2026-07-17):** `match_id` is the canonical `{date}_{home}_{away}` from each report's own date+teams, so it joins matches.parquet regardless of how the FBref report is named on disk. Previously the writer keyed by `html_path.stem`; FBref 2025-26 reports are saved as `{hash}.html`, so the entire current season was **hash-keyed and invisible to every canonical join** (player_impact / team_aggregates / advanced_player) — key-player tracking silently froze at the prior season, and promoted teams (no history) went null for all 38 matches. The 2026-07-17 migration re-keyed the 380 existing 2025-26 matches hash→canonical (pure relabel, content unchanged); the writer fix prevents recurrence. Verified: player_impact 2025-26 fill 80.0% → 99.7%.
 
 ### `data/parsed/lineups.parquet`
 - **Starting XI + formation + subs**
 - **266,386 rows (SA + EPL, both leagues all seasons)** — columns: match_id, team, is_home, formation, player_name, shirt_number, role, season
 - **Writer:** `scripts/data/parse_all_lineups.py` — flags: `--season` (**required**), `--append`, `--replace-all`, `--dry-run`
+- **Keying (FIXED 2026-07-17):** the FBref parser now builds the canonical `{date}_{home}_{away}` match_id from the report's own date+teams, not `html_path.stem`. Before the fix, SA 2025-26 was broken **two ways at once**: the FBref rows (correct team names) were hash-keyed, while a Sofascore lineup path wrote a **canonical-keyed copy with `team=''`** (empty — formation only). `features/player_impact.py` filters lineups by team on the canonical id, so it saw only the empty-team rows → `home/away_key_players_available`, `top_scorer_played`, `squad_rotation` were 0/null for the whole current season. The migration dropped the empty-team canonical SA 2025-26 rows and re-keyed the correct FBref copy hash→canonical (verified: player_impact starter∩player_stats overlap 11/11). `formation` is unaffected (present in both copies).
 - ⚠️ **`--include-epl` / `--epl-only` no longer exist** (noted 2026-07-16). The original module was one of the 15 phantoms (never git-added, swept after 2026-06-01) and the rebuild reconstructs only the Serie A path that `refresh_weekly_data.py` actually invokes. The EPL rows already in this parquet are **preserved** — the merge replaces only the match_ids it parsed (verified: 271,530 rows across 6,427 other-convention matches survive a 2025-26 run). What is gone is the ability to *refresh* EPL lineups from `{season}_epl/` HTML; that path is unbuilt, and calling the old flag now errors loudly rather than silently doing nothing. See AUGUST_RUNBOOK §3b.
 - **Fallback:** Sofascore JSON dumps in `data/external/sofascore/matches/{season}/*.json` have `home_lineup`/`away_lineup` objects
 - **2025-26:** 569 matches (260 SA + 309 EPL), 40 teams, formation 100% populated for both leagues
@@ -377,9 +378,10 @@ All 5 parsed from HTML match reports in `data/raw/html/{season}/{fbref_hash}.htm
 ### `data/parsed/goalkeeper_stats.parquet`
 - **Per-match GK stats** (28 cols: saves, PSxG, launches, pass completion)
 - **6,651 rows**
-- **Writer:** `scripts/data/parse_all_goalkeeper_stats.py` (NEW today)
+- **Writer:** `scripts/data/parse_all_goalkeeper_stats.py`
+- **Keying (FIXED 2026-07-17):** `match_id` is the canonical `{date}_{home}_{away}` from each report's own date+teams. Same bug/fix as `player_stats.parquet` — the writer keyed by `html_path.stem`, so 2025-26 (FBref `{hash}.html` reports) was 100% hash-keyed and invisible to `features/gk_quality.py` (which merges on canonical match_id, `gk_quality.py:84`) → GK features null for all of 2025-26. The 380 existing 2025-26 matches were re-keyed hash→canonical (pure relabel); the writer fix prevents recurrence.
 - **Fallback:** None yet (could be added from Sofascore player_match_stats where position='G')
-- **2025-26:** 260/330 (79%) — only FBref source, suffers the same Cloudflare gap
+- **2025-26:** only FBref source, suffers the same Cloudflare gap
 
 ### `data/parsed/shots.parquet`
 - **Individual shot events w/ xG** (15 cols: minute, player, xg_shot, psxg_shot, outcome, distance)
@@ -1069,22 +1071,18 @@ match_us = mapping.merge(
 
 ### Recipe 4: Per-player stats for a specific match
 
-FBref uses 8-char hash:
+As of the 2026-07-17 re-key, `player_stats.parquet` is **canonical-keyed for every
+season** (2025-26 was re-keyed from FBref hash → canonical; the writer now builds the
+canonical id directly). Join on the canonical `match_id` — no hash dance needed:
 
 ```python
-mapping = pd.read_parquet('data/parsed/match_id_mapping.parquet')
 players = pd.read_parquet('data/parsed/player_stats.parquet')
-
-# FBref rows in player_stats use the hash as match_id
-canonical_to_hash = dict(zip(mapping['match_id'], mapping['fbref_hash']))
 target_match = '2025-08-23_Genoa_Lecce'
-fbref_hash = canonical_to_hash.get(target_match)
-if fbref_hash:
-    stats = players[players['match_id'] == fbref_hash]
-# Alternatively: Sofascore fallback rows use canonical match_id directly
-stats_sofa = players[players['match_id'] == target_match]
-stats_combined = pd.concat([stats, stats_sofa])
+stats = players[players['match_id'] == target_match]
 ```
+
+Only reach for `match_id_mapping.parquet` (`fbref_hash` column) if you are reading an
+OLD parquet from before the re-key, or joining to a source still keyed by hash.
 
 ### Recipe 5: All matches + odds + results for modeling
 
