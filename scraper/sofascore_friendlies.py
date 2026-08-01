@@ -279,8 +279,13 @@ def _save(rows: Iterable[dict[str, Any]], season: str) -> pd.DataFrame:
     merged = merged.sort_values(["match_date", "sofascore_event_id", "club", "player"])
     merged = merged.reset_index(drop=True)
 
+    # Atomic: this runs on a schedule that can overlap the weekly data refresh,
+    # and a reader hitting a half-written parquet would see a torn file. Writing
+    # to a sibling then replacing makes the swap indivisible.
     path.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_parquet(path, index=False)
+    tmp = path.with_suffix(".parquet.tmp")
+    merged.to_parquet(tmp, index=False)
+    tmp.replace(path)
     log.info("friendlies: wrote %d rows -> %s", len(merged), path.name)
     return merged
 
