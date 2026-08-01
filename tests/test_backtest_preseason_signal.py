@@ -91,6 +91,27 @@ def test_season_opener_is_the_clubs_first_league_match():
     assert bt._season_opener(stats, "Nobody", "2024-2025") is None
 
 
+def test_every_replayed_club_resolves_a_cutoff_including_promoted_ones():
+    """`_season_opener` returning None means UNFILTERED, which would quietly
+    reopen the March-friendly leak.  It reads the TARGET season, and the replay
+    derives its club list from that same season, so the None branch is
+    unreachable inside the loop -- including for a promoted club, whose
+    emptiness is in the PRIOR season, not the target one.  Pin the invariant so
+    a future refactor of the club list cannot silently restore the leak.
+    """
+    stats = pd.DataFrame(_league_rows("2024-2025", [1, 2], range(14))
+                         + _league_rows("2025-2026", [1, 2], range(14))
+                         + _league_rows("2025-2026", [1, 2], range(14), team="Promoted"))
+    season = "2025-2026"
+    clubs = sorted(stats[stats["season"] == season]["team"].dropna().unique())
+    assert "Promoted" in clubs
+    for team in clubs:
+        assert bt._season_opener(stats, team, season) is not None, (
+            f"{team} has no cutoff -- the signal would go unfiltered")
+    # ...and the promoted club genuinely has no prior-season table.
+    assert bt._replay_table(stats, "Promoted", season, 1).empty
+
+
 def test_replay_table_at_mw1_is_last_season_only():
     """At MW1 no rows of the new season exist, so the production loader's
     season.max() yields LAST season.  A replay that leaked the new season's

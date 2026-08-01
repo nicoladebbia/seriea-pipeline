@@ -496,7 +496,11 @@ The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan)
 
 **Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Only 16 of 38 tracked clubs had ≥3 friendlies on 2026-08-01. Consequence: **the signal has not been backtested** — validating whether it improves XI accuracy needs `--pages 2` to backfill prior pre-seasons first.
 
-**Season attribution:** June/July friendlies are filed under the season that *starts* in August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`.
+**Season attribution — and the leak it hides.** `_season_for` files **everything from June onward** under the season that *starts* that August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`. That is right for pre-season friendlies, which is what the column is for.
+
+⚠️ **But the season label is therefore NOT a time bound.** A friendly played in **March 2025** is stamped `2024-2025` — the same label as the genuine July-2024 pre-season. Anything replaying a historical matchweek that filters by `season` alone will be handed matches from *months in its own future*. Two such friendlies exist in the 2024-08→2026-08 backfill.
+
+**Rule for any consumer that reasons about a past point in time:** pass `load_preseason_signal(team, season=..., before=<cutoff>)`. `before` drops friendlies played on/after the cutoff; the backtest passes the club's first league fixture of that season, which is also what "pre-season" literally means. Production leaves `before=None` — there is no future to leak from *today*. Filtering by season alone is safe **only** for the current, in-progress pre-season.
 
 ---
 
