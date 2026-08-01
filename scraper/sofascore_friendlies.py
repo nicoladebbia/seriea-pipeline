@@ -327,6 +327,10 @@ _YOUTH_MARKERS = (" u19", " u20", " u21", " u23", " ii", " b", " primavera",
 
 #: Opponent-profile cache.  One /team/{id} request per DISTINCT opponent, then
 #: never again -- opponents repeat across a pre-season and across years.
+# Permanent, keyed by team id, NO TTL: an opponent promoted or relegated after its
+# first resolution keeps its stale league/tier forever. Fine within one pre-season.
+# Delete this file on season rollover to force re-resolution -- the parquet keeps the
+# raw `opponent` name verbatim, so re-deriving loses nothing.
 _OPP_CACHE = SOFASCORE_DIR / "friendly_opponent_profiles.json"
 
 
