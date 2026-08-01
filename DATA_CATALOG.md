@@ -450,6 +450,29 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **Plan C:** Last saved parquet (stale but valid)
 - 3-level caching → very robust
 
+### `data/external/sofascore/friendlies_{season}.parquet` (PRE-SEASON — availability signal, NOT performance)
+
+Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 853 ("Club Friendly Games")**. One row per named player per friendly, **both sides**.
+
+| Season file | Rows | Matches | Tracked clubs |
+|---|---:|---:|---:|
+| `friendlies_2026_2027.parquet` | 4,118 | 90 | 38 |
+| `friendlies_2025_2026.parquet` | 44 | 1 | — |
+
+**Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`.
+
+**What it is FOR — read this before using it.** Friendly *performance* is close to noise: no stakes, wildly uneven opposition (a Serie A side vs a fourth-tier local club), rolling 11-man half-time substitutions, trialists in the XI, and squads deliberately short of match fitness. What it measures reliably is **availability and trust**: who is fit enough to be named, which signing is *not* getting minutes, who has been dropped, what shape is being trialled, and whose minutes are ramping toward matchday 1. That is a legitimate prior for MW1 XI prediction. The Sofascore rating is carried as **`rating_low_trust`** — the column name is deliberate, so no downstream join treats a July friendly rating as comparable to a league rating.
+
+**Unused substitutes are kept with `minutes_played = 0`** (`was_used = False`). "Named but did not play" is the signal; dropping those rows would leave only the players who featured.
+
+**Isolation — important.** Friendlies are **never** written to `lineups.parquet`, `player_match_stats.parquet` or any league table; a friendly row there would silently contaminate the training set. The module keeps its own tournament id and does **not** touch `scraper.sofascore_lineups._SUPPORTED_TOURNAMENT_IDS` (the league ingest gate). Verified: zero `sofascore_event_id` overlap with the league tables.
+
+**Naming:** `club` is the **canonical** repo name for tracked clubs (`Milan`, not `AC Milan`); untracked friendly opponents keep their raw Sofascore name. Both sides are tagged `is_our_club` when two tracked clubs meet (e.g. Sassuolo v Parma) — 4 such fixtures in 2026 pre-season.
+
+**Refresh:** manual, `python3 -m scraper.sofascore_friendlies --leagues serie_a,premier_league` (add `--dry-run` to fetch without writing). Not yet on a plist. Re-running is idempotent — rows merge on `(sofascore_event_id, player_id)`, last write wins, so a corrected re-scrape updates in place.
+
+**Season attribution:** June/July friendlies are filed under the season that *starts* in August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`.
+
 ---
 
 ## 5. Understat
