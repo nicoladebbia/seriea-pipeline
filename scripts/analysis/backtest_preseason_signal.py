@@ -144,7 +144,17 @@ def _model_top11(table: pd.DataFrame, team: str, preseason: dict | None) -> list
 
 def run_backtest(seasons: list[str] | None = None,
                  rounds: tuple[int, ...] = DEFAULT_ROUNDS,
-                 verbose: bool = True) -> dict[str, Any]:
+                 verbose: bool = True,
+                 write: bool = True) -> dict[str, Any]:
+    """Replay the XI predictor with the signal on and off.
+
+    write: persist the fixture rows to OUT_PATH.  `sweep()` passes False --
+        it calls this once per grid cell, and every cell writing the canonical
+        artefact leaves the file holding an ARBITRARY cell's fixtures, computed
+        with SWEPT constants over only the calibration seasons.  Anything that
+        then reads the JSON believing it holds the production-constants run
+        gets a confidently wrong answer (this happened 2026-08-01).
+    """
     stats = load_league_stats()
     if stats.empty:
         return {"error": "no player-stats parquet"}
@@ -199,9 +209,10 @@ def run_backtest(seasons: list[str] | None = None,
     summary = _summarise(fx)
     if verbose:
         _report(fx, summary)
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(json.dumps(
-        {"summary": summary, "fixtures": fixtures}, indent=2, default=str))
+    if write:
+        OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        OUT_PATH.write_text(json.dumps(
+            {"summary": summary, "fixtures": fixtures}, indent=2, default=str))
     return {"summary": summary, "fixtures": fx}
 
 
@@ -300,7 +311,7 @@ def sweep(seasons: list[str] | None = None) -> dict[str, Any]:
             lp.PRESEASON_ONLY_PRIOR = prior
             lp.PRESEASON_ABSENT_PENALTY = penalty
             lp.PRESEASON_FADE_MATCHES = fade
-            r = run_backtest(calib, verbose=False)
+            r = run_backtest(calib, verbose=False, write=False)
             if "summary" not in r:
                 continue
             results.append({"prior": prior, "penalty": penalty, "fade": fade,
@@ -314,7 +325,7 @@ def sweep(seasons: list[str] | None = None) -> dict[str, Any]:
             lp.PRESEASON_ONLY_PRIOR = best["prior"]
             lp.PRESEASON_ABSENT_PENALTY = best["penalty"]
             lp.PRESEASON_FADE_MATCHES = best["fade"]
-            v = run_backtest(holdout, verbose=False)
+            v = run_backtest(holdout, verbose=False, write=False)
             val = v.get("summary")
     finally:
         (lp.PRESEASON_ONLY_PRIOR, lp.PRESEASON_ABSENT_PENALTY,

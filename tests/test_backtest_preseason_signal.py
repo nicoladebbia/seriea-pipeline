@@ -7,6 +7,8 @@ the replay's honesty rather than checking that it runs.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -245,6 +247,51 @@ def test_sweep_restores_the_constants(tmp_path, monkeypatch):
     assert out["calibration"], "the grid must have produced cells"
     assert (lp.PRESEASON_ONLY_PRIOR, lp.PRESEASON_ABSENT_PENALTY,
             lp.PRESEASON_FADE_MATCHES) == before
+
+
+def test_sweep_never_overwrites_the_canonical_artefact(tmp_path, monkeypatch):
+    """Paid 2026-08-01.
+
+    `sweep()` calls `run_backtest` once per grid cell.  While every cell wrote
+    OUT_PATH, the file was left holding an ARBITRARY cell's fixtures -- computed
+    with SWEPT constants, over the CALIBRATION seasons only.  Reading it as "the
+    production-constants run" produced a confidently wrong analysis.  The
+    artefact must be written by the top-level run alone.
+    """
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(bt, "OUT_PATH", out)
+    for season in ("2024-2025", "2025-2026"):
+        pd.DataFrame(_friendly_rows(season, list(range(14)))).to_parquet(
+            tmp_path / f"friendlies_{season.replace('-', '_')}.parquet", index=False)
+    stats = pd.DataFrame(sum(
+        (_league_rows(s, [1, 2, 3], range(14))
+         for s in ("2023-2024", "2024-2025", "2025-2026")), []))
+    monkeypatch.setattr(bt, "load_league_stats", lambda: stats)
+    monkeypatch.setattr(bt, "friendly_seasons", lambda: ["2024-2025", "2025-2026"])
+
+    out.write_text('{"sentinel": true}')
+    assert "error" not in bt.sweep()
+    assert json.loads(out.read_text()) == {"sentinel": True}, (
+        "a sweep cell clobbered the canonical backtest artefact")
+
+
+def test_run_backtest_still_writes_when_asked(tmp_path, monkeypatch):
+    """The other half: `write=True` must actually persist, or the guard above
+    would pass on a harness that never writes at all."""
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(bt, "OUT_PATH", out)
+    pd.DataFrame(_friendly_rows("2025-2026", list(range(14)))).to_parquet(
+        tmp_path / "friendlies_2025_2026.parquet", index=False)
+    stats = pd.DataFrame(sum(
+        (_league_rows(s, [1, 2], range(14))
+         for s in ("2024-2025", "2025-2026")), []))
+    monkeypatch.setattr(bt, "load_league_stats", lambda: stats)
+    monkeypatch.setattr(bt, "friendly_seasons", lambda: ["2025-2026"])
+
+    assert "error" not in bt.run_backtest(verbose=False)
+    assert out.exists() and "fixtures" in json.loads(out.read_text())
 
 
 def test_sweep_restores_the_constants_even_when_a_cell_raises(tmp_path, monkeypatch):
