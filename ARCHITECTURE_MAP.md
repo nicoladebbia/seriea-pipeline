@@ -1401,6 +1401,14 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** none
 - **Quality signals:** Simple init file with docstring; zero complexity; serves as documentation for package purpose (backtesting, diagnostics, performance reporting, data audits)
 
+#### 🟢 `scripts/analysis/backtest_preseason_signal.py` — grade A · keep
+- **Does:** Replays past matchweeks to measure whether the pre-season friendly signal improves XI prediction, and grids the four `PRESEASON_*` constants in `lineup_predictor.py` (which were judgement, never measurement). Writes `data/analysis/preseason_signal_backtest.json`.
+- **Talks to:** imports `scripts/prediction/lineup_predictor.py` (`get_starter_frequency`, `load_preseason_signal`, `_PLAYER_STATS_FILES`, `SOFASCORE_DIR`). Reads `player_match_stats{,_premier_league}.parquet` + `friendlies_*.parquet`. Imported by nothing — CLI only. Tests: `tests/test_backtest_preseason_signal.py`.
+- **Run:** `python3 -m scripts.analysis.backtest_preseason_signal [--seasons A,B] [--rounds 1,2,3] [--sweep]`
+- **The replay is the load-bearing part.** For MW `k` of season `S` it reconstructs exactly what `_load_current_season_stats` would have returned: at `k==1` no season-`S` rows exist so the table is `S-1` (the case the signal exists for); at `k>1` it is rounds `1..k-1`. Friendlies are pinned to season `S` via `load_preseason_signal(team, season=S)` — **the default (newest on disk) would be look-ahead leakage** and would manufacture a good result.
+- **Three arms:** `naive` (top 11 by raw start count — the floor), `off`, `on`. Always read `player_slots_changed` beside the delta: an accuracy delta with ~zero changed slots is noise whatever its sign. `--sweep` calibrates on the earlier season and validates on a holdout, and restores the module globals in a `finally` so a crashed sweep cannot leave swept constants in the live predictor.
+- **To re-calibrate after a new season lands, this is the file.** To change what the signal *does*, it is `lineup_predictor.py`.
+
 #### ⚫ `scripts/analysis/backtest_multimarket.py` — grade B · **delete**
 - **Does:** Backtests 3 betting markets (1X2, O/U 2.5, Asian Handicap) against Pinnacle sharp odds with lineup-adjusted xG comparison.
 - **Talks to:** imports: config/settings.py (DATA_DIR, MODELS_DIR), storage/paths.py (features_path), scripts/betting/betting_unified.py (remove_overround), features/player_xg_model.py, ml/ensemble.py; imported_by: scripts/models/optimize_weights.py, scripts/models/optimize_unified.py
