@@ -1377,6 +1377,13 @@ def predict_starting_xi(starter_freq: list, formation: str,
             }
             if player.get("is_new_signing"):
                 entry["is_new_signing"] = True
+            # A player with NO league history at all is picked purely off
+            # pre-season minutes. Carry that through so the UI can say so
+            # rather than presenting him with the same confidence as a regular.
+            if player.get("preseason_only"):
+                entry["preseason_only"] = True
+                entry["preseason_starts"] = player.get("preseason_starts", 0)
+                entry["preseason_appearances"] = player.get("preseason_appearances", 0)
             if player.get("form_trend"):
                 entry["form_trend"] = player["form_trend"]
                 entry["form_z"] = player.get("form_z", 0)
