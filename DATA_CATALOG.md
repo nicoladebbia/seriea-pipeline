@@ -580,6 +580,35 @@ The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan)
 - **Unconfirmed transfer rumors per club:** `team, player_name, age, current_club, market_value_text, market_value_eur, source_date, source_url, confirmed(=False), scraped_at`. ~399 rows / 18 clubs (2026-07-14).
 - **Writer:** `scraper/transfermarkt.scrape_rumors()`. Overwritten each run (rumors expire); no incremental cache.
 - **NEVER read by the feature layer** — `compute_net_squad_delta` reads `transfers_*` only. Surfaced on `/transfers` dashboard as speculation with source date for traceability. TM's per-rumor "assessment" is usually blank, so NO fabricated probability is stored.
+- ⚠️ **Survivorship-biased — do NOT use this file for any retrospective study.** It shows only the rumors alive on the day you read it. Use `rumor_history.parquet` below.
+
+### `data/external/transfermarkt/rumor_history.parquet` + `rumor_scrape_log.parquet` (APPEND-ONLY — the studyable record)
+
+**What it is.** Every rumor ever observed, with a measurable lifetime. Seeded 2026-08-01 from the live snapshot (459 rumors / 20 Serie A clubs); grows daily thereafter. This is the file to read for *any* question of the form "do rumors predict transfers", "how long does a real link survive", "does market value predict completion".
+
+**Key** (`rumor_history.KEY`): `league, season, team, player_name, current_club`. **`source_url` is deliberately NOT in the key** — it embeds a Transfermarkt forum `post_id`, so a fresh post about the same rumor would mint a new row and reset `first_seen`, destroying the lifetime that is the whole point. URL is a latest-wins attribute.
+
+**Columns.** Key + latest-wins attributes (`age`, `market_value_eur`, `market_value_text`, `source_date`, `source_url`) + lifecycle: `first_seen`, `last_seen`, `last_covered_at`, `times_seen`, `first_run_id`, `last_run_id`.
+
+**⚠️ How to read it — use `annotate_status()`, never a bare `last_seen` comparison.**
+A stale `last_seen` has two opposite meanings: *the rumor was dropped*, or *the scraper was blind* (Transfermarkt 403s per club, and `refresh_transfers` swallows the whole step's exception). Those are **opposite labels** for the supervised question, so the store records per-club coverage separately and `last_covered_at` marks the last time a **successful** run looked at that club.
+
+```python
+from scripts.data.rumor_history import annotate_status
+df = annotate_status()          # adds days_alive, is_dropped, is_live, days_dark
+real_drops = df[df.is_dropped]  # a covering run ran AFTER last_seen
+unreliable = df[df.days_dark > 3]   # scraper blind here — trust neither verdict
+```
+- `is_dropped` — `last_covered_at > last_seen`. The rumor genuinely disappeared.
+- `is_live` — still listed as of the latest covering run.
+- `days_alive` — `last_seen − first_seen`. The lifetime feature.
+- `days_dark` — days since a run covered this club. Large ⇒ both verdicts unreliable.
+
+**`rumor_scrape_log.parquet`** — one row per run: `run_id, league, season, status (ok/partial/failed), teams_expected, teams_covered, n_rows, covered_teams, failed_teams`. Read this before trusting any window of history; a `failed`/`partial` streak is a hole in the record, not a burst of dropped rumors.
+
+**Writer:** `scripts/data/rumor_history.record_run()`, called by `scripts/data/refresh_transfers.py` step 3 right after `scrape_rumors` (which now fills a `coverage` out-param). Atomic tmp+replace. Additive and fail-soft: a dead scrape logs `status=failed` and **never** erases history.
+
+**Still NEVER a model feature.** This makes rumors *studyable*, which is the precondition for ever deciding whether they earn a feature slot — not a promotion of rumors to one.
 
 ### Auto-refresh (transfers)
 - **`com.seriea-pipeline.transfer-refresh` plist** (`deploy/launchagents/`, daily 06:00, `RunAtLoad: false`) runs `scripts/data/refresh_transfers.py` → scrapes confirmed + market values + rumors. Window-gated (summer 06-01→09-05, winter 01-01→02-05); exits instantly off-window. NOT auto-loaded — load with `launchctl load ~/Library/LaunchAgents/...` when wanted.

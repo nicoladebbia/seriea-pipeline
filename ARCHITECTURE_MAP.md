@@ -51,6 +51,19 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 > April behind a `TypeError` that named the write and not Cloudflare. Neither had
 > a map entry. The pattern is not "files go missing", it is **a whole directory
 > nobody can see, so nothing in it can be missed.**
+>
+> **Partial coverage started 2026-08-01** (`scripts/data/` section below). It is
+> seeded, NOT complete — files added since are listed there; the ~30 pre-existing
+> ones are still unmapped. The rule stands: absent from the map means *unknown*.
+
+### `scripts/data/` — PARTIAL (seeded 2026-08-01, not a full sweep)
+
+#### 🟢 `scripts/data/rumor_history.py` — grade A · keep
+- **Does:** Append-only transfer-rumor lifecycle store. Folds each daily `scrape_rumors` result into `rumor_history.parquet` (one row per rumor ever, with `first_seen`/`last_seen`/`times_seen`) plus `rumor_scrape_log.parquet` (per-run, per-club coverage). Exists because `rumors_<season>.parquet` is overwritten daily and is therefore survivorship-biased — unusable for any retrospective study.
+- **Talks to:** imported_by: `scripts/data/refresh_transfers.py` (step 3, right after `scrape_rumors`); imports: pandas, pathlib. Reads/writes `data/external/transfermarkt/rumor_history.parquet` + `rumor_scrape_log.parquet`.
+- **To change how rumor lifetimes are measured, the file is this one.** To change what a rumor *is*, it is `scraper/transfermarkt.py:_parse_rumors_page`.
+- **Quality signals:** content-owned key (`source_url` deliberately excluded — it carries a forum `post_id` that would reset lifetimes), atomic tmp+replace writes, injectable clock + `tm_dir` for tests, 19 tests in `tests/test_rumor_history.py` all exercising state *transitions* rather than steady state.
+- ⚠️ **Consumers must call `annotate_status()`, not compare `last_seen` directly** — a stale `last_seen` means either "dropped" or "scraper was blind", and only `last_covered_at` separates them.
 
 ### `cli.py/` — 1 files
 
