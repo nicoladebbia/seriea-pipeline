@@ -432,10 +432,21 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 
 | File | Rows | Cols | What |
 |------|------|------|------|
-| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
+| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes). **EPL twin: `player_match_stats_premier_league.parquet` (97,003 rows, 33 clubs, 2017-18→2025-26). Read BOTH — see below.** |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
 | `shotmap_stats.parquet` | 6,684 | 30 | Per-**team** shot aggregate, 2 rows/match (totals, xG, xGOT, situation counts, distance stats) — **not** shot-level |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
+
+> ⚠️ **`player_match_stats` is TWO files, one per league.** Any consumer reading only
+> `player_match_stats.parquet` is silently EPL-blind. Fixed in `lineup_predictor.py`
+> 2026-08-01 (`_PLAYER_STATS_FILES`), where the single-file read left all 20 Premier
+> League clubs with no XI prediction and graded every archived EPL prediction as a miss.
+> Safe to concatenate: **zero** team-name overlap between the files. But `player_id`
+> DOES overlap (229 players, correctly — it is a global Sofascore id), so never key
+> across leagues on `player_id` alone. Filter each file to its **own** `season.max()`;
+> a global max erases whichever league lags. This is failure mode #1 of the
+> "EPL data missing where SA has it" catalogue in `CLAUDE.md` — check any new loader
+> against it.
 | `match_incidents.parquet` | 44,184 | 13 | Full event timeline (goal, card, sub, VAR) |
 | `captains.parquet` | 6,650 | 5 | Team captain per match |
 

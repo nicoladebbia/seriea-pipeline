@@ -123,15 +123,40 @@ def _get_tactical_labels(formation: str, slots: dict) -> dict:
     return labels
 
 
+#: Both league variants of the Sofascore player-stats parquet.  Reading only the
+#: first is failure mode #1 in the project's "EPL data missing where SA has it"
+#: catalogue: 18 Premier League clubs had pre-season friendly data and no XI
+#: prediction path at all, purely because this loader opened one file.
+#: Safe to concatenate: the two files share ZERO team names (verified
+#: 2026-08-01, 32 SA vs 33 EPL clubs, empty intersection), and every lookup
+#: downstream keys on `team`.  `player_id` DOES overlap (229 players appear in
+#: both, correctly -- it is a global Sofascore id), which is why nothing may key
+#: on player_id alone across leagues.
+_PLAYER_STATS_FILES = ("player_match_stats.parquet",
+                       "player_match_stats_premier_league.parquet")
+
+
 def _load_current_season_stats() -> pd.DataFrame:
-    """Load player match stats for the current season."""
-    path = SOFASCORE_DIR / "player_match_stats.parquet"
-    if not path.exists():
+    """Load player match stats for the current season, ALL tracked leagues.
+
+    Each league is filtered to its OWN latest season before concatenating --
+    a global `season.max()` would silently drop a league that is a season
+    behind (mid-transition, or a source that lags).
+    """
+    frames = []
+    for name in _PLAYER_STATS_FILES:
+        path = SOFASCORE_DIR / name
+        if not path.exists():
+            continue
+        part = pd.read_parquet(path)
+        if part.empty:
+            continue
+        if "season" in part.columns:
+            part = part[part["season"] == part["season"].max()]
+        frames.append(part)
+    if not frames:
         return pd.DataFrame()
-    df = pd.read_parquet(path)
-    if "season" in df.columns:
-        latest = df["season"].max()
-        df = df[df["season"] == latest]
+    df = pd.concat(frames, ignore_index=True)
     # Ensure proper types
     for col in ["minutes", "is_starter", "round"]:
         if col in df.columns:
@@ -1985,13 +2010,21 @@ def evaluate_past_predictions(verbose: bool = True) -> dict:
             existing_eval = json.load(f)
     already_scored = set(existing_eval.get("scored_keys", []))
 
-    # Load actual starters from Sofascore
-    stats_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-    if not stats_path.exists():
-        print("No player_match_stats.parquet — cannot evaluate")
+    # Load actual starters from Sofascore -- BOTH leagues.  Grading only the
+    # Serie A file would silently score every EPL prediction as a miss (no
+    # actual starters found), which reads as a model failure rather than a
+    # missing input.  All seasons are kept here on purpose: this grades archived
+    # predictions, which may be older than the current season.
+    frames = []
+    for name in _PLAYER_STATS_FILES:
+        p = DATA_DIR / "external" / "sofascore" / name
+        if p.exists():
+            frames.append(pd.read_parquet(p))
+    if not frames:
+        print(f"No player-stats parquet ({', '.join(_PLAYER_STATS_FILES)}) — cannot evaluate")
         return {}
 
-    stats_df = pd.read_parquet(stats_path)
+    stats_df = pd.concat(frames, ignore_index=True)
     stats_df["team"] = stats_df["team"].apply(normalize_team)
 
     # Build actual starters lookup: (date, team) → set of player names

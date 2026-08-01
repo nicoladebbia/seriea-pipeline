@@ -342,3 +342,58 @@ def test_predict_formation_returns_the_same_keys_with_and_without_history():
 def test_preseason_formations_are_used_when_there_is_no_league_history():
     hist = [{"formation": f} for f in ("3-4-1-2", "3-4-1-2", "4-2-3-1")]
     assert lp.predict_formation(hist)["predicted"] == "3-4-1-2"
+
+
+# ---------------------------------------------------------------------------
+# 8. Multi-league loading.  Failure mode #1 in the project's "EPL data missing
+#    where SA has it" catalogue: a loader that opens one league's file.  This
+#    left 18 Premier League clubs with friendly data and no XI path at all.
+# ---------------------------------------------------------------------------
+
+def _stats_file(tmp_path, name, teams, season, monkeypatch_rows=11):
+    rows = []
+    for t in teams:
+        for p in range(monkeypatch_rows):
+            rows.append({"team": t, "match_id": f"{t}-1", "date": "2026-08-24",
+                         "player_id": abs(hash(f"{t}{p}")) % 10**6,
+                         "player_name": f"{t}P{p}", "is_starter": True,
+                         "minutes": 90, "rating": 6.9, "position": "M",
+                         "shirt_number": p + 1, "round": 1, "season": season})
+    pd.DataFrame(rows).to_parquet(tmp_path / name, index=False)
+
+
+def test_loader_reads_both_league_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    _stats_file(tmp_path, "player_match_stats.parquet", ["Inter"], "2025-2026")
+    _stats_file(tmp_path, "player_match_stats_premier_league.parquet",
+                ["Arsenal"], "2025-2026")
+    out = lp._load_current_season_stats()
+    assert set(out["team"]) == {"Inter", "Arsenal"}, (
+        "an EPL club must not disappear because the SA file was opened alone"
+    )
+
+
+def test_each_league_is_filtered_to_its_OWN_latest_season(tmp_path, monkeypatch):
+    """A global season.max() would erase any league that lags a season -- the
+    EPL file would vanish entirely the day Serie A's new season lands first."""
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    _stats_file(tmp_path, "player_match_stats.parquet", ["Inter"], "2026-2027")
+    _stats_file(tmp_path, "player_match_stats_premier_league.parquet",
+                ["Arsenal"], "2025-2026")
+    out = lp._load_current_season_stats()
+    assert set(out["team"]) == {"Inter", "Arsenal"}
+    assert set(out["season"]) == {"2026-2027", "2025-2026"}
+
+
+def test_loader_degrades_when_one_league_file_is_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    _stats_file(tmp_path, "player_match_stats.parquet", ["Inter"], "2025-2026")
+    assert set(lp._load_current_season_stats()["team"]) == {"Inter"}
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path / "nope")
+    assert lp._load_current_season_stats().empty
+
+
+def test_both_league_files_are_declared_once(tmp_path, monkeypatch):
+    """Guards the constant itself: every consumer must widen together."""
+    assert lp._PLAYER_STATS_FILES == ("player_match_stats.parquet",
+                                      "player_match_stats_premier_league.parquet")
