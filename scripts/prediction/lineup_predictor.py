@@ -165,8 +165,15 @@ def _load_current_season_stats() -> pd.DataFrame:
     return df.sort_values("date")
 
 
-def load_preseason_signal(team: str) -> dict:
+def load_preseason_signal(team: str, season: str | None = None) -> dict:
     """Pre-season friendly participation for one club.
+
+    Args:
+        season: which pre-season to read.  Defaults to the newest on disk,
+            which is what production wants.  The backtest passes an explicit
+            past season to replay a historical matchweek -- without it, a
+            2024-25 replay would be handed 2026-27 friendlies, which is
+            look-ahead leakage and would fake a good result.
 
     Why this exists: `_load_current_season_stats` filters to `season.max()`, so
     between May and the first league matchweek the predictor is reasoning off
@@ -194,7 +201,7 @@ def load_preseason_signal(team: str) -> dict:
     if df.empty or "is_our_club" not in df.columns:
         return {}
 
-    df = df[df["season"] == df["season"].max()]
+    df = df[df["season"] == (season or df["season"].max())]
     df = df[df["is_our_club"] & (df["club"] == team)]
     if df.empty:
         return {}
