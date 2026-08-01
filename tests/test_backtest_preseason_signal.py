@@ -59,6 +59,38 @@ def test_preseason_signal_is_season_scoped(tmp_path, monkeypatch):
     assert set(lp.load_preseason_signal(TEAM)["players"]) == {7, 8, 9}
 
 
+def test_a_MARCH_friendly_never_reaches_a_matchweek1_replay(tmp_path, monkeypatch):
+    """The leak season-scoping alone does NOT close.
+
+    `sofascore_friendlies._season_for` stamps every June-onward friendly with
+    the season starting that August, so a friendly played in MARCH 2025 is
+    labelled `2024-2025` -- the same label as the July-2024 pre-season.  A
+    matchweek-1 replay (August 2024) reading by season would therefore be handed
+    a match seven months in its own future.  Only the date cutoff stops it.
+    """
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    july = _friendly_rows("2024-2025", [1, 2, 3])          # genuine pre-season
+    march = _friendly_rows("2024-2025", [8, 9], event=950000)
+    for r in march:
+        r["match_date"] = "2025-03-14"                     # mid-season, future
+    pd.DataFrame(july + march).to_parquet(
+        tmp_path / "friendlies_2024_2025.parquet", index=False)
+
+    leaky = lp.load_preseason_signal(TEAM, season="2024-2025")
+    assert {8, 9} <= set(leaky["players"]), "fixture must actually contain the leak"
+
+    clean = lp.load_preseason_signal(TEAM, season="2024-2025", before="2024-08-17")
+    assert set(clean["players"]) == {1, 2, 3}
+    assert clean["club_friendlies"] == 1, "the March event must not be counted"
+
+
+def test_season_opener_is_the_clubs_first_league_match():
+    stats = pd.DataFrame(_league_rows("2024-2025", [3, 1, 2], range(14)))
+    opener = bt._season_opener(stats, TEAM, "2024-2025")
+    assert opener == pd.Timestamp("2024-09-01"), "earliest date, not first row"
+    assert bt._season_opener(stats, "Nobody", "2024-2025") is None
+
+
 def test_replay_table_at_mw1_is_last_season_only():
     """At MW1 no rows of the new season exist, so the production loader's
     season.max() yields LAST season.  A replay that leaked the new season's

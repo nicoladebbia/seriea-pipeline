@@ -74,6 +74,18 @@ def _prev_season(season: str) -> str:
     return f"{int(a) - 1}-{int(b) - 1}"
 
 
+def _season_opener(stats: pd.DataFrame, team: str, season: str):
+    """Date of the club's first league match that season -- the cutoff beyond
+    which a 'pre-season' friendly is no longer pre-season (and, for matchweek 1,
+    is outright future data).  None when unknown, which leaves the signal
+    unfiltered rather than silently emptying it."""
+    t = stats[(stats["team"] == team) & (stats["season"] == season)]
+    if t.empty or "date" not in t.columns:
+        return None
+    first = pd.to_datetime(t["date"], errors="coerce").min()
+    return None if pd.isna(first) else first
+
+
 def load_league_stats() -> pd.DataFrame:
     """All seasons, both leagues.  The replay slices this itself."""
     frames = []
@@ -151,7 +163,13 @@ def run_backtest(seasons: list[str] | None = None,
     for season in seasons:
         clubs = sorted(stats[stats["season"] == season]["team"].dropna().unique())
         for team in clubs:
-            pre = lp.load_preseason_signal(team, season=season)
+            # Season-scoping alone leaks: `_season_for` stamps ANY June-onward
+            # friendly with the season starting that August, so a March friendly
+            # carries the previous season's label and would reach a matchweek-1
+            # replay from seven months in its future.  Cut at the club's first
+            # league match -- which is also what "pre-season" literally means.
+            pre = lp.load_preseason_signal(
+                team, season=season, before=_season_opener(stats, team, season))
             for rnd in rounds:
                 actual = _actual_starters(stats, team, season, rnd)
                 if len(actual) < XI:

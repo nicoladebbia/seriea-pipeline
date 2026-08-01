@@ -165,7 +165,8 @@ def _load_current_season_stats() -> pd.DataFrame:
     return df.sort_values("date")
 
 
-def load_preseason_signal(team: str, season: str | None = None) -> dict:
+def load_preseason_signal(team: str, season: str | None = None,
+                          before: "str | pd.Timestamp | None" = None) -> dict:
     """Pre-season friendly participation for one club.
 
     Args:
@@ -174,6 +175,14 @@ def load_preseason_signal(team: str, season: str | None = None) -> dict:
             past season to replay a historical matchweek -- without it, a
             2024-25 replay would be handed 2026-27 friendlies, which is
             look-ahead leakage and would fake a good result.
+        before: drop friendlies played on/after this date.  Season-scoping
+            ALONE is not leak-free: `sofascore_friendlies._season_for` files
+            anything from June onward under the season that starts in August,
+            so a friendly played in **March 2025** is stamped `2024-2025` and
+            would reach a replay of 2024-25 matchweek 1 -- seven months of
+            look-ahead.  Production leaves this None (there is no future to
+            leak); the backtest passes the club's first league fixture of the
+            season, which is also what "PRE-season" means literally.
 
     Why this exists: `_load_current_season_stats` filters to `season.max()`, so
     between May and the first league matchweek the predictor is reasoning off
@@ -203,6 +212,9 @@ def load_preseason_signal(team: str, season: str | None = None) -> dict:
 
     df = df[df["season"] == (season or df["season"].max())]
     df = df[df["is_our_club"] & (df["club"] == team)]
+    if before is not None and "match_date" in df.columns:
+        df = df[pd.to_datetime(df["match_date"], errors="coerce")
+                < pd.to_datetime(before)]
     if df.empty:
         return {}
 
