@@ -102,7 +102,14 @@ PER_EVENT_MARKETS = {
 
 # Cache settings
 CACHE_DIR = DATA_DIR / "cache"
-CACHE_DURATION_MINUTES = 10  # Refresh odds every 10 minutes
+CACHE_DURATION_MINUTES = 60  # Per-event extras (btts, alt_totals, etc.) don't move
+# enough pre-kickoff to justify a 10-min refresh; this is layer 1 of the wake-storm
+# fix in CLAUDE.md ("Daily Odds API spend spikes after Mac wake/launchctl reload"),
+# where a duplicate pipeline run re-fetched identical extras 30-40 min apart.
+# Layer 2 (use_cache=True on the non-critical run_full_pipeline callers) shipped;
+# this line was stashed and lost, so the catalogue claimed a fix that was not live.
+# SAFE for closing lines: fetch_tagged_snapshot() passes use_cache=False, and the
+# cache is gated on use_cache — NOT on critical — so T-5min snapshots never read it.
 
 # Rate limiting — monthly quota is the binding constraint, not daily
 MONTHLY_LIMIT = 100000  # The Odds API 100K plan ($59/mo)

@@ -195,6 +195,7 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   1. **`CACHE_DURATION_MINUTES = 60`** in `scripts/data/odds_fetcher.py` (was 10). Per-event extras and bulk markets don't move enough pre-kickoff to need a 10-min refresh. T-5min closing snapshots bypass cache via `critical=True` anyway.
   2. **`use_cache=True`** on the non-critical `fetch_and_save_odds` callers in `run_full_pipeline.py` (the parallel path at ~988 and the sequential path at ~1282), and on `fetch_league_odds` at ~1590. The `run_incremental` path at line 616 already gates by `needs_odds_refresh(max_age_hours=4.0)` so leave that `use_cache=False`.
   3. **Optional plist tweak** (only if (1)+(2) prove insufficient): drop `<key>RunAtLoad</key><true/>` from `morning.plist` + `evening.plist`. `StartCalendarInterval` still catches up on next wake if the scheduled time was missed during sleep.
+- **Status (verified 2026-08-01):** layer 2 is live (`run_full_pipeline` lines ~992/1286/1594 pass `use_cache=True`); **layer 1 was NOT live** — `CACHE_DURATION_MINUTES` was still `10`, the change having been left in `stash@{1}` and never applied. Now applied. Safe for closing lines: the cache is gated on `use_cache`, not `critical`, and `fetch_tagged_snapshot()` passes `use_cache=False`.
 - **Prevention rule**: **all `fetch_and_save_odds` callers default to `use_cache=True` unless they have an upstream freshness check.** Same for `fetch_league_odds`. The cache exists precisely to absorb wake-storm duplicates.
 
 ### Symptom: "Auto-poll burning credits with no live matches"
