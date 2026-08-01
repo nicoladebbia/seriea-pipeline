@@ -300,3 +300,91 @@ def test_rating_is_stored_but_flagged_low_trust_in_the_schema():
         "name the column rating_low_trust so no downstream join treats a July "
         "friendly rating as comparable to a league rating"
     )
+
+
+# --------------------------------------------------------------------------
+# 6. opponent provenance -- "who did we actually play?"
+# --------------------------------------------------------------------------
+# A friendly result is meaningless without knowing the opposition: "Juventus 2-0
+# Nice" and "Torino 3-0 ACD Pinzolo" are identical in the payload.  The raw
+# opponent name is always kept verbatim; these columns only ADD context beside
+# it, so a wrong bucket can be re-derived from the stored facts.
+
+@pytest.mark.parametrize("name", [
+    "Arminia Bielefeld", "Rosenborg BK", "Bologna", "Dolomiti Bellunesi",
+])
+def test_a_senior_club_is_not_mistaken_for_a_youth_side(name):
+    """The space-padding is load-bearing.
+
+    A bare substring test for " b" / " ii" flags Bielefeld, Bellunesi and
+    Rosenborg BK -- all senior clubs.  Mislabelling them would silently
+    discount a real fixture.
+    """
+    assert f._is_youth_side(name) is False
+
+
+@pytest.mark.parametrize("name", ["Atalanta U23", "Lazio U20", "Real Madrid B"])
+def test_a_genuine_youth_or_reserve_side_is_flagged(name):
+    assert f._is_youth_side(name) is True
+
+
+def test_opponent_tier_buckets_by_stored_facts_not_by_name():
+    top5 = {"opponent_league_id": 34, "opponent_league": "Ligue 1"}
+    assert f._opponent_tier(top5) == "top5_league"
+    assert f._opponent_tier({"opponent_league_id": 99}) == "other_professional"
+    assert f._opponent_tier({}) == "lower_or_unknown"
+    assert f._opponent_tier({"opponent_is_national": True}) == "national_team"
+    # youth wins over league: Atalanta U23 play in Serie C, not Serie A
+    assert f._opponent_tier(
+        {"opponent_is_youth": True, "opponent_league_id": 34}
+    ) == "youth_or_reserve"
+
+
+def test_an_opponent_is_looked_up_once_then_served_from_cache(monkeypatch):
+    """Opponents repeat across a pre-season; re-fetching each time is waste."""
+    calls = []
+
+    def _fake(url, *a, **kw):
+        calls.append(url)
+        return {"team": {"name": "Nice", "national": False,
+                         "primaryUniqueTournament": {
+                             "id": 34, "name": "Ligue 1",
+                             "category": {"priority": 6}}}}
+
+    monkeypatch.setattr(f, "_get_json", _fake)
+    monkeypatch.setattr(f, "_jitter_delay", lambda *a, **kw: None)
+
+    cache: dict = {}
+    first = f.fetch_opponent_profile(2455, cache)
+    second = f.fetch_opponent_profile(2455, cache)
+
+    assert len(calls) == 1, "second lookup must not hit the network"
+    assert first == second
+    assert first["opponent_league"] == "Ligue 1"
+    assert first["opponent_league_id"] == 34
+    assert f._opponent_tier(first) == "top5_league"
+
+
+def test_a_store_written_before_provenance_existed_upgrades_without_duplicating(tmp_store):
+    """The real migration: rows already on disk predate these columns.
+
+    Merging a provenance-carrying row onto a provenance-free one must key on
+    (event, player) and must not leave the id columns as object dtype.
+    """
+    rows = f._parse_lineup(_lineups(), f._event_to_meta(_event(), OURS))
+    legacy = [{k: v for k, v in r.items()
+               if not k.startswith("opponent_") and k != "club_id"} for r in rows]
+    before = f._save(legacy, season="2026-2027")
+    assert "opponent_id" not in before.columns
+
+    for r in rows:
+        r["opponent_league"] = "Ligue 1"
+        r["opponent_tier"] = "top5_league"
+    after = f._save(rows, season="2026-2027")
+
+    assert len(after) == len(before), "upgrade must not append a second copy"
+    assert after["opponent_id"].dtype == "int64"
+    assert after["club_id"].dtype == "int64"
+    assert set(after["opponent_tier"].dropna()) == {"top5_league"}
+    gatti = after[after.player == "Federico Gatti"]
+    assert len(gatti) == 1

@@ -459,7 +459,13 @@ Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 
 | `friendlies_2026_2027.parquet` | 4,118 | 90 | 38 |
 | `friendlies_2025_2026.parquet` | 44 | 1 | — |
 
-**Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`.
+**Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `club_id`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`, plus opponent provenance: `opponent_id`, `opponent_country`, `opponent_league`, `opponent_league_id`, `opponent_country_priority`, `opponent_is_national`, `opponent_is_youth`, `opponent_tier`.
+
+**Opponent provenance — who did we actually play?** A friendly result is unreadable without the opposition's level: "Juventus 2-0 Nice" and "Torino 3-0 ACD Pinzolo" are identical in the payload. Each distinct opponent is resolved once via `/team/{id}` → `primaryUniqueTournament`, cached in `data/external/sofascore/friendly_opponent_profiles.json`. The **raw opponent name is always kept verbatim**; these columns only add context beside it, so a wrong bucket can be re-derived from the stored facts. `opponent_tier` ∈ `top5_league` / `other_professional` / `youth_or_reserve` / `national_team` / `lower_or_unknown`.
+
+2026 pre-season distribution (90 matches): `other_professional` 72, `top5_league` 15, `youth_or_reserve` 2, `lower_or_unknown` 1. Note `other_professional` spans a wide range (Championship → League Two → Scottish Premiership), so use `opponent_league` / `opponent_country_priority` rather than the tier alone when strength matters.
+
+**Consumed by:** `scripts/prediction/lineup_predictor.load_preseason_signal()` → `get_starter_frequency(..., preseason=...)`. Three effects, all inert without friendly data: an informed Bayesian prior (itself shrunk by friendly count), injection of players with **zero** league rows, and a downgrade for last-season regulars absent from ≥3 club friendlies. Measured 2026-08-01 across 17 Serie A clubs: **194 players** who featured in a friendly had no rows in last season's league table and could not be predicted at all; **72 players** with ≥5/10 starts last season appeared in no friendly. This affects the **displayed** XI and the advisor's grounding only — `lineup_predictions.json` is not consumed by the match-outcome models.
 
 **What it is FOR — read this before using it.** Friendly *performance* is close to noise: no stakes, wildly uneven opposition (a Serie A side vs a fourth-tier local club), rolling 11-man half-time substitutions, trialists in the XI, and squads deliberately short of match fitness. What it measures reliably is **availability and trust**: who is fit enough to be named, which signing is *not* getting minutes, who has been dropped, what shape is being trialled, and whose minutes are ramping toward matchday 1. That is a legitimate prior for MW1 XI prediction. The Sofascore rating is carried as **`rating_low_trust`** — the column name is deliberate, so no downstream join treats a July friendly rating as comparable to a league rating.
 
@@ -469,7 +475,11 @@ Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 
 
 **Naming:** `club` is the **canonical** repo name for tracked clubs (`Milan`, not `AC Milan`); untracked friendly opponents keep their raw Sofascore name. Both sides are tagged `is_our_club` when two tracked clubs meet (e.g. Sassuolo v Parma) — 4 such fixtures in 2026 pre-season.
 
-**Refresh:** manual, `python3 -m scraper.sofascore_friendlies --leagues serie_a,premier_league` (add `--dry-run` to fetch without writing). Not yet on a plist. Re-running is idempotent — rows merge on `(sofascore_event_id, player_id)`, last write wins, so a corrected re-scrape updates in place.
+**Refresh:** automated — `com.seriea-pipeline.friendlies-refresh` plist, **daily 05:15** (template in `scripts/pipeline/`, installed to `~/Library/LaunchAgents/`, logs to `logs/launchd-friendlies-refresh{,-err}.log`). Appears in the dashboard's `/api/scheduler/status` active/inactive list like every other job.
+
+The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan) and exits 0 immediately outside them, so it is cheap to leave loaded year-round rather than remembering to unload it in September. Manual run: `python3 -m scraper.sofascore_friendlies --leagues serie_a,premier_league` (`--dry-run` to fetch without writing, `--force` to override the window, `--pages 2` to reach the *previous* pre-season). Re-running is idempotent — rows merge on `(sofascore_event_id, player_id)`, last write wins, so a corrected re-scrape updates in place.
+
+**Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Only 16 of 38 tracked clubs had ≥3 friendlies on 2026-08-01. Consequence: **the signal has not been backtested** — validating whether it improves XI accuracy needs `--pages 2` to backfill prior pre-seasons first.
 
 **Season attribution:** June/July friendlies are filed under the season that *starts* in August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`.
 

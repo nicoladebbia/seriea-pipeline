@@ -26,6 +26,7 @@
 | refresh-understat | `refresh_understat_players` | `scripts/data/refresh_understat_players.py` |
 | scrape-epl-current | `scrape_epl_match_reports` | `scripts/data/scrape_epl_match_reports.py` |
 | sofascore-watcher | `sofascore_watcher` | `scripts/data/sofascore_watcher.py` |
+| friendlies-refresh | `scraper.sofascore_friendlies` | `scraper/sofascore_friendlies.py` |
 | telegram-bot | `telegram_bot` | `scripts/pipeline/telegram_bot.py` |
 | web-dashboard | `app.py` | `web/app.py` |
 

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Pre-season club-friendly ingest -> data/external/sofascore/friendlies_*.parquet -->
+    <!-- Feeds the XI predictor's availability prior (lineup_predictor.load_preseason_signal). -->
+    <!-- Install: cp scripts/pipeline/com.seriea-pipeline.friendlies-refresh.plist ~/Library/LaunchAgents/ -->
+    <!--          launchctl load ~/Library/LaunchAgents/com.seriea-pipeline.friendlies-refresh.plist -->
+    <!-- NOTE: never `plutil -convert json` this file; launchd needs the XML form. -->
+
+    <key>Label</key>
+    <string>com.seriea-pipeline.friendlies-refresh</string>
+
+    <!-- Daily 05:15. The script self-gates on FRIENDLY_WINDOWS (summer + winter
+         break) and exits 0 immediately outside them, so this is cheap to leave
+         loaded all year rather than remembering to unload it in September. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nicoladebbia/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>scraper.sofascore_friendlies</string>
+        <string>--leagues</string>
+        <string>serie_a,premier_league</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/nicoladebbia</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-friendlies-refresh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-friendlies-refresh-err.log</string>
+
+    <!-- RunAtLoad false: a wake-storm reload must not trigger a full re-scrape.
+         StartCalendarInterval still catches up if the slot was missed asleep. -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+</dict>
+</plist>

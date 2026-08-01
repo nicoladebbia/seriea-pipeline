@@ -140,6 +140,60 @@ def _load_current_season_stats() -> pd.DataFrame:
     return df.sort_values("date")
 
 
+def load_preseason_signal(team: str) -> dict:
+    """Pre-season friendly participation for one club.
+
+    Why this exists: `_load_current_season_stats` filters to `season.max()`, so
+    between May and the first league matchweek the predictor is reasoning off
+    LAST season's completed table.  Measured 2026-08-01 across 17 Serie A clubs:
+    194 players who featured in a pre-season friendly have ZERO rows in that
+    table (summer arrivals, promoted youth) and therefore cannot appear in a
+    predicted XI at all, while 72 players with >=5/10 starts last season
+    appeared in no friendly whatsoever (departed, sold, long-term injured) and
+    are still ranked as nailed-on starters.
+
+    Friendlies are a weak signal about ABILITY -- managers rotate freely and the
+    opposition is uneven -- but a strong one about AVAILABILITY, which is
+    exactly what the XI predictor gets wrong at this point in the calendar.
+
+    Returns {"players": {player_id: {...}}, "club_friendlies": int}.  An empty
+    dict means "no signal", and every caller must degrade to prior behaviour.
+    """
+    files = sorted(SOFASCORE_DIR.glob("friendlies_*.parquet"))
+    if not files:
+        return {}
+    try:
+        df = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
+    except (OSError, ValueError):
+        return {}
+    if df.empty or "is_our_club" not in df.columns:
+        return {}
+
+    df = df[df["season"] == df["season"].max()]
+    df = df[df["is_our_club"] & (df["club"] == team)]
+    if df.empty:
+        return {}
+
+    club_friendlies = int(df["sofascore_event_id"].nunique())
+    players: dict[int, dict] = {}
+    for pid, grp in df.groupby("player_id"):
+        # `appearances` counts SQUAD PRESENCE, not minutes: an unused sub is
+        # still evidence the player is at the club, which is the whole point of
+        # the absent-from-pre-season signal below.
+        appearances = int(len(grp))
+        starts = int(grp["is_starter"].sum())
+        players[int(pid)] = {
+            "starts": starts,
+            "appearances": appearances,
+            "minutes": int(pd.to_numeric(grp["minutes_played"], errors="coerce").fillna(0).sum()),
+            "start_pct": round(starts / appearances * 100, 1) if appearances else 0.0,
+            "name": grp["player"].iloc[0],
+            "position": grp["position"].mode().iloc[0] if len(grp["position"].mode()) else "?",
+            "shirt_number": grp["shirt_number"].mode().iloc[0] if len(grp["shirt_number"].mode()) else None,
+        }
+    return {"players": players, "club_friendlies": club_friendlies}
+
+
 def _load_season_incidents() -> pd.DataFrame:
     """Load all match incidents (cards, goals, subs) for the current season."""
     path = SOFASCORE_DIR / "match_incidents.parquet"
@@ -381,8 +435,20 @@ def _compute_recent_stats(stats_df: pd.DataFrame, team: str,
     return result
 
 
+#: Pre-season wiring constants.  All three effects are inert when `preseason`
+#: is None, so the historical code path is bit-for-bit unchanged.
+#: A friendly is worth less than a league match (free rotation, uneven
+#: opposition), so it informs the PRIOR RATE but does not raise PRIOR_STRENGTH:
+#: a 10-appearance regular still keeps ~83% observed weight.
+PRESEASON_ONLY_PRIOR = 40.0      # unproven player: below a coin flip, not at it
+PRESEASON_PRIOR_SHRINK = 2.0     # friendly start-rate is itself shrunk toward 50
+PRESEASON_ABSENT_PENALTY = -15.0  # league regular who featured in zero friendlies
+PRESEASON_ABSENT_MIN_MATCHES = 3  # below this, absence carries no information
+
+
 def get_starter_frequency(stats_df: pd.DataFrame, team: str,
-                          n_matches: int = 10) -> list:
+                          n_matches: int = 10,
+                          preseason: dict | None = None) -> list:
     """Get starter frequency for each player in the team.
 
     Uses recency-weighted start percentage: more recent matches count more.
@@ -464,6 +530,19 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
         # k=2: 10-app player barely affected (~92%), 2-app player corrected (83%)
         PRIOR_STRENGTH = 2  # equivalent to 2 matches of uncertainty
         PRIOR_RATE = 50.0
+        # Effect (a): an INFORMED prior. When we watched this player through
+        # pre-season, "what we believed before seeing league data" is his
+        # friendly start rate, not a coin flip. Strength is deliberately NOT
+        # raised — see PRESEASON_ONLY_PRIOR note above.
+        # The informed prior is ITSELF an estimate off a small sample, so it is
+        # shrunk toward 50 by its own friendly count. Without this, one
+        # unused-sub appearance in a club's only friendly drove a player's
+        # prior to 0% and cost him 23 points (measured on Milan/Odogu).
+        _ps = (preseason or {}).get("players", {}).get(int(pid))
+        if _ps and _ps["appearances"] > 0:
+            _fr_n = _ps["appearances"]
+            PRIOR_RATE = ((_ps["start_pct"] * _fr_n + 50.0 * PRESEASON_PRIOR_SHRINK)
+                          / (_fr_n + PRESEASON_PRIOR_SHRINK))
         shrunk_pct = (raw_weighted_pct * appearances + PRIOR_RATE * PRIOR_STRENGTH) / (appearances + PRIOR_STRENGTH)
 
         # Recent-start momentum: consecutive starts from the most recent match.
@@ -515,7 +594,22 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
         # Max ±3% — only matters for contested positions where margins are thin.
         form_data = form_scores.get(int(pid), {})
         form_bonus = form_data.get("form_bonus", 0)
-        adjusted_pct = shrunk_pct + form_bonus + last_match_bonus
+        # Effect (c): a last-season regular who featured in ZERO friendlies
+        # while his club played several has most likely left, been sold, or is
+        # long-term injured. Squad presence counts, so an unused sub is safe.
+        preseason_bonus = 0.0
+        if (preseason
+                and preseason.get("club_friendlies", 0) >= PRESEASON_ABSENT_MIN_MATCHES
+                and int(pid) not in preseason.get("players", {})):
+            preseason_bonus = PRESEASON_ABSENT_PENALTY
+            # Drop the manager-inertia bonus as well. "+25 because he started
+            # the last league match" is an argument about squad continuity, and
+            # it does not survive a transfer window: without this, a 10/10
+            # regular sat at shrunk 91.7 + 25 = clipped 100, so the penalty was
+            # invisible for precisely the players a summer sale matters most for.
+            last_match_bonus = 0.0
+
+        adjusted_pct = shrunk_pct + form_bonus + last_match_bonus + preseason_bonus
         weighted_pct = round(max(0, min(100, adjusted_pct)), 1)
 
         # Detect new signings: player appeared in last n_matches but not before
@@ -557,6 +651,44 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
             player_entry["recent_key_passes"] = perf["key_passes"]
             player_entry["recent_shots_pg"] = perf["shots_per_game"]
         players.append(player_entry)
+
+    # Effect (b): players who exist ONLY in pre-season. Summer arrivals and
+    # promoted youth have no rows in last season's league table, so the loop
+    # above never sees them and they cannot be picked no matter how obviously
+    # they are starting. Same Bayesian form, with zero league appearances and a
+    # deliberately pessimistic prior — friendly minutes are evidence of
+    # presence, not of a guaranteed shirt.
+    if preseason:
+        known = {p["player_id"] for p in players}
+        for pid, ps in preseason.get("players", {}).items():
+            if int(pid) in known or ps["appearances"] <= 0:
+                continue
+            PRIOR_STRENGTH = 2
+            shrunk = (
+                (ps["start_pct"] * ps["appearances"] + PRESEASON_ONLY_PRIOR * PRIOR_STRENGTH)
+                / (ps["appearances"] + PRIOR_STRENGTH)
+            )
+            shirt = ps.get("shirt_number")
+            players.append({
+                "player_id": int(pid),
+                "name": ps["name"],
+                "position": ps["position"],
+                "position_label": POSITION_MAP.get(ps["position"], ps["position"]),
+                "shirt_number": int(shirt) if pd.notna(shirt) else None,
+                "starts": ps["starts"],
+                "appearances": 0,          # zero LEAGUE appearances, by definition
+                "total_matches": total_matches,
+                "start_pct": round(max(0, min(100, shrunk)), 1),
+                "total_minutes": 0,
+                "avg_minutes": 0.0,
+                "avg_rating": 0,
+                "is_new_signing": True,
+                "start_streak": 0,
+                "preseason_only": True,
+                "preseason_starts": ps["starts"],
+                "preseason_appearances": ps["appearances"],
+                "preseason_minutes": ps["minutes"],
+            })
 
     players.sort(key=lambda p: (p["start_pct"], p["avg_minutes"]), reverse=True)
     return players
@@ -1557,7 +1689,9 @@ def predict_team_lineup(stats_df: pd.DataFrame, incidents_df: pd.DataFrame,
     formation_pred = predict_formation(formation_history)
 
     # 2. Starter frequency
-    starter_freq = get_starter_frequency(stats_df, team, n_matches=10)
+    preseason = load_preseason_signal(team)
+    starter_freq = get_starter_frequency(stats_df, team, n_matches=10,
+                                         preseason=preseason)
 
     # 3. Suspension tracking (yellow accumulation + red cards)
     yellow_cards = compute_suspensions(incidents_df, stats_df, team)

@@ -35,10 +35,11 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,8 @@ def _event_to_meta(
 
     home_name, home_is_ours, home_league = side(home)
     away_name, away_is_ours, away_league = side(away)
+    home_country = ((home.get("country") or {}).get("name"))
+    away_country = ((away.get("country") or {}).get("name"))
 
     return {
         "sofascore_event_id": int(event["id"]),
@@ -151,6 +154,12 @@ def _event_to_meta(
         "away_is_ours": away_is_ours,
         "home_league": home_league,
         "away_league": away_league,
+        # Ids are what the opponent-profile lookup keys on; names are ambiguous
+        # (several "Juventus"/"Arezzo"-shaped clubs exist across tiers).
+        "home_id": home.get("id"),
+        "away_id": away.get("id"),
+        "home_country": home_country,
+        "away_country": away_country,
     }
 
 
@@ -174,6 +183,9 @@ def _parse_lineup(payload: dict[str, Any], meta: dict[str, Any] | None) -> list[
         opponent = meta["away_team"] if is_home else meta["home_team"]
         is_ours = meta["home_is_ours"] if is_home else meta["away_is_ours"]
         side_league = meta["home_league"] if is_home else meta["away_league"]
+        club_id = meta["home_id"] if is_home else meta["away_id"]
+        opp_id = meta["away_id"] if is_home else meta["home_id"]
+        opp_country = meta["away_country"] if is_home else meta["home_country"]
 
         for entry in block.get("players") or []:
             player = entry.get("player") or {}
@@ -186,7 +198,10 @@ def _parse_lineup(payload: dict[str, Any], meta: dict[str, Any] | None) -> list[
                 "match_date": meta["match_date"],
                 "season": meta["season"],
                 "club": team,
+                "club_id": club_id,
                 "opponent": opponent,
+                "opponent_id": opp_id,
+                "opponent_country": opp_country,
                 "is_home": is_home,
                 "is_our_club": is_ours,
                 "club_league": side_league,
@@ -217,8 +232,13 @@ def _store_path(season: str) -> Path:
 #: Columns whose dtype must not drift between season files.  A season with no
 #: ratings at all would otherwise store rating_low_trust as object while a
 #: populated season stores float64, and reading both at once breaks.
-_NULLABLE_FLOATS = ("rating_low_trust", "shirt_number")
-_NULLABLE_STRS = ("club_league", "formation", "position", "player", "opponent")
+_NULLABLE_FLOATS = ("rating_low_trust", "shirt_number",
+                    "opponent_league_id", "opponent_country_priority")
+_NULLABLE_STRS = ("club_league", "formation", "position", "player", "opponent",
+                  "opponent_country", "opponent_league", "opponent_tier")
+_BOOL_COLS = ("is_home", "is_starter", "was_used", "is_our_club",
+              "opponent_is_national", "opponent_is_youth")
+_INT_COLS = ("sofascore_event_id", "minutes_played", "club_id", "opponent_id")
 
 
 def _pin_dtypes(df: pd.DataFrame) -> pd.DataFrame:
@@ -228,10 +248,13 @@ def _pin_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     for col in _NULLABLE_STRS:
         if col in df:
             df[col] = df[col].astype("object")
-    for col in ("is_home", "is_starter", "was_used", "is_our_club"):
+    for col in _BOOL_COLS:
         if col in df:
-            df[col] = df[col].astype("bool")
-    for col in ("sofascore_event_id", "minutes_played"):
+            # infer_objects() before astype: an all-None bool column arrives as
+            # object, and fillna->astype on object is deprecated (and silently
+            # drifted dtypes between seasons once already).
+            df[col] = df[col].fillna(False).infer_objects(copy=False).astype("bool")
+    for col in _INT_COLS:
         if col in df:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
     return df
@@ -292,17 +315,116 @@ def fetch_club_ids(league_keys: Iterable[str]) -> dict[int, tuple[str, str]]:
     return out
 
 
-def fetch_team_friendlies(team_id: int) -> list[dict[str, Any]]:
-    """Recent finished events for a club, filtered to club friendlies."""
-    data = _get_json(f"{_BASE_URL}/team/{team_id}/events/last/0")
-    if not data:
-        return []
-    return [e for e in data.get("events", []) if _is_friendly(e)]
+#: Youth / reserve sides play under the parent club's name plus a marker.  A 90
+#: minutes against Lazio U20 is not the same evidence as 90 against Man City.
+_YOUTH_MARKERS = (" u19", " u20", " u21", " u23", " ii", " b", " primavera",
+                  " next gen", " youth", " reserves", " academy")
+
+#: Opponent-profile cache.  One /team/{id} request per DISTINCT opponent, then
+#: never again -- opponents repeat across a pre-season and across years.
+_OPP_CACHE = SOFASCORE_DIR / "friendly_opponent_profiles.json"
+
+
+def _is_youth_side(name: str | None) -> bool:
+    """Space-padded token match, NOT substring.
+
+    The padding is load-bearing: a bare `" b" in name` would flag "Arminia
+    Bielefeld" and "Rosenborg BK".  Matching `" b "` inside `" arminia
+    bielefeld "` is False, while "Real Madrid B" -> `" real madrid b "` hits.
+    Validated over the 118 distinct opponents actually on disk: 2 flagged
+    (Atalanta U23, Lazio U20), zero false positives.
+    """
+    if not name:
+        return False
+    low = f" {name.lower()} "
+    return any(f"{m} " in low for m in _YOUTH_MARKERS)
+
+
+def _load_opp_cache() -> dict[str, Any]:
+    if _OPP_CACHE.exists():
+        try:
+            return json.loads(_OPP_CACHE.read_text())
+        except (json.JSONDecodeError, OSError):
+            log.warning("opponent cache unreadable -- rebuilding")
+    return {}
+
+
+def _save_opp_cache(cache: dict[str, Any]) -> None:
+    """Atomic write -- a truncated cache would silently lose every profile."""
+    try:
+        _OPP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _OPP_CACHE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
+        tmp.replace(_OPP_CACHE)
+    except OSError as exc:
+        log.warning("could not persist opponent cache: %s", exc)
+
+
+def fetch_opponent_profile(team_id: int, cache: dict[str, Any]) -> dict[str, Any]:
+    """Resolve which competition an opponent actually plays in.
+
+    The friendly itself carries no strength information: "Juventus 2-0 Nice" and
+    "Torino 3-0 ACD Pinzolo Valrendena" look identical in the payload.  The
+    opponent's OWN primary league is what makes a 90-minute shift legible.
+    """
+    key = str(team_id)
+    if key in cache:
+        return cache[key]
+
+    data = _get_json(f"{_BASE_URL}/team/{team_id}")
+    _jitter_delay()
+    team = (data or {}).get("team") or {}
+    put = team.get("primaryUniqueTournament") or {}
+    category = put.get("category") or {}
+
+    profile = {
+        "opponent_league": put.get("name"),
+        "opponent_league_id": put.get("id"),
+        "opponent_country_priority": category.get("priority"),
+        "opponent_is_national": bool(team.get("national")),
+        "opponent_is_youth": _is_youth_side(team.get("name")),
+    }
+    cache[key] = profile
+    return profile
+
+
+def _opponent_tier(profile: dict[str, Any]) -> str:
+    """Coarse, honest bucket -- facts are stored raw so this can be re-derived."""
+    if profile.get("opponent_is_youth"):
+        return "youth_or_reserve"
+    if profile.get("opponent_is_national"):
+        return "national_team"
+    lid = profile.get("opponent_league_id")
+    if lid in {cfg.sofascore_tournament_id for cfg in LEAGUE_REGISTRY.values()}:
+        return "top5_league"
+    if lid is not None:
+        return "other_professional"
+    return "lower_or_unknown"
+
+
+def fetch_team_friendlies(team_id: int, pages: int = 1) -> list[dict[str, Any]]:
+    """Recent finished events for a club, filtered to club friendlies.
+
+    One page (30 events) covers the whole current pre-season -- measured on
+    Milan 2026-08-01, page 0 spans 2025-12-04 -> 2026-07-25.  Page 1 reaches the
+    PREVIOUS pre-season, which is the only way to ever backtest whether this
+    signal improves XI accuracy; it is opt-in because it doubles the scrape.
+    """
+    events: list[dict[str, Any]] = []
+    for page in range(max(1, pages)):
+        data = _get_json(f"{_BASE_URL}/team/{team_id}/events/last/{page}")
+        if not data:
+            break
+        events.extend(e for e in data.get("events", []) if _is_friendly(e))
+        if page + 1 < pages:
+            _jitter_delay()
+    return events
 
 
 def scrape_friendlies(
     leagues: Iterable[str] = ("serie_a", "premier_league"),
     dry_run: bool = False,
+    pages: int = 1,
 ) -> pd.DataFrame:
     """Fetch every recent club friendly for our tracked clubs and store it."""
     our_teams = fetch_club_ids(leagues)
@@ -313,9 +435,10 @@ def scrape_friendlies(
 
     seen_events: set[int] = set()
     by_season: dict[str, list[dict[str, Any]]] = {}
+    opp_cache = _load_opp_cache()
 
     for team_id, (_club, _league) in sorted(our_teams.items(), key=lambda kv: kv[1][0]):
-        events = fetch_team_friendlies(team_id)
+        events = fetch_team_friendlies(team_id, pages=pages)
         _jitter_delay()
         for ev in events:
             meta = _event_to_meta(ev, our_teams)
@@ -329,9 +452,24 @@ def scrape_friendlies(
                 log.warning("%s vs %s: no lineups", meta["club"], meta["opponent"])
                 continue
             rows = _parse_lineup(payload, meta)
+
+            # Resolve where each opponent actually comes from.  The raw name is
+            # kept verbatim on the row; this only ADDS provenance beside it, so
+            # a wrong tier can always be re-derived from the stored facts.
+            for row in rows:
+                opp_id = row.get("opponent_id")
+                if not opp_id:
+                    continue
+                profile = fetch_opponent_profile(int(opp_id), opp_cache)
+                row.update(profile)
+                row["opponent_tier"] = _opponent_tier(profile)
+
             by_season.setdefault(meta["season"], []).extend(rows)
             log.info("%-18s vs %-18s %s  (%d players)",
                      meta["club"], meta["opponent"], meta["match_date"], len(rows))
+
+    if not dry_run:
+        _save_opp_cache(opp_cache)
 
     frames = []
     for season, rows in by_season.items():
@@ -344,17 +482,50 @@ def scrape_friendlies(
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+#: Club friendlies are a pre-season phenomenon: they cluster in June-August and
+#: reappear only around the winter break.  A daily job with no gate would spend
+#: ten months fetching an empty list.  Mirrors WINDOW_RANGES in
+#: scripts/data/refresh_transfers.py -- same shape, same --force escape hatch.
+FRIENDLY_WINDOWS = (
+    ((6, 1), (9, 5)),    # summer pre-season, with slack past the first matchweek
+    ((12, 15), (1, 10)),  # winter-break friendlies (wraps the year end)
+)
+
+
+def _in_friendly_window(today: date) -> bool:
+    for (lo_m, lo_d), (hi_m, hi_d) in FRIENDLY_WINDOWS:
+        lo, hi = (lo_m, lo_d), (hi_m, hi_d)
+        cur = (today.month, today.day)
+        if lo <= hi:
+            if lo <= cur <= hi:
+                return True
+        elif cur >= lo or cur <= hi:   # window wraps 31 Dec
+            return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--leagues", default="serie_a,premier_league",
                     help="comma-separated league keys")
     ap.add_argument("--dry-run", action="store_true",
                     help="fetch and report without writing the parquet")
+    ap.add_argument("--pages", type=int, default=1,
+                    help="pages of match history per club; 2 reaches last pre-season")
+    ap.add_argument("--force", action="store_true",
+                    help="run even outside the pre-season window")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    today = datetime.now(UTC).date()
+    if not args.force and not _in_friendly_window(today):
+        log.info("outside the friendly window (%s) -- skipping. Use --force to override.",
+                 today)
+        return 0
+
     keys = [k.strip() for k in args.leagues.split(",") if k.strip()]
-    df = scrape_friendlies(keys, dry_run=args.dry_run)
+    df = scrape_friendlies(keys, dry_run=args.dry_run, pages=args.pages)
 
     if df.empty:
         log.warning("no friendly rows produced")
