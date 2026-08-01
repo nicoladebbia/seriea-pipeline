@@ -42,10 +42,73 @@ ARCHIVE_JSON = DATA_DIR / "predictions_archive.json"
 TRACK_RECORD_JSON = DATA_DIR / "track_record.json"
 GOALSCORERS_CSV = DATA_DIR / "international_goalscorers.csv"
 SHOOTOUTS_CSV = DATA_DIR / "international_shootouts.csv"
+# Live overlays carry the penalty-shootout winner (decided_by/penalties/winner)
+# that the martj42 CSV lacks — needed to resolve a knockout level at full time.
+LIVE_RESULT_JSONS = ("sofascore_results.json", "fbref_results.json")
 
 # Comparator pool frozen pre-tournament: graded matches must never enter
 # their own baseline.
 BASE_POOL_CUTOFF = "2026-06-01"
+
+
+def _load_advance_winners() -> dict[frozenset[str], str]:
+    """{unordered canon team-pair -> canon winner} for ties decided beyond 90'.
+
+    The results CSV stores a knockout that went to penalties as its level
+    pre-shootout score (e.g. 1-1), losing who actually advanced. The live
+    Sofascore/FBref overlays carry ``winner`` + ``decided_by`` for those, so a
+    knockout level at full time can still be graded on the REAL outcome (who
+    went through) instead of being scored a draw. Keyed by unordered pair to
+    survive neutral-venue home/away swaps.
+    """
+    winners: dict[frozenset[str], str] = {}
+    for src in LIVE_RESULT_JSONS:
+        blob = read_json_safe(DATA_DIR / src, {})
+        rows = blob.get("results", []) if isinstance(blob, dict) else []
+        for r in rows:
+            w = r.get("winner")
+            if not w:
+                continue
+            try:
+                pair = frozenset((canon_team(str(r["home"])), canon_team(str(r["away"]))))
+            except (KeyError, TypeError):
+                continue
+            # Sofascore is listed first and is richer; don't let FBref overwrite it.
+            winners.setdefault(pair, canon_team(str(w)))
+    return winners
+
+
+def resolve_knockout(
+    home: str,
+    away: str,
+    hs: int,
+    as_: int,
+    advance_winners: dict[frozenset[str], str],
+) -> tuple[str, str] | None:
+    """Resolve a played knockout to ``(outcome, display_score)`` on the ACTUAL
+    result — who advanced — not the 90-minute score.
+
+    Single source of truth shared by the track record, the per-match drill-down
+    and the combo grader so the three can't drift on a knockout's outcome.
+
+    - decided in normal/extra time (``hs != as_``): the score stands.
+    - level at full time: went to penalties; the martj42 CSV lost the winner, so
+      it's read from the live overlay (:func:`_load_advance_winners`). ``outcome``
+      is the advancer; the in-play score is kept (penalties aren't goals) and the
+      display is annotated. No winner anywhere → ``None`` (refuse to grade a
+      knockout a draw — nobody draws a knockout).
+
+    ``outcome`` is what 1X2 grades against; the returned score is the in-play
+    (90'+ET) score that goal-quantity markets keep grading against.
+    """
+    if hs != as_:
+        return ("home" if hs > as_ else "away", f"{hs}-{as_}")
+    pair = frozenset((canon_team(home), canon_team(away)))
+    winner = advance_winners.get(pair)
+    if winner is None:
+        return None
+    outcome = "home" if winner == canon_team(home) else "away"
+    return (outcome, f"{hs}-{as_} (pens)")
 
 
 def _base_rates(df: pd.DataFrame) -> tuple[float, float, float]:
@@ -63,40 +126,34 @@ def _base_rates(df: pd.DataFrame) -> tuple[float, float, float]:
     )
 
 
-def _pair_mask(df: pd.DataFrame, a: str, b: str) -> Any:
-    """Mask for the unordered team-pair {a, b}.
-
-    Neutral-venue matches are stored home/away-swapped between sources (the
-    fixture list says Switzerland vs Canada, results.csv says Canada vs
-    Switzerland). Every lookup here matches the unordered pair for the same
-    reason engine.load_results_with_live dedups on a frozenset.
-    """
-    return ((df["home_team"] == a) & (df["away_team"] == b)) | (
-        (df["home_team"] == b) & (df["away_team"] == a)
-    )
-
-
 def _find_result(
     df: pd.DataFrame, home: str, away: str, date: str
 ) -> tuple[int, int, pd.Timestamp] | None:
     """FT score + result date, by canon names + date (±1 day for tz skew).
 
-    A row stored home/away-swapped is matched and its score returned in the
-    REQUESTED orientation, so callers always read the fixture's own frame.
+    Orientation-agnostic: the results CSV stores each neutral-venue match in one
+    fixed home/away order, but a pre-kickoff snapshot may have been archived with
+    the teams swapped (the fixture feed and the CSV don't always agree on which
+    side is "home" at a neutral venue). We try the queried orientation first; if
+    it misses, we try the swap and **flip the score back into the queried frame**
+    so the returned ``(home_score, away_score)`` always means "queried-home's
+    goals, queried-away's goals". Every caller's ``outcome = "home" if hs>as_``
+    is then correct in the snapshot's own frame — no backwards grading.
     """
-    ch, ca = canon_team(home), canon_team(away)
     target = pd.Timestamp(date)
-    window = df[
-        _pair_mask(df, ch, ca)
-        & (df["date"] >= target - pd.Timedelta(days=1))
-        & (df["date"] <= target + pd.Timedelta(days=1))
-    ]
-    if window.empty:
-        return None
-    row = window.iloc[0]
-    if str(row["home_team"]) == ch:
+    lo, hi = target - pd.Timedelta(days=1), target + pd.Timedelta(days=1)
+    chome, caway = canon_team(home), canon_team(away)
+    in_window = (df["date"] >= lo) & (df["date"] <= hi)
+    ordered = df[in_window & (df["home_team"] == chome) & (df["away_team"] == caway)]
+    if not ordered.empty:
+        row = ordered.iloc[0]
         return int(row["home_score"]), int(row["away_score"]), row["date"]
-    return int(row["away_score"]), int(row["home_score"]), row["date"]
+    swapped = df[in_window & (df["home_team"] == caway) & (df["away_team"] == chome)]
+    if not swapped.empty:
+        row = swapped.iloc[0]
+        # flip: CSV home==queried-away, so queried-home's goals are away_score
+        return int(row["away_score"]), int(row["home_score"]), row["date"]
+    return None
 
 
 def _ninety_minute_score(
@@ -110,17 +167,18 @@ def _ninety_minute_score(
     """90' score for a knockout match. None = cannot reconstruct honestly."""
     if not shootouts.empty:
         pens = shootouts[
-            _pair_mask(shootouts, home_canon, away_canon)
+            (shootouts["home_team"] == home_canon)
+            & (shootouts["away_team"] == away_canon)
             & (pd.to_datetime(shootouts["date"]) == result_date)
         ]
         if not pens.empty:
             return (0, 0)  # went to penalties => level at 90' (score irrelevant)
     # team col = beneficiary, so own-goal rows count toward the credited
-    # team's score — include them. Counting by team name is orientation-free,
-    # so only the row lookup needs the unordered pair.
+    # team's score — include them.
     rows = scorers[
         (pd.to_datetime(scorers["date"]) == result_date)
-        & _pair_mask(scorers, home_canon, away_canon)
+        & (scorers["home_team"] == home_canon)
+        & (scorers["away_team"] == away_canon)
     ] if not scorers.empty else pd.DataFrame()
     if len(rows) != ft[0] + ft[1]:
         return None  # scorer coverage incomplete — refuse to grade wrong
@@ -148,7 +206,8 @@ def reconstruct_halftime(
         return None
     rows = scorers[
         (pd.to_datetime(scorers["date"]) == result_date)
-        & _pair_mask(scorers, home_canon, away_canon)
+        & (scorers["home_team"] == home_canon)
+        & (scorers["away_team"] == away_canon)
     ]
     if len(rows) != ft[0] + ft[1]:
         return None  # incomplete scorer coverage — cannot split halves honestly
@@ -170,12 +229,7 @@ def build_track_record() -> dict[str, Any]:
         return record
     df = load_results_with_live()  # CSV + live Sofascore overlay (same-night grading)
     base = _base_rates(df)
-    scorers = (
-        pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
-    )
-    shootouts = (
-        pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
-    )
+    advance_winners = _load_advance_winners()
 
     matches: list[dict[str, Any]] = []
     skipped_ko = 0
@@ -196,17 +250,16 @@ def build_track_record() -> dict[str, Any]:
         result = _find_result(df, str(home), str(away), str(date))
         if result is None:
             continue
-        hs, as_, result_date = result
+        hs, as_, _result_date = result
         if snap.get("stage") != "group":
-            r90 = _ninety_minute_score(
-                scorers, shootouts, canon_team(str(home)), canon_team(str(away)),
-                result_date, (hs, as_),
-            )
-            if r90 is None:
-                skipped_ko += 1
+            resolved = resolve_knockout(str(home), str(away), hs, as_, advance_winners)
+            if resolved is None:
+                skipped_ko += 1  # penalty winner unknown — can't grade honestly
                 continue
-            hs, as_ = r90
-        outcome = "home" if hs > as_ else "draw" if hs == as_ else "away"
+            outcome, score_str = resolved
+        else:
+            outcome = "home" if hs > as_ else "draw" if hs == as_ else "away"
+            score_str = f"{hs}-{as_}"
         y = (
             1.0 if outcome == "home" else 0.0,
             1.0 if outcome == "draw" else 0.0,
@@ -219,7 +272,7 @@ def build_track_record() -> dict[str, Any]:
             "match": f"{home} vs {away}",
             "date": date,
             "stage": snap.get("stage", "group"),
-            "score": f"{hs}-{as_}",
+            "score": score_str,
             "outcome": outcome,
             "pick": pick,
             "pick_prob": round(float(probs[pick]), 4),

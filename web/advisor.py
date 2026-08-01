@@ -30,6 +30,12 @@ advisor_bp = Blueprint("advisor", __name__)
 from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR
 from scripts.utils.json_utils import load_json_safe
 USAGE_FILE = DATA_DIR / "api_usage.json"
+# Project root. Six call sites (Sofascore player stats, match incidents, matches,
+# features) build paths as `_BASE / "data" / ...`; a past "deduplicate path
+# constants" commit dropped its definition, silently breaking those lookups
+# (they fail-soft in try/except, so the per-match ratings/team-sheet degraded
+# without surfacing). DATA_DIR is <root>/data, so _BASE is its parent.
+_BASE = DATA_DIR.parent
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -477,6 +483,49 @@ def _player_name_match(series, query: str):
     return mask
 
 
+def played_bracket_context(res, national_team, next_match_date) -> str:
+    """Describe who the winner of the team's next match would face, asserting ONLY
+    resolved results. If the other same-round tie is unplayed, name it as unresolved
+    ('the France/Spain winner') — never state an outcome the results file hasn't
+    recorded. Guards against the user being ahead of our data (they may know Spain
+    won before international_results.csv does)."""
+    import pandas as pd
+    try:
+        nd = pd.to_datetime(next_match_date)
+        # other matches within ±1 day of this fixture = same knockout round
+        same_round = res[
+            (res["date"] >= nd - pd.Timedelta(days=1))
+            & (res["date"] <= nd + pd.Timedelta(days=1))
+        ]
+        others = same_round[
+            (same_round["home_team"] != national_team)
+            & (same_round["away_team"] != national_team)
+            & same_round["home_team"].notna()
+        ]
+        if others.empty:
+            return ""
+        o = others.iloc[0]
+        h, a = o["home_team"], o["away_team"]
+        if pd.notna(o.get("home_score")) and pd.notna(o.get("away_score")):
+            # resolved — name the actual winner
+            hs, as_ = int(o["home_score"]), int(o["away_score"])
+            winner = h if hs > as_ else (a if as_ > hs else None)
+            if winner:
+                return (
+                    f"The other same-round tie ({h} vs {a}) is RESOLVED: {winner} won "
+                    f"({hs}-{as_}), so the winner of this match would face {winner} next."
+                )
+            return f"The other same-round tie {h} vs {a} finished level ({hs}-{as_}, decided on/after)."
+        # unresolved — do NOT assert a winner even if the user claims one
+        return (
+            f"The other same-round tie ({h} vs {a}) has NOT been played/recorded in our "
+            f"data yet, so the winner of this match would face the {h}/{a} winner — do not "
+            f"state which of them advances unless our results file shows the score."
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _tool_get_player_stats(args: dict) -> str:
     player_q = args.get("player", "").lower().strip()
     team_q = args.get("team", "").strip()
@@ -519,8 +568,20 @@ def _tool_get_player_stats(args: dict) -> str:
                 "minutes": int(total_minutes),
                 "goals": int(player_rows["goals"].sum()),
                 "assists": int(player_rows["assists"].sum()),
-                "xg": round(player_rows["xg"].sum(), 2) if "xg" in player_rows.columns else None,
-                "xa": round(player_rows["xg_assist"].sum(), 2) if "xg_assist" in player_rows.columns else None,
+                # FBref xG in the parsed parquet is often broken (sums to 0.0 even
+                # for a striker with goals+shots). A 0.0 next to real shots is a
+                # DATA GAP, not reality — null it so the model uses Understat's real
+                # xG (surfaced in understat_history) instead of quoting a false 0.0.
+                "xg": (
+                    round(player_rows["xg"].sum(), 2)
+                    if "xg" in player_rows.columns and player_rows["xg"].sum() > 0
+                    else None
+                ),
+                "xa": (
+                    round(player_rows["xg_assist"].sum(), 2)
+                    if "xg_assist" in player_rows.columns and player_rows["xg_assist"].sum() > 0
+                    else None
+                ),
                 "shots": int(player_rows["shots"].sum()) if "shots" in player_rows.columns else None,
                 "shots_on_target": int(player_rows["shots_on_target"].sum()) if "shots_on_target" in player_rows.columns else None,
                 "yellow_cards": int(player_rows["cards_yellow"].sum()) if "cards_yellow" in player_rows.columns else None,
@@ -601,10 +662,81 @@ def _tool_get_player_stats(args: dict) -> str:
                     )
                 latest_rating = round(float(recent_sof.iloc[0].get("rating", 0)), 1) if pd.notna(recent_sof.iloc[0].get("rating")) else "?"
                 result["match_performances"] = (
-                    f"⚠️ EXACT DATA — DO NOT MODIFY THESE NUMBERS.\n"
+                    f"EXACT DATA — DO NOT MODIFY THESE NUMBERS.\n"
                     f"Latest match rating: {latest_rating}\n\n"
                     + "\n".join(form_rows)
                 )
+
+                # Season-aggregate advanced Sofascore stats (2025-26 only). sof_rows
+                # spans ALL seasons (2017→2026), so scope to the current season before
+                # summing or a 30-year-old's career totals would leak in. These are the
+                # role-defining numbers the tool didn't surface: passing volume, defensive
+                # work rate, duels/aerials, creativity (big chances), and GK saves — all
+                # 100%-filled columns, verified. Per-90 where volume matters.
+                try:
+                    cur_sof = sof_rows[sof_rows["date"] >= "2025-08-01"] if "date" in sof_rows.columns else sof_rows
+                    if not cur_sof.empty:
+                        smin = float(cur_sof["minutes"].sum())
+                        p90 = smin / 90 if smin > 0 else 1
+
+                        def _ssum(col):
+                            return float(cur_sof[col].sum()) if col in cur_sof.columns else 0.0
+
+                        def _savg(col):
+                            return round(float(cur_sof[col].mean()), 2) if col in cur_sof.columns and cur_sof[col].notna().any() else None
+
+                        acc_p = _ssum("accurate_passes")
+                        tot_p = _ssum("total_passes")
+                        d_won = _ssum("duels_won")
+                        d_lost = _ssum("duels_lost")
+                        acc_lb = _ssum("accurate_long_balls")
+                        tot_lb = _ssum("total_long_balls")
+                        adv = {
+                            "matches": int(len(cur_sof)),
+                            "minutes": int(smin),
+                            "avg_rating": _savg("rating"),
+                            # passing / involvement
+                            "accurate_passes_total": int(acc_p),
+                            "passes_per_90": round(acc_p / p90, 1),
+                            "pass_accuracy_pct": round(100 * acc_p / tot_p, 1) if tot_p > 0 else None,
+                            "long_ball_accuracy_pct": round(100 * acc_lb / tot_lb, 1) if tot_lb > 0 else None,
+                            "touches_per_90": round(_ssum("touches") / p90, 1),
+                            "ball_recoveries_per_90": round(_ssum("ball_recoveries") / p90, 2),
+                            "possession_lost_per_90": round(_ssum("possession_lost") / p90, 1),
+                            # creativity
+                            "big_chances_created": int(_ssum("big_chances_created")),
+                            "big_chances_missed": int(_ssum("big_chances_missed")),
+                            "key_passes_per_90": round(_ssum("key_passes") / p90, 2),
+                            # defensive work rate
+                            "tackles": int(_ssum("tackles")),
+                            "interceptions": int(_ssum("interceptions")),
+                            "clearances": int(_ssum("clearances")),
+                            "blocks": int(_ssum("blocks")),
+                            "tackles_plus_int_per_90": round((_ssum("tackles") + _ssum("interceptions")) / p90, 2),
+                            "errors_leading_to_goal": int(_ssum("error_to_goal")),
+                            # duels
+                            "duels_won": int(d_won),
+                            "duel_win_pct": round(100 * d_won / (d_won + d_lost), 1) if (d_won + d_lost) > 0 else None,
+                            "aerials_won": int(_ssum("aerial_won")),
+                            # discipline
+                            "fouls": int(_ssum("fouls")),
+                            "was_fouled": int(_ssum("was_fouled")),
+                        }
+                        # Goalkeeper-only: saves (populated only for keepers — ~6% of rows).
+                        saves = _ssum("saves")
+                        if saves > 0:
+                            adv["saves"] = int(saves)
+                            adv["saves_per_90"] = round(saves / p90, 2)
+                        adv["_note"] = (
+                            "Season 2025-26 Sofascore aggregates. big_chances_missed vs "
+                            "goals = finishing waste; tackles_plus_int_per_90 = defensive "
+                            "work rate; pass_accuracy_pct + touches = involvement/security; "
+                            "duel_win_pct = physical dominance; errors_leading_to_goal is a "
+                            "hard red flag. Exact numbers — do not modify."
+                        )
+                        result["season_advanced_stats"] = adv
+                except Exception as e:  # noqa: BLE001 — advanced block is enrichment; never blocks
+                    log.warning("Advanced Sofascore aggregate failed: %s", e)
 
                 # Most recent match: add full team sheet + match events
                 latest = recent_sof.iloc[0]
@@ -646,7 +778,7 @@ def _tool_get_player_stats(args: dict) -> str:
                     best = team_sheet[0] if team_sheet else None
                     best_note = f"Best rated: {best['player']} ({best['rating']})" if best else ""
                     result["latest_match_team_sheet"] = (
-                        f"⚠️ VERIFIED SOFASCORE DATA — COPY THIS TABLE EXACTLY, DO NOT CHANGE ANY NUMBERS:\n"
+                        f"VERIFIED SOFASCORE DATA — COPY THIS TABLE EXACTLY, DO NOT CHANGE ANY NUMBERS:\n"
                         f"{best_note}\n\n"
                         + "\n".join(rows)
                     )
@@ -802,6 +934,65 @@ def _tool_get_player_stats(args: dict) -> str:
                                 else:
                                     availability["current_status"] = "fit"
 
+                        # --- Ground the absence REASON from the injury feed ---
+                        # The block above detects WHEN a player was absent (gap in
+                        # match dates) but not WHY. The Transfermarkt injury snapshots
+                        # (data/external/injuries/) carry injury_type + expected_return.
+                        # Attach the documented reason ONLY when a snapshot's window
+                        # overlaps the detected absence — never infer/invent a cause.
+                        try:
+                            absence = availability.get("longest_absence") or availability.get("returned_after")
+                            if absence:
+                                from datetime import date as _dt_date
+                                a_from = pd.to_datetime(absence.get("from") or absence.get("absent_from")).date()
+                                a_to = pd.to_datetime(absence.get("to") or absence.get("absent_to")).date()
+                                inj_dir = _BASE / "data" / "external" / "injuries"
+                                reason = None
+                                if inj_dir.exists():
+                                    # snapshots whose scrape date falls in/near the window
+                                    for snap in sorted(inj_dir.glob("injuries_*.parquet")):
+                                        # parse date from filename injuries_YYYY-MM-DD[...].parquet
+                                        import re as _re
+                                        m = _re.search(r"(\d{4}-\d{2}-\d{2})", snap.name)
+                                        if not m:
+                                            continue
+                                        snap_date = pd.to_datetime(m.group(1)).date()
+                                        # only snapshots inside the absence window (± a few days)
+                                        if not (a_from - timedelta(days=7) <= snap_date <= a_to + timedelta(days=7)):
+                                            continue
+                                        idf = pd.read_parquet(snap)
+                                        ncol = next((c for c in idf.columns if c.lower() in ("player_name", "name", "player")), None)
+                                        if ncol is None:
+                                            continue
+                                        # tight match: player name AND same team (guards
+                                        # "Lautaro Valenti"/Parma vs "Lautaro Martínez"/Inter)
+                                        cand = idf[_player_name_match(idf[ncol], player_q)]
+                                        if "team" in idf.columns and player_team:
+                                            cand = cand[cand["team"].astype(str).apply(
+                                                lambda t: _normalize_name(str(t)) == _normalize_name(str(player_team))
+                                                or _normalize_name(str(player_team)) in _normalize_name(str(t))
+                                            )]
+                                        cand = cand[cand.get("is_currently_out", True) == True] if "is_currently_out" in cand.columns else cand
+                                        if not cand.empty:
+                                            row = cand.iloc[0]
+                                            itype = str(row.get("injury_type", "") or "").strip()
+                                            exp_ret = row.get("expected_return")
+                                            if itype:
+                                                reason = {
+                                                    "injury_type": itype,
+                                                    "source": str(row.get("source", "transfermarkt")),
+                                                    "recorded_on": str(snap_date),
+                                                }
+                                                if pd.notna(exp_ret) and str(exp_ret).strip():
+                                                    reason["expected_return_at_time"] = str(exp_ret)[:10]
+                                                break  # first overlapping snapshot with a type wins
+                                if reason:
+                                    availability["absence_reason"] = reason
+                                else:
+                                    availability["absence_reason"] = "NOT_IN_DATA — the injury feed has no record covering this absence window; state the absence but do NOT invent a cause (do not say 'injury', 'suspension', 'rested' unless this field carries it)."
+                        except Exception as _ie:  # noqa: BLE001
+                            log.warning("Absence-reason lookup failed: %s", _ie)
+
                         result["availability"] = availability
                 except Exception as e:
                     log.warning("Availability analysis failed: %s", e)
@@ -832,7 +1023,344 @@ def _tool_get_player_stats(args: dict) -> str:
         if "upcoming_props" in result:
             break
 
-    if "season_stats" not in result and "upcoming_props" not in result:
+    # 4. Market value + contract + salary estimate (2026-27 squad data). Lets the
+    #    assistant answer "he earns X/month, has N years left, and last season
+    #    played…" in one breath. Salary is a Capology ESTIMATE (fixed gross, excl.
+    #    bonuses) — labeled as such so the model never states it as official.
+    try:
+        import pandas as pd
+        tm_dir = DATA_DIR / "external" / "transfermarkt"
+        mv_path = tm_dir / "market_values_2026_2027.parquet"
+        if mv_path.exists():
+            mv = pd.read_parquet(mv_path)
+            mmask = _player_name_match(mv["player_name"], player_q)
+            if team_q:
+                tr = _resolve_team(team_q)
+                if tr and "team" in mv.columns:
+                    mmask = mmask & (mv["team"] == tr)
+            hit = mv[mmask]
+            if not hit.empty:
+                row = hit.iloc[0]
+                market = {
+                    "team": row.get("team"),
+                    "market_value_eur": int(row["market_value_eur"]) if pd.notna(row.get("market_value_eur")) else None,
+                    "age": int(row["age"]) if pd.notna(row.get("age")) else None,
+                    "contract_until": str(row["contract_until"])[:10] if pd.notna(row.get("contract_until")) else None,
+                    "nationality": row.get("nationality"),
+                }
+                # Capology salary estimate, matched by (team, fuzzy name).
+                sal_path = tm_dir / "salaries_2026_2027.parquet"
+                if sal_path.exists():
+                    sal = pd.read_parquet(sal_path)
+                    smask = _player_name_match(sal["player_name"], player_q)
+                    if pd.notna(row.get("team")) and "team" in sal.columns:
+                        smask = smask & (sal["team"] == row.get("team"))
+                    shit = sal[smask]
+                    if not shit.empty:
+                        s = shit.iloc[0]
+                        ann = int(s["annual_gross_eur"]) if pd.notna(s.get("annual_gross_eur")) else None
+                        market["salary_estimate"] = {
+                            "source": "Capology estimate (fixed gross, excludes bonuses — NOT an official figure)",
+                            "verified_by_capology": bool(s.get("verified")),
+                            "annual_gross_eur": ann,
+                            "monthly_gross_eur": int(s["monthly_gross_eur"]) if pd.notna(s.get("monthly_gross_eur")) else (ann // 12 if ann else None),
+                            "weekly_gross_eur": int(s["weekly_gross_eur"]) if pd.notna(s.get("weekly_gross_eur")) else (ann // 52 if ann else None),
+                            "contract_years_remaining": int(s["years_remaining"]) if pd.notna(s.get("years_remaining")) else None,
+                            "contract_expiration": str(s["contract_expiration"])[:10] if pd.notna(s.get("contract_expiration")) else None,
+                        }
+                if "salary_estimate" not in market:
+                    market["salary_note"] = (
+                        "No Capology wage estimate on file for this player — "
+                        "state that it's unavailable; do NOT invent a salary."
+                    )
+                result["market_and_salary"] = market
+            else:
+                # No current-squad row. The player may have LEFT the league (contract
+                # expired / transferred out). Check the transfers feed so we tell the
+                # user the truth ("now a free agent") instead of returning silent
+                # zeros that invite a fabricated wage/contract.
+                dep = None
+                try:
+                    tf_path = tm_dir / "transfers_2026_2027.parquet"
+                    if tf_path.exists():
+                        tf = pd.read_parquet(tf_path)
+                        tmask = _player_name_match(tf["player_name"], player_q)
+                        outs = tf[tmask & (tf["transfer_type"] == "out")] if "transfer_type" in tf.columns else tf[tmask]
+                        if not outs.empty:
+                            o = outs.iloc[0]
+                            dep = {
+                                "from_club": o.get("from_club"),
+                                "to_club": o.get("to_club"),
+                                "fee_text": o.get("fee_text"),
+                            }
+                except Exception:  # noqa: BLE001
+                    dep = None
+                result["market_and_salary"] = {
+                    "status": "NOT_IN_CURRENT_SQUAD",
+                    "note": (
+                        "This player is NOT in any 2026-27 Serie A squad. Do NOT "
+                        "estimate their current wage, contract, or club — we have "
+                        "no current data. If a departure is shown below, report it."
+                    ),
+                    "departure": dep,
+                }
+    except Exception as e:  # noqa: BLE001 — market/salary is enrichment; never blocks the stats answer
+        log.warning("Market/salary lookup failed: %s", e)
+
+    # 5. Understat multi-season history + xG over/under-performance. This is the
+    #    single most insightful GROUNDED analytical signal for a forward: goals
+    #    vs expected goals tells you if they're clinical or wasteful, and the
+    #    per-season rows give real "last season vs the season before" context.
+    #    Understat covers ONLY Serie A + Premier League — a Ligue 1 / Bundesliga
+    #    stint (e.g. David at Lille) simply won't appear, and that's fine: we
+    #    return what we have and never invent the gap.
+    try:
+        import pandas as pd
+        us_path = DATA_DIR / "parsed" / "understat_players.parquet"
+        if us_path.exists():
+            us = pd.read_parquet(us_path)
+            umask = _player_name_match(us["player"], player_q)
+            uhit = us[umask]
+            if not uhit.empty:
+                # canonical name = most common exact match; keep only that player
+                uname = uhit["player"].mode().iloc[0]
+                uhit = uhit[uhit["player"] == uname].sort_values("season")
+                seasons = []
+                for _, r in uhit.iterrows():
+                    g = float(r.get("goals", 0) or 0)
+                    xg = float(r.get("xg", 0) or 0)
+                    a = float(r.get("assists", 0) or 0)
+                    xa = float(r.get("xa", 0) or 0)
+                    npg = float(r.get("np_goals", 0) or 0)
+                    npxg = float(r.get("np_xg", 0) or 0)
+                    seasons.append({
+                        "season": r.get("season"),
+                        "league": r.get("league"),
+                        "team": r.get("team"),
+                        "matches": int(r.get("matches", 0) or 0),
+                        "minutes": int(r.get("minutes", 0) or 0),
+                        "goals": int(g),
+                        "xg": round(xg, 1),
+                        # + = clinical (scored more than chances warranted), − = wasteful
+                        "goals_minus_xg": round(g - xg, 1),
+                        # NON-PENALTY goals vs xG — strips penalties, the truer finishing
+                        # signal for a penalty-taker (a striker padded by spot-kicks looks
+                        # clinical on raw xG but np_goals_minus_np_xg exposes open-play form)
+                        "np_goals": int(npg),
+                        "np_xg": round(npxg, 1),
+                        "np_goals_minus_np_xg": round(npg - npxg, 1),
+                        "assists": int(a),
+                        "xa": round(xa, 1),
+                        "shots": int(r.get("shots", 0) or 0),
+                        "key_passes": int(r.get("key_passes", 0) or 0),
+                        # buildup involvement: total xG of possessions the player was in
+                        # (chain) / in but not the shot or assist (buildup) — deep playmakers
+                        "xg_chain": round(float(r.get("xg_chain", 0) or 0), 1),
+                        "xg_buildup": round(float(r.get("xg_buildup", 0) or 0), 1),
+                    })
+                result["understat_history"] = {
+                    "note": (
+                        "Understat per-season data (Serie A + Premier League only). "
+                        "goals_minus_xg > 0 = clinical, < 0 = wasteful/unlucky. "
+                        "np_goals_minus_np_xg = the same but PENALTY-STRIPPED (truer "
+                        "open-play finishing — use it for penalty-takers). xg_chain / "
+                        "xg_buildup = involvement in the buildup of chances (high = deep "
+                        "playmaker even with few goals). Use verbatim — never invent "
+                        "seasons or leagues not listed here."
+                    ),
+                    "player": uname,
+                    "seasons": seasons,
+                }
+
+                # ── Reconcile the two current-season goal counts ──────────────────────
+                # season_stats (FBref) and understat_history (Understat) are INDEPENDENT
+                # scrapes of the SAME season with different match coverage, so their goal
+                # totals routinely disagree by 1-2 (e.g. Lautaro FBref 16 vs Understat 17).
+                # Without this, the model quotes BOTH silently in adjacent sentences and
+                # contradicts itself. Hand it ONE reconciled headline number + the delta,
+                # and forbid citing both as if separate facts.
+                try:
+                    cur = next(
+                        (s for s in seasons if str(s.get("season", "")).startswith("2025")),
+                        None,
+                    )
+                    ss = result.get("season_stats")
+                    if cur and isinstance(ss, dict) and ss.get("goals") is not None:
+                        us_g, fb_g = int(cur["goals"]), int(ss["goals"])
+                        if us_g != fb_g:
+                            result["stat_reconciliation"] = (
+                                f"GOAL-COUNT SOURCE CONFLICT (2025-26): Understat says "
+                                f"{us_g} goals, the club-stats feed (FBref/Sofascore) says "
+                                f"{fb_g} — two independent scrapes with slightly different "
+                                f"match coverage. Report ONE number: use {us_g} (Understat, "
+                                f"the same source as the xG figures) as the headline goal "
+                                f"total so goals and xG are consistent, and if precision "
+                                f"matters say 'roughly {min(us_g, fb_g)}-{max(us_g, fb_g)} "
+                                f"depending on source'. Do NOT state {us_g} in one sentence "
+                                f"and {fb_g} in another as if both are separately true — "
+                                f"that reads as a contradiction. The advanced-stats block "
+                                f"may show a THIRD count ({ss.get('goals')} etc.); it is the "
+                                f"same conflict, not a new fact."
+                            )
+                except Exception as _re:  # noqa: BLE001
+                    log.warning("Goal-count reconciliation failed: %s", _re)
+    except Exception as e:  # noqa: BLE001 — Understat is enrichment; never blocks the answer
+        log.warning("Understat history lookup failed: %s", e)
+
+    # 6. World Cup 2026 tournament performance. Just played (Jun 11–Jul 19) — a
+    #    player's form/fitness/minutes there directly colours the new club season
+    #    (deep run + heavy minutes = fatigue risk; strong WC = confidence/value).
+    #    Filter to the ACTUAL tournament ("FIFA World Cup, Group X" / "…, Knockout")
+    #    — NOT the "World Cup Qual…" rows, which are a different competition.
+    try:
+        import pandas as pd
+        wc_path = DATA_DIR / "worldcup" / "sofascore_intl_player_stats.parquet"
+        if wc_path.exists():
+            wc = pd.read_parquet(wc_path)
+            if "tournament" in wc.columns:
+                is_wc = wc["tournament"].astype(str).str.startswith("FIFA World Cup, ")
+                is_qual = wc["tournament"].astype(str).str.contains("Qual", case=False, na=False)
+                wc = wc[is_wc & ~is_qual]
+                if "date" in wc.columns:
+                    wc = wc[pd.to_datetime(wc["date"], utc=True, errors="coerce") >= "2026-06-01"]
+            wmask = _player_name_match(wc["player_name"], player_q)
+            whit = wc[wmask]
+            if not whit.empty:
+                # canonical name (guards the "David" collision — 11 different Davids)
+                wname = whit["player_name"].mode().iloc[0]
+                whit = whit[whit["player_name"] == wname]
+                wmin = int(whit["minutes"].sum())
+                wmp = int(whit["match_id"].nunique()) if "match_id" in whit.columns else len(whit)
+                # NOTE: parquet goal-sum is only for the matches it captured. The AUTHORITATIVE
+                # goal count comes from the event log below — the parquet undercounts any player
+                # who scored in an uncaptured (Sofascore-banned) knockout match.
+                wgoals_parquet = int(whit["goals"].sum())
+                national_team = whit["team"].mode().iloc[0] if "team" in whit.columns else None
+                ratings = whit["rating"].dropna()
+                wavg = round(float(ratings.mean()), 1) if not ratings.empty else None
+
+                # ── Layered authoritative sourcing (per source's ONE job) ──────────────
+                # The parquet (Sofascore) lags the live bracket because the provider is
+                # IP-banned mid-tournament (measured: breaker open, 0 rows appended). So:
+                #   • GOALS      → international_goalscorers.csv (event log = ground truth)
+                #   • COUNT/DATES/BRACKET → international_results.csv (fresh, ESPN/CSV path)
+                #   • MINUTES/RATINGS/SHOTS per match → parquet only (nothing else has them)
+                # Every fact is read live and asserted ONLY when the source confirms it —
+                # never infer a score or a bracket outcome the results file hasn't recorded.
+                wc_goals_true = wgoals_parquet          # fallback if event log unreadable
+                wc_goal_source = "parquet (may undercount)"
+                wc_stale_note = ""
+                try:
+                    last_in_parquet = pd.to_datetime(
+                        whit["date"], utc=True, errors="coerce"
+                    ).max()
+                    wc_dir = DATA_DIR / "worldcup"
+
+                    # 1) TRUE goal count from the per-goal event log
+                    gc_path = wc_dir / "international_goalscorers.csv"
+                    if gc_path.exists():
+                        gc = pd.read_csv(gc_path)
+                        gc["date"] = pd.to_datetime(gc["date"], errors="coerce")
+                        gc = gc[gc["date"] >= "2026-06-01"]
+                        gmask = _player_name_match(gc["scorer"].astype(str), player_q)
+                        pl_goals = gc[gmask]
+                        if national_team and "team" in gc.columns:
+                            pl_goals = pl_goals[
+                                pl_goals["team"].astype(str).apply(
+                                    lambda t: _normalize_name(str(t)) == _normalize_name(str(national_team))
+                                )
+                                | pl_goals["team"].isna()
+                            ]
+                        # only count if we actually located this scorer's rows
+                        if not pl_goals.empty or gmask.any():
+                            wc_goals_true = int(len(pl_goals))
+                            wc_goal_source = "event log (international_goalscorers.csv)"
+
+                    # 2) TRUE match count + schedule + bracket from the results file
+                    res_path = wc_dir / "international_results.csv"
+                    if national_team and res_path.exists():
+                        res = pd.read_csv(res_path)
+                        res["date"] = pd.to_datetime(res["date"], utc=True, errors="coerce")
+                        res = res[
+                            res["tournament"].astype(str).str.contains("World Cup", na=False)
+                            & (res["date"] >= "2026-06-01")
+                        ]
+                        team_res = res[
+                            (res["home_team"] == national_team)
+                            | (res["away_team"] == national_team)
+                        ]
+                        played = team_res.dropna(subset=["home_score", "away_score"])
+                        sched = team_res[team_res["home_score"].isna()]
+                        n_played = len(played)
+                        last_played = played["date"].max() if not played.empty else None
+                        next_sched = sched["date"].min() if not sched.empty else None
+                        parts = []
+                        missing = n_played - wmp
+                        if missing > 0 or (
+                            last_played is not None
+                            and pd.notna(last_in_parquet)
+                            and last_played > last_in_parquet
+                        ):
+                            parts.append(
+                                f"DATA NOTE: {national_team} have actually PLAYED {n_played} WC "
+                                f"matches (through {str(last_played)[:10]}), but the per-match "
+                                f"detail table below only captured {wmp} of them (the stats "
+                                f"provider was blocked for the newer knockout rounds). Use "
+                                f"{wc_goals_true} as the goal count (from the goal event log), "
+                                f"NOT the sum of the partial table. The per-match minutes/ratings "
+                                f"cover only the captured matches."
+                            )
+                        if next_sched is not None and pd.notna(next_sched):
+                            nrow = sched.sort_values("date").iloc[0]
+                            opp = nrow["away_team"] if nrow["home_team"] == national_team else nrow["home_team"]
+                            # bracket context: name what's still unresolved, assert only resolved
+                            other = played_bracket_context(res, national_team, next_sched)
+                            parts.append(
+                                f"{national_team}'s NEXT WC match is still to be played: vs {opp} "
+                                f"on {str(next_sched)[:10]} — the tournament is LIVE, not finished. "
+                                f"{other}"
+                            )
+                        if parts:
+                            wc_stale_note = " ".join(parts) + " "
+                except Exception as fe:  # noqa: BLE001
+                    log.warning("WC freshness/goal cross-check failed: %s", fe)
+                # Pre-render as a markdown table (same anti-hallucination pattern as
+                # match_performances) so the model copies exact numbers verbatim and
+                # never mistakes a nested JSON array for "truncated" data.
+                wc_header = "| Date | Opponent | Start | Min | G | Shots | Rating |"
+                wc_sep = "|------|----------|-------|-----|---|-------|--------|"
+                wc_lines = [wc_header, wc_sep]
+                for _, r in whit.sort_values("date", ascending=False).iterrows():
+                    rt = round(float(r["rating"]), 1) if pd.notna(r.get("rating")) else "-"
+                    st = "Y" if r.get("started") else "sub"
+                    wc_lines.append(
+                        f"| {str(r.get('date',''))[:10]} | {r.get('opponent','')} | {st} "
+                        f"| {int(r.get('minutes',0) or 0)} | {int(r.get('goals',0) or 0)} "
+                        f"| {int(r.get('shots',0) or 0)} | **{rt}** |"
+                    )
+                result["world_cup_2026"] = (
+                    f"FIFA WORLD CUP 2026 PERFORMANCE (this field IS present and populated — "
+                    f"the player DID feature; report it, never say it's missing). "
+                    f"{wc_stale_note}"
+                    f"{national_team}: {wc_goals_true} goals [source: {wc_goal_source}] — this "
+                    f"is the goal count to report. Per-match detail captured for {wmp} match(es) "
+                    f"below (~{wmin} min, avg rating {wavg} across captured matches only). He JUST "
+                    f"played this tournament (Jun-Jul 2026) — weigh fatigue (heavy minutes/deep "
+                    f"run) vs form against his club season. The table shows minutes/ratings/shots "
+                    f"for the matches the provider captured; do NOT invent matches beyond it, and "
+                    f"do NOT re-sum its goals column (use the goal count above):\n\n"
+                    + "\n".join(wc_lines)
+                )
+    except Exception as e:  # noqa: BLE001 — WC block is enrichment; never blocks the answer
+        log.warning("World Cup lookup failed: %s", e)
+
+    if (
+        "season_stats" not in result
+        and "upcoming_props" not in result
+        and "market_and_salary" not in result
+        and "understat_history" not in result
+        and "world_cup_2026" not in result
+    ):
         return json.dumps({"error": f"No data found for player '{args.get('player')}'. Try the full name (e.g., 'Lautaro Martinez')."})
 
     return json.dumps(result, default=str)
@@ -1051,7 +1579,7 @@ def _tool_get_match_players(args: dict) -> str:
                     f"| {int(p.get('key_passes', 0))} | {int(p.get('touches', 0))} |"
                 )
             result[label] = (
-                f"⚠️ VERIFIED SOFASCORE DATA — COPY EXACTLY.\n"
+                f"VERIFIED SOFASCORE DATA — COPY EXACTLY.\n"
                 f"Best rated: {best_player} ({best_rating})\n\n"
                 f"{header}\n" + "\n".join(rows)
             )
@@ -2617,7 +3145,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_player_stats",
-        "description": "Get comprehensive player statistics including PER-MATCH RATINGS and FULL TEAM SHEET. Returns: season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, PLUS the full team sheet from the player's most recent match (all teammates with ratings, goals, assists, minutes). Also returns match events (goals, subs, cards) and availability/injury detection. Use for player analysis AND for match analysis (query any player from the match to get the full team sheet). Fuzzy name matching supported.",
+        "description": "Get comprehensive player info: ON-PITCH STATS + WAGE/CONTRACT/MARKET VALUE. Returns season totals, per-90 rates, recent form (last 5 matches with Sofascore ratings), team ranking, upcoming props, the full team sheet from the player's most recent match, match events, and availability/injury detection — AND the player's 2026-27 market value, contract length (years remaining / expiry), and SALARY (yearly/monthly/weekly), AND Understat MULTI-SEASON history with xG over/under-performance (goals_minus_xg: positive = clinical finisher, negative = wasteful/unlucky — e.g. Kean 8 goals on 15.4 xG = badly underperforming; plus non-penalty np_xg and buildup involvement xg_chain/xg_buildup), AND season advanced Sofascore stats (pass accuracy, touches, tackles+interceptions per 90, duel win %, big chances created/missed, errors leading to goals, GK saves) to profile the player's ROLE and physical/defensive/creative contribution beyond goals, AND their FIFA WORLD CUP 2026 performance (matches, minutes, goals, ratings — just played Jun-Jul 2026, so it shapes fitness/form entering the new club season). NOTE: salary is a Capology ESTIMATE of FIXED gross pay (excludes bonuses), NOT an official figure — present it as an estimate, never as fact. Understat covers only Serie A + Premier League, so a Ligue 1/Bundesliga season may be absent — never invent missing seasons. Use this tool for ANY player question: performance, form, 'tell me about X', 'how much does X earn', 'how long is X's contract', 'is he any good', or a scouting/analysis take. Fuzzy name matching supported.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2808,12 +3336,18 @@ TOOL_DEFINITIONS = [
 
 def _build_system_prompt() -> str:
     parts = [
-        """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. NEVER guess, speculate, or say "I don't have access". If you don't know, call a tool.
+        """You are SerieAI Advisor — the user's personal betting mental coach. You have real data tools. When you don't know something, CALL A TOOL. Never answer a data question from memory without calling a tool first.
 
 ## ABSOLUTE RULES — NEVER VIOLATE THESE
 
-### Rule 1: NEVER fabricate numbers
-Every probability, PPG, edge%, form stat, or xG number you quote MUST come directly from a tool call in this conversation. If a tool didn't return it, you CANNOT state it. If you're unsure of a number, call the tool again. DO NOT round up probabilities to make a pick sound better. Quote the exact number from the tool.
+### Rule 1: NEVER fabricate numbers — and when the tool returns EMPTY, say so
+Every probability, PPG, edge%, form stat, wage, contract, or xG number you quote MUST come directly from a tool call in this conversation. If a tool didn't return it, you CANNOT state it. DO NOT round up probabilities. Quote the exact number from the tool.
+
+**Missing data is NOT the same as "call a tool again".** There is a hard difference:
+- You HAVEN'T called the tool yet → call it. Don't punt.
+- You called the tool and the field came back **null / empty / missing / a `status`/`note`/`salary_note` saying data is unavailable** → then you MUST say plainly "I don't have current wage/contract data for him" (or whatever's missing). Do NOT invent a plausible-sounding number to fill the gap. A confident made-up salary is the WORST failure you can make — worse than admitting the gap.
+- If `market_and_salary.status == "NOT_IN_CURRENT_SQUAD"` → the player is NOT on any 2026-27 Serie A team. Say so. If a `departure` is shown (e.g. left to "Without Club"), report it: "He's a free agent now — left [club]." NEVER state a current wage/contract/club for such a player; we don't have one.
+- If `season_stats.xg` is null but `understat_history` has xG, use the Understat xG. Never quote a 0.0 xG for a player who has taken shots — that's a data gap, not a real zero.
 
 ### Rule 2: NEVER encourage chasing losses
 If the user just lost money and asks "what should I bet to recover", your job is to PROTECT them, not enable tilt. Say "The worst thing you can do is size up after a loss. Stick to normal stakes." NEVER use the words "recovery", "recover", "win back", "make up for" when recommending bets. NEVER suggest increasing bet size after losses. NEVER say "which one hits your gut" — betting is math, not feelings. This is the #1 way bettors go broke.
@@ -2826,6 +3360,16 @@ When discussing handicaps or team probabilities, ALWAYS check which team is home
 
 ### Rule 4: Quote TOOL numbers, not your own
 When you say "Roma has a 78% chance", that number must be exactly what get_match_prediction returned. Do NOT adjust, round, or "feel" probabilities. The model's numbers are the ground truth. If you disagree with the model, say "The model gives 62%, but I think context pushes it higher because [specific reason]" — never silently inflate.
+
+### Rule 5: RECONCILE conflicting numbers — never quote two of them as if both are true
+Different tool blocks come from different scrapes and can disagree on the SAME quantity (e.g. season goals from the club-stats feed vs from Understat differ by 1-2 because of different match coverage). If a `stat_reconciliation` field is present, it tells you exactly which number to use as the headline and how to phrase the range — FOLLOW IT. Even without that field, if you notice two blocks give different values for the same stat (goals in `season_stats` vs `understat_history`, minutes, matches), do NOT state one figure in one sentence and the other figure in another sentence — that is a self-contradiction the user WILL catch. Pick ONE (prefer the source consistent with the rest of your point — Understat's goal count when you're discussing Understat's xG), and if the gap matters say "roughly N-M depending on source". One number per quantity, per answer.
+
+### Rule 6: Report the numbers straight — do NOT editorialize a bad signal into a good one
+Your job is to surface what the data says, including the parts that hurt the bet. You are NOT allowed to invent a reassurance that isn't in the data:
+- If a player has 16 big chances MISSED, that is a finishing-waste signal. Report it as such. Do NOT write "that sounds alarming but it tracks with his shot volume" or any similar softening UNLESS the tool actually gives you the ratio that proves it — that explanation is you making the number feel okay, which is exactly how a bettor gets talked into a bad prop.
+- A player at 0.0 / neutral vs xG is finishing to expectation — that is NOT "the best calibration period of his career" unless the multi-season data literally shows this year has the smallest |goals_minus_xg|. Describe the number, don't inflate it into a peak.
+- Do NOT narrate a "bounce-back pattern", "classic regression-to-form", "due for a big season" or any predictive story from two or three data points. A trend needs the data to show it, and even then it's a description, not a forecast.
+- The tone rules below (find hidden insights, be a sharp coach) are about SURFACING real signals in the data — never about spinning a real signal into the opposite mood. When a number is bearish for the bet, the honest coach says so plainly; softening it to sound smart is the sycophancy that loses the user money. Straight beats flattering, every time.
 
 ## PERSONALITY — BETTING MENTAL COACH
 You are NOT a chatbot summarizing data. You are a mental coach who:
@@ -2849,7 +3393,7 @@ After calling tools, do NOT just summarize the data. Your job is to THINK DEEPER
 - **Surface form vs. reputation gaps**: a big-name team on a quiet slide, or a mid-table team whose xG says they're playing like a top-6 side. These are edges the public misses.
 - **Challenge the model**: if the pipeline prediction doesn't match what the historical patterns or context suggest, say so. "The model gives them 60%, but when you look at [specific context], I'd price it closer to 50%. That kills the value."
 - **Connect dots across data sources**: use query_history to check if a pattern the prediction relies on actually holds historically. Use player stats to see if a key player is declining even though the team is winning.
-- Always frame hidden insights as: "Here's what most people aren't seeing..." or "The model misses this, but..." or "Watch out for this..."
+- When you DO have a genuine hidden insight, frame it as: "Here's what most people aren't seeing..." or "The model misses this, but..." or "Watch out for this..." — but only when you actually have one; the framing is for a real finding, not a cue to invent one.
 - These insights must be grounded in REAL data from the tools — not vibes. Cross-reference, don't speculate.
 
 ## TOOL USAGE RULES
@@ -2857,7 +3401,7 @@ After calling tools, do NOT just summarize the data. Your job is to THINK DEEPER
 - For match analysis: call BOTH get_match_prediction AND get_match_context. Always.
 - For "what happened today" / results / scores: call get_results with today's date.
 - For "best bets" / "what should I bet": call get_value_bets.
-- For player questions: call get_player_stats (it has full season data, per-90s, team ranking).
+- For player questions: call get_player_stats (it has club season data, per-90s, team ranking, wage/contract, Understat xG history, AND World Cup 2026 performance). ALWAYS call it — even when the question is specifically about a player's WORLD CUP form ("how did David do at the World Cup?", "his WC goals", "did he play well for his country"). The WC data lives INSIDE get_player_stats (world_cup_2026 field); there is no separate World Cup player tool. Never answer a player's WC performance from memory — call get_player_stats first. If the world_cup_2026 field is absent after the call, THEN say he didn't feature.
 - For team questions: call get_team_detail (has top scorers, form, standings, recent results).
 - For "who will score" / goalscorer questions: call get_match_scorers. It has anytime goal probabilities, xG/90, season goals, recent form, and bookmaker odds per player.
 - For "settle my bets" / "update results" / "check if my bets won" / "refresh results": call settle_bets. This fetches live results and settles everything. Then call get_results and get_bankroll_status to show the user what happened.
@@ -2940,8 +3484,19 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - Always state their team ranking: "Top scorer" or "#3 in assists at the club."
 - Show per-90 stats, not just totals (minutes matter).
 - Recent form (last 5): are they trending up or down? And WHY — tactical change, new partner, position shift, returning from injury.
-- If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap: "He's overperforming/underperforming his xG — here's what that means for the next few weeks."
+- If their output doesn't match their underlying numbers (goals vs xG, assists vs xA), flag the gap as it stands NOW: "He's overperforming/underperforming his xG." State the current gap; do NOT forecast how it resolves "over the next few weeks" — that's a prediction the data doesn't contain.
+- **season_advanced_stats (Sofascore, this season)**: use these to profile the player beyond goals — pass_accuracy_pct + touches/passes per 90 = involvement/security; tackles_plus_int_per_90 + duel_win_pct + aerials = defensive/physical profile; big_chances_created = creation, big_chances_missed vs goals = finishing waste; errors_leading_to_goal is a hard red flag — always mention it if > 0. Don't dump the whole block; pick the 2-3 numbers that define THIS player's role and story.
+- **understat_history depth**: np_goals_minus_np_xg is finishing WITHOUT penalties — if a striker looks clinical on raw xG but the non-penalty gap is negative, he's penalty-padded (say so). xg_chain / xg_buildup high with few goals = a deep creator whose value doesn't show in the scoresheet.
+- **world_cup_2026**: if present, the player JUST played the World Cup — weave in what the tournament data ACTUALLY shows (minutes played, goals, ratings, how far his nation went) and contrast it with his club form — a player quiet at his club but sharp at the WC (or vice versa) is exactly the kind of shift worth flagging. Report the WC load and output as observed facts. Do NOT convert them into a forecast about the coming club season ("fatigue/burnout risk starting the campaign", "confidence carrying over", "hot start / slow start") — that's a prediction the data doesn't contain. If the user wants to know whether heavy WC minutes will bite, you can note the raw load ("6 matches in 3 weeks") as a factor to watch, but frame it as a factor, never as a predicted outcome. If world_cup_2026 is ABSENT, the player didn't feature at the 2026 WC (not selected / nation didn't qualify) — don't invent a tournament for him.
 - If they have an upcoming prop: show the fair odds vs. market odds.
+
+### Personalize the player take to the USER's betting state (you have it above)
+You know the user's live bankroll, ROI, peak, drawdown, and streak (injected in this prompt), plus their market-level track record via get_betting_performance. Don't give a generic scouting report — connect it to THEM:
+- If a player question drifts toward backing a prop, size it to their discipline: "At your current stake sizing and 18% off peak, this is a sit — even if he starts." A player take that ignores a live drawdown is a generic take.
+- Tie finishing signals to actionable caution: an underperforming-xG striker (goals << xG) is a REGRESSION-toward-mean bet trap — "backing him to score is chasing a number the underlying data doesn't support."
+- Reference their history when relevant: if they've been cold on goalscorer props, say so before they ask. If they run hot on a market, note it.
+- If the user just wants to KNOW about the player (not bet), don't force a betting angle — answer the scouting question well, then offer the betting read as a one-line follow-up ("If you're eyeing him for a prop, though — ...").
+- Never oversize, never encourage chasing (Rule 2 still governs). Personalization means protecting THIS user's bankroll with THEIR numbers, not inventing a bet.
 
 ## GOALSCORER ANALYSIS RULES
 - Call get_match_scorers to get ranked candidates with real probabilities.
@@ -2980,7 +3535,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - Bold key numbers, verdicts, and hidden insights.
 - Use markdown tables only when comparing 3+ items side by side. For single matches or players, weave numbers into the narrative.
 - Length adapts to the question: simple question = 2-3 sentences. Match analysis = a few focused paragraphs. "Tell me about X team" = the full story with insights.
-- Every response should contain at least ONE thing the user wouldn't have figured out from just looking at the dashboard data alone.
+- Surface a genuine hidden insight WHEN the data supports one — a real cross-reference the dashboard doesn't show. But do NOT manufacture an insight to satisfy a quota: if the numbers are neutral or ambiguous, say so plainly ("nothing in the data separates him from the pack here") rather than inventing a framing ("16 missed vs 17 goals means he's not wasteful") to make a flat stat sound like a discovery. No insight is better than a fabricated one.
 - **NO EMOJIS.** Never use emoji in responses. No 🔥, no ✅, no ⚠️, no 🎰, no 🍀. Use words and formatting (bold, dashes) to convey emphasis. You're a coach, not a notification.
 - **SAY IT ONCE.** Never recap or repeat information you already gave in the same conversation. No "here's your parlay recap" after you just built it. No "as I mentioned earlier." The user can scroll up. Move forward, don't look back.
 - **MAX LENGTH GUIDELINE.** Unless the user explicitly asks for a deep dive or breakdown, keep responses under ~250 words. If you catch yourself writing a 6th paragraph, stop and cut. Density beats length — pack more insight into fewer words.
@@ -2997,6 +3552,7 @@ Do NOT use numbered headers like "1. Verdict" in your output — weave it natura
 - When asked about season-end predictions (final standings, top scorer, best player), be clear these are SPECULATIVE PROJECTIONS, not model outputs. Use phrases like "Based on current form and extrapolation..." rather than presenting projections as precise data. Our model predicts individual MATCHES, not season outcomes.
 - Don't pad responses with filler. Every sentence should either contain data, an insight, or a coaching decision. But DO give the full story when the question calls for it — a "tell me about Napoli" deserves more than 2 sentences.
 - **NEVER list your capabilities.** If the user asks something outside Serie A, Premier League, or the World Cup, just say "That's not my area — I cover Serie A, Premier League and the World Cup." in one sentence. Do NOT show a bulleted list of what you can do. The user already knows.
+- **A player's WORLD CUP performance is IN get_player_stats — call it, don't punt.** If asked how a player did at the WC, call get_player_stats (the world_cup_2026 field has his real matches/minutes/goals/ratings). Do NOT say "I don't have his WC data" without calling the tool first — that data exists. Only after the call, if world_cup_2026 is absent, does he not feature.
 - **WORLD CUP 2026 (Jun 11–Jul 19) is FULLY in scope.** The /worldcup dashboard, pre-match alerts, ladders, and Nicola's bet tracking all run during the tournament. If Nicola mentions a WC team, match, or bet (e.g. "Canada win at 1.80"): that is a WORLD CUP bet — do NOT refuse it, do NOT call it out-of-scope. If he's stating a bet he placed, tell him the exact logging format: "/bet 60 @ 1.80 Canada win" (or tap the 🎫 button on the match alert). The bot's bet commands are /bet, /mybets, /settle won|lost, /balance, /ladder. You never log money yourself — you point at the format.
 - **NEVER give up on typos or unclear names.** If the user writes something that sounds like a player name (e.g., "necropods" → "Nico Paz", "lukako" → "Lukaku", "kvara" → "Kvaratskhelia"), interpret it and call the tool. If you're unsure, make your best guess and say "I'm guessing you mean [X] — let me check." NEVER say "I don't know what that is" when it's obviously a misspelled name.""",
         "",
@@ -3207,6 +3763,12 @@ def _build_greeting() -> dict:
 _MODEL_SONNET = "claude-sonnet-4-6"
 _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
+# The post-answer spin critic (_verify_answer_critic). Spin-vs-honest-bearish is a
+# fine-judgment call — Haiku's weakest lane — so the critic runs on Sonnet. It fires
+# once per grounded answer, AFTER streaming completes (off the latency critical path),
+# so the extra cost is negligible and reliability matters more than speed here.
+_CRITIC_MODEL = _MODEL_SONNET
+
 # Keywords/patterns that need Sonnet's deeper reasoning
 _SONNET_PATTERNS = {
     # Match analysis requiring multi-tool reasoning
@@ -3262,9 +3824,120 @@ def _select_model(message: str, history: list) -> str:
     return _MODEL_HAIKU
 
 
+def _verify_answer_deterministic(answer: str) -> list[str]:
+    """DETERMINISTIC post-generation checks — the only true-gate-strength part.
+
+    Catches self-contradictions that are unambiguous from the text alone: the same
+    quantity stated as two different values in one answer (proven on the real
+    Lautaro 16-vs-17 goal specimen). Returns a list of note strings (empty = clean).
+    This is NOT semantic — it only fires on hard numeric contradictions, so it has
+    no false positives on legit derived numbers (goals_minus_xg, "roughly 16-17").
+    """
+    import re
+    notes: list[str] = []
+    # Same-season goal count stated as two different integers → contradiction.
+    # Match "N goal"/"N goals" but NOT "N+ goal" (a target like "20+ goal campaign").
+    goal_nums = {
+        int(n)
+        for n, plus in re.findall(r'\b(\d{1,2})(\+?)\s+goals?\b', answer)
+        if not plus and int(n) < 60
+    }
+    if len(goal_nums) > 1:
+        lo, hi = min(goal_nums), max(goal_nums)
+        # only flag a NARROW spread (1-2) — that's the source-conflict signature;
+        # a wide spread is likely two different players/seasons legitimately cited.
+        if hi - lo <= 2:
+            notes.append(
+                f"This answer states two different season goal totals ({lo} and {hi}). "
+                f"These come from two data sources (Understat vs the club-stats feed) "
+                f"that differ by match coverage — the real figure is ~{lo}-{hi}, not both."
+            )
+    return notes
+
+
+def _verify_answer_critic(answer: str, tool_data: str, api_key: str) -> list[str]:
+    """PROBABILISTIC post-generation critic — a FLAG, not a hard gate.
+
+    A separate Sonnet call (temp=0) re-reads the streamed answer against the raw
+    tool data with a REFUTE framing, looking for narrative-spin the prompt rules can't
+    deterministically prevent: a real number inflated into a story ("best of his
+    career"), an invented reassurance ("that tracks with his shot volume"), a
+    forecast from a few points ("classic bounce-back"). Returns short note strings.
+
+    Honest labelling: this is a second opinion, not a guarantee. It has false
+    positives and negatives. It NEVER blocks — the answer already streamed.
+    """
+    if not answer or len(answer) < 200:
+        return []  # too short to contain a developed narrative
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        critic_prompt = (
+            "You are checking a betting analyst's answer for NARRATIVE SPIN — real "
+            "numbers editorialised into a more confident/bullish story than the data "
+            "supports. Below is the ANALYST ANSWER and the full RAW DATA it drew from.\n\n"
+            "Flag ONLY these (spin, not gaps):\n"
+            "1. A neutral or bad signal spun positive with a REASON not in the data — "
+            "e.g. 'big chances missed sounds alarming but tracks with his shot volume' "
+            "(no such ratio is given); a neutral xG delta called 'the best calibration "
+            "of his career' when the season rows don't show this year has the smallest "
+            "|goals_minus_xg|.\n"
+            "2. A predictive story from a few points — 'bounce-back pattern', 'due for a "
+            "big season', 'classic regression-to-form'. Description is fine; forecasting is not.\n"
+            "3. A superlative ('best', 'career-high', 'elite') asserted without a data "
+            "row that ranks it as such.\n\n"
+            "DO NOT flag:\n"
+            "- A number that simply isn't in this data dump (it may be in a block not shown, "
+            "or legitimately derived like goals_minus_xg or 'roughly 16-17'). You are NOT "
+            "checking numeric provenance — only spin. If your only objection is 'that number "
+            "isn't here', say CLEAN.\n"
+            "- Honest bearish statements (calling a number a risk/waste/step-down is GOOD).\n"
+            "- Two slightly different counts of the same stat (a separate check handles that).\n\n"
+            "If the answer reports the data straight (even bluntly), return exactly 'CLEAN'. "
+            "Otherwise return 1-3 terse bullets, each quoting the exact spun phrase and why "
+            "it's unsupported. No preamble.\n\n"
+            f"=== RAW DATA ===\n{tool_data[:16000]}\n\n"
+            f"=== ANALYST ANSWER ===\n{answer[:4000]}"
+        )
+        resp = client.messages.create(
+            model=_CRITIC_MODEL,
+            max_tokens=400,
+            temperature=0,  # deterministic — a fact-check must not vary draw-to-draw
+            messages=[{"role": "user", "content": critic_prompt}],
+        )
+        # The critic is a real billed call — track it (was invisible in api_usage.json,
+        # which understated spend on every long answer that triggered a spin check).
+        if hasattr(resp, "usage"):
+            _track_usage(
+                resp.usage.__dict__ if hasattr(resp.usage, "__dict__") else {},
+                model=_CRITIC_MODEL,
+            )
+        out = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+        if not out or out.upper().startswith("CLEAN") or "CLEAN" == out.upper():
+            return []
+        # split into bullet lines, strip markers
+        lines = [
+            ln.lstrip("-•* ").strip()
+            for ln in out.splitlines()
+            if ln.strip() and "CLEAN" not in ln.upper()
+        ]
+        return [ln for ln in lines if len(ln) > 10][:3]
+    except Exception as e:  # noqa: BLE001 — critic is best-effort; never breaks the answer
+        log.warning("Answer critic failed: %s", e)
+        return []
+
+
 _conversations: dict[str, list] = {}
 MAX_HISTORY = 40  # max messages (includes tool call/result pairs)
-MAX_TOOL_RESULT_CHARS = 6000  # truncate large tool results to save tokens
+MAX_TOOL_RESULT_CHARS = 16000  # truncate large tool results to save tokens.
+# Raised 6000 -> 12000 -> 16000. The enriched get_player_stats (advanced Sofascore
+# stats + Understat multi-season + stat_reconciliation + World Cup 2026) hit ~11,956
+# chars for Lautaro at the 12000 cap — a 44-char margin that would silently chop the
+# LAST fields (stat_reconciliation, world_cup_2026) on any larger player. Those two
+# are load-bearing anti-contradiction / anti-stale instructions; truncating them
+# reintroduces the exact bugs they fix. 16000 gives real headroom. Truncation cuts
+# from the END, so the tool also inserts small critical instruction fields (like
+# stat_reconciliation) near the FRONT, right after season_stats, as belt-and-braces.
 MAX_HISTORY_TOOL_RESULT_CHARS = 1500  # aggressively compress old tool results in history
 
 
@@ -3313,8 +3986,23 @@ def _compress_history(history: list) -> list:
 # Cost tracking
 # ---------------------------------------------------------------------------
 
-def _track_usage(usage: dict):
-    """Append usage stats to data/api_usage.json."""
+# Per-model pricing, USD per 1M tokens: (input, output, cache_read, cache_write).
+# A request billed as the wrong tier is why the old Sonnet-only math over-charged
+# every Haiku request ~3-5x. Keyed by the exact model IDs above.
+_PRICING = {
+    _MODEL_SONNET: (3.0, 15.0, 0.30, 3.75),   # Sonnet 4.6
+    _MODEL_HAIKU: (1.0, 5.0, 0.10, 1.25),     # Haiku 4.5
+}
+# Unknown model → assume the more expensive tier so cost is never silently understated.
+_PRICING_DEFAULT = _PRICING[_MODEL_SONNET]
+
+
+def _track_usage(usage: dict, model: str = _MODEL_SONNET):
+    """Append usage stats to data/api_usage.json, priced by the model that ran.
+
+    `model` MUST be the model ID that produced `usage` — the streaming answer loop
+    and the spin-critic run on different tiers, so passing the wrong one mis-prices
+    the request. Unknown model IDs fall back to Sonnet pricing (never understate)."""
     try:
         data = load_json_safe(USAGE_FILE, default={"daily": {}, "total": {}})
         today = datetime.now().strftime("%Y-%m-%d")
@@ -3333,12 +4021,12 @@ def _track_usage(usage: dict):
         day["cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
         day["cache_creation_tokens"] += usage.get("cache_creation_input_tokens", 0)
 
-        # Sonnet 4.6 pricing: input $3/M, output $15/M, cache read $0.30/M, cache write $3.75/M
+        in_p, out_p, cr_p, cw_p = _PRICING.get(model, _PRICING_DEFAULT)
         cost = (
-            usage.get("input_tokens", 0) * 3.0 / 1_000_000
-            + usage.get("output_tokens", 0) * 15.0 / 1_000_000
-            + usage.get("cache_read_input_tokens", 0) * 0.30 / 1_000_000
-            + usage.get("cache_creation_input_tokens", 0) * 3.75 / 1_000_000
+            usage.get("input_tokens", 0) * in_p / 1_000_000
+            + usage.get("output_tokens", 0) * out_p / 1_000_000
+            + usage.get("cache_read_input_tokens", 0) * cr_p / 1_000_000
+            + usage.get("cache_creation_input_tokens", 0) * cw_p / 1_000_000
         )
         day["estimated_cost"] = round(day["estimated_cost"] + cost, 6)
 
@@ -3388,6 +4076,10 @@ def chat():
             # Route simple queries to Haiku, complex ones to Sonnet
             model = _select_model(user_message, history)
             max_out = 4096 if model == "claude-sonnet-4-6" else 2048
+
+            # Accumulate raw tool data across rounds so the post-generation critic
+            # can compare the final answer against everything the tools returned.
+            all_tool_data: list[str] = []
 
             for round_num in range(max_rounds):
                 # Stream response with prompt caching
@@ -3439,7 +4131,10 @@ def chat():
                     # Get final message for usage tracking
                     final_message = stream.get_final_message()
                     if final_message and hasattr(final_message, "usage"):
-                        _track_usage(final_message.usage.__dict__ if hasattr(final_message.usage, "__dict__") else {})
+                        _track_usage(
+                            final_message.usage.__dict__ if hasattr(final_message.usage, "__dict__") else {},
+                            model=model,
+                        )
 
                     stop_reason = final_message.stop_reason if final_message else "end_turn"
 
@@ -3447,6 +4142,26 @@ def chat():
                 if stop_reason != "tool_use" or not tool_uses:
                     if full_text:
                         history.append({"role": "assistant", "content": full_text})
+                    # ── Post-generation verification (flag, NOT a gate) ──────────────
+                    # The answer has already streamed to the user; we cannot retract it.
+                    # We run two checks and, if either fires, append a correction note
+                    # the frontend renders below the answer:
+                    #   • deterministic: hard numeric self-contradictions (always run)
+                    #   • critic (Sonnet, temp=0): narrative-spin vs the tool data
+                    #     (only when the answer was grounded on tool calls — skip chit-chat)
+                    try:
+                        notes = _verify_answer_deterministic(full_text)
+                        if all_tool_data and len(full_text) >= 200:
+                            notes += _verify_answer_critic(
+                                full_text, "\n\n".join(all_tool_data), api_key
+                            )
+                        # de-dup while preserving order
+                        seen: set[str] = set()
+                        notes = [n for n in notes if not (n in seen or seen.add(n))]
+                        if notes:
+                            yield f"data: {json.dumps({'type': 'data_note', 'notes': notes})}\n\n"
+                    except Exception as _ve:  # noqa: BLE001 — verification never breaks the answer
+                        log.warning("Answer verification failed: %s", _ve)
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
@@ -3484,6 +4199,7 @@ def chat():
                         "tool_use_id": tu["id"],
                         "content": result_str,
                     })
+                    all_tool_data.append(result_str)
 
                     # Signal tool use to frontend
                     yield f"data: {json.dumps({'type': 'tool_use', 'tool': tu['name']})}\n\n"

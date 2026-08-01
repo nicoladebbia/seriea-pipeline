@@ -584,31 +584,57 @@ class TestGrading:
         assert r2 is not None and (r2[0], r2[1]) == (2, 0)
         assert _find_result(df, "Mexico", "South Africa", "2026-06-20") is None
 
-    def test_find_result_matches_swapped_orientation(self) -> None:
+    def test_find_result_swapped_orientation_flips_score(self) -> None:
+        # A pre-kickoff snapshot may store the teams in the opposite home/away
+        # order from the neutral-venue results CSV. The lookup must still join
+        # AND return the score flipped into the *queried* frame, so a caller's
+        # ``outcome = "home" if hs>as_`` is correct in the snapshot's own frame
+        # (Mexico beat Czechia 3-0; a Mexico pick must grade HIT, not a Czechia
+        # loss graded backwards). This is the bug that dropped Mexico-Czechia,
+        # Switzerland-Canada and Türkiye-USA from the track record.
         from scripts.worldcup.grading import _find_result
 
-        # Neutral-venue matches are stored home/away-swapped between sources:
-        # the fixture list says 'Switzerland vs Canada', results.csv stored
-        # 'Canada 1-2 Switzerland'. Same match — it must grade, and the score
-        # must come back in the FIXTURE's orientation (2-1), not the row's.
         df = pd.DataFrame(
             {
-                "date": pd.to_datetime(["2026-06-24"]),
-                "home_team": ["Canada"],
-                "away_team": ["Switzerland"],
-                "home_score": [1],
-                "away_score": [2],
+                "date": pd.to_datetime(["2026-06-25"]),
+                "home_team": ["Mexico"],  # CSV orientation
+                "away_team": ["Czech Republic"],
+                "home_score": [3],
+                "away_score": [0],
                 "tournament": ["FIFA World Cup"],
                 "city": ["x"],
                 "country": ["x"],
                 "neutral": [True],
             }
         )
-        r = _find_result(df, "Switzerland", "Canada", "2026-06-24")
-        assert r is not None and (r[0], r[1]) == (2, 1)
-        # the stored orientation still reads straight through, unswapped
-        r2 = _find_result(df, "Canada", "Switzerland", "2026-06-24")
-        assert r2 is not None and (r2[0], r2[1]) == (1, 2)
+        # Queried in the SNAPSHOT orientation (home=Czechia, away=Mexico).
+        r = _find_result(df, "Czechia", "Mexico", "2026-06-25")
+        assert r is not None
+        hs, as_, _ = r
+        assert (hs, as_) == (0, 3)  # flipped into the queried (snapshot) frame
+        assert ("home" if hs > as_ else "draw" if hs == as_ else "away") == "away"
+
+    def test_shootout_winner_found_when_swapped(self, tmp_path, monkeypatch) -> None:
+        # Same orientation trap as _find_result, one file over: shootouts.csv
+        # can store a neutral-venue tie home/away-swapped relative to the
+        # queried fixture. An order-sensitive join returns None, the knockout
+        # never resolves on its real advancer, and the bracket silently falls
+        # back to simulation.
+        import scripts.worldcup.knockout as ko
+
+        csv = tmp_path / "shootouts.csv"
+        csv.write_text(
+            "date,home_team,away_team,winner\n2026-07-04,Croatia,Brazil,Croatia\n"
+        )
+        monkeypatch.setattr(ko, "SHOOTOUTS_CSV", csv)
+        fn = ko._real_shootout_lookup()
+
+        # Queried in the opposite orientation from the CSV.
+        assert fn("Brazil", "Croatia", "2026-07-04") == "Croatia"
+        # Stored orientation still reads through unchanged.
+        assert fn("Croatia", "Brazil", "2026-07-04") == "Croatia"
+        # A pair that never met must still miss.
+        assert fn("Brazil", "Spain", "2026-07-04") is None
 
     def test_brier_math(self) -> None:
         from scripts.worldcup.grading import _brier
@@ -676,44 +702,29 @@ class TestNinetyMinuteReconstruction:
         )
         assert r is None  # refuse to grade rather than grade wrong
 
-    def test_swapped_orientation_still_reconstructs(self) -> None:
-        from scripts.worldcup.grading import _ninety_minute_score
 
-        # goalscorers.csv stores the tie as 'Brazil vs France' while the
-        # fixture asks for 'France vs Brazil'. Goals are credited by team
-        # name, so the 90' score must still come back correctly — a swapped
-        # knockout must not silently fall into the skipped_ko bucket.
-        scorers = pd.DataFrame(
-            {
-                "date": ["2026-06-29"] * 3,
-                "home_team": ["Brazil"] * 3,
-                "away_team": ["France"] * 3,
-                "team": ["France", "Brazil", "France"],
-                "scorer": ["A", "B", "C"],
-                "minute": [40.0, 88.0, 104.0],
-                "own_goal": [False, False, False],
-                "penalty": [False, False, False],
-            }
-        )
-        r = _ninety_minute_score(
-            scorers, pd.DataFrame(), "France", "Brazil",
-            pd.Timestamp("2026-06-29"), (2, 1),
-        )
-        assert r == (1, 1)
+def _unresolve_knockouts(fixtures: list) -> list:
+    """Deep-copy fixtures with knockout ``home``/``away`` reset to their
+    original slot labels (``slot_home``/``slot_away``).
 
-    def test_penalties_found_when_swapped(self) -> None:
-        from scripts.worldcup.grading import _ninety_minute_score
-
-        shootouts = pd.DataFrame(
-            {"date": ["2026-06-29"], "home_team": ["Brazil"],
-             "away_team": ["France"], "winner": ["France"],
-             "first_shooter": ["France"]}
-        )
-        r = _ninety_minute_score(
-            pd.DataFrame(), shootouts, "France", "Brazil",
-            pd.Timestamp("2026-06-29"), (4, 3),
-        )
-        assert r == (0, 0)  # level at 90' — orientation must not hide the pens
+    As the live tournament plays, ``knockout.py`` fills real team names into
+    the knockout fixtures' ``home``/``away`` while preserving the slot label in
+    ``slot_home``/``slot_away``. Bracket-logic tests that assert on slot labels
+    or drive their own resolution must start from the *pre-tournament* view, or
+    they break every time a real match is played (this is what left three
+    bracket tests permanently red). Group fixtures already carry real teams and
+    are copied unchanged.
+    """
+    out = []
+    for f in fixtures:
+        g = dict(f)
+        if g.get("stage") != "group":
+            if g.get("slot_home"):
+                g["home"] = g["slot_home"]
+            if g.get("slot_away"):
+                g["away"] = g["slot_away"]
+        out.append(g)
+    return out
 
 
 @pytest.mark.integration
@@ -763,6 +774,9 @@ class TestRealArtifacts:
 
         if not RESULTS_CSV.exists():
             pytest.skip("international results dataset not present")
+        # Simulate from the pre-tournament bracket so the invariants hold
+        # regardless of how far the live tournament has progressed.
+        fixtures = _unresolve_knockouts(fixtures)
         engine = WorldCupEngine.build()
         sim = TournamentSimulator(
             engine, fixtures, spec, rng=np.random.default_rng(7)
@@ -867,6 +881,7 @@ class TestRealArtifacts:
 
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = self._stub_engine_and_stats(fixtures)
         bracket = build_bracket(engine, fixtures, sim, spec)  # type: ignore[arg-type]
 
@@ -904,6 +919,7 @@ class TestRealArtifacts:
     ) -> None:
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = self._stub_engine_and_stats(fixtures)
         resolved = [dict(f) for f in fixtures]
         m73 = next(f for f in resolved if int(f["match_number"]) == 73)
@@ -1049,7 +1065,9 @@ class TestResultConditioning:
              "away": "Japan", "home_score": 1, "away_score": 1,
              "winner": "Japan", "decided_by": "PEN", "penalties": [3, 4]},
         ]}))
-        # CSV empty → the scrape bridges, in both orientations, exact date.
+        # CSV empty → the scrape bridges, in both orientations, within ±1 day
+        # (the same UTC-skew tolerance load_results_with_live uses — a late
+        # pens feeder logged a day off must still resolve the next slot).
         monkeypatch.setattr(ko, "_real_result_lookup",
                             lambda: (lambda h, a, d: None))
         monkeypatch.setattr(ko, "_real_shootout_lookup",
@@ -1057,9 +1075,12 @@ class TestResultConditioning:
         rfn = ko._merged_result_lookup(sofa_path=store)
         assert rfn("Mexico", "South Africa", "2026-06-11") == (2, 1)
         assert rfn("South Africa", "Mexico", "2026-06-11") == (1, 2)
-        assert rfn("Mexico", "South Africa", "2026-06-12") is None
+        assert rfn("Mexico", "South Africa", "2026-06-12") == (2, 1)  # +1 day
+        assert rfn("Mexico", "South Africa", "2026-06-10") == (2, 1)  # -1 day
+        assert rfn("Mexico", "South Africa", "2026-06-14") is None  # out of window
         sfn = ko._merged_shootout_lookup(sofa_path=store)
         assert sfn("Spain", "Japan", "2026-07-05") == "Japan"  # PEN winner
+        assert sfn("Spain", "Japan", "2026-07-06") == "Japan"  # +1 day skew
         assert sfn("Mexico", "South Africa", "2026-06-11") is None  # FT: none
         # The canonical CSV always outranks the scrape.
         monkeypatch.setattr(ko, "_real_result_lookup",
@@ -1126,6 +1147,7 @@ class TestResultConditioning:
     ) -> None:
         from scripts.worldcup.generate_predictions import build_bracket
 
+        fixtures = _unresolve_knockouts(fixtures)
         engine, sim = TestRealArtifacts._stub_engine_and_stats(fixtures)
         resolved = [dict(f) for f in fixtures]
         m73 = next(f for f in resolved if int(f["match_number"]) == 73)

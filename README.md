@@ -1,238 +1,142 @@
-# Serie A Prediction Pipeline
+# Football Match-Prediction Pipeline
 
-A production-grade football betting intelligence system for Italian Serie A. Combines 21 seasons of historical data (7,829 matches), real-time odds tracking, 6-method ensemble predictions, and automated bankroll management.
+**A leakage-aware, walk-forward ML system that predicts football match outcomes (1X2) from ~1,000 engineered features, blends three gradient-boosting models with a draw-aware weight optimizer, and calibrates the output — then proves it beats the bookmaker baseline on held-out seasons it never trained on.**
 
-## Features
+The hard part of this domain is not training a classifier. It is **not lying to yourself**. Football outcomes are ~50% home / 27% draw / 23% away, the realistic accuracy ceiling on 1X2 is ~53–55% (Pinnacle's closing line, academic state-space SOTA), and almost every naive pipeline beats that number — by leaking future information, miscalibrating, or quietly feeding the market odds back in as a feature. This project is built end-to-end to make that impossible, and to report numbers that survive contact with reality.
 
-- **6-Method Ensemble**: Factor analysis, xG Poisson, ML classifier (XGBoost/LightGBM/CatBoost), player xG, deep learning, market-based
-- **484-Column Feature Table**: 36-step feature engineering pipeline covering form, xG trends, Elo ratings, referee bias, weather, player impact, tactical metrics, and more
-- **Real-Time Odds**: Multi-bookmaker tracking via The Odds API with sharp/soft divergence detection
-- **ML Pipeline**: Walk-forward cross-validation, Optuna hyperparameter tuning, isotonic calibration, weighted average ensemble with draw-aware optimization
-- **Extended Markets**: Over/Under, Handicap, Cards, BTTS, Corners, Double Chance, Team Totals, Exact Score, HT/FT
-- **Bankroll Management**: Kelly criterion staking, drawdown limits, streak adjustments, closing line value tracking
-- **Web Dashboard**: Flask app with match context strips, dual probability bars, player props, and value highlighting
+> **Live performance is read from model metadata, never from this file.**
+> Markdown goes stale within hours of a retrain; JSON written by the trainer does not.
+> ```bash
+> python3 scripts/diagnostics/print_model_status.py
+> ```
+> That command prints walk-forward accuracy, log-loss, ECE and the selected-feature count straight from the trainer's metadata — see [`MODEL_STATUS.md`](MODEL_STATUS.md) for how to read it. The honest ceiling on 1X2 is ~53–55%; anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
 
-## Quick Start
+---
 
-### Prerequisites
+## The problem, precisely
 
-- Python 3.11+
-- macOS / Linux (tested on Apple M2)
+Three failure modes destroy a sports-prediction model and none of them show up in a standard train/test split:
 
-### Installation
+1. **Temporal leakage.** Rolling form, Elo, and head-to-head features computed on a randomly shuffled split let the model see the future. Even an honest season split leaks across the train/test boundary because a 5-match rolling window straddles it.
+2. **The draw trap.** Draws are ~27% of outcomes but the hardest class to predict. A log-loss-greedy optimizer learns to *never predict a draw* (it's "safer"), tanking real-world usefulness while looking fine on aggregate loss.
+3. **Calibration collapse.** Gradient-boosted trees produce well-*ranked* but over-confident probabilities. If you bet (or just report confidence) off uncalibrated output, you're systematically wrong at the tails — and per-class calibration *before* blending silently destroys the draw probability mass.
 
-```bash
-cd seriea_pipeline
-pip install -e .
+Each of these is handled explicitly in code, not hand-waved.
 
-# Additional dependencies not in pyproject.toml:
-pip install catboost tensorflow flask python-dotenv selenium botasaurus
+---
+
+## Architecture
+
+```
+scrapers (FBref, Football-Data, Understat, Sofascore, Open-Meteo, Transfermarkt)
+        │   public HTML/CSV/JSON, with HTML-fallback breakers for banned APIs
+        ▼
+parser/                  raw HTML/JSON ──► canonical Parquet, cross-source match_id mapping
+        ▼
+features/  (~37 FeaturePlugin steps, ABC registry)  ──►  features_<league>.parquet  (~1,059 cols)
+        │   form · xG trends · Elo · H2H · referee · weather · squad value · market microstructure
+        ▼
+ml/
+  data.py           leakage-aware load: domain-imputation fit on TRAIN rows only, season-split CV
+  feature_selection recency-weighted walk-forward importance  ──► 126 features (odds excluded)
+  ensemble.py       XGBoost + LightGBM + CatBoost ─► scipy-optimized blend ─► single calibrator
+  calibration.py    isotonic vs temperature, auto-pick by ECE
+  correction_layer  static (logistic on OOF) + rolling (EMA) bias correction
+        ▼
+scripts/prediction · scripts/betting · web/  (Flask dashboard)   ── value-bet / Kelly signals
+        ▼
+scripts/worldcup/   independent Elo + Poisson-GLM model for the 2026 World Cup
 ```
 
-### Environment Setup
+**Data flow is one-directional and idempotent per stage:** each layer writes Parquet keyed by a deterministic `match_id`, so any stage can be recomputed without re-scraping. Coverage: 5 league configs, 21 seasons (2005-06 → 2025-26), per-league models (deliberately *not* one model across leagues — Serie A and the Premier League have different home-advantage and draw structure).
+
+---
+
+## Key engineering decisions & tradeoffs
+
+**1. Walk-forward CV with a purge gap — chosen over k-fold, accepting smaller training folds.**
+`ml/walk_forward.py` uses expanding-window season splits and **drops the last 2 matchweeks (~20 matches) from each training fold** before the test boundary. Reason: a 5-match rolling feature on the first test fixture would otherwise be partly computed from matches that are "in the future" relative to fold N but "in the past" relative to the rolling window. The purge gap is the cheapest correct fix; the cost is fewer training rows per fold, which is the right tradeoff when the alternative is silent leakage.
+
+**2. Blend RAW probabilities, then calibrate ONCE — not calibrate-then-blend.**
+The bug this avoids (documented in `ml/ensemble.py`): isotonic regression applied per-model *per-class* distorts the relative class proportions, and the draw mass is what gets crushed. So the ensemble optimizes blend weights on **raw** out-of-fold probabilities and fits a **single** `AutoCalibrator` on the blended output. This preserves each model's class discrimination and calibrates exactly once.
+
+**3. Draw-aware blend objective — not pure log-loss.**
+`_optimize_blend_weights` minimizes `(1 - 0.3)·log_loss − 0.3·draw_F1` via `scipy.optimize` with a **softmax parameterization** (weights are positive and sum to 1 by construction, no constrained optimizer needed). The 0.3 draw weight is justified directly from the data — draws are ~27% of outcomes, so the optimizer cannot dump all weight on the lowest-log-loss model (usually CatBoost) without paying for the draws it then misses.
+
+**4. Odds are excluded from the feature set on purpose.**
+`feature_selection.exclude_odds` strips every market-derived column before training the production model. Market odds are a near-perfect predictor of the outcome — including them produces a model that *looks* brilliant in backtest and adds **zero independent edge** in production, because at bet time you'd just be predicting the market with the market. The model has to earn its signal from football, not from the bookmaker. Odds re-enter only downstream, as the value-comparison baseline.
+
+**5. Leakage-free fold models for backtesting — a separate, slower artifact.**
+`build_fold_models()` trains and persists one CatBoost per walk-forward fold, keyed by its test season. The backtester loads *the model that never saw that season*. This duplicates training work but is the only honest way to backtest a model on data it didn't train on, and the cost is paid offline, once.
+
+---
+
+## Notable implementation details
+
+- **Domain-aware, leakage-aware imputation** (`ml/data.py:_smart_impute`). NaNs are filled by *feature category*, not a global mean: H2H gets uninformative priors (`1/3` win rate, `0` counts), Elo forward-fills within team then falls back to the 1500 league mean, rolling stats get `0.0` (season start = no history), referee/market features get per-season medians. Critically, **all medians are computed on the training rows only** via a `fit_mask` — imputing with test-set statistics is itself a leak, and this is the line most pipelines get wrong.
+
+- **Two-stage bias correction** (`ml/correction_layer.py`). A `StaticCorrector` (logistic regression on 6,500+ OOF predictions + match context) learns *persistent* biases like "underconfident above 60%"; a `RollingCorrector` (EMA of recent errors bucketed by predicted-class × confidence band) adapts week-to-week after settlement. The static layer is trained on the *pre-calibration* OOF probabilities to avoid double-calibrating.
+
+- **Auto-selected calibration** (`ml/calibration.py`). Isotonic regression and single-parameter temperature scaling are both fit, and whichever yields lower ECE on a **chronological** held-out split wins — with a `MIN_CALIBRATION_SAMPLES = 200` guard that falls back to identity rather than calibrate on noise.
+
+- **HTML-fallback scraping with circuit breakers.** When Sofascore's API returns Cloudflare 403s, the scraper parses the `__NEXT_DATA__` JSON embedded in the public HTML, with measured per-page-tier freshness rules (hub pages are fresh ISR renders; match pages are data-free shells) and sentinel checks (`Inter` must appear in Serie A standings, `Arsenal` in the EPL) that trip a breaker on schema drift instead of silently writing garbage.
+
+- **Plugin feature pipeline.** `features/build.py` orchestrates ~37 feature-engineering steps as `FeaturePlugin` (ABC) subclasses over a shared `FeatureState`, producing a ~1,059-column table. The provenance of every column → step is documented in `DATA_CATALOG.md`.
+
+- **World Cup model with real holdout discipline** (`scripts/worldcup/`). An independent Elo + Poisson-GLM model whose ratings are **leak-free by construction** (each match's expectancy uses only pre-match ratings). The variant was selected on a DEV set (WC 2018 + Euro 2020) while WC 2022 / Euro 2024 / Copa 2024 were kept **untouched as a FINAL holdout** — and it ships only because the backtest shows positive Brier skill over the base rate. Goal-quantity markets are explicitly marked "display-grade" until they clear a skill threshold; they are not dressed up as predictive.
+
+---
+
+## Tech stack
+
+| Layer | Tools |
+|---|---|
+| Language | Python 3.11+ (strict `mypy`, `ruff` with bandit/bugbear rules) |
+| Data | pandas, pyarrow (Parquet), numpy, scipy |
+| ML | scikit-learn, xgboost, lightgbm, catboost, optuna |
+| Calibration / opt | isotonic + temperature scaling, `scipy.optimize` (Nelder-Mead, softmax-parameterized) |
+| Scraping | requests, beautifulsoup4, lxml; optional selenium/botasaurus |
+| Serving | Flask dashboard; Click CLI |
+| Tests | pytest — **508 test functions across 26 files** |
+
+---
+
+## Running it
 
 ```bash
-cp .env.example .env
-# Edit .env with your API keys:
-#   ODDS_API_KEY       - The Odds API (required for live odds)
-#   OPENAI_API_KEY     - GPT-4o for AI reasoning (optional)
-#   PERPLEXITY_API_KEY - Sentiment analysis (optional)
-#   APIFOOTBALL_KEY    - Confirmed lineups (optional)
-#   FOOTBALLDATA_KEY   - Squad rosters fallback (optional)
-```
+pip install -e .                 # core
+pip install -e ".[web]"          # + Flask dashboard
+cp .env.example .env             # only the API keys for sources you use are required
 
-### Run the Full Pipeline
+# Full prediction pipeline (scrape/odds/predict/dashboard)
+python3 scripts/pipeline/run_full_pipeline.py
+python3 scripts/pipeline/run_full_pipeline.py --quick   # cached data, no API calls
 
-```bash
-# Full 30-step pipeline (fetches odds, predictions, betting, dashboard)
-python3 scripts/run_full_pipeline.py
-
-# Quick mode (use cached data, skip API calls)
-python3 scripts/run_full_pipeline.py --quick
-
-# Pre-kickoff mode (confirmed lineups, ~25s)
-python3 scripts/run_full_pipeline.py --pre-kickoff
-
-# Snapshot only (odds + bookmaker data, ~6 API credits)
-python3 scripts/run_full_pipeline.py --snapshot-only
-```
-
-### Web Dashboard
-
-```bash
-python3 web/app.py
-# Open http://localhost:5001
-```
-
-## CLI Reference
-
-The `seriea` CLI provides granular control over individual pipeline stages:
-
-```bash
-# Data collection
-seriea scrape-fixtures --season 2025-2026
-seriea scrape-matches --season 2025-2026 --limit 10
-seriea fetch-odds --season 2025-2026
-seriea fetch-weather
-seriea fetch-transfers --season 2025-2026
-seriea fetch-referees
-
-# Processing
-seriea parse --season 2025-2026
+# ML lifecycle via the `seriea` CLI (entry point cli:main)
 seriea features --season 2025-2026
-seriea run-all --season 2025-2026
+seriea ml train                  # universal models, walk-forward CV
+seriea ml optimize --trials 50   # feature selection + Optuna tuning + ensemble
+seriea ml backtest               # leakage-free, per-fold models
 
-# ML training
-seriea ml train                   # Universal models (walk-forward CV)
-seriea ml train-rich              # Rich models (single season, all features)
-seriea ml optimize --trials 50    # Full pipeline: feature selection + tuning + ensemble
-seriea ml evaluate                # Evaluate on last season
-seriea ml importance --top-n 30   # Feature importance ranking
-seriea ml backtest                # Walk-forward backtest
-seriea ml ablation                # Compare with/without odds features
+# Honest model status (reads JSON metadata, not docs)
+python3 scripts/diagnostics/print_model_status.py
 
-# Status
-seriea status                     # Pipeline status overview
+# Web dashboard
+python3 web/app.py               # http://localhost:5001
+
+# Quality gates
+python3 -m pytest tests/
+ruff check . && mypy .
 ```
 
-## Project Structure
+---
 
-```
-seriea_pipeline/
-├── cli.py                          # Click CLI entry point
-├── config/settings.py              # Global configuration
-├── .env.example                    # API keys template
-│
-├── scraper/                        # Data collection
-│   ├── fixtures.py                 # FBref fixture lists
-│   ├── match_reports.py            # FBref match report HTML
-│   ├── odds.py                     # Football-data.co.uk odds
-│   ├── weather.py                  # Open-Meteo weather API
-│   ├── referee.py                  # Worldfootball.net referees
-│   ├── transfermarkt.py            # Market values & transfers
-│   ├── lineup_fetcher.py           # API-Football lineups
-│   └── historical.py              # Football-data.co.uk backfill
-│
-├── parser/                         # HTML -> structured data
-│   └── match_page.py              # FBref match page parser
-│
-├── storage/                        # Data persistence
-│   ├── paths.py                    # Path configuration
-│   └── structured.py              # Parquet I/O
-│
-├── features/                       # Feature engineering (36 steps)
-│   ├── build.py                    # Orchestrator
-│   ├── base.py, rolling.py         # Core team stats
-│   ├── h2h.py, strength.py         # Matchup features
-│   ├── referee.py, weather.py      # Context features
-│   ├── injury_impact.py            # Injury analysis
-│   ├── pressing.py                 # PPDA from Understat
-│   ├── bankroll_manager.py         # Kelly criterion engine
-│   ├── market_intelligence.py      # Sharp/soft aggregation
-│   └── bookmaker_analysis.py       # Bookmaker classification
-│
-├── ml/                             # Machine learning pipeline
-│   ├── config.py                   # Model/tuning/feature configs
-│   ├── data.py                     # DataLoader + time-series splits
-│   ├── models.py                   # XGBoost/LightGBM/CatBoost wrappers
-│   ├── training.py                 # train_universal, train_rich, train_optimized
-│   ├── ensemble.py                 # WeightedAverageEnsemble (draw-aware)
-│   ├── tuning.py                   # Optuna hyperparameter search
-│   ├── calibration.py              # Isotonic regression calibrator
-│   ├── evaluation.py               # RPS, ECE, Kelly, bootstrap CI
-│   ├── feature_selection.py        # Importance + correlation pruning
-│   ├── comparison.py               # Cross-run model comparison
-│   └── persistence.py              # Model serialization
-│
-├── scripts/                        # Pipeline runners & models
-│   ├── run_full_pipeline.py        # 30-step master pipeline
-│   ├── run_betting_system.py       # Betting-focused runner
-│   ├── ensemble_prediction_engine.py  # 6-method ensemble (~1700 lines)
-│   ├── odds_fetcher.py             # Live odds via The Odds API
-│   ├── odds_tracker.py             # Line movement tracking
-│   ├── betting_engine.py           # Value bet identification
-│   ├── advanced_betting_engine.py  # Multi-market engine
-│   ├── over_under_model.py         # O/U predictions
-│   ├── handicap_model.py           # Handicap predictions
-│   ├── cards_model.py              # Cards predictions
-│   ├── btts_corners_model.py       # BTTS & Corners
-│   ├── extended_markets.py         # Exact score, HT/FT, etc.
-│   ├── intelligence_integrator.py  # Post-ensemble adjustments
-│   ├── sentiment_analyzer.py       # Perplexity AI sentiment
-│   ├── ai_reasoning.py             # GPT-4o bet narratives
-│   ├── results_fetcher.py          # Auto-settle via Odds API
-│   ├── clv_tracker.py              # Closing line value
-│   ├── performance_dashboard.py    # Accuracy & P/L tracking
-│   └── standings_generator.py      # League table generation
-│
-├── web/                            # Flask web application
-│   ├── app.py                      # Routes and data loading
-│   ├── templates/                  # Jinja2 templates
-│   │   ├── dashboard.html          # Main dashboard
-│   │   └── betting.html            # Betting intelligence page
-│   └── static/                     # CSS/JS assets
-│
-├── data/                           # All data artifacts
-│   ├── raw/                        # Scraped HTML & fixtures
-│   ├── parsed/                     # Parquet tables
-│   ├── features/                   # features.parquet (7,829 x 484)
-│   ├── upcoming/                   # Predictions & odds
-│   ├── models/                     # Trained model artifacts
-│   ├── bankroll/                   # Bankroll state
-│   └── betting/                    # Bet history & slips
-│
-├── docs/                           # Documentation
-├── tests/                          # Test suite
-└── pyproject.toml                  # Package definition
-```
+## Status
 
-## Pipeline Architecture
+Active personal project, run live on a schedule (15 launchd jobs + the Flask dashboard). **Honest about its ceiling:** the production model sits below the ~53–55% market SOTA on walk-forward 1X2 accuracy — exactly where an honest, odds-excluded model should be — and the repo is wired to flag any number that claims otherwise. The 1X2 "who-wins" markets are the only ones treated as bet-grade; goal-quantity and corners/cards markets were backtested, found to add no skill over the base rate, and **removed from every consumer** rather than left in to inflate the feature list.
 
-The system runs in two modes:
+Two further sources of truth, both generated mechanically (not hand-written narrative):
+- [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) — per-file map (purpose, imports, liveness, quality grade) for the whole codebase.
+- [`DATA_CATALOG.md`](DATA_CATALOG.md) — authoritative per-file / per-column data reference, including NaN rates and fallback matrices.
 
-**Historical Training** (offline):
-```
-FBref HTML -> Parser -> Parquet Tables -> Feature Build (36 steps) -> ML Training -> Models
-```
-
-**Prediction Pipeline** (30 steps, live):
-```
-Odds API -> Match Sync -> Bookmaker Analysis -> Market Intelligence
-    -> Ensemble Predictions (6 methods) -> Intelligence Adjustments
-    -> Betting Markets (O/U, Handicap, Cards, BTTS)
-    -> Value Detection -> Bankroll Sizing -> Dashboard
-```
-
-## Ensemble Weights
-
-| Method | Weight | Description |
-|--------|--------|-------------|
-| Factor Analysis | 0.27 | 21-season validated factors (form, venue, Elo) |
-| xG Poisson | 0.27 | Expected goals with Poisson distribution |
-| ML Classifier | 0.14 | XGBoost/LightGBM/CatBoost ensemble |
-| Player xG | 0.05 | Per-player expected goals aggregation |
-| Deep Learning | 0.07 | Neural network classifier |
-| Market-Based | 0.20 | Sharp bookmaker consensus odds |
-
-## API Usage
-
-| API | Credits/Month | Per Pipeline Run |
-|-----|--------------|-----------------|
-| The Odds API | 100K ($50 plan) | ~6 credits |
-| Odds API /scores | (included) | ~2 credits |
-| API-Football | 100/day (free) | ~1 call |
-| Open-Meteo | Unlimited (free) | ~10 calls |
-| Perplexity | Per-key pricing | ~10 calls |
-| OpenAI | Per-key pricing | ~10 calls |
-
-## Documentation
-
-- [Architecture Guide](docs/ARCHITECTURE.md) - System design, data flow, ensemble internals
-- [User Guide](docs/USER_GUIDE.md) - CLI reference, configuration, common workflows
-- [Data Dictionary](docs/DATA_DICTIONARY.md) - Feature table columns, data sources
-- [Development Guide](docs/DEVELOPMENT.md) - Contributing, testing, adding features
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common errors and fixes
-
-## License
-
-Private project. Not for redistribution.
+Private — not for redistribution.

@@ -164,6 +164,7 @@ def grade_match_markets(
     away_goals: int,
     ht: tuple[int, int] | None = None,
     market_odds: dict[str, Any] | None = None,
+    outcome_override: str | None = None,
 ) -> list[dict[str, Any]]:
     """Grade the full market menu for one played match.
 
@@ -174,12 +175,18 @@ def grade_match_markets(
         ``probabilities`` dict (home/draw/away). This is what we froze BEFORE
         kickoff, so the grade is honest.
     home_goals, away_goals
-        Final (90') score — already reconstructed honestly by the caller.
+        In-play (90'+ET) score. Goal-quantity markets (O/U, BTTS, correct
+        score) grade against this — penalties are not goals.
     ht
         Half-time score if known (from complete scorer coverage), else None.
     market_odds
         Optional ``{"odds": {...}, "implied": {...}}`` Sofascore-proxy block for
         this match (1X2 prices) so edge stakes are struck at the real price.
+    outcome_override
+        For a knockout decided on penalties: the "who advanced" outcome
+        (``home``/``away``) that the who-wins markets (1X2, double chance) grade
+        against, since the in-play score is level. ``None`` for matches decided
+        in play — the score determines the outcome as usual.
 
     Returns a list of graded-market rows (see ``_market_row``), display order
     roughly strongest→weakest family.
@@ -205,7 +212,11 @@ def grade_match_markets(
     hg, ag = int(home_goals), int(away_goals)
     total = hg + ag
     margin = hg - ag
-    outcome = "home" if hg > ag else "draw" if hg == ag else "away"
+    # Goal markets use the in-play score; who-wins markets (1X2, double chance)
+    # use the advancer when a knockout was decided on penalties.
+    outcome = outcome_override or (
+        "home" if hg > ag else "draw" if hg == ag else "away"
+    )
     odds_blk = (market_odds or {}).get("odds", {}) if isinstance(market_odds, dict) else {}
 
     rows: list[dict[str, Any]] = []
@@ -221,11 +232,18 @@ def grade_match_markets(
     mk_1x2 = None
     if isinstance(odds_blk, dict):
         mk_1x2 = odds_blk.get({"home": "home", "draw": "draw", "away": "away"}[pick_1x2])
+    # On a penalty tie the in-play score is level but the outcome is the advancer;
+    # annotate so "Argentina (1-1)" doesn't read as a contradiction.
+    _res_lbl = (
+        f"{label_map[outcome]} ({hg}-{ag}, won on pens)"
+        if outcome_override and hg == ag
+        else f"{label_map[outcome]} ({hg}-{ag})"
+    )
     rows.append(_market_row(
         "1x2", "Match result (1X2)", str(label_map[pick_1x2]),
         p1x2[pick_1x2], round(1 / p1x2[pick_1x2], 2) if p1x2[pick_1x2] > 0 else 99,
         pick_1x2 == outcome,
-        f"{label_map[outcome]} ({hg}-{ag})",
+        _res_lbl,
         None, "exact result — hit or miss",
         mk_1x2,
     ))

@@ -1309,6 +1309,7 @@ def api_worldcup():
             "coverage_note": players.get("coverage_note", ""),
         } if isinstance(players, dict) else {},
         "golden_boot": players.get("golden_boot", []) if isinstance(players, dict) else [],
+        "actual_scorers": players.get("actual_scorers", []) if isinstance(players, dict) else [],
         "best_combos": _wc_best_combos(preds, market),
         "fun_combos": _wc_fun_combos(preds),
         "projections": projections,
@@ -1350,10 +1351,10 @@ def api_worldcup_match_grades():
     from scripts.worldcup.engine import canon_team
     from scripts.worldcup.grading import (
         GOALSCORERS_CSV,
-        SHOOTOUTS_CSV,
         _find_result,
-        _ninety_minute_score,
+        _load_advance_winners,
         reconstruct_halftime,
+        resolve_knockout,
     )
     from scripts.worldcup.market_grading import grade_match_markets
 
@@ -1383,7 +1384,7 @@ def api_worldcup_match_grades():
 
     df = _wc_load_results()  # CSV + live Sofascore overlay so the drill-down sees same-night results
     scorers = pd.read_csv(GOALSCORERS_CSV) if GOALSCORERS_CSV.exists() else pd.DataFrame()
-    shootouts = pd.read_csv(SHOOTOUTS_CSV) if SHOOTOUTS_CSV.exists() else pd.DataFrame()
+    advance_winners = _load_advance_winners()
 
     out: dict[str, dict] = {}
     for key, snap in archive.items():
@@ -1398,21 +1399,27 @@ def api_worldcup_match_grades():
         hs, as_, result_date = res
         stage = snap.get("stage", "group")
         ht = None
+        outcome_override = None
+        score_str = f"{hs}-{as_}"
         if stage != "group":
-            r90 = _ninety_minute_score(
-                scorers, shootouts, canon_team(str(home)), canon_team(str(away)),
-                result_date, (hs, as_),
-            )
-            if r90 is None:
-                continue  # can't grade a knockout's 90' honestly — skip
-            hs, as_ = r90
+            # KNOCKOUT: grade the who-wins markets on who ADVANCED (matches the
+            # track record via the shared resolver), goal markets on the in-play
+            # score. Penalty ties keep their level score + an advancer override.
+            resolved = resolve_knockout(str(home), str(away), hs, as_, advance_winners)
+            if resolved is None:
+                continue  # penalty winner unknown — can't grade a knockout honestly
+            outcome, score_str = resolved
+            if hs == as_:  # decided on penalties — override the who-wins outcome
+                outcome_override = outcome
         else:
             ht = reconstruct_halftime(
                 scorers, canon_team(str(home)), canon_team(str(away)),
                 result_date, (hs, as_),
             )
         mo = market.get(str(snap.get("match_number"))) if isinstance(market, dict) else None
-        graded = grade_match_markets(snap, hs, as_, ht=ht, market_odds=mo)
+        graded = grade_match_markets(
+            snap, hs, as_, ht=ht, market_odds=mo, outcome_override=outcome_override
+        )
         if not graded:
             continue
         n_hit = sum(1 for g in graded if g["hit"] is True)
@@ -1423,7 +1430,7 @@ def api_worldcup_match_grades():
             "away_team": away,
             "date": date,
             "stage": stage,
-            "score": f"{hs}-{as_}",
+            "score": score_str,
             "ht_score": f"{ht[0]}-{ht[1]}" if ht else None,
             "match_number": snap.get("match_number"),
             "n_hit": n_hit,

@@ -56,6 +56,12 @@ SerieAI.Advisor = (() => {
     return text.replace(/\n/g, '<br>');
   }
 
+  function _escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
   function _createMessageEl(role, content) {
     const wrap = document.createElement('div');
     wrap.className = 'advisor-msg advisor-msg--' + role;
@@ -220,6 +226,21 @@ SerieAI.Advisor = (() => {
 
           } else if (data.type === 'tool_use') {
             _showToolIndicator(data.tool);
+
+          } else if (data.type === 'data_note') {
+            // Post-generation verification flag (not a gate — answer already shown).
+            // Render a distinct note block under the answer listing what the checks caught.
+            if (Array.isArray(data.notes) && data.notes.length && assistantEl) {
+              const noteEl = document.createElement('div');
+              noteEl.className = 'advisor-data-note';
+              const items = data.notes
+                .map((n) => `<li>${_escapeHtml(n)}</li>`)
+                .join('');
+              noteEl.innerHTML =
+                `<div class="advisor-data-note-head">Data check</div><ul>${items}</ul>`;
+              assistantEl.appendChild(noteEl);
+              _scrollToBottom();
+            }
 
           } else if (data.type === 'error') {
             _removeTypingIndicator();
