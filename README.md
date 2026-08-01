@@ -9,7 +9,7 @@ The hard part of this domain is not training a classifier. It is **not lying to 
 > ```bash
 > python3 scripts/diagnostics/print_model_status.py
 > ```
-> At time of writing: **walk-forward 1X2 accuracy 51.4% (last-3 seasons), log-loss 1.004, ECE 0.043, 126 selected features.** Those numbers sit *inside* the honest ceiling — see [`MODEL_STATUS.md`](MODEL_STATUS.md). Anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
+> That command prints walk-forward accuracy, log-loss, ECE and the selected-feature count straight from the trainer's metadata — see [`MODEL_STATUS.md`](MODEL_STATUS.md) for how to read it. The honest ceiling on 1X2 is ~53–55%; anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
 
 ---
 
@@ -133,7 +133,7 @@ ruff check . && mypy .
 
 ## Status
 
-Active personal project, run live on a schedule (15 launchd jobs + the Flask dashboard). **Honest about its ceiling:** the production model sits at ~51% walk-forward 1X2 accuracy — below the ~53–55% market SOTA, exactly where an honest, odds-excluded model should be, and the repo is wired to flag any number that claims otherwise. The 1X2 "who-wins" markets are the only ones treated as bet-grade; goal-quantity and corners/cards markets were backtested, found to add no skill over the base rate, and **removed from every consumer** rather than left in to inflate the feature list.
+Active personal project, run live on a schedule (15 launchd jobs + the Flask dashboard). **Honest about its ceiling:** the production model sits below the ~53–55% market SOTA on walk-forward 1X2 accuracy — exactly where an honest, odds-excluded model should be — and the repo is wired to flag any number that claims otherwise. The 1X2 "who-wins" markets are the only ones treated as bet-grade; goal-quantity and corners/cards markets were backtested, found to add no skill over the base rate, and **removed from every consumer** rather than left in to inflate the feature list.
 
 Two further sources of truth, both generated mechanically (not hand-written narrative):
 - [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) — per-file map (purpose, imports, liveness, quality grade) for the whole codebase.
