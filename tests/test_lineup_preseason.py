@@ -25,6 +25,16 @@ from scripts.prediction import lineup_predictor as lp
 TEAM = "Juventus"
 
 
+#: `_stats()` models LAST season's completed table and `_signal()` the pre-season
+#: that follows it -- the matchweek-1 regime.  Both fields below were originally
+#: absent, leaving the regime implicit; the real producers always set them
+#: (`_load_current_season_stats` always yields a `season` column,
+#: `load_preseason_signal` always sets `"season"` on a non-empty result), and the
+#: regime now decides whether manager inertia applies, so it must be explicit.
+LAST_SEASON = "2025-2026"
+THIS_SEASON = "2026-2027"
+
+
 def _stats(n_matches: int = 10, players: int = 14) -> pd.DataFrame:
     """A believable last-season table: 11 regulars plus rotation."""
     rows = []
@@ -42,6 +52,7 @@ def _stats(n_matches: int = 10, players: int = 14) -> pd.DataFrame:
                 "position": "M",
                 "shirt_number": p + 1,
                 "round": m + 1,
+                "season": LAST_SEASON,
             })
     # A rotation player with only 2 league appearances. The Bayesian prior is
     # deliberately weak against a 10-appearance regular (~17% weight) and such a
@@ -53,12 +64,13 @@ def _stats(n_matches: int = 10, players: int = 14) -> pd.DataFrame:
             "player_id": 520, "player_name": "Rotation Guy",
             "is_starter": True, "minutes": 90, "rating": 6.8,
             "position": "M", "shirt_number": 20, "round": m + 1,
+            "season": LAST_SEASON,
         })
     return pd.DataFrame(rows).sort_values("date")
 
 
-def _signal(players: dict, club_friendlies: int) -> dict:
-    return {"players": players, "club_friendlies": club_friendlies}
+def _signal(players: dict, club_friendlies: int, season: str = THIS_SEASON) -> dict:
+    return {"players": players, "club_friendlies": club_friendlies, "season": season}
 
 
 def _entry(starts, apps, name="New Guy", pos="F", shirt=99):
@@ -139,8 +151,10 @@ def test_a_last_season_regular_absent_from_preseason_is_downgraded():
     present = {500 + p: _entry(2, 3, name=f"Player {p}") for p in range(1, 11)}
     sig = _signal(present, club_friendlies=4)   # Player 0 is missing entirely
 
-    before = lp.get_starter_frequency(df, TEAM, n_matches=10)
-    after = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig)
+    before = lp.get_starter_frequency(df, TEAM, n_matches=10,
+                                      target_season=THIS_SEASON)
+    after = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig,
+                                     target_season=THIS_SEASON)
 
     gone = _by_name(after, "Player 0")
     was = _by_name(before, "Player 0")
@@ -156,8 +170,10 @@ def test_absence_carries_no_information_when_the_club_barely_played():
     df = _stats()
     sig = _signal({500 + p: _entry(1, 1, name=f"Player {p}") for p in range(1, 11)},
                   club_friendlies=lp.PRESEASON_ABSENT_MIN_MATCHES - 1)
-    before = lp.get_starter_frequency(df, TEAM, n_matches=10)
-    after = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig)
+    before = lp.get_starter_frequency(df, TEAM, n_matches=10,
+                                      target_season=THIS_SEASON)
+    after = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig,
+                                     target_season=THIS_SEASON)
     assert _by_name(after, "Player 0")["start_pct"] == _by_name(before, "Player 0")["start_pct"]
 
 
@@ -187,9 +203,10 @@ def test_one_unused_appearance_does_not_collapse_a_players_prior():
     one = _signal({520: _entry(0, 1, name="Rotation Guy")}, club_friendlies=1)
     five = _signal({520: _entry(0, 5, name="Rotation Guy")}, club_friendlies=5)
 
-    base = _by_name(lp.get_starter_frequency(df, TEAM, n_matches=10), "Rotation Guy")["start_pct"]
-    thin = _by_name(lp.get_starter_frequency(df, TEAM, 10, preseason=one), "Rotation Guy")["start_pct"]
-    thick = _by_name(lp.get_starter_frequency(df, TEAM, 10, preseason=five), "Rotation Guy")["start_pct"]
+    _t = dict(target_season=THIS_SEASON)
+    base = _by_name(lp.get_starter_frequency(df, TEAM, n_matches=10, **_t), "Rotation Guy")["start_pct"]
+    thin = _by_name(lp.get_starter_frequency(df, TEAM, 10, preseason=one, **_t), "Rotation Guy")["start_pct"]
+    thick = _by_name(lp.get_starter_frequency(df, TEAM, 10, preseason=five, **_t), "Rotation Guy")["start_pct"]
 
     assert thick < thin < base, "more friendly evidence must move the prior further"
 
@@ -289,8 +306,14 @@ def test_the_absence_penalty_never_bites_harder_in_season_than_in_preseason():
            "season": "2026-2027"}
 
     def worst(df):
-        b = lp.get_starter_frequency(df, TEAM, n_matches=10)
-        w = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig)
+        # Both arms declare the SAME regime, so the delta isolates the absence
+        # penalty. Without this the 2025-26 arm compared inertia-alive against
+        # inertia-dropped, inflating `pre` in the very direction that makes the
+        # assertion pass -- a green test for the wrong reason.
+        b = lp.get_starter_frequency(df, TEAM, n_matches=10,
+                                     target_season="2026-2027")
+        w = lp.get_starter_frequency(df, TEAM, n_matches=10, preseason=sig,
+                                     target_season="2026-2027")
         bd = {p["player_id"]: p["start_pct"] for p in b}
         return min([p["start_pct"] - bd[p["player_id"]]
                     for p in w if p["player_id"] in bd], default=0.0)
@@ -397,3 +420,84 @@ def test_both_league_files_are_declared_once(tmp_path, monkeypatch):
     """Guards the constant itself: every consumer must widen together."""
     assert lp._PLAYER_STATS_FILES == ("player_match_stats.parquet",
                                       "player_match_stats_premier_league.parquet")
+
+
+# --------------------------------------------------------------------------
+# 9. Manager inertia is REGIME-DEPENDENT (the matchweek-1 regression)
+#
+# `--ablate` over 2024-25 + 2025-26 measured the last-match bonus as BOTH the
+# model's most valuable in-season component AND the only component whose removal
+# helps at MW1:
+#
+#     component disabled      MW1     MW3     MW4     MW5
+#     nothing (baseline)     48.3%   81.5%   76.6%   77.0%
+#     no last-match bonus    49.5%   78.4%   71.2%   70.7%
+#     -- naive floor --      48.6%   78.3%   71.4%   72.8%
+#
+# So it must be scaled by LAST_MATCH_STALE_SCALE when, and ONLY when, the table
+# predates the summer window.
+# --------------------------------------------------------------------------
+
+def _season_rows(season, rounds, n=14, starters=11, team="T"):
+    return [{"team": team, "match_id": f"{season}-{r}",
+             "date": f"{season[:4]}-09-{r:02d}", "player_id": i,
+             "player_name": f"P{i}", "is_starter": i < starters,
+             "minutes": 90 if i < starters else 0, "rating": 6.9,
+             "position": "M", "shirt_number": i + 1, "round": r, "season": season}
+            for r in rounds for i in range(n)]
+
+
+def _inertia_alive(df, **kw):
+    """The +25 bonus pushes a settled regular past 95; without it he sits ~92."""
+    freq = lp.get_starter_frequency(df, "T", 10, **kw)
+    return max(p["start_pct"] for p in freq) > 95
+
+
+def test_inertia_survives_when_the_table_is_the_CURRENT_season():
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    assert _inertia_alive(df, target_season="2025-2026")
+
+
+def test_inertia_is_dropped_when_the_table_is_a_PREVIOUS_season():
+    """At MW1 'the most recent match' is the final round of a finished season --
+    a dead rubber, played before a transfer window."""
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    assert not _inertia_alive(df, target_season="2026-2027")
+
+
+def test_no_preseason_and_no_target_KEEPS_inertia_alive():
+    """THE fail-safe, and the reason the flag does not default to True.
+
+    `load_preseason_signal` returns {} for any club with no friendly rows -- and
+    for EVERY club if the friendlies parquet is missing. A default of "predates"
+    would then disable inertia league-wide and silently collapse MW3-5 to the
+    naive floor (-3 to -6pp measured). Absence of evidence must not be read as
+    evidence the table is stale.
+    """
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    assert _inertia_alive(df)
+    assert _inertia_alive(df, preseason={})
+
+
+def test_preseason_alone_still_detects_the_regime():
+    """Production passes `preseason` but not `target_season`, so the fallback
+    path is the one that actually runs live."""
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    same = {"season": "2025-2026", "players": {}, "club_friendlies": 0}
+    nxt = {"season": "2026-2027", "players": {}, "club_friendlies": 0}
+    assert _inertia_alive(df, preseason=same)
+    assert not _inertia_alive(df, preseason=nxt)
+
+
+def test_target_season_overrides_the_preseason_fallback():
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    stale = {"season": "2025-2026", "players": {}, "club_friendlies": 0}
+    assert not _inertia_alive(df, preseason=stale, target_season="2026-2027")
+
+
+def test_stale_scale_of_one_restores_the_old_behaviour(monkeypatch):
+    """The constant is a dial, not a switch: 1.0 must reproduce pre-fix scoring
+    exactly, which is what made the fix verifiable against the old numbers."""
+    df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
+    monkeypatch.setattr(lp, "LAST_MATCH_STALE_SCALE", 1.0)
+    assert _inertia_alive(df, target_season="2026-2027")

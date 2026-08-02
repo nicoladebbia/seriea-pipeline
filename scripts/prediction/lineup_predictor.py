@@ -556,11 +556,56 @@ def _preseason_entries(preseason: dict | None, known_ids: set, total_matches: in
 PRESEASON_ABSENT_PENALTY = -15.0  # league regular who featured in zero friendlies
 PRESEASON_ABSENT_MIN_MATCHES = 3  # below this, absence carries no information
 
+# --- XI scoring components -------------------------------------------------
+# Promoted from function-locals 2026-08-01 so they can be ABLATED by the
+# backtest.  Values are unchanged; this refactor is behaviour-identical and was
+# verified by re-running the replay and getting byte-identical hit rates.
+#
+# ⚠️ All of these were tuned on MID-SEASON matchweeks, where "the most recent
+# match" is last week.  At matchweek 1 the most recent match is the FINAL match
+# of LAST season -- routinely a dead rubber with a rotated XI -- and the replay
+# measures the model scoring 47.6% there against 48.8% for raw start-counts.
+# See scripts/analysis/backtest_preseason_signal.py --ablate.
+RECENCY_DECAY = 0.85          # exponential weight per match of age
+SHRINK_PRIOR_STRENGTH = 2     # virtual matches at SHRINK_PRIOR_RATE
+SHRINK_PRIOR_RATE = 50.0      # uninformed prior when there is no friendly signal
+LAST_MATCH_STARTED_BONUS = 25.0    # started the most recent match
+LAST_MATCH_BENCHED_PENALTY = -5.0  # in the squad, not selected
+LAST_MATCH_ABSENT_PENALTY = -10.0  # not in the squad at all
+
+# Manager inertia is REGIME-DEPENDENT, and this is the fix for the matchweek-1
+# regression. Measured by --ablate over 2024-25 + 2025-26:
+#
+#   component disabled        MW1     MW3     MW4     MW5
+#   nothing (baseline)       48.3%   81.5%   76.6%   77.0%
+#   no last-match bonus      49.5%   78.4%   71.2%   70.7%
+#   -- naive floor --        48.6%   78.3%   71.4%   72.8%
+#
+# The bonus is simultaneously the model's MOST valuable component in-season
+# (removing it collapses MW3-5 to the naive floor) and the ONLY component whose
+# removal helps at MW1 -- where it drags the model BELOW raw start-counts.
+#
+# Why: "he started the most recent match" is strong evidence when that match was
+# last week. At matchweek 1 the most recent match is the final round of a
+# FINISHED season -- routinely a dead rubber with a rotated XI, played before a
+# transfer window, by players who may no longer be at the club.
+#
+# So scale the bonus rather than delete it, and only when the table predates the
+# window. 0.0 = ignore inertia entirely at MW1.
+LAST_MATCH_STALE_SCALE = 0.0
+
 
 def get_starter_frequency(stats_df: pd.DataFrame, team: str,
                           n_matches: int = 10,
-                          preseason: dict | None = None) -> list:
+                          preseason: dict | None = None,
+                          target_season: str | None = None) -> list:
     """Get starter frequency for each player in the team.
+
+    target_season: the season being PREDICTED.  Supplying it is what lets the
+        manager-inertia bonus know whether "the most recent match" was last week
+        or the final round of a season that has since ended.  See
+        LAST_MATCH_STALE_SCALE.  When None, falls back to the pre-season-based
+        detection, which only works when `preseason` is also supplied.
 
     Uses recency-weighted start percentage: more recent matches count more.
     Decay factor 0.85 means the most recent match has ~5x the weight of
@@ -616,22 +661,39 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
     # friendlies' own season. If it has, the season has started and every league
     # match played is direct evidence that supersedes a July friendly.
     _fade = 1.0
-    _table_predates_window = True
-    if preseason and "season" in stats_df.columns and len(stats_df):
-        if str(stats_df["season"].iloc[0]) == str(preseason.get("season")):
-            _fade = max(0.0, 1.0 - total_matches / PRESEASON_FADE_MATCHES)
+    # FAIL-SAFE DEFAULT. Assume the table is CURRENT unless we can POSITIVELY
+    # establish it is not. This flag now gates manager inertia, which the
+    # ablation showed is the model's most valuable in-season component -- so
+    # defaulting to "predates" would disable it for every club with no friendly
+    # data, and for the ENTIRE league if the friendlies parquet ever goes
+    # missing, silently collapsing MW3-5 to the naive floor (-3 to -6pp).
+    # `target_season` is authoritative and needs no preseason dict; the
+    # preseason comparison is the fallback for callers that supply neither.
+    _table_predates_window = False
+    _table_season = (str(team_data["season"].iloc[0])
+                     if "season" in team_data.columns and len(team_data) else None)
+    if _table_season is not None:
+        if target_season is not None:
+            _table_predates_window = _table_season != str(target_season)
+        elif preseason and preseason.get("season"):
+            _table_predates_window = _table_season != str(preseason["season"])
+    if preseason and _table_season is not None:
+        if _table_season == str(preseason.get("season")):
             # The table is from the SAME season as the friendlies, so the most
             # recent league match was played after the transfer window, not
-            # before it.
-            _table_predates_window = False
+            # before it.  (This block no longer sets `_table_predates_window`:
+            # the positive detection above already yields False in exactly this
+            # case, and re-setting it here silently OVERRODE an explicit
+            # `target_season`, which is authoritative.)
+            _fade = max(0.0, 1.0 - total_matches / PRESEASON_FADE_MATCHES)
 
     # Build match recency rank: 0 = most recent, 1 = 2nd most recent, ...
     match_recency = {mid: rank for rank, mid in enumerate(match_ids)}
 
-    # Recency weights: exponential decay (0.85^rank)
+    # Recency weights: exponential decay (RECENCY_DECAY^rank)
     # Per-player max_weight only counts matches where the player was in the squad,
     # so players absent due to injury aren't penalized for those matches.
-    DECAY = 0.85
+    DECAY = RECENCY_DECAY
 
     players = []
     for (pid, pname), grp in recent.groupby(["player_id", "player_name"]):
@@ -665,8 +727,8 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
         # 50%. With many appearances, the observed rate dominates.
         # k = strength of prior (equivalent to k "virtual" matches at 50%)
         # k=2: 10-app player barely affected (~92%), 2-app player corrected (83%)
-        PRIOR_STRENGTH = 2  # equivalent to 2 matches of uncertainty
-        PRIOR_RATE = 50.0
+        PRIOR_STRENGTH = SHRINK_PRIOR_STRENGTH  # virtual matches of uncertainty
+        PRIOR_RATE = SHRINK_PRIOR_RATE
         # Effect (a): an INFORMED prior. When we watched this player through
         # pre-season, "what we believed before seeing league data" is his
         # friendly start rate, not a coin flip. Strength is deliberately NOT
@@ -720,13 +782,17 @@ def get_starter_frequency(stats_df: pd.DataFrame, team: str,
             if player_last_match_id == most_recent_match_id:
                 # Player was in the squad for the most recent match
                 if player_started_last:
-                    last_match_bonus = 25.0
+                    last_match_bonus = LAST_MATCH_STARTED_BONUS
                 else:
-                    last_match_bonus = -5.0   # benched
+                    last_match_bonus = LAST_MATCH_BENCHED_PENALTY   # benched
             else:
                 # Player's last appearance was NOT the most recent match
                 # (absent from squad — injury, rest, dropped, etc.)
-                last_match_bonus = -10.0
+                last_match_bonus = LAST_MATCH_ABSENT_PENALTY
+
+        # Manager inertia does not survive a summer. See LAST_MATCH_STALE_SCALE.
+        if _table_predates_window:
+            last_match_bonus *= LAST_MATCH_STALE_SCALE
 
         # Form adjustment: apply a small bonus/penalty from recent rating trends.
         # Max ±3% — only matters for contested positions where margins are thin.

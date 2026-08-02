@@ -137,8 +137,10 @@ def _naive_top11(table: pd.DataFrame) -> list[int]:
     return [int(p) for p in starts.head(XI).index]
 
 
-def _model_top11(table: pd.DataFrame, team: str, preseason: dict | None) -> list[int]:
-    freq = lp.get_starter_frequency(table, team, n_matches=10, preseason=preseason)
+def _model_top11(table: pd.DataFrame, team: str, preseason: dict | None,
+                 target_season: str | None = None) -> list[int]:
+    freq = lp.get_starter_frequency(table, team, n_matches=10, preseason=preseason,
+                                    target_season=target_season)
     return [int(p["player_id"]) for p in freq[:XI]]
 
 
@@ -187,8 +189,8 @@ def run_backtest(seasons: list[str] | None = None,
                 table = _replay_table(stats, team, season, rnd)
                 arms = {
                     "naive": _naive_top11(table),
-                    "off": _model_top11(table, team, None),
-                    "on": _model_top11(table, team, pre or None),
+                    "off": _model_top11(table, team, None, season),
+                    "on": _model_top11(table, team, pre or None, season),
                 }
                 row: dict[str, Any] = {
                     "season": season, "team": team, "round": rnd,
@@ -307,10 +309,12 @@ def sweep(seasons: list[str] | None = None) -> dict[str, Any]:
             lp.PRESEASON_FADE_MATCHES)
     results = []
     try:
-        for prior, penalty, fade in grid:
+        for i, (prior, penalty, fade) in enumerate(grid, 1):
             lp.PRESEASON_ONLY_PRIOR = prior
             lp.PRESEASON_ABSENT_PENALTY = penalty
             lp.PRESEASON_FADE_MATCHES = fade
+            print(f"  cell {i}/{len(grid)}  prior={prior:.0f} penalty={penalty:.0f}"
+                  f" fade={fade:.0f}", flush=True)
             r = run_backtest(calib, verbose=False, write=False)
             if "summary" not in r:
                 continue
@@ -352,6 +356,75 @@ def sweep(seasons: list[str] | None = None) -> dict[str, Any]:
     return {"calibration": results, "holdout": val, "best": best}
 
 
+#: Each ablation switches ONE scoring component off, leaving the rest intact.
+#: Values are (attribute, off-value) pairs applied to `lineup_predictor`.
+ABLATIONS: dict[str, list[tuple[str, Any]]] = {
+    "baseline (nothing disabled)": [],
+    "no last-match bonus": [("LAST_MATCH_STARTED_BONUS", 0.0),
+                            ("LAST_MATCH_BENCHED_PENALTY", 0.0),
+                            ("LAST_MATCH_ABSENT_PENALTY", 0.0)],
+    "no  +25 started-last only": [("LAST_MATCH_STARTED_BONUS", 0.0)],
+    "no  -10 absent-last only": [("LAST_MATCH_ABSENT_PENALTY", 0.0)],
+    "no recency decay": [("RECENCY_DECAY", 1.0)],
+    "no bayesian shrinkage": [("SHRINK_PRIOR_STRENGTH", 0)],
+}
+
+
+def ablate(seasons: list[str] | None = None,
+           rounds: tuple[int, ...] = DEFAULT_ROUNDS) -> dict[str, Any]:
+    """Which scoring component makes the model LOSE to raw start-counts at MW1?
+
+    The replay showed `off` 47.6% vs `naive` 48.8% at matchweek 1 while `off`
+    beats `naive` by 3-5pp at MW2-5.  Same code, different input regime: at MW1
+    the table is LAST season's, so "the most recent match" is the final match of
+    a finished season -- routinely a dead rubber with a rotated XI.
+
+    This turns each component off in isolation and reports the MW1 hit-rate.
+    A component whose REMOVAL raises MW1 is the one doing the damage.  Measured,
+    not theorised -- reading the code cannot tell you which term dominates.
+    """
+    saved = {a: getattr(lp, a) for _, pairs in ABLATIONS.items() for a, _ in pairs}
+    out: dict[str, Any] = {}
+    try:
+        for label, pairs in ABLATIONS.items():
+            for attr, val in saved.items():          # restore before each cell
+                setattr(lp, attr, val)
+            for attr, val in pairs:
+                setattr(lp, attr, val)
+            r = run_backtest(seasons, rounds, verbose=False, write=False)
+            if "summary" not in r:
+                continue
+            fx = r["fixtures"]
+            per_mw = {}
+            for mw in sorted(fx["round"].unique()):
+                s = fx[fx["round"] == mw]
+                per_mw[int(mw)] = {"naive": float(s["hit_naive"].mean()),
+                                   "off": float(s["hit_off"].mean()),
+                                   "n": int(len(s))}
+            out[label] = per_mw
+    finally:
+        for attr, val in saved.items():
+            setattr(lp, attr, val)
+
+    mws = sorted({m for v in out.values() for m in v})
+    print("\n" + "=" * 78)
+    print("ABLATION — which component loses to raw start-counts at MW1?")
+    print("  (arm shown is `off`: the model WITHOUT the friendly signal)")
+    print("=" * 78)
+    head = "".join(f"MW{m:<8}" for m in mws)
+    print(f"  {'component disabled':<30}{head}")
+    base = out.get("baseline (nothing disabled)", {})
+    for label, per in out.items():
+        cells = "".join(f"{per[m]['off']*100:5.1f}%   " for m in mws)
+        print(f"  {label:<30}{cells}")
+    if base:
+        print(f"  {'-- naive floor --':<30}"
+              + "".join(f"{base[m]['naive']*100:5.1f}%   " for m in mws))
+    print("=" * 78)
+    print("  A component whose REMOVAL raises MW1 above the naive floor is the culprit.")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seasons", default=None,
@@ -359,12 +432,17 @@ def main() -> int:
     ap.add_argument("--rounds", default="1,2,3,4,5")
     ap.add_argument("--sweep", action="store_true",
                     help="grid over the invented constants, with a holdout season")
+    ap.add_argument("--ablate", action="store_true",
+                    help="disable each scoring component in turn; find the MW1 culprit")
     args = ap.parse_args()
     seasons = [s.strip() for s in args.seasons.split(",")] if args.seasons else None
     rounds = tuple(int(r) for r in args.rounds.split(","))
 
     if args.sweep:
         sweep(seasons)
+        return 0
+    if args.ablate:
+        ablate(seasons, rounds)
         return 0
     res = run_backtest(seasons, rounds)
     if "error" in res:
