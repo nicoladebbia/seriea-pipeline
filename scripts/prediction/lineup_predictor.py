@@ -574,7 +574,16 @@ def _compute_recent_stats(stats_df: pd.DataFrame, team: str,
 #: a 10-appearance regular still keeps ~83% observed weight.
 PRESEASON_ONLY_PRIOR = 40.0      # unproven player: below a coin flip, not at it
 PRESEASON_PRIOR_SHRINK = 2.0     # friendly start-rate is itself shrunk toward 50
-PRESEASON_FADE_MATCHES = 5.0     # league matches that fully retire the signal
+# 5 -> 3 on 2026-08-02.  The pre-season signal is worth +11.02pp at matchweek 1
+# and -0.21pp across rounds 2+ (controlled, same fixtures both arms, on the two
+# seasons with friendly coverage): once real league data exists the pre-season
+# prior is stale noise.  A fade of 5 keeps it alive through rounds where it
+# costs accuracy, which is why every sweep preferred a shorter one and why fade
+# interacts violently with the penalty above -- a -80 penalty over 5 matches
+# measures -0.829pp while the same penalty over 2 measures +0.568pp.  Measured
+# saturated at <=3 (3, 2 and 1 are indistinguishable), so 3 is the shallowest
+# value that captures the whole effect.
+PRESEASON_FADE_MATCHES = 3.0     # league matches that fully retire the signal
 
 
 def _preseason_entries(preseason: dict | None, known_ids: set, total_matches: int,
@@ -628,7 +637,48 @@ def _preseason_entries(preseason: dict | None, known_ids: set, total_matches: in
             "preseason_minutes": ps["minutes"],
         })
     return out
-PRESEASON_ABSENT_PENALTY = -15.0  # league regular who featured in zero friendlies
+# -15 -> -30 on 2026-08-02, jointly with SHRINK_PRIOR_STRENGTH below.  These two
+# are COUPLED and must not be moved independently: strength scales how hard the
+# INFORMED pre-season prior is pulled toward the uninformed rate, while this
+# penalty is a FLAT additive term that does not scale with it.
+#
+# ⚠️ THE LEGAL RANGE FOR THIS CONSTANT DEPENDS ON SHRINK_PRIOR_STRENGTH.
+# Two semantic invariants bound it from opposite directions, so it is a WINDOW,
+# not a direction:
+#
+#   A  a player who appeared in pre-season as an UNUSED SUBSTITUTE must outrank
+#      one who did not appear at all -- squad presence is the entire reason this
+#      penalty exists.  Violated when the penalty is too SHALLOW.
+#   B  an established league regular who missed the friendlies (rested, injured,
+#      international duty) must still outrank a fringe player who played in
+#      them.  Violated when the penalty is too DEEP.
+#
+# Both are closed-form: a player with no league history is untouched by
+# shrinkage (a flat 25.70 in the fixtures), and the absent score is exactly
+# base(strength) + penalty.  Solving them gives:
+#
+#     strength    legal penalty        width
+#            2    -66.0 .. -5.0         61.0
+#            8    -52.1 .. -13.4        38.7
+#           16    -43.5 .. -18.4        25.1   <- shipped: -30, near the midpoint
+#           32    -36.2 .. -22.9        13.3
+#           64    -31.1 .. -26.0         5.1
+#
+# The window NARROWS monotonically as strength rises, which is the real ceiling
+# on strength -- raise it far enough and no penalty satisfies both.  If you
+# change either constant, re-solve this table first; the boundaries are not
+# where sampling a few round numbers suggests they are.  PRESEASON_FADE_MATCHES
+# was checked against this and does NOT move the window (identical bounds at
+# fade 1/2/3/5/8), so it is a genuinely independent axis.
+#
+# Why -30 and not the -45 an earlier joint sweep recommended: -45 is outside the
+# strength-16 window (it violates B by 1.5pp) and buys nothing, because on real
+# data -45 and -30 produce BYTE-IDENTICAL matchweek-1 XIs at every club in both
+# seasons with friendly coverage.  The penalty is inert on real predictions
+# anywhere inside the window; only the semantics differ.  Both invariants were
+# found by the test suite, not by any sweep -- every sweep varied one constant
+# with the others held at production, which cannot see an interaction.
+PRESEASON_ABSENT_PENALTY = -30.0  # league regular who featured in zero friendlies
 PRESEASON_ABSENT_MIN_MATCHES = 3  # below this, absence carries no information
 
 # --- XI scoring components -------------------------------------------------
@@ -642,7 +692,41 @@ PRESEASON_ABSENT_MIN_MATCHES = 3  # below this, absence carries no information
 # measures the model scoring 47.6% there against 48.8% for raw start-counts.
 # See scripts/analysis/backtest_preseason_signal.py --ablate.
 RECENCY_DECAY = 0.85          # exponential weight per match of age
-SHRINK_PRIOR_STRENGTH = 2     # virtual matches at SHRINK_PRIOR_RATE
+# 2 -> 16 on 2026-08-02, jointly with PRESEASON_ABSENT_PENALTY above.
+#
+# ⚠️ RAISING THIS NARROWS THE LEGAL RANGE OF PRESEASON_ABSENT_PENALTY -- see the
+# window table above and re-solve it before changing this value.  Moving this
+# alone ships an inverted ordering; the suite catches it, no sweep does.
+#
+# Swept on the arm production runs (pre-season signal ON).  An earlier sweep on
+# the OFF arm picked (32, rate 25), which loses -0.51pp across rounds 2+, i.e.
+# 80% of fixtures -- a reminder that the objective must match production.
+#
+# Full three-constant change vs true production, paired per fixture, n=1570:
+#
+#     matchweek 1 (n=316)   52.532% -> 54.747%   +2.215pp   <- the whole gain
+#     rounds 2+   (n=1254)  78.991% -> 79.000%   +0.007pp   <- untouched
+#     overall               73.706% -> 74.158%   +0.452pp
+#
+# CI [+0.279, +0.628], 7/8 seasons positive, and leave-one-season-out over the
+# LEGAL cells only beats production in 7/8 (mean +0.437pp).
+#
+# 16 rather than the raw argmax, for two separate reasons.  The accuracy surface
+# is flat between 16 and 64 and turns at 128, so the argmax is not meaningful:
+# every legal cell at strength 16 or 32 lands between +0.446 and +0.463pp, a
+# spread of 0.017pp against CIs ~0.35pp wide.  And the raw argmax (32, -20) is
+# DISQUALIFIED on invariant A, while LOSO's pick (32, -25) is legal but clears
+# that invariant by only 2.10pp against 11.60pp here -- it buys +0.011pp for a
+# 5.5x thinner margin to an inversion.  LOSO optimises hit rate and cannot see
+# the constraint geometry, so among statistically tied cells the tiebreak is
+# distance from the window edges, not the third decimal of a hit rate.
+#
+# Why it only moves matchweek 1: there every per-player rate comes off a table a
+# summer stale with tiny effective samples, and shrinking unreliable estimates
+# toward a prior is the standard response.  By round 3 each player has enough
+# current-season appearances that the prior's weight vanishes.
+# Evidence: .plans/xi-constant-tuning-findings.md, data/analysis/overnight{9,10}_results.json
+SHRINK_PRIOR_STRENGTH = 16    # virtual matches at SHRINK_PRIOR_RATE
 SHRINK_PRIOR_RATE = 50.0      # uninformed prior when there is no friendly signal
 LAST_MATCH_STARTED_BONUS = 25.0    # started the most recent match
 LAST_MATCH_BENCHED_PENALTY = -5.0  # in the squad, not selected

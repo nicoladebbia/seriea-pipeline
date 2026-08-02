@@ -448,9 +448,28 @@ def _season_rows(season, rounds, n=14, starters=11, team="T"):
 
 
 def _inertia_alive(df, **kw):
-    """The +25 bonus pushes a settled regular past 95; without it he sits ~92."""
-    freq = lp.get_starter_frequency(df, "T", 10, **kw)
-    return max(p["start_pct"] for p in freq) > 95
+    """Inertia is ALIVE iff zeroing the last-match bonus lowers the top score.
+
+    Deliberately threshold-free.  The previous version asserted `max > 95`, a
+    cutoff calibrated to SHRINK_PRIOR_STRENGTH = 2.  Shrinkage pulls every score
+    toward the prior, so raising it drops the absolute numbers while leaving the
+    invariant untouched -- an absolute cutoff quietly stops measuring "is the
+    bonus applied?" and starts measuring the shrinkage constant instead.  It
+    broke on the 2026-08-02 constant change even though the inertia gap had
+    GROWN (+8.30 -> +25.00).  Compare against the same fixture with the bonus
+    switched off and the test says what its name says at any parameterisation.
+    """
+    def _top(**extra):
+        return max(p["start_pct"] for p in lp.get_starter_frequency(df, "T", 10, **kw))
+
+    live = _top()
+    orig = lp.LAST_MATCH_STARTED_BONUS
+    try:
+        lp.LAST_MATCH_STARTED_BONUS = 0.0
+        base = _top()
+    finally:
+        lp.LAST_MATCH_STARTED_BONUS = orig
+    return live > base
 
 
 def test_inertia_survives_when_the_table_is_the_CURRENT_season():
