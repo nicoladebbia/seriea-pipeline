@@ -2047,18 +2047,39 @@ def predict_team_lineup(stats_df: pd.DataFrame, incidents_df: pd.DataFrame,
 def generate_lineup_predictions() -> dict:
     """Main entry point: generate lineup predictions for all upcoming matches.
 
-    Loads predictions.json for the match list, then generates lineup predictions
-    for both teams in each match.
+    Reads the match list from BOTH league prediction files, then generates
+    lineup predictions for both teams in each match.
+
+    The Premier League used to be served by a separate, cruder producer in
+    `generate_epl_supplementary` (most-used starters over the last ten rounds,
+    no recency decay, no shrinkage, no manager inertia, no pre-season
+    friendlies).  Everything this module learned therefore reached one league
+    out of two, and EPL lineups refreshed only on the full pipeline while
+    Serie A refreshed on every incremental run.  The stats loader and the
+    pre-season club map were already dual-league; the input file was the only
+    single-league thing left, so this is a routing change, not a port.
     """
-    pred_path = DATA_DIR / "upcoming" / "predictions.json"
-    if not pred_path.exists():
-        print("No predictions.json found")
-        return {}
+    predictions: list[dict] = []
+    seen_keys: set[str] = set()
+    for fname in ("predictions.json", "predictions_premier_league.json"):
+        pred_path = DATA_DIR / "upcoming" / fname
+        if not pred_path.exists():
+            continue
+        try:
+            with open(pred_path) as f:
+                pred_data = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"  Warning: could not read {fname}: {e}")
+            continue
+        for p in pred_data.get("predictions", []):
+            # The two files are written independently and could name the same
+            # fixture; build it once.
+            key = p.get("match") or f"{p.get('home_team','')} vs {p.get('away_team','')}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            predictions.append(p)
 
-    with open(pred_path) as f:
-        pred_data = json.load(f)
-
-    predictions = pred_data.get("predictions", [])
     if not predictions:
         print("No upcoming predictions")
         return {}

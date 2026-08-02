@@ -600,3 +600,104 @@ def test_preseason_club_names_is_empty_when_there_is_no_data(tmp_path, monkeypat
     prediction cycle, including on a fresh checkout with no friendlies yet."""
     monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
     assert lp.preseason_club_names() == set()
+
+
+# --------------------------------------------------------------------------
+# 11. Both leagues must go through THIS predictor.
+#
+# Measured 2026-08-02: `generate_lineup_predictions` read only
+# `predictions.json` (Serie A).  The Premier League was served by a second,
+# cruder producer inside `generate_epl_supplementary` -- most-used starters
+# over the last 10 rounds, with no recency decay, no shrinkage, no
+# last-match inertia, and no pre-season friendlies at all.  Every measured
+# improvement in this file therefore applied to one league out of two, and
+# EPL lineups refreshed only on the full pipeline while Serie A refreshed on
+# every incremental run.
+#
+# All 20 EPL clubs were probed against `_resolve_team_name` before this
+# change and all 20 resolved on the league rung, so the routing carries no
+# name-convention risk.
+# --------------------------------------------------------------------------
+
+
+def _write_predictions(dir_: "object", fname: str, pairs: list) -> None:
+    (dir_ / "upcoming").mkdir(parents=True, exist_ok=True)
+    (dir_ / "upcoming" / fname).write_text(json.dumps({
+        "predictions": [
+            {"match": f"{h} vs {a}", "home_team": h, "away_team": a}
+            for h, a in pairs
+        ]
+    }))
+
+
+@pytest.fixture()
+def routed(tmp_path, monkeypatch):
+    """`generate_lineup_predictions` against fixture files, real ladder,
+    stubbed scoring -- this section is about which matches get built, not
+    about how good the XI is."""
+    monkeypatch.setattr(lp, "DATA_DIR", tmp_path)
+    (tmp_path / "lineup_history").mkdir(parents=True, exist_ok=True)
+
+    stats = pd.DataFrame([
+        {"team": t, "season": LAST_SEASON} for t in ("Juventus", "Arsenal")
+    ])
+    monkeypatch.setattr(lp, "_load_current_season_stats", lambda: stats)
+    monkeypatch.setattr(lp, "_load_season_incidents", lambda: pd.DataFrame())
+    monkeypatch.setattr(lp, "preseason_club_names", lambda season=None: set())
+    monkeypatch.setattr(
+        "scripts.prediction.player_positions.build_player_position_map",
+        lambda *a, **k: {})
+    monkeypatch.setattr(
+        lp, "predict_team_lineup",
+        lambda *a, **k: {"team": a[2], "predicted_xi": [], "formation": "4-4-2"})
+    return tmp_path
+
+
+def test_the_premier_league_is_no_longer_left_out(routed):
+    _write_predictions(routed, "predictions.json", [("Juventus", "Milan")])
+    _write_predictions(routed, "predictions_premier_league.json",
+                       [("Arsenal", "Chelsea")])
+
+    out = lp.generate_lineup_predictions()
+
+    assert "Juventus vs Milan" in out["matches"]
+    assert "Arsenal vs Chelsea" in out["matches"], \
+        "the EPL fixture must be built by this predictor, not a separate one"
+    assert out["match_count"] == 2
+
+
+def test_serie_a_alone_still_works_when_there_is_no_epl_file(routed):
+    """The EPL file is absent out of season and on a fresh checkout."""
+    _write_predictions(routed, "predictions.json", [("Juventus", "Milan")])
+
+    out = lp.generate_lineup_predictions()
+
+    assert set(out["matches"]) == {"Juventus vs Milan"}
+
+
+def test_the_epl_file_alone_is_enough(routed):
+    """Serie A used to be a hard precondition: no predictions.json meant an
+    early return and no lineups for anyone."""
+    _write_predictions(routed, "predictions_premier_league.json",
+                       [("Arsenal", "Chelsea")])
+
+    out = lp.generate_lineup_predictions()
+
+    assert set(out["matches"]) == {"Arsenal vs Chelsea"}
+
+
+def test_a_fixture_listed_in_both_files_is_built_once(routed):
+    """The two files are independently written and could disagree; a duplicate
+    key must not double-count `match_count` or be built twice."""
+    _write_predictions(routed, "predictions.json", [("Juventus", "Milan")])
+    _write_predictions(routed, "predictions_premier_league.json",
+                       [("Juventus", "Milan"), ("Arsenal", "Chelsea")])
+
+    out = lp.generate_lineup_predictions()
+
+    assert out["match_count"] == 2
+    assert sorted(out["matches"]) == ["Arsenal vs Chelsea", "Juventus vs Milan"]
+
+
+def test_no_prediction_file_at_all_returns_nothing(routed):
+    assert lp.generate_lineup_predictions() == {}

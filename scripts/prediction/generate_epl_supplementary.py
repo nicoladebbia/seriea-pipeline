@@ -950,267 +950,42 @@ def enrich_epl_standings_with_position() -> dict:
 # =============================================================================
 
 def generate_epl_lineup_predictions() -> dict:
-    """Generate predicted starting XIs for each EPL match.
+    """Return the EPL subset of the shared lineup predictions.
 
-    Uses Sofascore player_match_stats_premier_league.parquet to determine
-    each team's most-used starters, then maps them into the predicted
-    formation from the ensemble engine's formation_analysis field.
+    This used to be a second, independent XI producer: most-used starters over
+    the last ten rounds, mapped onto the ensemble's `formation_analysis`.  It
+    had none of `lineup_predictor`'s scoring -- no recency decay, no shrinkage
+    toward a prior, no manager inertia from the last XI, and no pre-season
+    friendlies, which is the only signal a promoted club has at matchweek 1.
 
-    Returns: dict keyed by match name with home_lineup / away_lineup.
+    `generate_lineup_predictions` now reads both league prediction files and
+    writes the whole file itself, so this delegates rather than duplicating.
+    Two consequences worth naming: formations are now predicted from each
+    club's own history and friendlies instead of taken from the ensemble, a
+    silent change for the seventeen clubs that were resolving fine; and EPL
+    lineups now refresh on the incremental pipeline too, where they were
+    previously only rebuilt on a full run.
     """
-    import numpy as np
-    from scripts.prediction.lineup_predictor import (
-        FORMATION_TACTICAL_SLOTS,
-        _get_tactical_labels,
-    )
+    from scripts.prediction.lineup_predictor import generate_lineup_predictions
 
-    predictions = get_epl_predictions()
-    if not predictions:
+    epl_teams = set()
+    for pred in get_epl_predictions():
+        epl_teams.add(pred.get("home_team", ""))
+        epl_teams.add(pred.get("away_team", ""))
+    epl_teams.discard("")
+    if not epl_teams:
         return {}
 
-    # Load Sofascore player stats
-    parquet_path = DATA_DIR / "external" / "sofascore" / "player_match_stats_premier_league.parquet"
-    if not parquet_path.exists():
-        log.warning(f"EPL player stats not found: {parquet_path}")
-        return {}
-
-    import pandas as pd
-    df = pd.read_parquet(parquet_path)
-
-    # Use the latest season available
-    latest_season = df["season"].max()
-    df = df[df["season"] == latest_season].copy()
-    log.info(f"Using EPL season {latest_season} ({len(df)} player-match rows)")
-
-    for col in ["minutes", "is_starter", "round"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.sort_values("date")
-
-    # Build team -> sofascore team name mapping
-    sofascore_teams = set(df["team"].unique())
-
-    def _resolve_team(pred_name: str) -> Optional[str]:
-        """Map prediction team name to Sofascore team name."""
-        if pred_name in sofascore_teams:
-            return pred_name
-        short = to_short(pred_name)
-        if short in sofascore_teams:
-            return short
-        # Partial match fallback
-        for st in sofascore_teams:
-            if pred_name.lower() in st.lower() or st.lower() in pred_name.lower():
-                return st
-        return None
-
-    def _predict_team_xi(team_ss: str, formation: str, n_matches: int = 10) -> dict:
-        """Predict starting XI for a team based on recent usage patterns."""
-        team_df = df[df["team"] == team_ss]
-        if team_df.empty:
-            return {}
-
-        # Get last n match rounds
-        recent_rounds = team_df["round"].dropna().sort_values().unique()
-        if len(recent_rounds) > n_matches:
-            recent_rounds = recent_rounds[-n_matches:]
-        recent_df = team_df[team_df["round"].isin(recent_rounds)]
-
-        total_matches = recent_df["match_id"].nunique()
-        if total_matches == 0:
-            return {}
-
-        # Compute starter frequency
-        starters = recent_df[recent_df["is_starter"] == True]
-        player_stats = starters.groupby(["player_name", "position"]).agg(
-            starts=("is_starter", "sum"),
-            avg_rating=("rating", "mean"),
-            avg_minutes=("minutes", "mean"),
-            shirt_number=("shirt_number", "first"),
-            player_id=("player_id", "first"),
-            last_date=("date", "max"),
-        ).reset_index()
-
-        # Sort by starts desc, avg_rating desc
-        player_stats = player_stats.sort_values(
-            ["starts", "avg_rating"], ascending=[False, False]
-        )
-
-        # Compute recent form (last 5 games of each player)
-        last5 = {}
-        for pname, grp in starters.groupby("player_name"):
-            last5[pname] = grp.nlargest(5, "date")["rating"].mean()
-        overall_avg = starters.groupby("player_name")["rating"].mean().to_dict()
-
-        # Parse formation into slot counts (e.g., "4-2-3-1" -> D=4, M=6, F=1)
-        parts = [int(x) for x in formation.split("-")]
-        slot_counts = {"G": 1}
-        if len(parts) == 3:
-            slot_counts["D"] = parts[0]
-            slot_counts["M"] = parts[1]
-            slot_counts["F"] = parts[2]
-        elif len(parts) == 4:
-            slot_counts["D"] = parts[0]
-            slot_counts["M"] = parts[1] + parts[2]
-            slot_counts["F"] = parts[3]
-        elif len(parts) == 5:
-            slot_counts["D"] = parts[0]
-            slot_counts["M"] = parts[1] + parts[2] + parts[3]
-            slot_counts["F"] = parts[4]
-        else:
-            slot_counts = {"D": 4, "M": 4, "F": 2}
-
-        # Get tactical labels
-        tactical_labels = _get_tactical_labels(formation, slot_counts)
-
-        # Position code mapping
-        pos_map = {"G": "G", "D": "D", "M": "M", "F": "F"}
-
-        # Select best players per position group
-        predicted_xi = []
-        used_players = set()
-
-        for pos_code in ["G", "D", "M", "F"]:
-            n_slots = slot_counts.get(pos_code, 0)
-            labels = tactical_labels.get(pos_code, [])
-            # Get candidates for this position
-            candidates = player_stats[
-                (player_stats["position"] == pos_code) &
-                (~player_stats["player_name"].isin(used_players))
-            ].head(n_slots + 3)  # extra candidates for flexibility
-
-            selected = candidates.head(n_slots)
-
-            for i, (_, row) in enumerate(selected.iterrows()):
-                name = row["player_name"]
-                used_players.add(name)
-                start_pct = round(row["starts"] / total_matches * 100)
-                recent_avg = last5.get(name, row["avg_rating"])
-                season_avg = overall_avg.get(name, row["avg_rating"])
-
-                # Form trend
-                if recent_avg > season_avg + 0.3:
-                    form_trend = "hot"
-                elif recent_avg < season_avg - 0.3:
-                    form_trend = "cold"
-                else:
-                    form_trend = "stable"
-
-                # Status based on start %
-                if start_pct >= 80:
-                    status = "certain"
-                elif start_pct >= 50:
-                    status = "likely"
-                else:
-                    status = "rotation"
-
-                label = labels[i] if i < len(labels) else pos_map.get(pos_code, "?")
-
-                predicted_xi.append({
-                    "name": name,
-                    "position": pos_code,
-                    "position_label": label,
-                    "shirt_number": int(row["shirt_number"]) if pd.notna(row["shirt_number"]) else 0,
-                    "start_pct": start_pct,
-                    "avg_rating": round(float(row["avg_rating"]), 2),
-                    "avg_minutes": round(float(row["avg_minutes"]), 1),
-                    "status": status,
-                    "form_trend": form_trend,
-                    "recent_rating": round(float(recent_avg), 2),
-                    "start_streak": int(row["starts"]),
-                })
-
-        # Get formation history from match JSONs or Sofascore data
-        match_json_dir = DATA_DIR / "external" / "sofascore" / "matches_premier_league" / latest_season
-        formation_history = []
-        if match_json_dir.exists():
-            team_matches = recent_df[recent_df["team"] == team_ss].groupby("match_id").first()
-            for mid, mrow in team_matches.sort_values("date", ascending=False).head(5).iterrows():
-                json_path = match_json_dir / f"{mid}.json"
-                if json_path.exists():
-                    try:
-                        with open(json_path) as fh:
-                            mdata = json.load(fh)
-                        side = "home_lineup" if mrow.get("is_home", True) else "away_lineup"
-                        fm = mdata.get(side, {}).get("formation", "")
-                        if fm:
-                            formation_history.append({
-                                "formation": fm,
-                                "date": str(mrow["date"].date()) if pd.notna(mrow.get("date")) else "",
-                                "match_id": int(mid),
-                                "opponent": mrow.get("opponent", ""),
-                                "round": int(mrow["round"]) if pd.notna(mrow.get("round")) else 0,
-                                "is_home": bool(mrow.get("is_home", True)),
-                            })
-                    except Exception:
-                        pass
-
-        # Compute formation confidence from history
-        if formation_history:
-            fm_counts = {}
-            for fh in formation_history:
-                fm_counts[fh["formation"]] = fm_counts.get(fh["formation"], 0) + 1
-            total = sum(fm_counts.values())
-            fm_confidence = fm_counts.get(formation, 0) / total if total > 0 else 0.5
-            alternatives = [
-                {"formation": f, "pct": round(c / total * 100, 1), "count": c}
-                for f, c in sorted(fm_counts.items(), key=lambda x: -x[1])
-            ]
-        else:
-            fm_confidence = 0.5
-            alternatives = [{"formation": formation, "pct": 100.0, "count": 1}]
-
-        return {
-            "team": team_ss,
-            "formation": {
-                "predicted": formation,
-                "confidence": round(fm_confidence, 3),
-                "alternatives": alternatives,
-                "last_used": formation_history[0]["formation"] if formation_history else formation,
-                "history": formation_history[:5],
-            },
-            "predicted_xi": predicted_xi,
-            "bench": [],
-            "unavailable": [],
-            "changes": [],
-            "fitness_concerns": [],
-            "suspension_risk": [],
-        }
-
-    # Build match-level lineup predictions
-    results = {}
-    for pred in predictions:
-        home = pred.get("home_team", "")
-        away = pred.get("away_team", "")
-        match_key = pred.get("match", f"{home} vs {away}")
-
-        # Get formations from prediction engine
-        fa = pred.get("formation_analysis", {})
-        home_formation = fa.get("home_formation", "4-4-2")
-        away_formation = fa.get("away_formation", "4-4-2")
-
-        home_ss = _resolve_team(home)
-        away_ss = _resolve_team(away)
-
-        home_lineup = _predict_team_xi(home_ss, home_formation) if home_ss else {}
-        away_lineup = _predict_team_xi(away_ss, away_formation) if away_ss else {}
-
-        # Fix team names back to prediction names
-        if home_lineup:
-            home_lineup["team"] = home
-        if away_lineup:
-            away_lineup["team"] = away
-
-        results[match_key] = {
-            "match": match_key,
-            "home_team": home,
-            "away_team": away,
-            "home_lineup": home_lineup,
-            "away_lineup": away_lineup,
-        }
-
+    out = generate_lineup_predictions()
+    matches = out.get("matches", {}) if isinstance(out, dict) else {}
+    results = {
+        key: m for key, m in matches.items()
+        if m.get("home_team") in epl_teams or m.get("away_team") in epl_teams
+    }
     log.info(f"Generated lineup predictions for {len(results)} EPL matches")
     return results
+
+
 
 
 # =============================================================================
@@ -1525,19 +1300,20 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     print(f"         {len(standings_enriched)} team entries (with position + aliases)")
 
     # 8. Lineup predictions
-    print("  [8/9] Generating lineup predictions...")
-    lineup_results = generate_epl_lineup_predictions()
-    if not dry_run and lineup_results:
-        existing = load_json_safe(UPCOMING_DIR / "lineup_predictions.json")
-        existing_matches = existing.get("matches", {})
-        if isinstance(existing_matches, list):
-            existing_matches = {m.get("match", ""): m for m in existing_matches if m.get("match")}
-        existing_matches.update(lineup_results)
-        existing["matches"] = existing_matches
-        existing["generated_at"] = datetime.now().isoformat()
-        existing["match_count"] = len(existing_matches)
-        _save_json(UPCOMING_DIR / "lineup_predictions.json", existing)
-    print(f"         {len(lineup_results)} matches with predicted XIs")
+    #
+    # `generate_epl_lineup_predictions` now delegates to the shared predictor,
+    # which writes both leagues into lineup_predictions.json itself.  The old
+    # read-modify-write merge here is gone: it existed because this file was
+    # the only writer of the EPL half, and re-applying a subset of what was
+    # just written would only be a chance to lose the Serie A half.  Skipped
+    # entirely under --dry-run, since the delegate writes.
+    lineup_results: dict = {}
+    if dry_run:
+        print("  [8/9] Lineup predictions skipped (dry run)")
+    else:
+        print("  [8/9] Generating lineup predictions...")
+        lineup_results = generate_epl_lineup_predictions()
+        print(f"         {len(lineup_results)} matches with predicted XIs")
 
     # 9. Injuries & suspension risk
     print("  [9/11] Generating injury/suspension data...")
