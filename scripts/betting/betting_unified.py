@@ -936,16 +936,26 @@ class UnifiedBettingEngine:
     # -----------------------------------------------------------------
     # Situational tagging (Phase 3 — backtest-derived edge adjustments)
     # -----------------------------------------------------------------
-    # Promoted teams per season (mirrors features/creative_factors.py)
+    # ⚠️ The ONLY hand-maintained duplicate of config.leagues.PROMOTED_TEAMS.
+    # features/creative_factors.py imports the real one; this file forked it and
+    # added spelling variants. That fork is why this goes stale every August. It
+    # should read config.leagues and normalise names, but that is a betting-path
+    # refactor and does not belong in a season-rollover commit. Until then:
+    # update BOTH together.
+    # 2026-2027 measured 2026-08-02 against the live Sofascore club lists, with
+    # spelling variants included because this file joins on raw names.
     _PROMOTED_TEAMS = {
         "2023-2024": {"Cagliari", "Frosinone", "Genoa"},
         "2024-2025": {"Como", "Parma", "Venezia"},
         "2025-2026": {"Sassuolo", "Pisa", "Cremonese"},
+        "2026-2027": {"Frosinone", "Monza", "Venezia"},
     }
     _EPL_PROMOTED_TEAMS = {
         "2023-2024": {"Burnley", "Sheffield United", "Luton Town"},
         "2024-2025": {"Leicester City", "Ipswich Town", "Southampton"},
         "2025-2026": {"Leeds", "Leeds United", "Burnley", "Sunderland"},
+        "2026-2027": {"Coventry City", "Coventry", "Hull", "Hull City",
+                      "Ipswich", "Ipswich Town"},
     }
     _EPL_BIG_6 = {
         "Arsenal", "Chelsea", "Liverpool", "Man City", "Manchester City",

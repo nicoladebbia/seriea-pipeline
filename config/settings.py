@@ -15,11 +15,47 @@ def get_current_season() -> str:
     """Return the current season string (e.g. '2025-2026').
 
     Season boundary: August 1. Before Aug 1 → previous season is current.
+
+    ⚠️ This is the season to SCRAPE, not the season to ANALYSE. Between the
+    August 1 rollover and the first matchweek (~3 weeks) it names a season with
+    ZERO played matches. Any code that filters a dataframe to "the current
+    season" and then computes something from those rows wants
+    `latest_season_with_results()` below, not this.
     """
     today = date.today()
     if today.month >= 8:
         return f"{today.year}-{today.year + 1}"
     return f"{today.year - 1}-{today.year}"
+
+
+def latest_season_with_results(df, season_col: str = "season",
+                               result_col: str = "home_score"):
+    """Return the latest season that actually has PLAYED matches, or None.
+
+    The counterpart to `get_current_season()`, and the correct choice for every
+    consumer that READS match data. Three seasons are routinely distinct:
+
+        get_current_season()          the season we scrape into  (calendar)
+        df[season_col].max()          the latest season PRESENT  (incl. fixtures)
+        latest_season_with_results()  the latest season PLAYED   (this)
+
+    A plain `.max()` is the tempting version and it is wrong here: fixture rows
+    are written before kickoff with a null score, so from the moment next
+    season's schedule is ingested `.max()` names a season with no results and
+    every downstream mean/count silently reads an empty frame. Measured
+    2026-08-02: matches.parquet already held 13 such rows.
+
+    Returns None when nothing has been played at all, which callers must handle
+    — the historical failure mode here is a soft empty return that looks like a
+    successful run.
+    """
+    if df is None or len(df) == 0 or season_col not in df:
+        return None
+    played = df[df[result_col].notna()] if result_col in df else df
+    if len(played) == 0:
+        return None
+    seasons = played[season_col].dropna()
+    return str(seasons.max()) if len(seasons) else None
 
 # FBref
 FBREF_BASE_URL = "https://fbref.com"

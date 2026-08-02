@@ -68,7 +68,7 @@ try:
 except ImportError:
     pass  # dotenv not required if env vars set externally
 
-from config.settings import DATA_DIR, PROJECT_ROOT
+from config.settings import DATA_DIR, PROJECT_ROOT, get_current_season
 from scripts.utils.logging_config import (
     PipelineLogger,
     log_pipeline_start,
@@ -1512,7 +1512,9 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 print(f"  Sofascore data stale ({_ss_age:.0f}h) — starting background refresh...")
                 import subprocess as _sp
                 _sp.Popen(
-                    [sys.executable, "-m", "scripts.data.scrape_sofascore", "--season", "2025-2026"],
+                    # Scrape target → calendar season, derived not hardcoded.
+                    [sys.executable, "-m", "scripts.data.scrape_sofascore",
+                     "--season", get_current_season()],
                     cwd=str(PROJECT_ROOT),
                     stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
                 )

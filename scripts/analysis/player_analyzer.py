@@ -39,7 +39,7 @@ from collections import defaultdict
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, PROJECT_ROOT
+from config.settings import DATA_DIR, PROJECT_ROOT, latest_season_with_results
 from config.team_names import normalize_team
 from scripts.utils.parsing import get_cache_path
 from scraper.lineup_fetcher import normalize_player_name
@@ -866,7 +866,10 @@ class PlayerAnalyzer:
             sofascore_path, sofascore_team = _resolve_sofascore_source(team)
             if sofascore_path.exists():
                 pms = pd.read_parquet(sofascore_path)
-                current = pms[pms["season"] == "2025-2026"]
+                # Latest season with data, not the calendar season — player rows
+                # exist only for played matches. See config.settings.
+                _season = latest_season_with_results(pms, result_col="minutes")
+                current = pms[pms["season"] == _season] if _season else pms.iloc[0:0]
                 if not current.empty:
                     if sofascore_team not in current["team"].unique() and team in current["team"].unique():
                         sofascore_team = team  # fall back to original if normalized name doesn't match
@@ -938,7 +941,10 @@ class PlayerAnalyzer:
                 return []
 
             pms = pd.read_parquet(sofascore_path)
-            current = pms[pms["season"] == "2025-2026"]
+            # Latest season with data, not the calendar season — player rows
+            # exist only for played matches. See config.settings.
+            _season = latest_season_with_results(pms, result_col="minutes")
+            current = pms[pms["season"] == _season] if _season else pms.iloc[0:0]
             if current.empty:
                 return []
 

@@ -22,9 +22,17 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT))
 
+from config.settings import get_current_season  # noqa: E402  (needs sys.path above)
+
 log = logging.getLogger(__name__)
 
-CURRENT_SEASON = "2025-2026"  # Update this at start of each new season
+# Derived, not written down — this is a SCRAPE target, so the calendar season is
+# correct even before matchweek 1. It used to be a hardcoded string with a
+# "update this at the start of each new season" comment, which is exactly the
+# kind of instruction that gets missed: the job keeps running and silently
+# re-scrapes a finished season. If you need the season to ANALYSE rather than
+# fetch, use latest_season_with_results() instead.
+CURRENT_SEASON = get_current_season()
 
 
 def run(cmd: list[str], step: str, timeout: int = 3600) -> bool:

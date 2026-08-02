@@ -219,6 +219,11 @@ PROMOTED_TEAMS: dict[str, dict[str, set[str]]] = {
         "2023-2024": {"Cagliari", "Frosinone", "Genoa"},
         "2024-2025": {"Como", "Parma", "Venezia"},
         "2025-2026": {"Sassuolo", "Pisa", "Cremonese"},
+        # Measured 2026-08-02 against the live Sofascore 26/27 club list
+        # (unique-tournament seasons[0]) diffed against last season's
+        # player_match_stats table — exactly 3-up-3-down, out: Cremonese, Pisa,
+        # Verona. Not typed from memory.
+        "2026-2027": {"Frosinone", "Monza", "Venezia"},
     },
     "premier_league": {
         "2005-2006": {"Sunderland", "Wigan", "West Ham"},
@@ -242,7 +247,17 @@ PROMOTED_TEAMS: dict[str, dict[str, set[str]]] = {
         "2023-2024": {"Burnley", "Sheffield United", "Luton"},
         "2024-2025": {"Leicester", "Ipswich", "Southampton"},
         "2025-2026": {"Leeds", "Sheffield United", "Burnley"},
+        # Same measurement as Serie A above; out: Burnley, West Ham, Wolves.
+        # Brentford and Brighton ARE in the 26/27 league (confirmed live) — they
+        # merely have no pre-season friendly rows yet, which is a scrape gap and
+        # must not be read as relegation.
+        "2026-2027": {"Coventry City", "Hull", "Ipswich"},
     },
+    # ⚠️ la_liga / bundesliga / ligue_1 have NO 2026-2027 entry. That is
+    # deliberate: they are not in ACTIVE_LEAGUES, so nothing measured their
+    # promotions, and inventing three club names from memory is exactly the kind
+    # of plausible-looking fiction this file must not contain. Add them only
+    # from a live source, the way the two above were.
     "la_liga": {
         "2023-2024": {"Granada", "Las Palmas", "Alaves"},
         "2024-2025": {"Leganes", "Valladolid", "Espanyol"},

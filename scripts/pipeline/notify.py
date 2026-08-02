@@ -3698,7 +3698,11 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
                 matches_path = _Path(__file__).parent.parent.parent / "data" / "parsed" / "matches.parquet"
                 if matches_path.exists():
                     mdf = pd.read_parquet(matches_path)
-                    current = mdf[mdf["season"] == "2025-2026"]
+                    # Latest season with results, not the calendar season — see
+                    # config.settings.latest_season_with_results.
+                    from config.settings import latest_season_with_results
+                    _season = latest_season_with_results(mdf)
+                    current = mdf[mdf["season"] == _season] if _season else mdf.iloc[0:0]
                     # Filter to single league to avoid inflated MW numbers
                     if "league" in current.columns:
                         current = current[current["league"] == "serie_a"]

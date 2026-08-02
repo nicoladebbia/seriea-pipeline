@@ -42,7 +42,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, latest_season_with_results
 from storage.paths import features_path
 
 log = logging.getLogger("weekly_retrain")
@@ -102,9 +102,17 @@ def get_matchweek_status() -> dict:
             return {"error": "matches.parquet not found"}
 
         df = pd.read_parquet(matches_path)
-        current_season = df[df["season"] == "2025-2026"]
+        # The season to retrain on is the latest one with PLAYED matches, not the
+        # calendar season: between the August rollover and matchweek 1 the
+        # calendar season has no results, and a hardcoded season keeps happily
+        # retraining on a finished one while reporting success. Both look
+        # identical from outside, which is why this is derived, not written down.
+        season = latest_season_with_results(df)
+        if season is None:
+            return {"error": "no played matches in matches.parquet"}
+        current_season = df[df["season"] == season]
         if current_season.empty:
-            return {"error": "No 2025-2026 season data"}
+            return {"error": f"No {season} season data"}
 
         # Total matches with scores = reliable matchweek count
         has_score = current_season["home_score"].notna()

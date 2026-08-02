@@ -85,5 +85,10 @@ def main(season: str) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    season = sys.argv[1] if len(sys.argv) > 1 else "2025-2026"
+    sys.path.insert(0, str(PROJECT))
+    from config.settings import get_current_season
+
+    # Scrape target → calendar season. Defaulting to a hardcoded season meant
+    # that once it went stale this silently refreshed a finished schedule.
+    season = sys.argv[1] if len(sys.argv) > 1 else get_current_season()
     main(season)
