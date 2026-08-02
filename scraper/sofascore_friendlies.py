@@ -49,6 +49,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from config.leagues import LEAGUE_REGISTRY
+from config.settings import get_current_season
 from scraper.sofascore_events import _BASE_URL, _get_json, _jitter_delay
 from scraper.sofascore_lineups import _normalize_sofascore_team
 
@@ -327,11 +328,14 @@ _YOUTH_MARKERS = (" u19", " u20", " u21", " u23", " ii", " b", " primavera",
 
 #: Opponent-profile cache.  One /team/{id} request per DISTINCT opponent, then
 #: never again -- opponents repeat across a pre-season and across years.
-# Permanent, keyed by team id, NO TTL: an opponent promoted or relegated after its
-# first resolution keeps its stale league/tier forever. Fine within one pre-season.
-# Delete this file on season rollover to force re-resolution -- the parquet keeps the
-# raw `opponent` name verbatim, so re-deriving loses nothing.
+# Keyed by team id. An opponent promoted or relegated after its first resolution
+# would keep its stale league/tier forever, so the cache is STAMPED with the season
+# that resolved it and self-invalidates on rollover -- this used to be a manual
+# "delete this file every August" note in DATA_CATALOG.md, which is precisely the
+# kind of instruction that gets missed. Re-deriving loses nothing: the parquet keeps
+# the raw `opponent` name verbatim.
 _OPP_CACHE = SOFASCORE_DIR / "friendly_opponent_profiles.json"
+_OPP_CACHE_SEASON_KEY = "__season__"
 
 
 def _is_youth_side(name: str | None) -> bool:
@@ -350,20 +354,48 @@ def _is_youth_side(name: str | None) -> bool:
 
 
 def _load_opp_cache() -> dict[str, Any]:
-    if _OPP_CACHE.exists():
-        try:
-            return json.loads(_OPP_CACHE.read_text())
-        except (json.JSONDecodeError, OSError):
-            log.warning("opponent cache unreadable -- rebuilding")
-    return {}
+    """Load the cache, discarding it wholesale if it was built in a past season.
+
+    A club's league is a per-season fact, so a profile resolved last August is
+    not merely old, it is wrong for anyone promoted or relegated since. The
+    season stamp makes that automatic instead of remembered.
+
+    An UNSTAMPED file is treated as current, not as stale: the stamp was added
+    2026-08-02, and the file on disk at that point had just been fully rebuilt
+    by the Aug 1 backfill (verified -- all six 26/27-promoted clubs already
+    carried their NEW league). Discarding it would have thrown away 261 correct
+    profiles and re-fetched every one.
+    """
+    if not _OPP_CACHE.exists():
+        return {}
+    try:
+        cache = json.loads(_OPP_CACHE.read_text())
+    except (json.JSONDecodeError, OSError):
+        log.warning("opponent cache unreadable -- rebuilding")
+        return {}
+    if not isinstance(cache, dict):
+        log.warning("opponent cache is not a mapping -- rebuilding")
+        return {}
+    stamped = cache.get(_OPP_CACHE_SEASON_KEY)
+    current = get_current_season()
+    if stamped is not None and stamped != current:
+        log.info(
+            "opponent cache was resolved for %s, current season is %s -- "
+            "discarding %d profiles so leagues are re-derived",
+            stamped, current, len(cache) - 1,
+        )
+        return {}
+    return cache
 
 
 def _save_opp_cache(cache: dict[str, Any]) -> None:
     """Atomic write -- a truncated cache would silently lose every profile."""
     try:
         _OPP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(cache)
+        payload[_OPP_CACHE_SEASON_KEY] = get_current_season()
         tmp = _OPP_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
         tmp.replace(_OPP_CACHE)
     except OSError as exc:
         log.warning("could not persist opponent cache: %s", exc)

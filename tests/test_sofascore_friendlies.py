@@ -17,6 +17,8 @@ actually break silently:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scraper import sofascore_friendlies as f
@@ -388,3 +390,74 @@ def test_a_store_written_before_provenance_existed_upgrades_without_duplicating(
     assert set(after["opponent_tier"].dropna()) == {"top5_league"}
     gatti = after[after.player == "Federico Gatti"]
     assert len(gatti) == 1
+
+
+# --------------------------------------------------------------------------
+# opponent-profile cache — a club's league is a PER-SEASON fact
+#
+# The cache used to carry a "delete this file every August" note in
+# DATA_CATALOG.md. That is a manual step nobody performs, so a club promoted or
+# relegated over the summer kept its old league forever and every friendly
+# against it was bucketed at the wrong strength tier. The stamp makes it
+# automatic; these pin the mutation it exists to survive — a rollover.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_opp_cache(tmp_path, monkeypatch):
+    """_OPP_CACHE is bound at import time, so redirect it explicitly."""
+    p = tmp_path / "friendly_opponent_profiles.json"
+    monkeypatch.setattr(f, "_OPP_CACHE", p)
+    return p
+
+
+def _stamp(monkeypatch, season):
+    monkeypatch.setattr(f, "get_current_season", lambda: season)
+
+
+def test_a_cache_resolved_last_season_is_discarded(tmp_opp_cache, monkeypatch):
+    """THE test: a promoted club must not keep last season's league."""
+    _stamp(monkeypatch, "2025-2026")
+    f._save_opp_cache({"1": {"opponent_league": "Championship"}})
+
+    _stamp(monkeypatch, "2026-2027")   # August rolls over
+    assert f._load_opp_cache() == {}, "stale-season profiles must not survive"
+
+
+def test_a_cache_resolved_this_season_is_kept(tmp_opp_cache, monkeypatch):
+    _stamp(monkeypatch, "2026-2027")
+    f._save_opp_cache({"1": {"opponent_league": "Premier League"}})
+    got = f._load_opp_cache()
+    assert got["1"]["opponent_league"] == "Premier League"
+
+
+def test_an_unstamped_cache_is_kept_not_thrown_away(tmp_opp_cache, monkeypatch):
+    """Files written before the stamp existed are current, not stale —
+    discarding them would re-fetch hundreds of correct profiles."""
+    tmp_opp_cache.write_text(json.dumps({"1": {"opponent_league": "Serie A"}}))
+    _stamp(monkeypatch, "2026-2027")
+    assert f._load_opp_cache()["1"]["opponent_league"] == "Serie A"
+
+
+def test_the_season_stamp_is_written_on_save(tmp_opp_cache, monkeypatch):
+    _stamp(monkeypatch, "2026-2027")
+    f._save_opp_cache({"7": {"opponent_league": "Serie B"}})
+    on_disk = json.loads(tmp_opp_cache.read_text())
+    assert on_disk[f._OPP_CACHE_SEASON_KEY] == "2026-2027"
+
+
+def test_the_stamp_key_cannot_collide_with_a_team_id(tmp_opp_cache, monkeypatch):
+    """Team ids are numeric strings; the sentinel must never be one."""
+    assert not f._OPP_CACHE_SEASON_KEY.isdigit()
+    _stamp(monkeypatch, "2026-2027")
+    f._save_opp_cache({"853": {"opponent_league": "Serie A"}})
+    got = f._load_opp_cache()
+    assert got["853"]["opponent_league"] == "Serie A"
+
+
+def test_a_corrupt_or_non_mapping_cache_rebuilds_instead_of_raising(tmp_opp_cache,
+                                                                   monkeypatch):
+    _stamp(monkeypatch, "2026-2027")
+    tmp_opp_cache.write_text("[]")
+    assert f._load_opp_cache() == {}
+    tmp_opp_cache.write_text("{not json")
+    assert f._load_opp_cache() == {}
