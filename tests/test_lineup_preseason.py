@@ -501,3 +501,102 @@ def test_stale_scale_of_one_restores_the_old_behaviour(monkeypatch):
     df = pd.DataFrame(_season_rows("2025-2026", range(1, 11)))
     monkeypatch.setattr(lp, "LAST_MATCH_STALE_SCALE", 1.0)
     assert _inertia_alive(df, target_season="2026-2027")
+
+
+# --------------------------------------------------------------------------
+# 10. The promoted club must REACH the predictor at all.
+#
+# Section 7 proves the scoring path handles a club with no league history.
+# This section guards the rung above it: the name-resolution ladder in
+# `generate_lineup_predictions`, which decides whether that club is ever
+# passed to `predict_team_lineup` in the first place.
+#
+# Measured 2026-08-02, live, against the real files: all six promoted clubs
+# (Coventry City / Hull / Ipswich, Frosinone / Monza / Venezia) resolved to
+# None on every rung of the old ladder and were dropped with a warning -- yet
+# each had 25-29 friendly players and a real formation on disk, and
+# `predict_team_lineup` returns a full 11-man XI when handed one.  The repair
+# the friendlies work exists for was unreachable for 15% of both books.
+# --------------------------------------------------------------------------
+
+PROMOTED = "Venezia"
+LEAGUE_CLUBS = {"Juventus", "Inter", "AC Milan"}
+
+
+def test_a_club_with_league_history_resolves_without_touching_friendlies():
+    """The common path must not change: if the club is in the league table,
+    the pre-season name map is never consulted."""
+    name, source = lp._resolve_team_name("Juventus", LEAGUE_CLUBS, preseason_clubs=set())
+    assert (name, source) == ("Juventus", "league")
+
+
+def test_league_resolution_still_normalises_and_partial_matches():
+    assert lp._resolve_team_name("Milan", {"AC Milan"}, set())[0] == "AC Milan"
+    assert lp._resolve_team_name("Napoli", {"SSC Napoli"}, set())[0] == "SSC Napoli"
+
+
+def test_a_promoted_club_is_no_longer_dropped_when_it_has_friendlies():
+    """The bug: zero rows in the league table meant zero prediction."""
+    assert lp._resolve_team_name(PROMOTED, LEAGUE_CLUBS, set()) == (None, None), \
+        "precondition: no league history and no friendlies means no prediction"
+
+    name, source = lp._resolve_team_name(PROMOTED, LEAGUE_CLUBS, {PROMOTED})
+    assert name == PROMOTED
+    assert source == "preseason"
+
+
+def test_the_promoted_rung_also_normalises():
+    name, source = lp._resolve_team_name("Hull", LEAGUE_CLUBS, {"Hull City"})
+    assert (name, source) == ("Hull City", "preseason")
+
+
+def test_the_promoted_rung_refuses_substring_matches():
+    """A wrong club here would invent an entire XI out of another squad's
+    players, so this rung is deliberately stricter than the league one --
+    which DOES substring-match as a last resort."""
+    assert lp._resolve_team_name("Man", LEAGUE_CLUBS, {"Man City", "Man United"}) \
+        == (None, None)
+    # ...while the league rung, by design, still takes that risk.
+    assert lp._resolve_team_name("Man", {"Man City"}, set())[1] == "league"
+
+
+def test_an_unknown_club_still_resolves_to_nothing():
+    assert lp._resolve_team_name("Nowhere FC", LEAGUE_CLUBS, {PROMOTED}) == (None, None)
+
+
+def test_league_history_wins_over_a_same_named_friendly_entry():
+    """Every club plays friendlies, so the pre-season map contains the whole
+    league. It must never pre-empt real league data."""
+    name, source = lp._resolve_team_name("Juventus", LEAGUE_CLUBS, {"Juventus"})
+    assert source == "league"
+
+
+def test_preseason_club_names_reads_the_newest_season_by_default(tmp_path, monkeypatch):
+    """The club list and the per-club signal must agree on which pre-season is
+    current, or a club could be routed in and then handed nothing."""
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    rows = [
+        {"season": "2025-2026", "club": "Old Club", "is_our_club": True,
+         "player_id": 1, "player": "A", "sofascore_event_id": 1,
+         "is_starter": True, "minutes_played": 90, "position": "M",
+         "shirt_number": 1, "formation": "4-3-3", "match_date": "2025-07-01"},
+        {"season": "2026-2027", "club": PROMOTED, "is_our_club": True,
+         "player_id": 2, "player": "B", "sofascore_event_id": 2,
+         "is_starter": True, "minutes_played": 90, "position": "M",
+         "shirt_number": 2, "formation": "3-5-2", "match_date": "2026-07-01"},
+        {"season": "2026-2027", "club": "Opponent", "is_our_club": False,
+         "player_id": 3, "player": "C", "sofascore_event_id": 2,
+         "is_starter": True, "minutes_played": 90, "position": "M",
+         "shirt_number": 3, "formation": "3-5-2", "match_date": "2026-07-01"},
+    ]
+    pd.DataFrame(rows).to_parquet(tmp_path / "friendlies_all.parquet")
+
+    assert lp.preseason_club_names() == {PROMOTED}, "newest season, our clubs only"
+    assert lp.preseason_club_names("2025-2026") == {"Old Club"}
+
+
+def test_preseason_club_names_is_empty_when_there_is_no_data(tmp_path, monkeypatch):
+    """Must degrade to 'no promoted rung', not raise -- this runs on every
+    prediction cycle, including on a fresh checkout with no friendlies yet."""
+    monkeypatch.setattr(lp, "SOFASCORE_DIR", tmp_path)
+    assert lp.preseason_club_names() == set()

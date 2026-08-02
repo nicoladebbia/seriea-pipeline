@@ -18,6 +18,7 @@ import json
 import math
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -165,6 +166,88 @@ def _load_current_season_stats() -> pd.DataFrame:
     return df.sort_values("date")
 
 
+def _friendlies_frame(season: str | None = None) -> pd.DataFrame:
+    """Every scraped club friendly for ONE pre-season, our clubs only.
+
+    Shared by `load_preseason_signal` and `preseason_club_names` so the two can
+    never disagree about which pre-season is current or which rows count as
+    ours -- a club routed in off one answer and handed nothing by the other
+    would be worse than not routing it at all.
+
+    Returns an empty frame (never raises) when there is no data: a fresh
+    checkout, a scraper that has not run yet, and a corrupt parquet must all
+    degrade to "no signal", which every caller already handles.
+    """
+    files = sorted(SOFASCORE_DIR.glob("friendlies_*.parquet"))
+    if not files:
+        return pd.DataFrame()
+    try:
+        df = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
+    except (OSError, ValueError):
+        return pd.DataFrame()
+    if df.empty or "is_our_club" not in df.columns:
+        return pd.DataFrame()
+    df = df[df["season"] == (season or df["season"].max())]
+    return df[df["is_our_club"]]
+
+
+def preseason_club_names(season: str | None = None) -> set[str]:
+    """Clubs with at least one scraped friendly in that pre-season.
+
+    Used to route a club that has no league history at all -- see
+    `_resolve_team_name`.
+    """
+    df = _friendlies_frame(season)
+    if df.empty or "club" not in df.columns:
+        return set()
+    return {str(c) for c in df["club"].dropna().unique()}
+
+
+def _resolve_team_name(team: str, league_teams: "set[str] | Iterable[str]",
+                       preseason_clubs: "set[str] | Iterable[str] | None" = None,
+                       ) -> tuple[str | None, str | None]:
+    """Map a prediction's club name onto the name our data files use.
+
+    Returns `(resolved_name, source)` where source is "league", "preseason" or
+    None.  The ladder, strictest first: exact league name, normalised league
+    name, substring league name (last resort), then -- only when the club has
+    no league presence whatsoever -- exact or normalised PRE-SEASON name.
+
+    The pre-season rung exists because `_load_current_season_stats` filters to
+    `season.max()`, which at matchweek 1 is still LAST season: a newly promoted
+    club has zero rows there, resolved to None on every league rung, and was
+    dropped with a warning -- no XI at all.  Measured 2026-08-02 against the
+    live files, all six promoted clubs across both leagues were being dropped
+    while holding 25-29 friendly players and a real formation on disk, and
+    `predict_team_lineup` returns a full 11-man XI when handed one of them.
+    Those clubs are exactly what the pre-season signal was built for: with no
+    league history, friendlies are the ONLY evidence of who is at the club.
+
+    Substring matching is deliberately NOT offered on the pre-season rung.  On
+    the league rung a bad match degrades an XI that would otherwise be built
+    from real data; here it would invent an entire lineup out of another
+    squad's players, and every club plays friendlies, so the map it searches
+    contains the whole league.
+    """
+    league_teams = set(league_teams)
+    if team in league_teams:
+        return team, "league"
+    norm_to_raw = {normalize_team(t): t for t in league_teams}
+    if normalize_team(team) in norm_to_raw:
+        return norm_to_raw[normalize_team(team)], "league"
+    for t in league_teams:
+        if team.lower() in t.lower() or t.lower() in team.lower():
+            return t, "league"
+
+    pre = set(preseason_clubs or ())
+    if team in pre:
+        return team, "preseason"
+    pre_norm = {normalize_team(c): c for c in pre}
+    if normalize_team(team) in pre_norm:
+        return pre_norm[normalize_team(team)], "preseason"
+    return None, None
+
+
 def load_preseason_signal(team: str, season: str | None = None,
                           before: "str | pd.Timestamp | None" = None) -> dict:
     """Pre-season friendly participation for one club.
@@ -200,18 +283,10 @@ def load_preseason_signal(team: str, season: str | None = None,
     Returns {"players": {player_id: {...}}, "club_friendlies": int}.  An empty
     dict means "no signal", and every caller must degrade to prior behaviour.
     """
-    files = sorted(SOFASCORE_DIR.glob("friendlies_*.parquet"))
-    if not files:
+    df = _friendlies_frame(season)
+    if df.empty:
         return {}
-    try:
-        df = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
-    except (OSError, ValueError):
-        return {}
-    if df.empty or "is_our_club" not in df.columns:
-        return {}
-
-    df = df[df["season"] == (season or df["season"].max())]
-    df = df[df["is_our_club"] & (df["club"] == team)]
+    df = df[df["club"] == team]
     if before is not None and "match_date" in df.columns:
         df = df[pd.to_datetime(df["match_date"], errors="coerce")
                 < pd.to_datetime(before)]
@@ -2010,26 +2085,20 @@ def generate_lineup_predictions() -> dict:
         teams.add(p.get("away_team", ""))
     teams.discard("")
 
-    # Map prediction team names to Sofascore team names.
-    # Both should now use canonical names via normalize_team(), but as a
-    # safety net we also try normalizing and partial matching.
+    # Map prediction team names to Sofascore team names.  Both should now use
+    # canonical names via normalize_team(), but as a safety net the ladder in
+    # `_resolve_team_name` also normalises and partial-matches -- and falls
+    # back to the pre-season friendlies for a club with no league history at
+    # all, which is every promoted club at matchweek 1.
     sofascore_teams = set(stats_df["team"].unique())
-    # Build reverse lookup: normalized name → Sofascore name
-    ss_norm_to_raw = {normalize_team(st): st for st in sofascore_teams}
+    preseason_clubs = preseason_club_names()
     team_map = {}
+    team_source = {}
     for t in teams:
-        # 1. Direct match
-        if t in sofascore_teams:
-            team_map[t] = t
-        # 2. Try normalizing both sides
-        elif normalize_team(t) in ss_norm_to_raw:
-            team_map[t] = ss_norm_to_raw[normalize_team(t)]
-        else:
-            # 3. Partial match (last resort)
-            for st in sofascore_teams:
-                if t.lower() in st.lower() or st.lower() in t.lower():
-                    team_map[t] = st
-                    break
+        resolved, source = _resolve_team_name(t, sofascore_teams, preseason_clubs)
+        if resolved:
+            team_map[t] = resolved
+            team_source[t] = source
 
     print(f"Generating lineup predictions for {len(teams)} teams...")
 
@@ -2040,7 +2109,11 @@ def generate_lineup_predictions() -> dict:
         if not ss_team:
             print(f"  Warning: No Sofascore data for {team}")
             continue
-        print(f"  Processing {team} (Sofascore: {ss_team})...")
+        if team_source.get(team) == "preseason":
+            print(f"  Processing {team} (Sofascore: {ss_team}) — "
+                  "no league history, pre-season friendlies only...")
+        else:
+            print(f"  Processing {team} (Sofascore: {ss_team})...")
         team_predictions[team] = predict_team_lineup(
             stats_df, incidents_df, ss_team,
             player_position_map=player_position_map,
