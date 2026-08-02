@@ -84,12 +84,27 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — fail-soft
         _log(f"market values FAILED: {type(e).__name__}: {e}")
 
-    # 3. Rumors (display-only — NEVER feeds the model)
+    # 3. Rumors (display-only — NEVER feeds the model).
+    #    rumors_<season>.parquet is OVERWRITTEN each run, so it is
+    #    survivorship-biased and useless retrospectively. record_run() folds the
+    #    same rows into the append-only rumor_history.parquet, plus a per-club
+    #    coverage log so a later absence means "dropped", not "scraper blind".
+    coverage: dict[str, str] = {}
     try:
-        rm = scrape_rumors(season=args.season, league=args.league, only_teams=teams)
+        rm = scrape_rumors(season=args.season, league=args.league,
+                           only_teams=teams, coverage=coverage)
         _log(f"rumors: {len(rm)} rows")
     except Exception as e:  # noqa: BLE001
         _log(f"rumors FAILED: {type(e).__name__}: {e}")
+        rm = None
+    try:
+        from scripts.data.rumor_history import record_run
+        summ = record_run(rm, coverage, season=args.season, league=args.league)
+        _log(f"rumor history: +{summ['new_rumors']} new, {summ['updated_rumors']} refreshed, "
+             f"{summ['total_tracked']} tracked, coverage "
+             f"{summ['teams_covered']}/{summ['teams_expected']} ({summ['status']})")
+    except Exception as e:  # noqa: BLE001 — history is additive; never block the refresh
+        _log(f"rumor history FAILED: {type(e).__name__}: {e}")
 
     # 4. Second source — Wikipedia (exact date + independent cross-check). Serie A
     #    only; display + data-quality, never fed to the model directly.

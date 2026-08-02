@@ -401,6 +401,32 @@ class TestFeaturePipeline:
         overlap = forbidden & set(ml_cols)
         assert len(overlap) == 0, f"ML columns include forbidden cols: {overlap}"
 
+    def test_signing_integration_is_withheld_but_its_siblings_are_not(self, features_df):
+        """The INTEGRATION_CURVES output is excluded from training; the rest of
+        the transfer module is not.
+
+        Measured 2026-08-01: `signing_integration` takes 3 distinct values over
+        7,980 matches (93.3% identical) and ranks 62/68 in all three live Serie A
+        models at 0.0-0.1% importance. Its sibling `squad_disruption` ranks
+        10/68, 24/68 and 19/68 in those same models -- so a blanket exclusion of
+        the transfer features would throw away a genuinely useful one.
+
+        This pins the DISTINCTION, which a careless cleanup would collapse.
+        """
+        from features.build import get_ml_feature_columns
+
+        ml_cols = set(get_ml_feature_columns(features_df))
+        present = set(features_df.columns)
+
+        for side in ("home", "away"):
+            col = f"{side}_signing_integration"
+            if col in present:
+                assert col not in ml_cols, f"{col} must not be offered to training"
+            sib = f"{side}_squad_disruption"
+            if sib in present:
+                assert sib in ml_cols, (
+                    f"{sib} is a USEFUL feature (rank 10-24/68) and must survive")
+
 
 # ============================================================================
 # 3. TRAINING PIPELINE TESTS

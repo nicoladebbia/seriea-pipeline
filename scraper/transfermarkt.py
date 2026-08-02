@@ -486,6 +486,7 @@ def scrape_rumors(
     season: str = "2026-2027",
     league: str = "serie_a",
     only_teams: set[str] | None = None,
+    coverage: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Scrape UNCONFIRMED transfer rumors per club (Transfermarkt /geruechte).
 
@@ -498,6 +499,16 @@ def scrape_rumors(
 
     Rumors change and expire, so this OVERWRITES rumors_<season>.parquet each
     run (no incremental cache) and stamps scraped_at. All rows are confirmed=False.
+    The append-only lifetime record lives in scripts.data.rumor_history, which
+    is what any retrospective study must read -- this file alone is
+    survivorship-biased.
+
+    Args:
+        coverage: optional out-param.  If given, it is filled with
+            ``{club: "ok" | "fetch_failed"}`` per club attempted.  A club we
+            could not fetch is NOT the same as a club with zero rumors, and
+            rumor_history needs that distinction to tell "rumor dropped" from
+            "scraper was blind".
 
     Returns columns: team, player_name, age, current_club, market_value_eur,
     market_value_text, source_date, source_url, confirmed, scraped_at.
@@ -517,6 +528,8 @@ def scrape_rumors(
             resp.raise_for_status()
         except requests.RequestException as e:
             log.warning("Failed to fetch %s rumors: %s", team_name, e)
+            if coverage is not None:
+                coverage[team_name] = "fetch_failed"
             time.sleep(5)
             continue
         rows = _parse_rumors_page(resp.text, team_name)
@@ -524,6 +537,10 @@ def scrape_rumors(
             r["confirmed"] = False
             r["scraped_at"] = scraped_at
         all_rows.extend(rows)
+        # Fetched and parsed: this club is COVERED even if it has zero rumors.
+        # "Zero rumors today" is real information; "we never looked" is not.
+        if coverage is not None:
+            coverage[team_name] = "ok"
         log.info("  %s: %d rumors", team_name, len(rows))
         time.sleep(4)
 

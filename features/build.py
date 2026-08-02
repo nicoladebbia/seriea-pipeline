@@ -1890,6 +1890,65 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
         "is_august", "is_december", "is_january", "is_may",
         "is_late_season", "season_phase",
         "nothing_to_play_for", "safe_from_relegation", "out_of_europe",
+        # Signing INTEGRATION curve — measured worthless 2026-08-01.
+        # `features/transfer_impact_analysis.INTEGRATION_CURVES` is 32 hand-picked
+        # constants (8 positions x 4 stages) feeding `compute_integration_curve`,
+        # which exists ONLY to produce these two columns. Two independent
+        # measurements say they earn nothing:
+        #
+        #  (1) Output has no resolution. Across 7,980 matches the column takes
+        #      THREE distinct values (1.00 / 0.30 / 0.65) and 93.3% of rows sit
+        #      at 1.00 — the position-specificity never surfaces, because almost
+        #      every row is at the fully-integrated plateau.
+        #  (2) Every model that has ranked it, ranks it last — rank 62/68 at
+        #      0.0-0.1% importance in the CatBoost, LightGBM and XGBoost models
+        #      under data/models/serie_a/ (0.101 / 2.0 / exactly 0.000): three
+        #      algorithms, three different importance metrics, same verdict.
+        #
+        # ⚠️ Scope of (2): those three are NOT deployed. `data/models/serie_a/`
+        # is written by ml.persistence but never read — `_league_model_dir()`
+        # returns MODELS_DIR *root* for Serie A, and `_load_league_model` only
+        # runs for league != "serie_a". They are still valid evidence about the
+        # FEATURE (independently trained on the same data and target), just not
+        # about live impact. The directory name is misleading; do not read it as
+        # "the Serie A production models".
+        #
+        # Where it genuinely IS live: the draw detector (697 features, blend
+        # enabled at alpha=0.32) carries it; `catboost_no_odds` — the primary
+        # Serie A model — does not.
+        #
+        # Measured directly off draw_detector.cbm (its metadata records no
+        # importances, so this came from the model object). THE STRONGEST
+        # COUNTER-EVIDENCE, recorded rather than buried:
+        #     home_signing_integration  rank  98/697  0.24%
+        #     away_signing_integration  rank 684/697  0.00%
+        # So it is NOT literally zero in the live model, and excluding it does
+        # cost that model one rank-98 feature at the next retrain.
+        #
+        # Why the exclusion still stands: the home/away split is the tell. The
+        # SAME one-side-alive/mirror-exactly-zero pattern holds for
+        # squad_disruption (away 0.21% / home 0.00%) and jan_arrivals (away
+        # 0.08% / home 0.00%). A feature carrying real signal about squad
+        # integration should not matter for the home team and be exactly nil for
+        # the away team. That is the signature of arbitrary selection among
+        # noisy, correlated columns — and 294 of the 697 features sit at exactly
+        # zero, so the model is heavily regularised and the 0.2% tail is thin.
+        # The draw detector is also dominated by market features (top five are
+        # all odds/market_draw_prob, 3.4-5.0% each) and its whole blend is worth
+        # avg_ll_improvement=0.00278, so 0.24% of that is not a real loss.
+        # This is a judgement call on top of (1) and (2), not a slam dunk.
+        #
+        # Contrast its sibling `squad_disruption`, which is NOT excluded: same
+        # module, same window logic, but ranks 10/68, 24/68 and 19/68 in those
+        # same three models. The transfer module is not the problem; this curve is.
+        #
+        # Withheld from training only. The columns are still COMPUTED (identical
+        # treatment to net_squad_delta below), so already-trained models that
+        # carry them in `feature_names` keep loading and predicting — prediction
+        # selects by model metadata, never by this function. Delete
+        # INTEGRATION_CURVES and compute_integration_curve once no live model
+        # references the columns, i.e. after the next full retrain.
+        "home_signing_integration", "away_signing_integration",
         # Zero-importance features (confirmed 0.0 in feature importance analysis)
         "home_xg_attack_strength", "away_xg_attack_strength",
         "home_xg_defense_strength", "away_xg_defense_strength",

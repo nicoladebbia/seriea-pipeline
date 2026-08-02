@@ -1954,9 +1954,14 @@ class TestWorldCupDigest:
         assert "Edge combos" in text
         # both matches are inside the 48h combo window -> legs reference them
         assert "Foo or draw" in text and "Baz or draw" in text
-        # today-section content mirrors the Rome-date check the digest uses
-        rome = ZoneInfo("Europe/Rome")
-        if k1.astimezone(rome).date() == now.astimezone(rome).date():
+        # Mirror the digest's OWN display timezone, not a hardcoded one. The
+        # digest renders in WC_DISPLAY_TZ (America/New_York); its local variable
+        # is still named `rome` from before the Miami switch, and pinning this
+        # assertion to real Europe/Rome made the test fail on any evening where
+        # the two zones disagree about the date at now+30min.
+        from scripts.pipeline.telegram_bot import _wc_tz
+        disp = _wc_tz()
+        if k1.astimezone(disp).date() == now.astimezone(disp).date():
             assert "Foo–Bar" in text
         else:
             assert "No matches today" in text

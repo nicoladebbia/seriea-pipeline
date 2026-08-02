@@ -432,10 +432,21 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 
 | File | Rows | Cols | What |
 |------|------|------|------|
-| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes) |
+| `player_match_stats.parquet` | 101,875 | 80 | Per-player per-match (xG, shots, passes, tackles, duels, etc.). Feeds the 19-market player floor engine (passes/tackles/duels/interceptions validated 2026-06-11, NB tail for passes). **EPL twin: `player_match_stats_premier_league.parquet` (97,003 rows, 33 clubs, 2017-18→2025-26). Read BOTH — see below.** |
 | `match_team_stats.parquet` | 8,790 | 54 | Per-team per-match (possession, shots, xG, corners, passes, fouls) |
 | `shotmap_stats.parquet` | 6,684 | 30 | Per-**team** shot aggregate, 2 rows/match (totals, xG, xGOT, situation counts, distance stats) — **not** shot-level |
 | `all_shots_with_xg.parquet` | 82,432 | 27 | **Legacy shot events** (9 seasons, 2017-2024 strong, partial 2025-26) |
+
+> ⚠️ **`player_match_stats` is TWO files, one per league.** Any consumer reading only
+> `player_match_stats.parquet` is silently EPL-blind. Fixed in `lineup_predictor.py`
+> 2026-08-01 (`_PLAYER_STATS_FILES`), where the single-file read left all 20 Premier
+> League clubs with no XI prediction and graded every archived EPL prediction as a miss.
+> Safe to concatenate: **zero** team-name overlap between the files. But `player_id`
+> DOES overlap (229 players, correctly — it is a global Sofascore id), so never key
+> across leagues on `player_id` alone. Filter each file to its **own** `season.max()`;
+> a global max erases whichever league lags. This is failure mode #1 of the
+> "EPL data missing where SA has it" catalogue in `CLAUDE.md` — check any new loader
+> against it.
 | `match_incidents.parquet` | 44,184 | 13 | Full event timeline (goal, card, sub, VAR) |
 | `captains.parquet` | 6,650 | 5 | Team captain per match |
 
@@ -449,6 +460,74 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **Plan B:** Cached JSON files on disk (always available)
 - **Plan C:** Last saved parquet (stale but valid)
 - 3-level caching → very robust
+
+### `data/external/sofascore/friendlies_{season}.parquet` (PRE-SEASON — availability signal, NOT performance)
+
+Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 853 ("Club Friendly Games")**. One row per named player per friendly, **both sides**.
+
+| Season file | Rows | Matches | Tracked clubs |
+|---|---:|---:|---:|
+| `friendlies_2026_2027.parquet` | 4,118 | 90 | 38 |
+| `friendlies_2025_2026.parquet` | 7,461 | 165 | 40 |
+| `friendlies_2024_2025.parquet` | 5,649 | 128 | 36 |
+| `friendlies_2023_2024.parquet` | 133 | 3 | 4 |
+
+Backfilled 2026-08-01 with `--pages 4 --force` (17,361 rows / 386 matches total). Before that only the current pre-season existed — 2025-26 held **44 rows / 1 match** — which is why the signal could not be validated. `2023_2024` is a fragment (3 matches, 4 clubs): page depth runs out there, so **do not use it as a backtest season** — it has zero usable friendly coverage and only dilutes a pooled result.
+
+**Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `club_id`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`, plus opponent provenance: `opponent_id`, `opponent_country`, `opponent_league`, `opponent_league_id`, `opponent_country_priority`, `opponent_is_national`, `opponent_is_youth`, `opponent_tier`.
+
+**Opponent provenance — who did we actually play?** A friendly result is unreadable without the opposition's level: "Juventus 2-0 Nice" and "Torino 3-0 ACD Pinzolo" are identical in the payload. Each distinct opponent is resolved once via `/team/{id}` → `primaryUniqueTournament`, cached in `data/external/sofascore/friendly_opponent_profiles.json`. The **raw opponent name is always kept verbatim**; these columns only add context beside it, so a wrong bucket can be re-derived from the stored facts. `opponent_tier` ∈ `top5_league` / `other_professional` / `youth_or_reserve` / `national_team` / `lower_or_unknown`.
+
+2026 pre-season distribution (90 matches): `other_professional` 72, `top5_league` 15, `youth_or_reserve` 2, `lower_or_unknown` 1. Note `other_professional` spans a wide range (Championship → League Two → Scottish Premiership), so use `opponent_league` / `opponent_country_priority` rather than the tier alone when strength matters.
+
+⚠️ **The profile cache has no TTL — that distribution is a frozen snapshot, not a live fact.** `friendly_opponent_profiles.json` is keyed by team id and never re-fetched, so an opponent promoted or relegated after its first resolution keeps its old `opponent_league` / `opponent_tier` forever. Harmless within one pre-season; wrong across seasons. **Delete the JSON on season rollover** to force re-resolution (the parquet keeps the raw `opponent` name verbatim, so nothing is lost by re-deriving).
+
+**Consumed by:** `scripts/prediction/lineup_predictor.load_preseason_signal()` → `get_starter_frequency(..., preseason=...)`. Three effects, all inert without friendly data: an informed Bayesian prior (itself shrunk by friendly count), injection of players with **zero** league rows, and a downgrade for last-season regulars absent from ≥3 club friendlies. Also supplies the **formation** for promoted clubs, which have no league history to infer one from.
+
+**The signal expires in-season.** It is scaled by a fade that keys on whether the league table has caught up to the friendlies' own season, then decays over `PRESEASON_FADE_MATCHES` (5) league matches and is fully retired by MW5. This is not optional: un-faded, at 8 matchweeks it injected 32 players at 80% who had not played a league minute all season. Fading on match *count* alone would be wrong — during pre-season the 10-match window is full of *last* season's matches. Measured 2026-08-01 across 17 Serie A clubs: **194 players** who featured in a friendly had no rows in last season's league table and could not be predicted at all; **72 players** with ≥5/10 starts last season appeared in no friendly. This affects the **displayed** XI and the advisor's grounding only — `lineup_predictions.json` is not consumed by the match-outcome models.
+
+**What it is FOR — read this before using it.** Friendly *performance* is close to noise: no stakes, wildly uneven opposition (a Serie A side vs a fourth-tier local club), rolling 11-man half-time substitutions, trialists in the XI, and squads deliberately short of match fitness. What it measures reliably is **availability and trust**: who is fit enough to be named, which signing is *not* getting minutes, who has been dropped, what shape is being trialled, and whose minutes are ramping toward matchday 1. That is a legitimate prior for MW1 XI prediction. The Sofascore rating is carried as **`rating_low_trust`** — the column name is deliberate, so no downstream join treats a July friendly rating as comparable to a league rating.
+
+**Unused substitutes are kept with `minutes_played = 0`** (`was_used = False`). "Named but did not play" is the signal; dropping those rows would leave only the players who featured.
+
+**Isolation — important.** Friendlies are **never** written to `lineups.parquet`, `player_match_stats.parquet` or any league table; a friendly row there would silently contaminate the training set. The module keeps its own tournament id and does **not** touch `scraper.sofascore_lineups._SUPPORTED_TOURNAMENT_IDS` (the league ingest gate). Verified: zero `sofascore_event_id` overlap with the league tables.
+
+**Naming:** `club` is the **canonical** repo name for tracked clubs (`Milan`, not `AC Milan`); untracked friendly opponents keep their raw Sofascore name. Both sides are tagged `is_our_club` when two tracked clubs meet (e.g. Sassuolo v Parma) — 4 such fixtures in 2026 pre-season.
+
+**Refresh:** automated — `com.seriea-pipeline.friendlies-refresh` plist, **daily 06:30** (template in `scripts/pipeline/`, installed to `~/Library/LaunchAgents/`, logs to `logs/launchd-friendlies-refresh{,-err}.log`). Appears in the dashboard's `/api/scheduler/status` active/inactive list like every other job. Deliberately *not* 05:00–05:30: the Monday `weekly-data-refresh` job runs at 05:00 and this scrape takes ~5 minutes. Writes are atomic (tmp + replace) so an overlapping reader can never see a torn parquet.
+
+The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan) and exits 0 immediately outside them, so it is cheap to leave loaded year-round rather than remembering to unload it in September. Manual run: `python3 -m scraper.sofascore_friendlies --leagues serie_a,premier_league` (`--dry-run` to fetch without writing, `--force` to override the window, `--pages 2` to reach the *previous* pre-season). Re-running is idempotent — rows merge on `(sofascore_event_id, player_id)`, last write wins, so a corrected re-scrape updates in place.
+
+**Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Use `--pages 4` to reach back three pre-seasons; page depth runs out during 2023-24.
+
+**✅ The signal IS backtested (2026-08-01).** `scripts/analysis/backtest_preseason_signal.py` replays past matchweeks with the signal on and off, against a `naive` raw-start-count floor. Result over 578 fixtures, both leagues:
+
+| Matchweek | n | naive | model, no signal | model + signal | delta |
+|---|---:|---:|---:|---:|---:|
+| **1** | 120 | 48.8% | 47.6% | **55.6%** | **+8.0pp** |
+| 2 | 104 | 83.5% | 83.5% | 83.5% | +0.0pp |
+| 3 | 116 | 78.2% | 81.2% | 81.1% | −0.1pp |
+| 4 | 120 | 73.2% | 77.9% | 77.6% | −0.2pp |
+| 5 | 118 | 72.8% | 76.9% | 76.7% | −0.2pp |
+
+**The signal is real, and it is a matchweek-1 effect.** Paired t=4.80 at MW1, and of the 40 fixtures it moved, **39 improved and 1 worsened**. It is inert at MW2 and mildly *negative* at MW3–5 (3 better vs 10 worse combined) — so `PRESEASON_FADE_MATCHES=5` keeps it alive through matchweeks where it only costs accuracy. Note `_fade` is only computed when the table and the friendlies share a season, which is never true at MW1, so **the fade constant does not affect the matchweek the signal actually works on**.
+
+**Promoted clubs are the extreme case:** with no prior league table the model returns literally nothing, so the friendlies are the only evidence that exists.
+
+**Looks like a bug, is not: the friendly club list will not match the live player-stats table.** Between May and the first matchweek, `player_match_stats` holds LAST season's clubs while the friendly scrape resolves the NEW season's, live from `/unique-tournament/{tid}/seasons` → `seasons[0]` (verified 2026-08-01 to be the 26/27 id for both leagues). The difference is promotion/relegation, and it should be exactly **3-up-3-down per league**:
+
+| | out of the friendly list (relegated) | into it (promoted) |
+|---|---|---|
+| Serie A 2026-27 | Cremonese, Pisa, Verona | Frosinone, Monza, Venezia |
+| Premier League 2026-27 | Burnley, West Ham, Wolves | Coventry City, Hull, Ipswich |
+
+So a relegated club having **no** pre-season signal is correct — it is not in the league. A promoted club having one is the whole point, since it has no top-flight history at all. **Check the 3-up-3-down shape before concluding the club list is stale**; a mismatch that is *not* 3-and-3 is the real bug signal. A current-league club with zero rows usually just has not played a tracked friendly yet (Brentford and Brighton on 2026-08-01) and fills in as pre-season runs.
+
+**Season attribution — and the leak it hides.** `_season_for` files **everything from June onward** under the season that *starts* that August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`. That is right for pre-season friendlies, which is what the column is for.
+
+⚠️ **But the season label is therefore NOT a time bound.** A friendly played in **March 2025** is stamped `2024-2025` — the same label as the genuine July-2024 pre-season. Anything replaying a historical matchweek that filters by `season` alone will be handed matches from *months in its own future*. Two such friendlies exist in the 2024-08→2026-08 backfill.
+
+**Rule for any consumer that reasons about a past point in time:** pass `load_preseason_signal(team, season=..., before=<cutoff>)`. `before` drops friendlies played on/after the cutoff; the backtest passes the club's first league fixture of that season, which is also what "pre-season" literally means. Production leaves `before=None` — there is no future to leak from *today*. Filtering by season alone is safe **only** for the current, in-progress pre-season.
 
 ---
 
@@ -510,7 +589,15 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **Richer detail added 2026-07-14 (dashboard + data-quality):** `position`, `nationality`, `from_club`/`to_club` (the club selector was scoped too tightly — `td.zentriert a` found 0 on `/plus/1`; now row-level `a[href*='/verein/']`, preferring the crest img alt for the full club name), `market_value_at_transfer`. All 100% filled on the 26/27 file.
 - **Consumed by:** `features/transfer_impact_analysis.compute_net_squad_delta()` → `home/away_net_squad_delta` + `net_squad_delta_diff` (Step 35). Player weight blends TM market value with last-season minutes/rating from `sofascore/player_match_stats.parquet`.
 - **⚠ NOT a live model feature yet — GATED OUT of `get_ml_feature_columns`** (`features/build.py`) pending a leak-free held-out backtest with skill > 0 (project cardinal rule). Both pre-conditions for the backtest are now MET: (1) the winter-window LEAK IS FIXED — `compute_net_squad_delta` excludes `window=="winter"` rows (transfer files are now window-tagged for all 10 seasons 2017-2027 via `backfill_transfer_windows.py`, 2026-07-14), so winter signings no longer leak onto August matches; (2) `market_values_2026_2027.parquet` now exists, so live-signing talent weight is real, not the 0.15 floor. Backtest harness: `scripts/analysis/backtest_net_squad_delta.py` → `net_squad_delta_backtest.json`. Until it passes skill > 0, the columns drive ONLY the `/transfers` dashboard.
-- **NOTE — the `jan_*` / `squad_disruption` / `signing_integration` transfer features are NOT in the deployed 126-feature model** (verified against `catboost_no_odds_metadata.json:feature_names` 2026-07-14; only `us_squad_depth` from Understat is). So transfer-derived features have NEVER affected live 1X2 predictions — the 51.38% CV ceiling is honest, not leak-inflated. The window-filter + loan-dedup fixes correct the feature VALUES (for the dashboard and the backtest input); they do not change the live model.
+- **NOTE — the `jan_*` / `squad_disruption` / `signing_integration` transfer features are NOT in the deployed 126-feature model** (verified against `catboost_no_odds_metadata.json:feature_names` 2026-07-14; only `us_squad_depth` from Understat is). The window-filter + loan-dedup fixes correct the feature VALUES (for the dashboard and the backtest input); they do not change that model.
+
+  ⚠️ **Corrected 2026-08-01 — "never affected live 1X2 predictions" was too strong.** It holds for `catboost_no_odds`, but that is not the only live model. **`draw_detector`** (697 features, `blend_enabled=true`, `blend_alpha=0.32`, blended into the ensemble at `ensemble_prediction_engine.py:2481`) carries all six `home/away_{jan_arrivals,squad_disruption,signing_integration}`, and **`catboost_upcoming_v2`** carries `away_jan_arrivals`. So transfer features DO reach live output, via the draw blend. The CV-ceiling claim is unaffected — that is measured on `catboost_no_odds`.
+
+  ⚠️ **`data/models/serie_a/` is NOT the Serie A production model directory.** It is written by `ml.persistence.save_model` and never read: `_league_model_dir()` returns `MODELS_DIR` *root* for Serie A, and `_load_league_model()` only runs for `league != "serie_a"`. Anything measured there describes a trained-but-undeployed model. `premier_league/` **is** read and live.
+
+- **`signing_integration` is excluded from ML training as of 2026-08-01 — measured worthless.** Over 7,980 matches it takes **three** distinct values (1.00 / 0.30 / 0.65) with **93.3% of rows at 1.00**, and it ranks **62/68 at 0.0–0.1% importance** in all three CatBoost/LightGBM/XGBoost models under `models/serie_a/`. Its source, `INTEGRATION_CURVES`, is 32 hand-invented constants whose position-specificity never surfaces because nearly every row sits at the fully-integrated plateau. It is **still computed** (so already-trained models keep loading — prediction selects by model metadata, never by `get_ml_feature_columns`) but is withheld from the next retrain. Its sibling **`squad_disruption` is KEPT** — same module, but rank 10/68, 24/68 and 19/68 in those same models. Do not collapse the two in a cleanup.
+
+  **Counter-evidence, recorded honestly.** Measured directly off `draw_detector.cbm` (its metadata stores no importances): `home_signing_integration` is rank **98/697 at 0.24%** — not zero. But `away_signing_integration` is rank 684/697 at **0.00%**, and the identical one-side-alive/mirror-exactly-zero pattern holds for `squad_disruption` (away 0.21% / home 0.00%) and `jan_arrivals` (away 0.08% / home 0.00%). A feature carrying real squad-integration signal should not matter for the home side and be exactly nil for the away side; that asymmetry is the signature of arbitrary selection among noisy correlated columns. **294 of 697 features sit at exactly zero**, the top five are all odds/market features (3.4–5.0% each), and the whole draw blend is worth `avg_ll_improvement=0.00278`. The exclusion is a judgement call resting on the model-independent resolution argument, not a slam dunk.
 - **✅ Loan-to-permanent double-count FIXED 2026-07-14** — `_loan_to_permanent_outs()` drops the phantom "End of loan" OUT for a bought-back loanee (real IN + End-of-loan OUT same player) from BOTH `compute_net_squad_delta` and the live `squad_disruption` departure loop. A bought-back loanee counts as an arrival, not a departure. 12 tests in `tests/test_transfer_delta.py`.
 - **✅ January temporal leak FIXED 2026-07-14** — `compute_january_window_features` filters on `window=="winter"` (was: dead date branch → `else: assume all January` ingesting the whole season). Untagged files → jan_*=0 (leak-free), not keep-all.
 - **⚠ 60% of rows are "End of loan" returns** (not real squad changes) — the feature discounts them 0.3× and guards against double-counting a loanee who returns AND leaves.
@@ -543,6 +630,35 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 - **Unconfirmed transfer rumors per club:** `team, player_name, age, current_club, market_value_text, market_value_eur, source_date, source_url, confirmed(=False), scraped_at`. ~399 rows / 18 clubs (2026-07-14).
 - **Writer:** `scraper/transfermarkt.scrape_rumors()`. Overwritten each run (rumors expire); no incremental cache.
 - **NEVER read by the feature layer** — `compute_net_squad_delta` reads `transfers_*` only. Surfaced on `/transfers` dashboard as speculation with source date for traceability. TM's per-rumor "assessment" is usually blank, so NO fabricated probability is stored.
+- ⚠️ **Survivorship-biased — do NOT use this file for any retrospective study.** It shows only the rumors alive on the day you read it. Use `rumor_history.parquet` below.
+
+### `data/external/transfermarkt/rumor_history.parquet` + `rumor_scrape_log.parquet` (APPEND-ONLY — the studyable record)
+
+**What it is.** Every rumor ever observed, with a measurable lifetime. Seeded 2026-08-01 from the live snapshot (459 rumors / 20 Serie A clubs); grows daily thereafter. This is the file to read for *any* question of the form "do rumors predict transfers", "how long does a real link survive", "does market value predict completion".
+
+**Key** (`rumor_history.KEY`): `league, season, team, player_name, current_club`. **`source_url` is deliberately NOT in the key** — it embeds a Transfermarkt forum `post_id`, so a fresh post about the same rumor would mint a new row and reset `first_seen`, destroying the lifetime that is the whole point. URL is a latest-wins attribute.
+
+**Columns.** Key + latest-wins attributes (`age`, `market_value_eur`, `market_value_text`, `source_date`, `source_url`) + lifecycle: `first_seen`, `last_seen`, `last_covered_at`, `times_seen`, `first_run_id`, `last_run_id`.
+
+**⚠️ How to read it — use `annotate_status()`, never a bare `last_seen` comparison.**
+A stale `last_seen` has two opposite meanings: *the rumor was dropped*, or *the scraper was blind* (Transfermarkt 403s per club, and `refresh_transfers` swallows the whole step's exception). Those are **opposite labels** for the supervised question, so the store records per-club coverage separately and `last_covered_at` marks the last time a **successful** run looked at that club.
+
+```python
+from scripts.data.rumor_history import annotate_status
+df = annotate_status()          # adds days_alive, is_dropped, is_live, days_dark
+real_drops = df[df.is_dropped]  # a covering run ran AFTER last_seen
+unreliable = df[df.days_dark > 3]   # scraper blind here — trust neither verdict
+```
+- `is_dropped` — `last_covered_at > last_seen`. The rumor genuinely disappeared.
+- `is_live` — still listed as of the latest covering run.
+- `days_alive` — `last_seen − first_seen`. The lifetime feature.
+- `days_dark` — days since a run covered this club. Large ⇒ both verdicts unreliable.
+
+**`rumor_scrape_log.parquet`** — one row per run: `run_id, league, season, status (ok/partial/failed), teams_expected, teams_covered, n_rows, covered_teams, failed_teams`. Read this before trusting any window of history; a `failed`/`partial` streak is a hole in the record, not a burst of dropped rumors.
+
+**Writer:** `scripts/data/rumor_history.record_run()`, called by `scripts/data/refresh_transfers.py` step 3 right after `scrape_rumors` (which now fills a `coverage` out-param). Atomic tmp+replace. Additive and fail-soft: a dead scrape logs `status=failed` and **never** erases history.
+
+**Still NEVER a model feature.** This makes rumors *studyable*, which is the precondition for ever deciding whether they earn a feature slot — not a promotion of rumors to one.
 
 ### Auto-refresh (transfers)
 - **`com.seriea-pipeline.transfer-refresh` plist** (`deploy/launchagents/`, daily 06:00, `RunAtLoad: false`) runs `scripts/data/refresh_transfers.py` → scrapes confirmed + market values + rumors. Window-gated (summer 06-01→09-05, winter 01-01→02-05); exits instantly off-window. NOT auto-loaded — load with `launchctl load ~/Library/LaunchAgents/...` when wanted.
@@ -5648,3 +5764,82 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 
 ---
 
+
+---
+
+## 17. LEAGUE FEATURE PARITY — the EPL table is 427 columns narrower than Serie A
+
+**Measured 2026-08-02.** `features_serie_a.parquet` is `(7980, 1334)`;
+`features_premier_league.parquet` is `(7909, 909)`. 907 columns are common, 2 are
+EPL-only, and **427 exist in Serie A and not in the EPL table at all**.
+
+### The gap is structural, not a fill-rate problem
+
+For the 907 shared columns, EPL coverage is level with Serie A over the last three
+seasons (`ss_roll_*` 99.7% vs 99.8%, shot/xG-zone 97.7% vs 98.1%, referee 97.5% vs
+98.8%, elo 99.8% both). Nothing shared is thinly populated for the EPL. The
+asymmetry is entirely *which columns exist*.
+
+All 427 missing columns are well populated on the Serie A side — 170 family stems,
+most at 94–100% filled over recent seasons. They are real signal in Serie A, not
+dead columns that happen to be absent for the EPL.
+
+### Severity: unused width, NOT a live inference bug
+
+The production model `data/models/universal/catboost_no_odds_metadata.json`
+(variant `universal/no_odds__phase5_v1`) uses **126 features, of which zero come
+from any of the 427 missing families.** So these columns are not arriving as NaN at
+EPL inference — they are not requested at all, for either league. Building them for
+the EPL changes nothing until a retrain selects them. **Do not read this section as
+"the EPL model is missing a third of its features."**
+
+### Input data is at full parity — this is not a scraping gap
+
+| file | Serie A | Premier League |
+|---|---|---|
+| `match_team_stats` | 20,270 rows × 54 cols | 20,268 rows × 54 cols |
+| `shotmap_stats` | 6,688 rows × 30 cols | 6,698 rows × 30 cols |
+| `player_match_stats` | 101,875 rows × 80 cols | 97,003 rows × 80 cols |
+
+Same columns, same three recent seasons, near-identical row counts. The EPL data has
+been scraped all along. Both feature tables were also rebuilt within 18 minutes of
+each other on 2026-08-02, so **staleness is ruled out** — the current build produces
+these families for Serie A and not for the EPL.
+
+### Attribution — confirmed
+
+- **`fh_*` first-half splits (28 cols)** — `features/first_half_splits.py:122`
+  filters season directories with `or "premier_league" in season_dir.name`, an
+  explicit in-code exclusion of the EPL. This one is deliberate, whatever the
+  original reason.
+- **`features/player_depth.py:42`** and **`features/player_xg_model.py:336`** each
+  hardcode `player_match_stats.parquet` with no `_premier_league` sibling and no
+  glob — the documented "helper reads only the SA file" bug class from
+  `CLAUDE.md`. Candidate source of the `adv_*` (76) / `tagg_*` (52) / `gk_*` (8)
+  block, **not yet confirmed end-to-end** to be the producer of those exact columns.
+
+### Attribution — ruled out
+
+- **`features/sofascore_features.py` is NOT a cause.** It globs
+  `match_team_stats_*.parquet` and `shotmap_stats_*.parquet` (lines 660, 713) and
+  loads league-specific player files (line 59) — fully dual-league. A filename grep
+  flags it, which is why the grep is a hypothesis and not the finding.
+- **`features/_utils.py`'s Serie A-only `_PMS_PATH`** feeds a Sofascore-id bridge
+  with **zero callers**. Dead code, not a live gap.
+
+### Correctly absent — do not "fix" these
+
+- **`coppa_matches_last_7d` / `coppa_matches_last_14d` (4 cols)** — Coppa Italia.
+  There is no EPL equivalent; absence is correct.
+- `altitude_advantage`, `long_travel` (`features/venue.py`) are Serie A geography
+  features and are *likely* correctly absent — **not verified**, flagged here so the
+  next pass checks rather than assumes.
+
+### The remaining ~250 columns are unattributed
+
+`ct_*` card timing (26), `captain_*` (6), `formation_*` (8), transfers (8), missing
+players (8), subs (8), squad/spend (12), `fb_roll_*`/`fb_diff_*` (~60), the
+`ss_roll_*` shot-type-share subset and `shot_*`/`xg_share_*` derived layer (~100).
+Their builders have not been traced to a cause. Given the severity finding above,
+tracing them is only worth doing as part of a decision to retrain the EPL model on
+the wider feature set — which is a deliberate call, not a cleanup.
