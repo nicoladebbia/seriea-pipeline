@@ -496,6 +496,15 @@ The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan)
 
 **Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Only 16 of 38 tracked clubs had ≥3 friendlies on 2026-08-01. Consequence: **the signal has not been backtested** — validating whether it improves XI accuracy needs `--pages 2` to backfill prior pre-seasons first.
 
+**Looks like a bug, is not: the friendly club list will not match the live player-stats table.** Between May and the first matchweek, `player_match_stats` holds LAST season's clubs while the friendly scrape resolves the NEW season's, live from `/unique-tournament/{tid}/seasons` → `seasons[0]` (verified 2026-08-01 to be the 26/27 id for both leagues). The difference is promotion/relegation, and it should be exactly **3-up-3-down per league**:
+
+| | out of the friendly list (relegated) | into it (promoted) |
+|---|---|---|
+| Serie A 2026-27 | Cremonese, Pisa, Verona | Frosinone, Monza, Venezia |
+| Premier League 2026-27 | Burnley, West Ham, Wolves | Coventry City, Hull, Ipswich |
+
+So a relegated club having **no** pre-season signal is correct — it is not in the league. A promoted club having one is the whole point, since it has no top-flight history at all. **Check the 3-up-3-down shape before concluding the club list is stale**; a mismatch that is *not* 3-and-3 is the real bug signal. A current-league club with zero rows usually just has not played a tracked friendly yet (Brentford and Brighton on 2026-08-01) and fills in as pre-season runs.
+
 **Season attribution — and the leak it hides.** `_season_for` files **everything from June onward** under the season that *starts* that August, not the ordinary Aug-1 boundary in `config.settings.get_current_season()`. That is right for pre-season friendlies, which is what the column is for.
 
 ⚠️ **But the season label is therefore NOT a time bound.** A friendly played in **March 2025** is stamped `2024-2025` — the same label as the genuine July-2024 pre-season. Anything replaying a historical matchweek that filters by `season` alone will be handed matches from *months in its own future*. Two such friendlies exist in the 2024-08→2026-08 backfill.
