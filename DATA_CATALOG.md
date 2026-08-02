@@ -5764,3 +5764,82 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 
 ---
 
+
+---
+
+## 17. LEAGUE FEATURE PARITY — the EPL table is 427 columns narrower than Serie A
+
+**Measured 2026-08-02.** `features_serie_a.parquet` is `(7980, 1334)`;
+`features_premier_league.parquet` is `(7909, 909)`. 907 columns are common, 2 are
+EPL-only, and **427 exist in Serie A and not in the EPL table at all**.
+
+### The gap is structural, not a fill-rate problem
+
+For the 907 shared columns, EPL coverage is level with Serie A over the last three
+seasons (`ss_roll_*` 99.7% vs 99.8%, shot/xG-zone 97.7% vs 98.1%, referee 97.5% vs
+98.8%, elo 99.8% both). Nothing shared is thinly populated for the EPL. The
+asymmetry is entirely *which columns exist*.
+
+All 427 missing columns are well populated on the Serie A side — 170 family stems,
+most at 94–100% filled over recent seasons. They are real signal in Serie A, not
+dead columns that happen to be absent for the EPL.
+
+### Severity: unused width, NOT a live inference bug
+
+The production model `data/models/universal/catboost_no_odds_metadata.json`
+(variant `universal/no_odds__phase5_v1`) uses **126 features, of which zero come
+from any of the 427 missing families.** So these columns are not arriving as NaN at
+EPL inference — they are not requested at all, for either league. Building them for
+the EPL changes nothing until a retrain selects them. **Do not read this section as
+"the EPL model is missing a third of its features."**
+
+### Input data is at full parity — this is not a scraping gap
+
+| file | Serie A | Premier League |
+|---|---|---|
+| `match_team_stats` | 20,270 rows × 54 cols | 20,268 rows × 54 cols |
+| `shotmap_stats` | 6,688 rows × 30 cols | 6,698 rows × 30 cols |
+| `player_match_stats` | 101,875 rows × 80 cols | 97,003 rows × 80 cols |
+
+Same columns, same three recent seasons, near-identical row counts. The EPL data has
+been scraped all along. Both feature tables were also rebuilt within 18 minutes of
+each other on 2026-08-02, so **staleness is ruled out** — the current build produces
+these families for Serie A and not for the EPL.
+
+### Attribution — confirmed
+
+- **`fh_*` first-half splits (28 cols)** — `features/first_half_splits.py:122`
+  filters season directories with `or "premier_league" in season_dir.name`, an
+  explicit in-code exclusion of the EPL. This one is deliberate, whatever the
+  original reason.
+- **`features/player_depth.py:42`** and **`features/player_xg_model.py:336`** each
+  hardcode `player_match_stats.parquet` with no `_premier_league` sibling and no
+  glob — the documented "helper reads only the SA file" bug class from
+  `CLAUDE.md`. Candidate source of the `adv_*` (76) / `tagg_*` (52) / `gk_*` (8)
+  block, **not yet confirmed end-to-end** to be the producer of those exact columns.
+
+### Attribution — ruled out
+
+- **`features/sofascore_features.py` is NOT a cause.** It globs
+  `match_team_stats_*.parquet` and `shotmap_stats_*.parquet` (lines 660, 713) and
+  loads league-specific player files (line 59) — fully dual-league. A filename grep
+  flags it, which is why the grep is a hypothesis and not the finding.
+- **`features/_utils.py`'s Serie A-only `_PMS_PATH`** feeds a Sofascore-id bridge
+  with **zero callers**. Dead code, not a live gap.
+
+### Correctly absent — do not "fix" these
+
+- **`coppa_matches_last_7d` / `coppa_matches_last_14d` (4 cols)** — Coppa Italia.
+  There is no EPL equivalent; absence is correct.
+- `altitude_advantage`, `long_travel` (`features/venue.py`) are Serie A geography
+  features and are *likely* correctly absent — **not verified**, flagged here so the
+  next pass checks rather than assumes.
+
+### The remaining ~250 columns are unattributed
+
+`ct_*` card timing (26), `captain_*` (6), `formation_*` (8), transfers (8), missing
+players (8), subs (8), squad/spend (12), `fb_roll_*`/`fb_diff_*` (~60), the
+`ss_roll_*` shot-type-share subset and `shot_*`/`xg_share_*` derived layer (~100).
+Their builders have not been traced to a cause. Given the severity finding above,
+tracing them is only worth doing as part of a decision to retrain the EPL model on
+the wider feature set — which is a deliberate call, not a cleanup.
