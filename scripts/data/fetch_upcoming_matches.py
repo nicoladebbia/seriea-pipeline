@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -99,18 +100,38 @@ def _event_to_match(event: dict[str, Any], league: str) -> dict[str, Any] | None
     }
 
 
-def _fetch_league_events(league: str) -> list[dict[str, Any]]:
-    """Upcoming events for one league. Empty list on any failure or off-season.
+def _redact(text: object) -> str:
+    """Strip the API key out of anything bound for a log.
+
+    `requests` puts the FULL request URL — query string included — into the
+    string form of an HTTPError, so logging the exception verbatim wrote
+    `apiKey=<the real key>` into logs/ on every failure. Observed 2026-08-02
+    against a 401. The key is a secret; a failure path is not a licence to
+    print it.
+    """
+    s = str(text)
+    if API_KEY:
+        s = s.replace(API_KEY, "<redacted>")
+    return re.sub(r"(apiKey=)[^&\s]+", r"\1<redacted>", s)
+
+
+def _fetch_league_events(league: str) -> tuple[list[dict[str, Any]], bool]:
+    """Upcoming events for one league, and whether the call SUCCEEDED.
 
     Mirrors odds_fetcher.py:754-763 — same URL, same rate-limit gate, same
     0-credit accounting.
+
+    The bool is the point. An empty list is ambiguous on its own: the off-season
+    legitimately returns zero events, and so does a 401. Callers that persist the
+    result must be able to tell those apart, or a dead key silently overwrites a
+    good schedule with nothing (which is exactly what happened).
     """
     sport_key = _resolve_sport_key(league)
 
     ok, msg = check_rate_limit()
     if not ok:
         log.error("Rate limit: %s", msg)
-        return []
+        return [], False
 
     try:
         resp = requests.get(
@@ -121,8 +142,9 @@ def _fetch_league_events(league: str) -> list[dict[str, Any]]:
         resp.raise_for_status()
         events = resp.json()
     except Exception as e:  # noqa: BLE001 - one dead league must not sink the rest
-        log.error("Failed to fetch events for %s (%s): %s", league, sport_key, e)
-        return []
+        log.error("Failed to fetch events for %s (%s): %s",
+                  league, sport_key, _redact(e))
+        return [], False
 
     # /events listing is billed 0 credits by The Odds API.
     remaining_hdr = resp.headers.get("x-requests-remaining")
@@ -134,20 +156,29 @@ def _fetch_league_events(league: str) -> list[dict[str, Any]]:
 
     matches = [m for e in (events or []) if (m := _event_to_match(e, league))]
     log.info("%s: %d upcoming events", league, len(matches))
-    return matches
+    return matches, True
 
 
-def get_upcoming_matches(leagues: list[str] | None = None) -> list[dict[str, Any]]:
+def get_upcoming_matches(leagues: list[str] | None = None,
+                         with_status: bool = False):
     """Upcoming fixtures across ``leagues``, sorted by kickoff.
 
-    An empty list is a legitimate result, not a failure — the off-season returns
-    no events. The caller at scheduler.py:925 already guards with ``if matches``.
+    An empty list is a legitimate result — the off-season returns no events, and
+    the caller at scheduler.py:925 already guards with ``if matches``. What is
+    NOT legitimate is treating an empty list as a result when every league
+    FAILED; pass ``with_status=True`` to get ``(matches, any_league_succeeded)``
+    and refuse to persist when that flag is False.
+
+    Default stays list-only so existing callers are unaffected.
     """
     out: list[dict[str, Any]] = []
+    any_ok = False
     for league in leagues or ACTIVE_LEAGUES:
-        out.extend(_fetch_league_events(league))
+        matches, ok = _fetch_league_events(league)
+        any_ok = any_ok or ok
+        out.extend(matches)
     out.sort(key=lambda m: m["commence_time"])
-    return out
+    return (out, any_ok) if with_status else out
 
 
 def save_upcoming_matches(matches: list[dict[str, Any]]) -> None:
@@ -166,7 +197,16 @@ def save_upcoming_matches(matches: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
-    matches = get_upcoming_matches()
+    matches, any_ok = get_upcoming_matches(with_status=True)
+    if not any_ok:
+        # Every league failed. Writing here would replace a good schedule with
+        # an empty one and report success — which is what a dead API key did on
+        # 2026-08-02, clobbering matches.json and still exiting 0.
+        log.error(
+            "every league failed to fetch — refusing to overwrite %s "
+            "(a total failure is not an off-season)", OUTPUT_PATH,
+        )
+        return 1
     save_upcoming_matches(matches)
     return 0
 

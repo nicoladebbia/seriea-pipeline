@@ -4,9 +4,12 @@ Purpose: Global configuration constants for FBref scraping, HTTP requests, seaso
 Inputs:  None (static configuration)
 Outputs: Constants for FBREF_BASE_URL, DATA_DIR, SEASONS, REQUEST_DELAY_SECONDS, HEADERS, etc.
 Called by: All modules needing path resolution, HTTP config, or season lists
-Depends on: None (pure config module)
+Depends on: stdlib only (base layer — nothing in this repo may be imported here)
 """
 
+import logging
+import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -56,6 +59,151 @@ def latest_season_with_results(df, season_col: str = "season",
         return None
     seasons = played[season_col].dropna()
     return str(seasons.max()) if len(seasons) else None
+
+
+class SecretRedactingFilter(logging.Filter):
+    """Strip API keys out of every log record before it is written.
+
+    Found 2026-08-02: the live Odds API key was sitting in plaintext in TEN log
+    files — settlement, scheduler, morning, evening, pipeline, errors, the web
+    dashboard. Nobody logged it on purpose. `requests` embeds the FULL request
+    URL, query string included, in the string form of an HTTPError, so any
+    module that logs a failed Odds API call writes `apiKey=<the real key>`.
+
+    That makes per-call-site fixes the wrong shape: the leak is wherever an
+    exception is logged, which is everywhere. The primary hook is therefore the
+    process-wide LogRecord factory (see install_secret_redaction); this Filter
+    class carries the scrubbing logic and is additionally attached to handlers we
+    own, as defence in depth.
+
+    It lives in config/settings.py rather than scripts/utils/logging_config.py
+    because 163 modules import this one and only ONE imports that one — a
+    security control nobody imports protects nobody.
+
+    It redacts two ways, because either alone is insufficient:
+      * the literal values of known secret env vars — catches a key that appears
+        without its query parameter
+      * `apiKey=` / `api_key=` / `token=` / `key=` query params — catches a key
+        that has been rotated since the process started, or one this filter was
+        never told about
+    """
+
+    _PARAM_RE = re.compile(
+        r"(?i)\b(apikey|api_key|token|access_token|auth|key)=([^&\s\"']+)"
+    )
+    _SECRET_ENV_VARS = (
+        "ODDS_API_KEY", "OPENAI_API_KEY", "PERPLEXITY_API_KEY",
+        "APIFOOTBALL_KEY", "FOOTBALLDATA_KEY", "ANTHROPIC_API_KEY",
+        "TELEGRAM_BOT_TOKEN", "GOOGLE_GEMINI_KEY", "GROQ_API_KEY",
+        "FLASK_SECRET_KEY",
+    )
+    # Short values would turn every log line into <redacted> soup.
+    _MIN_SECRET_LEN = 12
+
+    @classmethod
+    def _literals(cls) -> list[str]:
+        out = []
+        for var in cls._SECRET_ENV_VARS:
+            val = os.environ.get(var)
+            if val and len(val) >= cls._MIN_SECRET_LEN:
+                out.append(val)
+        return out
+
+    @classmethod
+    def scrub(cls, text: str) -> str:
+        for secret in cls._literals():
+            text = text.replace(secret, "<redacted>")
+        return cls._PARAM_RE.sub(r"\1=<redacted>", text)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            # Render args in NOW, so lazy %-formatting cannot smuggle a secret
+            # past us at format time.
+            msg = record.getMessage()
+            scrubbed = self.scrub(msg)
+            if scrubbed != msg:
+                record.msg = scrubbed
+                record.args = ()
+            if record.exc_info:
+                # The traceback text is rendered later by the formatter; the
+                # exception's own str() is the part that carries the URL.
+                exc = record.exc_info[1]
+                if exc is not None and self.scrub(str(exc)) != str(exc):
+                    record.exc_info = None
+                    record.msg = f"{record.msg} | {self.scrub(str(exc))}"
+                    record.args = ()
+        except Exception:  # noqa: BLE001 — a logging filter must never raise
+            return True
+        return True
+
+
+_REDACTION_INSTALLED = False
+
+
+def install_secret_redaction(logger: "logging.Logger | None" = None) -> None:
+    """Turn on redaction process-wide. Idempotent.
+
+    Implemented with `logging.setLogRecordFactory`, NOT with handler filters.
+    Filters were the obvious choice and are not sufficient — measured:
+
+        import logging_config          # installs filters on root + its handlers
+        logging.basicConfig(...)       # a module adds its OWN handler afterwards
+        log.error("...apiKey=%s", key) # -> LEAKED
+
+    A handler filter can only protect handlers that exist when it is attached,
+    and the modules that leaked call basicConfig() after importing anything.
+    Every LogRecord in the process goes through the record factory, whenever its
+    handler was created, so that is the only hook with no ordering hazard.
+
+    Handler filters are still attached where we own the handlers (setup_logging),
+    as defence in depth for records built before this module is imported.
+    """
+    global _REDACTION_INSTALLED
+    if not _REDACTION_INSTALLED:
+        previous = logging.getLogRecordFactory()
+
+        def _redacting_factory(*args, **kwargs):
+            record = previous(*args, **kwargs)
+            try:
+                msg = record.getMessage()
+                scrubbed = SecretRedactingFilter.scrub(msg)
+                if scrubbed != msg:
+                    record.msg = scrubbed
+                    record.args = ()
+
+                # exc_info is rendered by the FORMATTER, long after this factory
+                # runs, so scrubbing the message alone still leaks: an HTTPError
+                # carries the full URL in its str(). Measured — this was the one
+                # path of five that survived the first version of this fix.
+                # Render the traceback here, scrub it, and carry it as text so
+                # nothing is lost except the secret.
+                if record.exc_info:
+                    import traceback as _tb
+                    ei = record.exc_info
+                    if isinstance(ei, BaseException):
+                        ei = (type(ei), ei, ei.__traceback__)
+                    if ei and ei[1] is not None:
+                        rendered = "".join(_tb.format_exception(*ei))
+                        clean = SecretRedactingFilter.scrub(rendered)
+                        if clean != rendered:
+                            record.exc_info = None
+                            record.exc_text = None
+                            record.msg = f"{record.getMessage()}\n{clean.rstrip()}"
+                            record.args = ()
+            except Exception:  # noqa: BLE001,S110 — logging must never raise
+                pass  # nosec: a failure to redact must not break logging itself
+            return record
+
+        logging.setLogRecordFactory(_redacting_factory)
+        _REDACTION_INSTALLED = True
+
+    target = logger or logging.getLogger()
+    if not any(isinstance(f, SecretRedactingFilter) for f in target.filters):
+        target.addFilter(SecretRedactingFilter())
+    for handler in target.handlers:
+        if not any(isinstance(f, SecretRedactingFilter) for f in handler.filters):
+            handler.addFilter(SecretRedactingFilter())
+
 
 # FBref
 FBREF_BASE_URL = "https://fbref.com"
@@ -190,3 +338,9 @@ def atomic_write_parquet(path: Path, df, **kwargs):
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+# Installed at import time, deliberately: this module is imported by ~163
+# others, including every module observed leaking the Odds API key into logs/.
+# A redaction hook that requires opting in does not protect anything.
+install_secret_redaction()

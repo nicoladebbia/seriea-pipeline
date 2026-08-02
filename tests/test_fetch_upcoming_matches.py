@@ -114,7 +114,8 @@ def test_empty_result_is_success_not_failure(tmp_path, monkeypatch):
     raise — scheduler.py:925 guards with `if matches:` and continues."""
     out = tmp_path / "matches.json"
     monkeypatch.setattr(fum, "OUTPUT_PATH", out)
-    monkeypatch.setattr(fum, "_fetch_league_events", lambda league: [])
+    # (matches, ok) — a SUCCESSFUL fetch that legitimately found nothing.
+    monkeypatch.setattr(fum, "_fetch_league_events", lambda league: ([], True))
 
     matches = fum.get_upcoming_matches(["serie_a"])
     assert matches == []
@@ -125,12 +126,13 @@ def test_empty_result_is_success_not_failure(tmp_path, monkeypatch):
 def test_a_dead_league_does_not_sink_the_others(real_event, monkeypatch):
     """A 401/timeout on one league must not lose the other's fixtures.
 
-    _fetch_league_events swallows its own errors and returns [], so a dead
-    league surfaces here as an empty list.
+    _fetch_league_events swallows its own errors and reports ok=False, so a
+    dead league surfaces here as an empty list with a failure flag.
     """
     good = fum._event_to_match(real_event, "premier_league")
     monkeypatch.setattr(
-        fum, "_fetch_league_events", lambda lg: [] if lg == "serie_a" else [good]
+        fum, "_fetch_league_events",
+        lambda lg: ([], False) if lg == "serie_a" else ([good], True)
     )
     assert fum.get_upcoming_matches(["serie_a", "premier_league"]) == [good]
 
@@ -143,7 +145,7 @@ def test_fetch_league_events_swallows_a_failed_call(monkeypatch):
 
     monkeypatch.setattr(fum.requests, "get", boom)
     monkeypatch.setattr(fum, "check_rate_limit", lambda *a, **k: (True, ""))
-    assert fum._fetch_league_events("serie_a") == []
+    assert fum._fetch_league_events("serie_a") == ([], False)
 
 
 def test_output_sorted_by_kickoff(real_event, monkeypatch):
@@ -152,10 +154,87 @@ def test_output_sorted_by_kickoff(real_event, monkeypatch):
     monkeypatch.setattr(
         fum,
         "_fetch_league_events",
-        lambda league: [
+        lambda league: ([
             fum._event_to_match(later, league),
             fum._event_to_match(earlier, league),
-        ],
+        ], True),
     )
     out = fum.get_upcoming_matches(["serie_a"])
     assert [m["event_id"] for m in out] == ["earlier", "later"]
+
+
+# --------------------------------------------------------------------------
+# Two defects found 2026-08-02 by actually running this against a dead key.
+# Both were invisible to the suite above, which only ever exercised success.
+# --------------------------------------------------------------------------
+
+def test_a_total_failure_does_not_overwrite_a_good_schedule(tmp_path, monkeypatch):
+    """THE data-integrity test.
+
+    An empty list is ambiguous: the off-season returns zero events, and so does
+    a 401 on every league. Persisting the second case replaces a real schedule
+    with nothing AND exits 0, so the failure is indistinguishable from a quiet
+    summer. Observed for real — a dead key wrote `{"count": 0}` over
+    matches.json and reported success.
+    """
+    out = tmp_path / "matches.json"
+    out.write_text(json.dumps({"count": 380, "matches": ["real schedule"]}))
+    monkeypatch.setattr(fum, "OUTPUT_PATH", out)
+    monkeypatch.setattr(fum, "_fetch_league_events", lambda lg: ([], False))
+
+    assert fum.main() == 1, "a total fetch failure must exit non-zero"
+    assert json.loads(out.read_text())["count"] == 380, "must not be clobbered"
+
+
+def test_a_genuine_offseason_still_writes_an_empty_schedule(tmp_path, monkeypatch):
+    """The other side of the same coin — this must NOT become a hair trigger."""
+    out = tmp_path / "matches.json"
+    out.write_text(json.dumps({"count": 380, "matches": ["stale"]}))
+    monkeypatch.setattr(fum, "OUTPUT_PATH", out)
+    monkeypatch.setattr(fum, "_fetch_league_events", lambda lg: ([], True))
+
+    assert fum.main() == 0
+    assert json.loads(out.read_text())["count"] == 0
+
+
+def test_one_live_league_is_enough_to_persist(real_event, tmp_path, monkeypatch):
+    good = fum._event_to_match(real_event, "premier_league")
+    out = tmp_path / "matches.json"
+    monkeypatch.setattr(fum, "OUTPUT_PATH", out)
+    monkeypatch.setattr(fum, "ACTIVE_LEAGUES", ["serie_a", "premier_league"])
+    monkeypatch.setattr(
+        fum, "_fetch_league_events",
+        lambda lg: ([], False) if lg == "serie_a" else ([good], True),
+    )
+    assert fum.main() == 0
+    assert json.loads(out.read_text())["count"] == 1
+
+
+def test_the_api_key_never_reaches_a_log(monkeypatch, caplog):
+    """`requests` embeds the full URL — query string included — in the string
+    form of an HTTPError, so logging the exception verbatim wrote the real key
+    into logs/ on every failure. A failure path is not a licence to print a
+    secret."""
+    secret = "s3cr3tkey0000000000000000000000f"
+    monkeypatch.setattr(fum, "API_KEY", secret)
+    monkeypatch.setattr(fum, "check_rate_limit", lambda *a, **k: (True, ""))
+
+    def boom(*a, **k):
+        raise requests.RequestException(
+            f"401 Client Error: Unauthorized for url: "
+            f"https://api.the-odds-api.com/v4/sports/soccer_epl/events?apiKey={secret}"
+        )
+
+    monkeypatch.setattr(fum.requests, "get", boom)
+    with caplog.at_level("ERROR"):
+        fum._fetch_league_events("premier_league")
+
+    assert secret not in caplog.text, "the API key leaked into the log"
+    assert "<redacted>" in caplog.text
+
+
+def test_redact_handles_an_unknown_key_shape():
+    """Even if API_KEY is unset/rotated, an apiKey= in the text is stripped."""
+    got = fum._redact("...events?apiKey=deadbeefdeadbeef&regions=eu")
+    assert "deadbeef" not in got
+    assert "regions=eu" in got

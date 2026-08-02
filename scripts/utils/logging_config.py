@@ -12,6 +12,7 @@ Provides consistent logging across all modules with:
 import logging
 import logging.handlers
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -28,6 +29,16 @@ MAIN_LOG = LOG_DIR / "pipeline.log"
 ERROR_LOG = LOG_DIR / "errors.log"
 API_LOG = LOG_DIR / "api_calls.log"
 PERFORMANCE_LOG = LOG_DIR / "performance.log"
+
+
+# Secret redaction lives in config/settings.py — the base layer, imported by
+# 163 modules including every one that leaked (odds_fetcher, scheduler,
+# notify, web/app.py). Only run_full_pipeline.py imports THIS module, so a
+# security control installed here would have protected almost nothing.
+from config.settings import (  # noqa: E402
+    SecretRedactingFilter,
+    install_secret_redaction,
+)
 
 
 class ColoredFormatter(logging.Formatter):
@@ -94,6 +105,8 @@ def setup_logging(
 
     # Clear existing handlers
     logger.handlers = []
+    # Re-attach after the clear above, and again at the end once handlers exist.
+    install_secret_redaction(logger)
 
     # Console handler
     if console_output:
@@ -139,7 +152,17 @@ def setup_logging(
         ))
         logger.addHandler(error_handler)
 
+    # Now that every handler exists, put the redaction filter on each of them.
+    install_secret_redaction(logger)
     return logger
+
+
+# Installed at IMPORT time, deliberately. The modules that leaked the Odds API
+# key were precisely the ones that never call setup_logging() — they use
+# logging.basicConfig() and log straight to the root logger. A security control
+# that only protects the callers who opted in does not protect anything, so
+# importing this module is enough to turn redaction on.
+install_secret_redaction()
 
 
 def get_logger(name: str) -> logging.Logger:
