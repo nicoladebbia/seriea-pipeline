@@ -30,7 +30,7 @@
         <string>-m</string>
         <string>scripts.data.scrape_epl_match_reports</string>
         <string>--season</string>
-        <string>2025-2026</string>
+        <string>current</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -40,7 +40,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from config.settings import DATA_DIR, RAW_HTML_DIR
+from config.settings import DATA_DIR, RAW_HTML_DIR, get_current_season
 from config.team_names import normalize_team
 from parser.html_utils import (
     _uncomment_tables,
@@ -457,7 +457,8 @@ def main():
     )
     parser.add_argument(
         "--season",
-        help="Process only this season (e.g., 2024-2025)",
+        help="Process only this season (e.g., 2024-2025), or 'current' "
+             "to resolve the calendar season at run time",
     )
     parser.add_argument(
         "--parse-only",
@@ -481,6 +482,14 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
 
+    # `--season current` resolves at run time. Scheduled jobs pass that instead
+    # of a literal, so a plist can never pin itself to a finished season — which
+    # is what happened to this one (stuck on 2025-2026 into August 2026).
+    # Omitting --season still means SEASONS (full backfill); that contract is
+    # unchanged, which is why this is a new VALUE and not a new default.
+    if args.season == "current":
+        args.season = get_current_season()
+        log.info(f"--season current resolved to {args.season}")
     seasons = [args.season] if args.season else SEASONS
 
     # Step 1: Extract match URLs and download
@@ -515,6 +524,28 @@ def main():
     df = parse_all_epl_seasons(seasons)
 
     if df.empty:
+        # "The season has not kicked off yet" is not a failure. Between the
+        # August season rollover and the first published fixture list there is
+        # genuinely nothing to scrape, and this job runs daily — exiting 1 for
+        # ~3 weeks every August is how a real failure later gets ignored.
+        # Distinguish the two by asking whether FBref has published a schedule:
+        # no fixtures.html at all => not started; fixtures present but nothing
+        # parsed => actually broken.
+        # Scoped to the CURRENT season deliberately: a HISTORICAL season with no
+        # fixtures.html is not "not started", it is missing data, and must stay
+        # an error. Without this scoping the clean-exit swallows that too.
+        _cur = get_current_season()
+        unstarted = [
+            s for s in seasons
+            if s == _cur and not (_epl_season_dir(s) / "fixtures.html").exists()
+        ]
+        if unstarted and len(unstarted) == len(seasons):
+            log.info(
+                "No fixture list published yet for %s — the season has not "
+                "started. Nothing to do; exiting clean.",
+                ", ".join(seasons),
+            )
+            return
         log.warning("No data parsed. Run without --parse-only first to download match reports.")
         sys.exit(1)
 

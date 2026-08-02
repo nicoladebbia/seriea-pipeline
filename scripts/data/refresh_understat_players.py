@@ -21,7 +21,7 @@ from typing import Any
 
 import pandas as pd
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, get_current_season
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def refresh(league_keys: list[str], seasons: list[str] | None,
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--season", help="Season to refresh, e.g. 2025-2026")
+    ap.add_argument("--season", help="Season to refresh, e.g. 2025-2026, or 'current' to resolve the calendar season at run time")
     ap.add_argument("--leagues", default="serie_a,premier_league",
                     help="Comma-separated: serie_a,premier_league")
     ap.add_argument("--all-seasons", action="store_true",
@@ -207,7 +207,13 @@ def main() -> int:
     if unknown:
         ap.error(f"unknown league(s): {unknown}. Known: {sorted(LEAGUES)}")
     if not args.season and not args.all_seasons:
-        ap.error("pass --season YYYY-YYYY or --all-seasons")
+        ap.error("pass --season YYYY-YYYY, --season current, or --all-seasons")
+
+    # Resolved at run time so a scheduled job cannot pin itself to a finished
+    # season -- this plist was stuck on 2025-2026 into August 2026.
+    if args.season == "current":
+        args.season = get_current_season()
+        log.info("--season current resolved to %s", args.season)
 
     refresh(league_keys, [args.season] if args.season else None,
             all_seasons=args.all_seasons, dry_run=args.dry_run)
