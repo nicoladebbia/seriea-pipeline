@@ -28,6 +28,23 @@ log = logging.getLogger(__name__)
 
 # Position-specific integration curves
 # Tuple = effectiveness at game 1, 3, 5, 7+
+#
+# ⚠️ MEASURED WORTHLESS 2026-08-01 — do not tune these, and do not add more.
+# These 32 numbers were invented, never validated, and exist only to produce
+# `{home,away}_signing_integration` via compute_integration_curve().  Two
+# independent measurements:
+#   (1) no resolution — over 7,980 matches the output takes THREE distinct
+#       values (1.00 / 0.30 / 0.65) with 93.3% of rows at 1.00, so the
+#       position-specificity never actually surfaces;
+#   (2) no signal — in all three live Serie A models it is rank 62/68 at
+#       0.0-0.1% importance (CatBoost 0.101, LightGBM 2.0, XGBoost 0.000).
+# The columns are now excluded from training in features/build.py
+# (get_ml_feature_columns).  DELETE this dict, compute_integration_curve, and
+# the `signing_integration` output once no live model still lists the columns in
+# its feature_names — i.e. after the next full retrain.
+#
+# Its sibling compute_squad_disruption is NOT affected: same module, same window
+# logic, but ranks 10/68, 24/68 and 19/68 in those same models.  Keep it.
 INTEGRATION_CURVES = {
     "GK": (0.50, 0.80, 0.95, 1.0),   # GK integrates fastest
     "CB": (0.40, 0.70, 0.90, 1.0),
