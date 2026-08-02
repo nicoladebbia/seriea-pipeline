@@ -592,6 +592,20 @@ LAST_MATCH_ABSENT_PENALTY = -10.0  # not in the squad at all
 #
 # So scale the bonus rather than delete it, and only when the table predates the
 # window. 0.0 = ignore inertia entirely at MW1.
+#
+# HONEST SCOPE -- re-measured over EIGHT seasons (2018-19..2025-26, n=316 MW1
+# fixtures; the `off` arm never touches friendlies, so it is not limited to the
+# two backfilled pre-seasons):
+#
+#     naive floor   50.00%
+#     off BEFORE    48.68%   <- the defect generalises across all 8 seasons
+#     off AFTER     49.74%   <- +1.06pp, paired t=2.08 (82 better, 69 worse)
+#
+# This is a PARTIAL repair, not a solution. The gate recovers about a point and
+# the direction is corroborated independently by the ablation, but the model is
+# STILL below raw start-counts at matchweek 1. On the 2-season sample it looked
+# like it cleared the floor (49.5 vs 48.6); the 8-season sample says otherwise.
+# Do not cite the 2-season figure. MW1 remains an open problem.
 LAST_MATCH_STALE_SCALE = 0.0
 
 
