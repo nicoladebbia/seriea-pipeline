@@ -1914,10 +1914,29 @@ def get_ml_feature_columns(df: pd.DataFrame) -> list[str]:
         # "the Serie A production models".
         #
         # Where it genuinely IS live: the draw detector (697 features, blend
-        # enabled at alpha=0.32) carries it, and `catboost_no_odds` — the primary
-        # Serie A model — does NOT. Its per-feature contribution inside the draw
-        # detector is UNMEASURED (that metadata records no feature_importance),
-        # so the case rests on (1), which is model-independent, plus (2).
+        # enabled at alpha=0.32) carries it; `catboost_no_odds` — the primary
+        # Serie A model — does not.
+        #
+        # Measured directly off draw_detector.cbm (its metadata records no
+        # importances, so this came from the model object). THE STRONGEST
+        # COUNTER-EVIDENCE, recorded rather than buried:
+        #     home_signing_integration  rank  98/697  0.24%
+        #     away_signing_integration  rank 684/697  0.00%
+        # So it is NOT literally zero in the live model, and excluding it does
+        # cost that model one rank-98 feature at the next retrain.
+        #
+        # Why the exclusion still stands: the home/away split is the tell. The
+        # SAME one-side-alive/mirror-exactly-zero pattern holds for
+        # squad_disruption (away 0.21% / home 0.00%) and jan_arrivals (away
+        # 0.08% / home 0.00%). A feature carrying real signal about squad
+        # integration should not matter for the home team and be exactly nil for
+        # the away team. That is the signature of arbitrary selection among
+        # noisy, correlated columns — and 294 of the 697 features sit at exactly
+        # zero, so the model is heavily regularised and the 0.2% tail is thin.
+        # The draw detector is also dominated by market features (top five are
+        # all odds/market_draw_prob, 3.4-5.0% each) and its whole blend is worth
+        # avg_ll_improvement=0.00278, so 0.24% of that is not a real loss.
+        # This is a judgement call on top of (1) and (2), not a slam dunk.
         #
         # Contrast its sibling `squad_disruption`, which is NOT excluded: same
         # module, same window logic, but ranks 10/68, 24/68 and 19/68 in those
