@@ -468,7 +468,11 @@ Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 
 | Season file | Rows | Matches | Tracked clubs |
 |---|---:|---:|---:|
 | `friendlies_2026_2027.parquet` | 4,118 | 90 | 38 |
-| `friendlies_2025_2026.parquet` | 44 | 1 | — |
+| `friendlies_2025_2026.parquet` | 7,461 | 165 | 40 |
+| `friendlies_2024_2025.parquet` | 5,649 | 128 | 36 |
+| `friendlies_2023_2024.parquet` | 133 | 3 | 4 |
+
+Backfilled 2026-08-01 with `--pages 4 --force` (17,361 rows / 386 matches total). Before that only the current pre-season existed — 2025-26 held **44 rows / 1 match** — which is why the signal could not be validated. `2023_2024` is a fragment (3 matches, 4 clubs): page depth runs out there, so **do not use it as a backtest season** — it has zero usable friendly coverage and only dilutes a pooled result.
 
 **Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `club_id`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`, plus opponent provenance: `opponent_id`, `opponent_country`, `opponent_league`, `opponent_league_id`, `opponent_country_priority`, `opponent_is_national`, `opponent_is_youth`, `opponent_tier`.
 
@@ -494,7 +498,21 @@ Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 
 
 The script **self-gates on `FRIENDLY_WINDOWS`** (1 Jun–5 Sep, 15 Dec–10 Jan) and exits 0 immediately outside them, so it is cheap to leave loaded year-round rather than remembering to unload it in September. Manual run: `python3 -m scraper.sofascore_friendlies --leagues serie_a,premier_league` (`--dry-run` to fetch without writing, `--force` to override the window, `--pages 2` to reach the *previous* pre-season). Re-running is idempotent — rows merge on `(sofascore_event_id, player_id)`, last write wins, so a corrected re-scrape updates in place.
 
-**Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Only 16 of 38 tracked clubs had ≥3 friendlies on 2026-08-01. Consequence: **the signal has not been backtested** — validating whether it improves XI accuracy needs `--pages 2` to backfill prior pre-seasons first.
+**Coverage limit:** the default single page of match history covers the whole *current* pre-season (measured: Milan page 0 spans 2025-12-04 → 2026-07-25) but not earlier ones. Use `--pages 4` to reach back three pre-seasons; page depth runs out during 2023-24.
+
+**✅ The signal IS backtested (2026-08-01).** `scripts/analysis/backtest_preseason_signal.py` replays past matchweeks with the signal on and off, against a `naive` raw-start-count floor. Result over 578 fixtures, both leagues:
+
+| Matchweek | n | naive | model, no signal | model + signal | delta |
+|---|---:|---:|---:|---:|---:|
+| **1** | 120 | 48.8% | 47.6% | **55.6%** | **+8.0pp** |
+| 2 | 104 | 83.5% | 83.5% | 83.5% | +0.0pp |
+| 3 | 116 | 78.2% | 81.2% | 81.1% | −0.1pp |
+| 4 | 120 | 73.2% | 77.9% | 77.6% | −0.2pp |
+| 5 | 118 | 72.8% | 76.9% | 76.7% | −0.2pp |
+
+**The signal is real, and it is a matchweek-1 effect.** Paired t=4.80 at MW1, and of the 40 fixtures it moved, **39 improved and 1 worsened**. It is inert at MW2 and mildly *negative* at MW3–5 (3 better vs 10 worse combined) — so `PRESEASON_FADE_MATCHES=5` keeps it alive through matchweeks where it only costs accuracy. Note `_fade` is only computed when the table and the friendlies share a season, which is never true at MW1, so **the fade constant does not affect the matchweek the signal actually works on**.
+
+**Promoted clubs are the extreme case:** with no prior league table the model returns literally nothing, so the friendlies are the only evidence that exists.
 
 **Looks like a bug, is not: the friendly club list will not match the live player-stats table.** Between May and the first matchweek, `player_match_stats` holds LAST season's clubs while the friendly scrape resolves the NEW season's, live from `/unique-tournament/{tid}/seasons` → `seasons[0]` (verified 2026-08-01 to be the 26/27 id for both leagues). The difference is promotion/relegation, and it should be exactly **3-up-3-down per league**:
 
