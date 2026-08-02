@@ -283,6 +283,53 @@ def _read_parquet_cached(path, columns=None):
         log.warning("Failed to read parquet %s: %s", path, e)
         return pd.DataFrame()
 
+# Book names that mean "these prices were made up". A comparison_odds.json
+# carrying one of these must never reach /value-bets: the page presents edges as
+# real money opportunities, and fabricated prices produce fabricated edges that
+# are indistinguishable from genuine ones on screen.
+#
+# This existed as a real hazard, not a hypothetical: an untracked
+# comparison_odds.json holding invented prices (1.95 / 3.5 / 4.2, book="sample")
+# sat in data/upcoming/ feeding the page. It has since been removed by hand, and
+# the standing advice was "remember to delete it before reactivation" — which is
+# the same class of instruction as the hardcoded seasons fixed today. A guard
+# makes the trap impossible to recreate; a reminder does not.
+_FABRICATED_BOOKS = {
+    "sample", "test", "fake", "demo", "example", "mock", "dummy",
+    "placeholder", "synthetic", "manual",
+}
+
+
+def _load_comparison_odds() -> tuple[str, dict]:
+    """Return (book_name, odds_by_match), refusing fabricated or unattributed odds.
+
+    The real writer (scripts/betting/betfair_to_comparison.py) always stamps
+    book="Betfair", so both rejections below are safe: nothing legitimate is
+    anonymous, and nothing legitimate is called "sample".
+    """
+    raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
+    if not isinstance(raw, dict):
+        return "", {}
+    book = raw.get("book", "") or ""
+    odds = raw.get("odds", {}) or {}
+    if not odds:
+        return book, {}
+    if book.strip().lower() in _FABRICATED_BOOKS:
+        log.error(
+            "REFUSING comparison_odds.json: book=%r is a fabricated-odds marker. "
+            "Value bets computed from invented prices are indistinguishable from "
+            "real ones on screen. Delete the file or write real odds.", book,
+        )
+        return "", {}
+    if not book.strip():
+        log.error(
+            "REFUSING comparison_odds.json: no `book` field, so the prices have "
+            "no provenance. The Betfair writer always stamps one.",
+        )
+        return "", {}
+    return book, odds
+
+
 def _load_json(path: Path, default=None):
     """Safely load a JSON file with 60-second mtime-aware cache.
 
@@ -2157,12 +2204,12 @@ def api_projections():
     except Exception as e:
         log.warning("results grading skipped: %s", e)
 
-    # Attach odds-edge comparison when a book's odds are available.
-    # comparison_odds.json is written by the Betfair client (or a sample);
-    # format {match: {market: {outcome: price}}}. The engine is source-agnostic.
-    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
-    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
-    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+    # Attach odds-edge comparison when a REAL book's odds are available.
+    # comparison_odds.json is written by the Betfair client; format
+    # {match: {market: {outcome: price}}}. The engine is source-agnostic, which
+    # is exactly why the provenance check has to happen here — see
+    # _load_comparison_odds: fabricated prices produce fabricated edges.
+    book_name, book_odds_by_match = _load_comparison_odds()
     if book_odds_by_match:
         from scripts.betting.odds_comparison import compare_match, best_value_bets
         for proj in projections:
@@ -2200,9 +2247,7 @@ def api_value_bets():
     """
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     preds = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else (predictions_raw or [])
-    odds_raw = _load_json(UPCOMING_DIR / "comparison_odds.json", {})
-    book_name = odds_raw.get("book", "") if isinstance(odds_raw, dict) else ""
-    book_odds_by_match = odds_raw.get("odds", {}) if isinstance(odds_raw, dict) else {}
+    book_name, book_odds_by_match = _load_comparison_odds()
 
     if not book_odds_by_match:
         return jsonify({"odds_source": "", "value_bets": [], "count": 0,

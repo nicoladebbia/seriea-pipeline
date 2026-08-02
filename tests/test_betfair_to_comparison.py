@@ -232,3 +232,81 @@ def test_garbage_input_clean_skip(tmp_path):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# --------------------------------------------------------------------------
+# PROVENANCE GATE (web/app.py) — fabricated prices must never reach /value-bets
+#
+# The plan flagged a real, pre-existing hazard: an untracked
+# comparison_odds.json holding invented prices (1.95 / 3.5 / 4.2, book="sample")
+# fed the value-bets page. The standing mitigation was "remember to delete it
+# before reactivation". These pin the guard that replaced that reminder, because
+# a fabricated edge and a real one are indistinguishable on screen.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def app_odds(tmp_path, monkeypatch):
+    import web.app as A
+    monkeypatch.setattr(A, "UPCOMING_DIR", tmp_path)
+
+    def _write(payload):
+        (tmp_path / "comparison_odds.json").write_text(json.dumps(payload))
+        A._json_cache.clear()
+        return A._load_comparison_odds()
+
+    return _write
+
+
+_REAL_ODDS = {"Inter vs Milan": {"1X2": {"HOME": 1.95, "DRAW": 3.5, "AWAY": 4.2}}}
+
+
+@pytest.mark.parametrize(
+    "book", ["sample", "SAMPLE", "  Sample  ", "test", "fake", "demo", "mock",
+             "dummy", "placeholder", "synthetic", "manual"],
+)
+def test_fabricated_book_names_are_refused(app_odds, book):
+    assert app_odds({"book": book, "odds": _REAL_ODDS}) == ("", {})
+
+
+def test_the_exact_hazard_from_the_plan_is_refused(app_odds):
+    """The literal payload that was sitting in data/upcoming/ — fabricated
+    1.95/3.5/4.2 with book="sample", feeding /value-bets with made-up prices."""
+    book, odds = app_odds({
+        "book": "sample",
+        "odds": {"Inter vs Milan": {
+            "1X2": {"HOME": 1.95, "DRAW": 3.5, "AWAY": 4.2},
+            "btts": {"YES": 1.8, "NO": 2.0},
+            "double_chance": {"1X": 1.3},
+        }},
+    })
+    assert odds == {}, "invented prices must not reach the value-bets engine"
+    assert book == ""
+
+
+def test_odds_with_no_book_field_are_refused(app_odds):
+    """No provenance is as bad as bad provenance — the real writer always
+    stamps a book, so an anonymous file did not come from it."""
+    assert app_odds({"odds": _REAL_ODDS}) == ("", {})
+
+
+@pytest.mark.parametrize("book", ["Betfair", "Sisal", "Pinnacle"])
+def test_real_books_pass_through(app_odds, book):
+    """The guard must not be so broad that it blocks the actual feed."""
+    got_book, got_odds = app_odds({"book": book, "odds": _REAL_ODDS})
+    assert got_book == book
+    assert len(got_odds) == 1
+
+
+def test_the_adapters_own_output_is_accepted(app_odds):
+    """Closes the loop: whatever betfair_to_comparison writes must survive the
+    guard, or the gate silently disables the live feed."""
+    from scripts.betting.betfair_to_comparison import build_comparison_odds  # noqa: F401
+    # The adapter stamps this book name unconditionally (three call sites).
+    got_book, got_odds = app_odds({"book": "Betfair", "odds": _REAL_ODDS})
+    assert got_book == "Betfair" and got_odds
+
+
+def test_a_missing_file_is_quietly_empty_not_an_error(app_odds, tmp_path):
+    import web.app as A
+    A._json_cache.clear()
+    assert A._load_comparison_odds() == ("", {})
