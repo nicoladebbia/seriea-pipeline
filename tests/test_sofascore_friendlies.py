@@ -18,6 +18,7 @@ actually break silently:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -461,3 +462,119 @@ def test_a_corrupt_or_non_mapping_cache_rebuilds_instead_of_raising(tmp_opp_cach
     assert f._load_opp_cache() == {}
     tmp_opp_cache.write_text("{not json")
     assert f._load_opp_cache() == {}
+
+
+# --------------------------------------------------------------------------
+# Club roster sidecar.
+#
+# The health monitor runs every 30 minutes; asking Sofascore "which clubs are in
+# the league" from there would be ~190 requests a day for three months against a
+# source we are periodically banned from. The daily scrape already resolves that
+# list, so it persists it and the monitor reads a file.
+#
+# The contract that matters is the EMPTY RETURN: `{}` means "not computable",
+# never "no clubs". A reader that cannot tell those apart reports full coverage
+# exactly when the data is unusable — which is the failure this whole sidecar
+# exists to avoid, so every unusable shape is pinned below.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_roster(tmp_path, monkeypatch):
+    monkeypatch.setattr(f, "_CLUB_ROSTER", tmp_path / "friendly_club_roster.json")
+    return tmp_path / "friendly_club_roster.json"
+
+
+def _teams(n=20, league="serie_a", start=1):
+    return {i: (f"Club{i}", league) for i in range(start, start + n)}
+
+
+def test_roster_roundtrips_and_groups_by_league(tmp_roster, monkeypatch):
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    teams = {**_teams(20, "serie_a", 1), **_teams(20, "premier_league", 100)}
+    f._save_club_roster(teams)
+
+    got = f.load_club_roster()
+    assert sorted(got) == ["premier_league", "serie_a"]
+    assert len(got["serie_a"]) == 20 and len(got["premier_league"]) == 20
+    assert got["serie_a"] == sorted(got["serie_a"]), "stored sorted for a stable diff"
+
+
+def test_a_roster_from_another_season_is_unusable_not_stale_data(tmp_roster,
+                                                                 monkeypatch):
+    """Last August's roster would report this season's promoted clubs as missing
+    and its relegated ones as present. Refuse it outright."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2025-2026")
+    f._save_club_roster(_teams())
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    assert f.load_club_roster() == {}
+
+
+def test_an_old_roster_is_unusable(tmp_roster, monkeypatch):
+    """A scrape that has been failing for a week must not look like coverage."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster(_teams())
+    raw = json.loads(tmp_roster.read_text())
+    raw["__fetched__"] = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
+    tmp_roster.write_text(json.dumps(raw))
+
+    assert f.load_club_roster() == {}
+    assert f.load_club_roster(max_age_hours=96) != {}, "the age cutoff is the knob"
+
+
+def test_a_naive_timestamp_does_not_raise(tmp_roster, monkeypatch):
+    """This repo has been bitten by naive/aware subtraction before; a TypeError
+    here would read as 'roster unusable' forever."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster(_teams())
+    raw = json.loads(tmp_roster.read_text())
+    raw["__fetched__"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
+    tmp_roster.write_text(json.dumps(raw))
+
+    assert f.load_club_roster() != {}
+
+
+@pytest.mark.parametrize("body", ["", "{not json", "[]", '{"leagues": []}',
+                                  '{"__season__": "2026-2027"}'])
+def test_every_malformed_shape_returns_empty_rather_than_raising(tmp_roster,
+                                                                 monkeypatch, body):
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    tmp_roster.write_text(body)
+    assert f.load_club_roster() == {}
+
+
+def test_a_missing_file_returns_empty(tmp_roster, monkeypatch):
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    assert f.load_club_roster() == {}
+
+
+def test_the_roster_is_written_atomically(tmp_roster, monkeypatch):
+    """A monitor reading a half-written file would see malformed JSON and report
+    the roster unusable — recoverable, but noisy every single day."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster(_teams())
+    assert not tmp_roster.with_suffix(".json.tmp").exists()
+    assert json.loads(tmp_roster.read_text())["leagues"]
+
+
+def test_a_dry_run_never_writes_the_roster(tmp_roster, monkeypatch):
+    """--dry-run must leave the filesystem untouched, roster included."""
+    monkeypatch.setattr(f, "fetch_club_ids", lambda leagues: _teams(2))
+    monkeypatch.setattr(f, "fetch_team_friendlies", lambda tid, pages=1: [])
+    monkeypatch.setattr(f, "_load_opp_cache", dict)
+    f.scrape_friendlies(["serie_a"], dry_run=True)
+    assert not tmp_roster.exists()
+
+
+def test_a_real_run_writes_the_roster_even_with_no_friendlies(tmp_roster,
+                                                              monkeypatch):
+    """Coverage is 'who SHOULD have friendlies'. If nobody has played one yet the
+    roster still has to exist, or the monitor cannot tell an empty pre-season
+    from a broken scrape."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    monkeypatch.setattr(f, "fetch_club_ids", lambda leagues: _teams(20))
+    monkeypatch.setattr(f, "fetch_team_friendlies", lambda tid, pages=1: [])
+    monkeypatch.setattr(f, "_load_opp_cache", dict)
+    monkeypatch.setattr(f, "_save_opp_cache", lambda c: None)
+
+    f.scrape_friendlies(["serie_a"], dry_run=False)
+    assert len(f.load_club_roster()["serie_a"]) == 20

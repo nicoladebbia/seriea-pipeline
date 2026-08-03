@@ -19,6 +19,12 @@ invisible on the day it would have been tested:
      `expected - have` is empty too and the check reports FULL coverage exactly
      when Sofascore is blocking us.
 
+The roster comes from a FILE the daily scrape persists, never a live lookup: the
+health monitor runs every 30 minutes, so asking Sofascore from here would be
+~190 requests a day for three months against a source we get banned from. The
+file is season-stamped and age-stamped so a stale one is detectable rather than
+quietly wrong.
+
 Test 1 is therefore written at a frozen July date, not today's.
 """
 from __future__ import annotations
@@ -36,10 +42,8 @@ SA = [f"SA{i}" for i in range(20)]
 EPL = [f"EPL{i}" for i in range(20)]
 
 
-def _registry(sa=SA, epl=EPL):
-    reg = {i: (n, "serie_a") for i, n in enumerate(sa, start=1)}
-    reg.update({i: (n, "premier_league") for i, n in enumerate(epl, start=100)})
-    return reg
+def _roster(sa=SA, epl=EPL):
+    return {"serie_a": list(sa), "premier_league": list(epl)}
 
 
 @pytest.fixture
@@ -48,7 +52,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
     monkeypatch.setattr(hc, "ACTIVE_LEAGUES", LEAGUES, raising=False)
     monkeypatch.setattr("config.leagues.ACTIVE_LEAGUES", LEAGUES)
-    monkeypatch.setattr(sf, "fetch_club_ids", lambda keys: _registry())
+    monkeypatch.setattr(sf, "load_club_roster", lambda **kw: _roster())
     (tmp_path / "external" / "sofascore").mkdir(parents=True)
     (tmp_path / "parsed").mkdir(parents=True)
     return tmp_path
@@ -157,7 +161,7 @@ def test_a_short_club_list_is_unknown_never_ok(env, monkeypatch, sa_clubs):
     coverage exactly when we are being blocked."""
     _freeze(monkeypatch, _dt.date(2026, 7, 20))
     _write_friendlies(env, "2026-2027")
-    monkeypatch.setattr(sf, "fetch_club_ids", lambda keys: _registry(sa=sa_clubs))
+    monkeypatch.setattr(sf, "load_club_roster", lambda **kw: _roster(sa=sa_clubs))
 
     got = hc.check_preseason_coverage()
     assert got["status"] == "UNKNOWN", "reported coverage off an unvalidated list"
@@ -167,20 +171,33 @@ def test_a_short_club_list_is_unknown_never_ok(env, monkeypatch, sa_clubs):
 def test_one_short_league_does_not_mask_a_real_gap_in_the_other(env, monkeypatch):
     _freeze(monkeypatch, _dt.date(2026, 7, 20))
     _write_friendlies(env, "2026-2027", epl=EPL[:-2])
-    monkeypatch.setattr(sf, "fetch_club_ids", lambda keys: _registry(sa=[]))
+    monkeypatch.setattr(sf, "load_club_roster", lambda **kw: _roster(sa=[]))
 
     got = hc.check_preseason_coverage()
     assert got["status"] == "UNKNOWN"
     assert got["leagues"]["premier_league"]["without_friendlies"] == sorted(EPL[-2:])
 
 
-def test_a_raising_club_lookup_is_unknown_not_a_crash(env, monkeypatch):
+def test_an_unusable_roster_file_is_unknown_not_full_coverage(env, monkeypatch):
+    """`load_club_roster` returns {} for missing / stale / wrong-season /
+    malformed. Every one of those must read as 'not computable', never as 'no
+    clubs' — the two are indistinguishable in an unguarded set difference."""
+    _freeze(monkeypatch, _dt.date(2026, 7, 20))
+    _write_friendlies(env, "2026-2027")
+    monkeypatch.setattr(sf, "load_club_roster", lambda **kw: {})
+
+    got = hc.check_preseason_coverage()
+    assert got["status"] == "UNKNOWN"
+    assert "roster" in got["detail"]
+
+
+def test_a_raising_roster_read_is_unknown_not_a_crash(env, monkeypatch):
     _freeze(monkeypatch, _dt.date(2026, 7, 20))
     _write_friendlies(env, "2026-2027")
 
-    def _boom(keys):
-        raise RuntimeError("403")
-    monkeypatch.setattr(sf, "fetch_club_ids", _boom)
+    def _boom(**kw):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(sf, "load_club_roster", _boom)
 
     got = hc.check_preseason_coverage()
     assert got["status"] == "UNKNOWN"

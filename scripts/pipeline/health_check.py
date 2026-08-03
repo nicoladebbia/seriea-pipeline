@@ -967,7 +967,7 @@ def check_preseason_coverage() -> Dict:
         from scraper.sofascore_friendlies import (
             _in_friendly_window,
             current_friendly_season,
-            fetch_club_ids,
+            load_club_roster,
         )
 
         today = datetime.now().date()
@@ -1000,21 +1000,26 @@ def check_preseason_coverage() -> Dict:
         fr = pd.read_parquet(fpath, columns=["club", "club_league", "is_our_club"])
         fr = fr[fr["is_our_club"]]
 
-        try:
-            registry = fetch_club_ids(list(ACTIVE_LEAGUES))
-        except Exception as exc:  # noqa: BLE001 — a live lookup must not sink the monitor
+        # Read the roster the daily scrape persisted; never ask Sofascore from
+        # here. This monitor runs every 30 minutes, so a live lookup would be
+        # ~190 requests a day for three months against a source we get banned
+        # from — to re-fetch a list that changes once a year.
+        roster = load_club_roster()
+        if not roster:
             out["status"] = "UNKNOWN"
-            out["detail"] = f"club list unavailable: {type(exc).__name__}"
+            out["detail"] = ("club roster missing, stale or stamped to another "
+                             "season — run scraper.sofascore_friendlies")
             return out
 
         for league in ACTIVE_LEAGUES:
-            expected = {n for n, lg in registry.values() if lg == league}
+            expected = set(roster.get(league, ()))
             have = set(fr[fr["club_league"] == league]["club"])
-            # fetch_club_ids logs and CONTINUES on a 403 or an empty payload — it
-            # returns a short dict, it does not raise. An unguarded empty
-            # `expected` makes `expected - have` empty too, and the check would
-            # report perfect coverage precisely when Sofascore is blocking us.
-            # Guard on cardinality, never on the exception.
+            # `load_club_roster` returns {} rather than a partial answer, but a
+            # league key can still be short if that league 403'd during the
+            # scrape — fetch_club_ids logs and CONTINUES, it does not raise. An
+            # unguarded empty `expected` makes `expected - have` empty too, and
+            # the check would report perfect coverage precisely when Sofascore
+            # was blocking us. Guard on cardinality, never on the exception.
             if len(expected) < 18:
                 out["status"] = "UNKNOWN"
                 out["leagues"][league] = {

@@ -480,6 +480,72 @@ def fetch_team_friendlies(team_id: int, pages: int = 1) -> list[dict[str, Any]]:
     return events
 
 
+#: The roster this scrape enumerated, persisted so a MONITOR never has to ask
+#: Sofascore the same question. `health_check.check_preseason_coverage()` needs
+#: "which clubs SHOULD have friendlies", and the health monitor runs every 30
+#: minutes: calling `fetch_club_ids` from there would be ~190 extra requests a
+#: day for three months, against a source this repo is periodically banned from,
+#: to re-fetch a list that changes once a year. Writing it here costs nothing --
+#: the daily scrape already resolved it -- and the names match the parquet's
+#: `club` column BY CONSTRUCTION, since both come from the same
+#: `_normalize_sofascore_team` call.
+_CLUB_ROSTER = SOFASCORE_DIR / "friendly_club_roster.json"
+
+
+def _save_club_roster(our_teams: dict[int, tuple[str, str]]) -> None:
+    """Persist {league: [club, ...]} with a season stamp and a fetch timestamp.
+
+    Both stamps exist so a stale file is DETECTABLE rather than quietly wrong:
+    a reader that cannot tell a fresh roster from last season's would report
+    relegated clubs as missing every August.
+    """
+    by_league: dict[str, list[str]] = {}
+    for club, league in our_teams.values():
+        by_league.setdefault(league, []).append(club)
+    payload: dict[str, Any] = {
+        # Same stamp key as the opponent cache on purpose: one convention for
+        # every season-stamped JSON this module owns, so a reader never has to
+        # remember which file uses which sentinel.
+        _OPP_CACHE_SEASON_KEY: current_friendly_season(),
+        "__fetched__": datetime.now(UTC).isoformat(),
+        "leagues": {k: sorted(v) for k, v in by_league.items()},
+    }
+    try:
+        _CLUB_ROSTER.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _CLUB_ROSTER.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        tmp.replace(_CLUB_ROSTER)
+    except OSError as exc:
+        log.warning("could not write club roster: %s", exc)
+
+
+def load_club_roster(max_age_hours: float = 48.0) -> dict[str, list[str]]:
+    """{league: [club, ...]} as last enumerated, or ``{}`` if unusable.
+
+    Returns empty -- never a partial or stale answer -- when the file is
+    missing, malformed, stamped to another season, or older than
+    *max_age_hours*. The caller must treat ``{}`` as "not computable", NOT as
+    "no clubs": that distinction is the whole point of the empty return.
+    """
+    try:
+        raw = json.loads(_CLUB_ROSTER.read_text())
+        if not isinstance(raw, dict):
+            return {}
+        if raw.get(_OPP_CACHE_SEASON_KEY) != current_friendly_season():
+            return {}
+        fetched = datetime.fromisoformat(raw["__fetched__"])
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=UTC)
+        if (datetime.now(UTC) - fetched).total_seconds() > max_age_hours * 3600:
+            return {}
+        leagues = raw.get("leagues")
+        if not isinstance(leagues, dict):
+            return {}
+        return {k: list(v) for k, v in leagues.items() if isinstance(v, list)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
 def scrape_friendlies(
     leagues: Iterable[str] = ("serie_a", "premier_league"),
     dry_run: bool = False,
@@ -491,6 +557,8 @@ def scrape_friendlies(
         log.error("no club ids resolved -- aborting")
         return pd.DataFrame()
     log.info("resolved %d clubs across %s", len(our_teams), list(leagues))
+    if not dry_run:
+        _save_club_roster(our_teams)
 
     seen_events: set[int] = set()
     by_season: dict[str, list[dict[str, Any]]] = {}
