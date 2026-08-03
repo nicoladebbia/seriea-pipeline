@@ -467,12 +467,27 @@ Written by `scraper/sofascore_friendlies.py` from Sofascore **unique-tournament 
 
 | Season file | Rows | Matches | Tracked clubs |
 |---|---:|---:|---:|
-| `friendlies_2026_2027.parquet` | 4,118 | 90 | 38 |
+| `friendlies_2026_2027.parquet` | 4,500 | 98 | 38 |
 | `friendlies_2025_2026.parquet` | 7,461 | 165 | 40 |
-| `friendlies_2024_2025.parquet` | 5,649 | 128 | 36 |
-| `friendlies_2023_2024.parquet` | 133 | 3 | 4 |
+| `friendlies_2024_2025.parquet` | 7,705 | 172 | 40 |
+| `friendlies_2023_2024.parquet` | 6,799 | 153 | 39 |
+| `friendlies_2022_2023.parquet` | 8,471 | 191 | 38 |
+| `friendlies_2021_2022.parquet` | 3,778 | 90 | 34 |
+| `friendlies_2020_2021.parquet` | 1,624 | 41 | 21 |
+| `friendlies_2019_2020.parquet` | 638 | 17 | 9 |
 
-Backfilled 2026-08-01 with `--pages 4 --force` (17,361 rows / 386 matches total). Before that only the current pre-season existed — 2025-26 held **44 rows / 1 match** — which is why the signal could not be validated. `2023_2024` is a fragment (3 matches, 4 clubs): page depth runs out there, so **do not use it as a backtest season** — it has zero usable friendly coverage and only dilutes a pooled result.
+Backfilled 2026-08-02 with `--pages 12 --force`: **40,976 rows / 927 matches / 3,575 tracked-club players**. The `--pages 4` backfill of the day before reached only 2024-25 and left 2023-24 as a 3-match fragment, which is why the constants could be tuned on just **two** informative seasons. Pagination in fact reaches **2020-21** (probed on Juventus: 4 pages → Jul 2024, 8 → Jul 2022, 12 → Sep 2020), and the old friendlies still carry real lineups — 941 of 1,214 events parsed, ~22% having no lineup payload at all.
+
+**Usable backtest seasons, by club coverage** (out of 20 per league):
+
+| season | Serie A clubs | EPL clubs | verdict |
+|---|---|---|---|
+| 2022-23 … 2025-26 | 18–20 | 19–20 | **full — use these** |
+| 2021-22 | 17 | 17 | usable, slightly thin |
+| 2020-21 | 13 | 8 | partial — pooling it skews toward the big clubs |
+| 2019-20 | 6 | 3 | fragment — **do not use** |
+
+Two properties to hold in mind before backtesting on the deep seasons. The club set is the **current** one, so a club has friendly rows for seasons in which it was in a different division (Cremonese 2021-22) and simply has no league rows to grade against — the join drops them, it does not corrupt them. And the shipped `(SHRINK_PRIOR_STRENGTH=16, PRESEASON_ABSENT_PENALTY=-30, PRESEASON_FADE_MATCHES=3.0)` window was solved on the **old, two-season** corpus; re-tuning against this larger one is a cross-condition comparison unless the eval set is held fixed.
 
 **Columns:** `sofascore_event_id`, `match_date`, `season`, `club`, `club_id`, `opponent`, `is_home`, `is_our_club`, `club_league`, `formation`, `player`, `player_id`, `shirt_number`, `position`, `is_starter`, `minutes_played`, `was_used`, `rating_low_trust`, plus opponent provenance: `opponent_id`, `opponent_country`, `opponent_league`, `opponent_league_id`, `opponent_country_priority`, `opponent_is_national`, `opponent_is_youth`, `opponent_tier`.
 
