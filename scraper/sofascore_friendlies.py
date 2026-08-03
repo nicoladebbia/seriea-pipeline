@@ -279,11 +279,53 @@ def _pin_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _participation_score(df: pd.DataFrame) -> pd.Series:
+    """1 where the row carries participation data, 0 where it is lineup-only.
+
+    Deliberately coarse. The question is only "does this row still have the
+    statistics Sofascore has since stopped serving", and a single bit answers it
+    without inventing a ranking between, say, 45 minutes and a rating.
+    """
+    mins = pd.to_numeric(df.get("minutes_played"), errors="coerce").fillna(0) > 0
+    used = df["was_used"].astype(bool) if "was_used" in df else False
+    rated = df["rating_low_trust"].notna() if "rating_low_trust" in df else False
+    return (mins | used | rated).astype(int)
+
+
+def _drop_duplicates_without_downgrading(df: pd.DataFrame) -> pd.DataFrame:
+    """De-duplicate on _KEY, keeping the row that still has participation data.
+
+    Ties -- both informative, or both lineup-only -- fall back to arrival order,
+    preserving the "a corrected re-scrape updates in place" contract.
+    """
+    ordered = df.assign(_info=_participation_score(df), _ord=range(len(df)))
+    ordered = ordered.sort_values(["_info", "_ord"])
+    kept = ordered.drop_duplicates(subset=_KEY, keep="last")
+    return kept.drop(columns=["_info", "_ord"])
+
+
 def _save(rows: Iterable[dict[str, Any]], season: str) -> pd.DataFrame:
     """Merge rows into the season store, de-duplicating on (event, player).
 
-    Last write wins, so a corrected re-scrape updates in place instead of
-    appending a second copy.  Saving nothing leaves an existing file untouched.
+    Last write wins *among equally informative rows*, so a corrected re-scrape
+    updates in place instead of appending a second copy.  Saving nothing leaves
+    an existing file untouched.
+
+    **A re-scrape may never downgrade a row.**  Sofascore's participation data
+    (``minutes_played``, ``was_used``, ``rating_low_trust``) has a rolling
+    retention window of about three years; the *lineup* for an old friendly is
+    served forever, the *statistics* are not.  Measured 2026-08-02, the cliff
+    sits at **2023-07-05**: every quarter before it is at exactly 0.0 used-rows,
+    every quarter after holds a steady ~0.25.  The boundary is a wall-clock
+    window, not a season property, so it MOVES -- next summer 2023-24 goes dark
+    too.
+
+    Blind ``keep="last"`` plus a source that degrades over time is silent,
+    irreversible data loss: a future ``--pages 12`` re-scrape would replace real
+    minutes with zeros for exactly the seasons we can no longer re-acquire them
+    for.  The parquet is the only surviving copy, so the merge prefers whichever
+    row actually carries participation data and falls back to arrival order only
+    when they tie.
     """
     path = _store_path(season)
     existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
@@ -294,7 +336,7 @@ def _save(rows: Iterable[dict[str, Any]], season: str) -> pd.DataFrame:
 
     merged = pd.concat([existing, new], ignore_index=True) if not existing.empty else new
     merged = _pin_dtypes(merged)
-    merged = merged.drop_duplicates(subset=_KEY, keep="last")
+    merged = _drop_duplicates_without_downgrading(merged)
     merged = merged.sort_values(["match_date", "sofascore_event_id", "club", "player"])
     merged = merged.reset_index(drop=True)
 

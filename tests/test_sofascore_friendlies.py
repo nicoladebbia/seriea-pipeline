@@ -578,3 +578,88 @@ def test_a_real_run_writes_the_roster_even_with_no_friendlies(tmp_roster,
 
     f.scrape_friendlies(["serie_a"], dry_run=False)
     assert len(f.load_club_roster()["serie_a"]) == 20
+
+
+# --------------------------------------------------------------------------
+# A re-scrape must never DOWNGRADE a row.
+#
+# Sofascore keeps the LINEUP for an old friendly forever but drops the
+# STATISTICS after about three years. Measured 2026-08-02 the cliff sits at
+# 2023-07-05: every quarter before it has exactly 0.0 rows with was_used, every
+# quarter after holds a steady ~0.25. It is a wall-clock window, not a season
+# property, so it MOVES -- next summer 2023-24 goes dark too.
+#
+# Blind keep="last" plus a source that degrades over time is silent data loss:
+# a future --pages 12 run would replace real minutes with zeros for exactly the
+# seasons we can never re-acquire them for. The parquet is the only surviving
+# copy.
+# --------------------------------------------------------------------------
+
+def _row(pid=1, eid=900, minutes=0, used=False, rating=None, shirt=7.0):
+    return {"sofascore_event_id": eid, "player_id": pid, "club": "Juventus",
+            "club_id": 2687, "opponent": "Nice", "opponent_id": 2455,
+            "opponent_country": "France", "is_home": True, "is_our_club": True,
+            "club_league": "serie_a", "formation": "4-3-3", "player": "P",
+            "shirt_number": shirt, "position": "M", "is_starter": False,
+            "minutes_played": minutes, "was_used": used,
+            "rating_low_trust": rating, "match_date": "2023-07-20",
+            "season": "2023-2024"}
+
+
+def test_a_degraded_rescrape_does_not_erase_captured_minutes(tmp_store):
+    """THE mutation. Same (event, player); the incoming row is the stripped one
+    Sofascore will serve in three years' time."""
+    f._save([_row(minutes=62, used=True, rating=7.1)], "2023-2024")
+    out = f._save([_row(minutes=0, used=False, rating=None)], "2023-2024")
+
+    assert len(out) == 1
+    assert out.iloc[0]["minutes_played"] == 62
+    assert bool(out.iloc[0]["was_used"]) is True
+    assert out.iloc[0]["rating_low_trust"] == 7.1
+
+
+def test_an_upgraded_rescrape_still_wins(tmp_store):
+    """The guard must not freeze a lineup-only row in place once the stats do
+    arrive -- a friendly scraped the morning after kickoff has no statistics
+    yet, and the evening run is the one that fills them in."""
+    f._save([_row(minutes=0, used=False)], "2023-2024")
+    out = f._save([_row(minutes=90, used=True, rating=6.8)], "2023-2024")
+
+    assert out.iloc[0]["minutes_played"] == 90
+    assert bool(out.iloc[0]["was_used"]) is True
+
+
+def test_a_correction_between_two_equally_informative_rows_still_updates(tmp_store):
+    """Ties fall back to arrival order, so the documented 'last write wins'
+    contract survives for everything the guard is not about."""
+    f._save([_row(minutes=45, used=True, shirt=7.0)], "2023-2024")
+    out = f._save([_row(minutes=45, used=True, shirt=21.0)], "2023-2024")
+
+    assert len(out) == 1
+    assert out.iloc[0]["shirt_number"] == 21.0
+
+
+def test_two_lineup_only_rows_still_take_the_later_one(tmp_store):
+    f._save([_row(shirt=7.0)], "2021-2022")
+    out = f._save([_row(shirt=21.0)], "2021-2022")
+    assert out.iloc[0]["shirt_number"] == 21.0
+
+
+def test_the_guard_is_per_player_not_per_match(tmp_store):
+    """A bench player with no minutes must not be dragged along by a team-mate
+    who has them -- the score is a property of the ROW."""
+    f._save([_row(pid=1, minutes=90, used=True), _row(pid=2)], "2023-2024")
+    out = f._save([_row(pid=1, minutes=0, used=False),
+                   _row(pid=2, shirt=99.0)], "2023-2024")
+
+    by_pid = out.set_index("player_id")
+    assert by_pid.loc[1, "minutes_played"] == 90, "informative row was downgraded"
+    assert by_pid.loc[2, "shirt_number"] == 99.0, "lineup-only row failed to update"
+
+
+def test_a_rating_alone_counts_as_participation(tmp_store):
+    """An unused sub has 0 minutes and was_used False, so a rating is the only
+    remaining evidence the statistics payload was present at all."""
+    f._save([_row(minutes=0, used=False, rating=6.5)], "2023-2024")
+    out = f._save([_row(minutes=0, used=False, rating=None)], "2023-2024")
+    assert out.iloc[0]["rating_low_trust"] == 6.5

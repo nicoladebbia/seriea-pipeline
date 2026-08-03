@@ -480,12 +480,19 @@ Backfilled 2026-08-02 with `--pages 12 --force`: **40,976 rows / 927 matches / 3
 
 **Usable backtest seasons, by club coverage** (out of 20 per league):
 
-| season | Serie A clubs | EPL clubs | verdict |
-|---|---|---|---|
-| 2022-23 … 2025-26 | 18–20 | 19–20 | **full — use these** |
-| 2021-22 | 17 | 17 | usable, slightly thin |
-| 2020-21 | 13 | 8 | partial — pooling it skews toward the big clubs |
-| 2019-20 | 6 | 3 | fragment — **do not use** |
+| season | SA clubs | EPL clubs | lineup (`is_starter`) | participation (`minutes`, `was_used`, rating) |
+|---|---|---|---|---|
+| 2023-24 … 2026-27 | 19–20 | 18–20 | ✅ | ✅ **the only re-validation set** |
+| 2022-23 | 18 | 20 | ✅ | ❌ all-zero |
+| 2021-22 | 17 | 17 | ✅ | ❌ all-zero |
+| 2020-21 | 13 | 8 | partial | ❌ all-zero |
+| 2019-20 | 6 | 3 | fragment | ❌ all-zero |
+
+**Sofascore keeps the LINEUP forever but drops the STATISTICS after ~3 years, and the boundary is wall-clock, so it MOVES.** Measured 2026-08-02 the cliff is at **2023-07-05**: every quarter before it has *exactly* 0.0 rows with `was_used`, every quarter after holds a steady ~0.25. Pre-cliff rows carry the named XI and `is_starter` (11.00 per club, clean) but `minutes_played` is identically 0 and `was_used` identically False for all 14,511 of them.
+
+This is why the deep seasons do **not** give five re-validation seasons, only four (2023-24 … 2026-27, still 2× the two the constants were tuned on). The `(16, −30, fade 3.0)` window was solved around an invariant about *named-but-unused substitutes* — and pre-cliff every player looks unused, so pooling those seasons would introduce a season-correlated measurement difference in the exact variable under test. They remain valid for anything keyed on `is_starter` alone.
+
+**Consequence for the writer, and it is a data-loss one:** `_save` merges on `(sofascore_event_id, player_id)`, and blind `keep="last"` against a source that degrades over time would let a future `--pages 12` run overwrite the real minutes with zeros — for exactly the seasons we can never re-acquire them for, since the parquet is now the only surviving copy. `_drop_duplicates_without_downgrading()` prefers whichever row still carries participation data and falls back to arrival order only on a tie, so "a corrected re-scrape updates in place" still holds and a same-day re-run that fills in stats still upgrades. Pinned by mutation-killed tests in `tests/test_sofascore_friendlies.py`.
 
 Two properties to hold in mind before backtesting on the deep seasons. The club set is the **current** one, so a club has friendly rows for seasons in which it was in a different division (Cremonese 2021-22) and simply has no league rows to grade against — the join drops them, it does not corrupt them. And the shipped `(SHRINK_PRIOR_STRENGTH=16, PRESEASON_ABSENT_PENALTY=-30, PRESEASON_FADE_MATCHES=3.0)` window was solved on the **old, two-season** corpus; re-tuning against this larger one is a cross-condition comparison unless the eval set is held fixed.
 
