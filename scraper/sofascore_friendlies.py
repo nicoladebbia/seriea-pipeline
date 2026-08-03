@@ -95,6 +95,24 @@ def _season_for(ts: int) -> str:
     return f"{dt.year - 1}-{dt.year}"
 
 
+def current_friendly_season(today: date | None = None) -> str:
+    """The season whose friendlies are being played *now*.
+
+    A THIRD meaning of "current season", and the one outside callers keep
+    getting wrong. ``config.settings.get_current_season()`` rolls on 1 August,
+    but ``FRIENDLY_WINDOWS`` opens on 1 June — so through June and July the
+    calendar helper names the season that just ENDED while every row written in
+    those two months lands in the NEXT season's parquet. A monitor keyed off the
+    calendar helper therefore opens the wrong file for two of the three
+    pre-season months, and reads it as complete.
+
+    Public because ``scripts/pipeline/health_check.py`` must resolve the season
+    exactly the way the writer does, not approximately.
+    """
+    d = today or date.today()
+    return _season_for(int(datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()))
+
+
 def _event_to_meta(
     event: dict[str, Any],
     our_teams: dict[int, tuple[str, str]],

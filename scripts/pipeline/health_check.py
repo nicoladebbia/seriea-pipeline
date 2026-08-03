@@ -939,6 +939,104 @@ def check_feature_model_alignment() -> Dict:
     return result
 
 
+def check_preseason_coverage() -> Dict:
+    """Which clubs will face matchweek 1 with NO pre-season signal.
+
+    This is a prediction-QUALITY check, not a failure check. The pre-season
+    friendly signal is worth +11.0pp of XI accuracy at matchweek 1 (measured over
+    the two seasons with coverage: 60.6% with it against 49.6% without). A club
+    with no friendly rows silently falls back to a league table a whole summer
+    stale — the exact regime the signal exists to repair.
+
+    Nothing is broken when this fires. Coverage depends on whether Sofascore
+    lists a club's friendlies at all, and on whether they were PLAYED: measured
+    2026-08-02, Brighton's only listed friendly was CANCELED (zero players on
+    both sides, correctly refused by the writer) and Brentford had none listed.
+    Both are real-world facts, not scrape bugs. The point of surfacing them is
+    that the consequence — two clubs predicted from a stale table on opening day
+    — is otherwise completely invisible.
+
+    Only meaningful before the league table catches up, so it reports OK once the
+    current season has played matches.
+    """
+    out: Dict = {"status": "OK", "season": None, "leagues": {}}
+    try:
+        import pandas as pd
+
+        from config.leagues import ACTIVE_LEAGUES
+        from scraper.sofascore_friendlies import (
+            _in_friendly_window,
+            current_friendly_season,
+            fetch_club_ids,
+        )
+
+        today = datetime.now().date()
+        if not _in_friendly_window(today):
+            out["detail"] = "outside the friendly window — nothing to cover"
+            return out
+
+        # NOT get_current_season(): that rolls on 1 August, the window opens on
+        # 1 June, so through June and July the calendar helper names the season
+        # that just ended and would open the previous season's parquet.
+        season = current_friendly_season(today)
+        out["season"] = season
+        fpath = (DATA_DIR / "external" / "sofascore"
+                 / f"friendlies_{season.replace('-', '_')}.parquet")
+        if not fpath.exists():
+            out["status"] = "WARNING"
+            out["detail"] = f"no friendlies parquet for {season} — nobody has any signal"
+            return out
+
+        # Once real league matches exist the stale-table problem is over and the
+        # signal has faded by design (PRESEASON_FADE_MATCHES).
+        mpath = DATA_DIR / "parsed" / "matches.parquet"
+        if mpath.exists():
+            m = pd.read_parquet(mpath, columns=["season", "home_score"])
+            played = m[(m["season"] == season) & (m["home_score"].notna())]
+            if len(played) >= 20:
+                out["detail"] = f"{season} under way ({len(played)} played) — signal retired"
+                return out
+
+        fr = pd.read_parquet(fpath, columns=["club", "club_league", "is_our_club"])
+        fr = fr[fr["is_our_club"]]
+
+        try:
+            registry = fetch_club_ids(list(ACTIVE_LEAGUES))
+        except Exception as exc:  # noqa: BLE001 — a live lookup must not sink the monitor
+            out["status"] = "UNKNOWN"
+            out["detail"] = f"club list unavailable: {type(exc).__name__}"
+            return out
+
+        for league in ACTIVE_LEAGUES:
+            expected = {n for n, lg in registry.values() if lg == league}
+            have = set(fr[fr["club_league"] == league]["club"])
+            # fetch_club_ids logs and CONTINUES on a 403 or an empty payload — it
+            # returns a short dict, it does not raise. An unguarded empty
+            # `expected` makes `expected - have` empty too, and the check would
+            # report perfect coverage precisely when Sofascore is blocking us.
+            # Guard on cardinality, never on the exception.
+            if len(expected) < 18:
+                out["status"] = "UNKNOWN"
+                out["leagues"][league] = {
+                    "clubs": len(expected),
+                    "detail": "club list came back short — coverage not computable",
+                }
+                continue
+            missing = sorted(expected - have)
+            out["leagues"][league] = {
+                "clubs": len(expected),
+                "with_friendlies": len(expected) - len(missing),
+                "without_friendlies": missing,
+            }
+            if missing and out["status"] == "OK":
+                out["status"] = "WARNING"
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out["status"] = "UNKNOWN"
+        out["detail"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+
 def run_health_check() -> Dict:
     """Run all health checks and return unified result."""
     result = {
@@ -954,6 +1052,7 @@ def run_health_check() -> Dict:
         "model_consistency": check_model_metadata_consistency(),
         "calibration_drift": check_calibration_drift(),
         "betting_health": check_betting_health(),
+        "preseason_coverage": check_preseason_coverage(),
         "system_integrity": check_system_integrity(),
         "issues": [],
     }
@@ -992,6 +1091,26 @@ def run_health_check() -> Dict:
         drift_alerts = result["betting_health"]["details"].get("drift", {}).get("alerts", [])
         for a in drift_alerts:
             issues.append(("WARNING", a["message"]))
+
+    # Pre-season XI coverage. WARNING, never CRITICAL: nothing is broken when a
+    # club has no friendlies (Sofascore may not list them, or they may have been
+    # canceled). What the line buys is visibility — otherwise those clubs quietly
+    # fall back to a summer-stale table on opening day, ~11pp worse at MW1.
+    pre = result.get("preseason_coverage", {})
+    if pre.get("status") == "WARNING":
+        for league, det in pre.get("leagues", {}).items():
+            gap = det.get("without_friendlies") or []
+            if gap:
+                issues.append(("WARNING",
+                               f"No pre-season friendlies for {len(gap)} {league} "
+                               f"club(s): {', '.join(gap)} — MW1 XI falls back to "
+                               f"the stale league table"))
+        if not pre.get("leagues"):
+            issues.append(("WARNING", f"Pre-season coverage: {pre.get('detail')}"))
+    elif pre.get("status") == "UNKNOWN":
+        issues.append(("WARNING",
+                       f"Pre-season coverage not computable: "
+                       f"{pre.get('detail') or 'club list unavailable'}"))
 
     # Live calibration drift (rolling ECE on archived 1X2 predictions)
     calib = result.get("calibration_drift", {}).get("calibration_1x2", {})
