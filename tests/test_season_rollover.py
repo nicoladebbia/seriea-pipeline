@@ -136,3 +136,46 @@ def test_promoted_clubs_are_not_also_last_seasons_clubs():
     for league in ("serie_a", "premier_league"):
         seasons = sorted(PROMOTED_TEAMS[league])
         assert PROMOTED_TEAMS[league][seasons[-1]] != PROMOTED_TEAMS[league][seasons[-2]]
+
+
+# --------------------------------------------------------------------------
+# Weather coverage for the clubs that changed division this summer.
+#
+# AUGUST_RUNBOOK.md lists TEAM_TO_CITY under "promoted teams — BEFORE first
+# pipeline run", with the note "the EPL lesson: missing city = 0 weather rows".
+# Found 2026-08-02 that the trap has a second, worse form: Hull was MAPPED to
+# London (~290 km away, different coast) as a deliberate degrade because the
+# coord table had no Hull entry. A missing city yields a visible NaN; a wrong
+# city yields plausible weather for the wrong place and is invisible.
+# --------------------------------------------------------------------------
+
+def test_every_promoted_club_has_real_weather_coordinates():
+    from scraper.weather import TEAM_TO_CITY, VENUE_COORDS
+
+    season = get_current_season()
+    for league in ("serie_a", "premier_league"):
+        for club in PROMOTED_TEAMS[league].get(season, set()):
+            city = TEAM_TO_CITY.get(club)
+            assert city, f"{club} promoted for {season} but absent from TEAM_TO_CITY"
+            assert VENUE_COORDS.get(city), f"{club} -> {city} has no coordinates"
+
+
+def test_english_clubs_are_not_silently_mapped_to_a_distant_city():
+    """Pins the specific bug: an English club whose own city exists in the coord
+    table must not be pointed at London instead."""
+    from scraper.weather import TEAM_TO_CITY, VENUE_COORDS
+
+    for club, own_city in (("Hull", "Hull"), ("Coventry City", "Coventry"),
+                           ("Cardiff", "Cardiff")):
+        mapped = TEAM_TO_CITY.get(club)
+        assert mapped == own_city, f"{club} maps to {mapped!r}, not {own_city!r}"
+        assert VENUE_COORDS[mapped] != VENUE_COORDS["London"]
+
+
+def test_english_cities_use_the_london_timezone():
+    """A club with Rome's timezone would shift every kickoff-hour weather lookup."""
+    from scraper.weather import TEAM_TO_CITY, _CITY_TIMEZONE
+
+    for club in ("Hull", "Coventry City", "Ipswich"):
+        city = TEAM_TO_CITY[club]
+        assert _CITY_TIMEZONE.get(city) == "Europe/London", city

@@ -85,6 +85,11 @@ VENUE_COORDS: dict[str, tuple[float, float]] = {
     "Swansea": (51.6427, -3.9353),
     "West Bromwich": (52.5090, -1.9640),
     "Middlesbrough": (54.5782, -1.2169),
+    # Promoted for 2026-27 — added 2026-08-02. Hull previously degraded to
+    # LONDON (~290 km away, different coast) and Coventry was absent entirely.
+    "Hull": (53.7676, -0.3274),
+    "Coventry": (52.4068, -1.5197),
+    "Cardiff": (51.4816, -3.1791),
 }
 
 # Open-Meteo archive endpoint
@@ -100,6 +105,7 @@ _UK_CITIES = {
     "Brentford", "Ipswich", "Sunderland", "Fulham", "West Ham",
     "Stoke", "Watford", "Huddersfield", "Norwich", "Swansea",
     "West Bromwich", "Middlesbrough",
+    "Hull", "Coventry", "Cardiff",
 }
 for _c in _UK_CITIES:
     _CITY_TIMEZONE[_c] = "Europe/London"
@@ -185,8 +191,15 @@ TEAM_TO_CITY: dict[str, str] = {
     "Swansea": "Swansea", "Swansea City": "Swansea",
     "Huddersfield": "Huddersfield", "Huddersfield Town": "Huddersfield",
     "Ipswich": "Ipswich", "Ipswich Town": "Ipswich",
-    "Cardiff": "London",  # No Cardiff coords; degrade to London
-    "Hull": "London", "Hull City": "London",  # No Hull coords; degrade
+    # Hull and Cardiff used to degrade to LONDON because the coord table had no
+    # entry for either. Harmless while both were second-tier; Hull is a Premier
+    # League club in 2026-27, and London weather is ~290 km and a different coast
+    # from Hull. Real coordinates added 2026-08-02 — a wrong city is worse than a
+    # missing one, because a missing one shows up as a NaN and a wrong one does
+    # not show up at all.
+    "Cardiff": "Cardiff", "Cardiff City": "Cardiff",
+    "Hull": "Hull", "Hull City": "Hull",
+    "Coventry": "Coventry", "Coventry City": "Coventry",
 }
 
 
