@@ -11,6 +11,8 @@ The hard part of this domain is not training a classifier. It is **not lying to 
 > ```
 > That command prints walk-forward accuracy, log-loss, ECE and the selected-feature count straight from the trainer's metadata — see [`MODEL_STATUS.md`](MODEL_STATUS.md) for how to read it. The honest ceiling on 1X2 is ~53–55%; anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
 
+![Match Intelligence dashboard](docs/screenshots/match-intel.png)
+
 ---
 
 ## The problem, precisely
@@ -97,7 +99,7 @@ The bug this avoids (documented in `ml/ensemble.py`): isotonic regression applie
 | Calibration / opt | isotonic + temperature scaling, `scipy.optimize` (Nelder-Mead, softmax-parameterized) |
 | Scraping | requests, beautifulsoup4, lxml; optional selenium/botasaurus |
 | Serving | Flask dashboard; Click CLI |
-| Tests | pytest — **508 test functions across 26 files** |
+| Tests | pytest — **850+ test functions across 46 files** |
 
 ---
 
@@ -139,4 +141,4 @@ Two further sources of truth, both generated mechanically (not hand-written narr
 - [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) — per-file map (purpose, imports, liveness, quality grade) for the whole codebase.
 - [`DATA_CATALOG.md`](DATA_CATALOG.md) — authoritative per-file / per-column data reference, including NaN rates and fallback matrices.
 
-Private — not for redistribution.
+Built and maintained by [Nicola Debbia](https://github.com/nicoladebbia).
