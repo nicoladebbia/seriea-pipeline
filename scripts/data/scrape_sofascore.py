@@ -750,7 +750,8 @@ async def scrape_season(
         matchweeks=_matchweeks,
     )
     if not fixtures:
-        return pd.DataFrame()
+        log.info("No fixtures found for %s [%s]", season, league_key)
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     all_player_rows = []
     all_team_rows = []
