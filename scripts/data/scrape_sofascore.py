@@ -184,7 +184,7 @@ async def get_season_fixtures(
             last = await league.last_fixtures()
             if isinstance(last, list):
                 all_fixtures.extend(last)
-        except Exception as e:
+        except (OSError, ConnectionError) as e:
             log.warning("last_fixtures failed: %s", e)
 
     # Guard against cache truncation: don't overwrite with fewer fixtures
