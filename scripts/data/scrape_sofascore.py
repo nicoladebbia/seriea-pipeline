@@ -42,9 +42,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from config.leagues import LEAGUE_REGISTRY, get_league_config
 from config.settings import DATA_DIR
 from config.team_names import normalize_team
-from config.leagues import get_league_config, LEAGUE_REGISTRY
 from scripts.utils.scraper_state import load_failed, save_failed
 
 log = logging.getLogger(__name__)
