@@ -173,8 +173,8 @@ async def get_season_fixtures(
             events = data.get("events", [])
             all_fixtures.extend(events)
             await asyncio.sleep(0.5)  # Light rate limiting for fixture fetching
-        except (OSError, ConnectionError):
-            log.debug("Round %d: network error or timeout", round_num)
+        except Exception as e:
+            log.debug("Round %d: %s", round_num, e)
             break
 
     if not all_fixtures:
@@ -536,7 +536,7 @@ def extract_team_stats_rows(match_data: dict, fixture: dict, season: str) -> lis
 
         def _build_row(team, opponent, is_home, flat):
             return {
-                **base,
+                **base_row,
                 "team": team,
                 "opponent": opponent,
                 "is_home": is_home,
