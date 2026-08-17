@@ -21,3 +21,4 @@ catboost_info/
 
 # Codesight codebase maps
 .codesight/
+.aider*
