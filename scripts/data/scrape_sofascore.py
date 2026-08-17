@@ -173,8 +173,8 @@ async def get_season_fixtures(
             events = data.get("events", [])
             all_fixtures.extend(events)
             await asyncio.sleep(0.5)  # Light rate limiting for fixture fetching
-        except Exception as e:
-            log.debug("Round %d: %s", round_num, e)
+        except (OSError, ConnectionError):
+            log.debug("Round %d: network error or timeout", round_num)
             break
 
     if not all_fixtures:
@@ -282,8 +282,8 @@ async def scrape_match_stats(
                 with open(cache_file, "w") as f:
                     json.dump(cached, f)
                 log.debug("Backfilled team_stats for match %d", match_id)
-            except Exception as e:
-                log.debug("Could not backfill team_stats for %d: %s", match_id, e)
+            except (OSError, ConnectionError):
+                log.debug("Could not backfill team_stats for %d: %s", match_id, e if 'e' in locals() else "unknown")
                 cached["team_stats"] = {}
         return cached
 
@@ -303,14 +303,16 @@ async def scrape_match_stats(
         try:
             team_stats = await match.stats()
             result["team_stats"] = team_stats
-        except Exception:
+        except (OSError, ConnectionError):
+            log.debug("Could not fetch team stats for %d", match_id)
             result["team_stats"] = {}
 
         # Shotmap (per-shot xG, coordinates, body part, situation)
         try:
             shotmap = await match.shotmap()
             result["shotmap"] = shotmap
-        except Exception:
+        except (OSError, ConnectionError):
+            log.debug("Could not fetch shotmap for %d", match_id)
             result["shotmap"] = []
 
         # Cache
@@ -320,8 +322,8 @@ async def scrape_match_stats(
 
         return result
 
-    except Exception as e:
-        log.debug("Failed to get lineups for match %d: %s", match_id, e)
+    except (OSError, ConnectionError):
+        log.debug("Failed to get lineups for match %d: %s", match_id, e if 'e' in locals() else "unknown")
         return None
 
 
@@ -346,7 +348,7 @@ def extract_player_rows(match_data: dict, fixture: dict, season: str) -> list[di
 
     rows = []
 
-    for side, lineup_key, team, opponent, is_home in [
+    for _side, lineup_key, team, opponent, is_home in [
         ("home", "home_lineup", home_team, away_team, True),
         ("away", "away_lineup", away_team, home_team, False),
     ]:
@@ -520,7 +522,7 @@ def extract_team_stats_rows(match_data: dict, fixture: dict, season: str) -> lis
         if not flat_home:
             continue
 
-        base = {
+        base_row = {
             "season": season,
             "match_id": match_id,
             "date": match_date,
@@ -595,6 +597,7 @@ def extract_team_stats_rows(match_data: dict, fixture: dict, season: str) -> lis
     return rows
 
 
+# Pre-compute base row outside loop to avoid closure capture issues (B023)
 def _shot_distance(shot: dict) -> float | None:
     """Euclidean distance from shot location to goal center.
 
@@ -782,7 +785,8 @@ async def scrape_season(
                 with open(cache_file) as f:
                     peek = json.load(f)
                 needs_backfill = "team_stats" not in peek
-            except Exception:
+            except (json.JSONDecodeError, OSError):
+                log.debug("Could not read cache file for %d", match_id)
                 needs_backfill = False
 
         if not was_cached:
@@ -831,7 +835,7 @@ async def scrape_season(
                     "match": f"{home} vs {away}",
                 }
 
-        except Exception as e:
+        except (OSError, ConnectionError) as e:
             failed += 1
             log.error("Failed match %s (%s vs %s): %s", match_id, home, away, e)
             failed_log[str(match_id)] = {
