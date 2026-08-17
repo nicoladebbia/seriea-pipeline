@@ -56,6 +56,7 @@ log = logging.getLogger(__name__)
 
 LEAGUE_SEASON_MAPS: dict[str, dict[str, int]] = {
     "serie_a": {
+        "2026-2027": 95836,
         "2025-2026": 76457,
         "2024-2025": 63515,
         "2023-2024": 52760,
@@ -67,6 +68,7 @@ LEAGUE_SEASON_MAPS: dict[str, dict[str, int]] = {
         "2017-2018": 13768,
     },
     "premier_league": {
+        "2026-2027": 96668,
         "2025-2026": 76986,
         "2024-2025": 61627,
         "2023-2024": 52186,
@@ -85,6 +87,7 @@ SEASON_MAP = LEAGUE_SEASON_MAPS["serie_a"]
 SCRAPE_SEASONS = [
     "2017-2018", "2018-2019", "2019-2020", "2020-2021",
     "2021-2022", "2022-2023", "2023-2024", "2024-2025", "2025-2026",
+    "2026-2027",
 ]
 
 RATE_LIMIT = 2  # seconds between match requests
