@@ -676,7 +676,18 @@ def quick_retrain(dry_run: bool = False) -> dict:
             result["error"] = f"Promotion failed: {e}"
             _notify(f"Promotion failed: {e}", "Retrain FAILED")
     else:
-        log.warning("NOT promoting — %s", reason)
+        # Partially true here, unlike in full_retrain, and worth being precise
+        # about: ens.save("universal") above IS withheld, so the ensemble stays
+        # as it was. But train_universal already overwrote
+        # universal/{catboost,lightgbm,xgboost}_latest.* before this gate ran.
+        # On the scheduled path auto_retrain archives universal/ beforehand, so
+        # rollback() can restore them; invoked directly, there is no archive.
+        log.warning(
+            "NOT promoting the ensemble — %s. The individual universal/*_latest "
+            "models were already overwritten during training; rollback() restores "
+            "them from the pre-retrain archive.",
+            reason,
+        )
         _notify(f"Retrain skipped: {reason}", "Retrain SKIPPED")
 
     _append_metrics_history(result)
@@ -690,7 +701,15 @@ def quick_retrain(dry_run: bool = False) -> dict:
 def full_retrain(dry_run: bool = False) -> dict:
     """Full optimized retrain with Optuna tuning and feature re-selection.
 
-    Wraps train_optimized() with comparison gate and archival.
+    NOT a deployment gate, despite the shape of the code below. train_optimized()
+    writes each league's models to *_latest as it goes (ml/training.py ->
+    save_model -> ml/persistence.py:43), so by the time the comparison runs the
+    new models are ALREADY SERVING. A failed comparison skips the O/U retrain and
+    the prediction refresh and warns; it cannot un-deploy anything. Archival is
+    done by the caller (the dispatcher), not here.
+
+    The comparison also covers only the LAST league in ACTIVE_LEAGUES — see the
+    caveat at the new_metrics read below.
     """
     result = {
         "mode": "full",
@@ -717,10 +736,12 @@ def full_retrain(dry_run: bool = False) -> dict:
 
         # Train both leagues with all improvements (exclude_odds, per-league)
         from config.leagues import ACTIVE_LEAGUES
+        trained: list[str] = []
         for _league in ACTIVE_LEAGUES:
             log.info("Training %s...", _league)
             try:
                 train_optimized(league=_league, exclude_odds=True)
+                trained.append(_league)
                 log.info("%s training complete", _league)
             except Exception as _le:
                 log.error("%s training failed: %s — continuing with other leagues", _league, _le)
@@ -736,17 +757,35 @@ def full_retrain(dry_run: bool = False) -> dict:
         _append_metrics_history(result)
         return result
 
-    # Extract new metrics from CV results
+    # Extract new metrics from CV results.
+    #
+    # CAVEAT, load-bearing: evaluate_ensemble_cv writes to a single hardcoded path
+    # (ml/ensemble.py:675 -> MODELS_DIR / "universal" / "ensemble"), so each league
+    # in the loop above OVERWRITES the previous league's cv_results.json. Both the
+    # current_metrics read (before the loop) and this one therefore describe
+    # whichever league ran LAST — not the two leagues together, and not
+    # necessarily Serie A, which is the production earner. Name the league in the
+    # log so nobody reads these numbers as Serie A's.
     new_metrics = _load_current_cv_metrics()  # train_optimized saves these
     result["new_metrics"] = new_metrics
+    metrics_league = trained[-1] if trained else "unknown"
+    result["metrics_league"] = metrics_league
 
     if new_metrics:
         log.info(
-            "New model: acc=%.4f  ll=%.4f  brier=%.4f",
+            "New model [%s only]: acc=%.4f  ll=%.4f  brier=%.4f",
+            metrics_league,
             new_metrics.get("ensemble_accuracy", 0),
             new_metrics.get("ensemble_log_loss", 0),
             new_metrics.get("ensemble_brier", 0),
         )
+        if len(trained) > 1:
+            log.warning(
+                "%d leagues were retrained (%s) but only %s is measured above — "
+                "the other leagues' CV results were overwritten before they could "
+                "be read.",
+                len(trained), ", ".join(trained), metrics_league,
+            )
 
     # Compare — full retrain always promotes unless catastrophically worse
     TOLERANCE = 0.05  # More lenient for full retrain (new features/params)
@@ -792,8 +831,24 @@ def full_retrain(dry_run: bool = False) -> dict:
         log.info(msg)
         _notify(msg, "Full Retrain SUCCESS")
     else:
-        log.warning("NOT promoting — %s", reason)
-        _notify(f"Full retrain rejected: {reason}", "Full Retrain REJECTED")
+        # Not a rejection. train_optimized already wrote every league's models to
+        # *_latest above, so nothing here un-deploys them — what is actually
+        # skipped is the O/U retrain and the prediction refresh. Reporting this as
+        # "REJECTED" told a human the bad model had been held back when it was
+        # already serving.
+        log.error(
+            "Comparison FAILED for %s (%s) — but the new models are ALREADY LIVE "
+            "at *_latest: train_optimized saves before this check runs. Skipping "
+            "the O/U retrain and prediction refresh only. Roll back manually if "
+            "the new model must not serve.",
+            metrics_league, reason,
+        )
+        result["models_live_despite_failed_comparison"] = True
+        _notify(
+            f"Full retrain comparison FAILED ({reason}). Models are ALREADY LIVE "
+            f"— manual rollback required.",
+            "Full Retrain — LIVE BUT UNVALIDATED",
+        )
 
     # Save new features and params
     # train_results was assigned earlier in quick_retrain but full_retrain has its

@@ -14,18 +14,18 @@ recomputed on the current basis instead.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
 
+import scripts.pipeline.weekly_retrain as wr
 from ml.evaluation import MIN_GATE_TEST_MATCHES
 
 
 @pytest.fixture
 def retrain(monkeypatch, tmp_path):
     """weekly_retrain binds MODELS_DIR at import, so patch it on the module."""
-    import scripts.pipeline.weekly_retrain as wr
-
     monkeypatch.setattr(wr, "MODELS_DIR", tmp_path)
     (tmp_path / "universal" / "ensemble").mkdir(parents=True)
     return wr
@@ -109,3 +109,77 @@ def test_the_threshold_used_here_matches_the_one_the_trainers_gate_on():
     import scripts.pipeline.weekly_retrain as wr
 
     assert wr.MIN_GATE_TEST_MATCHES == MIN_GATE_TEST_MATCHES
+
+
+# ---------------------------------------------------------------------------
+# The gate's own claims about itself
+#
+# full_retrain is shaped like a deployment gate but cannot be one: train_optimized
+# writes each league's models to *_latest as it trains (ml/persistence.py:43), so
+# by the time the comparison runs the new models are already serving. The `else`
+# branch used to log "NOT promoting" and notify "Full retrain REJECTED", telling a
+# human the bad model had been held back when it was live. These pin the wording,
+# because here the wording IS the deliverable.
+# ---------------------------------------------------------------------------
+
+def _src(fn) -> str:
+    """Source of one function — whole-file greps catch the sibling retrain path."""
+    return inspect.getsource(fn)
+
+
+def test_the_docstring_does_not_claim_to_be_a_deployment_gate():
+    doc = wr.full_retrain.__doc__ or ""
+
+    assert "Wraps train_optimized() with comparison gate and archival." not in doc, (
+        "the old docstring claimed two things full_retrain does not do: it does no "
+        "archival (auto_retrain does), and the comparison cannot gate"
+    )
+    assert "NOT a deployment gate" in doc
+    assert "ALREADY SERVING" in doc
+
+
+def test_full_retrain_does_not_report_a_rejection_it_did_not_make():
+    """train_optimized saves every league, ensemble included, before this gate."""
+    src = _src(wr.full_retrain)
+
+    assert '"Full Retrain REJECTED"' not in src, (
+        "reporting REJECTED implies the model was held back; it was not"
+    )
+    assert 'log.warning("NOT promoting — %s", reason)' not in src
+    assert "ALREADY LIVE" in src
+    assert "manual rollback required" in src
+    assert "models_live_despite_failed_comparison" in src
+
+
+def test_quick_retrain_says_which_half_of_the_promotion_was_withheld():
+    """Its gate is PARTLY real: ens.save is withheld, *_latest is not."""
+    src = _src(wr.quick_retrain)
+
+    assert 'ens.save("universal")' in src, (
+        "precondition: this test only makes sense while the ensemble save is the "
+        "thing the promote branch actually gates"
+    )
+    assert 'log.warning("NOT promoting — %s", reason)' not in src, (
+        "unqualified 'NOT promoting' hides that the individual models were "
+        "already overwritten"
+    )
+    assert "NOT promoting the ensemble" in src
+    assert "already overwritten" in src
+
+
+def test_full_retrains_reported_metrics_say_which_league_they_measure():
+    """One cv_results.json is shared by every league, so the last one wins."""
+    src = _src(wr.full_retrain)
+
+    assert '"New model: acc=%.4f  ll=%.4f  brier=%.4f"' not in src, (
+        "an unqualified 'New model' line reads as both leagues' numbers when it "
+        "is only whichever league ran last"
+    )
+    assert '"New model [%s only]: acc=%.4f  ll=%.4f  brier=%.4f"' in src
+    assert 'result["metrics_league"] = metrics_league' in src
+
+
+def test_quick_retrain_is_left_alone_because_it_trains_one_universal_model():
+    """The league caveat is specific to full_retrain's per-league loop."""
+    assert "for _league in ACTIVE_LEAGUES" in _src(wr.full_retrain)
+    assert "for _league in ACTIVE_LEAGUES" not in _src(wr.quick_retrain)
