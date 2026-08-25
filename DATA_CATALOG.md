@@ -807,7 +807,7 @@ Runs `scripts/pipeline/refresh_weekly_data.py` which does 13 steps:
 | 4 | Parse lineups | `parse_all_lineups --season 2025-2026 --append` | lineups.parquet |
 | 5 | Parse events | `parse_all_events --season 2025-2026 --append` | events.parquet |
 | 6 | Parse goalkeeper_stats | `parse_all_goalkeeper_stats --season 2025-2026 --append` | goalkeeper_stats.parquet |
-| 7 | Parse shots | `parse_all_shots --season 2025-2026 --append` | shots.parquet (exits 1 — no shots tables cached for 2025-26) |
+| 7 | Parse shots — **WATCH, not a required step** (2026-08-25) | `parse_all_shots --season CURRENT_SEASON --append` | shots.parquet. Still exits 1 — FBref removed `shots_all` in 2025-26 and it is still absent from all 8 cached 2026-27 reports (re-measured 2026-08-25). Its result is now recorded in `watches`, NOT `results`, so it no longer gates the job's exit code; it ran in the required loop before, which made `refresh_weekly_data` return 1 every single week on a dead upstream it cannot act on. Still executed, because a True here is the only signal that FBref restored the table. |
 
 > ⚠️ `--season` is **required** on all five parsers — there is no all-seasons
 > default. `refresh_weekly_data.py` passes `--season CURRENT_SEASON`; the bare

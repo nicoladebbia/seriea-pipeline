@@ -58,6 +58,53 @@ def run(cmd: list[str], step: str, timeout: int = 3600) -> bool:
         return False
 
 
+def step_watch_fbref_shots(py: str) -> bool:
+    """Run the shots parser as a WATCH for good news, not as a required step.
+
+    FBref removed the ``shots_all`` table from its match reports starting with
+    2025-26. Confirmed source-side 2026-07-16 (absent from all 380 cached
+    2025-26 reports, present in 2024-25, and a scrolled re-fetch came back
+    larger and still lacked it), and re-measured 2026-08-25 against all 8
+    cached 2026-27 reports: still absent. The parser itself is healthy —
+    ``--season 2024-2025`` exits 0 on the same code path.
+
+    It used to sit in the Step 3 loop, so this job exited 1 EVERY week on a
+    dead upstream it can do nothing about. A permanently red signal is worse
+    than no signal: it trains you to ignore the one week a real step breaks,
+    because the failure looks identical. The exit code now reflects only the
+    steps that can actually succeed.
+
+    Nothing downstream is lost by not parsing it. ``parsed/shots.parquet`` has
+    no live reader (DATA_CATALOG.md, "data/parsed/shots.parquet") — every shot
+    feature reads ``all_shots_with_xg.parquet``, which Step 4b rebuilds from
+    the Sofascore cache. What 2025-26+ genuinely loses is FBref's
+    shot-creating-action chain and ``psxg_shot``, neither of which any current
+    feature consumes.
+
+    Returns True when the table is BACK, which is why this runs at all: it is
+    cheap (reads already-cached HTML, no network) and it is the only thing
+    that would ever tell us the upstream recovered. Logged loudly on purpose —
+    a True here means go re-wire the shot-creation features.
+    """
+    ok = run(
+        [py, "-m", "scripts.data.parse_all_shots", "--season", CURRENT_SEASON, "--append"],
+        "Parse shots (watch — FBref dropped shots_all in 2025-26)",
+    )
+    if ok:
+        log.warning(
+            "  !! FBref shots_all appears to be BACK for %s — parsed/shots.parquet "
+            "wrote rows. This has been dead since 2025-26; re-check whether the "
+            "shot-creating-action features are worth re-wiring.", CURRENT_SEASON,
+        )
+    else:
+        log.info(
+            "  (expected) no shots_all table in %s reports — FBref removed it in "
+            "2025-26. Not counted as a failure; shot features read "
+            "all_shots_with_xg.parquet, rebuilt in Step 4b.", CURRENT_SEASON,
+        )
+    return ok
+
+
 def step_refresh_fbref_fixtures() -> bool:
     """Refresh fbref fixtures.html so scrape_fbref_missing sees the latest match list."""
     log.info("=== FBref fixtures.html refresh ===")
@@ -95,6 +142,8 @@ def main() -> int:
     log.info("=" * 70)
 
     results = {}
+    # Observations that must NOT gate the exit code — see step_watch_fbref_shots.
+    watches: dict[str, bool] = {}
     py = sys.executable
 
     # --- Step 1: Refresh FBref fixtures.html (so we discover new matches) ---
@@ -110,18 +159,21 @@ def main() -> int:
         timeout=300,
     )
 
-    # --- Step 3: Re-parse FBref into 5 parquets (all append current season) ---
+    # --- Step 3: Re-parse FBref into 4 parquets (all append current season) ---
+    # parse_all_shots is deliberately NOT here — see step_watch_fbref_shots().
     for parser_name, label in [
         ("parse_all_player_stats", "player_stats"),
         ("parse_all_lineups", "lineups"),
         ("parse_all_events", "events"),
         ("parse_all_goalkeeper_stats", "goalkeeper_stats"),
-        ("parse_all_shots", "shots"),
     ]:
         results[f"parse_{label}"] = run(
             [py, "-m", f"scripts.data.{parser_name}", "--season", CURRENT_SEASON, "--append"],
             f"Parse {label}",
         )
+
+    # --- Step 3b: shots — a WATCH, not a required step ---
+    watches["shots_all_restored"] = step_watch_fbref_shots(py)
 
     # --- Step 4: Sofascore refresh (per active league) ---
     from config.leagues import ACTIVE_LEAGUES
@@ -253,6 +305,9 @@ def main() -> int:
     n_ok = sum(results.values())
     n_total = len(results)
     log.info("  %d/%d steps OK", n_ok, n_total)
+    # Printed, never counted: a watch firing false is the expected state.
+    for name, fired in watches.items():
+        log.info("  %s watch: %s", "!!" if fired else "--", name)
 
     # --- Scheduler notification ---
     try:
