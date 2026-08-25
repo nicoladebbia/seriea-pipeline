@@ -52,6 +52,28 @@ def _file_age(path: Path) -> Tuple[float, str]:
         return hours, f"{days:.1f}d ago"
 
 
+def _iso_age_days(stamp: str) -> Optional[float]:
+    """Age in days of an ISO timestamp, or None if it cannot be read.
+
+    Naive stamps are read as UTC. That is the convention the project's bug
+    catalogue settled on after ``_iso_age_hours`` mixed naive and aware
+    datetimes, raised TypeError, swallowed it and reported -1 — a staleness
+    check that silently returns "fine" is worse than one that is absent.
+    ``predictions_archive.json`` writes naive stamps, so this is the branch
+    that actually runs; a few hours of local-vs-UTC skew is immaterial against
+    a threshold measured in weeks.
+    """
+    if not stamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+
+
 def _freshest_fixture_source() -> Path:
     """The newest file that can actually tell us about upcoming matches.
 
@@ -816,6 +838,74 @@ def check_silent_failures() -> Dict:
     return checks
 
 
+CALIB_BINS = 10
+CALIB_MIN_BIN = 5
+
+
+def _confidence_ece(probs: list, hits: list) -> Tuple[float, int]:
+    """10-bin confidence-ECE on the argmax class; bins under CALIB_MIN_BIN skipped.
+
+    Module level so the null floor below can be pinned against it in a test —
+    the two implement the same binning and must not drift apart.
+    """
+    n = len(probs)
+    total, bins_used = 0.0, 0
+    for b in range(CALIB_BINS):
+        sel = [i for i, q in enumerate(probs) if int(min(q, 0.999) * CALIB_BINS) == b]
+        if len(sel) < CALIB_MIN_BIN:
+            continue
+        bins_used += 1
+        conf = sum(probs[i] for i in sel) / len(sel)
+        acc_ = sum(hits[i] for i in sel) / len(sel)
+        total += abs(conf - acc_) * len(sel) / n
+    return total, bins_used
+
+
+def _calibration_null_floor(
+    probs: list, sims: int = 2000, seed: int = 20260825
+) -> Tuple[float, float, float]:
+    """The ECE this estimator returns for a PERFECTLY calibrated model at this n.
+
+    ECE sums |conf - acc|, so per-bin sampling noise always ADDS and never
+    cancels: the estimator is biased upward, badly at small n. Measured
+    2026-08-25 at n=100 with the live confidence distribution, a perfect model
+    scores a median ECE of 0.079 — so the old fixed 0.06 WARNING fired on 76%
+    of perfectly calibrated models and the 0.10 CRITICAL on 25%. Comparing
+    against a fixed constant was measuring the window size, not the model.
+
+    Drawing each outcome as Bernoulli(conf) IS a perfectly calibrated model by
+    construction, so the resulting spread is exactly the floor at this n and
+    this confidence distribution. Reusing the observed `probs` keeps the bin
+    structure identical between null and observation.
+
+    Seeded on purpose: an unattended monitor must not flap between runs on
+    identical data.
+
+    Returns (median, p90, p99).
+    """
+    import numpy as np
+
+    p_arr = np.asarray(probs, dtype=float)
+    n = p_arr.size
+    bin_of = (np.minimum(p_arr, 0.999) * CALIB_BINS).astype(int)
+    rng = np.random.default_rng(seed)
+    # (sims, n) of perfectly-calibrated outcomes.
+    draws = rng.random((sims, n)) < p_arr
+    total = np.zeros(sims, dtype=float)
+    for b in range(CALIB_BINS):
+        sel = np.flatnonzero(bin_of == b)
+        if sel.size < CALIB_MIN_BIN:
+            continue
+        conf = float(p_arr[sel].mean())
+        acc = draws[:, sel].mean(axis=1)
+        total += np.abs(conf - acc) * sel.size / n
+    return (
+        float(np.median(total)),
+        float(np.percentile(total, 90)),
+        float(np.percentile(total, 99)),
+    )
+
+
 def check_calibration_drift() -> Dict:
     """Rolling live-calibration check on archived pre-kickoff 1X2 predictions.
 
@@ -823,8 +913,15 @@ def check_calibration_drift() -> Dict:
     predictions that joined to a real result (same leak-free join the Track
     Record page uses: archived_at < kickoff snapshots only). A model can stay
     accurate while its probabilities drift — this catches the drift between
-    retrains. Thresholds: ECE > 0.10 CRITICAL, > 0.06 WARNING. Fewer than
-    CALIB_MIN_N graded predictions = SKIP (off-season, early season).
+    retrains.
+
+    Thresholds are NOT constants. ECE is biased upward at small n, so the
+    observation is compared against the floor a perfectly calibrated model
+    produces at this same n and confidence distribution (see
+    _calibration_null_floor): above the null p90 = WARNING, above the null p99
+    = CRITICAL. Fewer than CALIB_MIN_N graded predictions = SKIP, and so does a
+    window whose newest entry is over CALIB_MAX_AGE_DAYS old — an ECE computed
+    entirely on last season is not live drift no matter how it is thresholded.
 
     Grades the MONEY PATH, not the display layer (isolated 2026-06-11):
     display "probabilities" carry a deliberate draw-boost + temperature
@@ -836,6 +933,11 @@ def check_calibration_drift() -> Dict:
     """
     CALIB_WINDOW = 100
     CALIB_MIN_N = 60
+    # Gates the NEWEST graded entry, not the oldest: a 100-match window always
+    # spans ~2.5 months of fixtures, but its newest entry going stale means the
+    # archive stopped joining to results (off-season, or a broken pipeline).
+    # Longest in-season gap is an international break, ~2 weeks.
+    CALIB_MAX_AGE_DAYS = 30
     out: dict = {"status": "SKIP", "n": 0, "ece": None, "window": CALIB_WINDOW}
     try:
         import pandas as pd
@@ -881,20 +983,6 @@ def check_calibration_drift() -> Dict:
             disp = p.get("probabilities") or {}
             return (disp or None), "display"
 
-        def _ece(window: list) -> tuple[float, int]:
-            probs = [w[0] for w in window]
-            hits = [w[1] for w in window]
-            total, bins_used = 0.0, 0
-            for b in range(10):
-                sel = [i for i, q in enumerate(probs) if int(min(q, 0.999) * 10) == b]
-                if len(sel) < 5:
-                    continue
-                bins_used += 1
-                conf = sum(probs[i] for i in sel) / len(sel)
-                acc_ = sum(hits[i] for i in sel) / len(sel)
-                total += abs(conf - acc_) * len(sel) / len(window)
-            return total, bins_used
-
         graded, graded_disp, layers = [], [], {}
         for k, p in (arch or {}).items():
             if k not in res:
@@ -920,15 +1008,39 @@ def check_calibration_drift() -> Dict:
             out["reason"] = f"only {len(window)} graded predictions (< {CALIB_MIN_N})"
             return {"calibration_1x2": out}
 
-        ece, bins_used = _ece(window)
+        # How old is the freshest thing in this window? Without this the check
+        # reported a May number as live drift every 30 minutes all summer.
+        age_days = _iso_age_days(graded[-1][0])
+        out["newest_graded_age_days"] = (
+            round(age_days, 1) if age_days is not None else None
+        )
+        if age_days is not None and age_days > CALIB_MAX_AGE_DAYS:
+            out["reason"] = (
+                f"newest graded prediction is {age_days:.0f}d old "
+                f"(> {CALIB_MAX_AGE_DAYS}d) — no recent calibration to measure"
+            )
+            return {"calibration_1x2": out}
+
+        probs = [w[0] for w in window]
+        hits = [w[1] for w in window]
+        ece, bins_used = _confidence_ece(probs, hits)
         out["ece"] = round(ece, 4)
         out["bins_used"] = bins_used
+
+        null_med, null_p90, null_p99 = _calibration_null_floor(probs)
+        out["null_ece_median"] = round(null_med, 4)
+        out["null_ece_p90"] = round(null_p90, 4)
+        out["null_ece_p99"] = round(null_p99, 4)
+        out["ece_excess"] = round(ece - null_med, 4)
+
         graded_disp.sort()
         dwin = [(g[1], g[2]) for g in graded_disp[-CALIB_WINDOW:]]
         if len(dwin) >= CALIB_MIN_N:
-            out["display_ece"] = round(_ece(dwin)[0], 4)  # informational only
-        out["status"] = ("CRITICAL" if ece > 0.10 else
-                         "WARNING" if ece > 0.06 else "OK")
+            out["display_ece"] = round(  # informational only
+                _confidence_ece([g[0] for g in dwin], [g[1] for g in dwin])[0], 4
+            )
+        out["status"] = ("CRITICAL" if ece > null_p99 else
+                         "WARNING" if ece > null_p90 else "OK")
     except Exception as e:
         out["status"] = "SKIP"
         out["reason"] = f"check failed: {e}"
@@ -1227,9 +1339,15 @@ def run_health_check() -> Dict:
     # Live calibration drift (rolling ECE on archived 1X2 predictions)
     calib = result.get("calibration_drift", {}).get("calibration_1x2", {})
     if calib.get("status") in ("WARNING", "CRITICAL"):
+        # Quote the null floor, not a constant: an ECE of 0.09 is alarming at
+        # n=800 and unremarkable at n=100, and the alert text is where that
+        # distinction was previously lost.
         issues.append((calib["status"],
                        f"1X2 calibration drift: rolling-{calib.get('n')} ECE "
-                       f"{calib.get('ece')} (warn >0.06, crit >0.10)"))
+                       f"{calib.get('ece')} vs perfectly-calibrated floor "
+                       f"p90 {calib.get('null_ece_p90')} / "
+                       f"p99 {calib.get('null_ece_p99')} "
+                       f"({calib.get('newest_graded_age_days')}d old)"))
 
     # System issues
     if not result["system_integrity"].get("imports_ok", True):
