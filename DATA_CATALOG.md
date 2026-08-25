@@ -186,6 +186,7 @@
 | 18 | `data/parsed/player_stats_epl.parquet` | 87,326 | 309/309 EPL matches | ✅ | `scrape_epl_match_reports.py --season 2025-2026` | 2026-04-25 |
 | 19 | `data/parsed/understat_players.parquet` | 11,669 | 1,086 (SA + EPL) | ✅ | `scripts.data.refresh_understat_players` (manual; no scheduler yet) | 2026-04-24 |
 | 20 | `data/parsed/missing_players.parquet` | **6,776** (SA 3,389 + EPL 3,387) | **380/380** SA, 10/10 SA 2026-27 | ✅ self-refreshing | derived from `data/external/sofascore/matches{,_premier_league}/*/*.json` by `features/missing_players.py` | 2026-08-25 |
+| 21 | `data/parsed/first_half_splits.parquet` | **6,775** (SA 3,388 + EPL 3,387) | 380/380 SA, 10/10 SA 2026-27 | ✅ self-refreshing | derived from `data/external/sofascore/matches{,_premier_league}/*/*.json` by `features/first_half_splits.py` (1ST-period `team_stats`) | 2026-08-25 |
 
 ### 2025-26 feature completeness (what the ML model sees)
 

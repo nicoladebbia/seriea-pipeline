@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SOFASCORE_MATCHES_DIR = PROJECT_ROOT / "data" / "external" / "sofascore" / "matches"
+SOFASCORE_MATCHES_DIRS = (
+    (SOFASCORE_MATCHES_DIR, "serie_a"),
+    (PROJECT_ROOT / "data" / "external" / "sofascore" / "matches_premier_league", "premier_league"),
+)
 MAPPING_PATH = PROJECT_ROOT / "data" / "parsed" / "match_id_mapping.parquet"
 CACHE_PATH = PROJECT_ROOT / "data" / "parsed" / "first_half_splits.parquet"
 
@@ -114,28 +118,81 @@ def _parse_match_json(path: Path) -> dict | None:
     return rec
 
 
-def _walk_match_jsons() -> pd.DataFrame:
-    if not SOFASCORE_MATCHES_DIR.exists():
-        return pd.DataFrame()
+def _walk_match_jsons(seen: dict[str, float] | None = None) -> pd.DataFrame:
+    """Parse Sofascore match JSONs -> one row of 1ST-period stats per match.
+
+    Walks BOTH league directories. The EPL lives in a sibling top-level dir, not
+    a subdirectory, so the old `"premier_league" in season_dir.name` guard never
+    matched anything and the EPL was never scanned -- it had no `*_fh_*` columns.
+
+    `seen` maps sofascore_id -> the file mtime that produced the cached row. A
+    file is re-parsed when it is unknown or has been rewritten since. A JSON with
+    no "1ST" period yields nothing and is simply retried next time (1 of 6,776
+    today), which costs a read, not a wrong value.
+    """
+    seen = seen or {}
     records = []
-    for season_dir in sorted(SOFASCORE_MATCHES_DIR.iterdir()):
-        if not season_dir.is_dir() or season_dir.name.startswith(".") or "premier_league" in season_dir.name:
+    n_parsed = 0
+    n_current = 0
+    for base, league in SOFASCORE_MATCHES_DIRS:
+        if not base.exists():
+            log.warning("First-half splits: %s not found", base.name)
             continue
-        for json_path in season_dir.glob("*.json"):
-            rec = _parse_match_json(json_path)
-            if rec is not None:
+        for season_dir in sorted(base.iterdir()):
+            if not season_dir.is_dir() or season_dir.name.startswith("."):
+                continue
+            for json_path in sorted(season_dir.glob("*.json")):
+                mtime = json_path.stat().st_mtime
+                cached_mtime = seen.get(json_path.stem)
+                if cached_mtime is not None and mtime <= cached_mtime:
+                    n_current += 1
+                    continue
+                rec = _parse_match_json(json_path)
+                if rec is None:
+                    continue
+                rec["season"] = season_dir.name.replace("_", "-")
+                rec["league"] = league
+                rec["source_mtime"] = mtime
                 records.append(rec)
+                n_parsed += 1
+    log.info("First-half splits: parsed %d match JSONs (%d already current)", n_parsed, n_current)
     return pd.DataFrame(records)
 
 
 def _ensure_cache() -> pd.DataFrame:
-    if CACHE_PATH.exists():
-        return pd.read_parquet(CACHE_PATH)
-    log.info("Building first_half_splits.parquet cache (one-time; ~20s)")
-    df = _walk_match_jsons()
-    if len(df):
-        df.to_parquet(CACHE_PATH, index=False)
-    return df
+    """Return the cache, refreshing any match that is new or has been rewritten.
+
+    This used to return the parquet verbatim whenever it existed, so it froze on
+    the day it was built (2026-04-22) at 1,465 rows -- 22% of the 6,775 match
+    JSONs that carry a 1ST period today. Sofascore rewrites a match JSON after
+    kickoff, and many of those rewrites are what added the per-period breakdown
+    in the first place, so the freeze cost far more than the matches played since.
+
+    The watermark lives in the data (`source_mtime` per row), not on the cache
+    file: writing the cache stamps it `now`, so comparing against the file's own
+    mtime would permanently skip anything rewritten between two writes.
+    """
+    cached = pd.read_parquet(CACHE_PATH) if CACHE_PATH.exists() else pd.DataFrame()
+    seen: dict[str, float] = {}
+    if len(cached) and "source_mtime" in cached.columns:
+        seen = dict(zip(cached["sofascore_id"].astype(str), cached["source_mtime"]))
+
+    fresh = _walk_match_jsons(seen)
+    if fresh.empty:
+        return cached
+
+    fresh["sofascore_id"] = fresh["sofascore_id"].astype(str)
+    if len(cached):
+        cached["sofascore_id"] = cached["sofascore_id"].astype(str)
+        merged = pd.concat([cached, fresh], ignore_index=True)
+    else:
+        merged = fresh
+    merged = merged.drop_duplicates(subset="sofascore_id", keep="last").reset_index(drop=True)
+
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_parquet(CACHE_PATH, index=False)
+    log.info("First-half splits: cache now %d matches (%d refreshed)", len(merged), len(fresh))
+    return merged
 
 
 def _rolling_per_team(per_match_team: pd.DataFrame) -> pd.DataFrame:
@@ -206,6 +263,10 @@ def add_first_half_splits_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     mapping = pd.read_parquet(MAPPING_PATH)[["match_id", "sofascore_id"]].dropna()
     mapping["sofascore_id"] = mapping["sofascore_id"].astype(str)
     df_fh["sofascore_id"] = df_fh["sofascore_id"].astype(str)
+    # season/league come from feature_df below; carrying the cache's own copies
+    # into the merge would collide them into season_x/season_y
+    df_fh = df_fh.drop(columns=[c for c in ("season", "league", "source_mtime")
+                                if c in df_fh.columns])
 
     req = {"match_id", "home_team", "away_team", "match_date", "season", "league"}
     if not req.issubset(feature_df.columns):
