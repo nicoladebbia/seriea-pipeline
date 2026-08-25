@@ -59,9 +59,10 @@ from scripts.data.scrape_sofascore import (
 log = logging.getLogger(__name__)
 
 MATCHES_PARQUET = DATA_DIR / "parsed" / "matches.parquet"
-PLAYER_STATS_PARQUET = SOFASCORE_DIR / "player_match_stats.parquet"
-TEAM_STATS_PARQUET = SOFASCORE_DIR / "match_team_stats.parquet"
-SHOTMAP_PARQUET = SOFASCORE_DIR / "shotmap_stats.parquet"
+# player_match_stats / match_team_stats / shotmap_stats are league-SPLIT and so
+# have no single path — resolve them per league via _sofascore_parquet(). The
+# two below are genuinely shared: match ids are globally unique, so one merged
+# file holds every league.
 INCIDENTS_PARQUET = SOFASCORE_DIR / "match_incidents.parquet"
 CAPTAINS_PARQUET = SOFASCORE_DIR / "captains.parquet"
 
@@ -73,8 +74,36 @@ FIXTURES_CACHE_MAX_AGE = 6 * 3600  # 6 hours
 # 1. Detect new matches
 # ---------------------------------------------------------------------------
 
-def _fixtures_cache_path(season: str) -> Path:
-    return SOFASCORE_DIR / f"fixtures_{season.replace('-', '_')}.json"
+def _league_suffix(league: str) -> str:
+    """Filename suffix for non-Serie A leagues (empty for serie_a).
+
+    Mirrors scripts/data/scrape_sofascore.py::_league_suffix. That module writes
+    the same fixtures caches and per-league stat parquets this one reads, so the
+    two MUST agree on every filename.
+    """
+    return "" if league == "serie_a" else f"_{league}"
+
+
+def _sofascore_parquet(base: str, league: str) -> Path:
+    """Path to a per-league Sofascore stat parquet.
+
+    Serie A owns the unsuffixed name; every other league gets `_{league}`.
+    Sofascore match ids are globally unique, so these files are disjoint —
+    writing one league's rows into another's file is silent contamination.
+    """
+    return SOFASCORE_DIR / f"{base}{_league_suffix(league)}.parquet"
+
+
+def _fixtures_cache_path(season: str, league: str = "serie_a") -> Path:
+    """Fixtures cache path, one file per league.
+
+    This took no `league` until 2026-08-25, so both leagues shared a single
+    cache. run_matchday_update loops serie_a → premier_league, so Serie A
+    refreshed the cache and EPL then found it FRESH (6h window), loaded Serie
+    A's fixtures, diffed them against Serie A's ids and detected nothing. EPL
+    starved silently on every run — no error, no log, just zero new matches.
+    """
+    return SOFASCORE_DIR / f"fixtures_{season.replace('-', '_')}{_league_suffix(league)}.json"
 
 
 def _is_cache_stale(cache_path: Path) -> bool:
@@ -118,7 +147,7 @@ async def _refresh_fixtures_cache(season: str, league: str = "serie_a") -> list[
                 break
 
         if all_fixtures:
-            cache_path = _fixtures_cache_path(season)
+            cache_path = _fixtures_cache_path(season, league)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
                 json.dump(all_fixtures, f, indent=1)
@@ -129,19 +158,26 @@ async def _refresh_fixtures_cache(season: str, league: str = "serie_a") -> list[
         await api.close()
 
 
-def _load_fixtures(season: str) -> list[dict]:
+def _load_fixtures(season: str, league: str = "serie_a") -> list[dict]:
     """Load fixtures from cache file."""
-    cache_path = _fixtures_cache_path(season)
+    cache_path = _fixtures_cache_path(season, league)
     if not cache_path.exists():
         return []
     with open(cache_path) as f:
         return json.load(f)
 
 
-def _get_existing_sofascore_match_ids() -> set[int]:
-    """Get set of match_ids already in player_match_stats.parquet."""
-    if PLAYER_STATS_PARQUET.exists():
-        df = pd.read_parquet(PLAYER_STATS_PARQUET, columns=["match_id"])
+def _get_existing_sofascore_match_ids(league: str = "serie_a") -> set[int]:
+    """Match ids already held in this LEAGUE's player_match_stats parquet.
+
+    Read the Serie A file for every league until 2026-08-25, so EPL fixtures
+    were diffed against Serie A's ids. Masked in production by the shared
+    fixtures cache above (EPL never got its own fixtures to diff), and only
+    visible under force_refresh=True.
+    """
+    path = _sofascore_parquet("player_match_stats", league)
+    if path.exists():
+        df = pd.read_parquet(path, columns=["match_id"])
         return set(df["match_id"].unique())
     return set()
 
@@ -163,14 +199,27 @@ def detect_new_matches(
     """
     if season is None:
         season = get_current_season()
-    cache_path = _fixtures_cache_path(season)
+    cache_path = _fixtures_cache_path(season, league)
 
     # Refresh cache if stale or forced
     if force_refresh or _is_cache_stale(cache_path):
         log.info("Fixtures cache stale or refresh forced, fetching fresh data for %s...", league)
         fixtures = asyncio.run(_refresh_fixtures_cache(season, league=league))
+        if not fixtures:
+            # The refresh came back empty — Sofascore 403s the round endpoint for
+            # hours-to-days at a time (see CLAUDE.md "Sofascore API blocks"), and
+            # _refresh_fixtures_cache swallows that into a debug log and returns [].
+            # Returning [] here means the league detects nothing for the whole ban
+            # even though a usable cache is sitting on disk. A stale fixtures list
+            # costs nothing: already-ingested matches are filtered out below anyway.
+            fixtures = _load_fixtures(season, league)
+            if fixtures:
+                log.warning(
+                    "[%s] fixtures refresh returned nothing — falling back to the "
+                    "cache on disk (%d fixtures)", league, len(fixtures),
+                )
     else:
-        fixtures = _load_fixtures(season)
+        fixtures = _load_fixtures(season, league)
 
     if not fixtures:
         log.warning("No fixtures found for %s", season)
@@ -181,7 +230,7 @@ def detect_new_matches(
     log.info("Found %d finished matches in %s fixtures cache", len(finished), season)
 
     # Diff against existing data
-    existing_ids = _get_existing_sofascore_match_ids()
+    existing_ids = _get_existing_sofascore_match_ids(league)
     new_fixtures = [f for f in finished if f.get("id") not in existing_ids]
 
     if new_fixtures:
@@ -289,12 +338,19 @@ def _save_merged(new_df: pd.DataFrame, output_path: Path, dedup_cols: list[str])
 def merge_to_sofascore_parquets(
     match_data_pairs: list[tuple[dict, dict]],
     season: str,
+    league: str = "serie_a",
 ) -> dict[str, int]:
     """Merge fetched data into player_match_stats, match_team_stats, shotmap_stats parquets.
+
+    These three files are league-SPLIT (Serie A unsuffixed, others `_{league}`)
+    and hold disjoint match ids. This wrote the Serie A files for every league
+    until 2026-08-25; it never corrupted anything only because the shared
+    fixtures cache meant no EPL match was ever fetched here.
 
     Args:
         match_data_pairs: List of (match_data, fixture) tuples.
         season: Season string.
+        league: League key (e.g. "serie_a", "premier_league").
 
     Returns:
         Dict mapping parquet name to rows added.
@@ -313,19 +369,25 @@ def merge_to_sofascore_parquets(
     if all_player_rows:
         df = pd.DataFrame(all_player_rows)
         result["player_match_stats"] = _save_merged(
-            df, PLAYER_STATS_PARQUET, ["match_id", "player_id", "season"]
+            df,
+            _sofascore_parquet("player_match_stats", league),
+            ["match_id", "player_id", "season"],
         )
 
     if all_team_rows:
         df = pd.DataFrame(all_team_rows)
         result["match_team_stats"] = _save_merged(
-            df, TEAM_STATS_PARQUET, ["match_id", "team", "period", "season"]
+            df,
+            _sofascore_parquet("match_team_stats", league),
+            ["match_id", "team", "period", "season"],
         )
 
     if all_shotmap_rows:
         df = pd.DataFrame(all_shotmap_rows)
         result["shotmap_stats"] = _save_merged(
-            df, SHOTMAP_PARQUET, ["match_id", "team", "season"]
+            df,
+            _sofascore_parquet("shotmap_stats", league),
+            ["match_id", "team", "season"],
         )
 
     return result
@@ -841,7 +903,9 @@ def run_matchday_update(
                 # Step 3: Merge into Sofascore parquets
                 log.info("-" * 40)
                 log.info("[%s] Step 3: Merging into Sofascore parquets...", league)
-                league_parquet_counts = merge_to_sofascore_parquets(match_data_pairs, season)
+                league_parquet_counts = merge_to_sofascore_parquets(
+                    match_data_pairs, season, league=league
+                )
                 for k, v in league_parquet_counts.items():
                     parquet_counts[k] = parquet_counts.get(k, 0) + v
                 summary["sofascore_parquets"] = parquet_counts
