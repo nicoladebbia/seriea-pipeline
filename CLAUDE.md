@@ -214,6 +214,24 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   nothing. Measured 2026-07-16: api + www both **200** with live data via curl_cffi while
   plain curl still 403 — the June ban was gone, and two modules deferred as "403, do not
   build" (`live_sofascore`, `sofascore_watcher`) were buildable all along. One cheap probe.
+- **TWO different 403s — tell them apart before doing anything, they have opposite fixes.**
+  Measured 2026-08-25 from a university network (egress `131.94.x.x`, an institutional
+  NAT): **every** Sofascore path 403'd — `www` HTML, `www` API, `api.sofascore`, and
+  also `/robots.txt` and `/favicon.ico`. A static asset 403 cannot be a rate limit you
+  earned, so that is the tell. Body is `{"error": {"code": 403, "reason": "Forbidden" }}`
+  with **`server: Varnish`** — Sofascore's own edge denying the IP wholesale, NOT the
+  Cloudflare fingerprint ban described below.
+  - **Blanket-IP deny** (robots.txt 403, `server: Varnish`): the egress IP is denied.
+    The HTML fallback DOES NOT help — it 403s too, so the page-tier map below is moot.
+    Not a school firewall either: verify by curling any Cloudflare-fronted host, which
+    returns 200. **Fix: change network** (hotspot/VPN). Waiting does nothing.
+  - **Cloudflare fingerprint ban** (api tier 403, `www` HTML still 200): the documented
+    case below — burn the cooldown, scrape the HTML.
+  - Detection one-liner:
+    `python3 -c "from curl_cffi import requests as r; x=r.get('https://www.sofascore.com/robots.txt',impersonate='chrome124'); print(x.status_code, x.headers.get('server'))"`
+    → `403 Varnish` = blanket IP deny; `200` = IP is fine, problem is elsewhere.
+  - While blanket-denied, `football-data.co.uk` still serves results (verified 200 the
+    same minute) — that is the working third source for scores, not Sofascore HTML.
 - **Throttling ≠ ban.** Rapid successive requests return `CurlError (7) Failed to connect
   ... port 443` — a *connection* error, not a 403. Back off ~20s; it recovers. Don't read it
   as the ban returning.
