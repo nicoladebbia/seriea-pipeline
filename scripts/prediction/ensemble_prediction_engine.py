@@ -24,7 +24,7 @@ Expected improvement: 50.8% -> 55%+ accuracy
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
@@ -112,6 +112,11 @@ try:
     CORRECTION_LAYER_AVAILABLE = True
 except ImportError:
     CORRECTION_LAYER_AVAILABLE = False
+
+# Fixture-source primitives. Imported from match_timing (not re-exported via
+# predict_unified) so this stays available even if the try/except import block
+# below falls through to its fallback branch.
+from scripts.utils.match_timing import _is_future, _load_sofascore_fixtures
 
 # Import existing components
 try:
@@ -2288,7 +2293,34 @@ class EnsemblePredictor:
                 log.warning(f"Calibration pipeline not available: {e}")
 
         # Phase 7: Prediction Correction Layer (Static + Rolling bias correction)
-        if CORRECTION_LAYER_AVAILABLE:
+        #
+        # DEFAULT OFF since 2026-08-25. It was not correcting a bias, it was
+        # destroying the prediction: 14 of 20 Serie A fixtures came out at
+        # exactly 0.98/0.01/0.01, and 19 of 20 predicted HOME.
+        #
+        # Mechanism, measured, not guessed:
+        #   * The static path is disabled in the artifact's own config, because
+        #     it REGRESSED calibration when fitted (ece 0.0113 -> 0.0180, and a
+        #     log-loss gain of 0.0014 that is noise). So rolling is the only
+        #     live path.
+        #   * `correction_factor_min/max` (0.7-1.3) is applied ONLY in the
+        #     static path (correction_layer.py:317). RollingCorrector.correct
+        #     adds its EMA with NO magnitude bound, clips to [0.01, 0.99] and
+        #     renormalises — so an EMA of any size saturates the output.
+        #   * The live EMA is enormous: bucket H_0.40_0.50 holds +0.600 on
+        #     prob_H, bucket A_0.60_1.00 holds +0.883. A blend of 0.452 + 0.600
+        #     clips to 0.99 against 0.01/0.01 and renormalises to 0.98. Most
+        #     fixtures land in that bucket.
+        #   * The state was last updated 2026-05-27 with processed_count reset
+        #     to 0 — stale across a season boundary on top of everything else.
+        #
+        # Re-enabling requires the project's standard bar, same as the
+        # corners/cards models that were ripped out: a held-out backtest
+        # beating the uncorrected blend on BOTH skill score and ECE, plus a
+        # magnitude bound on the rolling path so it cannot saturate again. The
+        # prediction ledger below still accumulates, so the data to re-fit it
+        # keeps arriving while this is off.
+        if CORRECTION_LAYER_AVAILABLE and os.getenv("ENABLE_CORRECTION_LAYER") == "1":
             try:
                 self.correction_layer = CorrectionLayer()
                 if self.correction_layer.load():
@@ -3921,14 +3953,30 @@ class EnsemblePredictor:
 # =============================================================================
 
 def _load_league_matches(league: str) -> List[Dict]:
-    """Load upcoming matches for a given league.
+    """Load UPCOMING matches for a given league, freshest source first.
 
-    Serie A: delegates to existing load_upcoming_matches() (manual + scraped).
-    Other leagues: reads from odds_full_{league}.json (the odds fetch already
-    stores match metadata including home_team, away_team, commence_time).
+    Serie A: delegates to load_upcoming_matches(), which already leads with the
+    Sofascore fixture files and date-filters every source.
+
+    Other leagues used to read odds_full_{league}.json and nothing else, with
+    NO date filter. Both halves of that were wrong once the Odds API key
+    lapsed: the file is Odds-API-derived so it stopped advancing, and with no
+    date filter it served the previous season's final matchweek forever —
+    measured 2026-08-25, every EPL prediction on the dashboard was dated
+    2026-05-24, three months stale, and the run still exited 0.
+
+    So: Sofascore leads here too (refreshed independently of the Odds API), and
+    the odds file survives only as a date-filtered fallback. A stale source now
+    degrades to EMPTY, which fails loudly, rather than to wrong-but-plausible.
     """
     if league == "serie_a":
         return load_upcoming_matches()
+
+    now = datetime.now(timezone.utc)
+    fresh = [m for m in _load_sofascore_fixtures(now) if m.get("league") == league]
+    if fresh:
+        log.info("Loaded %d upcoming %s fixtures from Sofascore", len(fresh), league)
+        return fresh
 
     odds_path = DATA_DIR / "upcoming" / f"odds_full_{league}.json"
     if not odds_path.exists():
@@ -3967,7 +4015,14 @@ def _load_league_matches(league: str) -> List[Dict]:
             "league": league,
         })
 
-    return matches
+    kept = [m for m in matches if _is_future(m, now)]
+    if len(kept) != len(matches):
+        log.warning(
+            "%s odds fallback: %d/%d fixtures are in the past and were dropped "
+            "(the Odds API file is not advancing)",
+            league, len(matches) - len(kept), len(matches),
+        )
+    return kept
 
 
 def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a") -> Dict:
