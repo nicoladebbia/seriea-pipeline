@@ -40,7 +40,7 @@ from catboost import CatBoostClassifier
 from config.settings import MODELS_DIR
 from ml.config import LABEL_MAP, ValidationConfig
 from ml.data import TimeSeriesSplitter
-from ml.evaluation import compute_metrics
+from ml.evaluation import MIN_GATE_TEST_MATCHES, compute_metrics, gate_folds
 from ml.training import _strip_meta
 from ml.tuning import _compute_sample_weights
 from storage.paths import features_path
@@ -64,6 +64,7 @@ def load_current_feature_set() -> list[str]:
     features = metadata["feature_names"]
     log.info(f"Loaded {len(features)} features from metadata")
     return features
+
 
 
 def load_rejection_thresholds() -> Dict[str, float]:
@@ -101,7 +102,14 @@ def walk_forward_validate(
     matches.
 
     If `return_last_fold_cal_data=True`, also returns (proba_last, y_last_str)
-    for fitting an isotonic calibrator on the held-out test fold.
+    for fitting an isotonic calibrator — taken from the most recent test fold
+    holding at least MIN_GATE_TEST_MATCHES matches, which is NOT necessarily the
+    final fold. Early in a season the final fold is a handful of matches, and
+    per-class isotonic fit on those ships a calibrator whose classes disagree
+    about whether they were calibrated at all (see the note in the fold loop).
+    Returns
+    None for both when no fold is large enough, so the caller skips calibration
+    rather than fitting noise.
     """
     config = ValidationConfig()
     splitter = TimeSeriesSplitter(config)
@@ -116,6 +124,7 @@ def walk_forward_validate(
     last_fold_model = None
     last_fold_proba = None
     last_fold_y_str = None
+    last_fold_cal_season = None
     for fold_idx, (train_seasons, test_seasons) in enumerate(splits):
         train_mask = X["_season"].isin(train_seasons)
         test_mask = X["_season"].isin(test_seasons)
@@ -165,15 +174,44 @@ def walk_forward_validate(
             metrics["brier_score"], metrics["f1_D"],
         )
 
-        # Capture the last fold's artifacts for production saving
-        if fold_idx == len(splits) - 1:
-            if return_last_fold_model:
-                last_fold_model = model
-            if return_last_fold_cal_data:
-                last_fold_proba = y_proba
-                last_fold_y_str = y_test_str.values
+        # The shipped model is the LAST fold's — trained on every season but the
+        # newest, which is precisely the season it will go on to predict.
+        if return_last_fold_model and fold_idx == len(splits) - 1:
+            last_fold_model = model
+
+        # Calibration is a different question, and it must NOT follow the same
+        # rule. Early in a season the final fold can be a handful of matches
+        # (ten, on 2026-08-25), and lean_calibrators.pkl ships to live
+        # inference. Fitting per-class isotonic on ten predictions does not
+        # produce a mildly worse calibrator — it produces an INCOHERENT one.
+        # Measured on that real fold: two of the three classes had fewer than
+        # five positives, so fit_isotonic_calibrators fell back to the exact
+        # identity map (2 knots, pure passthrough) while the third was fit on
+        # ten points (4 knots). At inference all three are applied together and
+        # renormalised, so one class gets pulled toward a curve estimated from
+        # ten samples while the other two are left untouched and the mass
+        # redistributes in a direction nobody chose. The `binary.sum() < 5`
+        # guard below does not prevent this; it is what CREATES the asymmetry.
+        # The 2025-2026 fold fits all three properly (27/14/33 knots). Its model
+        # was trained one season shy of the shipped model; trading exact model
+        # identity for ~70x the sample size is the standard arrangement.
+        if return_last_fold_cal_data and len(X_test) >= MIN_GATE_TEST_MATCHES:
+            last_fold_proba = y_proba
+            last_fold_y_str = y_test_str.values
+            last_fold_cal_season = test_seasons[0] if test_seasons else "?"
 
     df = pd.DataFrame(fold_rows)
+    if return_last_fold_cal_data:
+        if last_fold_proba is None:
+            log.error(
+                "No fold reaches %d test matches — cannot fit a calibrator on any "
+                "of them. The calibrator will be skipped rather than fit on noise.",
+                MIN_GATE_TEST_MATCHES,
+            )
+        else:
+            log.info(
+                "Calibration fold: %s (n=%d)", last_fold_cal_season, len(last_fold_proba)
+            )
     if return_last_fold_model or return_last_fold_cal_data:
         return df, last_fold_model, last_fold_proba, last_fold_y_str
     return df
@@ -453,7 +491,7 @@ def main(
     # Aggregate across seeds (median of last-3 log-loss for the headline)
     last3_lls = []
     for r in seed_results:
-        last3 = r["cv"].tail(3)
+        last3 = gate_folds(r["cv"])
         last3_lls.append(last3["log_loss"].mean())
     median_idx = int(np.argsort(last3_lls)[len(last3_lls) // 2])
     selected = seed_results[median_idx]
@@ -468,7 +506,7 @@ def main(
     all_folds_ll = cv_df["log_loss"].mean()
     all_folds_brier = cv_df["brier_score"].mean()
 
-    last3 = cv_df.tail(3)
+    last3 = gate_folds(cv_df)
     last3_acc = last3["accuracy"].mean()
     last3_ll = last3["log_loss"].mean()
     last3_brier = last3["brier_score"].mean()
@@ -566,7 +604,8 @@ def main(
     log.info(f"Saving model to {model_path}")
     final_model.save_model(str(model_path))
 
-    # Optionally fit + save isotonic calibrators (leakage-safe, last fold only)
+    # Optionally fit + save isotonic calibrators (leakage-safe; last fold large
+    # enough to calibrate on — see walk_forward_validate)
     if fit_calibrator:
         cal_proba = selected["last_proba"]
         cal_y_str = selected["last_y_str"]
@@ -574,7 +613,8 @@ def main(
             log.warning("fit_calibrator requested but cal data not captured — skipping")
         else:
             log.info("=" * 70)
-            log.info("FITTING ISOTONIC CALIBRATORS (last walk-forward fold)")
+            log.info("FITTING ISOTONIC CALIBRATORS (last walk-forward fold >= %d matches)",
+                     MIN_GATE_TEST_MATCHES)
             log.info("=" * 70)
             calibrators = fit_isotonic_calibrators(cal_y_str, cal_proba)
             cal_path = MODELS_DIR / "universal" / f"lean_calibrators{suffix_part}.pkl"
@@ -657,7 +697,9 @@ def _update_deployment_state(deploy_path: Path, feature_names: list,
     else:
         deploy_state = {}
 
-    last3 = cv_df.tail(3)
+    # Same eligible folds as the gate, so rps/ece here agree with the
+    # accuracy/log_loss/brier the caller already computed from gate_folds().
+    last3 = gate_folds(cv_df)
 
     deploy_state["active_ml_model"] = {
         "name": "catboost_no_odds",

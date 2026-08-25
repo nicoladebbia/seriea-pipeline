@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional
 
 import numpy as np
@@ -13,6 +14,63 @@ from sklearn.metrics import (
 )
 
 from ml.config import CLASS_INDICES, CLASS_LABELS, LABEL_MAP, N_CLASSES
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Release gating
+# ---------------------------------------------------------------------------
+
+# A walk-forward fold only carries a release decision if it is big enough to
+# measure one. A fold's accuracy has standard error sqrt(0.25 / n_test): 0.158
+# at n_test=10 against 0.026 at a full 380-match season. Averaged UNWEIGHTED
+# into the three-fold headline, a ten-match fold moves it by up to +-0.05 while
+# holding under 1% of the data -- several times the margin the thresholds
+# actually decide on. At 200 matches the standard error is 0.035 and a single
+# fold shifts the headline by at most ~0.012.
+MIN_GATE_TEST_MATCHES = 200
+
+
+def gate_folds(
+    cv: pd.DataFrame, n: int = 3, min_test: int = MIN_GATE_TEST_MATCHES
+) -> pd.DataFrame:
+    """The last `n` folds large enough to gate a release on.
+
+    Paid lesson, 2026-08-25: the first ten matches of the 2026-2027 season
+    became their own walk-forward fold (acc=0.400, f1_D=0.000 on n_test=10) and
+    dragged the three-fold mean to 0.4565, rejecting a model whose three real
+    folds averaged 0.5107. The tiny fold is not itself a bug -- it is what makes
+    --walkforward-final ship a model that has never seen the season it predicts,
+    so the split list is deliberately left alone. What was wrong is letting it
+    vote. Undersized folds are still trained, logged and written to the metadata;
+    they just do not decide whether the model ships.
+    """
+    if "n_test" not in cv.columns:
+        return cv.tail(n)
+
+    eligible = cv[cv["n_test"] >= min_test]
+    if eligible.empty:
+        log.error(
+            "No fold reaches %d test matches (largest=%d) — gating on the raw "
+            "last %d folds, which cannot support the decision. Treat any verdict "
+            "from this run as unmeasured.",
+            min_test, int(cv["n_test"].max()), n,
+        )
+        return cv.tail(n)
+
+    skipped = cv[cv["n_test"] < min_test]
+    if not skipped.empty:
+        log.warning(
+            "Excluding %d fold(s) from the release gate — under %d test matches: %s",
+            len(skipped), min_test,
+            ", ".join(
+                f"{r['test']} (n={int(r['n_test'])}, acc={r['accuracy']:.3f})"
+                for _, r in skipped.iterrows()
+            ),
+        )
+
+    return eligible.tail(n)
 
 
 # ---------------------------------------------------------------------------

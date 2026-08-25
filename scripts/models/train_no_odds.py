@@ -24,7 +24,7 @@ import pandas as pd
 from config.settings import MODELS_DIR
 from ml.config import LABEL_MAP, META_COLS, ModelConfig, ValidationConfig
 from ml.data import DataLoader
-from ml.evaluation import compute_metrics
+from ml.evaluation import compute_metrics, gate_folds
 from ml.feature_selection import (
     correlation_pruning,
     exclude_odds,
@@ -107,7 +107,7 @@ def train_no_odds(top_k: int = 60, corr_threshold: float = 0.70) -> Dict:
             )
 
         avg = cv_df[["accuracy", "log_loss"]].mean()
-        last3 = cv_df.tail(3)[["accuracy", "log_loss"]].mean()
+        last3 = gate_folds(cv_df)[["accuracy", "log_loss"]].mean()
         log.info(
             "  %s Overall: acc=%.4f logloss=%.4f | Last 3 folds: acc=%.4f logloss=%.4f",
             mt, avg["accuracy"], avg["log_loss"], last3["accuracy"], last3["log_loss"],
@@ -147,7 +147,7 @@ def train_no_odds(top_k: int = 60, corr_threshold: float = 0.70) -> Dict:
 
     for mt in model_types:
         cv_df = cv_results[mt]
-        last3 = cv_df.tail(3)
+        last3 = gate_folds(cv_df)
         report["cv_summary"][mt] = {
             "all_folds_accuracy": round(cv_df["accuracy"].mean(), 4),
             "all_folds_logloss": round(cv_df["log_loss"].mean(), 4),
