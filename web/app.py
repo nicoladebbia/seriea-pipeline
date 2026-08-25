@@ -2291,21 +2291,36 @@ def _club_leagues_dormant(horizon_days: int = 14) -> dict[str, bool]:
     stop reading as a hard failure. Auto-clears the moment a fixture appears
     inside the window. Conservative: any read error -> not dormant (so a
     genuine failure is never masked by a parse problem here).
+
+    Read the FIXTURE source, not ``matches.parquet``. That file is a
+    results-only store — measured 2026-08-25, it has never held a future-dated
+    row or a null score — so asking it for upcoming fixtures returned zero
+    every single time and BOTH leagues read dormant all year. That is not a
+    cosmetic wrong flag: ``offseason_dormant`` gates the ``league_hard`` branch
+    below and forces ``ok: True``, so ``/api/data-freshness`` could never report
+    a hard failure and the dashboard's staleness banner was permanently green.
+    It was masking a live one — Serie A sat at ``html_ok: False`` while the
+    endpoint reported healthy.
     """
     flags = {"serie_a": False, "premier_league": False}
-    matches_path = DATA_DIR / "parsed" / "matches.parquet"
-    if not matches_path.exists():
-        return flags
     try:
-        import pandas as pd
-        m = pd.read_parquet(matches_path, columns=["league", "match_date"])
-        m["match_date"] = pd.to_datetime(m["match_date"], errors="coerce")
-        now = datetime.now()
-        horizon = now + timedelta(days=horizon_days)
+        from scripts.utils.match_timing import _load_sofascore_fixtures
+
+        now = datetime.now(timezone.utc)
+        # Silence has two causes and they demand opposite answers: a readable
+        # season file with nothing inside the window is a REAL off-season
+        # (dormant, suppress); an unreadable or empty one is a failure to read,
+        # and calling that off-season would suppress the very alert it should
+        # raise. So prove the source works — an unbounded read returns the whole
+        # published season — before trusting its silence about the next 14 days.
+        if not _load_sofascore_fixtures(now, horizon_days=None):
+            return flags
+        seen = {
+            f.get("league")
+            for f in _load_sofascore_fixtures(now, horizon_days=horizon_days)
+        }
         for lg in flags:
-            sub = m[m["league"] == lg] if "league" in m.columns else m
-            upcoming = sub[(sub["match_date"] > now) & (sub["match_date"] <= horizon)]
-            flags[lg] = len(upcoming) == 0
+            flags[lg] = lg not in seen
     except Exception:
         return {"serie_a": False, "premier_league": False}
     return flags

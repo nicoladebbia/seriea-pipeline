@@ -19,16 +19,18 @@ Exit codes: 0=HEALTHY, 1=WARNING, 2=CRITICAL
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, get_current_season
 
 # ─── Staleness thresholds ───
 MAX_FEATURES_AGE_DAYS = 7       # Features should be rebuilt weekly
 MAX_MODEL_AGE_DAYS = 30         # Models should be retrained monthly
+MIN_UNSEEN_MATCHES_FOR_STALE = 10   # ...but only if a matchweek of new
+                                    # results exists that they never saw.
 MAX_ODDS_AGE_HOURS = 48         # Odds should be fresh if matches upcoming
 MAX_PREDICTIONS_AGE_HOURS = 48  # Predictions should be recent before matchday
 
@@ -50,13 +52,36 @@ def _file_age(path: Path) -> Tuple[float, str]:
         return hours, f"{days:.1f}d ago"
 
 
+def _freshest_fixture_source() -> Path:
+    """The newest file that can actually tell us about upcoming matches.
+
+    ``upcoming/matches.json`` is the raw Odds API schedule, and it used to be the
+    only thing this check looked at. That made the check lie once the Odds API
+    key lapsed: it reported "fixtures stale" while the Sofascore season files —
+    which predict_unified now loads first, and which refresh independently of
+    the Odds API — were hours old. Being blind to upcoming matches is the
+    condition worth alerting on, not one source of them being cold.
+    """
+    season = get_current_season().replace("-", "_")
+    sofa = DATA_DIR / "external" / "sofascore"
+    candidates = [
+        DATA_DIR / "upcoming" / "matches.json",
+        sofa / f"fixtures_{season}.json",
+        sofa / f"fixtures_{season}_premier_league.json",
+    ]
+    existing = [c for c in candidates if c.exists()]
+    if not existing:
+        return candidates[0]
+    return max(existing, key=lambda c: c.stat().st_mtime)
+
+
 def check_data_freshness() -> Dict:
     """Check freshness of key data files."""
     checks = {}
 
     files = {
         "features.parquet": DATA_DIR / "features" / "features.parquet",
-        "fixtures": DATA_DIR / "upcoming" / "matches.json",
+        "fixtures": _freshest_fixture_source(),
         "odds_data": DATA_DIR / "upcoming" / "odds.json",
         "predictions": DATA_DIR / "upcoming" / "predictions.json",
         "results": DATA_DIR / "upcoming" / "results.json",
@@ -90,6 +115,68 @@ def check_data_freshness() -> Dict:
     return checks
 
 
+def _labeled_matches_since_model() -> Dict[str, Optional[int]]:
+    """How many matches with a RESULT postdate each model's training run.
+
+    Uses the model file's mtime as the training instant — the same signal the
+    age check already trusts, and the only one available: six of the seven
+    active models ship no ``saved_at`` metadata. Zero means the model has seen
+    everything there is to learn from, however old the file is. Returns
+    ``None`` per model when the count cannot be established, so the caller
+    fails loud rather than silently reporting OK.
+
+    Two granularity traps, both handled by comparing whole DAYS:
+
+    * ``match_date`` is date-only (every row is midnight), so comparing it
+      against a mid-afternoon timestamp counts same-day matches as already
+      seen. Truncating the model side too makes "strictly later day" the test.
+    * ``datetime.fromtimestamp(mtime)`` is naive-LOCAL, while the parquet dates
+      are naive-UTC. On this machine (EDT) that shifted the training instant
+      four hours early — enough to flip a whole day of fixtures into "unseen".
+      This is the ``_iso_age_hours`` naive/aware bug in the project's own bug
+      catalogue; convert with an explicit ``timezone.utc`` and keep BOTH sides
+      naive-UTC. Do not make one of them aware without doing the other.
+
+    The count is deliberately league-agnostic: these are the ``universal``
+    models, trained across Serie A and the Premier League together (roughly
+    7,990 / 7,909 rows), so a matchweek of either league is genuinely unseen
+    training data for them.
+    """
+    import pandas as pd  # local, matching this module's lazy-import convention
+
+    out: Dict[str, Optional[int]] = {}
+    universal_dir = MODELS_DIR / "universal"
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if not matches_path.exists():
+        return out
+    try:
+        m = pd.read_parquet(matches_path, columns=["match_date", "home_score"])
+        played = m[m["home_score"].notna()].copy()
+        played["match_date"] = pd.to_datetime(
+            played["match_date"], errors="coerce"
+        ).dt.normalize()
+        played = played.dropna(subset=["match_date"])
+    except (OSError, ValueError, KeyError):
+        # No logger in this module by design — it is a CLI that prints its
+        # report. Returning the empty mapping is how the failure is surfaced:
+        # every model then reads None, which the caller turns into STALE, so an
+        # unreadable parquet fails loud instead of passing silently as healthy.
+        return out
+
+    for path in universal_dir.glob("*"):
+        if not path.is_file():
+            continue
+        try:
+            trained_on = pd.Timestamp(
+                datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                .replace(tzinfo=None)
+            ).normalize()
+        except OSError:
+            continue
+        out[path.stem] = int((played["match_date"] > trained_on).sum())
+    return out
+
+
 def check_model_freshness() -> Dict:
     """Check model files exist and aren't stale.
 
@@ -111,6 +198,8 @@ def check_model_freshness() -> Dict:
         "xgboost_latest": universal_dir / "xgboost_latest.json",
     }
 
+    unseen = _labeled_matches_since_model()
+
     for name, path in active_models.items():
         age_hours, age_str = _file_age(path)
         status = "OK"
@@ -118,13 +207,25 @@ def check_model_freshness() -> Dict:
         if age_hours < 0:
             status = "MISSING"
         elif age_hours > MAX_MODEL_AGE_DAYS * 24:
-            status = "STALE"
+            # Calendar age alone is NOT staleness. A model goes stale because
+            # labeled matches exist that it never trained on — not because the
+            # off-season is long. Blind calendar age fired on all seven models
+            # for the whole of June/July and drowned the three real signals in
+            # the issues list, which is how a monitor stops being read.
+            n = unseen.get(name)
+            if n is None:
+                status = "STALE"          # can't measure — fail loud, not quiet
+            elif n >= MIN_UNSEEN_MATCHES_FOR_STALE:
+                status = "STALE"
 
-        checks[name] = {
+        entry = {
             "exists": path.exists(),
             "age": age_str,
             "status": status,
         }
+        if unseen.get(name) is not None:
+            entry["unseen_matches"] = unseen[name]
+        checks[name] = entry
 
     return checks
 
@@ -346,6 +447,12 @@ def check_data_quality() -> Dict:
                 # by design across the full historical window.
                 "home_xg_share_", "away_xg_share_",
                 "home_xg_conceded_share_", "away_xg_conceded_share_",
+                # Goalkeeper rollups: FBref GK tables only exist from 2024-25.
+                # Measured 2026-08-24 on features_serie_a: 100% NaN for every
+                # season through 2023-24, then 12.5% (2024-25) and 0.5%
+                # (2025-26). Sparse across full history by construction, not a
+                # regression — the underlying data did not exist.
+                "home_gk_roll5_", "away_gk_roll5_",
             )
             dense_cols = [c for c in df.columns if not c.startswith(SPARSE_PREFIXES)]
             nan_rate = float(df[dense_cols].isna().mean().mean()) if dense_cols else 0.0

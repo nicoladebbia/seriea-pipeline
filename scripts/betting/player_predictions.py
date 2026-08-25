@@ -57,6 +57,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _sps
 
+from config.team_names import normalize_team_safe
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -65,11 +67,37 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 SS_DIR = DATA_DIR / "external" / "sofascore"
 
-TEAM_MAP = {
-    "Hellas Verona": "Verona", "ChievoVerona": "Chievo",
-    "AC Milan": "Milan", "Inter Milan": "Inter",
-    "Internazionale": "Inter", "Parma Calcio 1913": "Parma",
-}
+def _canon(s: pd.Series) -> pd.Series:
+    """Canonicalise a column of team names.
+
+    This was a hand-typed six-entry dict covering Serie A only, which put the
+    two documented traps of this repo into one production engine. Team names
+    reach here straight from the Sofascore parquets, but the fixture side (and
+    therefore every lookup below) uses CANONICAL names, so any club the dict
+    did not know became a key nobody queries:
+
+    * "Liverpool FC" and "Liverpool" existed side by side as SEPARATE keys, so
+      the possession prior for Liverpool was built from part of its history and
+      the 2025-26 rows sat under a key no fixture ever asks for.
+    * "Coventry City" meant newly-promoted Coventry had no prior at all, so
+      every Coventry player silently lost the possession adjustment.
+
+    ``normalize_team_safe`` is a strict superset of the six entries (verified
+    name by name) and knows both active leagues, so it cannot go stale on a
+    promotion the way the literal did.
+
+    The reverse risk of a fuzzy normaliser is OVER-collapse: fusing two distinct
+    clubs into one key would merge their priors, the mirror of the bug above.
+    Audited across all four stats parquets and every team-ish column — the only
+    multi-source group is "Liverpool"/"Liverpool FC", which is the intended
+    merge. ``test_distinct_clubs_do_not_fuse`` pins the shared-name pairs.
+
+    Mapped over the DISTINCT values rather than per cell: these frames run to
+    ~100k rows over a few dozen clubs, and it keeps the collapse set auditable.
+    """
+    uniq = s.dropna().astype(str).unique()
+    lookup = {v: normalize_team_safe(v) for v in uniq}
+    return s.map(lambda v: lookup.get(v, v) if isinstance(v, str) else v)
 
 # Minimum prior 60+min matches before we trust a player's rate. Below this we
 # fall back to the position base rate (computed live from the same data).
@@ -138,8 +166,8 @@ def load_player_data(league: str = "serie_a") -> pd.DataFrame:
     path = SS_DIR / fname
     log.info("Loading %s …", path.name)
     pms = pd.read_parquet(path)
-    pms["team"] = pms["team"].replace(TEAM_MAP)
-    pms["opponent"] = pms["opponent"].replace(TEAM_MAP)
+    pms["team"] = _canon(pms["team"])
+    pms["opponent"] = _canon(pms["opponent"])
     pms["date"] = pd.to_datetime(pms["date"])
     for c in _RATE_COLS + ["minutes"]:
         if c in pms.columns:
@@ -293,7 +321,7 @@ def _get_possession(
         return _POSS_CACHE["team"], _POSS_CACHE["player"]
     mts = pd.read_parquet(path)
     mts = mts[mts["period"] == "ALL"][["match_id", "team", "possession", "date"]].copy()
-    mts["team"] = mts["team"].replace(TEAM_MAP)
+    mts["team"] = _canon(mts["team"])
     mts["date"] = pd.to_datetime(mts["date"])
     mts = mts.sort_values("date")
     mts["poss_prior"] = mts.groupby("team")["possession"].transform(

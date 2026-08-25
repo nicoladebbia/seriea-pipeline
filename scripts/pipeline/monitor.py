@@ -188,14 +188,16 @@ def check_groq_api_key() -> Dict:
     try:
         from groq import Groq
         client = Groq(api_key=key)
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-        )
-        if response.choices:
-            return {"status": "OK", "detail": "Groq key valid"}
-        return {"status": "WARNING", "detail": "Groq returned empty response"}
+        # List models rather than completing against a named one. The old probe
+        # hardcoded llama-3.3-70b-versatile, which Groq decommissioned — the
+        # check then reported a 404 every 30 minutes about a PERFECTLY VALID
+        # key, because it was asking a question that rots. A key is valid if the
+        # provider will talk to it; that is what this asks. It also costs no
+        # tokens, which matters for a check on a 30-minute timer.
+        models = getattr(client.models.list(), "data", None) or []
+        if models:
+            return {"status": "OK", "detail": f"Groq key valid ({len(models)} models)"}
+        return {"status": "WARNING", "detail": "Groq key valid but no models listed"}
     except Exception as e:
         err = str(e)
         if "401" in err or "403" in err:

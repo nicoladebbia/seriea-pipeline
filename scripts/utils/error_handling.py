@@ -11,7 +11,7 @@ Depends on: config.settings (DATA_DIR)
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
@@ -55,19 +55,44 @@ class FeatureUnavailableError(Exception):
 # DATA VALIDATION
 # =============================================================================
 
-VALID_SERIE_A_TEAMS = {
-    "Inter", "Milan", "Juventus", "Roma", "Lazio", "Napoli",
-    "Atalanta", "Fiorentina", "Bologna", "Torino", "Genoa",
-    "Sassuolo", "Udinese", "Verona", "Lecce", "Cagliari",
-    "Parma", "Como", "Cremonese", "Pisa",
-}
+def _valid_team_names() -> set[str]:
+    """Every alias that resolves to a club playing in an active league THIS season.
+
+    This used to be a hand-typed 20-name Serie A set. It was wrong twice over:
+    frozen on the previous season (no Venezia / Frosinone / Monza, still listing
+    relegated clubs) and completely EPL-blind, so validation rejected 13 of the
+    20 live fixtures — Crystal Palace and Man City included. Two of the repo's
+    own documented traps at once: the season rollover and the league-parity
+    rule.
+
+    The obvious repair — ``set(TEAM_NAME_MAP)`` — over-corrects. That map is the
+    union of FIVE leagues (406 entries, La Liga / Bundesliga / Ligue 1 included)
+    plus every club either active league has ever fielded, so it validated
+    "Real Madrid", "Bayern Munich" and "Blackpool" clean. This gate exists to
+    catch rows that do not belong in an upcoming-fixture file at all, so the
+    scope must be the CURRENT-SEASON rosters, with aliases folded in so
+    "Liverpool FC" and "Coventry City" still resolve. It rolls over by itself
+    when the two season constants are updated.
+
+    Deliberately narrower than the map in one direction: a relegated club is
+    rejected. That is correct here — the only caller, ``safe_load_matches``,
+    validates UPCOMING fixtures. Do not reuse this on historical rows.
+    """
+    from config.team_names import (
+        PREMIER_LEAGUE_2026_27,
+        SERIE_A_2026_27,
+        TEAM_NAME_MAP,
+    )
+
+    active = set(SERIE_A_2026_27) | set(PREMIER_LEAGUE_2026_27)
+    return active | {k for k, v in TEAM_NAME_MAP.items() if v in active}
 
 
 def validate_team_name(team: str) -> bool:
-    """Validate that a team name is a known Serie A team."""
+    """Validate that a team name resolves to a known club in an active league."""
     if not team or not isinstance(team, str):
         return False
-    return team in VALID_SERIE_A_TEAMS
+    return team.strip() in _valid_team_names()
 
 
 def validate_match_data(match: Dict) -> tuple[bool, List[str]]:
@@ -484,16 +509,37 @@ def health_check() -> Dict:
 # =============================================================================
 
 def safe_load_matches() -> List[Dict]:
-    """Safely load upcoming matches with validation."""
+    """Safely load UPCOMING matches with validation.
+
+    "Safe" has to include fresh. This read manual_matches.json with no date
+    filter, so once the Odds API key lapsed it returned the previous season's
+    final matchweek forever — validated, well-formed, and three months stale.
+    Nothing in production calls this today, which is exactly why it needed
+    fixing: a wrapper named ``safe_*`` is the one a future caller trusts
+    without reading. Fresh source first, manual file only as a date-filtered
+    fallback, and a stale source degrades to EMPTY rather than to wrong.
+    """
+    from scripts.utils.match_timing import _is_future, _load_sofascore_fixtures
+
+    now = datetime.now(timezone.utc)
     matches = []
 
-    # Try manual matches
+    for match in _load_sofascore_fixtures(now):
+        is_valid, errors = validate_match_data(match)
+        if is_valid:
+            matches.append(match)
+        else:
+            log.warning(f"Invalid match data: {errors}")
+    if matches:
+        return matches
+
     manual_path = DATA_DIR / "upcoming" / "manual_matches.json"
     if manual_path.exists():
         try:
             with open(manual_path) as f:
                 data = json.load(f)
-            raw_matches = data.get("matches", [])
+            raw_matches = [m for m in (data.get("matches") or [])
+                           if _is_future(m, now)]
 
             for match in raw_matches:
                 is_valid, errors = validate_match_data(match)

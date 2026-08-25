@@ -38,6 +38,14 @@ except ImportError:
 
 # Import from central config — single source of truth
 from config.leagues import ACTIVE_LEAGUES
+from config.team_names import normalize_team
+from scripts.utils.match_timing import _entry_kickoff, _load_sofascore_fixtures
+
+#: How far ahead the scheduler looks for kickoffs. The Sofascore files carry the
+#: whole season, and an unbounded read would put ~740 fixtures in the kickoff map
+#: every tick. Both callers window far tighter than this (72h and
+#: MATCH_CLOCK_LOOKAHEAD_HOURS), so 14 days is slack, not a constraint.
+SOFA_FIXTURE_HORIZON_DAYS = 14
 
 # Schedule configuration (24h format, Italian timezone for Serie A)
 SCHEDULE_CONFIG = {
@@ -263,6 +271,67 @@ def get_kickoff_times() -> List[Dict]:
     results = []
     seen = set()
 
+    anon = [0]
+
+    def _seen_key(home: str, away: str, fallback: str = "") -> str:
+        """Dedup on CANONICAL names. Sofascore says "Milan" where the Odds API
+        says "AC Milan"; a raw-name key lets the same fixture in twice, and the
+        T-30 monitor then fires twice for one match.
+
+        A row missing either name CANNOT be identified by name: normalising two
+        empty strings yields ONE constant key, so the first such row would be
+        kept and every later one silently dropped. Source 2 feeds the -3h
+        settlement tail, so that failure mode is settled matches going
+        unprocessed. Fall back to the row's own unique id, or a per-call
+        sentinel that can never collide.
+        """
+        h, a = normalize_team(home or ""), normalize_team(away or "")
+        if not h or not a:
+            if fallback:
+                return f"?id:{fallback}"
+            anon[0] += 1
+            return f"?anon:{anon[0]}"
+        return f"{h}_{a}"
+
+    # Source 0: Sofascore season fixtures. Leads because it is the ONLY source
+    # here that does not depend on the Odds API — sources 1 and 3 are both
+    # Odds-API-derived, so a lapsed key left the scheduler blind to every
+    # kickoff and the T-30 pre-kickoff monitors simply never fired (2026-08-24).
+    # It also carries a real `league` tag, which sources 1 and 2 do not: without
+    # one, caller `run_line_movement` falls back to "serie_a" and mis-tags EPL.
+    try:
+        now_sofa = _utc_now()
+        # -6h so a match that has already kicked off stays visible: the match
+        # clock wants a 3h settlement tail, and dropping started matches here
+        # would silently break settlement rather than pre-kickoff.
+        lo = now_sofa - timedelta(hours=6)
+        hi = now_sofa + timedelta(days=SOFA_FIXTURE_HORIZON_DAYS)
+        for entry in _load_sofascore_fixtures(
+            lo, horizon_days=SOFA_FIXTURE_HORIZON_DAYS
+        ):
+            ko = _entry_kickoff(entry)
+            if ko is None or ko > hi:
+                continue
+            home, away = entry["home_team"], entry["away_team"]
+            sk = _seen_key(home, away)
+            if sk in seen:
+                continue
+            seen.add(sk)
+            results.append({
+                "match": f"{home} vs {away}",
+                "home_team": home,
+                "away_team": away,
+                "kickoff_utc": ko,
+                "date": _to_italy_date(ko),
+                "league": entry.get("league", ""),
+            })
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        # Narrow deliberately: _load_sofascore_fixtures already degrades quietly
+        # on a missing/corrupt file, so anything reaching here is a parse or
+        # shape problem in a row. A blind catch here would hide a real bug in
+        # the reader while the scheduler keeps reporting "source unavailable".
+        log.warning("Sofascore fixture source unavailable: %s", e)
+
     # Source 1: manual_matches.json (most reliable, has commence_time from Odds API)
     mm_path = DATA_DIR / "upcoming" / "manual_matches.json"
     if mm_path.exists():
@@ -277,9 +346,10 @@ def get_kickoff_times() -> List[Dict]:
                 home = m.get("home_team", "")
                 away = m.get("away_team", "")
                 key = f"{home} vs {away}"
-                if key in seen:
+                sk = _seen_key(home, away)
+                if sk in seen:
                     continue
-                seen.add(key)
+                seen.add(sk)
                 try:
                     kickoff_utc = datetime.fromisoformat(ct.replace("Z", "+00:00"))
                     if kickoff_utc.tzinfo is None:
@@ -302,14 +372,15 @@ def get_kickoff_times() -> List[Dict]:
     try:
         from scripts.data.odds_fetcher import discover_kickoffs_via_events
         for ev in discover_kickoffs_via_events():
-            key = ev["match"]
-            if key in seen:
+            key = ev.get("match", "")
+            sk = _seen_key(ev.get("home_team", ""), ev.get("away_team", ""), key)
+            if sk in seen:
                 continue
-            seen.add(key)
+            seen.add(sk)
             results.append({
                 "match": key,
-                "home_team": ev["home_team"],
-                "away_team": ev["away_team"],
+                "home_team": ev.get("home_team", ""),
+                "away_team": ev.get("away_team", ""),
                 "kickoff_utc": ev["kickoff_utc"],
                 "date": _to_italy_date(ev["kickoff_utc"]),
                 "league": ev.get("league", ""),
@@ -325,9 +396,10 @@ def get_kickoff_times() -> List[Dict]:
                 data = json.load(f)
             for key, m in data.get("results", {}).items():
                 ct = m.get("commence_time", "")
-                if not ct or key in seen:
+                sk = _seen_key(m.get("home_team", ""), m.get("away_team", ""), key)
+                if not ct or sk in seen:
                     continue
-                seen.add(key)
+                seen.add(sk)
                 try:
                     kickoff_utc = datetime.fromisoformat(ct.replace("Z", "+00:00"))
                     if kickoff_utc.tzinfo is None:

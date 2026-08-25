@@ -1659,6 +1659,21 @@ def _build_features_for_matches(matches: pd.DataFrame,
     return feature_df
 
 
+def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
+    """tmp + replace. ``to_parquet`` straight onto the live path is a
+    non-atomic overwrite: a crash, a full disk or a SIGTERM mid-write leaves
+    the production feature store TRUNCATED, and the next pipeline step reads
+    it without complaint. This is the repo's existing idiom (see
+    scripts/data/rumor_history._atomic_write, scripts/betting/ledger, and the
+    CLAUDE.md plist rule) — the feature table is the one file that most
+    deserves it, since every model in the project trains off it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".parquet.tmp")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(path)
+
+
 def build_features(season: str | None = None,
                    use_cache: bool = True) -> pd.DataFrame:
     """Build the complete ML feature table.
@@ -1714,7 +1729,7 @@ def build_features(season: str | None = None,
             if not features.empty:
                 # Save per-league parquet (source of truth for per-league training)
                 league_out = features_path(league=league)
-                features.to_parquet(league_out, index=False)
+                _atomic_to_parquet(features, league_out)
                 log.info("Per-league features saved: %s (%d rows x %d cols)",
                          league_out, len(features), len(features.columns))
                 all_features.append(features)
@@ -1742,7 +1757,7 @@ def build_features(season: str | None = None,
 
     # Save
     out_path = features_path()
-    feature_df.to_parquet(out_path, index=False)
+    _atomic_to_parquet(feature_df, out_path)
     log.info(
         "Feature table saved: %d rows x %d columns at %s",
         len(feature_df),

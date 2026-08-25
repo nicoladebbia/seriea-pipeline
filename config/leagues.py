@@ -347,21 +347,35 @@ _PREMIER_LEAGUE_TEAMS: frozenset[str] = frozenset({
     "Everton", "Fulham", "Ipswich", "Ipswich Town", "Leeds", "Leeds United",
     "Leicester", "Leicester City", "Liverpool", "Man City", "Manchester City",
     "Man United", "Manchester United", "Newcastle", "Newcastle United",
-    "Nottingham Forest", "Nott'm Forest", "Southampton", "Sunderland",
+    "Coventry", "Coventry City", "Hull", "Hull City",
+    "Nottingham Forest", "Nott'm Forest", "Nott'ham Forest",
+    "Southampton", "Sunderland",
     "Tottenham", "Tottenham Hotspur", "Spurs", "West Ham", "West Ham United",
     "Wolves", "Wolverhampton Wanderers",
 })
 
 
 def infer_league(home_team: str | None = None, away_team: str | None = None) -> str:
-    """Return the league key implied by the team names. Defaults to serie_a."""
+    """Return the league key implied by the team names. Defaults to serie_a.
+
+    Normalises before matching. These sets are hand-maintained alias lists, so
+    any spelling nobody thought to add fell through to the serie_a DEFAULT
+    rather than failing loudly — measured 2026-08-24: Sofascore emits
+    "Liverpool FC" and "Coventry City", both of which inferred as Serie A, and
+    `run_line_movement` then mis-tagged those EPL fixtures. Normalising first
+    fixes every alias the canonical map already knows, instead of chasing
+    spellings one at a time.
+    """
+    from config.team_names import normalize_team
+
     for t in (home_team, away_team):
         if not t:
             continue
-        if t in _PREMIER_LEAGUE_TEAMS:
-            return "premier_league"
-        if t in _SERIE_A_TEAMS:
-            return "serie_a"
+        for candidate in (t, normalize_team(t)):
+            if candidate in _PREMIER_LEAGUE_TEAMS:
+                return "premier_league"
+            if candidate in _SERIE_A_TEAMS:
+                return "serie_a"
     return "serie_a"
 
 

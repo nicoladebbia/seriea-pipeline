@@ -255,3 +255,121 @@ class TestDisplayContract:
         mk_order = self._extract(src, "const MK_ORDER")
         display = self._extract(app_src, "_FLOOR_DISPLAY_MARKETS")
         assert set(display) <= set(mk_order), "template would silently drop markets"
+
+
+# ---------------------------------------------------------------------------
+# Team-name canonicalisation
+#
+# The engine used a hand-typed six-entry TEAM_MAP covering Serie A only. Names
+# arrive from the Sofascore parquets, but every lookup below is keyed by the
+# CANONICAL name the fixture side uses, so a club the literal did not know
+# became a key nobody queries — "Liverpool FC" sat beside "Liverpool" as a
+# separate club and Coventry had no entry at all.
+
+def _empty_pms() -> pd.DataFrame:
+    """Only the columns _get_possession's player-context merge touches."""
+    return pd.DataFrame(
+        {"player_id": pd.Series(dtype=int), "match_id": pd.Series(dtype=str),
+         "team": pd.Series(dtype=str), "date": pd.Series(dtype="datetime64[ns]")}
+    )
+
+
+def _mts(rows: list[tuple[str, float, str]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"match_id": f"m{i}", "team": t, "possession": p,
+             "date": d, "period": "ALL"}
+            for i, (t, p, d) in enumerate(rows)
+        ]
+    )
+
+
+def test_aliases_collapse_into_one_club_not_two(tmp_path, monkeypatch):
+    """"Liverpool FC" and "Liverpool" are the SAME club, so one prior.
+
+    Splitting them is not a cosmetic issue: the fixture side only ever asks for
+    "Liverpool", so every row filed under the alias was excluded from the prior
+    it should have fed.
+    """
+    from scripts.betting import player_predictions as pp
+
+    frame = _mts(
+        [("Liverpool", 60.0, "2025-01-01"), ("Liverpool", 62.0, "2025-01-08"),
+         ("Liverpool FC", 50.0, "2025-01-15"), ("Liverpool FC", 52.0, "2025-01-22")]
+    )
+    path = tmp_path / "match_team_stats_premier_league.parquet"
+    frame.to_parquet(path, index=False)
+    monkeypatch.setattr(pp, "SS_DIR", tmp_path)
+    monkeypatch.setattr(pp, "_POSS_CACHE", {"key": None, "team": None, "player": None})
+
+    team_prior, _ = pp._get_possession(_empty_pms(), "premier_league")
+
+    assert "Liverpool FC" not in team_prior, "the alias survived as its own club"
+    # Mean of the three matches before the last: (60 + 62 + 50) / 3.
+    assert team_prior["Liverpool"] == pytest.approx((60.0 + 62.0 + 50.0) / 3)
+
+
+def test_a_promoted_club_is_not_invisible(tmp_path, monkeypatch):
+    """Coventry arrives from Sofascore as "Coventry City"; the fixture side
+    calls it "Coventry". The literal knew neither, so it got no prior at all."""
+    from scripts.betting import player_predictions as pp
+
+    frame = _mts(
+        [("Coventry City", 44.0, "2026-08-21"), ("Coventry City", 46.0, "2026-08-28")]
+    )
+    path = tmp_path / "match_team_stats_premier_league.parquet"
+    frame.to_parquet(path, index=False)
+    monkeypatch.setattr(pp, "SS_DIR", tmp_path)
+    monkeypatch.setattr(pp, "_POSS_CACHE", {"key": None, "team": None, "player": None})
+
+    team_prior, _ = pp._get_possession(_empty_pms(), "premier_league")
+
+    assert "Coventry" in team_prior, "promoted club still keyed by its raw name"
+    assert team_prior["Coventry"] == pytest.approx(44.0)
+
+
+def test_the_serie_a_names_the_literal_handled_still_resolve():
+    """The replacement must be a superset, not a swap."""
+    from config.team_names import normalize_team_safe
+
+    for raw, canonical in (
+        ("Hellas Verona", "Verona"), ("ChievoVerona", "Chievo"),
+        ("AC Milan", "Milan"), ("Inter Milan", "Inter"),
+        ("Internazionale", "Inter"), ("Parma Calcio 1913", "Parma"),
+    ):
+        assert normalize_team_safe(raw) == canonical
+
+
+def test_distinct_clubs_do_not_fuse():
+    """The mirror risk: a fuzzy normaliser merging two REAL clubs into one key.
+
+    That would pool two teams' possession priors — the same failure as the
+    Liverpool split, in the opposite direction. Suffix-stripping is exactly
+    what would fuse shared-city and shared-stem names, so those are the cases
+    worth asserting.
+    """
+    from config.team_names import normalize_team_safe
+
+    for a, b in (
+        ("Man City", "Man United"),
+        ("Manchester City", "Manchester United"),
+        ("Sheffield United", "Sheffield Wednesday"),
+        ("Hellas Verona", "Chievo"),
+        ("Inter", "Milan"),
+        ("AC Milan", "Inter Milan"),
+        ("Nottingham Forest", "Norwich"),
+    ):
+        assert normalize_team_safe(a) != normalize_team_safe(b), f"{a} fused with {b}"
+
+
+def test_canon_maps_every_row_the_same_way_as_the_normaliser():
+    """The unique-value lookup must not change behaviour, only cost."""
+    from config.team_names import normalize_team_safe
+    from scripts.betting.player_predictions import _canon
+
+    raw = pd.Series(["Liverpool FC", "Liverpool", "AC Milan", None, "Coventry City",
+                     "Liverpool FC", "Hellas Verona"])
+    got = _canon(raw)
+    assert got.isna().tolist() == raw.isna().tolist()
+    for r, g in zip(raw.dropna(), got.dropna()):
+        assert g == normalize_team_safe(r)

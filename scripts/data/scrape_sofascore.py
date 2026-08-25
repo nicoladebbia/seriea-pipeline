@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import json
 import logging
 import sys
@@ -327,6 +328,27 @@ async def scrape_match_stats(
         return None
 
 
+def _kickoff_date(fixture: dict) -> str:
+    """The fixture's kickoff date in UTC, or "" when it carries no timestamp.
+
+    UTC, not local. Sofascore's ``startTimestamp`` is a UTC epoch and this date
+    becomes part of the row's IDENTITY — matches.parquet is keyed by
+    ``{date}_{home}_{away}``, and the stats parquets join back on it. Every
+    other consumer already pins UTC (build_match_id_mapping.py,
+    matchday_updater.py, worldcup/sofascore_fetch.py); a bare
+    ``fromtimestamp()`` is naive-LOCAL, so the calendar date these rows got
+    depended on the machine's timezone. Measured 2026-08-24: zero off-by-one
+    rows against canonical, because the offsets used so far never crossed a
+    kickoff over midnight — latent, not yet paid for.
+    """
+    start_ts = fixture.get("startTimestamp", 0)
+    if not start_ts:
+        return ""
+    return datetime.datetime.fromtimestamp(
+        start_ts, datetime.timezone.utc
+    ).strftime("%Y-%m-%d")
+
+
 def extract_player_rows(match_data: dict, fixture: dict, season: str) -> list[dict]:
     """Extract per-player stat rows from match data."""
     match_id = match_data.get("match_id", "")
@@ -335,13 +357,7 @@ def extract_player_rows(match_data: dict, fixture: dict, season: str) -> list[di
     home_score = fixture.get("homeScore", {}).get("current", "")
     away_score = fixture.get("awayScore", {}).get("current", "")
 
-    # Extract date from fixture
-    start_ts = fixture.get("startTimestamp", 0)
-    if start_ts:
-        import datetime
-        match_date = datetime.datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d")
-    else:
-        match_date = ""
+    match_date = _kickoff_date(fixture)
 
     round_info = fixture.get("roundInfo", {}).get("round", "")
     round_info = int(round_info) if round_info else None
@@ -485,12 +501,7 @@ def extract_team_stats_rows(match_data: dict, fixture: dict, season: str) -> lis
     home_score = fixture.get("homeScore", {}).get("current", "")
     away_score = fixture.get("awayScore", {}).get("current", "")
 
-    start_ts = fixture.get("startTimestamp", 0)
-    if start_ts:
-        import datetime
-        match_date = datetime.datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d")
-    else:
-        match_date = ""
+    match_date = _kickoff_date(fixture)
 
     round_info = fixture.get("roundInfo", {}).get("round", "")
     round_info = int(round_info) if round_info else None
@@ -621,12 +632,7 @@ def extract_shotmap_rows(match_data: dict, fixture: dict, season: str) -> list[d
     home_team = normalize_team(fixture.get("homeTeam", {}).get("name", ""))
     away_team = normalize_team(fixture.get("awayTeam", {}).get("name", ""))
 
-    start_ts = fixture.get("startTimestamp", 0)
-    if start_ts:
-        import datetime
-        match_date = datetime.datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d")
-    else:
-        match_date = ""
+    match_date = _kickoff_date(fixture)
 
     round_info = fixture.get("roundInfo", {}).get("round", "")
     round_info = int(round_info) if round_info else None

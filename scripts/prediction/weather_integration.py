@@ -13,7 +13,7 @@ Weather factors affect:
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 import requests
@@ -239,16 +239,36 @@ def fetch_all_match_weather(matches_file: str = None) -> Dict:
     from config.settings import DATA_DIR
 
     if matches_file is None:
-        matches_file = DATA_DIR / "upcoming" / "manual_matches.json"
-
-    if not Path(matches_file).exists():
-        log.warning(f"No matches file found at {matches_file}")
-        return {}
-
-    with open(matches_file) as f:
-        data = json.load(f)
-
-    matches = data.get("matches", [])
+        # No explicit file: use the shared upcoming-fixture source. This used to
+        # read manual_matches.json directly with NO date filter, so once the Odds
+        # API key lapsed it kept fetching forecasts for the previous season's
+        # final matchweek (2026-08-24) — a forecast for a date three months past
+        # is not just wasted API calls, it is garbage fed into the feature row.
+        from scripts.utils.match_timing import _is_future, _load_sofascore_fixtures
+        now = datetime.now(timezone.utc)
+        matches = _load_sofascore_fixtures(now)
+        if not matches:
+            # Sofascore unavailable: fall back to the manual file, but date-filter
+            # it this time — a stale source must degrade to EMPTY, never to wrong.
+            mp = DATA_DIR / "upcoming" / "manual_matches.json"
+            if mp.exists():
+                try:
+                    with open(mp) as f:
+                        matches = [m for m in (json.load(f).get("matches") or [])
+                                   if _is_future(m, now)]
+                except (OSError, ValueError) as e:
+                    log.warning(f"Could not read {mp.name}: {e}")
+                    matches = []
+        if not matches:
+            log.warning("No upcoming fixtures available for weather fetch")
+            return {}
+    else:
+        if not Path(matches_file).exists():
+            log.warning(f"No matches file found at {matches_file}")
+            return {}
+        with open(matches_file) as f:
+            data = json.load(f)
+        matches = data.get("matches", [])
     weather_data = {}
 
     log.info(f"Fetching weather for {len(matches)} matches...")

@@ -534,6 +534,25 @@ def fetch_team_friendlies(team_id: int, pages: int = 1) -> list[dict[str, Any]]:
 _CLUB_ROSTER = SOFASCORE_DIR / "friendly_club_roster.json"
 
 
+def _existing_roster_leagues() -> list[str]:
+    """League keys in the on-disk roster, but only if it is THIS season.
+
+    Deliberately not `load_club_roster()`: that returns {} for a merely stale
+    file, and a stale-but-same-season roster is still proof a league exists.
+    Age is the caller's problem; existence is this function's.
+    """
+    try:
+        raw = json.loads(_CLUB_ROSTER.read_text())
+        if not isinstance(raw, dict):
+            return []
+        if raw.get(_OPP_CACHE_SEASON_KEY) != current_friendly_season():
+            return []
+        leagues = raw.get("leagues")
+        return [k for k, v in leagues.items() if isinstance(v, list) and v] if isinstance(leagues, dict) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
 def _save_club_roster(our_teams: dict[int, tuple[str, str]]) -> None:
     """Persist {league: [club, ...]} with a season stamp and a fetch timestamp.
 
@@ -544,6 +563,25 @@ def _save_club_roster(our_teams: dict[int, tuple[str, str]]) -> None:
     by_league: dict[str, list[str]] = {}
     for club, league in our_teams.values():
         by_league.setdefault(league, []).append(club)
+
+    # A league ABSENT from this run is not a league with zero clubs. `fetch_club_ids`
+    # `continue`s past a league whose seasons/teams endpoint failed, so a throttled
+    # run hands us a perfectly valid dict covering only the leagues that answered.
+    # Rebuilding the file from that would DELETE the other league -- which is exactly
+    # what happened on 2026-08-24, leaving an EPL-only roster while the log cheerfully
+    # reported both leagues. Refuse the write instead: the previous file stays, and
+    # `load_club_roster`'s own age check expires it honestly if this keeps failing.
+    prior = _existing_roster_leagues()
+    dropped = sorted(set(prior) - set(by_league))
+    if dropped:
+        log.error(
+            "refusing to write club roster: this run resolved %s but the existing "
+            "roster also holds %s -- writing would delete %s. Keeping the previous "
+            "file; re-run once the API stops throttling.",
+            sorted(by_league), sorted(prior), dropped,
+        )
+        return
+
     payload: dict[str, Any] = {
         # Same stamp key as the opponent cache on purpose: one convention for
         # every season-stamped JSON this module owns, so a reader never has to
@@ -598,7 +636,23 @@ def scrape_friendlies(
     if not our_teams:
         log.error("no club ids resolved -- aborting")
         return pd.DataFrame()
-    log.info("resolved %d clubs across %s", len(our_teams), list(leagues))
+    # Report what RESOLVED, not what was requested. The old line printed the
+    # requested leagues, so a run that got zero Serie A clubs still logged
+    # "resolved 20 clubs across ['serie_a', 'premier_league']" -- a green log
+    # for a half-failed run.
+    resolved = sorted({lg for _, lg in our_teams.values()})
+    requested = [k for k in leagues if k in LEAGUE_REGISTRY]
+    missing = sorted(set(requested) - set(resolved))
+    log.info(
+        "resolved %d clubs across %s", len(our_teams), resolved,
+    )
+    if missing:
+        log.error(
+            "league(s) %s resolved ZERO clubs -- friendlies for them will be "
+            "missing from this run (usually Sofascore throttling; back off ~20s "
+            "and re-run). The club roster will NOT be overwritten.",
+            missing,
+        )
     if not dry_run:
         _save_club_roster(our_teams)
 

@@ -33,7 +33,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -211,27 +211,68 @@ def _load_factor_multipliers() -> Dict[str, float]:
 _FACTOR_MULTIPLIERS = _load_factor_multipliers()
 
 
+# Fixture-source helpers live in scripts/utils/match_timing so the scheduler can
+# import them without pulling in numpy/pandas. Re-exported here because this
+# module is their oldest caller and the tests import them from both paths.
+from scripts.utils.match_timing import (  # noqa: E402
+    _dedup_key,
+    _is_future,
+    _load_sofascore_fixtures,
+)
+
 def load_upcoming_matches() -> List[Dict]:
-    """Load upcoming matches from all available sources."""
-    matches = []
+    """Load upcoming matches from all available sources, freshest source first.
+
+    Every source is date-filtered. Before 2026-08-24 none of them were, and both
+    sources were Odds-API-derived: with the key dead, ``matches.json`` was empty
+    and ``manual_matches.json`` sat frozen on the previous season's final
+    matchweek, so the pipeline emitted predictions for matches played three
+    months earlier and still exited 0.
+
+    Precedence note: ``manual_matches.json`` used to be described as "most
+    reliable, has commence_time from Odds API". That is no longer true — it is
+    the stalest link in the chain. Sofascore leads because it is refreshed
+    independently of the Odds API. Do not restore the old order.
+    """
+    now = datetime.now(timezone.utc)
+    matches: List[Dict] = []
+    seen: set = set()
+
+    def _absorb(candidates: List[Dict], source: str) -> None:
+        kept = 0
+        for m in candidates:
+            if not isinstance(m, dict) or not m.get("home_team") or not m.get("away_team"):
+                continue
+            if not _is_future(m, now):
+                continue
+            key = _dedup_key(m)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(m)
+            kept += 1
+        if candidates:
+            log.info("Upcoming: %d/%d usable from %s", kept, len(candidates), source)
+
+    _absorb(_load_sofascore_fixtures(now), "sofascore fixtures")
 
     manual_path = DATA_DIR / "upcoming" / "manual_matches.json"
     if manual_path.exists():
-        with open(manual_path) as f:
-            data = json.load(f)
-            matches.extend(data.get("matches", []))
-            log.info(f"Loaded {len(matches)} matches from manual file")
+        try:
+            with open(manual_path) as f:
+                _absorb(json.load(f).get("matches", []), "manual file")
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("Could not read manual_matches.json: %s", e)
 
     scraped_path = DATA_DIR / "upcoming" / "matches.json"
     if scraped_path.exists():
-        with open(scraped_path) as f:
-            data = json.load(f)
-            existing = {f"{m['home_team']}_{m['away_team']}" for m in matches}
-            for m in data.get("matches", []):
-                key = f"{m['home_team']}_{m['away_team']}"
-                if key not in existing:
-                    matches.append(m)
+        try:
+            with open(scraped_path) as f:
+                _absorb(json.load(f).get("matches", []), "odds api schedule")
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("Could not read upcoming/matches.json: %s", e)
 
+    log.info("Upcoming: %d fixtures after date filter + dedup", len(matches))
     return matches
 
 

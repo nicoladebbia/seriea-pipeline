@@ -9,7 +9,11 @@ Modes:
   --quick     Force quick retrain (~15-20 min)
   --full      Force full Optuna retrain (~2-3 hours)
   --check     Just check if a matchweek completed — don't retrain
-  --dry-run   Compare only, don't promote
+  --dry-run   Train + compare, but promote nothing and stamp no state.
+              NOT read-only: it still rebuilds features_*.parquet and trains
+              real models, so it costs the same time as the real run. What it
+              guarantees is that production models and the retrain gate are
+              left exactly as they were.
 
 Safety:
   - Archives current models before promoting new ones
@@ -78,6 +82,25 @@ def _save_retrain_state(state: dict):
         json.dump(state, f, indent=2)
 
 
+def _last_retrained_for_season(state: dict, season: str) -> int:
+    """Matchweeks already retrained *within this season*.
+
+    The raw counter is meaningless across a season boundary. It keeps climbing
+    (it stood at 67 on 2026-05-25) while ``completed_matchweeks`` restarts at 1
+    every August, so comparing them directly leaves ``needs_retrain`` false for
+    an entire season — silently, exit 0, logging "already retrained". A Serie A
+    season never reaches 67, so nothing would have re-opened it.
+
+    ``get_matchweek_status`` already derives the season rather than writing it
+    down, for exactly this reason; the persisted state simply never got the same
+    treatment. State written before this field existed carries no season, which
+    by definition means it belongs to an earlier one.
+    """
+    if state.get("last_retrained_season") != season:
+        return 0
+    return int(state.get("last_retrained_matchweek", 0))
+
+
 def get_matchweek_status() -> dict:
     """Check current matchweek completion status.
 
@@ -125,11 +148,12 @@ def get_matchweek_status() -> dict:
 
         # Check if we already retrained for this matchweek count
         state = _load_retrain_state()
-        last_retrained_mw = state.get("last_retrained_matchweek", 0)
+        last_retrained_mw = _last_retrained_for_season(state, season)
 
         needs_retrain = completed_mws > last_retrained_mw
 
         return {
+            "season": season,
             "completed_matchweeks": completed_mws,
             "current_matchweek": completed_mws,  # alias for display
             "total_matches": total_matches,
@@ -885,10 +909,18 @@ def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
     aux_fail = sum(1 for r in aux_results.values() if r.get("error"))
     log.info("Auxiliary models: %d promoted, %d failed", aux_ok, aux_fail)
 
-    # Record that we retrained for this matchweek
-    if result.get("promoted") or dry_run:
+    # Record that we retrained for this matchweek.
+    #
+    # NOT `or dry_run`. A dry run deliberately returns promoted=False and
+    # promotes nothing — but it used to stamp the state anyway, so previewing
+    # with --dry-run silently CLOSED the gate and the real Tuesday retrain then
+    # logged "already retrained" and did nothing. A simulation must never mutate
+    # the state that gates the real run. (Sibling of the season-rollover bug:
+    # both let a write nobody intended suppress the job forever.)
+    if result.get("promoted") and not dry_run:
         state = _load_retrain_state()
         state["last_retrained_matchweek"] = mw
+        state["last_retrained_season"] = status.get("season")
         state["last_retrained_at"] = datetime.now(timezone.utc).isoformat()
         state["last_mode"] = result.get("mode", "auto")
         _save_retrain_state(state)
@@ -910,7 +942,8 @@ def main():
     parser.add_argument("--force", action="store_true",
                         help="Force retrain even if matchweek not complete")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Compare only, don't promote")
+                        help="Train + compare; promote nothing, stamp no state. "
+                             "Still rebuilds features and trains — not read-only.")
     parser.add_argument("--rollback", nargs="?", const="latest", metavar="VERSION",
                         help="Rollback to archived model version")
     parser.add_argument("--history", action="store_true",
@@ -980,6 +1013,19 @@ def main():
             "xg": retrain_xg_models(dry_run=args.dry_run),
             "draw_detector": retrain_draw_detector(dry_run=args.dry_run),
         }
+        # A forced retrain has to close the gate too. auto_retrain stamps the
+        # state, but this branch bypasses it entirely — so before the season fix
+        # a manual --quick left needs_retrain true and the scheduled job simply
+        # ran again. That was invisible while the gate was stuck shut.
+        if result.get("promoted"):
+            _status = get_matchweek_status()
+            if "error" not in _status:
+                _state = _load_retrain_state()
+                _state["last_retrained_matchweek"] = _status["current_matchweek"]
+                _state["last_retrained_season"] = _status.get("season")
+                _state["last_retrained_at"] = datetime.now(timezone.utc).isoformat()
+                _state["last_mode"] = result.get("mode", "forced")
+                _save_retrain_state(_state)
     else:
         # Auto mode: check matchweek completion, then quick or full based on calendar
         result = auto_retrain(dry_run=args.dry_run, force=args.force)

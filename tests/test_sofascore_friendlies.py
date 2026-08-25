@@ -663,3 +663,83 @@ def test_a_rating_alone_counts_as_participation(tmp_store):
     f._save([_row(minutes=0, used=False, rating=6.5)], "2023-2024")
     out = f._save([_row(minutes=0, used=False, rating=None)], "2023-2024")
     assert out.iloc[0]["rating_low_trust"] == 6.5
+
+
+# --- the club roster must not lose a league to a half-failed run ------------
+#
+# Paid 2026-08-24: `fetch_club_ids` `continue`s past a league whose endpoint
+# throttles, so a partial run returns a valid-looking dict covering only the
+# league that answered. `_save_club_roster` rebuilt the file from it and DELETED
+# Serie A, while the log reported "resolved 20 clubs across ['serie_a',
+# 'premier_league']" -- the leagues it had ASKED for, not the ones it got.
+# Green log, half a roster, 20 clubs' friendlies silently absent.
+#
+# These exercise the PARTIAL run. The roster tests above only ever save a
+# complete set, so they stay green against exactly this bug.
+
+
+def test_a_partial_run_does_not_delete_the_league_it_missed(tmp_roster, monkeypatch):
+    """THE BUG. Serie A throttled out; the EPL-only save must be refused."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster({**_teams(20, "serie_a", 1), **_teams(20, "premier_league", 100)})
+    before = tmp_roster.read_text()
+
+    f._save_club_roster(_teams(20, "premier_league", 100))  # serie_a throttled out
+
+    assert tmp_roster.read_text() == before, "a partial run overwrote the roster"
+    assert "serie_a" in f.load_club_roster(), "Serie A was deleted by a partial run"
+
+
+def test_a_partial_run_is_refused_even_when_the_prior_file_is_stale(tmp_roster, monkeypatch):
+    """Staleness is the READER's problem. A stale roster is still proof the
+    league exists, so it must not license deleting it."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster({**_teams(20, "serie_a", 1), **_teams(20, "premier_league", 100)})
+    raw = json.loads(tmp_roster.read_text())
+    raw["__fetched__"] = "2020-01-01T00:00:00+00:00"
+    tmp_roster.write_text(json.dumps(raw))
+    assert f.load_club_roster() == {}, "precondition: the reader calls it unusable"
+
+    f._save_club_roster(_teams(20, "premier_league", 100))
+    assert "serie_a" in json.loads(tmp_roster.read_text())["leagues"]
+
+
+def test_last_seasons_roster_does_not_block_this_seasons_write(tmp_roster, monkeypatch):
+    """The guard must not become a permanent lock: a roster stamped to an old
+    season carries no claim about which leagues exist NOW."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    tmp_roster.write_text(json.dumps({
+        f._OPP_CACHE_SEASON_KEY: "2025-2026",
+        "__fetched__": "2026-05-01T00:00:00+00:00",
+        "leagues": {"serie_a": ["Club1"], "premier_league": ["Club100"]},
+    }))
+    f._save_club_roster(_teams(20, "premier_league", 100))
+    assert set(json.loads(tmp_roster.read_text())["leagues"]) == {"premier_league"}
+
+
+def test_a_league_shrinking_within_itself_still_writes(tmp_roster, monkeypatch):
+    """Relegation is a real per-league change and must go through -- the guard
+    is about a MISSING league, never a smaller one."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    f._save_club_roster(_teams(20, "serie_a", 1))
+    f._save_club_roster(_teams(18, "serie_a", 1))
+    assert len(f.load_club_roster()["serie_a"]) == 18
+
+
+def test_first_ever_write_is_not_blocked(tmp_roster, monkeypatch):
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    assert not tmp_roster.exists()
+    f._save_club_roster(_teams(20, "premier_league", 100))
+    assert set(f.load_club_roster()) == {"premier_league"}
+
+
+def test_an_empty_league_list_on_disk_does_not_block_a_write(tmp_roster, monkeypatch):
+    """A league key present but empty is not evidence the league resolved."""
+    monkeypatch.setattr(f, "current_friendly_season", lambda *a: "2026-2027")
+    tmp_roster.write_text(json.dumps({
+        f._OPP_CACHE_SEASON_KEY: "2026-2027",
+        "__fetched__": "2026-08-24T00:00:00+00:00",
+        "leagues": {"serie_a": [], "premier_league": ["Club100"]},
+    }))
+    f._save_club_roster(_teams(20, "premier_league", 100))
+    assert set(json.loads(tmp_roster.read_text())["leagues"]) == {"premier_league"}

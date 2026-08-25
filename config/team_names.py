@@ -149,6 +149,8 @@ PREMIER_LEAGUE_NAMES: dict[str, str] = {
     "Charlton": "Charlton",
     "Charlton Athletic": "Charlton",
     "Chelsea": "Chelsea",
+    "Coventry": "Coventry",
+    "Coventry City": "Coventry",
     "Crystal Palace": "Crystal Palace",
     "Derby": "Derby",
     "Derby County": "Derby",
@@ -166,6 +168,7 @@ PREMIER_LEAGUE_NAMES: dict[str, str] = {
     "Leicester": "Leicester",
     "Leicester City": "Leicester",
     "Liverpool": "Liverpool",
+    "Liverpool FC": "Liverpool",
     "Luton": "Luton",
     "Luton Town": "Luton",
     "Man City": "Man City",
@@ -486,27 +489,32 @@ SERIE_A_2026_27: list[str] = [
 # Relegated after 2025-26: Cremonese, Pisa, Verona. They keep their
 # normalize_team() aliases above — historical rows still need resolving.
 
-PREMIER_LEAGUE_2025_26: list[str] = [
+# The CURRENT-season Premier League 20. Derived from the Sofascore season
+# fixture file (380 matches, primary source), not hand-typed: this list sat
+# at 2025-26 while SERIE_A_2026_27 beside it had already rolled over, so the
+# only EPL consumer resolved names against four relegated clubs and knew
+# nothing of the four promoted ones. Roll BOTH lists every August.
+PREMIER_LEAGUE_2026_27: list[str] = [
     "Arsenal",
     "Aston Villa",
     "Bournemouth",
     "Brentford",
     "Brighton",
     "Chelsea",
+    "Coventry",
     "Crystal Palace",
     "Everton",
     "Fulham",
+    "Hull",
     "Ipswich",
-    "Leicester",
+    "Leeds",
     "Liverpool",
     "Man City",
     "Man United",
     "Newcastle",
-    "Nott'ham Forest",
-    "Southampton",
+    "Nottingham Forest",
+    "Sunderland",
     "Tottenham",
-    "West Ham",
-    "Wolves",
 ]
 
 
