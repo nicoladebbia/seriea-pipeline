@@ -60,6 +60,7 @@ LEAGUE_SOFASCORE_PAGE = {
 _html_standings_cache: dict[str, tuple[float, dict]] = {}
 HTML_STANDINGS_TTL = 300
 HTML_FAILURE_TTL = 30  # negative-cache TTL: empty payload = recent failure marker
+HTML_BAN_TTL = 900  # negative-cache TTL once the breaker is open (see _failure_ttl)
 
 # Sentinel teams — the league is broken if these don't appear
 HTML_SENTINEL_TEAM = {
@@ -82,6 +83,20 @@ def html_health_now(league: str) -> dict:
         "last_error": "",
         "schema_break": False,
     })
+
+
+def _failure_ttl(h: dict) -> int:
+    """How long to sit on a failure before touching Sofascore again.
+
+    A blip deserves 30s. A ban does not. Sofascore 403s every tier for
+    hours-to-days at a time (CLAUDE.md "Sofascore API blocks"), and the breaker
+    already knows the difference — it just was not being used to back off, so a
+    banned endpoint kept getting re-probed on the 30s blip schedule: ~120
+    requests an hour per league, none of which could succeed.
+    """
+    if h["consecutive_failures"] >= HTML_FAILURE_THRESHOLD or h["schema_break"]:
+        return HTML_BAN_TTL
+    return HTML_FAILURE_TTL
 
 
 def html_is_broken(league: str) -> bool:
@@ -129,7 +144,7 @@ def live_standings_via_html(league: str) -> dict:
     # flaky Sofascore isn't re-hammered by every caller
     if league in _html_standings_cache:
         cached_at, payload = _html_standings_cache[league]
-        ttl = HTML_STANDINGS_TTL if payload else HTML_FAILURE_TTL
+        ttl = HTML_STANDINGS_TTL if payload else _failure_ttl(h)
         if (now - cached_at) < ttl:
             import copy
             return copy.deepcopy(payload)

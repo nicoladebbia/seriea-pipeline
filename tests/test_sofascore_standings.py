@@ -297,3 +297,58 @@ def test_per_team_shape_matches_what_the_watcher_wrote(serve):
     produced_team = next(iter(produced.values()))
     assert set(stored_team) == set(produced_team)
     assert set(stored_team["home"]) == set(produced_team["home"])
+
+
+def test_an_open_breaker_backs_off_far_longer_than_a_blip(serve):
+    """A blip is re-probed after 30s; a ban must not be.
+
+    Sofascore 403s for hours-to-days, so the 30s negative cache meant ~120
+    doomed requests an hour per league — measured live 2026-08-25, when every
+    tier (www HTML, www API, api.sofascore) 403'd under curl_cffi impersonation.
+    """
+    serve(_Resp("", status=403))
+    calls = {"n": 0}
+    real = ss.live_standings_via_html
+
+    for _ in range(ss.HTML_FAILURE_THRESHOLD):
+        ss._html_standings_cache.clear()
+        real("serie_a")
+    assert ss.html_is_broken("serie_a")
+
+    # 60s later — past the blip TTL, nowhere near the ban TTL: no new request.
+    # This assertion comes first deliberately: against the unfixed file it must
+    # fail on the re-probe itself, not on _failure_ttl being absent.
+    import time as _t
+    ss._html_standings_cache["serie_a"] = (_t.time() - 60, {})
+
+    def boom(**kw):  # pragma: no cover - must not run
+        calls["n"] += 1
+        raise AssertionError("re-probed Sofascore while the breaker was open")
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr("curl_cffi.requests.Session", boom)
+    try:
+        assert ss.live_standings_via_html("serie_a") == {}
+    finally:
+        monkey.undo()
+    assert calls["n"] == 0
+
+    h = ss.html_health_now("serie_a")
+    assert ss._failure_ttl(h) == ss.HTML_BAN_TTL
+    assert ss.HTML_BAN_TTL > ss.HTML_FAILURE_TTL
+
+
+def test_a_single_blip_still_retries_after_the_short_ttl(serve):
+    """True positive for the test above: without this, a constant-return
+    _failure_ttl would satisfy the ban assertion and silently freeze recovery."""
+    h = ss.html_health_now("serie_a")
+    h["consecutive_failures"] = 1
+    assert ss._failure_ttl(h) == ss.HTML_FAILURE_TTL
+
+    serve(_Resp("", status=500))
+    import time as _t
+    ss._html_standings_cache["serie_a"] = (_t.time() - 60, {})
+    ss.live_standings_via_html("serie_a")
+    assert ss.html_health_now("serie_a")["consecutive_failures"] == 2, (
+        "a blip past its TTL must reach the network again"
+    )
