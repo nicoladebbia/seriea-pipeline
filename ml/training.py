@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ from ml.config import (
     ValidationConfig,
 )
 from ml.data import DataLoader, TimeSeriesSplitter
-from ml.evaluation import compute_metrics, print_report
+from ml.evaluation import MIN_GATE_TEST_MATCHES, compute_metrics, print_report
 from ml.models import get_model
 from ml.persistence import save_model
 from ml.tuning import _compute_sample_weights
@@ -404,7 +404,25 @@ def train_optimized(
     holdout_season = all_seasons[-1]
     train_mask = X_sel["_season"] != holdout_season
     holdout_mask = X_sel["_season"] == holdout_season
-    log.info("Held-out test set: %s (%d matches)", holdout_season, holdout_mask.sum())
+    n_holdout = int(holdout_mask.sum())
+
+    # Keep the SPLIT as it is — the newest season must stay out of the training
+    # data whatever its size, or the hold-out stops being a hold-out. What
+    # changes below is only what we CLAIM from it. In August the newest season
+    # is a handful of matches (measured 2026-08-25: Serie A held out
+    # 2026-2027 with ten), and an accuracy over ten matches has a standard
+    # error of 0.158 — it cannot support the overfit verdict on line ~425, and
+    # written bare into the model card it is indistinguishable from the same
+    # number measured over a full season.
+    holdout_is_measurable = n_holdout >= MIN_GATE_TEST_MATCHES
+    log.info("Held-out test set: %s (%d matches)", holdout_season, n_holdout)
+    if not holdout_is_measurable:
+        log.warning(
+            "Hold-out season %s has only %d matches (under %d). Its metrics are "
+            "still saved but flagged holdout_reliable=false, and the overfit "
+            "check is skipped rather than run against noise.",
+            holdout_season, n_holdout, MIN_GATE_TEST_MATCHES,
+        )
 
     for mt in MODEL_TYPES:
         model = get_model(mt, tuned_params[mt])
@@ -415,10 +433,20 @@ def train_optimized(
         # True held-out evaluation (model has never seen holdout_season)
         y_proba = model.predict_proba(_strip_meta(X_sel[holdout_mask]))
         holdout_metrics = compute_metrics(y[holdout_mask], y_proba)
+        # Carry the sample size with the numbers. A reader of the model card
+        # cannot otherwise tell 0.400-over-ten-matches from 0.400-over-a-season.
+        # Kept as a separate dict because compute_metrics returns Dict[str, float]
+        # and these three are a season label, a count and a flag.
+        holdout_card: Dict[str, Any] = {
+            **holdout_metrics,
+            "holdout_season": holdout_season,
+            "n_holdout": n_holdout,
+            "holdout_reliable": holdout_is_measurable,
+        }
 
         # Compare with CV metrics for overfitting detection
         cv_key = f"{mt}_cv"
-        if cv_key in results and "log_loss" in results[cv_key]:
+        if holdout_is_measurable and cv_key in results and "log_loss" in results[cv_key]:
             cv_ll = results[cv_key]["log_loss"].mean() if hasattr(results[cv_key]["log_loss"], "mean") else results[cv_key]["log_loss"]
             holdout_ll = holdout_metrics["log_loss"]
             gap = abs(holdout_ll - cv_ll)
@@ -427,9 +455,9 @@ def train_optimized(
                     "OVERFIT FLAG: %s CV log_loss=%.4f vs holdout=%.4f (gap=%.4f > 0.02)",
                     mt, cv_ll, holdout_ll, gap,
                 )
-        results[f"{mt}_holdout_metrics"] = holdout_metrics
+        results[f"{mt}_holdout_metrics"] = holdout_card
 
-        path = save_model(model, variant, mt, selected_feats, holdout_metrics)
+        path = save_model(model, variant, mt, selected_feats, holdout_card)
         results[f"{mt}_path"] = str(path)
 
     # Train and save weighted average ensemble on training data

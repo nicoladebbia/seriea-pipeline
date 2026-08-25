@@ -23,7 +23,7 @@ def save_model(
     variant: str,
     model_type: str,
     feature_names: list[str],
-    metrics: Dict[str, float] | None = None,
+    metrics: Dict[str, Any] | None = None,
 ) -> Path:
     """Save model artifact + metadata JSON.
 
