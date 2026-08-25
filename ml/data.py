@@ -498,7 +498,10 @@ class TimeSeriesSplitter:
     ) -> list[Tuple[list[str], list[str]]]:
         """Return list of (train_seasons, test_seasons) tuples."""
         ordered = sorted(seasons.unique())
+        counts = seasons.value_counts()
+        min_test = getattr(self.config, "min_test_matches", 0)
         splits = []
+        dropped: list[tuple[list[str], int]] = []
 
         for i in range(self.config.min_train_seasons, len(ordered)):
             if self.config.expanding_window:
@@ -509,7 +512,39 @@ class TimeSeriesSplitter:
                 ]
             test_seasons = ordered[i : i + self.config.test_season_size]
 
-            if train_seasons and test_seasons:
-                splits.append((list(train_seasons), list(test_seasons)))
+            if not (train_seasons and test_seasons):
+                continue
+
+            # A season becomes a fold on its first played match. Ten matches
+            # cannot measure a model, but every caller averages folds
+            # unweighted, so those ten would carry a full fold's vote.
+            n_test = int(counts.reindex(test_seasons).fillna(0).sum())
+            if min_test and n_test < min_test:
+                dropped.append((list(test_seasons), n_test))
+                continue
+
+            splits.append((list(train_seasons), list(test_seasons)))
+
+        if dropped and splits:
+            log.info(
+                "Walk-forward: dropped %d fold(s) under min_test_matches=%d: %s",
+                len(dropped), min_test,
+                ", ".join(f"{t} (n={n})" for t, n in dropped),
+            )
+        elif dropped and not splits:
+            # Never hand back an empty split list — that aborts training
+            # outright, which is a worse failure than a noisy fold.
+            log.error(
+                "Every walk-forward fold is under min_test_matches=%d (largest "
+                "n=%d). Falling back to the unfiltered splits; any metric from "
+                "this run is unmeasured.",
+                min_test, max(n for _t, n in dropped),
+            )
+            splits = [(list(t), list(te)) for t, te in (
+                (ordered[:i] if self.config.expanding_window
+                 else ordered[max(0, i - self.config.min_train_seasons):i],
+                 ordered[i : i + self.config.test_season_size])
+                for i in range(self.config.min_train_seasons, len(ordered))
+            ) if t and te]
 
         return splits

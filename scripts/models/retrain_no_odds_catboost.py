@@ -111,7 +111,15 @@ def walk_forward_validate(
     None for both when no fold is large enough, so the caller skips calibration
     rather than fitting noise.
     """
-    config = ValidationConfig()
+    # Opt out of the splitter's min_test_matches guard on purpose. Every OTHER
+    # consumer wants the undersized newest-season fold gone, but this trainer
+    # ships the LAST fold's model under --walkforward-final, and that fold is
+    # exactly what makes the shipped model one trained through the previous
+    # season and blind to the season it will predict. Dropping it would quietly
+    # cut a full season from production. Undersized folds are excluded where it
+    # actually matters here — at the release gate and the calibration source,
+    # both via ml.evaluation.gate_folds / MIN_GATE_TEST_MATCHES.
+    config = ValidationConfig(min_test_matches=0)
     splitter = TimeSeriesSplitter(config)
 
     # Need to add _season column for splitting

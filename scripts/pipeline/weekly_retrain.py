@@ -47,6 +47,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import MODELS_DIR, latest_season_with_results
+from ml.evaluation import MIN_GATE_TEST_MATCHES
 from storage.paths import features_path
 
 log = logging.getLogger("weekly_retrain")
@@ -219,12 +220,38 @@ def _load_current_cv_metrics() -> dict | None:
             folds = json.load(f)
         if not folds:
             return None
-        # Compute averages across folds
+
+        # Recompute the baseline on the CURRENT measurement basis. This number
+        # is about to be subtracted from a freshly-trained one, and a stored
+        # file can predate the min_test_matches guard — in which case it still
+        # contains a fold of a dozen matches from the start of a season, while
+        # the new run no longer generates one. Averaging the two differently
+        # reports a change of basis as a change of model quality: on the real
+        # 2026-08-25 Serie A folds that phantom is 0.9756 -> 0.9640, a 0.0116
+        # "improvement" nobody earned (debugging.md #9). Folds carry n_test, so
+        # the honest fix is to drop the same folds the trainers now drop rather
+        # than to warn about the mismatch. Legacy files without n_test are read
+        # as-is; there is nothing better to do with them.
+        usable = [f for f in folds if f.get("n_test", MIN_GATE_TEST_MATCHES) >= MIN_GATE_TEST_MATCHES]
+        if not usable:
+            log.warning(
+                "Every stored CV fold is under %d test matches — using them all as "
+                "the promotion baseline, which cannot support a comparison.",
+                MIN_GATE_TEST_MATCHES,
+            )
+            usable = folds
+        elif len(usable) != len(folds):
+            log.info(
+                "Promotion baseline: ignoring %d stored fold(s) under %d test "
+                "matches so the comparison shares the new run's basis.",
+                len(folds) - len(usable), MIN_GATE_TEST_MATCHES,
+            )
+
         keys = ["ensemble_accuracy", "ensemble_log_loss", "ensemble_brier",
                 "ensemble_rps", "ensemble_ece", "ensemble_kelly_roi"]
         avgs = {}
         for k in keys:
-            vals = [f[k] for f in folds if k in f]
+            vals = [f[k] for f in usable if k in f]
             avgs[k] = sum(vals) / len(vals) if vals else None
         return avgs
     except Exception as e:

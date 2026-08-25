@@ -180,6 +180,26 @@ class ValidationConfig:
     # the best feature sources.
     min_train_season: str = "2017-2018"
 
+    # A test fold smaller than this is dropped from the walk-forward splits.
+    # A season becomes its own fold the moment it has a single played match, so
+    # every August the newest season arrives as a fold of ~10 — and every
+    # consumer averages folds UNWEIGHTED, giving those ten matches the same vote
+    # as a 760-match season. On 2026-08-25 that rejected catboost_no_odds
+    # (0.4565 vs 0.5107 on the three real folds), doubled the Serie A ensemble's
+    # reported ECE (0.051 -> 0.1047), fed ~20% of Optuna's objective, and would
+    # have sourced ml/calibration.py's `splits[-1]` calibration set.
+    # 200 is chosen from the standard error of an accuracy estimate,
+    # sqrt(0.25/n): 0.158 at n=10, 0.035 at n=200, against decision margins of
+    # ~0.01-0.02. CONSEQUENCE: a single-league trainer (380 matches/season)
+    # excludes the current season from CV and tuning until roughly MW20. That is
+    # deliberate — a release should not be gated on a quarter of a season — and
+    # the season rejoins on its own once it crosses the threshold.
+    # Set to 0 to opt out; scripts/models/retrain_no_odds_catboost.py does,
+    # because --walkforward-final ships the LAST fold's model and needs the
+    # newest season to BE that fold. It filters undersized folds at its gate
+    # instead, via ml.evaluation.gate_folds.
+    min_test_matches: int = 200
+
 
 # ---------------------------------------------------------------------------
 # Feature selection
