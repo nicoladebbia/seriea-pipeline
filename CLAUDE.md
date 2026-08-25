@@ -265,6 +265,23 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
         ...
 ```
 
+### Symptom: "a derived cache under data/parsed/ stopped tracking its source, and nobody noticed for months"
+
+- **What you'll see**: a feature family that is *partially* filled — high for old seasons, ~87% for last season, 0% for this one — with no error anywhere. `data/parsed/<x>.parquet` has an mtime months old while the raw files it derives from are current.
+- **Why it happens**: the build-once cache idiom
+  ```python
+  def _ensure_cache():
+      if CACHE_PATH.exists():
+          return pd.read_parquet(CACHE_PATH)   # <-- frozen forever
+      ...build...
+  ```
+  Its docstring will often *claim* "cached for incremental updates". There is no incremental update: the first successful build is the last one. Found 2026-08-25 in `features/missing_players.py`, frozen since 2026-04-22 — 3,329 rows against 6,776 match JSONs on disk, and **1,866 of the rows it did hold came from JSONs Sofascore has since rewritten** (a match JSON is rewritten after kickoff as lineups and absences are confirmed, so "cached" ≠ "accurate").
+- **Fix**: keep the watermark **in the data**, one `source_mtime` column per row, and re-parse a file when `stat().st_mtime > row.source_mtime`. **Do NOT compare against the cache file's own mtime** — writing the cache stamps it `now`, so every source rewritten between two cache writes becomes invisible permanently.
+- **Verify with idempotence, not a diff**: call the refresh twice; the second call must parse **zero** files and return a frame equal to the first. A test that only asserts "the frame didn't change" passes with the file-mtime bug still in place.
+- **Same walk, same trap — check league parity too**: these walkers iterate `data/external/sofascore/matches/` and carry a dead `if "premier_league" in season_dir.name: continue` guard. The EPL lives in the **sibling top-level dir** `matches_premier_league/`, never in a subdir, so that guard matched nothing and the EPL was simply never scanned — `features_premier_league.parquet` had *none* of these columns. Sofascore ids are disjoint across the two dirs (verified 3,389 vs 3,387, overlap 0), so one cache keyed on `sofascore_id` covers both.
+- **Known remaining instance (2026-08-25)**: `features/first_half_splits.py` has this defect verbatim — same frozen `_ensure_cache`, same dead guard, EPL has 0 `*_fh_*` columns, cache frozen at 1,465 rows. **Deliberately not fixed in the same commit**: unlike `missing_players` (a match-level signal, so a refresh only fills nulls), first-half splits feed `_rolling_per_team`, so refreshing the cache *changes existing non-null rolling values* for every season. That is a training-set change and needs to be a deliberate decision before a retrain, not a side effect.
+- **Prevention rule**: **a cache keyed on "does the file exist" is not a cache, it is a snapshot.** Any derived artifact under `data/parsed/` must record what it derived from (`source_mtime`) and re-derive when the source moves. If you write `_ensure_cache`, write the twice-in-a-row idempotence test in the same commit.
+
 ### Symptom: "a whole feature family is 100% NULL for the CURRENT season only, and a fresh rebuild doesn't fix it"
 
 - **What you'll see**: `features_serie_a.parquet` was rebuilt hours ago, yet e.g. `home_squad_size`, `home_avg_player_value`, `home_max_player_value` are 100% NaN for the in-progress season while ~90% filled for the previous one. No error, no warning — the build logs success.

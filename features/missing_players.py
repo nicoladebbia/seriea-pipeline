@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SOFASCORE_MATCHES_DIR = PROJECT_ROOT / "data" / "external" / "sofascore" / "matches"
+SOFASCORE_MATCHES_DIRS = (
+    (SOFASCORE_MATCHES_DIR, "serie_a"),
+    (PROJECT_ROOT / "data" / "external" / "sofascore" / "matches_premier_league", "premier_league"),
+)
 MAPPING_PATH = PROJECT_ROOT / "data" / "parsed" / "match_id_mapping.parquet"
 PLAYER_STATS_PATH = PROJECT_ROOT / "data" / "external" / "sofascore" / "player_match_stats.parquet"
 CACHE_PATH = PROJECT_ROOT / "data" / "parsed" / "missing_players.parquet"
@@ -115,38 +119,83 @@ def _load_key_player_ids() -> dict[str, set[int]]:
     return {k: set(v) for k, v in top.items()}
 
 
-def _walk_match_jsons() -> pd.DataFrame:
-    """Parse all Sofascore match JSONs → one row per (sofascore_id, match)."""
-    if not SOFASCORE_MATCHES_DIR.exists():
-        log.warning("Missing players: Sofascore matches dir not found")
-        return pd.DataFrame()
+def _walk_match_jsons(seen: dict[str, float] | None = None) -> pd.DataFrame:
+    """Parse Sofascore match JSONs -> one row per (sofascore_id, match).
+
+    Walks BOTH league directories. The EPL lives in a sibling top-level dir,
+    not a subdirectory, so the old `"premier_league" in season_dir.name` guard
+    never matched anything and the EPL was simply never scanned -- it had none
+    of these columns at all.
+
+    `seen` maps sofascore_id -> the file mtime that produced the cached row.
+    A file is re-parsed when it is unknown or has been rewritten since; Sofascore
+    rewrites a match JSON after kickoff as lineups and absences are confirmed,
+    so "already cached" is not the same as "still accurate".
+    """
+    seen = seen or {}
     records = []
     n_parsed = 0
-    for season_dir in sorted(SOFASCORE_MATCHES_DIR.iterdir()):
-        if not season_dir.is_dir() or season_dir.name.startswith(".") or "premier_league" in season_dir.name:
+    n_current = 0
+    for base, league in SOFASCORE_MATCHES_DIRS:
+        if not base.exists():
+            log.warning("Missing players: %s not found", base.name)
             continue
-        for json_path in season_dir.glob("*.json"):
-            rec = _parse_match_json(json_path)
-            if rec is None:
+        for season_dir in sorted(base.iterdir()):
+            if not season_dir.is_dir() or season_dir.name.startswith("."):
                 continue
-            rec["season"] = season_dir.name.replace("_", "-")  # e.g. 2024-2025
-            records.append(rec)
-            n_parsed += 1
-    log.info("Missing players: parsed %d match JSONs", n_parsed)
+            for json_path in sorted(season_dir.glob("*.json")):
+                mtime = json_path.stat().st_mtime
+                cached_mtime = seen.get(json_path.stem)
+                if cached_mtime is not None and mtime <= cached_mtime:
+                    n_current += 1
+                    continue
+                rec = _parse_match_json(json_path)
+                if rec is None:
+                    continue
+                rec["season"] = season_dir.name.replace("_", "-")  # e.g. 2024-2025
+                rec["league"] = league
+                rec["source_mtime"] = mtime
+                records.append(rec)
+                n_parsed += 1
+    log.info("Missing players: parsed %d match JSONs (%d already current)", n_parsed, n_current)
     return pd.DataFrame(records)
 
 
 def _ensure_cache() -> pd.DataFrame:
-    if CACHE_PATH.exists():
-        cached = pd.read_parquet(CACHE_PATH)
+    """Return the cache, refreshing any match that is new or has been rewritten.
+
+    This used to return the parquet verbatim whenever it existed, so it froze on
+    the day it was first built (2026-04-22) and every match played since was
+    invisible: 50 of 2025-2026 and all of 2026-2027 were absent, while 1,866 of
+    the rows it did hold had been parsed from JSONs Sofascore has since rewritten.
+
+    The watermark lives in the data (`source_mtime` per row), not on the cache
+    file. Comparing against the cache file's own mtime would skip forever any
+    JSON rewritten between two cache writes.
+    """
+    cached = pd.read_parquet(CACHE_PATH) if CACHE_PATH.exists() else pd.DataFrame()
+    seen: dict[str, float] = {}
+    if len(cached) and "source_mtime" in cached.columns:
+        seen = dict(zip(cached["sofascore_id"].astype(str), cached["source_mtime"]))
+
+    fresh = _walk_match_jsons(seen)
+    if fresh.empty:
         return cached
-    log.info("Building missing_players.parquet cache (one-time; ~10s)")
-    df = _walk_match_jsons()
-    if len(df):
-        # Drop unhashable player_ids column before parquet write; keep a count-only copy
-        df_cache = df.drop(columns=[c for c in df.columns if c.endswith("_missing_player_ids")])
-        df_cache.to_parquet(CACHE_PATH, index=False)
-    return df
+
+    # list-valued columns are not parquet-friendly and nothing downstream reads them
+    fresh = fresh.drop(columns=[c for c in fresh.columns if c.endswith("_missing_player_ids")])
+    fresh["sofascore_id"] = fresh["sofascore_id"].astype(str)
+    if len(cached):
+        cached["sofascore_id"] = cached["sofascore_id"].astype(str)
+        merged = pd.concat([cached, fresh], ignore_index=True)
+    else:
+        merged = fresh
+    merged = merged.drop_duplicates(subset="sofascore_id", keep="last").reset_index(drop=True)
+
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_parquet(CACHE_PATH, index=False)
+    log.info("Missing players: cache now %d matches (%d refreshed)", len(merged), len(fresh))
+    return merged
 
 
 def add_missing_players_features(feature_df: pd.DataFrame) -> pd.DataFrame:
