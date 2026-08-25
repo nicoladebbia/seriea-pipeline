@@ -205,6 +205,32 @@ def _league_cache_prefix(league: str) -> str:
     return f"{league}_"
 
 
+SQUAD_CACHE_MAX_AGE_HOURS = 24  # squads move daily while the window is open
+
+
+def _prune_to_league(df: pd.DataFrame, league_teams: dict, only_teams: set | None):
+    """Drop clubs that are not in this season's league.
+
+    The static team map is a historical superset and the cache was append-only,
+    so a per-season squad file accumulated every club that had ever been
+    scraped into it. market_values_2026_2027.parquet held 29 clubs for a
+    20-club league — Chievo (last in Serie A 2018-19), SPAL, Crotone, Benevento,
+    Brescia, Sampdoria, Salernitana, Empoli and Verona, 256 players who were
+    rendered on /rosters as though they were current squad members.
+
+    Only prunes when the caller named the current clubs; with only_teams=None
+    the map really is the intended (historical) scope and nothing is dropped.
+    """
+    if only_teams is None or df.empty or "team" not in df.columns:
+        return df
+    keep = set(league_teams.keys())
+    dropped = set(df["team"].unique()) - keep
+    if dropped:
+        log.info("Pruning %d club(s) no longer in the league: %s",
+                 len(dropped), ", ".join(sorted(dropped)))
+    return df[df["team"].isin(keep)].reset_index(drop=True)
+
+
 def scrape_squad_market_values(
     season: str = "2024-2025",
     league: str = "serie_a",
@@ -234,12 +260,28 @@ def scrape_squad_market_values(
         cached_teams = set(cached_df["team"].unique()) if "team" in cached_df.columns else set()
         all_teams = set(league_teams.keys())
         missing = all_teams - cached_teams
+        age_h = (time.time() - cache_path.stat().st_mtime) / 3600
+        if not missing and age_h < SQUAD_CACHE_MAX_AGE_HOURS:
+            log.info("Loading cached market values from %s (%d teams, %.0fh old)",
+                     cache_path, len(cached_teams), age_h)
+            pruned = _prune_to_league(cached_df, league_teams, only_teams)
+            if len(pruned) != len(cached_df):
+                # Persist it. Every consumer of this data — /api/rosters most
+                # visibly — reads the parquet directly, so pruning only the
+                # return value would leave the ghosts on screen.
+                pruned.to_parquet(cache_path, index=False)
+            return pruned
         if not missing:
-            log.info("Loading cached market values from %s (%d teams)", cache_path, len(cached_teams))
-            return cached_df
-        # Only scrape the missing teams
-        log.info("Cache exists but missing %d teams: %s — scraping those", len(missing), missing)
-        teams_to_scrape = {k: v for k, v in league_teams.items() if k in missing}
+            # Every club is present but the squads are stale. Before 2026-08-25
+            # this returned here unconditionally, so a squad file froze the day
+            # it was first completed: it never re-scraped, through a whole
+            # transfer window, and /rosters served whatever roster existed then.
+            log.info("Cache complete but %.0fh old (> %dh) — re-scraping all %d clubs",
+                     age_h, SQUAD_CACHE_MAX_AGE_HOURS, len(league_teams))
+        else:
+            # Only scrape the missing teams
+            log.info("Cache exists but missing %d teams: %s — scraping those", len(missing), missing)
+            teams_to_scrape = {k: v for k, v in league_teams.items() if k in missing}
 
     league_name = league.replace("_", " ").title()
     log.info("Scraping market values for %d %s teams (%s)", len(teams_to_scrape), league_name, season)
@@ -266,13 +308,21 @@ def scrape_squad_market_values(
 
     new_df = pd.DataFrame(all_rows)
 
-    # Merge with cached data if we were backfilling
+    # Merge with cached data. REPLACE the rows for clubs we just scraped rather
+    # than appending them: this used a bare concat, which was safe only because
+    # the early return above meant a re-scrape of an already-cached club could
+    # never happen. With a TTL it happens every day, and appending would double
+    # every squad on the first refresh.
     if cached_df is not None and not new_df.empty:
-        df = pd.concat([cached_df, new_df], ignore_index=True)
+        rescraped = set(new_df["team"].unique())
+        kept = cached_df[~cached_df["team"].isin(rescraped)]
+        df = pd.concat([kept, new_df], ignore_index=True)
     elif cached_df is not None:
         df = cached_df
     else:
         df = new_df
+
+    df = _prune_to_league(df, league_teams, only_teams)
 
     TM_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(cache_path, index=False)
