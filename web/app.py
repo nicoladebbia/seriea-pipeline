@@ -1987,6 +1987,31 @@ def api_track_record():
     return jsonify(_TRACKREC_CACHE["data"])
 
 
+def _played_result_row(matches, home, away, fixture_date):
+    """The row for THIS fixture, or None — never merely the last meeting.
+
+    This matched on (home_team, away_team) alone and took .tail(1), so it
+    borrowed the last time the two teams ever met and presented it as the
+    fixture's result: an unplayed 2026-08-28 Milan v Venezia was shown
+    "FT 4-0" from 2024-09-14, with its best bet graded a HIT against it.
+    21 of 22 upcoming fixtures had such a historical meeting available, so
+    the page reported a fabricated track record.
+
+    A fixture whose date will not parse gets no result at all: attaching the
+    wrong one is worse than attaching none.
+    """
+    import pandas as pd
+
+    when = pd.to_datetime(fixture_date, errors="coerce")
+    if pd.isna(when):
+        return None
+    cand = matches[(matches["home_team"] == home) & (matches["away_team"] == away)]
+    cand = cand[pd.to_datetime(cand["match_date"]).dt.normalize() == when.normalize()]
+    if not len(cand) or pd.isna(cand.iloc[-1].get("home_score")):
+        return None
+    return cand.sort_values("match_date").tail(1)
+
+
 @app.route("/api/projections")
 def api_projections():
     """Score-range projection family for every upcoming match.
@@ -2143,9 +2168,10 @@ def api_projections():
         _m = _comparative_matches_df()
         if _m is not None and "home_score" in _m.columns:
             for proj in projections:
-                row = _m[(_m["home_team"] == proj.get("home_team")) &
-                         (_m["away_team"] == proj.get("away_team"))].sort_values("match_date").tail(1)
-                if not len(row) or pd.isna(row.iloc[0].get("home_score")):
+                row = _played_result_row(
+                    _m, proj.get("home_team"), proj.get("away_team"), proj.get("date")
+                )
+                if row is None:
                     continue
                 r = row.iloc[0]
                 hs, as_ = int(r["home_score"]), int(r["away_score"])
