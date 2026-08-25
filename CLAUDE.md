@@ -265,6 +265,15 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
         ...
 ```
 
+### Symptom: "a whole feature family is 100% NULL for the CURRENT season only, and a fresh rebuild doesn't fix it"
+
+- **What you'll see**: `features_serie_a.parquet` was rebuilt hours ago, yet e.g. `home_squad_size`, `home_avg_player_value`, `home_max_player_value` are 100% NaN for the in-progress season while ~90% filled for the previous one. No error, no warning — the build logs success.
+- **Why it happens**: `config/settings.py:SEASONS` is a **hand-maintained literal list** and it lags the calendar. On 2026-08-25 it still ended at `"2025-2026"` while `get_current_season()` returned `"2026-2027"`. Any per-season enrichment written as `seasons = [season] if season else SEASONS` therefore **never iterates the season being played**. Two such loops existed in `features/build.py` (`_add_odds`, `_add_market_data`), costing 10 squad-value columns + 58 odds/disagreement columns (3.4% fill vs 74.5% the season before) — all of them live model features.
+- **Fix**: `features/build.py::_seasons_to_enrich(feature_df, season)` — iterate the seasons **actually present in the frame**, not the config list. Each of these loops is already masked per season and no-ops on a season it has no rows for, so the present-seasons list is a free superset that never needs a rollover edit.
+- **Do NOT fix it by appending to `SEASONS`.** 23 non-test modules import that constant, including `scripts/analysis/backtest_unified.py` and `data_quality_report.py`. Pushing a 10-match partial season into all of them is a much larger, unaudited blast radius than the enrichment bug it would fix — and it re-arms the same trap next August.
+- **Detection**: `python3 -c "import pandas as pd; d=pd.read_parquet('data/features/features_serie_a.parquet'); cur=d[d.season==d.season.max()]; print(sorted(c for c in d.columns if cur[c].isna().all() and d[c].notna().mean()>0.5))"` — any column filled historically but wholly null in the newest season.
+- **Prevention rule**: **never gate a per-season loop on `config.SEASONS`.** Derive the season list from the data in hand. A hand-maintained calendar constant is a time bomb with an annual fuse, and it fails *silently* — the skipped season looks exactly like a season with no data.
+
 ### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
 
 - **Why**: `features_quality` check flags any column >90% NaN unless its prefix is in `SPARSE_PREFIXES`. New feature families (e.g. `home_fh_*` first-half rollups, `home_xg_share_*` zone xG) weren't allowlisted.

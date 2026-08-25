@@ -2689,17 +2689,36 @@ def _add_venue_features(feature_df: pd.DataFrame) -> pd.DataFrame:
         return feature_df
 
 
+def _seasons_to_enrich(feature_df: pd.DataFrame, season: str | None) -> list[str]:
+    """The seasons a per-season enrichment step should actually iterate.
+
+    NOT config.SEASONS. That list is hand-maintained and lags the calendar --
+    it still ended at 2025-2026 on 2026-08-25, so every full rebuild silently
+    skipped the in-progress season and left its market-value and odds columns
+    null while the model treated them as live features.
+
+    The seasons present in the frame are the honest answer: each caller is
+    already masked per season and no-ops on one it has no rows for, so this is
+    a superset that costs nothing and never needs a rollover edit again.
+    """
+    if season:
+        return [season]
+    if "season" not in feature_df.columns:
+        return []
+    return sorted(str(s) for s in feature_df["season"].dropna().unique())
+
+
 def _add_odds(feature_df: pd.DataFrame, season: str | None) -> pd.DataFrame:
     """Merge cached betting odds if available.
 
     Handles multi-league data by downloading odds for the appropriate league.
     """
     from scraper.odds import compute_implied_probabilities, download_all_odds, merge_odds_with_matches
-    from config.settings import DATA_DIR, LEAGUES, SEASONS
+    from config.settings import DATA_DIR, LEAGUES
 
     odds_dir = DATA_DIR / "external" / "odds"
 
-    seasons = [season] if season else SEASONS
+    seasons = _seasons_to_enrich(feature_df, season)
 
     # Determine which league this data belongs to
     league = "serie_a"
@@ -2754,7 +2773,7 @@ def _add_market_data(feature_df: pd.DataFrame, season: str | None) -> pd.DataFra
     premier_league_market_values_2024_2025.parquet) and falls back to
     unprefixed files for Serie A (backward compatible).
     """
-    from config.settings import DATA_DIR, SEASONS
+    from config.settings import DATA_DIR
     tm_dir = DATA_DIR / "external" / "transfermarkt"
     if not tm_dir.exists():
         log.info("No Transfermarkt data found (run 'fetch-transfers' first); skipping")
@@ -2773,7 +2792,7 @@ def _add_market_data(feature_df: pd.DataFrame, season: str | None) -> pd.DataFra
     file_prefix = "" if league_key in ("serie_a", "") else f"{league_key}_"
 
     # Apply market data per-season to avoid cross-season contamination
-    seasons_to_check = [season] if season else SEASONS
+    seasons_to_check = _seasons_to_enrich(feature_df, season)
     for s in seasons_to_check:
         mv_path = tm_dir / f"{file_prefix}market_values_{s.replace('-', '_')}.parquet"
         tr_path = tm_dir / f"{file_prefix}transfers_{s.replace('-', '_')}.parquet"
