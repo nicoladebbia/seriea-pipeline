@@ -213,6 +213,12 @@ def _active_leagues_info() -> list[dict]:
     return result
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+# Jinja compiles templates once and caches them; with debug=False that cache never
+# invalidates, so a template edit silently keeps serving the old page until the process
+# is restarted. Cost is one stat() per template per request -- worth it to stop shipping
+# a page you cannot see.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 # Gzip compression for all responses
 try:
@@ -1278,6 +1284,126 @@ def matches_page():
 def projections_page():
     # no-cache so the browser never serves a stale version of this evolving page
     resp = app.make_response(render_template("projections.html", active_page="projections"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.route("/api/fantacalcio/my-team", methods=["GET", "POST"])
+def api_fantacalcio_my_team():
+    """The squad actually won at auction.
+
+    The board page keeps its state in localStorage, which is invisible to anything else --
+    a scheduled scorer cannot read one browser's storage. So the page mirrors every buy
+    here, and this file, not localStorage, is what the tracker scores.
+    """
+    path = DATA_DIR / "fantacalcio" / "my_team.json"
+    if flask_request.method == "GET":
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return jsonify(json.load(fh))
+        except (OSError, ValueError):
+            return jsonify({"roster": [], "saved_at": None})
+    payload = flask_request.get_json(silent=True) or {}
+    roster = [{"id": int(r["id"]), "paid": int(r.get("paid", 0))}
+              for r in payload.get("roster", []) if str(r.get("id", "")).isdigit()]
+    data = {"saved_at": datetime.now(timezone.utc).isoformat(),
+            "budget": int(payload.get("budget", 500)), "roster": roster}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1)
+    tmp.replace(path)
+    return jsonify({"ok": True, "n": len(roster)})
+
+
+@app.route("/api/fantacalcio/tracker")
+def api_fantacalcio_tracker():
+    """Per-round scores for the saved squad.
+
+    Rebuilds on demand when the cached artifact predates the last roster save, so a buy
+    made during the auction is reflected without waiting for the scheduled run.
+    """
+    out = DATA_DIR / "fantacalcio" / "tracker.json"
+    team = DATA_DIR / "fantacalcio" / "my_team.json"
+    # Three ways to be stale, and the third is the one that makes this a tracker rather
+    # than a snapshot: without an age check a newly graded giornata would never appear,
+    # because the roster file has not moved since the last build.
+    age_h = (_time.time() - out.stat().st_mtime) / 3600.0 if out.exists() else 1e9
+    stale = (not out.exists()
+             or (team.exists() and team.stat().st_mtime > out.stat().st_mtime)
+             or age_h > 6.0
+             or flask_request.args.get("refresh") == "1")
+    if stale:
+        try:
+            from scripts.fantacalcio.tracker import build
+            data = build(refresh=flask_request.args.get("refresh") == "1")
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1)
+            return jsonify(data)
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            app.logger.warning("tracker rebuild failed: %s", exc)
+    try:
+        with open(out, encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"rounds": [], "rounds_played": 0, "error": "unavailable"})
+
+
+@app.route("/api/fantacalcio/xi-advisor")
+def api_fantacalcio_xi_advisor():
+    """Who to field next giornata: module + XI + bench from live levels and the fixture.
+
+    Same rebuild-on-stale shape as the tracker: the advice must move when the roster
+    changes, when the tracker has ingested a new giornata (levels moved), or when the
+    fixture window has simply aged past the 6h cadence.
+    """
+    out = DATA_DIR / "fantacalcio" / "xi_advice.json"
+    team = DATA_DIR / "fantacalcio" / "my_team.json"
+    trk = DATA_DIR / "fantacalcio" / "tracker.json"
+    age_h = (_time.time() - out.stat().st_mtime) / 3600.0 if out.exists() else 1e9
+    stale = (not out.exists()
+             or (team.exists() and team.stat().st_mtime > out.stat().st_mtime)
+             or (trk.exists() and trk.stat().st_mtime > out.stat().st_mtime)
+             or age_h > 6.0
+             or flask_request.args.get("refresh") == "1")
+    if stale:
+        try:
+            from scripts.fantacalcio.xi_advisor import build_advice
+            data = build_advice()
+            with open(out, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1)
+            return jsonify(data)
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            app.logger.warning("xi advisor rebuild failed: %s", exc)
+    try:
+        with open(out, encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"round": None, "xi": [], "bench": [], "unavailable": [],
+                        "error": "unavailable"})
+
+
+@app.route("/fantacalcio")
+@app.route("/fanta")
+@app.route("/asta")
+def fantacalcio_page():
+    """Auction board for the 2026-27 Fantacalcio draft.
+
+    The board is a build artifact (scripts/fantacalcio/build_auction_board.py); this
+    route only serves it. Rendered server-side so the page works with no API round-trip
+    at 04:30, which is when the auction actually runs.
+    """
+    board_path = DATA_DIR / "fantacalcio" / "auction_board.json"
+    try:
+        with open(board_path, encoding="utf-8") as fh:
+            board = json.load(fh)
+    except (OSError, ValueError):
+        board = None
+    resp = app.make_response(render_template(
+        "fantacalcio.html", active_page="fantacalcio",
+        board=board, board_json=json.dumps(board) if board else "null",
+        board_path=str(board_path)))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp

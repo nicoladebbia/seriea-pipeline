@@ -32,6 +32,12 @@ PAGE_TIMEOUT = 90
 LEAGUES: dict[str, tuple[str, str]] = {
     "serie_a": ("Serie_A", "ITA-Serie A"),
     "premier_league": ("EPL", "ENG-Premier League"),
+    # The three remaining big-5 leagues exist for one consumer: pricing Serie A newcomers
+    # at the fantacalcio auction from their real record abroad instead of a market-value
+    # fallback fit. Nothing in the betting pipeline reads them.
+    "la_liga": ("La_liga", "ESP-La Liga"),
+    "bundesliga": ("Bundesliga", "GER-Bundesliga"),
+    "ligue_1": ("Ligue_1", "FRA-Ligue 1"),
 }
 
 # playersData field -> parquet column. Understat's own names are camelCase and
@@ -196,7 +202,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--season", help="Season to refresh, e.g. 2025-2026, or 'current' to resolve the calendar season at run time")
     ap.add_argument("--leagues", default="serie_a,premier_league",
-                    help="Comma-separated: serie_a,premier_league")
+                    help="Comma-separated, any of: " + ",".join(sorted(LEAGUES)))
     ap.add_argument("--all-seasons", action="store_true",
                     help="Refresh every season already stored for each league")
     ap.add_argument("--dry-run", action="store_true", help="Fetch and report; write nothing")

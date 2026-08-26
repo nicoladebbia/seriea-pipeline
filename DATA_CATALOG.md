@@ -5914,3 +5914,68 @@ players (8), subs (8), squad/spend (12), `fb_roll_*`/`fb_diff_*` (~60), the
 Their builders have not been traced to a cause. Given the severity finding above,
 tracing them is only worth doing as part of a decision to retrain the EPL model on
 the wider feature set — which is a deliberate call, not a cleanup.
+
+---
+
+## Fantacalcio (`data/fantacalcio/`)
+
+**2026-08-26: `data/parsed/understat_players.parquet` now carries five leagues**, not two —
+La Liga, Bundesliga and Ligue 1 (2017-2025) were added beside Serie A and the EPL, ~9,600
+new rows, scraped via `scripts/data/refresh_understat_players.py` (its `LEAGUES` dict is
+the extension point; Selenium required — plain GETs still return a data-free shell,
+re-measured 2026-08-26). Understat `player_id` is stable across leagues, so cross-league
+careers join without name matching. Sole consumer of the foreign rows: the auction board's
+foreign-informed tier (conversion factors ×0.93 goals / ×1.00 assists / ×1.05 yellows,
+measured on 164 league movers; minutes weighted ×0.85). The betting pipeline reads only
+the Serie A rows and is unaffected.
+
+Auction and season-scoring data for the private Fantacalcio league. Independent of the
+betting pipeline — nothing here feeds `features_*.parquet` or any model.
+
+| File | Written by | What it is |
+|---|---|---|
+| `listone_2026_2027.xlsx` | manual download | Official listone. `Id` is the fantacalcio player id and is the join key for everything below. |
+| `auction_board.json` | `scripts/fantacalcio/build_auction_board.py` | Projections, prices, walk-away caps, fallback chains. Served by `/fantacalcio`. |
+| `backtest_*.csv` | `scripts/fantacalcio/backtest.py` | Walk-forward validation of the projection over eight past auctions. |
+| `voti/stats_{season}.parquet` | `scripts/fantacalcio/voti.py` | Season-aggregate media voto / fantamedia per player. |
+| `voti/round_{season}_{rr}.parquet` | `scripts/fantacalcio/live_scores.py` | **Per-round voti.** One row per player who appeared: `pid, slug, team, role, voto, cards, bonus, fantavoto, played`. |
+| `my_team.json` | `POST /api/fantacalcio/my-team` | The squad actually won at auction. Written by the board page mirroring its localStorage so a scheduled job can read it. |
+| `tracker.json` | `scripts/fantacalcio/tracker.py` | Per-round scores for that squad. Rebuilt on demand by `/api/fantacalcio/tracker` when the roster moves or the file is >6h old. |
+| `xi_advice.json` | `scripts/fantacalcio/xi_advisor.py` | Who to field next giornata: module + XI + bench, from live levels x measured fixture terms x titolarita. Rebuilt on demand by `/api/fantacalcio/xi-advisor` when roster/tracker move or >6h old. |
+
+### Per-round voti — parsing facts that are not on the rules page
+
+These were established by reconciling 936 of 942 published fantavoti in round 1 of
+2025-26, not by reading documentation. Each one is a silent wrong answer if missed:
+
+- **`data-value="55"` is the senza-voto sentinel**, not a rating. Whole ratings render bare
+  (`6` = 6.0) and halves carry a comma (`6,5`). The count matches the sv total exactly in
+  every round checked (33/33, 36/36, 33/33). The parser rejects anything outside `[0,10]`
+  rather than special-casing the literal.
+- **"Player of the match" is a bonus column worth ZERO.** Weighting it +1 is wrong for the
+  nine players a round who get it.
+- **Cards are not bonus columns.** They live in the grade span's class
+  (`player-grade yellow-card`), so a `player-bonus`-only parser misses every booking.
+  Yellow −0.5, red −1.0.
+- **The fantavoto must not be range-guarded** — it legitimately exceeds 10 and can go
+  negative. The `[0,10]` guard applies to the *voto* alone.
+- **Three `.pill` blocks per player are three independent voti providers** and they
+  genuinely disagree (143 of 314 rows in round 1). `LIST_DEFAULT = 0` is Fantacalcio
+  Italia, which is what FantaLeghe uses.
+- **A round that parses <100 rows is treated as NOT PLAYED.** An unplayed round and a
+  broken selector both return HTTP 200 with zero rows; only one is benign, so
+  `played_rounds()` stops at the first empty round rather than scanning past it.
+
+### Season scoring
+
+`tracker.py` reports two numbers per round and the gap between them is the point:
+`settable` is the eleven that could actually have been fielded (module and XI chosen from
+the projection *before* kickoff, then up to three same-role substitutions for starters with
+no voto), and `hindsight` is the best eleven the roster could have produced knowing every
+result. The ceiling is unattainable by construction; reporting it as "my score" would be a
+lie, which is why both are computed and the page labels them.
+
+The modificatore di difesa is scored on the **raw voto** of the keeper plus the best three
+fielded defenders, using the same table and voto d'ufficio the auction board priced with. A
+three-defender module forfeits it entirely, so the module search compares four- and
+three-defender shapes on total points *including* the modifier.

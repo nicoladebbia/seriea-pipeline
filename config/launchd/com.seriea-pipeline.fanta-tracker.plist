@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.seriea-pipeline.fanta-tracker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nicoladebbia/.pyenv/versions/3.13.3/bin/python3</string>
+    <string>-m</string>
+    <string>scripts.fantacalcio.tracker</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-fanta-tracker-out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-fanta-tracker-err.log</string>
+</dict>
+</plist>
