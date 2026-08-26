@@ -373,10 +373,29 @@ _LEAGUE_PARQUET = {
     "premier_league": "data/external/sofascore/player_match_stats_premier_league.parquet",
 }
 
-_LEAGUE_FIXTURES_FILE = {
-    "serie_a": "data/external/sofascore/fixtures_2025_2026.json",
-    "premier_league": "data/external/sofascore/fixtures_2025_2026_premier_league.json",
-}
+def _league_fixtures_path(league: str):
+    """Current-season Sofascore fixture file for a league, or None.
+
+    Derived, never written down. This was a hardcoded ``fixtures_2025_2026``
+    dict and it rotted exactly as ``scripts.utils.match_timing`` warns it would:
+    from the 2026-08-01 season rollover it addressed a file frozen on Jun 1,
+    so ``_next_fixture_for_team`` searched a finished season for an upcoming
+    match and returned None every time, and ``/api/data-freshness`` reported a
+    fixtures age of ~2067h while the real files were 8h old -- permanently
+    arming the ``max_file_hours >= 36`` branch.
+
+    ``_sofascore_fixture_files()`` already derives this from
+    ``get_current_season()``. Reuse it rather than keeping a fourth copy of the
+    naming convention: one definition cannot drift from itself.
+    """
+    try:
+        from scripts.utils.match_timing import _sofascore_fixture_files
+        for path, lg in _sofascore_fixture_files():
+            if lg == league:
+                return path
+    except Exception:
+        pass
+    return None
 
 # Sofascore HTML standings scraping lives in scraper/sofascore_standings.py so
 # scripts.data.sofascore_watcher can share it: importing web.app starts the
@@ -405,11 +424,8 @@ def _next_fixture_for_team(league: str, team: str) -> dict | None:
     from config.settings import PROJECT_ROOT
     from config.team_names import normalize_team
 
-    rel = _LEAGUE_FIXTURES_FILE.get(league)
-    if not rel:
-        return None
-    path = PROJECT_ROOT / rel
-    if not path.exists():
+    path = _league_fixtures_path(league)
+    if path is None or not path.exists():
         return None
     try:
         with open(path) as f:
@@ -2352,6 +2368,148 @@ def _club_leagues_dormant(horizon_days: int = 14) -> dict[str, bool]:
     return flags
 
 
+def _league_ingest_lag(grace_hours: float = 24.0) -> dict[str, dict]:
+    """Per-league: is the parquet we SERVE actually behind the fixture calendar?
+
+    The staleness banner used to equate "the preferred SOURCE is unreachable"
+    with "the DATA is degraded". Those are different questions and on a blocked
+    network they disagree loudly: Sofascore 403s every tier from a denied egress
+    IP (project CLAUDE.md, "TWO different 403s" -> blanket-IP deny) while the
+    parquet the dashboard falls back to is complete and current. Measured
+    2026-08-26: both leagues served a full, correct 20-row MW1 table for the
+    entire time the banner claimed the data was degraded.
+
+    So ask the question a reader cares about -- is a match that has already been
+    PLAYED missing from the table? -- not the one that is easy to measure.
+
+    ``missing`` is None when either side of the comparison could not be read.
+    Silence from an unreadable source is not evidence of completeness, so an
+    unknown keeps the degraded branch ARMED rather than clearing it. Same
+    philosophy as ``_club_leagues_dormant`` above, and for the same reason: a
+    check that fails open is a check that hides the failure it exists to find.
+
+    ``grace_hours`` defaults to 24 because ingest is a daily-cadence job, not a
+    post-match hook. A match that kicks off at 22:45 is legitimately not in the
+    parquet until the next morning run; anything still missing a full day after
+    kickoff is a real gap, not cadence.
+    """
+    import json as _json
+    from datetime import timedelta
+
+    out: dict[str, dict] = {}
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=grace_hours)
+
+    try:
+        from scripts.utils.match_timing import _sofascore_fixture_files
+        fixture_files = dict((lg, path) for path, lg in _sofascore_fixture_files())
+    except Exception:
+        fixture_files = {}
+
+    for lg in ("serie_a", "premier_league"):
+        entry = {"expected_played": None, "ingested_played": None, "missing": None}
+        out[lg] = entry
+
+        path = fixture_files.get(lg)
+        if path is None or not path.exists():
+            continue
+        try:
+            rows = _json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rows, list) or not rows:
+            # An empty calendar cannot prove the parquet is complete.
+            continue
+
+        expected = 0
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            # A cancelled fixture keeps its ORIGINAL past timestamp for the rest
+            # of the season, so counting it as "should have been played" would
+            # pin missing > 0 forever and permanently re-arm the very banner
+            # this function exists to quiet -- same false alarm, new mechanism.
+            # Postponements self-heal (Sofascore reschedules the timestamp), so
+            # cancellation is the case that actually needs excluding; both are
+            # dropped because `_next_fixture_for_team` below already treats them
+            # as one class, and disagreeing with the sibling is how these two
+            # readers drift apart.
+            #
+            # Deliberately NOT narrowed to `status == "finished"`: a fixture
+            # file whose statuses have not flipped yet would then undercount and
+            # fail OPEN, and every other guard here is built to fail CLOSED.
+            status = r.get("status")
+            if isinstance(status, dict) and status.get("type") in (
+                "canceled", "cancelled", "postponed",
+            ):
+                continue
+            ts = r.get("startTimestamp")
+            if not isinstance(ts, (int, float)):
+                continue
+            if datetime.fromtimestamp(ts, tz=timezone.utc) <= cutoff:
+                expected += 1
+        entry["expected_played"] = expected
+
+        # Count from the SAME payload the dashboard serves, so this can never
+        # assert completeness for a table the user is not actually seeing.
+        try:
+            standings = _compute_standings(lg).get("standings") or {}
+        except Exception:
+            continue
+        if not standings:
+            continue
+        # Every match contributes one `played` to each of two teams.
+        entry["ingested_played"] = sum(
+            int(t.get("played", 0)) for t in standings.values()
+        ) // 2
+        entry["missing"] = max(0, expected - entry["ingested_played"])
+
+    return out
+
+
+def _any_league_behind(league_health: dict) -> bool:
+    """True if any league is missing already-played matches, or we cannot tell.
+
+    Unknown (`missing is None`) counts as behind ON PURPOSE. The alternative --
+    treating "I could not read the calendar" as "nothing is wrong" -- is how a
+    freshness check ends up permanently green while the thing it watches rots.
+    That exact failure already happened here once: see the `_club_leagues_dormant`
+    docstring, where reading fixtures from a results-only store returned zero
+    every time and pinned the banner green over a live Serie A failure.
+    """
+    for h in league_health.values():
+        missing = h.get("missing")
+        if missing is None or missing > 0:
+            return True
+    return False
+
+
+def _behind_summary(league_health: dict) -> str:
+    """Human phrasing of which league is short how many matches."""
+    parts = []
+    for lg, h in league_health.items():
+        name = lg.replace("_", " ").title()
+        missing = h.get("missing")
+        if missing is None:
+            parts.append(f"{name}: coverage unknown")
+        elif missing > 0:
+            parts.append(
+                f"{name}: {missing} played "
+                f"{'match' if missing == 1 else 'matches'} not ingested "
+                f"({h.get('ingested_played')}/{h.get('expected_played')})"
+            )
+    return "; ".join(parts) or "no league detail available"
+
+
+def _first_html_error(league_health: dict) -> str:
+    """The first non-empty scraper error, for the banner's one-line cause."""
+    for h in league_health.values():
+        err = (h.get("html_last_error") or "").strip()
+        if err:
+            return err
+    return ""
+
+
 @app.route("/api/data-freshness")
 def api_data_freshness():
     """Sofascore refresh freshness — used by the global staleness banner.
@@ -2408,13 +2566,13 @@ def api_data_freshness():
 
     # Also scan each fixtures file mtime — that's the real "data age" signal
     fixtures_paths = {
-        "serie_a": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026.json",
-        "premier_league": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026_premier_league.json",
+        lg: _league_fixtures_path(lg)
+        for lg in ("serie_a", "premier_league")
     }
     file_age = {}
     max_file_hours = 0
     for league, p in fixtures_paths.items():
-        if p.exists():
+        if p is not None and p.exists():
             mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
             age_h = round((datetime.now(timezone.utc) - mtime).total_seconds() / 3600, 1)
             file_age[league] = age_h
@@ -2436,6 +2594,7 @@ def api_data_freshness():
     schema_break_seen = False
     dormant = _club_leagues_dormant()
     all_dormant = all(dormant.get(lg) for lg in ("serie_a", "premier_league"))
+    ingest_lag = _league_ingest_lag()
 
     for lg in ("serie_a", "premier_league"):
         # Trigger scrape (cached) to refresh health entry
@@ -2466,6 +2625,9 @@ def api_data_freshness():
             "parquet_age_hours": pq_age_h,
             "parquet_too_old": (pq_age_h is not None and pq_age_h > 24 * 7),
             "offseason_dormant": bool(dormant.get(lg)),
+            # Fixture-calendar comparison: the honest "is the served data
+            # behind?" signal, as opposed to "is the live scraper reachable?".
+            **ingest_lag.get(lg, {}),
         }
         if html_ok:
             any_html_ok = True
@@ -2518,13 +2680,29 @@ def api_data_freshness():
             "club data intentionally stale until the season resumes. Live "
             "match data (e.g. World Cup) is served separately and unaffected."
         )
-    elif not any_html_ok:
-        # No HTML, but parquet within 7d — degraded but tolerable
+    elif not any_html_ok and _any_league_behind(league_health):
+        # No HTML *and* the cached table is missing matches that have already
+        # been played. This is the only combination that actually degrades what
+        # the user sees, so it is the only one that gets the red banner.
         out["severity"] = "degraded_parquet_only"
-        out["ok"] = False  # still surface the banner — we're not live
+        out["ok"] = False
         out["message"] = (
-            "Live HTML scrape failing — serving cached parquet data. "
-            f"Parquet ages: {league_health}"
+            "Live scrape is down and the cached table is behind the fixture "
+            f"calendar: {_behind_summary(league_health)}. "
+            f"Scraper error: {_first_html_error(league_health) or 'unknown'}."
+        )
+    elif not any_html_ok:
+        # The live scraper is blocked, but every match that has kicked off is
+        # already in the table the dashboard serves — so the data is CURRENT
+        # and there is nothing for a reader to act on. Report it, do not alarm
+        # over it. (`ok: True` is what hides the banner; see base.html.)
+        out["severity"] = "html_blocked_data_current"
+        out["ok"] = True
+        out["message"] = (
+            "Live Sofascore scrape blocked "
+            f"({_first_html_error(league_health) or 'unknown'}) — serving "
+            "cached data, which is complete through the latest played "
+            "matchweek. No action needed; switch network to restore live."
         )
     elif max_file_hours >= 36:
         out["severity"] = "fixtures_stale_html_ok"

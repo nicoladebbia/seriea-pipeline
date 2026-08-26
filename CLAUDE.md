@@ -363,6 +363,59 @@ cache stores only the columns its step adds and *merges* them, treat a partial r
 unsound: the only trustworthy full rebuild is `use_cache=False`. And **never trust
 `[computed]` in the log as evidence a value reached the parquet** — the diff is the evidence.
 
+### Symptom: "the staleness banner is red but the dashboard data is demonstrably correct"
+
+- **What you'll see**: the global banner dumps a raw Python dict across the bottom of every
+  page — `Live HTML scrape failing — serving cached parquet data. Parquet ages: {'serie_a':
+  {'html_ok': False, ...}}` — while `/api/standings/<league>` serves a complete, correct
+  20-row table for both leagues.
+- **Why it happened**: `degraded_parquet_only` fired on `not any_html_ok` alone. That asks
+  "is the preferred SOURCE reachable?" when the only question a reader cares about is "is the
+  DATA I'm being shown behind?" On a denied egress IP those two answers disagree permanently:
+  Sofascore 403s every tier while the parquet fallback is complete and current.
+- **Fix (2026-08-26)**: `_league_ingest_lag()` in `web/app.py` compares the fixture calendar
+  against the standings payload the dashboard actually serves — `missing = played fixtures
+  not ingested`, with a 24h grace matching the daily ingest cadence. HTML down **and**
+  `missing > 0` → `degraded_parquet_only` (red, `ok: False`). HTML down and everything played
+  is ingested → `html_blocked_data_current` (`ok: True`, banner hidden, one-line message).
+- **Two traps inside that fix, both paid for**:
+  1. **Fail CLOSED on unknown.** `missing is None` (calendar unreadable) counts as behind. The
+     opposite already happened here: `_club_leagues_dormant` read fixtures from a results-only
+     store, got zero every time, and pinned the banner green over a live Serie A failure.
+  2. **A cancelled fixture keeps its original past timestamp for the rest of the season.**
+     Counting it as should-have-been-played pins `missing > 0` forever and re-arms the same
+     false banner by a new mechanism. Exclude `canceled`/`postponed` — the sibling
+     `_next_fixture_for_team` already did, and disagreeing with the sibling is how two readers
+     of one file drift apart. Do **not** narrow to `status == "finished"`: a fixture file whose
+     statuses haven't flipped yet would undercount and fail OPEN.
+- **Prevention rule**: **a health check must assert on the artifact the user is served, not on
+  the reachability of the source you would have preferred.** And never interpolate a raw dict
+  into a user-facing string — if the detail matters, it belongs in the JSON payload
+  (`leagues_health`), not in the banner.
+
+### Symptom: "a season-stamped filename is hardcoded and silently addresses last season"
+
+Third instance of this trap in this file (see also `config/settings.py:SEASONS` above). Found
+2026-08-26 in `web/app.py`, **twice in the same module**:
+
+- `_LEAGUE_FIXTURES_FILE` and the `fixtures_paths` dict inside `/api/data-freshness` both named
+  `fixtures_2025_2026*.json`. After the 2026-08-01 rollover they addressed a file frozen on
+  Jun 1 while the live files (`fixtures_2026_2027*.json`) were hours old.
+- **Two silent failures, no error either time**: `_next_fixture_for_team` searched a *finished*
+  season for an *upcoming* fixture — 0 of 385 rows qualified, so it returned `None` for every
+  team, forever. And `fixtures_age_hours` reported **2067h** instead of ~9h, permanently arming
+  the `max_file_hours >= 36` branch — which is why this file's own restart-procedure note used
+  to name `fixtures_stale_html_ok` as the healthy signal. **That note was written against a
+  false reading.**
+- **Fix**: `_league_fixtures_path(league)` delegates to `scripts.utils.match_timing.
+  _sofascore_fixture_files()`, which derives the season from `get_current_season()`. One
+  definition cannot drift from itself.
+- **Detection**: `grep -rn "20[0-9][0-9]_20[0-9][0-9]" --include='*.py' .` — any season literal
+  in a path is a time bomb with an annual fuse.
+- **Prevention rule**: **never write a season into a filename literal.** Derive it, and derive
+  it by calling the one existing helper rather than re-implementing the naming convention —
+  the repo had a correct, well-documented deriver the whole time and three call sites ignored it.
+
 ### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
 
 - **Why**: `features_quality` check flags any column >90% NaN unless its prefix is in `SPARSE_PREFIXES`. New feature families (e.g. `home_fh_*` first-half rollups, `home_xg_share_*` zone xG) weren't allowlisted.
@@ -442,5 +495,5 @@ curl -s http://localhost:5001/api/data-freshness | python3 -m json.tool
 launchctl list | grep "com.seriea-pipeline" | awk '$2 != 0 && $2 != "-" {print}'
 ```
 
-Healthy signal: `ok=True`, `severity=fixtures_stale_html_ok` (or `ok`), `live_standings_ok=true`. Exit codes other than `0` or `-15`/`-9` (running) on any job indicate a real failure to investigate.
+Healthy signal: `ok=True` with `severity` in {`ok`, `fixtures_stale_html_ok`, `offseason_dormant`, `html_blocked_data_current`}. **`live_standings_ok=false` is NOT a failure on its own** — under `html_blocked_data_current` it just means the live scraper is blocked while the served table is complete through the latest played matchweek (check `leagues_health[*].missing == 0`). Exit codes other than `0` or `-15`/`-9` (running) on any job indicate a real failure to investigate.
 
