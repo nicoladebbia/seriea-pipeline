@@ -17,6 +17,8 @@ matchday run, which is the whole reason these tests exist.
 """
 from __future__ import annotations
 
+import os
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -117,3 +119,35 @@ def test_appending_the_same_fixture_twice_does_not_duplicate_the_match(isolated)
     mu.update_matches_parquet(pairs, season="2025-2026", league="serie_a")
 
     assert len(pd.read_parquet(isolated)) == 1
+
+
+# --- Step 6d gate: when does player_metadata.json get rebuilt? -------------
+# Regression pin. The first version of this gate was `matches_fetched or not
+# path.exists()`. `matches_fetched` reads 0 on every observed run (EPL detection
+# is blind to matches already in the stat parquets), so that gate fired once and
+# then never again — the same shape of defect that left this file with no writer
+# at all from 2026-02-17. The stale-file test below is the true positive: it
+# FAILS against the fetch-only gate.
+
+
+def _age(tmp_path, days):
+    p = tmp_path / "player_metadata.json"
+    p.write_text("{}")
+    os.utime(p, (time.time() - days * 86400,) * 2)
+    return p
+
+
+def test_a_stale_file_is_refreshed_even_when_nothing_was_fetched(tmp_path):
+    assert mu._player_meta_needs_refresh(_age(tmp_path, 30), 0) is True
+
+
+def test_a_fresh_file_is_left_alone(tmp_path):
+    assert mu._player_meta_needs_refresh(_age(tmp_path, 0.5), 0) is False
+
+
+def test_a_missing_file_is_always_rebuilt(tmp_path):
+    assert mu._player_meta_needs_refresh(tmp_path / "nope.json", 0) is True
+
+
+def test_a_fetch_forces_a_refresh_even_when_the_file_is_fresh(tmp_path):
+    assert mu._player_meta_needs_refresh(_age(tmp_path, 0.1), 5) is True

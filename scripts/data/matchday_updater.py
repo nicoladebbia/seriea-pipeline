@@ -832,6 +832,27 @@ def _fallback_ingest_from_results(season: str | None = None) -> int:
 # 6. Main orchestrator
 # ---------------------------------------------------------------------------
 
+PLAYER_META_MAX_AGE_DAYS = 3.0
+
+
+def _player_meta_needs_refresh(path: Path, matches_fetched: int | None) -> bool:
+    """Should Step 6d rebuild ``player_metadata.json``?
+
+    Do NOT gate this on ``matches_fetched`` alone. That counter reads 0 on every
+    observed run — EPL detection is blind to matches already present in the stat
+    parquets — so a fetch-only gate fires once and then never again, which is how
+    this file sat frozen from 2026-02-17 with no writer at all. File age cannot go
+    silently false the way a detection counter can.
+    """
+    if matches_fetched:
+        return True
+    try:
+        age_days = (time.time() - path.stat().st_mtime) / 86400
+    except OSError:
+        return True  # missing or unreadable -> always rebuild
+    return age_days > PLAYER_META_MAX_AGE_DAYS
+
+
 def run_matchday_update(
     season: str | None = None,
     rebuild_features: bool = False,
@@ -986,7 +1007,10 @@ def run_matchday_update(
     # and it must run here: this file previously had no writer at all and sat
     # frozen from 2026-02-17, leaving every bio on /player stale and every
     # player who arrived after that date with no bio at all.
-    if summary.get("matches_fetched") or not (DATA_DIR / "features" / "player_metadata.json").exists():
+    if _player_meta_needs_refresh(
+        DATA_DIR / "features" / "player_metadata.json",
+        summary.get("matches_fetched"),
+    ):
         log.info("Step 6d: Refreshing player metadata...")
         try:
             from scripts.data.build_player_metadata import main as _write_player_meta
