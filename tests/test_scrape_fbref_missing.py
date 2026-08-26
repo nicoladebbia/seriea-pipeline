@@ -216,16 +216,19 @@ def test_nothing_missing_exits_zero_without_a_browser(season_dirs, monkeypatch):
     assert s.main(["--season", "2025-2026"]) == 0
 
 
-def test_a_cloudflare_wall_exits_zero(season_dirs, monkeypatch):
-    """refresh_weekly_data.py reads the exit code. A wall is FBref's posture,
-    not a broken job, and the caller's own comment says Sofascore covers the
-    results — so a red weekly job here would only train everyone to ignore it.
+def test_a_cloudflare_wall_with_gaps_exits_nonzero(season_dirs, monkeypatch):
+    """refresh_weekly_data.py reads the exit code. This test used to pin exit 0
+    ("a red weekly would train everyone to ignore it") — the first weekly of
+    2026-27 falsified that premise: the job went red anyway, as five parse
+    failures downstream, while this step printed OK over the true cause. The
+    FBref parquets have no other source, so zero recovered = failure, honestly
+    labelled at the step that knows why.
     """
     monkeypatch.setattr(
         s, "download",
         lambda *a, **k: {"downloaded": 0, "failed": 1, "status": "walled"},
     )
-    assert s.main(["--season", "2025-2026", "--headless"]) == 0
+    assert s.main(["--season", "2025-2026", "--headless"]) == 1
 
 
 def test_a_walled_first_page_stops_the_batch_instead_of_grinding(season_dirs, monkeypatch):
@@ -291,3 +294,35 @@ def test_importing_the_module_opens_no_browser():
         capture_output=True, cwd=pathlib.Path(__file__).parent.parent,
     )
     assert r.returncode == 0, r.stderr.decode()
+
+
+# --------------------------------------------------------------------------
+# Exit semantics: zero recovery while matches are missing is a failure
+# --------------------------------------------------------------------------
+# 2026-08-24, first weekly of the season: --headless fetched 0 of 8, exited 0
+# anyway, and the summary showed five parse failures instead of the one true
+# cause. The jul-16 "always exit 0" rationale assumed exit 0 would keep the job
+# green; it did not — the redness just moved downstream with the wrong label.
+
+
+def test_zero_downloads_without_the_wall_marker_is_still_a_failure(monkeypatch):
+    """A dead driver (0-byte responses) recovers nothing either -- the exit
+    code keys on what reached disk, not on which failure shape produced it."""
+    monkeypatch.setattr(s, "find_missing", lambda season: {"aaaa1111": "https://x/1"})
+    monkeypatch.setattr(
+        s, "download",
+        lambda *a, **k: {"downloaded": 0, "failed": 1, "status": "started"})
+    assert s.main(["--season", "2025-2026"]) == 1
+
+
+def test_partial_progress_is_success(monkeypatch):
+    """One flaky page must not page anyone; the incremental skip retries it."""
+    monkeypatch.setattr(
+        s, "find_missing",
+        lambda season: {"aaaa1111": "https://x/1", "bbbb2222": "https://x/2"})
+    monkeypatch.setattr(
+        s, "download",
+        lambda *a, **k: {"downloaded": 1, "failed": 1, "status": "ok"})
+    assert s.main(["--season", "2025-2026"]) == 0
+
+

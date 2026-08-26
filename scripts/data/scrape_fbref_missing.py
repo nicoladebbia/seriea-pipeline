@@ -34,15 +34,23 @@ job anyway.
 
 Why ``--headless`` probes instead of refusing
 ---------------------------------------------
-``refresh_weekly_data.py:100`` calls this with ``--headless``, which the table
+``refresh_weekly_data.py`` calls this with ``--headless``, which the table
 above shows cannot work. Rather than hardcode that verdict, the headless path
-fetches **one** page and reads the result: if the wall is there it logs what to
-run instead and exits 0; if Cloudflare ever relaxes, it just keeps going. A
-measurement each week beats a constant asserting what was true in July.
+fetches **one** page and reads the result: if the wall is there it reports and
+stops; if Cloudflare ever relaxes, it just keeps going. A measurement each week
+beats a constant asserting what was true in July.
 
-Exit 0 on a wall is deliberate and matches the caller, whose own comment says
-the Sofascore fallback covers the results either way. The job going red weekly
-for a known, unfixable-from-cron condition trains everyone to ignore it.
+Zero downloads while reports are missing exits **1** (changed 2026-08-26). The
+original exit-0-on-wall reasoned that a weekly red for an unfixable-from-cron
+condition trains everyone to ignore it -- but the first weekly of 2026-27
+falsified the premise: the job went red anyway, as five "No match HTMLs" parse
+failures downstream, while the one step that knew the true cause printed OK.
+The Sofascore fallback carries *results*; the five FBref parquets (player
+stats, lineups, events, keepers) have no other source, so an unrecovered gap
+is a real failure of this step and is labelled as one. The error names the
+exact visible-browser command that recovers it. Partial progress still exits
+0: one flaky page must not page anyone, and the incremental skip means the
+next run resumes exactly where this one stopped.
 
 The reused session wears out around ~100 fetches — re-run, don't re-engineer
 ----------------------------------------------------------------------------
@@ -351,18 +359,28 @@ def main(argv: list[str] | None = None) -> int:
 
     counts = download(args.season, missing, headless=args.headless, limit=args.limit)
 
-    if counts["status"] == "walled":
-        log.warning(
-            "Cloudflare Turnstile turned the headless browser away — as measured on "
-            "2026-07-16, this is expected and is not a code fault. %d Serie A reports "
-            "are still missing. To recover them, run WITHOUT --headless (a visible "
-            "browser passes in ~6s):\n"
+    if counts["downloaded"] == 0:
+        # Zero recovered while matches are missing is a FAILURE, whatever shape
+        # produced it (Turnstile wall, dead driver, site down). The jul-16
+        # exit-0-on-wall rationale assumed the 0 would keep the weekly green;
+        # 2026-08-24 falsified that -- the job went red anyway, as five parse
+        # failures downstream, with the true cause labelled "OK". The exit code
+        # keys on what reached disk, and the message carries the one command
+        # that actually recovers the gap.
+        log.error(
+            "0 of %d missing %s reports recovered%s. FBref's Turnstile blocks "
+            "headless browsers (measured 2026-07-16); a visible one passes in "
+            "~6s. Run on a logged-in desktop session:\n"
             "    python3 -m scripts.data.scrape_fbref_missing --season %s",
             len(missing), args.season,
+            " (Turnstile wall)" if counts["status"] == "walled" else "",
+            args.season,
         )
+        return 1
 
-    # Always 0: a Cloudflare wall is FBref's posture, not a broken job, and the
-    # caller's own comment says the Sofascore fallback carries the results.
+    if counts["failed"]:
+        log.warning("%d fetched, %d still missing — re-run resumes where it stopped.",
+                    counts["downloaded"], counts["failed"])
     return 0
 
 

@@ -151,8 +151,12 @@ def main() -> int:
 
     # --- Step 2: Download any new FBref match HTMLs (headless) ---
     # 300s, not the default 3600: FBref is Cloudflare-blocked weekly and this
-    # step otherwise hangs the full hour for nothing — the Sofascore fallback
-    # (step below) covers the data either way. Fail fast, move on.
+    # step otherwise hangs the full hour for nothing. Fail fast, move on.
+    # Since 2026-08-26 the fetcher exits 1 when it recovers nothing while
+    # reports are missing, so a wall shows up HERE, once, with the visible-
+    # browser recovery command in its stderr — not as five "No match HTMLs"
+    # parse failures downstream. Sofascore covers results/scores only; the
+    # four FBref parquets below have no other source.
     results["fbref_htmls"] = run(
         [py, "-m", "scripts.data.scrape_fbref_missing", "--season", CURRENT_SEASON, "--headless"],
         "FBref match HTML download",
