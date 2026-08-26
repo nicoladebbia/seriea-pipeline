@@ -289,7 +289,79 @@ for fname in (f"{base}.parquet", f"{base}_premier_league.parquet"):
 - **Fix**: `features/build.py::_seasons_to_enrich(feature_df, season)` — iterate the seasons **actually present in the frame**, not the config list. Each of these loops is already masked per season and no-ops on a season it has no rows for, so the present-seasons list is a free superset that never needs a rollover edit.
 - **Do NOT fix it by appending to `SEASONS`.** 23 non-test modules import that constant, including `scripts/analysis/backtest_unified.py` and `data_quality_report.py`. Pushing a 10-match partial season into all of them is a much larger, unaudited blast radius than the enrichment bug it would fix — and it re-arms the same trap next August.
 - **Detection**: `python3 -c "import pandas as pd; d=pd.read_parquet('data/features/features_serie_a.parquet'); cur=d[d.season==d.season.max()]; print(sorted(c for c in d.columns if cur[c].isna().all() and d[c].notna().mean()>0.5))"` — any column filled historically but wholly null in the newest season.
+- **Measured outcome (2026-08-25)**: after the fix AND a step-cache bust, Serie A 2026-2027
+  squad value went 0.0% -> 100.0% and odds 3.4% -> 54.1%. The fix alone was NOT enough:
+  `odds` and `market_data` are in the `never_cache` set so they recomputed every run, but a
+  later `[CACHE HIT]` step restored a stale frame and discarded them. See the
+  "I fixed a feature module, the rebuild logs success, and the parquet is byte-identical"
+  section below — you almost certainly need to read it before this fix will land.
 - **Prevention rule**: **never gate a per-season loop on `config.SEASONS`.** Derive the season list from the data in hand. A hand-maintained calendar constant is a time bomb with an annual fuse, and it fails *silently* — the skipped season looks exactly like a season with no data.
+
+### Symptom: "I fixed a feature module, the rebuild logs success, and the parquet is byte-identical"
+
+The single most expensive trap in this repo. Three commits sat inert for a full
+session because of it. **Two independent defects in `features/build.py`'s step cache,
+either of which alone silently discards your work.**
+
+**Defect A — a cache hit REPLACES THE WHOLE FRAME, so it undoes earlier steps in the
+same run.** Each step's cache parquet stores the *entire cumulative feature frame* as
+of that step (~16 MB, same size as the output), and `build()` applies it as:
+```python
+cached_df = self._load_cache(plugin)
+state.feature_df = cached_df          # wholesale replacement, NOT a merge
+```
+So a step that recomputes at position 46 has its output thrown away by the very next
+`[CACHE HIT]` at 47, which restores a snapshot taken weeks earlier. **The final file is
+whatever the LAST cached step snapshotted** — everything before it is decorative.
+This makes the `never_cache` set (`odds`, `market_data`, `pivot_to_match_level`,
+`backfill_managers`, `backfill_referees`, `manager_h2h_noop`) actively misleading:
+those steps really do recompute every run, and their work is really discarded every
+run, unless every step after them also recomputes. Measured 2026-08-25: `_add_market_data`
+demonstrably turned 2026-27 squad value from 0% → 100% when called directly on the saved
+frame, while the full build left it at 0%, because steps 47–58 were all cache hits.
+
+**Defect B — the fingerprint is blind to the code you actually edited.** `_source_fingerprint`
+hashes `inspect.getsource(plugin.apply)` plus the `data_inputs` mtime+size manifest.
+But **46 of 59 plugins are two-line wrappers that delegate to a `features/*.py` module**,
+and the callee's source is not hashed. Editing `features/missing_players.py` changes
+nothing the fingerprint can see. Worse, `data_inputs` is hand-declared and frequently
+names the wrong files: `missing_players_match_time` and `first_half_splits` both declared
+`player_match_stats.parquet` / `match_team_stats.parquet` while the modules actually read
+the raw `data/external/sofascore/matches*/` JSON trees and their own `data/parsed/*.parquet`
+caches — none of it declared. 32 of those 46 delegating plugins declare **no** `data_inputs`
+at all. Net effect: a feature-module edit invalidates nothing, and the cache only ever
+refreshes by luck, when an unrelated scrape happens to touch a declared file.
+
+**Do NOT "fix" this by declaring the derived `data/parsed/*.parquet` as a `data_input`** —
+that deadlocks. The module's own self-refresh runs *inside* `apply()`, which the cache
+check short-circuits *before* it runs, so the parquet never updates and the fingerprint
+never changes.
+
+**What to do when a feature-module fix must land:**
+1. Delete the step's cache pair by hand — both `<step>_v<ver>.parquet` **and**
+   `<step>_v<ver>.fingerprint` — under `data/cache/features/<league>/`, for **every**
+   league. Bumping the plugin's `version` string works too and is more honest.
+2. Because of Defect A, deleting one step is not enough if any *later* step is cached.
+   Either delete every step from yours to the end of the order, or rebuild with
+   `use_cache=False`.
+3. **Verify by measuring the output file, never by reading the build log.** `[computed]`
+   in the log does not mean the value survived to disk. Diff the parquet before/after
+   and assert the specific columns moved.
+
+**Detection**: compare a module's git mtime against its step's `.fingerprint` mtime, and
+sanity-check that the fill% you expect is actually in the parquet:
+```bash
+for f in data/cache/features/serie_a/*.fingerprint; do
+  echo "$(stat -f '%Sm' -t '%m-%d %H:%M' "$f")  $(basename "$f" .fingerprint)"
+done | sort
+```
+Any fingerprint older than your edit to the module it wraps is a stale step.
+
+**Prevention rule**: **a step cache that stores the whole frame and replaces it on hit is
+not a cache, it is a checkpoint — and checkpoints must be all-or-nothing.** Until the
+cache stores only the columns its step adds and *merges* them, treat a partial rebuild as
+unsound: the only trustworthy full rebuild is `use_cache=False`. And **never trust
+`[computed]` in the log as evidence a value reached the parquet** — the diff is the evidence.
 
 ### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
 
