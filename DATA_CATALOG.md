@@ -1214,9 +1214,22 @@ match_us = mapping.merge(
 
 ### Recipe 4: Per-player stats for a specific match
 
-As of the 2026-07-17 re-key, `player_stats.parquet` is **canonical-keyed for every
-season** (2025-26 was re-keyed from FBref hash → canonical; the writer now builds the
-canonical id directly). Join on the canonical `match_id` — no hash dance needed:
+As of the **2026-08-26** re-key, `player_stats.parquet` and `goalkeeper_stats.parquet`
+are canonical-keyed for every season. Join on the canonical `match_id` — no hash dance
+needed:
+
+> ⚠️ This section previously claimed "canonical-keyed for every season" as of the
+> 2026-07-17 re-key. That was **false**: 2026-07-17 only re-keyed 2025-26, the season
+> that was visibly broken at the time. Seasons **2017-18 → 2023-24 stayed 100%
+> hash-keyed** for another 13 months. Nothing raised, because a hash-vs-canonical
+> mismatch does not error — `merge(on="match_id")` returns no rows and the feature
+> columns come out silently NaN. Cost: `adv_roll5_*` (76 cols), `tagg_roll5_*` (52) and
+> player_impact's key-player block (8) were **0% filled for all seven seasons**, i.e.
+> every season of the 2017+ training window except the last two. The families that
+> aggregate to (season, team) instead of joining per match — `fb_roll_*`, `lineup_*`,
+> suspensions — were unaffected, which is exactly why the gap looked like "sparse
+> historical data" rather than a bug. Re-keyed by
+> `scripts/data/rekey_legacy_hash_ids.py` (idempotent, safe to re-run).
 
 ```python
 players = pd.read_parquet('data/parsed/player_stats.parquet')

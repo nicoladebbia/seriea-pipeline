@@ -74,6 +74,14 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - ⚠️ **`market_value` is display-only — never a training feature.** Sofascore's `proposedMarketValueRaw` is the valuation served when the JSON was last fetched, not as of that kickoff, so a backfilled 2019 match carries today's number. `market_value_as_of` stamps the source match date.
 - ⚠️ **`age` in the file is a convenience copy.** Storing a computed age is what made the old file rot; derive from `date_of_birth`.
 
+#### 🔧 `scripts/data/rekey_legacy_hash_ids.py` — grade A · keep (idempotent one-shot)
+- **Does:** Rewrites legacy FBref-hash `match_id`s (`0005cd5f`) to the canonical `{date}_{home}_{away}` in `data/parsed/player_stats.parquet` and `goalkeeper_stats.parquet`. Dry-run by default; `--apply` writes. Safe to re-run — rows already canonical are skipped.
+- **Talks to:** imports `storage.paths.parsed_path`, pandas. No importers (CLI one-shot). Reads+writes the two parquets above, atomically via tmp+`os.replace`.
+- **Why it exists:** the writer keyed rows by `html_path.stem`, and FBref saves reports as `{hash}.html`. The 2026-07-17 fix repaired the writer and re-keyed only 2025-26; **2017-18 → 2023-24 stayed 100% hash-keyed for another 13 months**. A hash-vs-canonical mismatch never raises — `merge(on="match_id")` just returns nothing — so `adv_roll5_*` (76 cols), `tagg_roll5_*` (52) and player_impact's key-player block (8) were 0% filled for seven of the nine seasons in the training window, while the (season, team)-aggregating families next to them looked fine.
+- **To re-key any other parquet the old stem-keyed writer fed, the file is this one.** `goalkeeper_stats` has no `match_date` of its own and is served by the donor map derived from `player_stats` (same 2,640 ids, verified).
+- **Quality signals:** explicit home/away merge rather than groupby-apply, refuses to write below a 90% reconstruction floor, never mints a half-built id from a blank field, only ever touches hash-shaped ids; 12 tests in `tests/test_rekey_legacy_hash_ids.py`, each verified to fail against a mutated implementation (donor-overrides-local, no blank guard, no hash filter, one-sided-match accepted).
+- ⚠️ **A canonical id is authoritative even when the frame's own columns disagree with it.** Never "correct" one from the row — `matches.parquet` owns that id.
+
 ### `cli.py/` — 1 files
 
 #### 🟢 `cli.py` — grade B · keep
