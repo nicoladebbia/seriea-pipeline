@@ -4789,14 +4789,45 @@ _Same schema, Serie A + EPL combined._
 
 ### `data/features/player_metadata.json`
 
-_Player roles, positions, league membership._
+_Per-player bio: date of birth, height, nationality, market value, position._
 
-- **Format:** JSON  
-- **Size:** 454.6KB  
-- **Modified:** 2026-02-17 23:06  
-- **Type:** dict  
-- **Top-level keys:** 2701  
-- **Keys:** `['38618', '844480', '295133', '126816', '44104', '369866', '5465', '814624', '253367', '80802', '235672', '25577', '232224', '2979', '816837', '43985', '830551', '27912', '835600', '829581']` ...  
+- **Format:** JSON, `{sofascore_player_id: {...}}`
+- **Size:** 1055.0KB
+- **Players:** 4,933 (both leagues, 2017-18 → current)
+- **Written by:** `scripts/data/build_player_metadata.py` — walks the Sofascore
+  match JSONs (`data/external/sofascore/matches{,_premier_league}/*/*.json`)
+  and collapses every appearance into one record per player. No network access.
+- **Refreshed by:** `scripts/data/matchday_updater.run_matchday_update` Step 6d,
+  whenever new matches are ingested (~6s).
+- **Read by:** `web/app.py:api_player_detail` + `api_players` → the bio block on
+  `/player/<team>/<name>` (`player.html`).
+- **Fields:** `date_of_birth` (ISO, 100%), `height` (cm, 97.0%), `nationality` +
+  `country_code` (100%), `market_value` + `market_value_currency` +
+  `market_value_as_of` (86.0%), `name`, `position`, `age`.
+
+**`age` is a convenience copy — derive from `date_of_birth` instead.** An age int
+is correct only on the day it is written. Readers use `web/app.py:_player_age`,
+which computes it live.
+
+**`market_value` is display-only and must never become a training feature.** It
+comes from Sofascore's `proposedMarketValueRaw`, which is the valuation served
+when that match JSON was last *fetched*, not the valuation as of that kickoff —
+match JSONs are rewritten after the fact, so a backfilled 2019 match would carry
+today's number. `market_value_as_of` records the match date it was taken from.
+
+**Conflict rule: last non-null wins, walking oldest match first.** Sofascore
+corrects records over time (measured: `Honest Ahanor` served as Italy in older
+JSONs and Nigeria in newer; `Lorenzo Palmisani` height corrected 196 → 185), so
+the newest match carries the truth — but a later match that merely *omits* a
+field must never erase it. Pinned by `tests/test_player_metadata_build.py`.
+
+**History — this file had NO WRITER until 2026-08-26.** It was a one-shot
+artifact dated 2026-02-17 that `web/app.py` read and nothing maintained. At the
+time it was regenerated it held 2,701 players and covered **53.3%** of
+current-era players (Serie A only — the EPL was entirely absent); **1,432 of its
+ages were wrong**, 408 market values stale, and 41 Serie A 2026-27 players had
+no bio at all and rendered blank. Post-fix: 4,933 players, **100%** current-era
+coverage, 0 players lost.
 
 ---
 

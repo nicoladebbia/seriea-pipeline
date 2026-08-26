@@ -981,6 +981,21 @@ def run_matchday_update(
             log.error("Failed to settle bets: %s", e)
             summary["bets_settled"] = None
 
+    # Step 6d: refresh the player bio metadata the player detail page reads.
+    # Cheap (~6s, no network — it re-walks the match JSONs just fetched above)
+    # and it must run here: this file previously had no writer at all and sat
+    # frozen from 2026-02-17, leaving every bio on /player stale and every
+    # player who arrived after that date with no bio at all.
+    if summary.get("matches_fetched") or not (DATA_DIR / "features" / "player_metadata.json").exists():
+        log.info("Step 6d: Refreshing player metadata...")
+        try:
+            from scripts.data.build_player_metadata import main as _write_player_meta
+            summary["player_metadata_refreshed"] = _write_player_meta() == 0
+        except Exception as e:  # noqa: BLE001 — cosmetic bio refresh; must never
+            # fail the matchday update that already wrote the parquets above.
+            log.error("Failed to refresh player metadata: %s", e)
+            summary["player_metadata_refreshed"] = False
+
     elapsed = round(time.time() - t0, 1)
     summary["elapsed_seconds"] = elapsed
 

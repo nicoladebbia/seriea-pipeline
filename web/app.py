@@ -9408,6 +9408,26 @@ def api_match_detail(date, home_team, away_team):
 # Players Pages
 # ---------------------------------------------------------------------------
 
+def _player_age(pm: dict):
+    """Age from ``player_metadata.json``, derived live from date of birth.
+
+    The stored ``age`` int is only correct on the day the metadata file was
+    written — that is what left every bio on this page a birthday stale while
+    the file sat unregenerated from 2026-02-17 to 2026-08-26. Derive from
+    ``date_of_birth`` whenever it is present and fall back to the stored int
+    only for records that predate it.
+    """
+    dob = (pm or {}).get("date_of_birth")
+    if dob:
+        try:
+            born = datetime.strptime(str(dob)[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return pm.get("age")
+        today = datetime.now(timezone.utc).date()
+        return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    return (pm or {}).get("age")
+
+
 @app.route("/players")
 def players_page():
     """Render players overview page."""
@@ -9550,8 +9570,8 @@ def api_players():
                 pid = str(int(player_rows["player_id"].iloc[0]))
                 pm = player_metadata.get(pid, {})
                 if pm:
-                    if not entry["age"] and pm.get("age"):
-                        entry["age"] = pm["age"]
+                    if not entry["age"]:
+                        entry["age"] = _player_age(pm)
                     if not entry["nationality"] and pm.get("nationality"):
                         entry["nationality"] = pm["nationality"]
                     if not entry["market_value"] and pm.get("market_value"):
@@ -9740,14 +9760,18 @@ def api_player_detail(team_name, player_name):
         pid = str(int(player_rows["player_id"].iloc[0]))
         pm = player_metadata.get(pid, {})
         if pm:
-            if not result["player"].get("age") and pm.get("age"):
-                result["player"]["age"] = pm["age"]
+            if not result["player"].get("age"):
+                result["player"]["age"] = _player_age(pm)
             if not result["player"].get("nationality") and pm.get("nationality"):
                 result["player"]["nationality"] = pm["nationality"]
             if pm.get("height"):
                 result["player"]["height"] = pm["height"]
             if pm.get("market_value"):
                 result["player"]["market_value"] = pm["market_value"]
+                # Stamped, because proposedMarketValueRaw is the value Sofascore
+                # served when that match JSON was last fetched — not the value as
+                # of that kickoff. Display-only; never a training feature.
+                result["player"]["market_value_as_of"] = pm.get("market_value_as_of")
 
     # --- Career xG profile ---
     xg_profiles = _load_json(DATA_DIR / "features" / "player_xg_profiles.json", {})

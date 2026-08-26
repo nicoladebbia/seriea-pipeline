@@ -65,6 +65,15 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** content-owned key (`source_url` deliberately excluded — it carries a forum `post_id` that would reset lifetimes), atomic tmp+replace writes, injectable clock + `tm_dir` for tests, 19 tests in `tests/test_rumor_history.py` all exercising state *transitions* rather than steady state.
 - ⚠️ **Consumers must call `annotate_status()`, not compare `last_seen` directly** — a stale `last_seen` means either "dropped" or "scraper was blind", and only `last_covered_at` separates them.
 
+#### 🟢 `scripts/data/build_player_metadata.py` — grade A · keep
+- **Does:** Rebuilds `data/features/player_metadata.json` — per-player bio (date of birth, height, nationality, market value, position) for both leagues — by walking the Sofascore match JSONs already on disk. No network access. Exists because that file previously had **no writer at all**: a one-shot artifact dated 2026-02-17 that `web/app.py` read and nothing maintained, leaving 1,432 wrong ages, 408 stale market values, and 41 current Serie A players with a blank bio.
+- **Talks to:** imported_by: `scripts/data/matchday_updater.run_matchday_update` (Step 6d, gated on `matches_fetched`); imports: pandas, `storage.paths.DATA_DIR`. Reads `data/external/sofascore/matches{,_premier_league}/*/*.json` + the two `player_match_stats*.parquet` (match dates only); writes `data/features/player_metadata.json` atomically.
+- **Consumed by:** `web/app.py:api_player_detail` and `api_players` → the bio block on `/player/<team>/<name>`.
+- **To change what bio a player page shows, the file is this one.** To change how age is *rendered*, it is `web/app.py:_player_age`.
+- **Quality signals:** content-owned key (`sofascore_player_id`, not position/order), atomic tmp+replace write, refuses to overwrite on an empty extraction, deterministic date-ordered walk, 8 tests in `tests/test_player_metadata_build.py` — all exercising state transitions (a correction landing, a thin JSON not erasing, idempotence) and each verified to fail against a mutated implementation.
+- ⚠️ **`market_value` is display-only — never a training feature.** Sofascore's `proposedMarketValueRaw` is the valuation served when the JSON was last fetched, not as of that kickoff, so a backfilled 2019 match carries today's number. `market_value_as_of` stamps the source match date.
+- ⚠️ **`age` in the file is a convenience copy.** Storing a computed age is what made the old file rot; derive from `date_of_birth`.
+
 ### `cli.py/` — 1 files
 
 #### 🟢 `cli.py` — grade B · keep
