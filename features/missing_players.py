@@ -98,27 +98,6 @@ def _parse_match_json(path: Path) -> dict | None:
     return out
 
 
-def _load_key_player_ids() -> dict[str, set[int]]:
-    """Per (team, season), top-N xG contributors' Sofascore player IDs.
-
-    Used to tag "key player missing" — a missing bottom-of-bench reserve
-    doesn't matter; a missing top-scorer does.
-    """
-    if not PLAYER_STATS_PATH.exists():
-        return {}
-    ps = pd.read_parquet(PLAYER_STATS_PATH)
-    if "xg" not in ps.columns:
-        return {}
-    ps = ps.dropna(subset=["team", "season"]).copy()
-    # Top-10 xG per team-season
-    top = (
-        ps.groupby(["team", "season"], observed=True)
-        .apply(lambda g: g.sort_values("xg", ascending=False).head(10)["player_id"].dropna().astype(int).tolist(), include_groups=False)
-        .to_dict()
-    )
-    return {k: set(v) for k, v in top.items()}
-
-
 def _walk_match_jsons(seen: dict[str, float] | None = None) -> pd.DataFrame:
     """Parse Sofascore match JSONs -> one row per (sofascore_id, match).
 
