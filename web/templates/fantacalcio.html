@@ -1000,31 +1000,45 @@
       if (i % 3 === 0) paintPlan(S);
       setTimeout(passWalkaway, 0);
     }
+    // Chains are a JOINT assignment, not per-slot lists. Computed independently they
+    // all name the same next-best man -- on the 2026-08-26 board Spinazzola was the
+    // first fallback of FOUR defender slots at once, four IOUs written against one
+    // player. So every claimed fallback is banned from every other chain, depth-major:
+    // each slot claims its primary before any slot gets a second name (if N slots fail
+    // together, each grabs its primary -- depth 2 only matters after further losses).
+    // Claim priority = need_loss: the slot that hurts most to lose picks first.
+    const claimed = new Set();
+    const chainOrder = picks.slice().sort((a, b) =>
+      ((LIVE_NEED.get(b.id) || {}).loss || 0) - ((LIVE_NEED.get(a.id) || {}).loss || 0));
+    const steps = [];
+    for (let k = 0; k < 3; k++) chainOrder.forEach(p => steps.push({ p: p, k: k }));
     function passChains() {
       if (token !== needToken) return;
-      if (j >= picks.length) { paintPlan(S); return; }
-      const p = picks[j++];
-      const banned = [p.id], chain = [];
-      for (let k = 0; k < 3; k++) {
-        banned.forEach(id => gone.add(id));
+      if (j >= steps.length) { paintPlan(S); return; }
+      const p = steps[j].p, k = steps[j].k; j++;
+      const cur = LIVE_NEED.get(p.id) || { loss: 0 };
+      if (!cur.alts) cur.alts = [];
+      if (cur.alts.length === k) {          // chain still alive at this depth
+        const banned = new Set(claimed); banned.add(p.id);
+        const added = [];
+        banned.forEach(id => { if (!gone.has(id)) { gone.add(id); added.push(id); } });
         const st = solve();
         const fresh = st.ok ? (st.picks[p.R] || []).filter(
-          x => !baseIds.has(x.id) && banned.indexOf(x.id) < 0) : [];
-        let cap = null, pick = null;
+          x => !baseIds.has(x.id) && !banned.has(x.id)) : [];
+        let entry = null;
         if (fresh.length) {
-          pick = fresh.slice().sort((x, y) => y.pts - x.pts)[0];
+          const pick = fresh.slice().sort((x, y) => y.pts - x.pts)[0];
           // Only the FIRST fallback gets an exact cap -- he is the one you would actually
           // be bidding on next. Solving all three costs seconds for information you would
-          // only reach after losing two players.
-          if (k === 0) cap = waExact(pick);
+          // only reach after losing two players. Computed BEFORE the banned ids leave
+          // `gone`: the cap means "his walk-away once the man he replaces is lost" -- on
+          // the base board he is not in the squad at all and the search returns 0.
+          const cap = k === 0 ? waExact(pick) : null;
+          entry = { p: pick, cap: cap, loss: st.ok ? S.score - st.score : 0 };
         }
-        banned.forEach(id => gone.delete(id));
-        if (!pick) break;
-        chain.push({ p: pick, cap: cap, loss: st.ok ? S.score - st.score : 0 });
-        banned.push(pick.id);
+        added.forEach(id => gone.delete(id));
+        if (entry) { cur.alts.push(entry); claimed.add(entry.p.id); }
       }
-      const cur = LIVE_NEED.get(p.id) || { loss: 0 };
-      cur.alts = chain;
       LIVE_NEED.set(p.id, cur);
       if (j % 3 === 0) paintPlan(S);
       setTimeout(passChains, 0);
