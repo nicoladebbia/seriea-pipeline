@@ -839,6 +839,33 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     return summary
 
 
+def _nag_vpn_for_betfair() -> None:
+    """Telegram nag when Betfair is unreachable at T-30 — at most once per day.
+
+    On the campus network Betfair only resolves with the VPN up; the exchange
+    snapshot is the CLV close, so a missed one is worth a push. The daily
+    marker file keeps a multi-match evening from repeating the nag.
+    """
+    try:
+        from datetime import date
+        marker = Path("data/pipeline/betfair_vpn_nag.txt")
+        today = date.today().isoformat()
+        if marker.exists() and marker.read_text().strip() == today:
+            return
+        from scripts.pipeline.notify import notify
+        notify(
+            "Hey — I really need you to turn the VPN ON on this computer. "
+            "Betfair is not reachable, so the exchange snapshot (CLV close) "
+            "is being skipped for tonight's matches.",
+            title="Turn the VPN on — Betfair unreachable",
+            level="warning", category="alert", priority="urgent",
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(today)
+    except Exception as e:  # noqa: BLE001 — a nag must never break pre-kickoff
+        log.debug("VPN nag failed: %s", e)
+
+
 def run_pre_kickoff(bankroll: float = 1000.0):
     """Run a focused pre-kickoff pipeline for imminent matches.
 
@@ -936,6 +963,27 @@ def run_pre_kickoff(bankroll: float = 1000.0):
             _archive_bets(report["bets"], report.get("generated_at", ""))
     except Exception as e:
         print(f"  Betting engine warning: {e}")
+
+    # Step 5b: Betfair exchange snapshot at T-30 — the exchange close is the
+    # sharpest public line, so this is the CLV benchmark captured at the moment
+    # bets commit, plus the dashboard price-comparison refresh. Data layer
+    # only; degrades to a clean skip (no creds / expired token / network down)
+    # and must never block the pre-kickoff flow. On campus, Betfair is only
+    # reachable with the VPN up — 0 markets at T-30 (matches are imminent by
+    # definition here) means unreachable, so nag via Telegram, once per day.
+    try:
+        from scripts.data.betfair_feed import fetch_match_odds
+        from scripts.betting.betfair_to_comparison import main as _betfair_bridge
+        n_bf = fetch_match_odds()
+        if n_bf > 0:
+            _betfair_bridge()
+            print(f"  Betfair exchange snapshot refreshed ({n_bf} markets)")
+        else:
+            print(f"  Betfair snapshot skipped (unreachable or no session)")
+            _nag_vpn_for_betfair()
+    except Exception as e:
+        print(f"  Betfair snapshot skipped: {e}")
+        _nag_vpn_for_betfair()
 
     elapsed = time.time() - start_time
     banner(f"PRE-KICKOFF COMPLETE ({elapsed:.1f}s)")
