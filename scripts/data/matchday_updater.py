@@ -729,6 +729,87 @@ def update_matches_parquet(
 
 
 # ---------------------------------------------------------------------------
+# 5b-pre. Backfill: ground-truth rows for matches whose stats already exist
+# ---------------------------------------------------------------------------
+
+def backfill_matches_parquet(
+    season: str | None = None,
+    league: str = "serie_a",
+    dry_run: bool = False,
+) -> dict:
+    """Write matches.parquet rows for played fixtures that never got one.
+
+    detect_new_matches() diffs the fixture list against the STAT parquets, so a
+    match whose stats were scraped while the ground-truth append was broken (the
+    2026-03..08 EPL starvation) is invisible to it forever: the stats exist, the
+    matches.parquet row does not, and "0 new" looks exactly like health. This
+    keys the diff on matches.parquet itself — the artifact actually missing
+    rows — and rebuilds each missing row from the per-match JSON already on
+    disk, so it needs no network. Idempotent: update_matches_parquet dedups on
+    (home_team, away_team, match_date, season) with keep="first".
+    """
+    if season is None:
+        season = get_current_season()
+
+    fixtures = _load_fixtures(season, league)
+    finished = [f for f in fixtures if f.get("status", {}).get("type") == "finished"]
+    summary = {"league": league, "season": season, "finished_fixtures": len(finished),
+               "missing": 0, "no_json": 0, "rows_added": 0}
+    if not finished:
+        log.warning("[%s] No finished fixtures in cache for %s — nothing to backfill",
+                    league, season)
+        return summary
+
+    existing: set = set()
+    if MATCHES_PARQUET.exists():
+        gt = pd.read_parquet(
+            MATCHES_PARQUET, columns=["match_date", "home_team", "away_team", "league"]
+        )
+        gt = gt[gt["league"] == league]
+        existing = set(zip(gt["match_date"].astype(str).str[:10],
+                           gt["home_team"], gt["away_team"]))
+
+    json_dir = SOFASCORE_DIR / f"matches{_league_suffix(league)}" / season
+    pairs: list[tuple[dict, dict]] = []
+    for f in finished:
+        ts = f.get("startTimestamp")
+        home = normalize_team(f.get("homeTeam", {}).get("name", ""))
+        away = normalize_team(f.get("awayTeam", {}).get("name", ""))
+        if not (ts and home and away):
+            continue
+        # Same key derivation as update_matches_parquet — the two MUST agree.
+        date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        if (date, home, away) in existing:
+            continue
+        summary["missing"] += 1
+        jp = json_dir / f"{f.get('id')}.json"
+        if not jp.exists():
+            summary["no_json"] += 1
+            log.warning("[%s] %s %s vs %s missing from ground truth but no JSON on "
+                        "disk (%s) — the normal API path will pick it up",
+                        league, date, home, away, jp)
+            continue
+        try:
+            with open(jp) as fh:
+                match_data = json.load(fh)
+        except (OSError, ValueError) as e:
+            summary["no_json"] += 1
+            log.warning("[%s] unreadable match JSON %s: %s", league, jp, e)
+            continue
+        pairs.append((match_data, f))
+        log.info("[%s] backfill: %s %s vs %s (id=%s)", league, date, home, away, f.get("id"))
+
+    if dry_run or not pairs:
+        log.info("[%s] %s: %d missing, %d with JSON on disk%s", league, season,
+                 summary["missing"], len(pairs),
+                 " (dry run — nothing written)" if dry_run else "")
+        return summary
+
+    summary["rows_added"] = update_matches_parquet(pairs, season, league=league)
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # 5b. Fallback: ingest from results.json when Sofascore is unavailable
 # ---------------------------------------------------------------------------
 
@@ -1074,6 +1155,11 @@ Examples:
     parser.add_argument("--league", type=str, default=None,
                         help="Comma-separated leagues to update (default: serie_a,premier_league). "
                              "E.g. --league serie_a or --league serie_a,premier_league")
+    parser.add_argument("--backfill", action="store_true",
+                        help="Diff finished fixtures against matches.parquet (not the stat "
+                             "parquets) and rebuild missing ground-truth rows from match "
+                             "JSONs already on disk. No network. Honors --season, --league, "
+                             "--dry-run. Idempotent.")
 
     args = parser.parse_args()
 
@@ -1090,6 +1176,14 @@ Examples:
     leagues = None
     if args.league:
         leagues = [l.strip() for l in args.league.split(",") if l.strip()]
+
+    if args.backfill:
+        results = [
+            backfill_matches_parquet(season=args.season, league=lg, dry_run=args.dry_run)
+            for lg in (leagues or ["serie_a", "premier_league"])
+        ]
+        print(json.dumps(results, indent=2, default=str))
+        return
 
     summary = run_matchday_update(
         season=args.season,
