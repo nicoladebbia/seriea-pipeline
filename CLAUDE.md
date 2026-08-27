@@ -416,6 +416,49 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   it by calling the one existing helper rather than re-implementing the naming convention —
   the repo had a correct, well-documented deriver the whole time and three call sites ignored it.
 
+### Symptom: "predictions.json contains the OTHER league's matches" / "Data Validation Warning repeats twice a day forever"
+
+- **What you'll see** (found 2026-08-27, the day before SA go-live): `predictions.json` had 32
+  rows — 14 Serie A + 18 EPL fixtures, ALL tagged `league: serie_a`. The validator caught it
+  within hours as `odds_full.json: missing 18/32 prediction matches` and said so twice a day
+  for 3 days; the repetition trained the reader to ignore it.
+- **Why — three stacked defects**:
+  1. `predict_unified.load_upcoming_matches()` absorbed the Sofascore fixture files (which
+     carry BOTH leagues) with a date filter but **no league filter** — a regression from the
+     2026-08-24 stale-fixtures fix. Its non-SA sibling `_load_league_matches` filtered; the
+     SA branch didn't. **Diff the sibling.**
+  2. The engine stamps every prediction with the RUN's league → EPL rows became `serie_a`.
+  3. `betting_unified.load_predictions()` gates **per FILE**: predictions.json passes as
+     serie_a wholesale, and `load_odds_full()` merges ALL leagues' odds — so gated-league
+     EPL matches were priceable and bettable as Serie A, at SA's looser Kelly.
+- **Fix**: league guard in `_absorb` (predict_unified), foreign-league drop + warning at the
+  engine choke point (`run_ensemble_predictions`), per-league pairs in
+  `_check_cross_coverage`. Regression test: `test_epl_fixture_never_enters_the_serie_a_loader`.
+- **Prevention rules**: **a per-file betting gate is only as safe as the file's homogeneity —
+  any multi-league source feeding a per-league gate needs a row-level league check at the
+  choke point.** And **a validation warning that fires unchanged twice a day is not noise to
+  silence, it is a finding to READ** — dedup the alert (now signature-gated in
+  run_full_pipeline: notifies only when the critical-issue SET changes, state cleared on
+  recovery), never mute the check.
+
+### Symptom: "Telegram is ~11 messages/day of machine status" (fixed 2026-08-27)
+
+- **Measured** (notification_history.jsonl, 18 days): 200 sends — 77 Health (count-churn
+  re-alerts: `missing 18/32` → `17/31` minted a fresh issue key every 30-min cycle), 37
+  routine "✅ pipeline done" cards, 36 repeated validation warnings, 35 "N parlay picks
+  ready" (against the Jun-15 parlay guardrail).
+- **Fix**: `_issue_key` now collapses EVERY number (catch-all `\d+` → N); transient window
+  45→120 min (monitor cycle is 30); routine-success scheduler cards persist state but don't
+  send; dry-day pipeline cards don't send; parlay push removed (user decision — /parlays
+  still answers); 6 dead notify builders deleted; quiet hours 23:00–07:00 enabled (alert+live
+  bypass; overnight routine messages are DROPPED on Telegram not queued — the 09:00 digest
+  covers them; macOS unaffected). Tests: `tests/test_notify_dedup.py`.
+- **Prevention rule**: **the history file logs the macOS fallback `message`, NOT the
+  `tg_html` Telegram actually renders** — judge Telegram content from the builder code, and
+  judge VOLUME from the history. And **an alert channel averaging 4+ machine-status pings a
+  day is a broken alert channel** — every new notify call site must say what changed and fire
+  only on change.
+
 ### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
 
 - **Why**: `features_quality` check flags any column >90% NaN unless its prefix is in `SPARSE_PREFIXES`. New feature families (e.g. `home_fh_*` first-half rollups, `home_xg_share_*` zone xG) weren't allowlisted.

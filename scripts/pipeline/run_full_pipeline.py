@@ -2210,12 +2210,9 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         else:
             print(f"  Cached: {parlay_report['total_parlays']} parlays (inputs unchanged)")
 
-        # Notify parlays ready (skips if not regenerated)
-        try:
-            from scripts.pipeline.notify import notify_parlays_ready
-            notify_parlays_ready(parlay_report=parlay_report)
-        except Exception:
-            pass
+        # No Telegram push for parlays (2026-08-27, user decision): a twice-daily
+        # "N parlay picks ready" nudge worked against the Jun-15 parlay guardrail.
+        # Parlays stay computed and visible via /parlays and the dashboard.
     except Exception as e:
         print(f"  Parlay generator warning: {e}")
         log.warning(f"Parlay generator error: {e}")
@@ -2632,19 +2629,44 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         if n_crit:
             print(f"\n  ⚠️  {n_crit} CRITICAL issues found — check logs!")
             try:
-                from scripts.pipeline.notify import notify
-                notify(
-                    f"Pipeline completed but {n_crit} data issues detected: "
-                    + "; ".join(validation["critical"][:3]),
-                    title="Data Validation Warning",
-                    level="warning",
-                )
+                # Notify only when the ISSUE SET changes. Re-announcing the
+                # same standing condition twice a day trained the reader to
+                # ignore it — the Aug-24 league leak sat in exactly such a
+                # repeated warning for 3 days.
+                import hashlib
+                sig = hashlib.md5(
+                    "\n".join(sorted(validation["critical"])).encode()
+                ).hexdigest()
+                sig_path = Path("data/pipeline/validation_alert_state.json")
+                prev_sig = None
+                try:
+                    prev_sig = json.loads(sig_path.read_text()).get("sig")
+                except (OSError, ValueError):
+                    pass
+                if sig != prev_sig:
+                    from scripts.pipeline.notify import notify
+                    notify(
+                        f"Pipeline completed but {n_crit} data issue(s) detected: "
+                        + "; ".join(validation["critical"][:3]),
+                        title="Data Validation Warning",
+                        level="warning",
+                    )
+                    sig_path.parent.mkdir(parents=True, exist_ok=True)
+                    sig_path.write_text(json.dumps(
+                        {"sig": sig, "issues": validation["critical"][:10],
+                         "updated": datetime.now().isoformat(timespec="seconds")}))
             except Exception:
                 pass
         elif n_warn:
             print(f"\n  {n_warn} warnings (non-critical)")
         else:
             print("\n  All checks passed ✓")
+        if not n_crit:
+            # Recovered: clear the alert signature so a recurrence re-alerts.
+            try:
+                Path("data/pipeline/validation_alert_state.json").unlink(missing_ok=True)
+            except OSError:
+                pass
     except Exception as e:
         log.warning("Data validation skipped: %s", e)
 

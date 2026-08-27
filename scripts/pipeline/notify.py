@@ -1778,14 +1778,6 @@ def notify_retrain(mode: str, matchweek: int, promoted: bool,
     return notify(msg, title=title, level=level, category="retrain")
 
 
-def notify_stale_data(source: str, age_hours: float, threshold_hours: float) -> dict:
-    """DEPRECATED (2026-04-24): stale-data alerts are emitted by the
-    health-state change detector (with proper issue-key dedup). Silent.
-    """
-    log.debug("notify_stale_data: silent (deprecated) — %s aged %.1fh", source, age_hours)
-    return {}
-
-
 _DIGEST_POSITIVE_CLOSERS = [
     "Stay sharp.",
     "Keep trusting the process.",
@@ -2302,18 +2294,6 @@ def notify_morning_briefing() -> dict:
     log.debug("notify_morning_briefing: silent (deprecated)")
     return {}
 
-
-
-# ---------------------------------------------------------------------------
-# Live Matchday P&L Summary
-# ---------------------------------------------------------------------------
-
-def notify_matchday_update() -> dict:
-    """DEPRECATED (2026-04-24): matchday recap is covered by the daily-digest
-    + per-bet notify_settlement. Silent no-op; call sites kept for compat.
-    """
-    log.debug("notify_matchday_update: silent (deprecated)")
-    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -3160,133 +3140,6 @@ def notify_pre_kickoff_bets(match_key: str, bet_context: dict) -> dict:
     return notify(msg, title=f"Pre-match: {match_key}", level="info", category="live")
 
 
-def notify_parlays_ready(n_parlays: int = 0, best_odds: float = 0,
-                         best_prob: float = 0,
-                         parlay_report: dict | None = None) -> dict:
-    """Send a rich notification when parlays are generated.
-
-    Telegram gets a visual card per pick. macOS gets a brief summary.
-    Only sends if the report was regenerated (not cached/stale).
-    """
-    if parlay_report:
-        n_parlays = parlay_report.get("total_parlays", n_parlays)
-        if not parlay_report.get("regenerated", True):
-            log.info("Parlay notification skipped (report not regenerated)")
-            return {"macos": False, "telegram": False, "skipped": True}
-
-    # Extract top picks BEFORE dedup check (was causing NameError)
-    top_picks = parlay_report.get("top_picks", []) if parlay_report else []
-
-    # Dedup
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    import hashlib as _hl
-    picks_sig = ""
-    if top_picks:
-        picks_sig = _hl.md5(
-            "|".join(p.get("parlay", {}).get("id", "") for p in top_picks).encode()
-        ).hexdigest()[:12]
-    else:
-        picks_sig = str(n_parlays)
-
-    dedup_file = DATA_DIR / ".parlay_notify_dedup.json"
-    try:
-        if dedup_file.exists():
-            with open(dedup_file) as f:
-                dedup = json.load(f)
-            if dedup.get("date") == today_str and dedup.get("sig") == picks_sig:
-                log.info("Parlay notification skipped (same picks already sent today)")
-                return {"macos": False, "telegram": False, "skipped": True}
-    except Exception:
-        pass
-    title = "\U0001f3b0 Parlay Picks"
-
-    # --- Build rich Telegram HTML ---
-    tg = TgMsg()
-    if top_picks:
-        tg.line(f"{_smart_opener('parlay')} {n_parlays} parlays scanned.")
-        tg.blank()
-
-        for pick in top_picks[:3]:
-            p = pick.get("parlay", {})
-            legs = p.get("legs", [])
-            cat_label = pick.get("category", "").replace("_", " ").title()
-            quality = p.get("parlay_quality", 0)
-            combined = p.get("combined_odds", 0)
-            hp = p.get("hit_probability", {})
-            hit_pct = hp.get("median", hp.get("copula_adjusted", 0))
-            if hit_pct <= 1:
-                hit_pct *= 100
-            stake = p.get("stake", 0)
-
-            rank_emoji = ["\U0001f947", "\U0001f948", "\U0001f949"][pick.get("rank", 1) - 1] if pick.get("rank", 1) <= 3 else "\u25b8"
-            tg.raw(f"{rank_emoji} <b>{_html_escape(cat_label)}</b>  <i>q={quality:.0f}</i>")
-
-            for leg_data in legs:
-                mkt = leg_data.get("market", "")
-                mkt_tag = ""
-                if mkt == "double_chance":
-                    mkt_tag = "DC"
-                elif mkt == "btts":
-                    mkt_tag = "BTTS"
-                elif mkt == "draw_no_bet":
-                    mkt_tag = "DNB"
-                tg.leg(leg_data.get("match", "?"),
-                       leg_data.get("selection", "?"),
-                       leg_data.get("odds", 0),
-                       market=mkt_tag)
-
-            tg.stat_row(
-                ("Odds", f"{combined:.2f}x"),
-                ("Hit", f"{hit_pct:.0f}%"),
-                ("Stake", f"\u20ac{stake:.0f}"),
-            )
-
-            why = pick.get("why", [])
-            if why:
-                tg.raw(f"  <i>\u2192 {_html_escape(why[0])}</i>")
-            tg.blank()
-
-        # Category summary bar
-        if parlay_report:
-            cats = parlay_report.get("categories", {})
-            summary_parts = []
-            for cname, citems in cats.items():
-                if isinstance(citems, list) and citems:
-                    summary_parts.append(f"{cname.replace('_',' ').title()}: {len(citems)}")
-            if summary_parts:
-                tg.mini_sep()
-                tg.raw(f"<i>{_html_escape(' | '.join(summary_parts))}</i>")
-
-        # CTA
-        tg.blank()
-        tg.raw("<i>Review on dashboard \u2192 Betting tab \u2192 Parlays</i>")
-
-        tg_html = tg.build()
-    else:
-        tg_html = ""
-
-    # macOS: brief
-    n_picks = len(top_picks)
-    mac_msg = f"{n_picks} parlay picks ready." if n_picks else f"{n_parlays} parlays generated."
-
-    result = notify(
-        message=mac_msg,
-        title="Parlays Ready",
-        level="info",
-        category="betting",
-        tg_html=tg_html if tg_html else "",
-    )
-
-    # Update dedup marker
-    try:
-        with open(dedup_file, "w") as f:
-            json.dump({"date": today_str, "sig": picks_sig}, f)
-    except Exception:
-        pass
-
-    return result
-
-
 def notify_bankroll_milestone(old_balance: float, new_balance: float) -> dict:
     """Send a coaching-style notification when bankroll crosses a milestone.
 
@@ -3379,63 +3232,6 @@ def _test():
 # NEW NOTIFICATIONS (Mar 24 2026) — Critical missing functionality
 # ---------------------------------------------------------------------------
 
-def notify_bet_settled(bet: dict, result_score: str = "") -> dict:
-    """Per-bet settlement notification — immediate feedback on each bet.
-
-    Fires for each individual bet when it settles, not just the batch summary.
-    """
-    match = bet.get("match", "?")
-    selection = bet.get("selection", "?")
-    odds = bet.get("odds", 0)
-    stake = bet.get("stake", 0)
-    status = bet.get("status", "unknown")
-    profit = bet.get("profit", 0)
-
-    if status == "won":
-        emoji = "\u2705"
-        level = "success"
-        pnl_str = f"+\u20ac{profit:.2f}"
-    elif status == "lost":
-        emoji = "\u274c"
-        level = "warning"
-        pnl_str = f"-\u20ac{stake:.2f}"
-        profit = -stake
-    else:
-        emoji = "\u2796"
-        level = "info"
-        pnl_str = "PUSH"
-
-    mac_msg = f"{emoji} {match} | {selection} @{odds:.2f} | {pnl_str}"
-
-    # Check if this is a post-improvement bet
-    placed_at = (bet.get("placed_at") or "")[:10]
-    is_new_method = placed_at >= "2026-04-10"
-    new_tag = " \U0001f195" if is_new_method else ""  # 🆕
-
-    tg = TgMsg()
-    tg.raw(f"{emoji} <b>{_html_escape(match)}</b>{new_tag}")
-    tg.raw(f"{_html_escape(selection)} @{odds:.2f} | "
-           f"Stake \u20ac{stake:.2f}")
-    if result_score:
-        tg.raw(f"Score: <b>{_html_escape(result_score)}</b>")
-    tg.pnl(profit)
-
-    # CLV (Closing Line Value) — did we beat the market?
-    clv = bet.get("clv_pct")
-    if clv is not None:
-        clv_emoji = "\U0001f4c8" if clv > 0 else "\U0001f4c9"  # 📈 or 📉
-        tg.raw(f"{clv_emoji} CLV: {clv:+.1f}% {'(beat closing line)' if clv > 0 else '(below closing line)'}")
-
-    return notify(
-        message=mac_msg,
-        title=f"Bet {'WON' if status == 'won' else 'LOST' if status == 'lost' else 'PUSH'}",
-        level=level,
-        category="betting",
-        tg_html=tg.build(),
-        priority=PRIORITY_NORMAL,
-    )
-
-
 def notify_loss_streak(streak_count: int, total_loss: float = 0,
                        recent_bets: list = None) -> dict:
     """Alert when on a losing streak — psychological protection.
@@ -3486,141 +3282,6 @@ def notify_loss_streak(streak_count: int, total_loss: float = 0,
         tg_html=tg.build(),
         priority=PRIORITY_URGENT if streak_count >= 5 else PRIORITY_NORMAL,
     )
-
-
-def notify_weekly_accuracy(correct: int, total: int,
-                           accuracy_pct: float,
-                           best_prediction: dict = None,
-                           worst_miss: dict = None,
-                           roi_pct: float = 0) -> dict:
-    """Weekly model accuracy report — feedback loop for confidence.
-
-    Should fire Monday morning or after last matchweek match settles.
-    """
-    if total == 0:
-        return {}
-
-    if accuracy_pct >= 60:
-        mood = "Excellent week. Model is sharp."
-    elif accuracy_pct >= 51:
-        mood = "Solid week. Edge is holding."
-    elif accuracy_pct >= 45:
-        mood = "Below average. Monitor for drift."
-    else:
-        mood = "Rough week. Check if model needs recalibration."
-
-    mac_msg = (f"Weekly: {correct}/{total} ({accuracy_pct:.0f}%) | "
-               f"ROI: {roi_pct:+.1f}% | {mood}")
-
-    tg = TgMsg()
-    tg.title("Weekly Accuracy Report", emoji="\U0001f4ca")
-    tg.blank()
-    tg.raw(f"<b>{correct}/{total}</b> correct ({accuracy_pct:.1f}%)")
-    tg.progress_bar(correct, total)
-    if roi_pct != 0:
-        tg.pnl(roi_pct)  # shows as +/-
-    tg.blank()
-    tg.italic(mood)
-
-    if best_prediction:
-        tg.blank()
-        tg.raw(f"\u2b50 Best call: {_html_escape(best_prediction.get('match',''))}")
-    if worst_miss:
-        tg.raw(f"\U0001f4a5 Biggest miss: {_html_escape(worst_miss.get('match',''))}")
-
-    return notify(
-        message=mac_msg,
-        title=f"Weekly: {accuracy_pct:.0f}% accuracy",
-        level="success" if accuracy_pct >= 51 else "warning",
-        category="betting",
-        tg_html=tg.build(),
-    )
-
-
-def notify_lineup_impact(match: str, old_pred: dict = None, new_pred: dict = None,
-                         missing_players: list = None) -> dict:
-    """Enhanced lineup confirmation — shows how prediction shifted.
-
-    Fires after lineups are confirmed AND predictions re-run.
-    """
-    if not old_pred or not new_pred:
-        return {}
-
-    # Dedup: don't send same lineup impact twice
-    import hashlib as _hl
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    impact_sig = _hl.md5(f"{match}|{new_pred}".encode()).hexdigest()[:12]
-    _impact_dedup_path = DATA_DIR / ".lineup_impact_dedup.json"
-    try:
-        if _impact_dedup_path.exists():
-            with open(_impact_dedup_path) as _f:
-                _dedup = json.load(_f)
-            if _dedup.get("date") == today_str and impact_sig in _dedup.get("sigs", []):
-                log.info("Lineup impact skipped (already sent for %s today)", match)
-                return {}
-    except Exception:
-        pass
-
-    old_h = old_pred.get("prob_H", 0)
-    new_h = new_pred.get("prob_H", 0)
-    old_d = old_pred.get("prob_D", 0)
-    new_d = new_pred.get("prob_D", 0)
-    old_a = old_pred.get("prob_A", 0)
-    new_a = new_pred.get("prob_A", 0)
-
-    max_shift = max(abs(new_h - old_h), abs(new_d - old_d), abs(new_a - old_a))
-    if max_shift < 0.02:  # <2% shift — not worth notifying
-        return {}
-
-    def _arrow(old, new):
-        diff = new - old
-        if abs(diff) < 0.01:
-            return "\u2192"
-        return "\u2b06\ufe0f" if diff > 0 else "\u2b07\ufe0f"
-
-    mac_msg = (f"Lineup impact: {match} | "
-               f"H {old_h:.0%}{_arrow(old_h,new_h)}{new_h:.0%} "
-               f"D {old_d:.0%}{_arrow(old_d,new_d)}{new_d:.0%} "
-               f"A {old_a:.0%}{_arrow(old_a,new_a)}{new_a:.0%}")
-
-    tg = TgMsg()
-    tg.title(f"Lineup Impact: {match}", emoji="\U0001f4cb")
-    tg.blank()
-    tg.raw(f"H: {old_h:.1%} {_arrow(old_h,new_h)} <b>{new_h:.1%}</b>")
-    tg.raw(f"D: {old_d:.1%} {_arrow(old_d,new_d)} <b>{new_d:.1%}</b>")
-    tg.raw(f"A: {old_a:.1%} {_arrow(old_a,new_a)} <b>{new_a:.1%}</b>")
-
-    if missing_players:
-        tg.blank()
-        tg.bold("Key absences:")
-        for p in missing_players[:5]:
-            tg.raw(f"  \u274c {_html_escape(p)}")
-
-    if max_shift > 0.05:
-        tg.blank()
-        tg.italic("Significant shift — review your bets on this match.")
-
-    result = notify(
-        message=mac_msg,
-        title=f"Lineup shift: {match}",
-        level="warning" if max_shift > 0.05 else "info",
-        category="betting",
-        tg_html=tg.build(),
-    )
-    # Save dedup marker
-    try:
-        existing_sigs = []
-        if _impact_dedup_path.exists():
-            with open(_impact_dedup_path) as _f:
-                _d = json.load(_f)
-            if _d.get("date") == today_str:
-                existing_sigs = _d.get("sigs", [])
-        existing_sigs.append(impact_sig)
-        with open(_impact_dedup_path, "w") as _f:
-            json.dump({"date": today_str, "sigs": existing_sigs}, _f)
-    except Exception:
-        pass
-    return result
 
 
 def notify_clv_degradation(current_clv: float, previous_clv: float,
@@ -3851,40 +3512,6 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
         return {}
 
 
-def notify_entry_timing(match: str, selection: str, action: str,
-                        odds: float = 0, bookmaker: str = "",
-                        reason: str = "", confidence: float = 0) -> dict:
-    """Alert when optimal entry timing is detected for a bet.
-
-    Fires when sharp money confirms our bet direction and soft books
-    haven't caught up — the window to get best odds.
-    """
-    if action != "ENTER_NOW" or confidence < 0.7:
-        return {}  # Only notify on high-confidence ENTER_NOW
-
-    mac_msg = (f"\u23f0 ENTER NOW: {match} | {selection} @{odds:.2f} ({bookmaker}) "
-               f"| {reason[:60]}")
-
-    tg = TgMsg()
-    tg.title(f"Entry Window: {match}", emoji="\u23f0")
-    tg.blank()
-    tg.raw(f"<b>{_html_escape(selection)}</b> @{odds:.2f}")
-    tg.raw(f"Book: {_html_escape(bookmaker)}")
-    tg.blank()
-    tg.italic(reason)
-    tg.blank()
-    tg.raw(f"Confidence: {confidence:.0%}")
-
-    return notify(
-        message=mac_msg,
-        title=f"Entry: {match} {selection}",
-        level="info",
-        category="betting",
-        tg_html=tg.build(),
-        priority=PRIORITY_NORMAL,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Scheduler-run cards + health-state alerts
 # ---------------------------------------------------------------------------
@@ -4096,14 +3723,18 @@ def notify_pipeline_run_with_picks(
         if n > max_picks:
             tg.raw(f"  <i>… and {n - max_picks} more</i>")
 
+    # Dry day with nothing to say → no send at all. The run is already
+    # recorded in scheduler_state.json (persisted above) and the launchd log;
+    # a twice-daily "No value bets today." card was chat clutter (2026-08-27).
+    if not picks and not slip_is_stale and not (duration_sec is not None and duration_sec > 900):
+        log.info("pipeline card: dry day — nothing to send")
+        return {}
+
     # ---- macOS (silent on success except when slow) ----
     macos_msg = ""
     if duration_sec is not None and duration_sec > 900:
         macos_msg = f"{label}: done ({duration_sec/60:.0f}m)"
-    elif not picks and not slip_is_stale:
-        # Silent — nothing actionable
-        macos_msg = ""
-    # else: still silent; picks are in Telegram
+    # else: silent; picks are in Telegram
 
     return notify(
         macos_msg,
@@ -4155,6 +3786,14 @@ def notify_scheduler_run(
         "error": error,
     }
     _save_json_safe(_SCHEDULER_STATE_PATH, state)
+
+    # Routine success is log material, not a message. State is persisted for
+    # the digest's Systems block and launchd keeps the run log; only warn and
+    # fail still send (2026-08-27 cleanup — these one-line "✅ done" cards
+    # were ~2/day of pure chat clutter).
+    if is_success and not error:
+        log.info("scheduler card: %s %s — routine success, not sending", name, status_l)
+        return {}
 
     # Format duration compactly
     dur_str = ""
@@ -4233,12 +3872,15 @@ def notify_health_state_change(current: dict) -> dict:
         doesn't trigger re-alerts.
 
       - Transient-suppression: if an issue appears + disappears within
-        `_TRANSIENT_WINDOW_MIN` minutes (default 45), it is treated as noise
-        and no alert fires. Catches Gemini 503s, temporary timeouts, etc.
+        `_TRANSIENT_WINDOW_MIN` minutes (default 120 = 4 monitor cycles), it
+        is treated as noise and no alert fires — and a resolve-then-reappear
+        inside the same window is a flap, also silent. Catches Gemini 503s,
+        temporary timeouts, hourly-flapping checks.
 
-      - Long-standing-issue silencing: if an issue has been present for more
-        than `_QUIET_AFTER_HOURS` (default 24), no further re-alerts — you
-        already know about it. Only new/resolved issues ping you.
+      - Standing issues never re-alert: identity is key-stable, so an issue
+        already announced stays silent until it resolves. (An earlier
+        `_QUIET_AFTER_HOURS` constant promised this in prose but was never
+        used — with stable keys the property is inherent.)
 
     Silent when nothing meaningful changed.
     """
@@ -4246,8 +3888,7 @@ def notify_health_state_change(current: dict) -> dict:
     prev_state = _load_json_safe(_HEALTH_STATE_PATH, {})
     is_first_run = not prev_state
 
-    _TRANSIENT_WINDOW_MIN = 45
-    _QUIET_AFTER_HOURS = 24
+    _TRANSIENT_WINDOW_MIN = 120
     _NOW = datetime.now()
 
     def _issue_key(level: str, msg: str) -> str:
@@ -4263,6 +3904,11 @@ def notify_health_state_change(current: dict) -> dict:
         s = _re.sub(r"\d+(?:\.\d+)?%", "N%", s)
         # Strip trailing numeric counts like "11 issues"
         s = _re.sub(r"\d+\s*(?:bets?|items?|entries?|matches?|issues?)", "N \\g<0>", s)
+        # Catch-all (2026-08-27): collapse EVERY remaining number. Changing
+        # counts the rules above missed (e.g. "missing 18/32") minted a fresh
+        # identity each cycle and re-alerted every 30 min — 77 health sends
+        # in 18 days, most of them the same issue with a moving number.
+        s = _re.sub(r"\d+(?:[./]\d+)*", "N", s)
         return f"{level}|{s.strip().rstrip(':').rstrip()}"
 
     # Load previous key-indexed issue state
@@ -4334,11 +3980,12 @@ def notify_health_state_change(current: dict) -> dict:
             # Track resolution timestamp for flap detection on next cycle
             resolved_tracking[k] = now_iso
 
-    # Prune old resolved-tracking entries (>2h old)
+    # Prune old resolved-tracking entries (>4h old — must outlive the 120-min
+    # transient window or flap detection forgets too early)
     trimmed = {}
     for k, iso in resolved_tracking.items():
         try:
-            if (_NOW - datetime.fromisoformat(iso)).total_seconds() / 3600 < 2:
+            if (_NOW - datetime.fromisoformat(iso)).total_seconds() / 3600 < 4:
                 trimmed[k] = iso
         except Exception:
             pass
@@ -4395,6 +4042,9 @@ def notify_health_state_change(current: dict) -> dict:
     if odds_restored:
         parts.append("odds API back")
     macos_msg = f"Health: {overall}" + (f" — {', '.join(parts)}" if parts else "")
+    # Name the first new issue — "1 new" alone is unactionable on a lock screen
+    if truly_new:
+        macos_msg += f": {truly_new[0][1]}"
 
     # Only critical-level on NEW CRITICAL issues, not on resolutions
     has_critical_new = any(lvl == "CRITICAL" for lvl, _ in truly_new)
