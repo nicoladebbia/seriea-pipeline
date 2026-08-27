@@ -45,24 +45,129 @@ OUT_PATH = BASE_DIR / "data" / "betting" / "betfair_odds.json"
 
 API_URL = "https://api.betfair.com/exchange/betting/rest/v1.0"
 KEEPALIVE_URL = "https://identitysso.betfair.it/api/keepAlive"
+CERTLOGIN_URL = "https://identitysso-cert.betfair.it/api/certlogin"
+CERT_DIR = Path.home() / ".betfair"      # client-2048.{crt,key}, key chmod 600
+KEYCHAIN_SERVICE = "betfair-pipeline"    # security add-generic-password -a <user> -s betfair-pipeline -w
 
 SERIE_A_COMPETITION_ID = "81"   # Betfair competition id for Serie A — verify in --probe
 EVENT_TYPE_SOCCER = "1"
 TIMEOUT = 15
 
 
+def _keychain_password(username: str) -> str | None:
+    """Betfair password from the macOS login Keychain. Value is never logged."""
+    import subprocess
+    try:
+        out = subprocess.run(  # noqa: S603 — fixed argv, no shell; username is the user's own config
+            ["/usr/bin/security", "find-generic-password", "-a", username,
+             "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    pw = out.stdout.strip()
+    return pw if out.returncode == 0 and pw else None
+
+
+def _cert_login(bf: dict) -> str | None:
+    """Fresh session token via non-interactive cert login, or None.
+
+    Needs: `username` in the betfair config block, the password in the macOS
+    Keychain (service KEYCHAIN_SERVICE, account = username), and the client
+    cert pair in ~/.betfair/. The refreshed token is persisted back into
+    config/api_keys.json so later processes reuse it. Password and token are
+    never logged; loginStatus strings are safe to log.
+    """
+    username = (bf.get("username") or "").strip()
+    if not username or username.startswith("REPLACE"):
+        return None
+    password = _keychain_password(username)
+    if not password:
+        log.warning("betfair: no Keychain entry for account %r service %r — "
+                    "bot login skipped", username, KEYCHAIN_SERVICE)
+        return None
+
+    token = None
+    app_key = bf.get("app_key", "certlogin")
+    # Preferred path: cert login. betfair.IT's account UI has no certificate
+    # upload (jurisdiction-gated, confirmed 2026-08-27), so this only works if
+    # Betfair ever adds it — kept because it is the officially recommended
+    # bot method and the cert pair already exists in ~/.betfair/.
+    crt, key = CERT_DIR / "client-2048.crt", CERT_DIR / "client-2048.key"
+    if crt.exists() and key.exists():
+        try:
+            r = requests.post(
+                CERTLOGIN_URL,
+                data={"username": username, "password": password},
+                cert=(str(crt), str(key)),
+                headers={"X-Application": app_key},
+                timeout=TIMEOUT)
+            r.raise_for_status()
+            payload = r.json()
+            if payload.get("loginStatus") == "SUCCESS":
+                token = payload.get("sessionToken")
+            else:
+                log.info("betfair: cert login unavailable (loginStatus=%s) — "
+                         "trying interactive login", payload.get("loginStatus"))
+        except (requests.RequestException, ValueError) as e:
+            log.info("betfair: cert login request failed (%s) — trying "
+                     "interactive login", e)
+
+    # Fallback: interactive login API — works because 2FA is OFF on the
+    # account. If Nicola ever enables 2FA, this breaks by design; the fix is
+    # a cert (if .it ever allows it) or reverting to manual cookie copy.
+    # NOTE: this endpoint's response schema differs from certlogin:
+    # {"status": "SUCCESS", "token": ...} vs {"loginStatus", "sessionToken"}.
+    if not token:
+        try:
+            r = requests.post(
+                "https://identitysso.betfair.it/api/login",
+                data={"username": username, "password": password},
+                headers={"X-Application": app_key, "Accept": "application/json"},
+                timeout=TIMEOUT)
+            r.raise_for_status()
+            payload = r.json()
+        except (requests.RequestException, ValueError) as e:
+            log.warning("betfair: interactive login request failed: %s", e)
+            return None
+        if payload.get("status") != "SUCCESS":
+            log.warning("betfair: interactive login rejected (status=%s error=%s)",
+                        payload.get("status"), payload.get("error"))
+            return None
+        token = payload.get("token")
+    if not token:
+        return None
+    try:
+        keys = json.loads(KEYS_PATH.read_text())
+        keys.setdefault("betfair", {})["session_token"] = token
+        KEYS_PATH.write_text(json.dumps(keys, indent=2) + "\n")
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("betfair: could not persist refreshed token: %s", e)
+    log.info("betfair: bot login OK — fresh session token stored")
+    return token
+
+
 def _load_creds() -> dict | None:
-    """Betfair creds from api_keys.json, or None (clean skip) when absent."""
+    """Betfair creds from api_keys.json, or None (clean skip) when absent.
+
+    A missing/blank session token is recoverable: when the cert + Keychain
+    setup exists, a fresh token is fetched here so callers never see it.
+    """
     try:
         keys = json.loads(KEYS_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         log.info("betfair: no readable %s — skipping", KEYS_PATH.name)
         return None
     bf = keys.get("betfair") or {}
-    if not bf.get("app_key") or not bf.get("session_token"):
-        log.info("betfair: app_key/session_token not configured — skipping "
+    if not bf.get("app_key"):
+        log.info("betfair: app_key not configured — skipping "
                  "(see AUGUST_RUNBOOK.md step 6)")
         return None
+    if not bf.get("session_token"):
+        token = _cert_login(bf)
+        if not token:
+            log.info("betfair: no session token and cert login unavailable — skipping")
+            return None
+        bf["session_token"] = token
     return bf
 
 
@@ -75,12 +180,22 @@ def _headers(creds: dict) -> dict:
     }
 
 
-def _post(creds: dict, method: str, body: dict) -> Any | None:
-    """One REST call; None on any failure (callers skip, never raise)."""
+def _post(creds: dict, method: str, body: dict,
+          _retried: bool = False) -> Any | None:
+    """One REST call; None on any failure (callers skip, never raise).
+
+    An expired session triggers ONE cert-login refresh and retry, so a
+    stale token self-heals whenever the cert/Keychain setup exists.
+    """
     try:
         r = requests.post(f"{API_URL}/{method}/", headers=_headers(creds),
                           json=body, timeout=TIMEOUT)
         if r.status_code == 400 and "INVALID_SESSION" in r.text:
+            if not _retried:
+                token = _cert_login(creds)
+                if token:
+                    creds["session_token"] = token
+                    return _post(creds, method, body, _retried=True)
             log.warning("betfair: session token expired — re-login needed")
             return None
         r.raise_for_status()
