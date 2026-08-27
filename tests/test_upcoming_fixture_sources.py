@@ -529,3 +529,35 @@ def test_every_live_fixture_passes_validation():
     bad = [(m["home_team"], m["away_team"], errs)
            for m in fixtures for ok, errs in [validate_match_data(m)] if not ok]
     assert not bad, f"live fixtures failed validation: {bad}"
+
+
+def test_epl_fixture_never_enters_the_serie_a_loader(monkeypatch):
+    """Pins the 2026-08-27 league leak — the other half of the Aug-24 bug.
+
+    The Sofascore fixture files carry BOTH leagues. The Aug-24 fix added the
+    date filter but no league filter, so every Serie A prediction run also
+    predicted the EPL slate, wrote it into predictions.json tagged serie_a,
+    and rode the per-file betting gate (predictions.json passes wholesale as
+    serie_a in betting_unified.load_predictions). 18 gated-league matches
+    were bettable as Serie A for three days.
+    """
+    from scripts.prediction import predict_unified as pu
+
+    future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    both_leagues = [
+        {"home_team": "Milan", "away_team": "Venezia",
+         "commence_time": future, "league": "serie_a"},
+        {"home_team": "Arsenal", "away_team": "Chelsea",
+         "commence_time": future, "league": "premier_league"},
+        # No league tag at all → Serie A by default (SA-only sources don't tag)
+        {"home_team": "Roma", "away_team": "Lazio", "commence_time": future},
+    ]
+    monkeypatch.setattr(pu, "_load_sofascore_fixtures", lambda now: both_leagues)
+    monkeypatch.setattr(pu, "DATA_DIR", Path("/nonexistent"))  # no manual/odds files
+
+    got = pu.load_upcoming_matches()
+
+    homes = {m["home_team"] for m in got}
+    assert "Arsenal" not in homes, "EPL fixture leaked into the Serie A loader"
+    assert homes == {"Milan", "Roma"}
+    assert all(m.get("league", "serie_a") == "serie_a" for m in got)

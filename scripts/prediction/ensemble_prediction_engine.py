@@ -4048,6 +4048,15 @@ def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a")
     # Step 1: Load upcoming matches
     log.info("\n[1/4] Loading upcoming %s matches...", league_display)
     matches = _load_league_matches(league)
+    # Choke-point guard: a match whose own league tag disagrees with this run's
+    # league must never be predicted here — its prediction would be written to
+    # THIS league's file and ride this league's betting gate downstream.
+    foreign = [m for m in matches if m.get("league", league) != league]
+    if foreign:
+        log.warning("Dropping %d fixture(s) tagged for a different league than %s: %s",
+                    len(foreign), league,
+                    sorted({m.get("league", "?") for m in foreign}))
+        matches = [m for m in matches if m.get("league", league) == league]
     if not matches:
         log.error("No upcoming %s matches found!", league_display)
         return {}

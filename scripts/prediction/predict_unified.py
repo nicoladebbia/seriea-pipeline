@@ -243,6 +243,12 @@ def load_upcoming_matches() -> List[Dict]:
         for m in candidates:
             if not isinstance(m, dict) or not m.get("home_team") or not m.get("away_team"):
                 continue
+            # This loader is Serie A only. The Sofascore fixture files carry
+            # BOTH leagues; without this guard every SA prediction run also
+            # predicted the EPL slate and wrote it into predictions.json
+            # tagged serie_a — riding the per-file betting gate (2026-08-27).
+            if m.get("league", "serie_a") != "serie_a":
+                continue
             if not _is_future(m, now):
                 continue
             key = _dedup_key(m)

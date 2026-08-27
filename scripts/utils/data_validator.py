@@ -253,28 +253,43 @@ def _check_field_completeness(issues: dict[str, list]) -> None:
 
 
 def _check_cross_coverage(issues: dict[str, list]) -> None:
-    """Check supplementary files cover all prediction matches."""
-    preds = load_json_safe(UPCOMING_DIR / "predictions.json")
-    pred_keys = _extract_match_keys(preds)
-    if not pred_keys:
-        return
+    """Check supplementary files cover all prediction matches — per league.
 
+    Odds files are per-league; comparing a mixed predictions file against the
+    Serie A odds file alone is how the Aug-24 league-contamination bug showed
+    up as a permanent (and misread) "missing 18/32" warning. Each prediction
+    file is checked against ITS league's odds file.
+    """
+    league_pairs = [
+        ("predictions.json", "odds_full.json"),
+        ("predictions_premier_league.json", "odds_full_premier_league.json"),
+    ]
     supplementary = {
-        "odds_full.json": "critical",
         "weather.json": "info",
         "current_form.json": "warning",
         "market_intelligence.json": "info",
         "sentiment_analysis.json": "info",
     }
 
-    for fname, level in supplementary.items():
-        data = load_json_safe(UPCOMING_DIR / fname)
-        file_keys = _extract_match_keys(data)
-        missing = pred_keys - file_keys
-        if missing and len(missing) > len(pred_keys) * 0.25:
-            issues[level].append(
-                f"{fname}: missing {len(missing)}/{len(pred_keys)} prediction matches"
-            )
+    for pred_fname, odds_fname in league_pairs:
+        preds = load_json_safe(UPCOMING_DIR / pred_fname)
+        pred_keys = _extract_match_keys(preds)
+        if not pred_keys:
+            continue
+
+        checks = {odds_fname: "critical"}
+        if pred_fname == "predictions.json":
+            checks.update(supplementary)  # supplementary files are SA-shaped
+
+        for fname, level in checks.items():
+            data = load_json_safe(UPCOMING_DIR / fname)
+            file_keys = _extract_match_keys(data)
+            missing = pred_keys - file_keys
+            if missing and len(missing) > len(pred_keys) * 0.25:
+                issues[level].append(
+                    f"{fname}: missing {len(missing)}/{len(pred_keys)} "
+                    f"{pred_fname} matches"
+                )
 
 
 def _check_odds_league_tag(issues: dict[str, list]) -> None:
