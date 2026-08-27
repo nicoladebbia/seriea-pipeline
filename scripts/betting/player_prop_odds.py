@@ -2,17 +2,21 @@
 """PLAYER PROP ODDS FETCHER & VALUE SCANNER
 
 Fetches real player prop odds from The Odds API and compares them against
-our CatBoost player-level model predictions to find value bets.
+the floors engine's player predictions to find value bets.
 
-Available markets (Serie A via The Odds API):
-  - player_goal_scorer_anytime  (6+ bookmakers)
-  - player_first_goal_scorer    (5+ bookmakers)
-  - player_last_goal_scorer     (3+ bookmakers)
+Markets fetched (Serie A, probed live 2026-08-27 -- see PLAYER_PROP_MARKETS):
+  - player_goal_scorer_anytime       (6 bookmakers)
+  - player_shots_on_target (+_alternate)  (4 bookmakers)
+  - player_shots                     (3 bookmakers)
+Coverage is US-book-dominated (fanduel/draftkings/betmgm/betrivers), hence
+REGIONS includes "us". First/Last goalscorer deliberately NOT fetched:
+unmodeled, and prop_tracker voids them at settlement. The API carries no
+passes/tackles/duels/interceptions/fouls markets at all.
 
 Usage:
-    python scripts/player_prop_odds.py              # fetch + scan for value
-    python scripts/player_prop_odds.py --fetch-only # just fetch odds
-    python scripts/player_prop_odds.py --scan-only  # scan existing odds vs model
+    python -m scripts.betting.player_prop_odds              # fetch + scan
+    python -m scripts.betting.player_prop_odds --fetch-only # just fetch odds
+    python -m scripts.betting.player_prop_odds --scan-only  # scan cached odds
 """
 
 import json
@@ -47,13 +51,23 @@ log = logging.getLogger(__name__)
 # ── config ────────────────────────────────────────────────────────────────────
 API_BASE_URL = "https://api.the-odds-api.com/v4"
 SERIE_A_KEY = "soccer_italy_serie_a"
-REGIONS = "eu"  # EU only — see odds_fetcher.py for quota rationale
+REGIONS = "us,eu"  # Serie A player props live on US books (probed 2026-08-27:
+# fanduel/draftkings/betmgm/betrivers carry shots+SoT; eu-only reached ~1 book,
+# onexbet). Cost = markets x regions = 8 cr per event at the 4-market list --
+# ~tens of credits per matchweek against a 99k quota. The old eu-only note
+# predates the 2026-08 plan renewal.
 ODDS_FORMAT = "decimal"
 
+# The bettable intersection, probed live 2026-08-27 (Milan-Venezia, 6 books):
+# these are the only markets BOTH the floors engine models AND The Odds API
+# carries for Serie A. First/Last goalscorer were dropped -- unmodeled, and
+# prop_tracker voids them at settlement (unsettleable from stats), so fetching
+# them was pure credit spend. The API also has player_assists / cards / red
+# cards (unmodeled here), and NOTHING for passes / tackles / duels /
+# interceptions / fouls -- 11 of the 19 validated floors have no odds source
+# on this API (docs + probe agree; the passes floor is unbettable here).
 PLAYER_PROP_MARKETS = {
     "player_goal_scorer_anytime": "Anytime Goalscorer",
-    "player_first_goal_scorer": "First Goalscorer",
-    "player_last_goal_scorer": "Last Goalscorer",
     "player_shots_on_target": "Shots on Target O/U",
     "player_shots_on_target_alternate": "Shots on Target Alt O/U",
     "player_shots": "Total Shots O/U",
