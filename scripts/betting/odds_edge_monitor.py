@@ -922,7 +922,17 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Use cached odds only (no API)")
     parser.add_argument("--interval", type=int, default=900, help="Poll interval in seconds (default 900)")
     parser.add_argument("--max-hours", type=float, default=18, help="Max daemon runtime hours")
+    parser.add_argument("--if-match-day", action="store_true",
+                        help="Exit 0 immediately when no active-league match is scheduled "
+                             "today. Lets launchd fire this daily while polling credits are "
+                             "only spent on match days (the /events check itself is free).")
     args = parser.parse_args()
+
+    if args.if_match_day:
+        from scripts.pipeline.scheduler import is_match_day
+        if not is_match_day():
+            log.info("Not a match day — exiting without polling (--if-match-day)")
+            sys.exit(0)
 
     if args.daemon:
         run_daemon(interval_seconds=args.interval, max_hours=args.max_hours)

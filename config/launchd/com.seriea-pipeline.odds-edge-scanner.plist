@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/nicoladebbia</string>
+		<key>PATH</key>
+		<string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+		<key>PYTHONPATH</key>
+		<string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+	</dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.seriea-pipeline.odds-edge-scanner</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/nicoladebbia/.pyenv/versions/3.13.3/bin/python3</string>
+		<string>-m</string>
+		<string>scripts.betting.odds_edge_monitor</string>
+		<string>--daemon</string>
+		<string>--if-match-day</string>
+		<string>--interval</string>
+		<string>900</string>
+		<string>--max-hours</string>
+		<string>12</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-odds-edge-scanner-err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-odds-edge-scanner.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>11</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>3600</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+</dict>
+</plist>
