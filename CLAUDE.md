@@ -255,7 +255,7 @@ Common causes and where they live:
 6. **A shared CACHE, not a shared parquet** (found 2026-08-25): `matchday_updater._fixtures_cache_path(season)` took no league, so both leagues read/wrote one `fixtures_{season}.json`. `run_matchday_update` loops serie_a → premier_league, so Serie A refreshed the cache and EPL then found it FRESH (6h window), loaded **Serie A's** fixtures, diffed them against **Serie A's** match ids (`_get_existing_sofascore_match_ids()` was also SA-only) and detected nothing. EPL starved on every run — no error, no warning, just `No new matches detected`, which is also what a healthy run logs. Net effect: `matches.parquet` took **zero** EPL rows after 2026-03-22 while the EPL Sofascore stat parquets stayed fresh, and `features_premier_league.parquet` faithfully mirrored the frozen ground truth. **Rule**: a per-league *cache* or *diff basis* is as load-bearing as a per-league output file — if a function takes `league`, every path it derives must consume it. The working sibling `scripts/data/scrape_sofascore.py` (`_league_suffix()`, `_get_output_paths()`) had it right all along; `matchday_updater` was a second implementation that skipped it. **Diff the sibling before theorising.**
 7. **A failed refresh must fall back to the cache, not to `[]`** (same fix): when the Sofascore round endpoint 403s (routine, hours-to-days), `_refresh_fixtures_cache` logs at debug and returns `[]`, and detection returned `[]` — blind for the whole ban despite a usable cache on disk. Already-ingested matches get filtered out anyway, so a stale fixtures list is free. **Rule**: never let a failed refresh return empty when a cache exists.
 
-**Known residue (2026-08-25)**: the fix restores EPL flow *going forward* only. Matches already present in the EPL stat parquets are invisible to detection (`0 new`), so the existing gap — 2026-2027 = 0/10, 2025-2026 = 309/380 — needs a **backfill keyed on `matches.parquet`**, not on the stat parquets. `results.json` is also SA-only (0 EPL completed), so `_fallback_ingest_from_results` can never cover EPL.
+**Residue RESOLVED (2026-08-27)**: `matchday_updater --backfill` diffs finished fixtures against **matches.parquet** (not the stat parquets) and rebuilds missing rows from the per-match JSONs already on disk — no network, idempotent (dedup keep="first"). The 80-match EPL gap (71 of 2025-26 + 9 of 2026-27) was backfilled with it: EPL now 380/380 + 10/10, score cross-check vs the stat parquets 0 mismatches. Note: backfilled rows carry 100% xG/possession while ALL older EPL rows carry none — EPL ground truth never had team stats before this. `results.json` is still SA-only, so `_fallback_ingest_from_results` still can't cover EPL; --backfill is the EPL recovery path.
 
 **Prevention rule (umbrella)**: **whenever you write `data/external/sofascore/X.parquet`, immediately also handle `X_premier_league.parquet`** — and same for any other ACTIVE_LEAGUES file convention. Use this idiom:
 ```python
@@ -466,6 +466,29 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   2. Real bookmaker corners/cards odds from the per-event endpoint (currently we only have h2h/totals/spreads bulk)
   3. Verification that the new predictions don't suffer the same systematic over-prediction bias seen in cards (post-isotonic calibration_gap > 0.09)
 - **Prevention rule**: **a model is not "production" because the trainer ran successfully — it's production after a held-out backtest beats the always-predict-base-rate baseline.** Skill score, not log-loss, is the right metric: `1 - brier/baseline_brier > 0` is the floor. Anything below should not be wired into a UI or a bet generator.
+
+### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
+
+- **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is
+  candidate-deferral, and it IS the live design.** Morning/evening Step 24 generates
+  candidates only (no journal write); the commit happens at T-30 via the pre-kickoff-monitor
+  (every 15 min) → `run_pre_kickoff()` → `generate_unified_report` + `save_report` →
+  `save_bet_slip` journals the bets (and `_archive_bets` journals with supersede). That
+  timing IS the edge: journal analysis 2026-04-25 showed >24h-early bets ran −5% ROI,
+  <24h bets +63%.
+- **Flipping the flag to false makes bets commit at MORNING against stale odds — the −5% path.
+  It is an anti-live switch. Never touch it to "go live".**
+- The system is de-facto paper exactly when the Odds API key is dead (engine finds no odds →
+  0 bets). With a live key the chain is armed end-to-end and nothing needs flipping.
+- **Go-live checklist that actually matters** (all verified 2026-08-27): key alive; ledger
+  invariants green (journal-derived == bankroll.json); `pre-kickoff-monitor` + `telegram-bot`
+  + `settlement` jobs loaded; `betting_unified --dry-run` produces a sane slate (enabled
+  markets: O/U_Over 1.5/2.5 + Alt_OU only); per-league gate correct.
+- **Per-league gate**: `_league_betting_enabled()` — Serie A always on; any other league needs
+  `data/models/<league>/deployment_state.json` with `betting_enabled: true`. EPL was set true
+  on 2026-04-29 (predates the June "EPL stays gated" decision) and would have silently taken
+  real EPL bets; set false 2026-08-27 with `gated_reason`. Lift only via
+  `scripts/models/validate_league_deployment.py` after EPL earns the bar.
 
 ---
 

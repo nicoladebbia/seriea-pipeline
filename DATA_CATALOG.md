@@ -94,7 +94,7 @@
 
 | # | File | Rows | 2025-26 | Status | Refreshed via | Last update |
 |---|------|------|---------|--------|---------------|-------------|
-| 1 | `data/parsed/matches.parquet` | 15,889 | **380/380**, all canonical | ✅ | Daily morning/evening pipeline | 2026-07-17 |
+| 1 | `data/parsed/matches.parquet` | 15,980 (7,990 SA + 7,990 EPL) | **380/380 SA + 380/380 EPL** (EPL 80-match gap backfilled 2026-08-27 via `matchday_updater --backfill`; 2026-27: 10/10 both leagues) | ✅ | Daily morning/evening pipeline + `--backfill` for recovery | 2026-08-27 |
 | 2 | `data/features/features_serie_a.parquet` | 7,980 | **380/380 canonical** (0 numeric, verified 2026-07-17 — see callout) | ✅ (was ⚠ until FBref backfill) | Daily `features/build.py` (24h gate) | 2026-07-17 |
 | 3 | `data/parsed/player_stats.parquet` | **103,111** | **380/380** | ✅ | FBref HTMLs (`fbref_match`) | 2026-07-16 |
 | 4 | `data/parsed/lineups.parquet` | **289,305** (SA + EPL) | 380/380 union | ⚠ dual-keyed — see callout | FBref HTMLs (`parse_all_lineups --include-epl`) + Sofascore fallback | 2026-07-17 |
