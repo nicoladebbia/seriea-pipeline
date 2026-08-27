@@ -14,6 +14,35 @@ from datetime import date
 from pathlib import Path
 
 
+def _load_dotenv_once() -> None:
+    """Load repo-root .env into os.environ (existing env always wins).
+
+    launchd jobs carry only HOME/PATH/PYTHONPATH, and nothing else loads .env,
+    so every env-read key (APIFOOTBALL_KEY, FOOTBALLDATA_KEY, ...) was invisible
+    to all 16 scheduled jobs — measured 2026-08-27: LineupFetcher.is_configured()
+    was False in a clean env, silently downgrading the O/U engine from confirmed
+    lineups (+25.2% backtest ROI) to predicted (+4.6%) on every automated run.
+    File-based keys (config/api_keys.json) never noticed because they don't use
+    env. Stdlib parse, no python-dotenv dependency; malformed lines skipped.
+    """
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    try:
+        text = env_path.read_text()
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip("'\"")
+        if key and val and key not in os.environ:
+            os.environ[key] = val
+
+
+_load_dotenv_once()
+
+
 def get_current_season() -> str:
     """Return the current season string (e.g. '2025-2026').
 
