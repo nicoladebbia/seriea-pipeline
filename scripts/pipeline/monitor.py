@@ -180,7 +180,16 @@ def check_gemini_api_key() -> Dict:
 
 
 def check_groq_api_key() -> Dict:
-    """Validate the Groq API key with a minimal request."""
+    """Validate the Groq API key with a minimal request.
+
+    Gated on RUN_SENTIMENT: sentiment has been default-OFF since 2026-05-06
+    and nothing else calls Groq, so a key problem for a disabled feature must
+    not page — it was the channel's only CRITICAL on go-live morning, over a
+    feature that cannot run. Flipping RUN_SENTIMENT=1 re-arms the probe.
+    """
+    if os.environ.get("RUN_SENTIMENT", "").lower() not in ("1", "true", "yes"):
+        return {"status": "OK",
+                "detail": "sentiment disabled (RUN_SENTIMENT unset) — key not probed"}
     key = _load_env_key("GROQ_API_KEY")
     if not key:
         return {"status": "WARNING", "detail": "GROQ_API_KEY not set (optional)"}

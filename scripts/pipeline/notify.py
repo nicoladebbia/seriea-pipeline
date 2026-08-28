@@ -2165,12 +2165,6 @@ def notify_daily_digest() -> dict:
     if total_today == 0 and matches_today_count == 0 and not tomorrow_matches and not slip_rec:
         return {}
 
-    best_edge_bet = None
-    if tomorrow_value_bets:
-        def _edge(b):
-            return float(b.get("edge_pct") or b.get("value_pct") or 0)
-        best_edge_bet = max(tomorrow_value_bets, key=_edge)
-
     # ---------- Compose ----------
     level = "success" if pnl_today > 0 else "warning" if pnl_today < 0 else "info"
 
@@ -2313,50 +2307,30 @@ def notify_daily_digest() -> dict:
             f"{n} match{'es' if n != 1 else ''} ({_html_escape(tomorrow_str)})"
         )
         _render_matches_grouped_by_league(tg, tomorrow_matches)
-
-        if best_edge_bet:
-            be = best_edge_bet
-            edge = float(be.get("edge_pct") or be.get("value_pct") or 0)
-            odds_val = be.get("odds") or be.get("best_odds") or "?"
-            tg.raw(
-                f"⚡ <b>Best edge:</b> {_html_escape(be.get('match',''))} "
-                f"{_html_escape(be.get('selection',''))} "
-                f"@ {odds_val} (<b>{edge:.0f}%</b>)"
-            )
-        if tomorrow_value_bets:
-            tg.raw(
-                f"\U0001f4cb {len(tomorrow_value_bets)} value bet"
-                f"{'s' if len(tomorrow_value_bets) != 1 else ''} in the slip"
-            )
+        # Selections and odds are ticket-only (the -5% early-bet path);
+        # tomorrow's candidates don't exist until tomorrow's morning run.
+        tg.raw("  <i>Candidates generate tomorrow morning; selections arrive "
+               "on the T-30 ticket.</i>")
     elif next_bet_date:
-        tg.raw(
-            f"\n\U0001f4c5 <b>Next card:</b> {_html_escape(next_bet_date)} "
-            f"({len(tomorrow_value_bets)} value bet{'s' if len(tomorrow_value_bets) != 1 else ''})"
-        )
-        for b in tomorrow_value_bets[:3]:
-            edge = float(b.get("edge_pct") or b.get("value_pct") or 0)
-            odds_val = b.get("odds") or b.get("best_odds") or "?"
-            tg.raw(
-                f"  ▪ {_html_escape(b.get('match',''))} "
-                f"{_html_escape(b.get('selection',''))} "
-                f"@ {odds_val} (<b>{edge:.0f}%</b>)"
-            )
-    elif slip_rec and not slip_is_stale:
-        tg.raw(f"\n\U0001f4c5 <b>Slip:</b> {len(slip_rec)} bet(s) queued (no upcoming date matched)")
+        tg.raw(f"\n\U0001f4c5 <b>Next card:</b> {_html_escape(next_bet_date)}")
     else:
         tg.raw("\n\U0001f4c5 No upcoming matches on the radar.")
 
-    # Slip staleness warning — surface it explicitly when the slip was last
-    # refreshed more than 48h ago. Tells you WHY there's no fresh pick.
-    if slip_is_stale and slip_age_hours is not None:
-        age_label = (
-            f"{slip_age_hours:.0f}h" if slip_age_hours < 72
-            else f"{slip_age_hours/24:.0f}d"
-        )
-        tg.raw(
-            f"  ⚠️ <i>Slip is stale: last refresh {age_label} ago. "
-            f"Pipeline may be blocked.</i>"
-        )
+    # Freshness alarm on the CANDIDATE store — the file the T-30 chain
+    # actually consumes. (The old alarm keyed on betting_slip.json /
+    # unified_bet_slip.json, both dead since June: it cried "pipeline may be
+    # blocked" every morning over files nothing writes anymore.)
+    try:
+        _cand = _load_json(DATA_DIR / "upcoming" / "betting_candidates.json")
+        _cgen = (_cand or {}).get("generated_at") or ""
+        _cage = (datetime.now() - datetime.fromisoformat(str(_cgen))).total_seconds() / 3600
+        if _cage > 28:
+            _lbl = f"{_cage:.0f}h" if _cage < 72 else f"{_cage / 24:.0f}d"
+            tg.raw(f"  ⚠️ <i>Candidate store stale ({_lbl}) — "
+                   f"morning pipeline may be blocked.</i>")
+    except (ValueError, TypeError, OSError):
+        tg.raw("  ⚠️ <i>Candidate store unreadable — morning pipeline may "
+               "not have run.</i>")
 
     # --- Systems ---
     try:
