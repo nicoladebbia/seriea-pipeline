@@ -2004,6 +2004,7 @@ def _handle_help() -> str:
     tg.raw("  /today \u2014 today's matches + predictions")
     tg.raw("  /match \u2014 tap a match for full analysis")
     tg.raw("  /live \u2014 live scores + your bets")
+    tg.raw("  /fill \u2014 ticket lines + confirm a fill (/fill 2 1.95)")
     tg.raw("  /league \u2014 filter by league (EPL, Serie A)")
     tg.blank()
     tg.raw("<b>Reports:</b>")
@@ -2063,6 +2064,102 @@ def _handle_match(token: str, chat_id: str) -> bool:
         return False
 
 
+def _resolve_ticket_num(num: str):
+    """Resolve a T-30 ticket line number to (bet_id, match).
+
+    The order ticket's \u2713/\u2717 buttons and /fill carry the day-unique
+    line number, mapped to bet_ids in data/pipeline/t30_ticket_state.json.
+    Returns (None, reason) for a stale/unknown number -- old buttons tapped
+    on a later day must fail safely, never touch the wrong bet.
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+    marker = _Path(__file__).parent.parent.parent / "data" / "pipeline" / "t30_ticket_state.json"
+    try:
+        st = _json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return None, "No ticket on record today."
+    if st.get("date") != _dt.now().strftime("%Y-%m-%d"):
+        return None, "That ticket expired \u2014 numbers reset daily."
+    entry = (st.get("bets") or {}).get(str(num))
+    if isinstance(entry, dict) and entry.get("bet_id"):
+        return entry["bet_id"], entry.get("match", "?")
+    return None, f"No ticket line {num} today."
+
+
+def _record_fill(num: str, placed: bool, odds: float | None = None) -> str:
+    """Mark a ticket line placed/missed on its EXISTING journal row.
+
+    Annotation only -- mark_bet_fill never creates rows, never touches
+    stake/odds/status. Returns the human confirmation string.
+    """
+    bet_id, info = _resolve_ticket_num(num)
+    if not bet_id:
+        return info
+    try:
+        from scripts.betting.bet_journal import mark_bet_fill
+        r = mark_bet_fill(bet_id, "placed" if placed else "missed",
+                          filled_odds=odds)
+    except (OSError, ValueError, KeyError) as e:
+        log.warning("Fill record failed for %s: %s", bet_id, e)
+        return "Could not write the fill \u2014 try again or check the journal."
+    if not r.get("ok"):
+        return r.get("error", "Fill not recorded.")
+    if placed:
+        at = r.get("filled_odds")
+        return (f"\u2713 {num}\u00b7 placed @ {at:.2f} \u2014 {info}" if at
+                else f"\u2713 {num}\u00b7 placed \u2014 {info}")
+    return f"\u2717 {num}\u00b7 missed \u2014 {info}. Stays in the journal, drops from verified ROI."
+
+
+def _handle_fill_command(text: str) -> str:
+    """/fill <n> <odds> -- confirm a ticket line at the price actually got.
+    /fill alone lists today's ticket lines and their fill states."""
+    parts = text.split()
+    if len(parts) >= 2:
+        num = parts[1].strip()
+        odds = None
+        if len(parts) >= 3:
+            try:
+                odds = float(parts[2].replace(",", "."))
+            except ValueError:
+                return "Usage: <code>/fill 2 1.95</code> (line number, then odds)"
+            if not 1.01 <= odds <= 50:
+                return f"Odds {odds} out of range \u2014 expected 1.01\u201350."
+        return _record_fill(num, placed=True, odds=odds)
+    # Bare /fill: show today's ticket state
+    import json as _json
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+    marker = _Path(__file__).parent.parent.parent / "data" / "pipeline" / "t30_ticket_state.json"
+    try:
+        st = _json.loads(marker.read_text())
+        assert st.get("date") == _dt.now().strftime("%Y-%m-%d")
+        entries = st.get("bets") or {}
+        assert entries
+    except (OSError, ValueError, AssertionError):
+        return "No ticket today. Lines appear here once the T-30 ticket fires."
+    try:
+        from scripts.betting.bet_journal import get_pending_bets
+        rows = {b.get("bet_id"): b for b in get_pending_bets(include_superseded=False)}
+    except Exception:
+        rows = {}
+    lines = ["<b>Today's ticket lines</b>"]
+    icon = {"placed": "\u2713", "missed": "\u2717", "unverified": "\u26a0"}
+    for num in sorted(entries, key=lambda x: int(x) if x.isdigit() else 0):
+        e = entries[num]
+        if not isinstance(e, dict):
+            continue
+        b = rows.get(e.get("bet_id"), {})
+        fs = b.get("fill_status")
+        tag = f" {icon.get(fs, '')} {fs}" if fs else " \u00b7 unconfirmed"
+        sel = b.get("selection", "")
+        lines.append(f"{num}\u00b7 {e.get('match', '?')} \u2014 {sel}{tag}")
+    lines.append("\nConfirm: tap the ticket buttons, or <code>/fill &lt;n&gt; &lt;odds&gt;</code>.")
+    return "\n".join(lines)
+
+
 def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
                            conversation: ConversationManager) -> str | None:
     """Handle inline keyboard button presses.
@@ -2071,7 +2168,7 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
     """
     query_id = callback_query.get("id", "")
     data = callback_query.get("data", "")
-    message_id = callback_query.get("message", {}).get("message_id", 0)
+    _message_id = callback_query.get("message", {}).get("message_id", 0)  # noqa: F841 — kept for future message edits
 
     # Default: silent answer to remove loading spinner
     answer_text = ""
@@ -2166,44 +2263,29 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
         return f"Analyze {match_name} — full prediction, value assessment, should I bet?{ex_context}"
 
     if data.startswith("place:"):
-        # Quick-place bet from notification button
-        parts = data[len("place:"):].split("|")
-        if len(parts) >= 3:
-            match, selection, odds = parts[0], parts[1], parts[2]
-            try:
-                from scripts.betting.bet_journal import add_bet
-                bet_data = {
-                    "match": match,
-                    "selection": selection,
-                    "odds": float(odds),
-                    "market": "1X2" if selection in ("Home", "Draw", "Away") else "O/U",
-                    "date": "",
-                    "stake": 0,
-                    "placed_at": __import__("datetime").datetime.now().isoformat(),
-                }
-                add_bet(bet_data)
-                # Show confirmation popup (user must dismiss)
-                _tg_request(token, "answerCallbackQuery", {
-                    "callback_query_id": query_id,
-                    "text": f"\u2705 Bet recorded: {selection} @{odds}",
-                    "show_alert": True,
-                }, timeout=5)
-                # Edit the original message to mark this bet as placed
-                if message_id:
-                    _edit_message(token, chat_id, message_id,
-                                  f"\u2705 <b>Bet placed:</b> {match}\n"
-                                  f"{selection} @{odds}\n\n"
-                                  f"<i>Recorded in journal. Confirm stake on dashboard.</i>")
-                return None  # Already handled
-            except Exception as e:
-                _tg_request(token, "answerCallbackQuery", {
-                    "callback_query_id": query_id,
-                    "text": f"\u274c Failed: {str(e)[:50]}",
-                    "show_alert": True,
-                }, timeout=5)
-                return None
-        _tg_request(token, "answerCallbackQuery", {"callback_query_id": query_id}, timeout=5)
-        return "\u274c Invalid bet data"
+        # RETIRED 2026-08-27. This button used to call add_bet() with stake 0,
+        # an empty date, and a GUESSED market \u2014 writing a duplicate junk row
+        # into bet_journal.json (the ledger source of truth) from a phone tap.
+        # The T-30 chain journals the real bet; the order ticket is the record.
+        # Handler kept only so taps on old messages fail safely.
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id,
+            "text": "Button retired \u2014 the T-30 order ticket is the record.",
+            "show_alert": True,
+        }, timeout=5)
+        return None
+
+    if data.startswith("fill:") or data.startswith("miss:"):
+        placed = data.startswith("fill:")
+        num = data.split(":", 1)[1]
+        result = _record_fill(num, placed=placed)
+        _tg_request(token, "answerCallbackQuery", {
+            "callback_query_id": query_id,
+            "text": result[:190],
+            "show_alert": not result.startswith(("\u2713", "\u2717")),
+        }, timeout=5)
+        # Confirmations land in the chat too -- the ticket thread is the record.
+        return result
 
     if data.startswith("skip:"):
         parts = data[len("skip:"):].split("|")
@@ -2213,7 +2295,7 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             "callback_query_id": query_id,
             "text": f"Skipped {selection}",
         }, timeout=5)
-        return f"\u274c Skipped: {match} {selection}. Good discipline \u2014 only bet when you're sure."
+        return f"Noted \u2014 skipped {match} {selection}."
 
     if data.startswith("week:"):
         week_key = data[len("week:"):]
@@ -4062,6 +4144,8 @@ def run_bot():
                 elif cmd == "/bankroll":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_bankroll()
+                elif cmd == "/fill":
+                    response_text = _handle_fill_command(text)
                 elif cmd == "/today" or cmd == "/matches":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_today(token=token, chat_id=chat_id)

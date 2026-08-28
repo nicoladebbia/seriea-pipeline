@@ -866,6 +866,121 @@ def _nag_vpn_for_betfair() -> None:
         log.debug("VPN nag failed: %s", e)
 
 
+_T30_MARKER = Path("data/pipeline/t30_ticket_state.json")
+
+
+def _t30_state() -> dict:
+    """Today's ticket/notice state: which matches already got one, plus the
+    day-unique ticket line numbers ("bets": {"1": {"bet_id", "match"}, ...})
+    that the Telegram \u2713/\u2717 confirm buttons, /fill, the T-10 nudge and
+    the post-kickoff unverified sweep all resolve against."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        st = json.loads(_T30_MARKER.read_text())
+        if st.get("date") == today:
+            st.setdefault("matches", [])
+            st.setdefault("bets", {})
+            return st
+    except (OSError, ValueError):
+        pass
+    return {"date": today, "matches": [], "bets": {}}
+
+
+def _t30_mark(matches, bets: dict | None = None) -> None:
+    st = _t30_state()
+    st["matches"] = sorted(set(st["matches"]) | set(matches))
+    if bets:
+        st["bets"].update({str(k): v for k, v in bets.items()})
+    try:
+        _T30_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _T30_MARKER.write_text(json.dumps(st))
+    except OSError as e:
+        log.debug("t30 marker write failed: %s", e)
+
+
+def _min_acceptable_odds(bet: dict) -> float | None:
+    """Odds at which this bet's edge falls to its market's selection bar —
+    below it, the bet the engine committed is no longer value and should not
+    be placed. Inverts the engine's own formula (edge = model_prob*odds - 1)
+    using the journaled model_prob and the market_rules bar (line-aware,
+    e.g. O/U 2.5 gates at 7.0 while the class base is 5.0). Uses the BASE
+    bar, not the confidence-adjusted one — slightly conservative for HIGH
+    bets, which is the safe direction for a manual fill.
+    """
+    import re as _re
+    try:
+        p = float(bet.get("model_prob") or 0)
+        if p <= 0:
+            return None
+        from scripts.betting.betting_unified import BettingConfig
+        rules = BettingConfig.for_league(str(bet.get("league") or "serie_a")).market_rules
+        market = str(bet.get("market") or "")
+        sel = str(bet.get("selection") or "").upper()
+        mu = market.upper()
+        if mu.startswith(("O/U", "ALT", "OVER", "UNDER")):
+            cls = "O/U_Under" if "UNDER" in sel else "O/U_Over"
+        elif mu.startswith("1X2"):
+            cls = "1X2_Draw" if "DRAW" in sel else ("1X2_Away" if "AWAY" in sel else "1X2")
+        else:
+            cls = "O/U_Over"
+        mc = rules.get(cls, {})
+        eff = float(mc.get("min_edge_pct", 5.0))
+        m = _re.search(r"(\d+(?:\.\d+)?)", market)
+        if m:
+            line = float(m.group(1))
+            lm = mc.get("line_min_edge") or {}
+            if line in lm:
+                eff = float(lm[line])
+        return round((1.0 + eff / 100.0) / p, 2)
+    except Exception as e:
+        log.debug("min-odds floor unavailable: %s", e)
+        return None
+
+
+def _send_t30_ticket(pre_ids: set, imminent: list, odds_map: dict, confirmed: dict) -> None:
+    """Step 5c: the ORDER TICKET — or the no-action notice — at commit time.
+
+    A ticket fires when Step 5 journaled new bets (diff vs pre_ids), covering
+    every match in the window in one message. The no-action notice fires once
+    per match per day when an imminent match produced no bets — silence being
+    indistinguishable from a dead chain. Never raises into the pipeline.
+    """
+    try:
+        from scripts.betting.bet_journal import get_pending_bets
+        pending = get_pending_bets(include_superseded=False)
+        new = [b for b in pending if b.get("bet_id") not in pre_ids]
+        state_matches = set(_t30_state()["matches"])
+        if new:
+            st = _t30_state()
+            next_num = max((int(k) for k in st["bets"]), default=0) + 1
+            num_map = {}
+            for b in new:
+                mk = b.get("match", "")
+                od = (odds_map or {}).get(mk, {}) if isinstance(odds_map, dict) else {}
+                b["_kickoff"] = od.get("commence_time", "")
+                b["_xi_confirmed"] = mk in (confirmed or {})
+                b["_floor_odds"] = _min_acceptable_odds(b)
+                b["_resend"] = mk in state_matches
+                b["_num"] = next_num
+                num_map[str(next_num)] = {"bet_id": b.get("bet_id", ""), "match": mk}
+                next_num += 1
+            from scripts.pipeline.notify import notify_order_ticket
+            notify_order_ticket(new)
+            print(f"  Order ticket sent: {len(new)} bet(s)")
+            _t30_mark({b.get("match", "") for b in new}, bets=num_map)
+            return
+        pending_matches = {b.get("match") for b in pending}
+        quiet = [m for m in (imminent or [])
+                 if m not in pending_matches and m not in state_matches]
+        if quiet:
+            from scripts.pipeline.notify import notify_no_action
+            notify_no_action(quiet)
+            print(f"  No-action notice sent for {len(quiet)} match(es)")
+            _t30_mark(quiet)
+    except Exception as e:
+        log.warning("T-30 ticket step failed: %s", e)
+
+
 def run_pre_kickoff(bankroll: float = 1000.0):
     """Run a focused pre-kickoff pipeline for imminent matches.
 
@@ -896,10 +1011,10 @@ def run_pre_kickoff(bankroll: float = 1000.0):
 
     # Step 2: Classify match windows
     step(2, total, "Classifying Match Windows")
+    imminent = []
+    approaching = []
     try:
         from scripts.utils.match_timing import classify_match_window
-        imminent = []
-        approaching = []
         for match_key, data in odds.items():
             ct = data.get("commence_time", "")
             window = classify_match_window(ct)
@@ -951,6 +1066,15 @@ def run_pre_kickoff(bankroll: float = 1000.0):
 
     # Step 5: Regenerate betting recommendations
     step(5, total, "Regenerating Betting Recommendations")
+    # Snapshot pending bet ids BEFORE the engine runs — the diff after Step 5
+    # is exactly the set of bets THIS run committed, and drives the order
+    # ticket in Step 5c regardless of which path journaled them
+    # (save_report/save_bet_slip or _archive_bets).
+    try:
+        from scripts.betting.bet_journal import get_pending_bets as _gpb
+        _pre_ids = {b.get("bet_id") for b in _gpb(include_superseded=False)}
+    except Exception:
+        _pre_ids = set()
     report = None
     try:
         from scripts.betting.betting_unified import generate_unified_report, save_report
@@ -963,6 +1087,12 @@ def run_pre_kickoff(bankroll: float = 1000.0):
             _archive_bets(report["bets"], report.get("generated_at", ""))
     except Exception as e:
         print(f"  Betting engine warning: {e}")
+
+    # Step 5c: ORDER TICKET at the commit moment (or the no-action notice).
+    # Before 2026-08-27 this moment was mute: the briefing came from the
+    # scheduler's separate 15-min poll, briefed only the most imminent match,
+    # and carried no book / floor price / payout.
+    _send_t30_ticket(_pre_ids, imminent, odds, confirmed)
 
     # Step 5b: Betfair exchange snapshot at T-30 — the exchange close is the
     # sharpest public line, so this is the CLV benchmark captured at the moment
@@ -1282,13 +1412,6 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     print(f"\n  Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Mode: {mode_label}")
     print(f"  Bankroll: ${bankroll:.2f}")
-
-    # Notify pipeline start
-    try:
-        from scripts.pipeline.notify import notify_pipeline_start
-        notify_pipeline_start()
-    except Exception:
-        pass
 
     # Archive previous predictions before they get overwritten
     try:
@@ -2499,23 +2622,6 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     banner("PIPELINE COMPLETE")
     print(f"\n  Elapsed Time: {elapsed:.1f} seconds")
     print(f"  Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    # Notify pipeline complete
-    try:
-        from scripts.pipeline.notify import notify_pipeline_done
-        n_preds = len(predictions) if predictions else 0
-        n_vbets = report["summary"].get("total_bets", 0) if report else 0
-        notify_pipeline_done(n_predictions=n_preds, n_value_bets=n_vbets, elapsed_sec=elapsed)
-    except Exception:
-        pass
-
-    # Morning briefing — send if this is the morning run (before noon)
-    try:
-        if datetime.now().hour < 12:
-            from scripts.pipeline.notify import notify_morning_briefing
-            notify_morning_briefing()
-    except Exception:
-        pass
 
     if report:
         print("\n" + "=" * 70)

@@ -1067,23 +1067,15 @@ def poll_once() -> Dict:
 
         # ── Kickoff notification (transition into first_half) ──
         if status == "first_half" and prev_status in ("pre_match", None) and not match_entry.get("_kickoff_notified"):
-            try:
-                from scripts.pipeline.notify import notify_kickoff
-                bet_ctx = _get_bet_context(mk, home_score, away_score, minute)
-                notify_kickoff(mk, bet_context=bet_ctx)
-                match_entry["_kickoff_notified"] = True
-            except Exception:
-                pass  # Don't mark as notified — retry next cycle
+            # Kickoff ping removed (2026-08-27): it repeated the T-30 order
+            # ticket half an hour later with less detail; the goal thread
+            # takes over seconds after the whistle. Flag kept for state flow.
+            match_entry["_kickoff_notified"] = True
 
-        # ── Half-time notification ──
+        # Half-time ping removed (2026-08-27): the goal thread already carries
+        # the score at every change; a no-goal heartbeat earned no interrupt.
         if status == "half_time" and prev_status != "half_time" and not match_entry.get("_ht_notified"):
-            try:
-                from scripts.pipeline.notify import notify_halftime
-                bet_ctx = _get_bet_context(mk, home_score, away_score, 45)
-                notify_halftime(mk, home_score, away_score, bet_context=bet_ctx)
-                match_entry["_ht_notified"] = True
-            except Exception:
-                pass  # Don't mark as notified — retry next cycle
+            match_entry["_ht_notified"] = True
 
         if completed:
             match_entry["final_score"] = [home_score, away_score]

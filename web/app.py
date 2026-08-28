@@ -6031,15 +6031,7 @@ def api_refresh_snapshot():
             result = run_single_snapshot()
             log.info(f"Snapshot complete: {result}")
 
-            # Notify odds snapshot complete
-            try:
-                from scripts.pipeline.notify import notify_odds_snapshot
-                notify_odds_snapshot(
-                    n_matches=result.get("matches", 0) if isinstance(result, dict) else 0,
-                    n_bookmakers=result.get("bookmakers", 0) if isinstance(result, dict) else 0,
-                )
-            except Exception:
-                pass
+            # Odds snapshots are routine — log only (builder was a no-op; removed 2026-08-27)
         except Exception as e:
             log.error(f"Snapshot failed: {e}")
         finally:
@@ -6361,15 +6353,7 @@ def _scheduler_loop():
                     result = run_single_snapshot()
                     _scheduler_add_log("snapshot_done", f"{result.get('matches', 0)} matches, {result.get('steam_moves', 0)} steam")
 
-                    # Notify odds snapshot
-                    try:
-                        from scripts.pipeline.notify import notify_odds_snapshot
-                        notify_odds_snapshot(
-                            n_matches=result.get("matches", 0) if isinstance(result, dict) else 0,
-                            n_bookmakers=result.get("bookmakers", 0) if isinstance(result, dict) else 0,
-                        )
-                    except Exception:
-                        pass
+                    # Odds snapshots are routine — log only (builder was a no-op; removed 2026-08-27)
                 except Exception as e:
                     _scheduler_add_log("snapshot_error", str(e))
                 last_snapshot = now_ts
@@ -6872,34 +6856,10 @@ def api_settle():
             except Exception as e:
                 log.debug(f"Settlement notification failed: {e}")
 
-            # Bankroll milestone and drawdown notifications
-            try:
-                from scripts.pipeline.notify import notify_bankroll_milestone, notify_drawdown
-                old_balance = summary.get("old_balance", summary.get("previous_balance", 0)) or 0
-                new_balance = summary.get("balance", summary.get("bankroll", 0)) or 0
-                if old_balance and new_balance:
-                    notify_bankroll_milestone(old_balance, new_balance)
-
-                # Drawdown check: if drawdown from peak > 15%
-                peak = summary.get("peak_balance", 0) or 0
-                if not peak:
-                    # Try to load peak from bankroll files
-                    try:
-                        _br = _load_json(BETTING_DIR / "bankroll.json")
-                        _bs = _load_json(BANKROLL_DIR / "state.json")
-                        peak = max(
-                            _br.get("peak_balance", 0),
-                            _bs.get("peak_bankroll", 0),
-                            new_balance,
-                        )
-                    except Exception:
-                        peak = new_balance
-                if peak > 0 and new_balance > 0:
-                    dd_pct = (peak - new_balance) / peak * 100
-                    if dd_pct > 15:
-                        notify_drawdown(new_balance, peak, dd_pct)
-            except Exception as e:
-                log.debug(f"Bankroll milestone/drawdown notification failed: {e}")
+            # Milestone/drawdown pings removed (2026-08-27): milestone was
+            # vanity (the settlement card shows the balance) and the standalone
+            # drawdown builder had been a deliberate no-op since Apr 24 — the
+            # settlement card and daily digest carry drawdown inline.
         except Exception as e:
             log.error(f"Auto-settle failed: {e}")
             _settle_result = {
@@ -7051,11 +7011,10 @@ def _auto_settle_loop():
                     log.info("Auto-settle: settled %d bets | P&L: %+.2f | Balance: %.2f",
                              settled, summary.get("profit", 0), summary.get("new_balance", 0))
 
-                    # Settlement, bankroll milestone, and drawdown notifications
+                    # Settlement notification (milestone/drawdown pings removed
+                    # 2026-08-27 — the settlement card carries drawdown inline)
                     try:
-                        from scripts.pipeline.notify import (
-                            notify_settlement, notify_bankroll_milestone, notify_drawdown,
-                        )
+                        from scripts.pipeline.notify import notify_settlement
                         won = summary.get("won", 0)
                         lost = summary.get("lost", 0)
                         push = summary.get("push", 0)
@@ -7065,22 +7024,6 @@ def _auto_settle_loop():
                             settled=settled, won=won, lost=lost, push=push,
                             profit=profit, balance=new_balance,
                         )
-                        old_balance = summary.get("old_balance", summary.get("previous_balance", 0)) or 0
-                        if old_balance and new_balance:
-                            notify_bankroll_milestone(old_balance, new_balance)
-                        # Drawdown check
-                        peak = summary.get("peak_balance", 0) or 0
-                        if not peak:
-                            try:
-                                _br = _load_json(BETTING_DIR / "bankroll.json")
-                                _bs = _load_json(BANKROLL_DIR / "state.json")
-                                peak = max(_br.get("peak_balance", 0), _bs.get("peak_bankroll", 0), new_balance)
-                            except Exception:
-                                peak = new_balance
-                        if peak > 0 and new_balance > 0:
-                            dd_pct = (peak - new_balance) / peak * 100
-                            if dd_pct > 15:
-                                notify_drawdown(new_balance, peak, dd_pct)
                     except Exception as e:
                         log.debug("Auto-settle notification failed: %s", e)
                 else:

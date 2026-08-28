@@ -758,6 +758,37 @@ def get_journal_stats() -> Dict:
         elif b["status"] == "push":
             by_market[m]["pushes"] += 1
 
+    # Bets contested or settled today -- the settlement card and day wrap
+    # read this key (it was read for months before it existed; see 2026-08-28).
+    _today = datetime.now().strftime("%Y-%m-%d")
+    settled_today = [
+        b for b in settled
+        if (b.get("date") or "").startswith(_today)
+        or (str(b.get("settled_at") or ""))[:10] == _today
+    ]
+
+    # Trailing W/L streak over decisive results (pushes/voids neither
+    # break nor extend a streak). Consumed by the scheduler's post-settlement
+    # loss-streak alert -- these keys were read there long before they existed.
+    decisive = sorted(
+        (b for b in settled if b["status"] in ("won", "lost")),
+        key=lambda b: b.get("settled_at") or b.get("date") or "",
+    )
+    current_streak = 0
+    streak_loss = 0.0
+    recent_losses = []
+    if decisive:
+        last_status = decisive[-1]["status"]
+        run = []
+        for b in reversed(decisive):
+            if b["status"] != last_status:
+                break
+            run.append(b)
+        current_streak = len(run) if last_status == "won" else -len(run)
+        if last_status == "lost":
+            streak_loss = round(sum(b.get("stake", 0) or 0 for b in run), 2)
+            recent_losses = list(reversed(run[:5]))  # most recent last
+
     return {
         "total_bets": len(bets),
         "pending": len(pending),
@@ -772,7 +803,84 @@ def get_journal_stats() -> Dict:
         "clv_positive": positive_clv,
         "clv_total": len(clv_bets),
         "by_market": by_market,
+        "current_streak": current_streak,
+        "streak_loss": streak_loss,
+        "recent_losses": recent_losses,
+        "settled_today": settled_today,
     }
+
+
+# =============================================================================
+# FILL TIER -- what was actually placed at the book (two-tier ledger)
+# =============================================================================
+# The journal row records what the ENGINE committed (model tier: stake, odds,
+# edge -- never rewritten). These functions annotate the SAME row with what
+# happened at the book. They never create rows, never touch stake/odds/status,
+# and never alter settlement math -- verified-vs-journal comparisons are
+# computed by readers (proof-of-edge card) from the annotations.
+
+FILL_STATUSES = ("placed", "missed", "unverified")
+
+
+@_with_journal_lock
+def mark_bet_fill(bet_id: str, fill_status: str,
+                  filled_odds: float | None = None) -> dict:
+    """Annotate an existing journal row with its real-world fill state.
+
+    fill_status: "placed" (bet was placed at the book; filled_odds records the
+    actual price, defaulting to the committed odds), "missed" (never placed),
+    or "unverified" (kickoff passed with no confirmation -- set by the sweep).
+    Re-marking is allowed (a mis-tap is corrected by tapping again), EXCEPT
+    that the sweep's "unverified" never overwrites an explicit answer.
+    """
+    if fill_status not in FILL_STATUSES:
+        return {"ok": False, "error": f"invalid fill_status: {fill_status}"}
+    journal = _load_journal()
+    bet = journal["bets"].get(bet_id)
+    if bet is None:
+        return {"ok": False, "error": f"no such bet: {bet_id}"}
+    if fill_status == "unverified" and bet.get("fill_status") in ("placed", "missed"):
+        return {"ok": True, "bet_id": bet_id, "fill_status": bet["fill_status"],
+                "note": "explicit answer stands"}
+    bet["fill_status"] = fill_status
+    if fill_status == "placed":
+        try:
+            odds = float(filled_odds) if filled_odds else float(bet.get("odds") or 0)
+        except (TypeError, ValueError):
+            odds = float(bet.get("odds") or 0)
+        if odds > 0:
+            bet["filled_odds"] = round(odds, 2)
+    else:
+        bet.pop("filled_odds", None)
+    bet["fill_updated_at"] = datetime.now().isoformat()
+    _save_journal(journal)
+    log.info("Fill recorded: %s -> %s%s", bet_id, fill_status,
+             f" @ {bet.get('filled_odds')}" if bet.get("filled_odds") else "")
+    return {"ok": True, "bet_id": bet_id, "fill_status": fill_status,
+            "filled_odds": bet.get("filled_odds")}
+
+
+@_with_journal_lock
+def sweep_unverified_fills(bet_ids) -> int:
+    """After kickoff: any of these bets with no fill answer is flagged
+    "unverified" -- it stays in the journal (model tier intact) but drops out
+    of verified ROI/CLV. Explicit placed/missed answers are never overwritten.
+    Returns the number of rows flagged.
+    """
+    journal = _load_journal()
+    flagged = 0
+    now = datetime.now().isoformat()
+    for bid in bet_ids or []:
+        bet = journal["bets"].get(bid)
+        if bet is None or bet.get("fill_status"):
+            continue
+        bet["fill_status"] = "unverified"
+        bet["fill_updated_at"] = now
+        flagged += 1
+    if flagged:
+        _save_journal(journal)
+        log.info("Fill sweep: %d bet(s) flagged unverified", flagged)
+    return flagged
 
 
 # =============================================================================

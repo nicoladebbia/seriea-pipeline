@@ -491,6 +491,23 @@ MATCH_CLOCK_STAGES = [
         "window": (-150, -105), # Trigger 105-150 min after kickoff
         "description": "Post-match settlement check",
     },
+    {
+        # Fill-verification tier (two-tier ledger). (0, 15) guarantees exactly
+        # one 15-min monitor tick lands in the window; the nudge itself only
+        # fires if ticket lines are still unanswered.
+        "name": "fill_nudge_T10",
+        "minutes_before": 10,
+        "window": (0, 15),
+        "description": "T-10 unconfirmed-fill nudge",
+    },
+    {
+        # After kickoff: unanswered ticket lines get flagged "unverified" in
+        # the journal (fill tier only -- model tier and settlement untouched).
+        "name": "fill_verify_close",
+        "minutes_before": -10,
+        "window": (-95, -3),
+        "description": "Flag unanswered fills unverified",
+    },
 ]
 
 # How far ahead the match clock looks. Widened from "today only" to 80h so the
@@ -858,9 +875,12 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                         if both_confirmed:
                             confirmed_matches.add(mk)
 
+                # No standalone lineup blast (2026-08-27): full XIs are
+                # dashboard material; the order ticket carries an "XI ✓" flag
+                # per match instead.
                 if confirmed_matches:
-                    from scripts.pipeline.notify import notify_lineups_confirmed
-                    notify_lineups_confirmed(matches=", ".join(confirmed_matches))
+                    log.info("Lineups confirmed for %s (no notification — ticket carries the flag)",
+                             ", ".join(confirmed_matches))
 
                 # Mark matches WITHOUT confirmed lineups for retry
                 for mk in actions_needed["lineup_fetch"]:
@@ -890,28 +910,13 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
         log.info("Match clock: re-predicting for %s", matches_str)
         success = run_pre_kickoff(bankroll)
         if success:
-            # Send ONE consolidated pre-kickoff notification (not 3-5 separate ones)
-            # Only the bet briefing if user has bets, otherwise just predictions ready
-            try:
-                from scripts.betting.live_bet_context import get_match_bet_context
-                from scripts.pipeline.notify import notify_pre_kickoff_bets
-                matches_with_bets = []
-                for match_key in actions_needed["prediction_update"]:
-                    ctx = get_match_bet_context(match_key)
-                    if ctx["has_bets"]:
-                        matches_with_bets.append((match_key, ctx))
-
-                if matches_with_bets:
-                    # Send bet briefing for the first match only (most imminent)
-                    # The briefing already includes all relevant info
-                    mk, ctx = matches_with_bets[0]
-                    notify_pre_kickoff_bets(mk, bet_context=ctx)
-                else:
-                    # No bets — just a brief predictions-ready note
-                    from scripts.pipeline.notify import notify_predictions_ready
-                    notify_predictions_ready(n_matches=len(actions_needed["prediction_update"]))
-            except Exception:
-                pass
+            # Notifications moved INTO run_pre_kickoff (2026-08-27): the order
+            # ticket fires at the journal-commit moment covering EVERY match in
+            # the window, and the no-action notice covers imminent matches that
+            # produced no bets. The old poller-side briefing raced the commit
+            # and briefed only the most imminent match.
+            log.info("Pre-kickoff run complete for %s (ticket/notice sent from the run itself)",
+                     ", ".join(actions_needed["prediction_update"]))
 
     # Stage 3: Settlement check
     if actions_needed["settlement_check"]:
@@ -920,10 +925,9 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
         try:
             settle_success = run_settle()
             if settle_success:
-                send_notification(
-                    f"Settlement check completed for: {matches_str}",
-                    "Match Clock: Settlement"
-                )
+                # Routine machine status: log only. The FT card carries the
+                # result; the day wrap carries the reconciliation.
+                log.info("Settlement check completed for: %s", matches_str)
         except Exception as e:
             log.warning("Settlement check failed: %s", e)
         # Player prop outcomes settle on the same clock (forward sample for the
@@ -935,6 +939,49 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                 log.info("Prop settlement: %s props settled", prop_result["total_settled"])
         except Exception as e:
             log.warning("Prop settlement failed (non-fatal): %s", e)
+
+    # Stage 4: T-10 unconfirmed-fill nudge (two-tier ledger).
+    # Only ticketed bets count -- the T-30 marker maps ticket numbers to
+    # bet_ids per match. If every line is answered, the stage stays silent.
+    if actions_needed.get("fill_nudge_T10"):
+        try:
+            from scripts.betting.bet_journal import get_pending_bets
+            from scripts.pipeline.notify import notify_fill_nudge
+            from scripts.pipeline.run_full_pipeline import _t30_state
+            ticketed = _t30_state().get("bets", {})
+            pending = get_pending_bets(include_superseded=False)
+            mins_by_match = {m["match"]: (m["kickoff_utc"] - now).total_seconds() / 60
+                            for m in horizon_matches}
+            for mk in actions_needed["fill_nudge_T10"]:
+                ids = {v.get("bet_id") for v in ticketed.values()
+                       if isinstance(v, dict) and v.get("match") == mk}
+                unconfirmed = [b for b in pending
+                               if b.get("bet_id") in ids and not b.get("fill_status")]
+                if unconfirmed:
+                    notify_fill_nudge(mk, len(unconfirmed),
+                                      minutes=int(mins_by_match.get(mk, 10)))
+                    log.info("Fill nudge sent: %s, %d unconfirmed", mk, len(unconfirmed))
+                else:
+                    log.info("Fill nudge skipped for %s: all lines answered", mk)
+        except Exception as e:
+            log.warning("Fill nudge stage failed (non-fatal): %s", e)
+
+    # Stage 5: post-kickoff unverified sweep. Unanswered ticket lines are
+    # flagged in the journal's fill tier; explicit answers are never touched.
+    if actions_needed.get("fill_verify_close"):
+        try:
+            from scripts.betting.bet_journal import sweep_unverified_fills
+            from scripts.pipeline.run_full_pipeline import _t30_state
+            ticketed = _t30_state().get("bets", {})
+            for mk in actions_needed["fill_verify_close"]:
+                ids = [v.get("bet_id") for v in ticketed.values()
+                       if isinstance(v, dict) and v.get("match") == mk]
+                if ids:
+                    n = sweep_unverified_fills(ids)
+                    if n:
+                        log.info("Fill sweep: %d bet(s) unverified for %s", n, mk)
+        except Exception as e:
+            log.warning("Fill sweep stage failed (non-fatal): %s", e)
 
     # Log summary
     total_triggered = sum(len(v) for v in actions_needed.values())
@@ -1272,6 +1319,80 @@ def run_post_matchday_ingest() -> dict:
         return {"error": str(e)}
 
 
+_DAY_WRAP_MARKER = DATA_DIR / "pipeline" / "day_wrap_state.json"
+_PROOF_MARKER = DATA_DIR / "pipeline" / "proof_of_edge_state.json"
+
+
+def _post_settlement_wrap(result: dict) -> None:
+    """RECONCILIATION consolidation: per-batch settlement cards stay silent;
+    ONE day-wrap card fires when the day's last open bet settles. A late
+    settlement after the wrap (postponed finish, void correction) falls back
+    to the classic settlement card so it is never silent. Never raises.
+    """
+    from scripts.pipeline.notify import notify_day_wrap, notify_settlement
+    from scripts.betting.bet_journal import get_journal_stats, get_pending_bets
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    balance = result.get("settlement", {}).get("balance", 0)
+    stats = get_journal_stats()
+    settled_today = stats.get("settled_today", []) or []
+
+    state = {}
+    try:
+        state = json.loads(_DAY_WRAP_MARKER.read_text())
+    except (OSError, ValueError):
+        pass
+
+    if state.get("date") == today and state.get("wrapped"):
+        s = result.get("settlement", {})
+        notify_settlement(
+            settled=s.get("settled", 0), won=s.get("won", 0),
+            lost=s.get("lost", 0), push=s.get("push", 0),
+            profit=s.get("profit", 0), balance=balance,
+            settled_bets=settled_today,
+        )
+        return
+
+    open_today = [b for b in get_pending_bets(include_superseded=False)
+                  if (b.get("date") or "9999") <= today]
+    if open_today:
+        log.info("Settlement: %d bet(s) still open today \u2014 day wrap deferred",
+                 len(open_today))
+        return
+
+    notify_day_wrap(settled_today, balance=balance)
+    try:
+        _DAY_WRAP_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _DAY_WRAP_MARKER.write_text(json.dumps({"date": today, "wrapped": True}))
+    except OSError as e:
+        log.debug("Day-wrap marker write failed: %s", e)
+
+
+def _maybe_proof_of_edge() -> None:
+    """Sunday >=22:00: the weekly proof-of-edge card, once per ISO week.
+
+    Hosted on the 5-min settlement tick because it is the one job guaranteed
+    alive on a Sunday evening. A week with no settled bets sends nothing but
+    still marks the week (no retry loop). Never raises.
+    """
+    try:
+        now = datetime.now()
+        if now.weekday() != 6 or now.hour < 22:
+            return
+        week = now.strftime("%G-W%V")
+        try:
+            if json.loads(_PROOF_MARKER.read_text()).get("week") == week:
+                return
+        except (OSError, ValueError):
+            pass
+        from scripts.pipeline.notify import notify_proof_of_edge
+        notify_proof_of_edge(days=7)
+        _PROOF_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _PROOF_MARKER.write_text(json.dumps({"week": week}))
+    except Exception as e:
+        log.debug("Proof-of-edge check failed: %s", e)
+
+
 def run_settle() -> bool:
     """Run post-match auto-settlement: fetch results, settle bets, track P&L.
 
@@ -1280,6 +1401,8 @@ def run_settle() -> bool:
 
     Only runs on match days. Uses scripts.betting.auto_settle orchestrator.
     """
+    _maybe_proof_of_edge()
+
     # Check for pending bets even on non-match days (late finishes, postponed games)
     has_pending = False
     try:
@@ -1306,27 +1429,13 @@ def run_settle() -> bool:
         alerts = result.get("alerts", [])
 
         if settled > 0:
-            # Use the coaching-style settlement notification with per-bet details
+            # Day-wrap consolidation: silent while bets remain open today,
+            # ONE reconciliation card when the last one settles (the FT card
+            # already carried each match's P&L in real time).
             try:
-                from scripts.pipeline.notify import notify_settlement
-                from scripts.betting.bet_journal import get_journal_stats
-                won = result.get("settlement", {}).get("won", 0)
-                lost = result.get("settlement", {}).get("lost", 0)
-                push = result.get("settlement", {}).get("push", 0)
-                balance = result.get("settlement", {}).get("balance", 0)
-                # Get today's settled bets for the rich summary
-                try:
-                    stats = get_journal_stats()
-                    settled_bets = stats.get("settled_today", [])
-                except Exception:
-                    settled_bets = None
-                notify_settlement(
-                    settled=settled, won=won, lost=lost, push=push,
-                    profit=profit, balance=balance,
-                    settled_bets=settled_bets,
-                )
+                _post_settlement_wrap(result)
             except Exception:
-                # Fallback to simple notification
+                # Fallback: never let a settlement pass unannounced
                 send_notification(
                     f"Settled {settled} bets | P&L: {'+'if profit >= 0 else ''}\u20ac{profit:.2f}",
                     title="Betting Pipeline Settlement"
@@ -1742,9 +1851,11 @@ def run_daemon(bankroll: float = 0, leagues: list = None):
 def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
     """Single pipeline run — morning or evening.
 
-    On success, calls notify_pipeline_run_with_picks which leads with the
-    actual value bets found (not run metadata). On failure, the standard
-    scheduler_run card fires with the error.
+    Success is silent (2026-08-27): the old picks card advertised stale-odds
+    candidates 12h before the T-30 commit — an invitation to place early, the
+    journal-measured −5% ROI path. Candidates surface as a count in the daily
+    digest; selections appear only on the T-30 order ticket. On failure the
+    standard scheduler_run card fires with the error.
     """
     if leagues is None:
         leagues = ACTIVE_LEAGUES
@@ -1764,8 +1875,8 @@ def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
         sched_name = "morning" if hour < 5 else "evening"
 
     try:
-        from scripts.pipeline.notify import notify_pipeline_run_with_picks
-        notify_pipeline_run_with_picks(
+        from scripts.pipeline.notify import notify_scheduler_run
+        notify_scheduler_run(
             name=sched_name,
             status="success" if success else "fail",
             duration_sec=elapsed,
