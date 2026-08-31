@@ -439,7 +439,8 @@ def apply_all_italian_standards():
     files_to_process = [
         DATA_DIR / "upcoming" / "over_under_bets.json",
         DATA_DIR / "upcoming" / "handicap_bets.json",
-        DATA_DIR / "betting" / "unified_report.json",
+        # data/betting/unified_report.json removed 2026-08-31: this loop kept
+        # re-stamping a February fossil so it always looked fresh
     ]
 
     results = {}

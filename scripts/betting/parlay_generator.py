@@ -703,12 +703,13 @@ def load_all_value_legs():
                     if isinstance(v, dict) and k not in goal_preds:
                         goal_preds[k] = v
 
-    # --- 1X2 from unified_report ---
-    unified = load_json_safe(BETTING_DIR / "unified_report.json")
-    for bet in unified.get("bets", []):
-        prob = bet.get("our_probability", 0) or 0
-        odds = bet.get("odds", 0) or 0
-        val = bet.get("value_pct", 0) or 0
+    # --- Singles from the live unified bet slip (ValueBet rows) ---
+    # (legacy data/betting/unified_report.json removed 2026-08-31)
+    unified = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
+    for bet in unified.get("selected_bets", []):
+        prob = bet.get("model_prob", 0) or 0
+        odds = bet.get("best_odds", 0) or 0
+        val = bet.get("edge_pct", 0) or 0
         if prob > 0 and odds > 1 and val >= MIN_LEG_VALUE_PCT:
             legs.append({
                 "match": bet.get("match", ""),
@@ -718,8 +719,8 @@ def load_all_value_legs():
                 "odds": round(odds, 2),
                 "probability": round(prob, 4),
                 "value_pct": round(val, 1),
-                "confidence": bet.get("confidence", "MEDIUM"),
-                "factors": bet.get("factors", []),
+                "confidence": bet.get("confidence_tier", "MEDIUM"),
+                "factors": [],
                 "source": "unified",
             })
 

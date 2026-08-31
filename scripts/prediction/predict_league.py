@@ -202,19 +202,18 @@ def load_all_value_bets(leagues: List[str]) -> List[Dict]:
     """
     all_bets = []
     for league in leagues:
-        # Serie A uses the default path
-        if league == "serie_a":
-            report_path = DATA_DIR / "betting" / "unified_report.json"
-        else:
-            report_path = DATA_DIR / "betting" / f"unified_report_{league}.json"
-
+        # One live slip for every league. The per-league
+        # data/betting/unified_report*.json files were never written by the
+        # current pipeline (the SA one froze in February) — removed 2026-08-31.
+        report_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
         if not report_path.exists():
             continue
 
         try:
             with open(report_path) as f:
                 report = json.load(f)
-            bets = report.get("bets", [])
+            bets = [b for b in report.get("selected_bets", [])
+                    if b.get("league", "serie_a") == league]
             for b in bets:
                 b.setdefault("league", league)
             all_bets.extend(bets)

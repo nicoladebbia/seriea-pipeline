@@ -3360,15 +3360,11 @@ def save_report(report: Dict):
     if slip and engine:
         save_bet_slip(slip, engine.all_bets)
     else:
-        # Fallback: save the report dict directly
-        import json
-        from pathlib import Path
-        output_path = Path("data/betting/unified_report.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Filter internal keys
-        clean = {k: v for k, v in report.items() if not k.startswith("_")}
-        output_path.write_text(json.dumps(clean, indent=2, default=str))
-        log.info("Saved report to %s", output_path)
+        # No slip/engine attached: nothing to journal. The old fallback wrote
+        # data/betting/unified_report.json — a legacy file that froze in
+        # February and was still read as "current bets" by a dozen consumers
+        # (removed 2026-08-31). Never resurrect it.
+        log.warning("save_report called without a slip — nothing written")
 
 
 def generate_betting_slip(include_parlays: bool = True) -> Dict:

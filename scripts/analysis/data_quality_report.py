@@ -301,7 +301,7 @@ def check_data_freshness() -> dict:
         "odds_full": DATA_DIR / "upcoming" / "odds_full.json",
         "injuries": DATA_DIR / "external" / "injuries",
         "player_xg_profiles": DATA_DIR / "features" / "player_xg_profiles.json",
-        "betting_report": DATA_DIR / "betting" / "unified_report.json",
+        "betting_report": DATA_DIR / "upcoming" / "unified_bet_slip.json",
     }
 
     freshness = {}

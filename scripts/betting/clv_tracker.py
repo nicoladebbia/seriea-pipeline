@@ -21,7 +21,7 @@ Workflow:
 Reads:
   data/betting/placed_bets.json (recorded at placement time)
   data/odds_snapshots/ (historical odds snapshots)
-  data/upcoming/ultimate_bet_slip.json
+  data/upcoming/unified_bet_slip.json
 Writes:
   data/betting/clv_history.json
   data/betting/placed_bets.json
@@ -101,7 +101,7 @@ def record_bet_placement(slip_path: Path = None) -> int:
     Returns number of new bets recorded.
     """
     if slip_path is None:
-        slip_path = DATA_DIR / "upcoming" / "ultimate_bet_slip.json"
+        slip_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
 
     if not slip_path.exists():
         log.warning("No bet slip found at %s", slip_path)

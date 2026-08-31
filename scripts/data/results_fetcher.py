@@ -380,16 +380,11 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
                 "_bet_id": jb.get("bet_id"),  # carry through for journal update
             })
     else:
-        # Fall back to unified_report.json
-        report_path = DATA_DIR / "betting" / "unified_report.json"
-        if not report_path.exists():
-            log.warning("No unified_report.json found - no bets to settle")
-            return {"settled": 0, "pending": 0}
-
-        with open(report_path) as f:
-            report = json.load(f)
-
-        bets = report.get("bets", [])
+        # The journal is the ONLY settlement source (CLAUDE.md ledger rules).
+        # The old fallback settled bets out of data/betting/unified_report.json,
+        # a report that froze in February — removed 2026-08-31.
+        log.warning("Settlement without the journal is not supported — nothing settled")
+        return {"settled": 0, "pending": 0}
     # Dedup: if pipeline re-ran and placed multiple bets on same match+market,
     # only settle the newest one (by bet_id / placed_at) to prevent double P&L.
     if use_journal and len(bets) > 1:

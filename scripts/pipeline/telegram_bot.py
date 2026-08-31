@@ -2320,10 +2320,10 @@ def _handle_callback_query(token: str, chat_id: str, callback_query: dict,
             seen = set()
 
             # Source 1: Pipeline unified report (has O/U, DC, 1X2)
-            report_path = _data / "betting" / "unified_report.json"
+            report_path = _data / "upcoming" / "unified_bet_slip.json"
             if report_path.exists():
                 report = _json.load(open(report_path))
-                for b in report.get("bets", []):
+                for b in report.get("selected_bets", []):
                     key = f"{b.get('match','')}_{b.get('selection','')}"
                     if key not in seen:
                         seen.add(key)

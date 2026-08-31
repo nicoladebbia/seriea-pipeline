@@ -3791,11 +3791,12 @@ def api_betting():
     league_filter = _get_league_filter()
 
     # ---- Load all data sources ----
-    # Primary: unified_bet_slip.json (written by current pipeline)
-    # Fallback: unified_report.json (legacy)
+    # unified_bet_slip.json is the only bet source. The legacy fallback to
+    # data/betting/unified_report.json (frozen in February) served six
+    # months-old bets as "current" on every zero-bet day — removed 2026-08-31.
     unified = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
-    if not unified or not unified.get("selected_bets"):
-        unified = _load_json(BETTING_DIR / "unified_report.json")
+    if not isinstance(unified, dict):
+        unified = {}
     # Normalize: unified_bet_slip uses "selected_bets", legacy uses "bets"
     if "selected_bets" in unified and "bets" not in unified:
         unified["bets"] = unified["selected_bets"]
@@ -3827,7 +3828,7 @@ def api_betting():
     epl_injuries_raw2 = _load_json(UPCOMING_DIR / "injuries_premier_league.json")
     risk_state = _load_json(BETTING_DIR / "risk_state.json")
     player_prop_vb = _load_json(UPCOMING_DIR / "player_prop_value_bets.json")
-    ultimate_slip = _load_json(UPCOMING_DIR / "ultimate_bet_slip.json")
+    ultimate_slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")  # rejected_bets consumer
     odds_fetched_at = odds_full.get("fetched_at", "") if isinstance(odds_full, dict) else ""
 
     # ---- Normalize into match-keyed dicts ----
@@ -4794,7 +4795,8 @@ def api_health():
         "predictions": UPCOMING_DIR / "predictions.json",
         "odds_full": UPCOMING_DIR / "odds_full.json",
         "market_intelligence": UPCOMING_DIR / "market_intelligence.json",
-        "unified_report": BETTING_DIR / "unified_report.json",
+        # key kept for API compatibility; the live bet artifact is the slip
+        "unified_report": UPCOMING_DIR / "unified_bet_slip.json",
         "bankroll": BETTING_DIR / "bankroll.json",
     }
 
@@ -5991,7 +5993,7 @@ def api_refresh_status():
                     (12, UPCOMING_DIR / "standings.json", "Generating standings..."),
                     (14, UPCOMING_DIR / "extended_markets.json", "Extended markets..."),
                     (18, UPCOMING_DIR / "over_under_bets.json", "Over/Under model..."),
-                    (22, BETTING_DIR / "unified_report.json", "Betting engine..."),
+                    (22, UPCOMING_DIR / "unified_bet_slip.json", "Betting engine..."),
                     (27, DATA_DIR / "performance_dashboard.json", "Dashboard..."),
                 ]
                 for step_num, fpath, msg in reversed(check_files):
@@ -10250,9 +10252,9 @@ def api_best_bets():
     league_filter = _get_league_filter()
 
     try:
-        # Load latest bets from unified report
-        report = _load_json(BETTING_DIR / "unified_report.json")
-        bets = _filter_by_league(report.get("bets", []), league_filter)
+        # Load latest bets from the live slip (legacy unified_report.json removed 2026-08-31)
+        report = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+        bets = _filter_by_league(report.get("selected_bets", []) if isinstance(report, dict) else [], league_filter)
 
         # Also check edge scan for newer discoveries
         scan = _load_json(BETTING_DIR / "edge_scan_latest.json")

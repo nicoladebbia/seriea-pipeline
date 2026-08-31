@@ -107,7 +107,7 @@ def check_data_freshness() -> Dict:
         "odds_data": DATA_DIR / "upcoming" / "odds.json",
         "predictions": DATA_DIR / "upcoming" / "predictions.json",
         "results": DATA_DIR / "upcoming" / "results.json",
-        "unified_report": DATA_DIR / "betting" / "unified_report.json",
+        "unified_report": DATA_DIR / "upcoming" / "unified_bet_slip.json",  # live slip (key kept)
         "bet_journal": DATA_DIR / "betting" / "bet_journal.json",
     }
 

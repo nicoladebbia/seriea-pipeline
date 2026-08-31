@@ -436,16 +436,16 @@ def generate_all_bet_reasoning(bets: List[Dict], match_contexts: Optional[Dict] 
 
 def load_and_analyze_bets() -> Dict:
     """Load current bets and generate AI reasoning for all."""
-    report_path = DATA_DIR / "betting" / "unified_report.json"
+    report_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
 
     if not report_path.exists():
-        log.error("No betting report found")
+        log.error("No bet slip found")
         return {"error": "No betting data available"}
 
     with open(report_path) as f:
         report = json.load(f)
 
-    bets = report.get("bets", [])
+    bets = report.get("selected_bets", [])
 
     if not bets:
         return {"error": "No bets in report"}

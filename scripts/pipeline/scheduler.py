@@ -1955,10 +1955,8 @@ def show_status():
     print("=" * 60)
     print()
 
-    # Check last run — prefer unified_bet_slip.json (current pipeline)
-    bet_slip = DATA_DIR / "upcoming" / "unified_bet_slip.json"
-    unified_report = DATA_DIR / "betting" / "unified_report.json"
-    report_path = bet_slip if bet_slip.exists() else unified_report
+    # Check last run — unified_bet_slip.json is the only bet artifact
+    report_path = DATA_DIR / "upcoming" / "unified_bet_slip.json"
     if report_path.exists():
         with open(report_path) as f:
             data = json.load(f)
