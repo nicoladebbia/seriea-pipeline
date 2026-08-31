@@ -27,7 +27,7 @@ advisor_bp = Blueprint("advisor", __name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, LIVE_DIR
 from scripts.utils.json_utils import load_json_safe
 USAGE_FILE = DATA_DIR / "api_usage.json"
 # Project root. Six call sites (Sofascore player stats, match incidents, matches,
@@ -42,48 +42,34 @@ _BASE = DATA_DIR.parent
 # ---------------------------------------------------------------------------
 
 def _get_bankroll() -> dict:
-    """Get bankroll from the freshest source.
+    """Bankroll view from ledger.get_metrics() — the one computation.
 
-    Two files exist:
-    - bankroll/state.json (updated by pipeline/manual)
-    - betting/bankroll.json (updated by settle flow)
-    We merge both, preferring the one with the higher 'updated_at' or file mtime.
+    Key names kept for existing callers. bankroll_growth_pct and
+    roi_on_stake_pct are SEPARATE named numbers — never conflate them.
     """
-    state = load_json_safe(BANKROLL_DIR / "state.json")
-    live = load_json_safe(BETTING_DIR / "bankroll.json")
-
-    # Determine which is fresher by file mtime
-    state_path = BANKROLL_DIR / "state.json"
-    live_path = BETTING_DIR / "bankroll.json"
-    state_mtime = state_path.stat().st_mtime if state_path.exists() else 0
-    live_mtime = live_path.stat().st_mtime if live_path.exists() else 0
-
-    # Build unified view — prefer live bankroll.json for balance and peak
-    # state.json peak_bankroll is stale (from old system) and unreliable
-    if live_mtime > state_mtime and live.get("current_balance"):
-        return {
-            "current_bankroll": live.get("current_balance"),
-            "initial_bankroll": live.get("initial_balance", state.get("initial_bankroll", 1000)),
-            "peak_bankroll": live.get("peak_balance", live.get("current_balance", 1000)),
-            "daily_pnl": state.get("daily_pnl", 0),
-            "total_bets": state.get("total_bets", 0),
-            "total_wins": state.get("total_wins", 0),
-            "current_streak": state.get("current_streak", 0),
-            "last_updated": live.get("updated_at", ""),
-            "source": "betting/bankroll.json",
-        }
-    else:
-        return {
-            "current_bankroll": state.get("current_bankroll", live.get("current_balance")),
-            "initial_bankroll": state.get("initial_bankroll", 1000),
-            "peak_bankroll": live.get("peak_balance", state.get("peak_bankroll", 1000)),
-            "daily_pnl": state.get("daily_pnl", 0),
-            "total_bets": state.get("total_bets", 0),
-            "total_wins": state.get("total_wins", 0),
-            "current_streak": state.get("current_streak", 0),
-            "last_updated": state.get("last_updated", ""),
-            "source": "bankroll/state.json",
-        }
+    try:
+        from scripts.betting.ledger import get_metrics
+        m = get_metrics(include_alerts=False)
+    except (ImportError, OSError, ValueError, KeyError, TypeError):
+        return {}
+    mb, rec = m["bankroll"], m["record"]
+    return {
+        "current_bankroll": mb["current"],
+        "initial_bankroll": mb["initial"],
+        "peak_bankroll": mb["peak"],
+        "lowest_bankroll": mb["lowest"],
+        "available": mb["available"],
+        "pending_stakes": mb["pending_stakes"],
+        "drawdown_pct": mb["drawdown_pct"],
+        "bankroll_growth_pct": mb["bankroll_growth_pct"],
+        "roi_on_stake_pct": m["roi"]["all_time_pct"],
+        "daily_pnl": m["periods"]["today"]["pnl"],
+        "total_bets": rec["settled_n"],
+        "total_wins": rec["won"],
+        "current_streak": m["streak"]["streak_decisive"],
+        "last_updated": m["meta"]["computed_at"],
+        "source": "ledger.get_metrics()",
+    }
 
 
 def _resolve_team(query: str) -> str | None:
@@ -1740,32 +1726,38 @@ def _tool_get_results(args: dict) -> str:
 
 
 def _tool_get_bankroll_status(args: dict) -> str:
-    state = _get_bankroll()
-    history = load_json_safe(BETTING_DIR / "history.json")
+    try:
+        from scripts.betting.ledger import get_metrics
+        m = get_metrics()
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        return json.dumps({"error": f"ledger unavailable: {e}"})
 
+    mb, rec, roi, streak = m["bankroll"], m["record"], m["roi"], m["streak"]
     result: dict[str, Any] = {
-        "current_bankroll": state.get("current_bankroll"),
-        "initial_bankroll": state.get("initial_bankroll"),
-        "peak_bankroll": state.get("peak_bankroll"),
-        "daily_pnl": state.get("daily_pnl"),
-        "total_bets": state.get("total_bets"),
-        "total_wins": state.get("total_wins"),
-        "current_streak": state.get("current_streak"),
-        "last_updated": state.get("last_updated"),
+        "current_bankroll": mb["current"],
+        "initial_bankroll": mb["initial"],
+        "peak_bankroll": mb["peak"],
+        "lowest_bankroll": mb["lowest"],
+        "available_after_pending": mb["available"],
+        "pending_bets": mb["pending_n"],
+        "pending_stakes": mb["pending_stakes"],
+        "drawdown_pct": mb["drawdown_pct"],
+        "max_drawdown_pct": mb["max_drawdown_pct"],
+        "bankroll_growth_pct": mb["bankroll_growth_pct"],
+        "roi_pct": roi["all_time_pct"],  # ROI on stake — NOT bankroll growth
+        "rolling_roi_pct": roi["rolling_pct"],
+        "rolling_n": roi["rolling_n"],
+        "daily_pnl": m["periods"]["today"]["pnl"],
+        "last_betting_day": m["periods"]["last_betting_day"],
+        "total_bets": rec["settled_n"],
+        "total_wins": rec["won"],
+        "win_rate_decisive": rec["win_rate_decisive"],
+        "current_streak": streak["streak_decisive"],
+        "last_updated": m["meta"]["computed_at"],
+        "alerts": m["alerts"],
     }
 
-    # ROI calculation
-    initial = state.get("initial_bankroll", 1000)
-    current = state.get("current_bankroll", initial)
-    if initial > 0:
-        result["roi_pct"] = round((current - initial) / initial * 100, 2)
-
-    # Recent results from history
-    totals = history.get("totals", {}) if isinstance(history, dict) else {}
-    if totals:
-        result["history_totals"] = totals
-
-    # P&L history (recent daily snapshots)
+    # P&L history (recent daily snapshots) — a display log, not a metric source
     pnl = load_json_safe(BETTING_DIR / "pnl_history.json", default=[])
     if isinstance(pnl, list) and pnl:
         result["pnl_history"] = [
@@ -1779,37 +1771,26 @@ def _tool_get_bankroll_status(args: dict) -> str:
             for p in pnl[-10:]  # last 10 snapshots
         ]
 
-    # CLV tracking (Closing Line Value — are we beating closing odds?)
-    clv = load_json_safe(BETTING_DIR / "clv_history.json")
-    if isinstance(clv, dict) and clv.get("running_clv") is not None:
+    # CLV — per-bet clv_pct from the payload (the one CLV definition)
+    if m["clv"]["n"]:
         result["clv"] = {
-            "running_clv_pct": clv.get("running_clv_pct"),
-            "total_tracked": clv.get("total_bets_tracked"),
-            "positive_clv_count": clv.get("positive_clv_count"),
-            "negative_clv_count": clv.get("negative_clv_count"),
+            "avg_clv_pct": m["clv"]["avg_pct"],
+            "total_tracked": m["clv"]["n"],
+            "positive_rate_pct": m["clv"]["positive_rate"],
         }
 
-    # Win rate by market
-    settled = history.get("settled_bets", []) if isinstance(history, dict) else history if isinstance(history, list) else []
-    if settled:
-        market_stats: dict[str, dict] = {}
-        for b in settled:
-            mkt = b.get("market", "unknown")
-            ms = market_stats.setdefault(mkt, {"wins": 0, "losses": 0, "profit": 0.0})
-            if b.get("status", "").lower() in ("won", "win"):
-                ms["wins"] += 1
-            elif b.get("status", "").lower() in ("lost", "loss"):
-                ms["losses"] += 1
-            ms["profit"] += b.get("profit", b.get("profit_loss", 0))
-        result["market_breakdown"] = {
-            k: {
-                **v,
-                "total": v["wins"] + v["losses"],
-                "profit": round(v["profit"], 2),
-                "win_rate": round(v["wins"] / max(v["wins"] + v["losses"], 1) * 100, 1),
-            }
-            for k, v in market_stats.items()
+    # Win rate by market — from the payload
+    result["market_breakdown"] = {
+        k: {
+            "wins": g["won"],
+            "losses": g["lost"],
+            "total": g["won"] + g["lost"],
+            "profit": g["profit"],
+            "win_rate": round(g["won"] / max(g["won"] + g["lost"], 1) * 100, 1),
+            "roi_pct": g["roi_pct"],
         }
+        for k, g in roi["by_market"].items()
+    }
 
     return json.dumps(result, default=str)
 
@@ -3001,7 +2982,7 @@ def _tool_build_parlay(args: dict) -> str:
     kelly_adj = max(kelly_raw * kelly_fraction, 0)
 
     bankroll = _get_bankroll()
-    balance = bankroll.get("balance", bankroll.get("current_balance", 1000))
+    balance = bankroll.get("current_bankroll", 1000)
     kelly_stake = round(kelly_adj * balance, 2)
 
     # Cap stake at 2% bankroll for parlays
@@ -3595,15 +3576,14 @@ You know the user's live bankroll, ROI, peak, drawdown, and streak (injected in 
                 parts.append(f"**Cold teams:** {', '.join(cold)}")
             parts.append("")
 
-    # Inject bankroll
-    bank = load_json_safe(BANKROLL_DIR / "state.json")
+    # Inject bankroll — ledger payload, growth and ROI-on-stake named separately
+    bank = _get_bankroll()
     if bank.get("current_bankroll"):
-        initial = bank.get("initial_bankroll", 1000)
-        current = bank.get("current_bankroll", initial)
-        roi = (current - initial) / initial * 100 if initial > 0 else 0
         parts.append(
-            f"## Bankroll: ${current:,.2f} (ROI: {roi:+.1f}%, "
-            f"Peak: ${bank.get('peak_bankroll', current):,.2f}, "
+            f"## Bankroll: €{bank['current_bankroll']:,.2f} "
+            f"(growth: {bank.get('bankroll_growth_pct', 0):+.1f}%, "
+            f"ROI on stake: {bank.get('roi_on_stake_pct', 0):+.1f}%, "
+            f"Peak: €{bank.get('peak_bankroll', 0):,.2f}, "
             f"Streak: {bank.get('current_streak', 0)})"
         )
         parts.append("")
@@ -3722,26 +3702,25 @@ def _build_greeting() -> dict:
     elif not today_results:
         greeting_parts.append("No clear value bets right now. Sometimes the best move is no move.")
 
-    # Bankroll — one line, coaching tone
+    # Bankroll — one line, coaching tone (payload numbers, honest labels)
     bank = _get_bankroll()
     if bank.get("current_bankroll"):
-        initial = bank.get("initial_bankroll", 1000)
-        current = bank.get("current_bankroll", initial)
+        current = bank["current_bankroll"]
         peak = bank.get("peak_bankroll", current)
-        roi = (current - initial) / initial * 100 if initial > 0 else 0
-        drawdown = (peak - current) / peak * 100 if peak > 0 else 0
+        roi = bank.get("bankroll_growth_pct", 0)
+        drawdown = bank.get("drawdown_pct", 0)
         if drawdown > 15:
             greeting_parts.append(
-                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%). "
-                f"You're {drawdown:.0f}% off your peak of ${peak:,.2f} — stay disciplined, smaller stakes until momentum turns."
+                f"\n\nBankroll: **€{current:,.2f}** (growth: {roi:+.1f}%). "
+                f"You're {drawdown:.0f}% off your peak of €{peak:,.2f} — stay disciplined, smaller stakes until momentum turns."
             )
         elif roi > 5:
             greeting_parts.append(
-                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%). You're in good shape."
+                f"\n\nBankroll: **€{current:,.2f}** (growth: {roi:+.1f}%). You're in good shape."
             )
         else:
             greeting_parts.append(
-                f"\n\nBankroll: **${current:,.2f}** (ROI: {roi:+.1f}%)."
+                f"\n\nBankroll: **€{current:,.2f}** (growth: {roi:+.1f}%)."
             )
 
     # Pending bets reminder

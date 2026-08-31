@@ -309,10 +309,13 @@ def _group(rows: list[dict], key: str) -> dict:
     out: dict[str, dict] = {}
     for b in rows:
         k = str(b.get(key) or "unknown")
-        g = out.setdefault(k, {"n": 0, "won": 0, "lost": 0, "staked": 0.0, "profit": 0.0})
+        g = out.setdefault(k, {"n": 0, "won": 0, "lost": 0, "push": 0, "voided": 0,
+                               "staked": 0.0, "profit": 0.0})
         g["n"] += 1
         g["won"] += b.get("status") == "won"
         g["lost"] += b.get("status") == "lost"
+        g["push"] += b.get("status") == "push"
+        g["voided"] += b.get("status") in ("voided", "void")
         g["staked"] += float(b.get("stake") or 0)
         g["profit"] += float(b.get("profit") or 0)
     for g in out.values():
@@ -646,6 +649,19 @@ def rebuild_caches() -> dict:
             "updated_at": datetime.now().isoformat(),
         }
         _atomic_write(BANKROLL_PATH, bankroll)
+
+        # state.json: legacy snapshot some readers still hold (Phase 3 retires
+        # it). Refreshed here so the ledger is its ONLY writer.
+        if STATE_JSON_PATH.exists():
+            try:
+                st = json.loads(STATE_JSON_PATH.read_text())
+            except (OSError, ValueError):
+                st = {}
+            st["current_bankroll"] = current
+            st["peak_bankroll"] = round(peak, 2)
+            st["initial_bankroll"] = round(initial, 2)
+            st["last_updated"] = datetime.now().isoformat()
+            _atomic_write(STATE_JSON_PATH, st)
 
         history = get_history_view()
         _atomic_write(HISTORY_PATH, history)

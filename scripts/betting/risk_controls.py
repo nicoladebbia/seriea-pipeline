@@ -89,7 +89,7 @@ def _load_settled_bets() -> List[Dict]:
         bets = journal.get("bets", {})
         settled = [
             b for b in bets.values()
-            if isinstance(b, dict) and b.get("status") in ("won", "lost", "push", "void")
+            if isinstance(b, dict) and b.get("status") in ("won", "lost", "push", "voided", "void")
         ]
         return sorted(settled, key=lambda b: b.get("settled_at") or b.get("date") or "")
     except Exception as e:
@@ -163,7 +163,7 @@ def check_consecutive_losses(settled: List[Dict], cfg: RiskConfig) -> Dict:
         status = bet.get("status")
         if status == "lost":
             current_streak += 1
-        elif status in ("push", "void"):
+        elif status in ("push", "voided", "void"):
             current_streak += 1  # non-wins extend the losing run
         else:  # won
             break

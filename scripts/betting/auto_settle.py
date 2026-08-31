@@ -235,7 +235,7 @@ def check_performance_drift(rolling: Dict) -> List[Dict]:
             "actual": roi,
             "baseline": BASELINE_ROI,
             "threshold": ROI_ALERT_THRESHOLD,
-            "message": f"Rolling ROI {roi:+.1f}% NEGATIVE and CLV {_clv:+.1f}% non-positive — edge likely gone (baseline: {BASELINE_ROI}%)",
+            "message": f"Rolling ROI {roi:+.1f}% NEGATIVE and rolling CLV {_clv:+.1f}% non-positive — edge likely gone (baseline: {BASELINE_ROI}%)",
         })
     elif roi < ROI_ALERT_THRESHOLD:
         # Negative ROI but CLV still positive → variance, not decay. WARNING, not CRITICAL.
@@ -246,7 +246,7 @@ def check_performance_drift(rolling: Dict) -> List[Dict]:
             "baseline": BASELINE_ROI,
             "threshold": ROI_ALERT_THRESHOLD,
             "message": (
-                f"Rolling ROI {roi:+.1f}% negative but CLV "
+                f"Rolling ROI {roi:+.1f}% negative but rolling CLV "
                 f"{('%+.1f%%' % _clv) if _clv is not None else 'n/a'} still positive — "
                 f"variance on intact edge, monitor (baseline: {BASELINE_ROI}%)"
             ),

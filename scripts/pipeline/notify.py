@@ -865,66 +865,32 @@ def notify_status() -> dict:
 # ---------------------------------------------------------------------------
 
 def _get_bankroll_context() -> dict:
-    """Return canonical bankroll state via scripts.betting.ledger.
+    """Canonical bankroll numbers from ledger.get_metrics() — one computation.
 
-    The ledger is the single source of truth: it reads bet_journal.json
-    (authoritative) and computes balance / peak / lowest from active bets only
-    (superseded bets are excluded from P&L). Falls back to raw file reads if
-    the ledger import fails.
+    growth_pct is bankroll growth vs initial; roi_on_stake_pct is ROI on
+    turnover. Different numbers, different names — never render either under
+    the bare label "ROI".
     """
     try:
-        from scripts.betting import ledger
-        current = ledger.get_balance()
-        peak = ledger.get_peak()
-        lowest = ledger.get_lowest()
-        initial = ledger.get_initial_bankroll()
-        return {
-            "current": current,
-            "initial": initial,
-            "peak": peak,
-            "lowest": lowest,
-            "roi_pct": round((current - initial) / initial * 100, 1) if initial else 0,
-            "drawdown_pct": round((peak - current) / peak * 100, 1) if peak else 0,
-            "is_up": current > initial,
-            "is_at_peak": current >= peak * 0.98 if peak else True,
-        }
-    except Exception as e:
-        log.warning("ledger-based bankroll lookup failed, falling back: %s", e)
-    # Fallback: old behavior from journal directly
-    try:
-        journal_path = DATA_DIR / "betting" / "bet_journal.json"
-        if journal_path.exists():
-            with open(journal_path) as f:
-                journal = json.load(f)
-            bets_raw = journal.get("bets", {})
-            bets = list(bets_raw.values()) if isinstance(bets_raw, dict) else bets_raw
-            initial = journal.get("initial_bankroll", journal.get("metadata", {}).get("initial_bankroll", 1000))
-            settled = [b for b in bets if b.get("status") in ("won", "lost", "push", "voided")]
-            total_profit = sum((b.get("profit") or 0) for b in settled)
-            current = initial + total_profit
-            peak = initial
-            running = initial
-            settled_sorted = sorted(settled, key=lambda b: b.get("settled_at") or "")
-            for b in settled_sorted:
-                running += (b.get("profit") or 0)
-                if running > peak:
-                    peak = running
-            return {
-                "current": round(current, 2),
-                "initial": initial,
-                "peak": round(peak, 2),
-                "lowest": round(initial, 2),
-                "roi_pct": round((current - initial) / initial * 100, 1) if initial else 0,
-                "drawdown_pct": round((peak - current) / peak * 100, 1) if peak else 0,
-                "is_up": current > initial,
-                "is_at_peak": current >= peak * 0.98,
-            }
-    except Exception:
-        pass
-    return {"current": 0, "initial": 1000, "peak": 0, "lowest": 0, "roi_pct": 0,
-            "drawdown_pct": 0, "is_up": False, "is_at_peak": False}
-
-
+        from scripts.betting.ledger import get_metrics
+        m = get_metrics(include_alerts=False)
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        log.warning("ledger.get_metrics failed in bankroll context: %s", e)
+        return {"current": 0, "initial": 1000, "peak": 0, "lowest": 0,
+                "growth_pct": 0, "roi_on_stake_pct": 0,
+                "drawdown_pct": 0, "is_up": False, "is_at_peak": False}
+    mb = m["bankroll"]
+    return {
+        "current": mb["current"],
+        "initial": mb["initial"],
+        "peak": mb["peak"],
+        "lowest": mb["lowest"],
+        "growth_pct": mb["bankroll_growth_pct"],
+        "roi_on_stake_pct": m["roi"]["all_time_pct"],
+        "drawdown_pct": mb["drawdown_pct"],
+        "is_up": mb["current"] > mb["initial"],
+        "is_at_peak": mb["current"] >= mb["peak"] * 0.98 if mb["peak"] else True,
+    }
 
 
 def _edge_label(edge_pct: float) -> str:
@@ -953,15 +919,15 @@ def _time_until_kickoff(match_date: str) -> str:
 
 
 def _bankroll_in_context(br_ctx: dict) -> str:
-    """Format bankroll with trend context: '€1,025 (↑2.5% ROI, 20% off peak)'."""
+    """Format bankroll with trend context: '€1,025 (↑2.5% growth, 20% off peak)'."""
     current = br_ctx.get("current", 0)
-    roi = br_ctx.get("roi_pct", 0)
+    roi = br_ctx.get("growth_pct", 0)
     dd = br_ctx.get("drawdown_pct", 0)
 
     parts = [f"\u20ac{current:,.0f}"]
     if roi != 0:
         arrow = "\u2191" if roi > 0 else "\u2193"
-        parts.append(f"{arrow}{abs(roi):.1f}% ROI")
+        parts.append(f"{arrow}{abs(roi):.1f}% growth")
     if dd > 5:
         parts.append(f"{dd:.0f}% off peak")
     elif br_ctx.get("is_at_peak"):
@@ -1418,7 +1384,7 @@ def notify_day_wrap(settled_bets: list, balance: float = 0) -> dict:
     if balance > 0:
         br_ctx["current"] = balance
         if br_ctx.get("initial"):
-            br_ctx["roi_pct"] = round(
+            br_ctx["growth_pct"] = round(
                 (balance - br_ctx["initial"]) / br_ctx["initial"] * 100, 1)
 
     _fill_icon = {"placed": "\u2713", "missed": "\u2717", "unverified": "\u26a0"}
@@ -1548,7 +1514,7 @@ def notify_settlement(settled: int, won: int, lost: int, push: int = 0,
     # Use passed balance if available (from settlement engine) instead of stale state
     if balance > 0:
         br_ctx["current"] = balance
-        br_ctx["roi_pct"] = round((balance - br_ctx["initial"]) / br_ctx["initial"] * 100, 1) if br_ctx["initial"] else 0
+        br_ctx["growth_pct"] = round((balance - br_ctx["initial"]) / br_ctx["initial"] * 100, 1) if br_ctx["initial"] else 0
     level = "success" if is_positive else "warning"
 
     record = f"{won}W-{lost}L" + (f"-{push}P" if push else "")
@@ -1913,10 +1879,8 @@ def notify_daily_digest() -> dict:
     """Generate and send end-of-day betting summary.
 
     Every datum is traced back to its authoritative source:
-      - Today's settled W/L/P&L  <- betting/history.json (list of settled bets)
-      - Bankroll current balance <- betting/bankroll.json (.current_balance)
-                                    Falls back to bet_journal running sum.
-      - Bankroll peak            <- betting/bankroll.json (.peak_balance)
+      - Today's settled W/L/P&L  <- ledger.get_history_view() (journal-derived)
+      - Bankroll numbers         <- ledger.get_metrics() (journal = truth)
       - Per-day record + recent-days streak <- history.json grouped by date
       - Rolling ROI (last 50 settled) <- history.json sorted by settled_at
       - Tomorrow's matches       <- upcoming/predictions.json (Serie A)
@@ -1996,7 +1960,7 @@ def notify_daily_digest() -> dict:
     current = _br["current"]
     peak = _br["peak"]
     lowest = _br.get("lowest", initial)
-    roi_alltime = _br["roi_pct"]
+    roi_alltime = _br["roi_on_stake_pct"]
     drawdown_pct = _br["drawdown_pct"]
 
     # ---------- Rolling ROI (last 50 settled bets via ledger) ----------
@@ -2020,7 +1984,7 @@ def notify_daily_digest() -> dict:
     today_bets = [
         b for b in history
         if (b.get("date") or "").startswith(today_str)
-        and b.get("status") in ("won", "lost", "push", "void")
+        and b.get("status") in ("won", "lost", "push", "voided", "void")
     ]
     won_today = sum(1 for b in today_bets if b.get("status") == "won")
     lost_today = sum(1 for b in today_bets if b.get("status") == "lost")
@@ -2264,7 +2228,9 @@ def notify_daily_digest() -> dict:
     # --- Bankroll ---
     tg.blank()
     tg.mini_sep()
-    tg.raw(f"\n\U0001f4b0 <b>Bankroll:</b> €{current:,.2f}")
+    _growth = _br.get("growth_pct", 0)
+    tg.raw(f"\n\U0001f4b0 <b>Bankroll:</b> €{current:,.2f} "
+           f"({'+' if _growth >= 0 else ''}{_growth:.1f}% growth)")
 
     roi_alltime_str = f"{'+' if roi_alltime >= 0 else ''}{roi_alltime:.1f}%"
     if roi_rolling is not None:

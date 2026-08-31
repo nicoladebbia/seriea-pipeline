@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Bankroll Loader — single source of truth for current bankroll.
+"""Bankroll Loader — staking config + thin shim over scripts.betting.ledger.
 
-Computes balance from bet_journal.json (the journal IS the ledger).
-Reads staking config from config/bankroll.yaml.
+Balance numbers come from ledger.get_metrics() (bet_journal.json is the
+truth). This module only adds config/bankroll.yaml staking parameters.
 
 Usage:
     from scripts.betting.bankroll_loader import get_effective_bankroll
     bankroll = get_effective_bankroll()  # e.g. 1093.66
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import Dict
@@ -18,8 +17,6 @@ log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_PATH = _PROJECT_ROOT / "config" / "bankroll.yaml"
-_JOURNAL_PATH = _PROJECT_ROOT / "data" / "betting" / "bet_journal.json"
-_BANKROLL_JSON = _PROJECT_ROOT / "data" / "betting" / "bankroll.json"
 
 # Hardcoded defaults (fallback if YAML missing)
 _DEFAULTS = {
@@ -54,117 +51,34 @@ def load_bankroll_config() -> Dict:
 
 
 def compute_current_bankroll(config: Dict = None) -> Dict:
-    """Compute balance from bet_journal.json.
+    """Balance numbers from ledger.get_metrics() — the one computation.
 
-    Formula: initial + sum(settled_profits) - pending_stakes
-
-    Safety guards:
-    - Returns initial_balance if journal missing
-    - Returns initial_balance if balance negative
-    - Returns initial_balance if balance > 10x initial (data error)
-
-    Returns dict with current_balance, pending_stakes, initial_balance, etc.
+    Key names kept for existing callers (auto_settle, betting_unified).
+    Kelly sizing uses available_balance (current minus pending stakes).
     """
     if config is None:
         config = load_bankroll_config()
-
     initial = config["initial_balance"]
-
-    if not _JOURNAL_PATH.exists():
-        log.info("No bet journal found — using initial balance %.2f", initial)
-        return {
-            "initial_balance": initial,
-            "current_balance": initial,
-            "pending_stakes": 0.0,
-            "settled_profit": 0.0,
-            "peak_balance": initial,
-        }
-
     try:
-        with open(_JOURNAL_PATH) as f:
-            journal = json.load(f)
-    except Exception as e:
-        log.warning("Failed to load journal: %s — using initial balance", e)
+        from scripts.betting.ledger import get_metrics
+        mb = get_metrics(include_alerts=False)["bankroll"]
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        log.warning("ledger.get_metrics failed (%s) — using initial balance", e)
         return {
             "initial_balance": initial,
             "current_balance": initial,
+            "available_balance": initial,
             "pending_stakes": 0.0,
             "settled_profit": 0.0,
             "peak_balance": initial,
         }
-
-    bets = journal.get("bets", {})
-
-    # Sum settled profits
-    settled_profit = 0.0
-    peak_profit = 0.0
-    running = 0.0
-    for bet in bets.values():
-        if not isinstance(bet, dict):
-            continue
-        status = bet.get("status", "")
-        if status in ("won", "lost", "push", "void"):
-            profit = bet.get("profit", 0) or 0
-            running += profit
-            peak_profit = max(peak_profit, running)
-    settled_profit = running
-
-    # Count pending stakes (for reporting only, not subtracted from balance)
-    pending_stakes = 0.0
-    for bet in bets.values():
-        if not isinstance(bet, dict):
-            continue
-        if bet.get("status") == "pending":
-            pending_stakes += bet.get("stake", 0) or 0
-
-    balance = initial + settled_profit
-    peak_balance = initial + peak_profit
-
-    # Safety guards — never silently override, find last known good balance
-    if balance <= 0 or balance > initial * 10:
-        log.critical(
-            "BANKROLL ANOMALY: computed balance %.2f (initial=%.2f, settled=%.2f). "
-            "Falling back to last known good balance from journal history.",
-            balance, initial, settled_profit,
-        )
-        try:
-            from scripts.pipeline.notify import notify
-            notify(
-                message=(f"CRITICAL: Bankroll anomaly detected. "
-                         f"Computed={balance:.2f}, Initial={initial:.2f}, "
-                         f"Settled P&L={settled_profit:.2f}"),
-                title="Bankroll Safety Alert",
-                level="critical",
-                category="betting",
-            )
-        except Exception:
-            pass  # notification best-effort
-
-        # Walk journal chronologically to find last valid balance
-        last_good = initial
-        running_replay = 0.0
-        sorted_bets = sorted(
-            (b for b in bets.values() if isinstance(b, dict)
-             and b.get("status") in ("won", "lost", "push", "void")),
-            key=lambda b: str(b.get("settled_at", "") or ""),
-        )
-        for bet in sorted_bets:
-            running_replay += bet.get("profit", 0) or 0
-            candidate = initial + running_replay
-            if 0 < candidate <= initial * 10:
-                last_good = candidate
-        balance = last_good
-        log.critical("Using last known good balance: %.2f", balance)
-
-    available = max(0.0, balance - pending_stakes)
-
     return {
-        "initial_balance": initial,
-        "current_balance": round(balance, 2),
-        "available_balance": round(available, 2),
-        "pending_stakes": round(pending_stakes, 2),
-        "settled_profit": round(settled_profit, 2),
-        "peak_balance": round(peak_balance, 2),
+        "initial_balance": mb["initial"],
+        "current_balance": mb["current"],
+        "available_balance": mb["available"],
+        "pending_stakes": mb["pending_stakes"],
+        "settled_profit": round(mb["current"] - mb["initial"], 2),
+        "peak_balance": mb["peak"],
     }
 
 
@@ -183,53 +97,15 @@ def get_effective_bankroll() -> float:
 
 
 def update_bankroll_json(balance_info: Dict = None):
-    """Write derived state to data/betting/bankroll.json.
+    """Regenerate bankroll.json via ledger.rebuild_caches() — the one writer.
 
-    DEPRECATED as the direct writer. As of 2026-04-23, bankroll.json is a pure
-    derived cache regenerated from the journal by scripts.betting.ledger.
-    This function now delegates to ledger.rebuild_caches() for a single source
-    of truth. The `balance_info` argument is ignored (was a source of drift —
-    callers could pass stale values that overwrote correct ones).
+    `balance_info` is ignored (was a source of drift — callers could pass
+    stale values that overwrote correct ones).
     """
     try:
         from scripts.betting import ledger
         result = ledger.rebuild_caches()
         log.info("Updated bankroll.json via ledger: €%.2f",
                  result["bankroll"]["current_balance"])
-        return
     except Exception as e:
-        log.error("ledger.rebuild_caches failed (%s), falling back to legacy writer", e)
-
-    # --- Legacy fallback: only reached if ledger import fails ---
-    if balance_info is None:
-        balance_info = compute_current_bankroll()
-
-    from datetime import datetime
-
-    pending_count = 0
-    if _JOURNAL_PATH.exists():
-        try:
-            with open(_JOURNAL_PATH) as f:
-                journal = json.load(f)
-            pending_count = sum(
-                1 for b in journal.get("bets", {}).values()
-                if isinstance(b, dict) and b.get("status") == "pending"
-            )
-        except Exception:
-            pass
-
-    bankroll_data = {
-        "initial_balance": balance_info["initial_balance"],
-        "current_balance": balance_info["current_balance"],
-        "available_balance": balance_info.get("available_balance", balance_info["current_balance"]),
-        "peak_balance": balance_info["peak_balance"],
-        "lowest_balance": balance_info["initial_balance"],
-        "pending_bets": pending_count,
-        "pending_stakes": balance_info["pending_stakes"],
-        "updated_at": datetime.now().isoformat(),
-    }
-
-    from config.settings import atomic_write_json
-    atomic_write_json(_BANKROLL_JSON, bankroll_data)
-    log.warning("Updated bankroll.json via LEGACY path: €%.2f",
-                balance_info["current_balance"])
+        log.error("ledger.rebuild_caches failed: %s — bankroll.json NOT updated", e)

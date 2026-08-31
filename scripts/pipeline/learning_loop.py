@@ -339,12 +339,11 @@ def _run_drift_detection() -> dict:
 def _run_roi_analysis() -> dict:
     """P&L by market, Kelly effectiveness, CLV correlation, streak analysis.
 
-    Reads: history.json, clv_history.json, bankroll state.json
+    Reads: history.json, clv_history.json, ledger.get_metrics() (bankroll)
     Writes: data/feedback/roi_report.json
     """
     history_path = DATA_DIR / "betting" / "history.json"
     clv_path = DATA_DIR / "betting" / "clv_history.json"
-    bankroll_path = DATA_DIR / "bankroll" / "state.json"
 
     # Load betting history
     history = []
@@ -468,12 +467,12 @@ def _run_roi_analysis() -> dict:
 
     # --- Bankroll state ---
     bankroll_info = {}
-    if bankroll_path.exists():
-        try:
-            with open(bankroll_path) as f:
-                bankroll_info = json.load(f)
-        except Exception as e:
-            log.warning(f"Failed to load bankroll state for learning loop: {e}")
+    try:
+        from scripts.betting.ledger import get_metrics
+        _mb = get_metrics(include_alerts=False)["bankroll"]
+        bankroll_info = {"balance": _mb["current"], "initial_balance": _mb["initial"]}
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as e:
+        log.warning(f"Failed to load ledger metrics for learning loop: {e}")
 
     roi_report = {
         "generated_at": datetime.now().isoformat(),

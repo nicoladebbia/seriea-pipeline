@@ -37,7 +37,6 @@ from scripts.utils.json_utils import load_json_safe
 from scripts.utils.parsing import extract_line
 
 BETTING_DIR = DATA_DIR / "betting"
-BANKROLL_DIR = DATA_DIR / "bankroll"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -295,8 +294,12 @@ class _NumpySafeEncoder(json.JSONEncoder):
 # ---------------------------------------------------------------------------
 
 def _get_bankroll():
-    state = load_json_safe(BANKROLL_DIR / "state.json")
-    return state.get("current_bankroll", 1000)
+    """Kelly base from the ledger: available = current − pending stakes."""
+    try:
+        from scripts.betting.ledger import get_metrics
+        return get_metrics(include_alerts=False)["bankroll"]["available"]
+    except (ImportError, OSError, ValueError, KeyError, TypeError):
+        return 1000.0
 
 
 def _normalize_match(m):

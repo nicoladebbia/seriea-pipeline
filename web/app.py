@@ -23,11 +23,12 @@ except ImportError:
 
 from flask import Flask, render_template, jsonify, request as flask_request
 from config.settings import (
-    DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, BANKROLL_DIR, LIVE_DIR,
+    DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, LIVE_DIR,
 )
 from config.leagues import LEAGUE_REGISTRY
 from config.team_names import strip_accents
 from scripts.utils.parsing import extract_line
+from scripts.betting import ledger as betting_ledger
 
 _BASE = Path(__file__).parent.parent  # project root
 FEEDBACK_DIR = DATA_DIR / "feedback"
@@ -684,51 +685,58 @@ def _get_standings(league: str) -> dict:
 
 
 
-def _get_betting_stats(league_filter: str = None):
-    """Aggregate wins/losses/pushes/ROI from history.json.
+_LEDGER_METRICS_CACHE: dict = {"at": 0.0, "payload": None}
 
-    Args:
-        league_filter: If set, only count bets belonging to this league.
+
+def _get_ledger_metrics(max_age_sec: float = 15.0):
+    """The one money/performance computation: scripts.betting.ledger.get_metrics().
+
+    Cached briefly so one page load (several API calls) computes once.
+    Returns None only if the ledger has never been readable in this process.
     """
-    history_raw = _load_json(BETTING_DIR / "history.json")
-    settled_bets = []
-    history_totals = {}
-    if isinstance(history_raw, dict):
-        settled_bets = history_raw.get("settled_bets", [])
-        history_totals = history_raw.get("totals", {})
-    elif isinstance(history_raw, list):
-        settled_bets = history_raw
+    now = _time.time()
+    cache = _LEDGER_METRICS_CACHE
+    if cache["payload"] is not None and now - cache["at"] < max_age_sec:
+        return cache["payload"]
+    try:
+        payload = betting_ledger.get_metrics()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        log.error(f"ledger.get_metrics() failed: {e}")
+        return cache["payload"]
+    cache["at"] = now
+    cache["payload"] = payload
+    return payload
 
-    for bet in settled_bets:
-        outcome = bet.get("outcome", bet.get("status", "")).upper()
-        bet["status"] = outcome.lower()
-        bet["profit"] = bet.get("profit_loss", bet.get("profit", 0))
 
-    # Apply league filter if specified
+def _get_betting_stats(league_filter: str = None):
+    """Record/ROI numbers from ledger.get_metrics() — never recomputed here.
+
+    win_rate is DECISIVE (won / (won + lost)); pushes and voids stay in
+    turnover at zero profit (definitions_version 1 in the payload).
+    """
+    m = _get_ledger_metrics()
+    if not m:
+        return {"wins": 0, "losses": 0, "pushes": 0, "settled_bets": 0,
+                "total_stake": 0, "total_profit": 0, "win_rate": 0, "roi": 0}
     if league_filter:
-        settled_bets = [b for b in settled_bets if _match_belongs_to_league(b, league_filter)]
-
-    settled_only = [b for b in settled_bets if b.get("status") in ("won", "lost", "push")]
-    wins = sum(1 for b in settled_only if b.get("status") == "won")
-    losses = sum(1 for b in settled_only if b.get("status") == "lost")
-    pushes = sum(1 for b in settled_only if b.get("status") == "push")
-    total_stake = sum(b.get("stake", 0) for b in settled_only)
-    total_profit = sum(b.get("profit", 0) for b in settled_only)
-
-    # Only use pre-aggregated totals when NOT league-filtering (they're global)
-    if history_totals and not league_filter:
-        total_stake = history_totals.get("total_staked", total_stake)
-        total_profit = history_totals.get("net_profit", total_profit)
-        wins = history_totals.get("wins", wins)
-        losses = history_totals.get("losses", losses)
-        pushes = history_totals.get("pushes", pushes)
-
+        g = m["roi"]["by_league"].get(league_filter, {})
+        won, lost = g.get("won", 0), g.get("lost", 0)
+        return {
+            "wins": won, "losses": lost, "pushes": g.get("push", 0),
+            "settled_bets": g.get("n", 0),
+            "total_stake": g.get("staked", 0.0),
+            "total_profit": g.get("profit", 0.0),
+            "win_rate": round(won / (won + lost) * 100, 1) if (won + lost) else 0,
+            "roi": g.get("roi_pct", 0.0),
+        }
+    rec, roi = m["record"], m["roi"]
     return {
-        "wins": wins, "losses": losses, "pushes": pushes,
-        "settled_bets": wins + losses + pushes,
-        "total_stake": round(total_stake, 2), "total_profit": round(total_profit, 2),
-        "win_rate": round(wins / (wins + losses + pushes) * 100, 1) if (wins + losses + pushes) > 0 else 0,
-        "roi": round(total_profit / total_stake * 100, 1) if total_stake > 0 else 0,
+        "wins": rec["won"], "losses": rec["lost"], "pushes": rec["push"],
+        "settled_bets": rec["settled_n"],
+        "total_stake": roi["all_time_staked"],
+        "total_profit": roi["all_time_profit"],
+        "win_rate": rec["win_rate_decisive"],
+        "roi": roi["all_time_pct"],
     }
 
 
@@ -928,7 +936,11 @@ def performance_page():
 def api_performance():
     try:
         from scripts.betting.benchmark_tracker import get_benchmark_report
-        return jsonify(get_benchmark_report())
+        report = get_benchmark_report()
+        # Hero row renders all-time numbers from the ledger payload; the
+        # before/after buckets below stay benchmark-scoped (their whole point).
+        report["metrics"] = _get_ledger_metrics()
+        return jsonify(report)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3787,8 +3799,6 @@ def api_betting():
     # Normalize: unified_bet_slip uses "selected_bets", legacy uses "bets"
     if "selected_bets" in unified and "bets" not in unified:
         unified["bets"] = unified["selected_bets"]
-    bankroll_file = _load_json(BETTING_DIR / "bankroll.json")
-    bankroll_state = _load_json(BANKROLL_DIR / "state.json")
     predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
     odds_full = _load_all_leagues_json("odds_full.json", "matches")
     parlay_raw = _load_json(BETTING_DIR / "parlay_report.json")
@@ -4155,18 +4165,16 @@ def api_betting():
             "predicted_stats": m["predicted_stats"],
         }
 
-    # ---- Bankroll (derive from history.json as source of truth) ----
+    # ---- Bankroll (ledger.get_metrics() — the one computation) ----
+    metrics = _get_ledger_metrics() or {}
     stats = _get_betting_stats()
-    initial_balance = bankroll_file.get("initial_balance", bankroll_state.get("initial_bankroll", 1000))
-    # Derive balance and profit from settled bet history (bankroll.json is often stale)
-    net_profit = stats["total_profit"]
-    current_balance = initial_balance + net_profit
+    _mb = metrics.get("bankroll", {})
     bankroll = {
-        "current_balance": round(current_balance, 2),
-        "initial_balance": initial_balance,
-        "peak_balance": max(bankroll_file.get("peak_balance", bankroll_state.get("peak_bankroll", current_balance)), current_balance),
-        "lowest_balance": bankroll_file.get("lowest_balance", initial_balance),
-        "net_profit": round(net_profit, 2),
+        "current_balance": _mb.get("current", 0.0),
+        "initial_balance": _mb.get("initial", 0.0),
+        "peak_balance": _mb.get("peak", 0.0),
+        "lowest_balance": _mb.get("lowest", 0.0),
+        "net_profit": stats["total_profit"],
         "settled_bets": stats["settled_bets"],
         "wins": stats["wins"],
         "losses": stats["losses"],
@@ -4175,13 +4183,13 @@ def api_betting():
         "roi": stats["roi"],
         "total_stake": stats["total_stake"],
         "total_profit": stats["total_profit"],
-        "pending_bets": bankroll_file.get("pending_bets", 0),
-        "pending_stakes": bankroll_file.get("pending_stakes", 0),
-        "drawdown": risk_state.get("checks", {}).get("drawdown", {}).get("current_drawdown_pct", 0) / 100 if isinstance(risk_state, dict) else 0,
-        "current_streak": bankroll_state.get("current_streak", 0),
+        "pending_bets": _mb.get("pending_n", 0),
+        "pending_stakes": _mb.get("pending_stakes", 0),
+        "drawdown": round(_mb.get("drawdown_pct", 0.0) / 100, 4),
+        "current_streak": metrics.get("streak", {}).get("streak_decisive", 0),
         "risk_level": risk_state.get("risk_level", "LOW") if isinstance(risk_state, dict) else "LOW",
         "can_bet": risk_state.get("allow_betting", True) if isinstance(risk_state, dict) else True,
-        "updated_at": bankroll_file.get("updated_at", bankroll_state.get("last_updated", "")),
+        "updated_at": metrics.get("meta", {}).get("computed_at", ""),
     }
 
     # ---- Compute summary from actual bets (frontend-compatible fields) ----
@@ -4225,6 +4233,7 @@ def api_betting():
         "predictions_generated_at": predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "",
         "extended_markets_at": extended_raw.get("generated_at", "") if isinstance(extended_raw, dict) else "",
         "bankroll": bankroll,
+        "metrics": metrics,
         "summary": summary,
         "match_analyses": unified.get("match_analyses", []),
         "bets": main_bets,
@@ -4304,23 +4313,20 @@ def _get_placed_bets():
 
 @app.route("/api/analytics")
 def api_analytics():
-    bankroll_file = _load_json(BETTING_DIR / "bankroll.json")
-    bankroll_state = _load_json(BANKROLL_DIR / "state.json")
     history_raw = _load_json(BETTING_DIR / "history.json")
     placed_log_raw = _load_json(BETTING_DIR / "placed_bets_log.json", default=[])
 
-    # --- Bankroll + stats from shared helper (history.json = source of truth) ---
+    # --- Bankroll + stats from ledger.get_metrics() (journal = source of truth) ---
     league_filter = _get_league_filter()
+    metrics = _get_ledger_metrics() or {}
     stats = _get_betting_stats(league_filter=league_filter)
-    initial_balance = bankroll_file.get("initial_balance", bankroll_state.get("initial_bankroll", 1000))
-    net_profit = stats["total_profit"]
-    current_balance = initial_balance + net_profit
+    _mb = metrics.get("bankroll", {})
     bankroll = {
-        "current_balance": round(current_balance, 2),
-        "initial_balance": initial_balance,
-        "peak_balance": max(bankroll_file.get("peak_balance", bankroll_state.get("peak_bankroll", current_balance)), current_balance),
-        "lowest_balance": bankroll_file.get("lowest_balance", initial_balance),
-        "net_profit": round(net_profit, 2),
+        "current_balance": _mb.get("current", 0.0),
+        "initial_balance": _mb.get("initial", 0.0),
+        "peak_balance": _mb.get("peak", 0.0),
+        "lowest_balance": _mb.get("lowest", 0.0),
+        "net_profit": stats["total_profit"],
         "settled_bets": stats["settled_bets"],
         "wins": stats["wins"],
         "losses": stats["losses"],
@@ -4329,9 +4335,9 @@ def api_analytics():
         "roi": stats["roi"],
         "total_stake": stats["total_stake"],
         "total_profit": stats["total_profit"],
-        "pending_bets": bankroll_file.get("pending_bets", 0),
-        "pending_stakes": bankroll_file.get("pending_stakes", 0),
-        "updated_at": bankroll_file.get("updated_at", bankroll_state.get("last_updated", "")),
+        "pending_bets": _mb.get("pending_n", 0),
+        "pending_stakes": _mb.get("pending_stakes", 0),
+        "updated_at": metrics.get("meta", {}).get("computed_at", ""),
     }
 
     # --- Parse history.json for bet-level details ---
@@ -4465,6 +4471,8 @@ def api_analytics():
         "timeline": timeline,
         "all_bets": all_bets,
         # Extra analytics data
+        "metrics": metrics,
+        # clv_history.json retires in Phase 3; per-bet CLV lives in metrics["clv"]
         "clv": _load_json(BETTING_DIR / "clv_history.json", default={}),
         "feedback": _load_json(FEEDBACK_DIR / "analysis.json", default={}),
         "calibration": _load_json(FEEDBACK_DIR / "calibration_curve.json", default={}),
@@ -4628,8 +4636,6 @@ def api_system():
     dashboard = _load_json(DATA_DIR / "performance_dashboard.json")
     quality = _load_json(DATA_DIR / "quality_report.json")
     archive = _load_json(UPCOMING_DIR / "predictions_archive.json")
-    bankroll_state = _load_json(BANKROLL_DIR / "state.json")
-    bankroll_live = _load_json(BETTING_DIR / "bankroll.json")
     history_raw = _load_json(BETTING_DIR / "history.json")
 
     # Prediction archive: convert dict to list
@@ -4676,27 +4682,17 @@ def api_system():
     if isinstance(history_raw, dict):
         settled_bets = history_raw.get("settled_bets", [])
 
-    # Bankroll health — derive from history.json (source of truth) via _get_betting_stats()
+    # Bankroll health — ledger.get_metrics() (journal = source of truth)
+    metrics = _get_ledger_metrics() or {}
     stats = _get_betting_stats()
-    initial = bankroll_live.get("initial_balance",
-              bankroll_state.get("initial_bankroll", 1000))
-    current = initial + stats["total_profit"]
-    peak = max(
-        bankroll_live.get("peak_balance",
-        bankroll_state.get("peak_bankroll", current)),
-        current,
-    )
-    lowest = min(
-        bankroll_live.get("lowest_balance", initial),
-        current,
-    )
+    _mb = metrics.get("bankroll", {})
     bankroll_health = {
-        "current_bankroll": round(current, 2),
-        "initial_bankroll": initial,
-        "peak_bankroll": round(peak, 2),
-        "lowest_bankroll": round(lowest, 2),
-        "drawdown": round((peak - current) / peak, 4) if peak > 0 else 0,
-        "net_profit": round(stats["total_profit"], 2),
+        "current_bankroll": _mb.get("current", 0.0),
+        "initial_bankroll": _mb.get("initial", 0.0),
+        "peak_bankroll": _mb.get("peak", 0.0),
+        "lowest_bankroll": _mb.get("lowest", 0.0),
+        "drawdown": round(_mb.get("drawdown_pct", 0.0) / 100, 4),
+        "net_profit": stats["total_profit"],
         "total_bets": stats["settled_bets"],
         "total_wins": stats["wins"],
         "wins": stats["wins"],
@@ -4707,7 +4703,7 @@ def api_system():
         "total_stake": stats["total_stake"],
         "can_bet": True,
         "risk_level": "LOW",
-        "updated_at": bankroll_live.get("updated_at", bankroll_state.get("last_updated", "")),
+        "updated_at": metrics.get("meta", {}).get("computed_at", ""),
     }
 
     # Feedback loop data
@@ -4764,6 +4760,7 @@ def api_system():
         "prediction_accuracy": dashboard.get("prediction_accuracy", {}),
         "betting_performance": dashboard.get("betting_performance", {}),
         "bankroll_health": bankroll_health,
+        "metrics": metrics,
         "data_freshness": _live_data_freshness(dashboard.get("data_freshness", quality.get("data_freshness", {}))),
         "feature_drift": dashboard.get("feature_drift", {}),
         "confidence_calibration": dashboard.get("confidence_calibration", {}),

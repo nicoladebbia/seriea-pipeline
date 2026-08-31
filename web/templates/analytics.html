@@ -172,6 +172,9 @@
 
   /* Toast */
   @keyframes slideInUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+.ledger-alert { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-bottom: 4px; }
+.ledger-alert--critical { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.35); }
+.ledger-alert--warning { background: rgba(251,191,36,0.10); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
 </style>
 {% endblock %}
 
@@ -181,6 +184,10 @@
 
 <!-- Summary Status Bar -->
 <div id="summary" class="perf-status-bar" style="display:none;"></div>
+
+<!-- Ledger payload tiles + alerts (ledger.get_metrics() rendered as-is) -->
+<div id="ledger-alerts" style="display:none;margin-bottom:var(--space-3);"></div>
+<div id="ledger-tiles" class="perf-status-bar" style="display:none;"></div>
 
 <!-- Bankroll link -->
 <div id="bankroll-link" style="display:none;font-size:12px;color:var(--text-tertiary);margin-bottom:var(--space-4);">
@@ -358,13 +365,14 @@ function statCard(label, value, sub, color) {
   </div>`;
 }
 
-function renderSummary(s, clv, bankroll) {
+function renderSummary(s, clv, bankroll, metrics) {
   const el = document.getElementById('summary');
   const profitColor = s.total_profit >= 0 ? 'var(--green)' : 'var(--red)';
   const roiColor = s.roi >= 0 ? 'var(--green)' : 'var(--red)';
   const record = `${s.wins || 0}W / ${s.losses || 0}L${s.pushes ? ' / ' + s.pushes + 'P' : ''}`;
   const pendingText = s.pending ? `${s.pending} pending` : `${s.total_bets || 0} total`;
-  const clvPct = clv?.running_clv_pct || 0;
+  const clvPct = metrics?.clv?.avg_pct ?? (clv?.running_clv_pct || 0);
+  const clvN = metrics?.clv?.n ?? (clv?.total_bets_tracked || 0);
   const clvColor = clvPct > 0 ? 'var(--green)' : clvPct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
   const bal = bankroll?.current_balance || 0;
   const balPnl = bankroll?.net_profit || 0;
@@ -374,9 +382,45 @@ function renderSummary(s, clv, bankroll) {
     statCard('Win Rate', (s.win_rate || 0) + '%', record, s.win_rate >= 50 ? 'var(--green)' : 'var(--amber)') +
     statCard('Total Profit', (s.total_profit >= 0 ? '+' : '-') + '\u20ac' + Math.abs(s.total_profit || 0).toFixed(2), `from \u20ac${(s.total_stake || 0).toFixed(0)} staked`, profitColor) +
     statCard('ROI', (s.roi >= 0 ? '+' : '') + (s.roi || 0) + '%', '', roiColor) +
-    statCard('CLV', (clvPct >= 0 ? '+' : '') + clvPct.toFixed(1) + '%', `${clv?.total_bets_tracked || 0} tracked`, clvColor) +
+    statCard('CLV', (clvPct >= 0 ? '+' : '') + clvPct.toFixed(1) + '%', `${clvN} tracked`, clvColor) +
     statCard('Bankroll', bal > 0 ? '\u20ac' + bal.toFixed(2) : '-', bal > 0 ? `${balPnl >= 0 ? '+' : ''}\u20ac${balPnl.toFixed(2)}` : '', balColor);
   el.style.display = '';
+  renderLedgerTiles(metrics);
+}
+
+/* Payload tiles — every number here is ledger.get_metrics(), rendered as-is. */
+function renderLedgerTiles(m) {
+  const el = document.getElementById('ledger-tiles');
+  if (!el || !m || !m.roi) { if (el) el.style.display = 'none'; return; }
+  const roll = m.roi.rolling_pct ?? 0;
+  const rollColor = roll >= 0 ? 'var(--green)' : 'var(--red)';
+  const dd = m.bankroll?.drawdown_pct ?? 0;
+  const ddColor = dd > 15 ? 'var(--red)' : dd > 5 ? 'var(--amber)' : 'var(--green)';
+  const growth = m.bankroll?.bankroll_growth_pct ?? 0;
+  const today = m.periods?.today || {};
+  const lbd = m.periods?.last_betting_day || {};
+  const week = m.periods?.last_7_days || {};
+  const strip = (week.per_day || []).map(d =>
+    d.n === 0 ? '\u26aa' : d.pnl > 0 ? '\ud83d\udfe2' : d.pnl < 0 ? '\ud83d\udd34' : '\u26aa').join(' ');
+  const fillRoi = m.fill?.verified_roi_pct;
+  el.innerHTML =
+    statCard(`ROI last ${m.roi.rolling_window}`, (roll >= 0 ? '+' : '') + roll + '%', `n=${m.roi.rolling_n}`, rollColor) +
+    statCard('Growth', (growth >= 0 ? '+' : '') + growth + '%', 'bankroll vs initial', growth >= 0 ? 'var(--green)' : 'var(--red)') +
+    statCard('Drawdown', dd + '%', `max ${m.bankroll?.max_drawdown_pct ?? 0}%`, ddColor) +
+    statCard('Today', today.n ? `${today.won}W-${today.lost}L` : 'no bets', today.n ? `${today.pnl >= 0 ? '+' : ''}\u20ac${(today.pnl || 0).toFixed(2)}` : (today.date || ''), today.n ? (today.pnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)') +
+    statCard('Last betting day', lbd.date || '\u2014', lbd.n ? `${lbd.won}W-${lbd.lost}L, ${lbd.pnl >= 0 ? '+' : ''}\u20ac${(lbd.pnl || 0).toFixed(2)}` : '', lbd.n && lbd.pnl >= 0 ? 'var(--green)' : lbd.n ? 'var(--red)' : 'var(--text-tertiary)') +
+    statCard('Last 7 days', week.n ? `${week.won}W-${week.lost}L` : 'quiet', strip, week.n ? (week.pnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)') +
+    statCard('Verified ROI', fillRoi != null ? (fillRoi >= 0 ? '+' : '') + fillRoi + '%' : 'n/a', m.fill?.verified_n ? `n=${m.fill.verified_n}` : 'no confirmed fills yet', fillRoi != null ? (fillRoi >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)');
+  el.style.display = '';
+  const ab = document.getElementById('ledger-alerts');
+  if (ab) {
+    const alerts = (m.alerts || []).filter(a => a.level === 'CRITICAL' || a.level === 'WARNING');
+    if (alerts.length) {
+      ab.innerHTML = alerts.map(a =>
+        `<div class="ledger-alert ledger-alert--${a.level.toLowerCase()}">${a.level === 'CRITICAL' ? '\ud83d\udd34' : '\u26a0\ufe0f'} [${a.source}] ${a.message}</div>`).join('');
+      ab.style.display = '';
+    } else { ab.style.display = 'none'; }
+  }
 }
 
 function renderBankroll(b) {
@@ -829,7 +873,7 @@ async function loadAnalytics() {
       return;
     }
 
-    renderSummary(data.summary || {}, data.clv, data.bankroll);
+    renderSummary(data.summary || {}, data.clv, data.bankroll, data.metrics);
     if (hasBankroll) renderBankroll(data.bankroll);
 
     if (hasHistory) {

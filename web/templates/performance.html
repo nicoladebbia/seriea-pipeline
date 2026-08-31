@@ -168,21 +168,25 @@ async function loadPerformance() {
 function renderAll(d) {
   const b = d.before, a = d.after;
 
-  // S1: Hero stats
-  const allCount = b.count + a.count;
-  const allProfit = b.total_profit + a.total_profit;
-  const allStaked = b.total_staked + a.total_staked;
-  const allROI = allStaked > 0 ? (allProfit / allStaked * 100) : 0;
-  const allWR = allCount > 0 ? ((b.wins + a.wins) / allCount * 100) : 0;
-  const clvAvg = d.clv_analysis?.avg;
-  const streak = d.streaks?.current || '—';
+  // S1: Hero stats — all-time numbers come from the ledger payload
+  // (metrics = ledger.get_metrics(); the one computation). Before/after
+  // buckets below stay benchmark-scoped.
+  const m = d.metrics || {};
+  const allCount = m.record?.settled_n ?? (b.count + a.count);
+  const allProfit = m.roi?.all_time_profit ?? (b.total_profit + a.total_profit);
+  const allStaked = m.roi?.all_time_staked ?? (b.total_staked + a.total_staked);
+  const allROI = m.roi?.all_time_pct ?? (allStaked > 0 ? (allProfit / allStaked * 100) : 0);
+  const allWR = m.record?.win_rate_decisive ?? (allCount > 0 ? ((b.wins + a.wins) / allCount * 100) : 0);
+  const clvAvg = m.clv?.avg_pct ?? d.clv_analysis?.avg;
+  const _sd = m.streak?.streak_decisive;
+  const streak = _sd != null ? (_sd > 0 ? _sd + 'W' : _sd < 0 ? (-_sd) + 'L' : '—') : (d.streaks?.current || '—');
 
   document.getElementById('hero-stats').innerHTML = [
     statCard('Total Bets', allCount, `${b.count} before + ${a.count} after`),
-    statCard('Win Rate', allWR.toFixed(1) + '%', `${b.wins + a.wins}W / ${b.losses + a.losses}L`, vc(allWR - 50)),
+    statCard('Win Rate', allWR.toFixed(1) + '%', `${m.record?.won ?? (b.wins + a.wins)}W / ${m.record?.lost ?? (b.losses + a.losses)}L`, vc(allWR - 50)),
     statCard('ROI', sp(allROI) + '%', `on \u20ac${allStaked.toFixed(0)} staked`, vc(allROI)),
     statCard('P&L', (allProfit >= 0 ? '+' : '') + '\u20ac' + allProfit.toFixed(2), '', vc(allProfit)),
-    statCard('Avg CLV', clvAvg != null ? sp(clvAvg) + '%' : 'N/A', clvAvg != null && d.clv_analysis ? (d.clv_analysis.positive_pct + '% positive') : '', clvAvg != null ? vc(clvAvg) : ''),
+    statCard('Avg CLV', clvAvg != null ? sp(clvAvg) + '%' : 'N/A', m.clv?.n != null ? `${m.clv.positive_rate}% positive (n=${m.clv.n})` : (clvAvg != null && d.clv_analysis ? (d.clv_analysis.positive_pct + '% positive') : ''), clvAvg != null ? vc(clvAvg) : ''),
     statCard('Streak', streak, `Best: ${d.streaks?.longest_win}W | Worst: ${d.streaks?.longest_loss}L`, streak.includes('W') ? 'val-pos' : streak.includes('L') ? 'val-neg' : ''),
   ].join('');
 

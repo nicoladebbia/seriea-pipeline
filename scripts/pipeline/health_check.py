@@ -256,20 +256,21 @@ def check_betting_health() -> Dict:
     """Check betting system health from journal stats and drift alerts."""
     result = {"status": "OK", "details": {}}
 
-    # Journal stats
+    # Journal stats — ledger.get_metrics() is the one computation
     try:
-        from scripts.betting.bet_journal import get_journal_stats
-        stats = get_journal_stats()
+        from scripts.betting.ledger import get_metrics
+        m = get_metrics(include_alerts=False)
         result["details"]["journal"] = {
-            "total_bets": stats.get("total_bets", 0),
-            "pending": stats.get("pending", 0),
-            "settled": stats.get("settled", 0),
-            "roi_pct": stats.get("roi_pct", 0),
-            "total_profit": stats.get("total_profit", 0),
-            "clv_avg_pct": stats.get("clv_avg_pct", 0),
+            "total_bets": m["record"]["settled_n"] + m["bankroll"]["pending_n"],
+            "pending": m["bankroll"]["pending_n"],
+            "settled": m["record"]["settled_n"],
+            "roi_pct": m["roi"]["all_time_pct"],
+            "total_profit": m["roi"]["all_time_profit"],
+            "clv_avg_pct": m["clv"]["avg_pct"],
         }
     except Exception as e:
         result["details"]["journal"] = {"error": str(e)}
+        m = None
 
     # Drift alerts from auto_settle
     drift_file = DATA_DIR / "betting" / "drift_alerts.json"
@@ -294,18 +295,12 @@ def check_betting_health() -> Dict:
         except Exception:
             pass
 
-    # Bankroll
-    bankroll_file = DATA_DIR / "betting" / "bankroll.json"
-    if bankroll_file.exists():
-        try:
-            with open(bankroll_file) as f:
-                bankroll = json.load(f)
-            result["details"]["bankroll"] = {
-                "current": bankroll.get("current_balance", 0),
-                "initial": bankroll.get("initial_balance", 0),
-            }
-        except Exception:
-            pass
+    # Bankroll — from the same payload
+    if m is not None:
+        result["details"]["bankroll"] = {
+            "current": m["bankroll"]["current"],
+            "initial": m["bankroll"]["initial"],
+        }
 
     return result
 

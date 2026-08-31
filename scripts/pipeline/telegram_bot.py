@@ -1054,6 +1054,7 @@ def _handle_bankroll() -> str:
         current = result.get("current_bankroll", 0)
         initial = result.get("initial_bankroll", 1000)
         roi = result.get("roi_pct", 0)
+        growth = result.get("bankroll_growth_pct", 0)
         peak = result.get("peak_bankroll", current)
         streak = result.get("current_streak", 0)
 
@@ -1063,7 +1064,8 @@ def _handle_bankroll() -> str:
 
         tg.raw(f"   Balance: <b>\u20ac{current:,.2f}</b>" if isinstance(current, (int, float)) else f"   Balance: {current}")
         tg.raw(f"   Started: \u20ac{initial:,.0f}" if isinstance(initial, (int, float)) else "")
-        tg.raw(f"   Return: <b>{roi:+.1f}%</b>" if roi else "")
+        tg.raw(f"   ROI on stake: <b>{roi:+.1f}%</b>" if roi else "")
+        tg.raw(f"   Growth: {growth:+.1f}%" if growth else "")
         tg.raw(f"   Peak: \u20ac{peak:,.0f}" if isinstance(peak, (int, float)) else "")
         tg.blank()
 
@@ -1073,11 +1075,10 @@ def _handle_bankroll() -> str:
             else:
                 tg.raw(f"   \u2744\ufe0f {abs(streak)}-bet losing streak")
 
-        # Drawdown
-        if isinstance(current, (int, float)) and isinstance(peak, (int, float)) and peak > 0:
-            dd = (peak - current) / peak * 100
-            if dd > 2:
-                tg.raw(f"   \u26a0\ufe0f {dd:.0f}% below peak balance")
+        # Drawdown — from the payload, not recomputed
+        dd = result.get("drawdown_pct", 0) or 0
+        if isinstance(dd, (int, float)) and dd > 2:
+            tg.raw(f"   \u26a0\ufe0f {dd:.0f}% below peak balance")
 
         # Market breakdown — consolidated and sorted by profitability
         mkt = result.get("market_breakdown", {})
