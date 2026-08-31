@@ -148,6 +148,22 @@ async def _refresh_fixtures_cache(season: str, league: str = "serie_a") -> list[
 
         if all_fixtures:
             cache_path = _fixtures_cache_path(season, league)
+            try:
+                existing = _load_fixtures(season, league)
+            except (OSError, ValueError):
+                existing = []
+            if len(all_fixtures) < len(existing):
+                # A round error breaks the loop above, so a transient failure
+                # yields a PARTIAL list. Writing it would truncate the season
+                # cache — 2026-08-31 a round-3 error cut EPL's 380-row cache to
+                # 20 played fixtures and every forward-fixture reader went
+                # blind (dormancy flipped, weather/form/referee lost the EPL).
+                # A partial fetch never overwrites a fuller cache.
+                log.warning(
+                    "[%s] partial fixtures fetch (%d < %d cached) — keeping cache",
+                    league, len(all_fixtures), len(existing),
+                )
+                return existing
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
                 json.dump(all_fixtures, f, indent=1)

@@ -252,6 +252,20 @@ async def refresh_fixtures_cache(
     if all_fixtures:
         suffix = _league_suffix(league_key)
         cache_file = OUTPUT_DIR / f"fixtures_{season.replace('-', '_')}{suffix}.json"
+        existing = []
+        if cache_file.exists():
+            try:
+                with open(cache_file) as f:
+                    existing = json.load(f)
+            except (OSError, ValueError):
+                existing = []
+        if isinstance(existing, list) and len(all_fixtures) < len(existing):
+            # Same guard as matchday_updater._refresh_fixtures_cache: a round
+            # error breaks the loop, and a partial list must never truncate a
+            # fuller season cache (paid 2026-08-31, EPL 380 -> 20).
+            log.warning("[%s] partial fixtures fetch (%d < %d cached) — keeping cache",
+                        league_key, len(all_fixtures), len(existing))
+            return existing
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_file, "w") as f:
             json.dump(all_fixtures, f, indent=1)

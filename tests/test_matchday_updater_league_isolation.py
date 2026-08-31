@@ -156,3 +156,50 @@ def test_a_failed_refresh_with_no_cache_still_returns_empty(sandbox, monkeypatch
     (sandbox / f"fixtures_{SEASON.replace('-', '_')}_premier_league.json").unlink()
 
     assert mu.detect_new_matches(season=SEASON, league="premier_league") == []
+
+
+def test_partial_fixtures_fetch_never_truncates_the_cache(tmp_path, monkeypatch):
+    """A round error mid-loop must not overwrite the season cache.
+
+    2026-08-31: a transient error at EPL round 3 broke the fetch loop and the
+    partial 20-row list was written over the 380-row cache; every forward-
+    fixture reader went blind. The old code overwrites — this test fails on it.
+    """
+    import asyncio
+    import json as _json
+    import sys
+    import types
+
+    import scripts.data.matchday_updater as mu
+
+    monkeypatch.setattr(mu, "SOFASCORE_DIR", tmp_path)
+    season, league = "2026-2027", "premier_league"
+    cache = mu._fixtures_cache_path(season, league)
+    full = [{"id": i, "startTimestamp": 1700000000 + i} for i in range(4)]
+    cache.write_text(_json.dumps(full))
+
+    class _StubAPI:
+        def __init__(self):
+            self.calls = 0
+
+        async def _get(self, _path):
+            self.calls += 1
+            if self.calls == 1:
+                return {"events": [{"id": 99, "startTimestamp": 1700000999}]}
+            raise RuntimeError("transient round failure")
+
+        async def close(self):
+            pass
+
+    stub_mod = types.ModuleType("sofascore_wrapper.api")
+    stub_mod.SofascoreAPI = _StubAPI
+    pkg = types.ModuleType("sofascore_wrapper")
+    pkg.api = stub_mod
+    monkeypatch.setitem(sys.modules, "sofascore_wrapper", pkg)
+    monkeypatch.setitem(sys.modules, "sofascore_wrapper.api", stub_mod)
+
+    result = asyncio.run(mu._refresh_fixtures_cache(season, league=league))
+
+    on_disk = _json.loads(cache.read_text())
+    assert len(on_disk) == 4, "partial fetch truncated the cache"
+    assert len(result) == 4, "caller should get the fuller cache back"
