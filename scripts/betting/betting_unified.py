@@ -614,6 +614,30 @@ def load_extended_markets() -> Dict:
     return data.get("matches", {})
 
 
+def _gate_aux_predictions(rows, allowed: set, label: str):
+    """Row-level league gate for the AUXILIARY prediction files.
+
+    goal/btts/cards/corners/margin predictions are merged both-league files with
+    NO league field (goal_predictions.json on 2026-08-31: 23 rows = 10 SA + 10 EPL
+    + 3 stale). The per-league betting gate lives in load_predictions() only, and
+    the O/U scanner — the ONLY enabled market — iterated these files against the
+    merged odds with no gate, so a gated-league (EPL) O/U bet would have been
+    journaled as Serie A the moment its edge landed in band. Keep only matches
+    that survived the gate in load_predictions().
+    """
+    if not isinstance(rows, list):
+        return rows
+    kept = [r for r in rows if isinstance(r, dict) and r.get("match") in allowed]
+    dropped = [r.get("match") if isinstance(r, dict) else r
+               for r in rows if not (isinstance(r, dict) and r.get("match") in allowed)]
+    if dropped:
+        log.warning("  %s predictions: dropped %d/%d rows with no gated prediction "
+                    "(league gated or stale): %s%s", label, len(dropped), len(rows),
+                    ", ".join(str(m) for m in dropped[:5]),
+                    " ..." if len(dropped) > 5 else "")
+    return kept
+
+
 def load_goal_predictions() -> List[Dict]:
     """Load Poisson goal predictions."""
     p = UPCOMING / "goal_predictions.json"
@@ -882,6 +906,26 @@ class UnifiedBettingEngine:
         self.selected: List[ValueBet] = []
         self.accumulators: List[AccumulatorBet] = []
         self.slip: Optional[BetSlip] = None
+        # Rejections recorded AFTER an edge was computed — makes "0 bets" auditable.
+        self.near_misses: List[Dict] = []
+
+    def top_near_misses(self, n: int = 10) -> List[Dict]:
+        """Closest-to-band rejections first (gap_pp 0 = inside the edge band,
+        rejected by another gate), then by descending edge."""
+        return sorted(self.near_misses,
+                      key=lambda m: (m["gap_pp"], -m["edge_pct"]))[:n]
+
+    def _log_near_misses(self, n: int = 5) -> None:
+        top = self.top_near_misses(n)
+        if not top:
+            return
+        log.info("  Near misses (%d rejected after edge calc; closest %d):",
+                 len(self.near_misses), len(top))
+        for m in top:
+            log.info("    %-32s %-10s %-10s edge %+.1f%% band [%.1f, %.1f] odds %.2f (pin %s) -> %s",
+                     m["match"][:32], m["market"], str(m["selection"])[:10], m["edge_pct"],
+                     m["min_edge"], m["max_edge"], m["best_odds"],
+                     m["pinnacle_odds"] if m["pinnacle_odds"] else "-", m["reason"])
 
     @staticmethod
     def _get_betting_probs(pred: Dict) -> Dict:
@@ -1146,12 +1190,32 @@ class UnifiedBettingEngine:
         # lower base probabilities).
         edge_pct = raw_edge * 100
 
+        def _miss(reason: str) -> None:
+            """Record a post-edge rejection (closes over the CURRENT min/max_edge)."""
+            _max = max_edge_override if max_edge_override is not None else max_edge
+            if edge_pct < min_edge:
+                gap = min_edge - edge_pct
+            elif edge_pct > _max:
+                gap = edge_pct - _max
+            else:
+                gap = 0.0
+            self.near_misses.append({
+                "match": match, "date": date, "market": market, "selection": selection,
+                "model_prob": round(float(model_p), 4), "sharp_prob": round(float(sharp_p), 4),
+                "effective_model_prob": round(float(effective_model_p), 4),
+                "edge_pct": round(edge_pct, 2), "min_edge": round(min_edge, 2),
+                "max_edge": round(_max, 2), "gap_pp": round(gap, 2),
+                "best_odds": float(best_o), "pinnacle_odds": float(pin_o) if pin_o else None,
+                "reason": reason,
+            })
+            return None
+
         # Hard cap removed — now handled by per-market max_edge (7.0%) at line below.
         # Previously: edges >8% hit 37.7% WR. Now capped at 7% via market_rules.
 
         # Odds-range gating: 1.5-2.0 is a dead zone (live: 15 bets, 40% WR, -EUR121).
         if 1.5 <= best_o < 2.0:
-            return None  # Dead zone: -44% ROI live. No edge overcomes it.
+            return _miss("odds_dead_zone_1.5_2.0")  # -44% ROI live. No edge overcomes it.
 
         # Confidence-stratified edge: adjust min_edge based on model probability
         # High confidence (prob > 55%) = more reliable = lower edge needed
@@ -1164,22 +1228,22 @@ class UnifiedBettingEngine:
                 break
 
         if edge_pct < min_edge:
-            return None
+            return _miss("below_min_edge")
         # Market-specific edge cap (backtest-calibrated)
         effective_max = max_edge_override if max_edge_override is not None else max_edge
         if edge_pct > effective_max:
-            return None  # Live-proven: edges above cap are model overconfidence
+            return _miss("above_max_edge")  # Live-proven: edges above cap are model overconfidence
         if raw_edge < 0.02:
-            return None  # Minimum 2% absolute edge
+            return _miss("raw_edge_below_2pct")  # Minimum 2% absolute edge
         if best_o < cfg.min_odds or best_o > cfg.max_odds:
-            return None
+            return _miss("odds_outside_range")
 
         # Require Pinnacle benchmark — can't verify edge without sharp reference
         if not pin_o or pin_o <= 1:
-            return None  # No Pinnacle data = no confidence in edge reality
+            return _miss("no_pinnacle_reference")  # No Pinnacle data = no confidence in edge reality
         # Reject if best odds >5% above Pinnacle (at/below = +15% ROI, above = -1.4%)
         if best_o > pin_o * 1.05:
-            return None
+            return _miss("best_odds_above_pinnacle_5pct")
 
         # Golden zone: 2.0-2.5 odds = +38.2% ROI (best range). Lower edge threshold.
         if 2.0 <= best_o <= 2.5:
@@ -1192,11 +1256,11 @@ class UnifiedBettingEngine:
 
         # Re-check min_edge after adjustments
         if edge_pct < min_edge:
-            return None
+            return _miss("below_min_edge")
 
         ev = calculate_ev(model_p, best_o)
         if ev <= 0:
-            return None  # HARD GATE: never recommend a -EV bet
+            return _miss("negative_ev")  # HARD GATE: never recommend a -EV bet
 
         # Per-market Kelly fraction (proven markets get higher fraction)
         market_kelly = rules.get("kelly_fraction", cfg.kelly_fraction)
@@ -1216,7 +1280,7 @@ class UnifiedBettingEngine:
             # Kelly fractional — sizes proportional to perceived edge.
             stake_pct = min(kelly_adj * 100, cfg.max_stake_pct)
             if stake_pct < 0.20:
-                return None  # Kelly < 0.2% = edge too thin (lowered from 0.30)
+                return _miss("kelly_below_0.2pct")  # edge too thin (lowered from 0.30)
 
             # Edge-quality multiplier: data shows 3-5% edges = +113% ROI,
             # 5-7% = +2% ROI. Boost proven range, reduce marginal.
@@ -1343,12 +1407,21 @@ class UnifiedBettingEngine:
     def scan_ou_market(self, goal_preds: List[Dict],
                        odds_full: Dict,
                        pred_by_match: Dict = None) -> List[ValueBet]:
-        """Scan Over/Under markets for value."""
+        """Scan Over/Under markets for value.
+
+        When `pred_by_match` is given it is the set of matches that passed the
+        per-league betting gate: any goal prediction outside it is skipped
+        (goal_predictions.json is a merged both-league file — see
+        _gate_aux_predictions). Passing None disables that check (unit tests).
+        """
+        gate = pred_by_match is not None
         pred_by_match = pred_by_match or {}
         bets = []
         for gp in goal_preds:
             match = gp["match"]
             date = gp.get("date", "")
+            if gate and match not in pred_by_match:
+                continue  # league-gated or stale — never price it
             if match not in odds_full:
                 continue
 
@@ -2579,6 +2652,15 @@ class UnifiedBettingEngine:
             log.warning("  Filtered out %d past matches (date < %s)",
                         pre_filter - len(predictions), today_str)
 
+        # Auxiliary prediction files carry BOTH leagues and no league field —
+        # gate them to the matches that passed the per-league gate above.
+        _allowed = {p.get("match") for p in predictions}
+        goal_preds = _gate_aux_predictions(goal_preds, _allowed, "goal")
+        btts_preds = _gate_aux_predictions(btts_preds, _allowed, "btts")
+        cards_preds = _gate_aux_predictions(cards_preds, _allowed, "cards")
+        corners_preds = _gate_aux_predictions(corners_preds, _allowed, "corners")
+        margin_preds = _gate_aux_predictions(margin_preds, _allowed, "margin")
+
         log.info("  Predictions:    %d matches", len(predictions))
         log.info("  Odds (40+ bk):  %d matches", len(odds_full))
         log.info("  Extended mkts:  %d matches", len(extended))
@@ -2661,6 +2743,7 @@ class UnifiedBettingEngine:
                         log.warning("Auto-kill: %s disabled (%s)", _rule_key, _killed)
         except Exception:
             pass
+        self.near_misses = []
         log.info("\nScanning markets for value (market rules applied)...")
         all_bets = []
 
@@ -2777,6 +2860,7 @@ class UnifiedBettingEngine:
             log.info("  Remaining: %d value bets", len(all_bets))
 
         self.all_bets = all_bets
+        self._log_near_misses()
 
         # -- Portfolio optimization --
         log.info("\nOptimizing portfolio...")
@@ -3212,7 +3296,8 @@ def print_monte_carlo(mc: Dict):
 # =============================================================================
 def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                   accumulators: List[AccumulatorBet] = None,
-                  dry_run: bool = False) -> Optional[Path]:
+                  dry_run: bool = False,
+                  near_misses: List[Dict] = None) -> Optional[Path]:
     """Save bet slip to JSON for tracking."""
     output = {
         "generated_at": slip.generated_at,
@@ -3229,6 +3314,8 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
         "selected_bets": [asdict(b) for b in slip.bets],
         "all_value_bets_found": len(all_value),
         "rejected_bets": [asdict(b) for b in all_value if not b.is_selected],
+        # closest post-edge rejections — why "0 bets" is 0 bets
+        "near_misses": list(near_misses or []),
     }
 
     if accumulators:
@@ -3358,7 +3445,7 @@ def save_report(report: Dict):
     slip = report.get("_slip")
     engine = report.get("_engine")
     if slip and engine:
-        save_bet_slip(slip, engine.all_bets)
+        save_bet_slip(slip, engine.all_bets, near_misses=engine.top_near_misses(10))
     else:
         # No slip/engine attached: nothing to journal. The old fallback wrote
         # data/betting/unified_report.json — a legacy file that froze in
@@ -3561,7 +3648,8 @@ Examples:
 
     # -- Save --
     if not cfg.dry_run:
-        save_bet_slip(slip, all_bets, engine.accumulators)
+        save_bet_slip(slip, all_bets, engine.accumulators,
+                      near_misses=engine.top_near_misses(10))
         n_recorded = record_bets(slip)
         log.info("Recorded %d bets to history tracker", n_recorded)
 
