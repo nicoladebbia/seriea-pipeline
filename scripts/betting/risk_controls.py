@@ -321,7 +321,23 @@ def check_risk_gates(
         }
     """
     if cfg is None:
-        cfg = RiskConfig(starting_bankroll=bankroll)
+        # The base for drawdown / floor / pct MUST be the journal's initial
+        # bankroll, never the current one. Every live caller passes the
+        # CURRENT bankroll (get_effective_bankroll / metrics.bankroll.current),
+        # and until 2026-08-31 that was used as starting_bankroll, so
+        # current_bankroll = current + total_pnl double-counted the P&L
+        # (risk_state showed €1048 on a €1024 book). `bankroll` is kept for
+        # signature compatibility and only logged.
+        try:
+            from scripts.betting.ledger import get_initial_bankroll
+            starting = float(get_initial_bankroll())
+        except Exception as e:  # journal unreadable -> config default
+            log.warning("risk gates: initial bankroll unavailable (%s) — using config", e)
+            starting = RiskConfig().starting_bankroll
+        if bankroll and abs(bankroll - starting) > 0.01:
+            log.debug("risk gates: base=%.2f (journal initial), caller passed %.2f",
+                      starting, bankroll)
+        cfg = RiskConfig(starting_bankroll=starting)
 
     settled = _load_settled_bets()
 
