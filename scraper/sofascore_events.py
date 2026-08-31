@@ -47,6 +47,10 @@ _HEADERS = {
 _IMPERSONATE_OPTIONS = ["chrome", "chrome110", "chrome120", "safari", "safari15_5"]
 
 _consecutive_failures = 0  # track API outages
+# Status code of the last _get_json call that returned None after exhausting
+# retries on 403/429/503 (None when the last call succeeded or 404'd) — lets
+# callers tell "lineups not published yet" apart from "Sofascore is blocking".
+_LAST_FAILURE_STATUS: int | None = None
 _current_impersonate_idx = 0
 _session = None  # persistent session for connection reuse
 
@@ -102,7 +106,8 @@ def _get_json(url: str, session=None) -> dict | None:
     - Exponential backoff up to 60s per attempt
     - Pauses 3 minutes after 8 consecutive failures
     """
-    global _consecutive_failures
+    global _consecutive_failures, _LAST_FAILURE_STATUS
+    _LAST_FAILURE_STATUS = None
 
     # If API has been consistently failing, pause and reset session
     if _consecutive_failures >= 8:
@@ -126,6 +131,7 @@ def _get_json(url: str, session=None) -> dict | None:
                 _consecutive_failures = 0
                 return None
             if resp.status_code in (403, 429, 503):
+                _LAST_FAILURE_STATUS = resp.status_code
                 wait = min(60, _DELAY * (2 ** attempt))
                 log.warning("HTTP %d, waiting %.0fs (attempt %d)",
                             resp.status_code, wait, attempt + 1)

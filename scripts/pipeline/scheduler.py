@@ -855,8 +855,11 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                    "from scraper.lineup_fetcher import fetch_and_save_lineups; "
                    "fetch_and_save_lineups()"]
             # 60s starved this on matchday afternoons (killed at T-51 on
-            # 2026-08-28 while settlement-tick rebuilds saturated the box);
-            # the imminent-path fetch legitimately needs 2-3 min of API calls.
+            # 2026-08-28); and on 2026-08-30 a Sofascore 403 wave burned ~42s
+            # of retries PER MATCH, so 5 matches blew even 180s and the kill
+            # discarded the lineups that WERE confirmed. The fetcher now
+            # self-bounds at 150s (deadline + blocked-endpoint breaker) and
+            # saves partial results, so 180s here is a guaranteed fit.
             subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=180)
 
             # Check which matches actually got confirmed lineups

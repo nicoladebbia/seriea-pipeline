@@ -29,6 +29,12 @@ from scraper.sofascore_events import _get_json, _jitter_delay, _BASE_URL
 
 log = logging.getLogger(__name__)
 
+
+def _now() -> float:
+    """Monotonic clock (separate hook so tests can fake the deadline)."""
+    import time
+    return time.monotonic()
+
 SOFASCORE_DIR = _PROJECT_ROOT / "data" / "external" / "sofascore"
 
 # Set of Sofascore tournament IDs we support (for filtering scheduled events)
@@ -224,7 +230,8 @@ def fetch_lineup(match_id: int) -> Optional[Dict]:
     return result
 
 
-def fetch_all_lineups(odds_data: Optional[Dict] = None) -> Dict:
+def fetch_all_lineups(odds_data: Optional[Dict] = None,
+                      deadline_sec: float = 150.0) -> Dict:
     """Fetch confirmed lineups for all imminent Serie A matches.
 
     Main entry point for Sofascore lineup fetching.
@@ -232,6 +239,11 @@ def fetch_all_lineups(odds_data: Optional[Dict] = None) -> Dict:
     Args:
         odds_data: Dict from odds_full.json {match_key: {commence_time, ...}}
                    If None, loads from disk.
+        deadline_sec: soft wall-clock budget. When Sofascore 403-blocks, each
+            miss burns the full ~40s retry ladder (measured 2026-08-30: 5
+            matches = 3.5 min, so the scheduler's 180s subprocess kill
+            discarded even the CONFIRMED lineups). The deadline returns
+            partial results instead; 0/None disables.
 
     Returns:
         Dict of {match_key: lineup_data} for matches with confirmed lineups.
@@ -272,12 +284,35 @@ def fetch_all_lineups(odds_data: Optional[Dict] = None) -> Dict:
         log.warning("Could not resolve any Sofascore match IDs")
         return {}
 
-    # Fetch lineups
+    # Fetch lineups — bounded by a deadline and a blocked-endpoint breaker,
+    # so a Sofascore 403 wave costs 2 misses, not 40s x every match.
+    from scraper import sofascore_events as _ss_events
+    t0 = _now()
+    consecutive_blocked = 0
     confirmed = {}
-    for match_key, ss_id in match_ids.items():
+    remaining = list(match_ids.items())
+    for i, (match_key, ss_id) in enumerate(remaining):
+        if deadline_sec and (_now() - t0) > deadline_sec:
+            log.warning(
+                "Lineup fetch deadline (%.0fs) reached after %d/%d matches — "
+                "returning %d confirmed, rest retried next cycle",
+                deadline_sec, i, len(remaining), len(confirmed))
+            break
+        if consecutive_blocked >= 2:
+            log.warning(
+                "Sofascore blocking the lineups endpoint (2 consecutive "
+                "403-exhausted fetches) — skipping remaining %d match(es)",
+                len(remaining) - i)
+            break
         _jitter_delay()
         lineup = fetch_lineup(ss_id)
+        if lineup is None:
+            if getattr(_ss_events, "_LAST_FAILURE_STATUS", None) in (403, 429, 503):
+                consecutive_blocked += 1
+            else:
+                consecutive_blocked = 0
         if lineup:
+            consecutive_blocked = 0
             # Add team names from odds data
             match_info = imminent.get(match_key, {})
             home = match_info.get("home_team", "")

@@ -347,7 +347,8 @@ class LineupFetcher:
         return confirmed
 
 
-def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
+def fetch_and_save_lineups(odds_data: Dict = None,
+                           deadline_sec: float = 150.0) -> Dict:
     """Main entry point: fetch lineups via multi-source cascade and save.
 
     Cascade order:
@@ -390,11 +391,18 @@ def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
             return {}
 
     confirmed = {}
+    import time as _time
+    _t0 = _time.monotonic()
+
+    def _remaining() -> float:
+        return max(0.0, deadline_sec - (_time.monotonic() - _t0)) if deadline_sec else 0.0
 
     # ── Source 1: Sofascore (primary) ──────────────────────────────────
     try:
         from scraper.sofascore_lineups import fetch_all_lineups as ss_fetch
-        ss_result = ss_fetch(odds_data)
+        # Leave ~30s of the budget for the fallback sources
+        ss_budget = max(30.0, deadline_sec - 30.0) if deadline_sec else 0.0
+        ss_result = ss_fetch(odds_data, deadline_sec=ss_budget)
         if ss_result:
             confirmed.update(ss_result)
             log.info("Sofascore: %d confirmed lineups", len(ss_result))
@@ -403,8 +411,10 @@ def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
 
     # ── Source 2: football-data.org (backup for missed matches) ───────
     try:
+        if deadline_sec and _remaining() < 10:
+            raise TimeoutError(f"budget spent ({deadline_sec:.0f}s) — skipping backup source")
         from scraper.footballdata_lineups import fetch_lineups_footballdata as fd_fetch
-        fd_result = fd_fetch(odds_data)
+        fd_result = fd_fetch(odds_data, deadline_sec=_remaining())
         if fd_result:
             # Only add matches not already confirmed by Sofascore
             added = 0
@@ -418,9 +428,12 @@ def fetch_and_save_lineups(odds_data: Dict = None) -> Dict:
         log.warning("football-data.org lineup fetch failed: %s", e)
 
     # ── Source 3: API-Football (legacy fallback) ──────────────────────
-    # Only try if we still have missing matches and the key is available
+    # Only try if we still have missing matches, budget remains and the key exists
     fetcher = LineupFetcher()
-    if fetcher.available:
+    if deadline_sec and _remaining() < 10:
+        log.warning("Lineup budget spent (%.0fs) — skipping API-Football legacy source",
+                    deadline_sec)
+    elif fetcher.available:
         # Find matches not yet confirmed
         remaining = {k: v for k, v in odds_data.items() if k not in confirmed}
         if remaining:

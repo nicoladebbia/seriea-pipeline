@@ -99,7 +99,8 @@ def _api_get(endpoint: str, params: Optional[dict] = None) -> Optional[dict]:
         return None
 
 
-def fetch_lineups_footballdata(odds_data: Optional[Dict] = None) -> Dict:
+def fetch_lineups_footballdata(odds_data: Optional[Dict] = None,
+                               deadline_sec: float = 0) -> Dict:
     """Fetch confirmed lineups from football-data.org.
 
     Backup source for when Sofascore fails.
@@ -158,7 +159,12 @@ def fetch_lineups_footballdata(odds_data: Optional[Dict] = None) -> Dict:
         return {}
 
     confirmed = {}
+    _t0 = time.monotonic()
     for match in matches:
+        if deadline_sec and (time.monotonic() - _t0) > deadline_sec:
+            log.warning("football-data.org lineup deadline (%.0fs) reached — "
+                        "returning %d partial", deadline_sec, len(confirmed))
+            break
         fd_home = _normalize_fd_team(match.get("homeTeam", {}).get("name", ""))
         fd_away = _normalize_fd_team(match.get("awayTeam", {}).get("name", ""))
         match_id = match.get("id")
