@@ -20,7 +20,13 @@ LIVE_DIR = Path(__file__).resolve().parents[1] / "data" / "live"
 def _stored_blocks():
     """(snapshot_file, match_key, match_dict, stored_block) for every stored block."""
     out = []
+    # The oracle is the 123 blocks written by the ORIGINAL (lost) module, all
+    # dated 2026-07 or earlier. Day files from the rebuilt live pipeline
+    # (2026-08-28 season restart onwards) keep growing and are NOT oracle —
+    # without this cut, every new matchday breaks the 123-block guard.
     for path in sorted(LIVE_DIR.glob("*.json")):
+        if path.name >= "2026-08":
+            continue
         try:
             payload = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):

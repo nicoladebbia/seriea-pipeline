@@ -25,9 +25,10 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -72,7 +73,7 @@ from config.api_keys import get_odds_api_key
 def _track_credits(response, endpoint: str = "live_monitor"):
     """Track API credits from response headers (delta-based, see odds_fetcher.track_api_call)."""
     try:
-        from scripts.data.odds_fetcher import track_api_call, REGIONS
+        from scripts.data.odds_fetcher import REGIONS, track_api_call
         remaining_hdr = response.headers.get("x-requests-remaining")
         remaining = int(remaining_hdr) if remaining_hdr is not None else None
         # Estimate: regions × 1 market (live_monitor fetches one market at a time)
@@ -124,15 +125,18 @@ def _leagues_with_active_matches(window_min: int = 180) -> set[str]:
     Used to skip API calls for leagues that have no relevant matches.
     Reads fixtures_*.json (cheap, local).
     """
-    from datetime import datetime, timezone
     import json as _json
+    from datetime import datetime, timezone
+
+    # Season is DERIVED via the one existing helper — a "fixtures_2025_2026"
+    # literal here is exactly the annual-fuse trap CLAUDE.md documents (this
+    # was its 4th instance: frozen last-season files meant "active leagues:
+    # none" on every matchday since the 2026-08-01 rollover, so live scores
+    # were silently dead all season).
+    from scripts.utils.match_timing import _sofascore_fixture_files
     active = set()
-    fixture_paths = {
-        "serie_a": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026.json",
-        "premier_league": DATA_DIR / "external" / "sofascore" / "fixtures_2025_2026_premier_league.json",
-    }
     now_ts = datetime.now(timezone.utc).timestamp()
-    for league, p in fixture_paths.items():
+    for p, league in _sofascore_fixture_files():
         if league not in SPORT_KEYS_BY_LEAGUE or not p.exists():
             continue
         try:
@@ -268,43 +272,70 @@ def check_bet_settlement(
     minute: Optional[int],
     completed: bool,
 ) -> Optional[str]:
-    """Check if a bet outcome is decided (won/lost/virtually_won/virtually_lost).
+    """Check if a bet outcome is decided.
 
-    Returns new status string or None if still open.
+    Understands the REAL journal shapes (market 'O/U 2.5' / '1X2' / 'DC' /
+    'DNB' / 'BTTS' / 'AH 0.25' / 'spreads'; selections 'Over 2.5', 'Home',
+    '1X (Home or Draw)', 'BTTS No', 'DNB Home', 'Away -0.2', ...).
+
+    Returns: won / lost / push / half_won / half_lost /
+    virtually_won / virtually_lost, or None if still open.
     """
+    try:
+        from scripts.betting.live_bet_context import (
+            _normalize_market,
+            _sel_side,
+            resolve_bet_line,
+        )
+    except ImportError:
+        return None
+
     market = bet.get("market", "")
-    selection = bet.get("selection", "").upper()
+    selection = bet.get("selection", "")
+    norm = _normalize_market(market)
+    sel_l = selection.lower()
     total_goals = home_score + away_score
 
-    if market == "totals":
-        # Parse line from selection: "OVER 2.5" → 2.5
-        try:
-            line = float(selection.split()[-1])
-        except (ValueError, IndexError):
+    if norm == "totals":
+        line = resolve_bet_line(market, selection)
+        if line is None:
             return None
+        floor_line = int(line)
+        frac = int(round((line - floor_line) * 100))  # 0 / 25 / 50 / 75
 
-        if "OVER" in selection:
+        if "over" in sel_l:
+            if frac == 75 and total_goals == floor_line + 1:
+                return "half_won" if completed else None
             if total_goals > line:
                 return "won" if completed else "virtually_won"
             if completed:
+                if frac == 0 and total_goals == floor_line:
+                    return "push"
+                if frac == 25 and total_goals == floor_line:
+                    return "half_lost"
                 return "lost"
-            # Can't lose OVER until FT — there's always time for more goals
-            # But if minute > 85 and need 3+ goals, virtually lost
-            if minute and minute >= 85:
-                goals_needed = int(line) + 1 - total_goals
-                if goals_needed >= 3:
-                    return "virtually_lost"
+            # Can't lose OVER until FT — but ≥85' needing 3+ is virtually lost
+            if minute and minute >= 85 and (floor_line + 1 - total_goals) >= 3:
+                return "virtually_lost"
             return None
 
-        elif "UNDER" in selection:
+        if "under" in sel_l:
+            if frac == 75 and total_goals == floor_line + 1:
+                return "half_lost" if completed else None
             if total_goals > line:
                 return "lost" if completed else "virtually_lost"
             if completed:
+                if frac == 0 and total_goals == floor_line:
+                    return "push"
+                if frac == 25 and total_goals == floor_line:
+                    return "half_won"
                 return "won"
             return None
+        return None
 
-    elif market == "h2h":
-        if selection in ("HOME", "1"):
+    if norm == "h2h":
+        side = _sel_side(selection)
+        if side == "home":
             if completed:
                 return "won" if home_score > away_score else "lost"
             if minute and minute >= 80 and home_score > away_score + 1:
@@ -312,8 +343,7 @@ def check_bet_settlement(
             if minute and minute >= 80 and away_score > home_score + 1:
                 return "virtually_lost"
             return None
-
-        elif selection in ("AWAY", "2"):
+        if side == "away":
             if completed:
                 return "won" if away_score > home_score else "lost"
             if minute and minute >= 80 and away_score > home_score + 1:
@@ -321,43 +351,66 @@ def check_bet_settlement(
             if minute and minute >= 80 and home_score > away_score + 1:
                 return "virtually_lost"
             return None
-
-        elif selection in ("DRAW", "X"):
+        if side == "draw":
             if completed:
                 return "won" if home_score == away_score else "lost"
             return None
+        return None
 
-    elif market == "btts":
+    if norm == "double_chance":
+        tok = next((t for t in re.findall(r"[A-Z0-9]+", selection.upper())
+                    if t in ("1X", "X2", "12")), "")
+        if not tok or not completed:
+            return None
+        if tok == "1X":
+            return "won" if home_score >= away_score else "lost"
+        if tok == "X2":
+            return "won" if away_score >= home_score else "lost"
+        return "won" if home_score != away_score else "lost"
+
+    if norm == "draw_no_bet":
+        side = _sel_side(selection)
+        if side not in ("home", "away") or not completed:
+            return None
+        lead = (home_score - away_score) if side == "home" else (away_score - home_score)
+        if lead > 0:
+            return "won"
+        if lead == 0:
+            return "push"
+        return "lost"
+
+    if norm == "btts":
+        toks = re.findall(r"[a-z]+", sel_l)
         both_scored = home_score > 0 and away_score > 0
-        if "YES" in selection:
+        if "yes" in toks:
             if both_scored:
                 return "won" if completed else "virtually_won"
-            if completed:
-                return "lost"
-            return None
-        elif "NO" in selection:
+            return "lost" if completed else None
+        if "no" in toks:
             if both_scored:
                 return "lost" if completed else "virtually_lost"
-            if completed:
-                return "won"
-            return None
-
-    elif market == "spreads":
-        # Parse handicap from selection, e.g. "HOME -1.5"
-        try:
-            parts = selection.split()
-            side = parts[0]  # HOME or AWAY
-            handicap = float(parts[-1])
-        except (ValueError, IndexError):
-            return None
-
-        if completed:
-            if side == "HOME":
-                adjusted = home_score + handicap - away_score
-            else:
-                adjusted = away_score + handicap - home_score
-            return "won" if adjusted > 0 else "lost"
+            return "won" if completed else None
         return None
+
+    if norm == "spreads":
+        line = resolve_bet_line(market, selection)
+        if line is None or not completed:
+            return None
+        side = _sel_side(selection) or "home"
+        if side == "home":
+            adjusted = home_score + line - away_score
+        else:
+            adjusted = away_score + line - home_score
+        adjusted = round(adjusted, 2)
+        if adjusted >= 0.5:
+            return "won"
+        if abs(adjusted - 0.25) < 0.01:
+            return "half_won"
+        if adjusted == 0:
+            return "push"
+        if abs(adjusted + 0.25) < 0.01:
+            return "half_lost"
+        return "lost"
 
     return None
 
@@ -586,11 +639,13 @@ def _make_event_key(event: Dict) -> str:
 
 
 def _get_bet_context(match_key: str, home_score: int = 0, away_score: int = 0,
-                     minute: int = None) -> Optional[Dict]:
+                     minute: int = None,
+                     player_stats: dict = None) -> Optional[Dict]:
     """Get bet context for a match, or None if unavailable."""
     try:
         from scripts.betting.live_bet_context import get_match_bet_context
-        return get_match_bet_context(match_key, home_score, away_score, minute)
+        return get_match_bet_context(match_key, home_score, away_score, minute,
+                                     player_stats=player_stats)
     except Exception as e:
         log.debug("Failed to get bet context for %s: %s", match_key, e)
         return None
@@ -600,7 +655,7 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
                                     old_events: List, new_events: List):
     """Compare old vs new Sofascore events and send coaching-style notifications."""
     try:
-        from scripts.pipeline.notify import notify_goal, notify
+        from scripts.pipeline.notify import notify, notify_goal
     except Exception:
         return
 
@@ -647,7 +702,15 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
         latest_minute = max(e.get("minute", 0) for e in new_goal_events)
     elif new_other_events:
         latest_minute = max(e.get("minute", 0) for e in new_other_events)
-    bet_ctx = _get_bet_context(match_key, h_score, a_score, latest_minute)
+    bet_ctx = _get_bet_context(match_key, h_score, a_score, latest_minute,
+                               player_stats=match_data.get("live_player_stats"))
+
+    # Bet-games only (2026-08-31): goal/red-card pings fire ONLY on matches
+    # carrying a journal bet. Everything else is log-only.
+    if not (bet_ctx and bet_ctx.get("has_bets")):
+        if new_goal_events or new_other_events:
+            log.info("Live events on %s suppressed — no bets on this match", match_key)
+        return
 
     # Send goal notifications (batch multiple into one if needed)
     if len(new_goal_events) > 1 and bet_ctx and bet_ctx.get("has_bets"):
@@ -1049,18 +1112,38 @@ def poll_once() -> Dict:
             else:
                 if home_score > prev_h or away_score > prev_a:
                     scoring_team = home if home_score > prev_h else away
-                    try:
-                        from scripts.pipeline.notify import notify
-                        notify(
-                            f"⚽ <b>{scoring_team} scored!</b>\n"
-                            f"{home} {home_score}-{away_score} {away}"
-                            + (f"  ({minute}')" if minute else ""),
-                            title=f"GOAL {home_score}-{away_score}",
-                            level="info",
-                            category="live",
-                        )
-                    except Exception as e:
-                        log.debug("Score-change goal alert failed: %s", e)
+                    # Bet-games only (2026-08-31): fires ONLY when a journal
+                    # bet rides on this match, and ONLY while Sofascore events
+                    # are absent (the rich path owns the ping otherwise).
+                    bet_ctx = _get_bet_context(mk, home_score, away_score, minute)
+                    if (bet_ctx and bet_ctx.get("has_bets")
+                            and not match_entry.get("live_events")):
+                        try:
+                            from scripts.pipeline.notify import notify
+                            lines = [
+                                f"⚽ <b>{scoring_team} scored!</b>",
+                                f"{home} {home_score}-{away_score} {away}"
+                                + (f"  ({minute}')" if minute else ""),
+                                "",
+                            ]
+                            for b in bet_ctx["bets"]:
+                                icon = ("✅" if b.get("is_winning") is True
+                                        else "❌" if b.get("is_winning") is False
+                                        else "⏳")
+                                lines.append(
+                                    f"{icon} {b['selection']} @ {b.get('odds', 0):.2f}"
+                                    f" — {b.get('commentary', '')}")
+                            notify(
+                                "\n".join(lines),
+                                title=f"GOAL {home_score}-{away_score}",
+                                level="info",
+                                category="live",
+                            )
+                        except Exception as e:
+                            log.debug("Score-change goal alert failed: %s", e)
+                    else:
+                        log.info("Goal on %s (%d-%d) — no bets or Sofascore owns it, alert suppressed",
+                                 mk, home_score, away_score)
         # Update score baseline for next tick
         match_entry["_last_home_score"] = home_score
         match_entry["_last_away_score"] = away_score
@@ -1179,14 +1262,28 @@ def poll_once() -> Dict:
     except Exception as e:
         log.warning("Reconciliation check failed (non-blocking): %s", e)
 
-    # ── Track bets ──
+    # ── Track bets — continuous (2026-08-31): every journal bet on a
+    #    tracked match gets an entry updated EVERY poll (status, score,
+    #    live commentary), not only when decided. Feeds /live "Your Bets".
     active_bets = _load_active_bets()
     bet_updates = []
-    for bet in active_bets:
+    norm_map = None
+    try:
+        from scripts.betting.live_bet_context import (
+            _check_winning,
+            _fuzzy_match_key,
+            _generate_commentary,
+        )
+        norm_map = {_fuzzy_match_key(k): k for k in matchday["matches"]}
+    except ImportError as e:
+        log.warning("live_bet_context unavailable (%s) — bet tracking skipped", e)
+
+    for bet in (active_bets if norm_map is not None else []):
         match_name = bet.get("match", "")
-        match_entry = matchday["matches"].get(match_name)
-        if not match_entry:
+        mk_resolved = norm_map.get(_fuzzy_match_key(match_name))
+        if not mk_resolved:
             continue
+        match_entry = matchday["matches"][mk_resolved]
 
         last_snap = match_entry["snapshots"][-1] if match_entry["snapshots"] else None
         if not last_snap:
@@ -1196,42 +1293,61 @@ def poll_once() -> Dict:
         minute = last_snap.get("min")
         completed = match_entry["status"] == "completed"
 
-        new_status = check_bet_settlement(bet, hs, aws, minute, completed)
-        if new_status:
-            # Check if already tracked
-            existing = None
-            for bt in matchday["bet_tracking"]:
-                if (bt.get("match") == match_name and
-                    bt.get("market") == bet.get("market") and
-                    bt.get("selection") == bet.get("selection")):
-                    existing = bt
-                    break
+        new_status = check_bet_settlement(bet, hs, aws, minute, completed) or "open"
+        market = bet.get("market", "")
+        selection = bet.get("selection", "")
+        commentary = _generate_commentary(
+            market, selection, hs, aws, minute,
+            player_stats=match_entry.get("live_player_stats"))
+        is_winning = _check_winning(market, selection, hs, aws)
 
-            if existing:
-                # Update if status changed
-                if existing.get("status") != new_status:
-                    existing["status"] = new_status
-                    existing["updated_at"] = now.isoformat()
-                    bet_updates.append((match_name, bet.get("selection"), new_status))
-            else:
-                placed_odds = bet.get("odds", 0)
-                placed_stake = bet.get("stake", 0)
-                profit = round(placed_stake * (placed_odds - 1), 2) if "won" in new_status else -placed_stake
+        placed_odds = bet.get("odds", 0)
+        placed_stake = bet.get("stake", 0)
+        if new_status == "half_won":
+            profit = round(placed_stake / 2 * (placed_odds - 1), 2)
+        elif new_status == "half_lost":
+            profit = round(-placed_stake / 2, 2)
+        elif "won" in new_status:
+            profit = round(placed_stake * (placed_odds - 1), 2)
+        elif "lost" in new_status:
+            profit = -placed_stake
+        else:  # open / push
+            profit = 0.0
 
-                entry = {
-                    "match": match_name,
-                    "market": bet.get("market"),
-                    "selection": bet.get("selection"),
-                    "placed_odds": placed_odds,
-                    "placed_stake": placed_stake,
-                    "status": new_status,
-                    "decided_at_minute": minute,
-                    "decided_at_ts": now.isoformat(),
-                    "score_when_decided": [hs, aws],
-                    "potential_profit": profit,
-                }
-                matchday["bet_tracking"].append(entry)
-                bet_updates.append((match_name, bet.get("selection"), new_status))
+        existing = None
+        for bt in matchday["bet_tracking"]:
+            if (bt.get("match") in (mk_resolved, match_name) and
+                    bt.get("market") == market and
+                    bt.get("selection") == selection):
+                existing = bt
+                break
+        if existing is None:
+            existing = {
+                "match": mk_resolved,
+                "market": market,
+                "selection": selection,
+                "placed_odds": placed_odds,
+                "placed_stake": placed_stake,
+                "status": "open",
+            }
+            matchday["bet_tracking"].append(existing)
+
+        prev_status = existing.get("status", "open")
+        existing.update({
+            "match": mk_resolved,
+            "status": new_status,
+            "score": [hs, aws],
+            "minute": minute,
+            "commentary": commentary,
+            "is_winning": is_winning,
+            "potential_profit": profit,
+            "updated_at": now.isoformat(),
+        })
+        if new_status != "open" and prev_status != new_status:
+            existing.setdefault("decided_at_minute", minute)
+            existing.setdefault("decided_at_ts", now.isoformat())
+            existing["score_when_decided"] = [hs, aws]
+            bet_updates.append((mk_resolved, selection, new_status))
 
     # ── Save ──
     save_matchday(matchday)

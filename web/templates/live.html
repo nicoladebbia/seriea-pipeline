@@ -360,9 +360,14 @@ function lpRenderMatch(mk, md, bets) {
       matchBets.map(b => {
         const st = b.status || 'open';
         const cls = st.includes('won') ? 'won' : st.includes('lost') ? 'lost' : 'open';
+        const stLabel = st === 'open' ? 'live' : st.replace(/_/g, ' ');
+        const comm = b.commentary ? `<div class="text-small text-tertiary" style="margin-top:2px">${b.commentary}</div>` : '';
         return `<div class="live-bet">
-          <div><span class="text-secondary">${b.selection}</span> <span class="text-tertiary">@ ${b.placed_odds}</span> <span class="text-tertiary">($${b.placed_stake})</span></div>
-          <span class="live-bet__status live-bet__status--${cls}">${st}</span>
+          <div>
+            <div><span class="text-secondary">${b.selection}</span> <span class="text-tertiary">@ ${b.placed_odds}</span> <span class="text-tertiary">(€${b.placed_stake})</span></div>
+            ${comm}
+          </div>
+          <span class="live-bet__status live-bet__status--${cls}">${stLabel}</span>
         </div>`;
       }).join('') + `</div>`;
   }
@@ -481,7 +486,7 @@ async function lpLoad() {
           <div class="text-label">Bet Tracker</div>
           <div class="flex items-center gap-4">
             <span class="text-small"><span class="text-green font-semibold">${won}W</span> / <span class="text-red font-semibold">${lost}L</span> / <span class="text-amber font-semibold">${open} open</span></span>
-            <span class="text-mono font-semibold ${pnl >= 0 ? 'text-green' : 'text-red'}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>
+            <span class="text-mono font-semibold ${pnl >= 0 ? 'text-green' : 'text-red'}">${pnl >= 0 ? '+' : ''}€${pnl.toFixed(2)}</span>
           </div>
         </div>
       </div>`;
