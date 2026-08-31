@@ -1267,6 +1267,9 @@ class FeatureBuilder:
         "home_prob_", "away_prob_", "draw_prob_",
         "weather_", "travel_distance",
         "line_vel_",
+        # League-context features: slowly-moving expanding averages — the
+        # latest played row's value IS the correct value for the next fixture.
+        "league_", "matchweek_avg_goals",
     )
 
     # Matchup-specific features that must NOT be cached from a random
@@ -1290,30 +1293,38 @@ class FeatureBuilder:
         (match-level) features like odds, market probs, etc.
         Excludes matchup-specific probability features that would be stale.
         """
-        seen_home = set()
-        seen_away = set()
-        self._latest_match_features = {}  # non-prefixed features from most recent row
+        # Coalesce each team's features over its last N rows instead of taking
+        # only the single most recent row: early-season rows carry scattered
+        # NaNs (std features need history, corners/fouls lag a day, etc.), and
+        # a NaN in the latest row silently dropped the feature from the cache —
+        # measured 2026-08-31: 28/126 ML features lost this way, mean-imputed
+        # at prediction time. A team's own last non-NaN value is the correct
+        # fallback for team-history features (they don't depend on the opponent).
+        _COALESCE_ROWS = 5
+        self._latest_match_features = {}  # match-level features, coalesced below
 
-        for _, row in self.df.iterrows():
-            home = row.get("home_team")
-            away = row.get("away_team")
+        for side in ("home", "away"):
+            team_col = f"{side}_team"
+            if team_col not in self.df.columns:
+                continue
+            # self.df is sorted match_date descending — head(N) = N most recent
+            recent = self.df.groupby(team_col, sort=False).head(_COALESCE_ROWS)
+            for team, g in recent.groupby(team_col, sort=False):
+                merged: Dict = {}
+                for _, row in g.iterrows():  # newest first — first value wins
+                    for key, val in self._extract_team_features(row, side).items():
+                        merged.setdefault(key, val)
+                self.team_features[f"{team}_{side}"] = merged
 
-            if home and home not in seen_home:
-                self.team_features[f"{home}_home"] = self._extract_team_features(row, "home")
-                seen_home.add(home)
-
-            if away and away not in seen_away:
-                self.team_features[f"{away}_away"] = self._extract_team_features(row, "away")
-                seen_away.add(away)
-
-            # Cache non-prefixed match-level features from the very first
-            # (most recent) row — used as fallback defaults at prediction time
-            if not self._latest_match_features:
-                for col in row.index:
-                    if col in self._EXCLUDE_FROM_CACHE:
-                        continue
-                    if pd.notna(row[col]) and any(col.startswith(p) for p in self._MATCH_LEVEL_PREFIXES):
-                        self._latest_match_features[col] = row[col]
+        # Cache match-level features, coalescing NaNs over the 10 most recent
+        # rows (a NaN weather/league-context value in the single newest row
+        # used to drop the feature entirely).
+        for _, row in self.df.head(10).iterrows():
+            for col in row.index:
+                if col in self._EXCLUDE_FROM_CACHE or col in self._latest_match_features:
+                    continue
+                if pd.notna(row[col]) and any(col.startswith(p) for p in self._MATCH_LEVEL_PREFIXES):
+                    self._latest_match_features[col] = row[col]
 
     # Suffixes of team-prefixed columns that are matchup-specific and must
     # NOT be cached from a previous match (they depend on the opponent).
@@ -1697,10 +1708,194 @@ class FeatureBuilder:
                          "ref_avg_reds_given", "ref_total_cards_mean"]:
             features.setdefault(ref_col, 0.0)
 
+        # --- Compute matchup-specific derived features (mirrors the exact
+        # training formulas in features/derived.py, goal_features.py, build.py,
+        # league_position.py, lineup_xg.py) — measured 2026-08-31: 23 match-
+        # level model features were absent here and mean-imputed, flattening
+        # every prediction. Fills only keys not already present. ---
+        features.update(self._compute_matchup_derived(features))
+
         # --- Compute interaction features (mirrors build.py Step 36) ---
         features.update(self._compute_interaction_features(features))
 
         return pd.DataFrame([features])
+
+    def _league_context(self) -> Dict:
+        """League/matchweek expanding-average context from played history.
+
+        Mirrors build.py _add_league_draw_features (expanding().mean().shift(1))
+        and creative_factors.py matchweek_avg_goals (per-season expanding):
+        for the NEXT fixture, the expanding value is simply the mean over all
+        played rows (league) / current-season played rows (matchweek).
+        """
+        if getattr(self, "_league_ctx_cache", None) is not None:
+            return self._league_ctx_cache
+        ctx: Dict = {}
+        try:
+            hs = pd.to_numeric(self.df.get("home_score"), errors="coerce")
+            as_ = pd.to_numeric(self.df.get("away_score"), errors="coerce")
+            total = (hs + as_).dropna()
+            if len(total):
+                ctx["league_avg_goals"] = float(total.mean())
+            if "season" in self.df.columns:
+                cur = self.df["season"].max()
+                mask = self.df["season"] == cur
+                cur_total = (hs[mask] + as_[mask]).dropna()
+                if len(cur_total):
+                    ctx["matchweek_avg_goals"] = float(cur_total.mean())
+            if "matchweek" in self.df.columns and "season" in self.df.columns:
+                cur = self.df["season"].max()
+                mw = pd.to_numeric(
+                    self.df.loc[self.df["season"] == cur, "matchweek"],
+                    errors="coerce").dropna()
+                ctx["next_matchweek"] = float(mw.max()) + 1 if len(mw) else 1.0
+        except Exception as e:
+            log.debug("League context unavailable: %s", e)
+        self._league_ctx_cache = ctx
+        return ctx
+
+    def _compute_matchup_derived(self, f: Dict) -> Dict:
+        """Compute matchup-specific derived features with the training formulas.
+
+        Every formula mirrors its training twin exactly (file:line noted) so
+        there is no train/predict distribution shift — enforced by
+        tests/test_upcoming_feature_parity.py. Only keys absent from `f` are
+        returned: fresher upstream values (odds injection, real weather) win.
+        """
+        import math
+        out: Dict = {}
+
+        def put(key, value):
+            if key not in f and value is not None and not (
+                    isinstance(value, float) and math.isnan(value)):
+                out[key] = value
+
+        # --- Elo-form blend (features/derived.py _add_elo_enhancements) ---
+        h_elo = f.get("home_elo");  h_elo = 1500.0 if h_elo is None or pd.isna(h_elo) else float(h_elo)
+        a_elo = f.get("away_elo");  a_elo = 1500.0 if a_elo is None or pd.isna(a_elo) else float(a_elo)
+        h_f5 = f.get("home_form_points_5"); h_f5 = 7.5 if h_f5 is None or pd.isna(h_f5) else float(h_f5)
+        a_f5 = f.get("away_form_points_5"); a_f5 = 7.5 if a_f5 is None or pd.isna(a_f5) else float(a_f5)
+        h_blend = round(0.75 * h_elo + 0.25 * (1400 + (h_f5 / 15.0) * 200), 1)
+        a_blend = round(0.75 * a_elo + 0.25 * (1400 + (a_f5 / 15.0) * 200), 1)
+        put("elo_form_blend_diff", round(h_blend - a_blend, 1))
+        put("elo_form_disagreement", round((h_blend - h_elo) - (a_blend - a_elo), 1))
+
+        # elo_momentum_diff (derived.py: fillna(0) diff, round 1)
+        h_mom = f.get("home_elo_momentum", 0) or 0
+        a_mom = f.get("away_elo_momentum", 0) or 0
+        put("elo_momentum_diff", round(float(h_mom) - float(a_mom), 1))
+
+        # --- Relative diffs (features/derived.py _add_relative_features:
+        # plain difference, NaN propagates -> only when both sides exist) ---
+        for name, h_key, a_key in [
+            ("momentum_diff", "home_win_streak", "away_win_streak"),
+            ("us_squad_depth_diff", "home_us_squad_depth", "away_us_squad_depth"),
+            ("us_top11_xg90_sum_diff", "home_us_top11_xg90_sum", "away_us_top11_xg90_sum"),
+        ]:
+            hv, av = f.get(h_key), f.get(a_key)
+            if hv is not None and av is not None and pd.notna(hv) and pd.notna(av):
+                put(name, float(hv) - float(av))
+
+        # position_momentum_diff (features/league_position.py: fillna(0) diff)
+        h_pm = f.get("home_position_momentum", 0) or 0
+        a_pm = f.get("away_position_momentum", 0) or 0
+        put("position_momentum_diff", float(h_pm) - float(a_pm))
+
+        # --- Interactions (features/build.py _add_interaction_features) ---
+        atk_diff = f.get("attack_strength_diff", 0) or 0
+        form_diff = (f.get("home_form_points_5", 0) or 0) - (f.get("away_form_points_5", 0) or 0)
+        put("attack_form_alignment", round(float(atk_diff) * form_diff / 10, 3))    # build.py:2437
+        elo_diff = f.get("elo_diff", 0) or 0
+        put("form_elo_signal", round(form_diff * float(elo_diff) / 100, 3))          # build.py:2458
+
+        # --- Draw-convergence (build.py _add_league_draw_features) ---
+        h_atk = f.get("home_attack_strength"); a_atk = f.get("away_attack_strength")
+        h_def = f.get("home_defense_strength"); a_def = f.get("away_defense_strength")
+        if h_def is not None and a_def is not None and pd.notna(h_def) and pd.notna(a_def):
+            put("both_defenses_strong", min(float(h_def), float(a_def)))
+        if h_atk is not None and a_atk is not None and pd.notna(h_atk) and pd.notna(a_atk):
+            put("both_attacks_weak", min(max(1.0 - max(float(h_atk), float(a_atk)), 0.0), 1.0))
+
+        # defense_mismatch_score (features/goal_features.py:90)
+        _a_atk = 1.0 if a_atk is None or pd.isna(a_atk) else float(a_atk)
+        _h_def = 1.0 if h_def is None or pd.isna(h_def) else float(h_def)
+        put("defense_mismatch_score", round(_a_atk / max(_h_def, 0.1), 3))
+
+        # btts_probability_naive (goal_features.py:123,134 — rates rounded 4, product rounded 4)
+        h_gs = f.get("home_roll_5_goals_scored"); h_gs = 1.0 if h_gs is None or pd.isna(h_gs) else float(h_gs)
+        a_gs = f.get("away_roll_5_goals_scored"); a_gs = 1.0 if a_gs is None or pd.isna(a_gs) else float(a_gs)
+        h_rate = round(1 - math.exp(-h_gs), 4)
+        a_rate = round(1 - math.exp(-a_gs), 4)
+        put("btts_probability_naive", round(h_rate * a_rate, 4))
+
+        # --- Poisson expectancy (features/derived.py _add_poisson_expectancy) ---
+        try:
+            from scipy.stats import poisson as _poisson
+            LEAGUE_AVG_GOALS = 1.35
+            p_h_atk = 1.0 if h_atk is None or pd.isna(h_atk) else float(h_atk)
+            p_a_atk = 1.0 if a_atk is None or pd.isna(a_atk) else float(a_atk)
+            p_h_def = 1.0 if h_def is None or pd.isna(h_def) else float(h_def)
+            p_a_def = 1.0 if a_def is None or pd.isna(a_def) else float(a_def)
+            hxg = min(max(p_h_atk * p_a_def * LEAGUE_AVG_GOALS, 0.1), 5.0)
+            axg = min(max(p_a_atk * p_h_def * LEAGUE_AVG_GOALS, 0.1), 5.0)
+            put("poisson_home_xg", round(hxg, 3))
+            put("poisson_away_xg", round(axg, 3))
+            prob_H = prob_D = prob_A = 0.0
+            for i in range(8):                       # max_goals=7, matches training
+                p_i = _poisson.pmf(i, hxg)
+                for j in range(8):
+                    joint = p_i * _poisson.pmf(j, axg)
+                    if i > j:
+                        prob_H += joint
+                    elif i == j:
+                        prob_D += joint
+                    else:
+                        prob_A += joint
+            put("poisson_prob_H", round(prob_H, 4))
+            put("poisson_prob_D", round(prob_D, 4))
+            put("poisson_prob_A", round(prob_A, 4))
+            # goal_features.py:140-158 — uses the ROUNDED xg columns
+            rhxg = out.get("poisson_home_xg", f.get("poisson_home_xg", round(hxg, 3)))
+            raxg = out.get("poisson_away_xg", f.get("poisson_away_xg", round(axg, 3)))
+            total_xg = float(rhxg) + float(raxg)
+            for line in (1.5, 2.5, 3.5):
+                put(f"poisson_over_{str(line).replace('.', '_')}",
+                    round(1 - _poisson.cdf(int(line), total_xg), 4))
+            put("poisson_btts",
+                round((1 - _poisson.pmf(0, float(rhxg))) * (1 - _poisson.pmf(0, float(raxg))), 4))
+        except Exception as e:
+            log.debug("Poisson expectancy unavailable: %s", e)
+
+        # --- League context (exact expanding values from played history) ---
+        ctx = self._league_context()
+        if "league_avg_goals" in ctx:
+            out["league_avg_goals"] = ctx["league_avg_goals"]      # exact > carried
+        if "matchweek_avg_goals" in ctx:
+            out["matchweek_avg_goals"] = ctx["matchweek_avg_goals"]
+
+        # is_run_in (build.py:2099: mw >= round(max_mw * 0.79))
+        try:
+            from config.leagues import get_matchweeks
+            mw = ctx.get("next_matchweek")
+            if mw is not None:
+                put("is_run_in", int(mw >= round(get_matchweeks(self.league) * 0.79)))
+        except Exception:
+            pass
+
+        # elo_xg_signal (build.py interaction #7: (elo_diff/100) * us_xg_diff)
+        us_xg_diff = f.get("us_xg_diff", 0) or 0
+        put("elo_xg_signal", round((float(elo_diff) / 100) * float(us_xg_diff), 3))
+
+        # Static-era / rare-context flags — 0 is the correct modern default
+        put("is_no_crowd_match", 0)            # COVID-era flag, 0 since 2021
+        put("derby_home_advantage_boost", 0.0)  # non-derby default
+
+        # promoted_vs_established (features/creative_factors.py:256)
+        h_pr, a_pr = f.get("home_is_promoted"), f.get("away_is_promoted")
+        if h_pr is not None and a_pr is not None and pd.notna(h_pr) and pd.notna(a_pr):
+            put("promoted_vs_established", int(bool(h_pr) != bool(a_pr)))
+
+        return out
 
     def _compute_interaction_features(self, f: Dict) -> Dict:
         """Compute the same interaction features as build.py _add_interaction_features.
