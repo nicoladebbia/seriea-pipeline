@@ -434,6 +434,15 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
 - **Fix**: league guard in `_absorb` (predict_unified), foreign-league drop + warning at the
   engine choke point (`run_ensemble_predictions`), per-league pairs in
   `_check_cross_coverage`. Regression test: `test_epl_fixture_never_enters_the_serie_a_loader`.
+- **Second instance (found 2026-08-31, four days after the first)**: the fix above gated
+  `predictions*.json` only. `goal_predictions.json` (and btts/cards/corners/margin) are
+  merged both-league files with **no league field** (23 rows = 10 SA + 10 EPL + 3 stale),
+  and `scan_ou_market` — the ONLY enabled market — priced them against the merged odds
+  with no gate. An EPL O/U bet would have been journaled as Serie A the moment its edge
+  landed in band. Caught only because near-miss logging (`near_misses` in the slip, top-5
+  in the run log) listed Arsenal–Chelsea. Fix: `_gate_aux_predictions` in `run()` +
+  `scan_ou_market` skips matches outside `pred_by_match`. **When you audit a gate, enumerate
+  every input the priced path iterates, not the one the gate was written for.**
 - **Prevention rules**: **a per-file betting gate is only as safe as the file's homogeneity —
   any multi-league source feeding a per-league gate needs a row-level league check at the
   choke point.** And **a validation warning that fires unchanged twice a day is not noise to
