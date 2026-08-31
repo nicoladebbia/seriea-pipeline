@@ -854,7 +854,10 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
             cmd = [sys.executable, "-c",
                    "from scraper.lineup_fetcher import fetch_and_save_lineups; "
                    "fetch_and_save_lineups()"]
-            subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=60)
+            # 60s starved this on matchday afternoons (killed at T-51 on
+            # 2026-08-28 while settlement-tick rebuilds saturated the box);
+            # the imminent-path fetch legitimately needs 2-3 min of API calls.
+            subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=180)
 
             # Check which matches actually got confirmed lineups
             try:
@@ -1168,6 +1171,15 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
     return False
 
 
+# The pre-kickoff subprocess is NOT a ~25s flow on a matchday: the per-event
+# odds extras loop alone runs ~5 min (20 events x ~7s x 2 leagues) plus the
+# ensemble re-predict. A 120s timeout killed the T-30 order-ticket commit
+# TWICE on go-live day (2026-08-28, 14:12 and 14:29 — no ticket, no
+# no-action, no journal write). 900s = one launchd tick; launchd will not
+# start a second monitor instance while one runs, so this cannot overlap.
+PRE_KICKOFF_TIMEOUT_SEC = 900
+
+
 def run_pre_kickoff(bankroll: float = 0) -> bool:
     """Execute the pre-kickoff pipeline (confirmed lineups + re-prediction + CLV capture).
 
@@ -1210,7 +1222,7 @@ def run_pre_kickoff(bankroll: float = 0) -> bool:
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=120  # 2 minute timeout (should be ~25s)
+            timeout=PRE_KICKOFF_TIMEOUT_SEC
         )
 
         if result.returncode == 0:
@@ -1242,8 +1254,15 @@ def run_pre_kickoff(bankroll: float = 0) -> bool:
             log.error(f"Pre-kickoff pipeline failed: {result.stderr[-500:]}")
             return False
 
-    except subprocess.TimeoutExpired:
-        log.error("Pre-kickoff pipeline timed out")
+    except subprocess.TimeoutExpired as e:
+        # TimeoutExpired carries the partial captured output — log the tail so
+        # the next miss is diagnosable from the log alone (today's was not).
+        out = e.stdout or ""
+        if isinstance(out, bytes):
+            out = out.decode(errors="replace")
+        tail = out[-800:]
+        log.error("Pre-kickoff pipeline timed out after %ds — partial stdout tail:\n%s",
+                  PRE_KICKOFF_TIMEOUT_SEC, tail)
         return False
     except Exception as e:
         log.error(f"Pre-kickoff execution error: {e}")

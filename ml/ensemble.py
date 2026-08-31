@@ -226,11 +226,13 @@ class WeightedAverageEnsemble:
         self.blend_calibrator = AutoCalibrator()
         self.blend_calibrator.fit(oof_y, blended_oof)
 
-        # Persist BOTH raw and calibrated OOF predictions.
-        # The correction layer trains on raw (pre-calibration) to avoid double-calibration.
-        # Calibrated OOF kept for diagnostics and ensemble evaluation.
-        calibrated_oof = _normalize_probs(self.blend_calibrator.calibrate(blended_oof))
-        self._persist_oof_predictions(X, joint_ok, calibrated_oof, oof_y, context_df,
+        # Persist ONLY honest (pre-calibration) OOF predictions. The calibrator
+        # above is refit on this whole OOF set, so applying it back to the same
+        # rows is in-sample: on the 2026-08-25 Serie A run it inflated OOF argmax
+        # accuracy 0.531 -> 0.565, and test_historical_accuracy graded that
+        # fiction. prob_* == raw_prob_* by contract; calibrated output is only
+        # ever produced for NEW matches at inference.
+        self._persist_oof_predictions(X, joint_ok, blended_oof, oof_y, context_df,
                                       raw_oof=blended_oof)
 
         # Retrain base models on all data
@@ -259,8 +261,10 @@ class WeightedAverageEnsemble:
         """Save OOF predictions + context features for the correction layer.
 
         Writes to data/models/{variant}/cv_predictions.parquet with columns:
-        prob_H, prob_D, prob_A (calibrated), raw_prob_H/D/A (pre-calibration),
-        actual, plus context features for correction.
+        prob_H, prob_D, prob_A and raw_prob_H/D/A (identical by contract — both
+        are the honest pre-calibration OOF; in-sample-calibrated output is
+        deliberately never persisted), actual, plus context features for
+        correction.
 
         Args:
             context_df: Optional full features DataFrame (pre-feature-selection)

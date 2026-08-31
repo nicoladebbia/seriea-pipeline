@@ -934,6 +934,21 @@ def _player_meta_needs_refresh(path: Path, matches_fetched: int | None) -> bool:
     return age_days > PLAYER_META_MAX_AGE_DAYS
 
 
+def _should_rebuild_features(summary: dict) -> bool:
+    """Rebuild features only when this run actually changed the data on disk.
+
+    build_features(use_cache=False) is a ~23-minute full rebuild, not the
+    "~30s" the old log line claimed. The settlement tick calls this every
+    5 minutes on matchdays, so an unconditional rebuild saturated the box
+    all afternoon on 2026-08-28 and starved the T-30 pre-kickoff run into
+    its subprocess timeout. Zero rows ingested == features provably
+    unchanged == rebuild is pure waste.
+    """
+    added = summary.get("matches_parquet_added", 0) or 0
+    fetched = summary.get("matches_fetched", 0) or 0
+    return (added + fetched) > 0
+
+
 def run_matchday_update(
     season: str | None = None,
     rebuild_features: bool = False,
@@ -1061,8 +1076,11 @@ def run_matchday_update(
             log.error("Failed to regenerate standings: %s", e)
             summary["standings_regenerated"] = False
 
+    if rebuild_features and not _should_rebuild_features(summary):
+        log.info("Step 6b skipped — nothing ingested this run, features already current")
+        rebuild_features = False
     if rebuild_features:
-        log.info("Step 6b: Rebuilding features.parquet (~30s)...")
+        log.info("Step 6b: Rebuilding features.parquet (full use_cache=False rebuild, ~23 min)...")
         try:
             from features.build import build_features
             features_df = build_features(use_cache=False)
