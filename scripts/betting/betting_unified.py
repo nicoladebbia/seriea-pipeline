@@ -263,7 +263,10 @@ class BettingConfig:
         "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +10.1% ROI (74% WR, 46 bets), realized CLV +2.5%.
                        "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.08,             # 2026-06-01: PER-LINE shrinkage. 1.5 model claims ~8% edge but
                        "line_shrinkage": {1.5: 0.6},                                     # CLV says ~2.5% (3x over-claim) → shrink 1.5 to size Kelly on the
-                       "line_min_edge": {2.5: 7.0}},                                    # deflated edge. 2.5 UNSHRUNK (best CLV +4.8%, already gated at 7.0).
+                       "line_min_edge": {2.5: 7.0},                                     # deflated edge. 2.5 UNSHRUNK (best CLV +4.8%, gated at >=7.0).
+                       "line_max_edge": {2.5: 10.0}},                                   # 2026-09-01: line 2.5 band was [7,7] = EMPTY (market max 7 met the
+                                                                                        # line min 7; +8.3% edge died above_max_edge). Journal: 7-10% edge
+                                                                                        # = +12.8% ROI / CLV +4.9 (n=16); >=10% = -26.9% (n=17) → cap 10.
         "O/U_Under":  {"enabled": False, "min_edge_pct": 6.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "AH":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "DC":         {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
@@ -271,7 +274,8 @@ class BettingConfig:
         "BTTS":       {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Alt_OU":     {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,
                        "allowed_lines": [1.5, 2.5],                                     # No shrinkage — same proven O/U model
-                       "line_min_edge": {2.5: 7.0}},                                    # O/U 2.5: higher threshold
+                       "line_min_edge": {2.5: 7.0},                                    # O/U 2.5: higher threshold
+                       "line_max_edge": {2.5: 10.0}},                                  # same [7,10] window as O/U_Over 2.5 (band was [7,7] = empty)
         "Alt_AH":     {"enabled": False, "min_edge_pct": 4.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Corners":    {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "Cards":      {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
@@ -1141,6 +1145,22 @@ class UnifiedBettingEngine:
 
         min_edge = min_edge_override if min_edge_override is not None else rules.get("min_edge_pct", cfg.min_edge_pct)
         max_edge = rules.get("max_edge_pct", cfg.max_edge_pct)
+
+        # Per-line max_edge override (mirrors line_min_edge / line_shrinkage).
+        # Without it a line_min_edge raise can meet the market-wide cap and
+        # produce an EMPTY band: O/U 2.5 sat at [7.0, 7.0] and every candidate
+        # was rejected (a +8.3% edge died as above_max_edge on 2026-09-01).
+        # Journal evidence for the 2.5 window: edge 7-10% = +12.8% ROI / CLV
+        # +4.9 (n=16); edge >=10% = -26.9% ROI (n=17) -> cap belongs at 10.
+        if max_edge_override is None:
+            line_max_edge = rules.get("line_max_edge")
+            if line_max_edge:
+                try:
+                    _line = float(str(market).split()[-1])
+                    if _line in line_max_edge:
+                        max_edge_override = line_max_edge[_line]
+                except (ValueError, IndexError):
+                    pass
 
         # Apply situational adjustments (Phase 3 backtest-derived)
         if pred is not None:

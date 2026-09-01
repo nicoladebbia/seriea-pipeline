@@ -77,6 +77,11 @@ def _build_edge_thresholds() -> dict:
         out[cat] = {
             "min": float(r.get("min_edge_pct", 5.0)),
             "max": float(r.get("max_edge_pct", 8.0)),
+            # Per-line overrides (O/U 2.5 runs a [7, 10] band while 1.5 keeps
+            # the market-wide [5, 7]) — consumed by the O/U scan, which knows
+            # the line; category-level scans use min/max above.
+            "line_min": dict(r.get("line_min_edge") or {}),
+            "line_max": dict(r.get("line_max_edge") or {}),
             "enabled": bool(r.get("enabled", False)),
         }
     return out
@@ -390,6 +395,9 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             edge_pct = ((model_over - sharp_implied) / sharp_implied * 100) if sharp_implied > 0 else 0
 
             thresholds = EDGE_THRESHOLDS.get("O/U_Over", {"min": 6.0, "max": 8.0})
+            # Line-aware band, mirroring _make_bet's line_min_edge/line_max_edge.
+            band_min = thresholds.get("line_min", {}).get(line, thresholds["min"])
+            band_max = thresholds.get("line_max", {}).get(line, thresholds["max"])
 
             bet_info = {
                 "match": match_key,
@@ -411,12 +419,12 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             if edge_pct > 50 or edge_pct < -50:
                 continue
 
-            in_band = thresholds["min"] <= edge_pct <= thresholds["max"]
+            in_band = band_min <= edge_pct <= band_max
             if in_band and thresholds.get("enabled", False):
                 value_bets.append(bet_info)          # actionable: in-band AND market enabled
-            elif in_band or (0 < edge_pct < thresholds["min"]
-                             and edge_pct >= thresholds["min"] - WATCHLIST_PROXIMITY_PP):
-                bet_info["gap_to_threshold"] = round(max(0.0, thresholds["min"] - edge_pct), 2)
+            elif in_band or (0 < edge_pct < band_min
+                             and edge_pct >= band_min - WATCHLIST_PROXIMITY_PP):
+                bet_info["gap_to_threshold"] = round(max(0.0, band_min - edge_pct), 2)
                 if not thresholds.get("enabled", False):
                     bet_info["note"] = "market disabled in BettingConfig (no proven edge)"
                 watchlist.append(bet_info)
