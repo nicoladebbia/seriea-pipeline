@@ -7063,6 +7063,65 @@ def _has_unsettled_past_bets() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Background Market-Intel Maintenance
+# ---------------------------------------------------------------------------
+# The pre-kickoff monitor refreshes odds_full.json all day, but the local
+# market-analysis chain (bookmaker → movement → cross-market → intelligence)
+# only ran inside the 2×/day full pipeline — so "Market intel Xh old" climbed
+# every afternoon while the odds it derives from were fresh. This loop
+# recomputes the chain (0 API credits, pure local computation) whenever
+# odds_full.json is newer than market_intelligence.json. Checks on boot first,
+# so a restart also self-heals a stale chain immediately.
+# ---------------------------------------------------------------------------
+
+_intel_maint_thread = None
+_intel_maint_active = False
+INTEL_MAINT_INTERVAL = 600  # 10 minutes between mtime checks
+
+
+def _intel_maintenance_loop():
+    """Recompute the local market-analysis chain when odds outrun it."""
+    global _intel_maint_active
+    import time as _time
+    _intel_maint_active = True
+    log.info("Market-intel maintenance started (every %ds)", INTEL_MAINT_INTERVAL)
+    while _intel_maint_active:
+        try:
+            if not (_smart_refresh_running or _pipeline_running or _settle_running):
+                odds_path = UPCOMING_DIR / "odds_full.json"
+                intel_path = UPCOMING_DIR / "market_intelligence.json"
+                if odds_path.exists():
+                    odds_m = odds_path.stat().st_mtime
+                    intel_m = intel_path.stat().st_mtime if intel_path.exists() else 0.0
+                    # 60s epsilon: the chain's own write bumps intel past odds,
+                    # so this is naturally idempotent — one recompute per odds refresh.
+                    if odds_m - intel_m > 60:
+                        raw = _load_json(odds_path) or {}
+                        odds = raw.get("matches", raw) if isinstance(raw, dict) else {}
+                        if odds:
+                            from scripts.pipeline.run_full_pipeline import _run_market_analysis
+                            _run_market_analysis(odds, {})
+                            log.info(
+                                "Market-intel maintenance: chain recomputed for %d matches "
+                                "(odds were %.0f min newer than intel)",
+                                len(odds), (odds_m - intel_m) / 60,
+                            )
+        except Exception as e:
+            log.warning(f"Market-intel maintenance failed: {e}")
+        _time.sleep(INTEL_MAINT_INTERVAL)
+
+
+def start_intel_maintenance():
+    """Start the background market-intel maintenance thread."""
+    global _intel_maint_thread, _intel_maint_active
+    if _intel_maint_thread and _intel_maint_thread.is_alive():
+        return
+    _intel_maint_active = True
+    _intel_maint_thread = threading.Thread(target=_intel_maintenance_loop, daemon=True)
+    _intel_maint_thread.start()
+
+
 def start_auto_settle():
     """Start the background auto-settlement thread."""
     global _auto_settle_thread, _auto_settle_active
@@ -7173,6 +7232,7 @@ def api_alerts_check():
 # Start auto-settle on app startup (outside of debug reloader)
 if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
     start_auto_settle()
+    start_intel_maintenance()
 
     # Auto-start live poll if there are matches today
     def _maybe_start_live_poll():
