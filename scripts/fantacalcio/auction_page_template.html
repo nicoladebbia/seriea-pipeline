@@ -260,7 +260,7 @@ function renderGrouped(list, tiers, hintText){
   const b = boosted(), q = query.trim().toLowerCase(), u = slotsUsed();
   let html = "";
   for (const r of ROLES){
-    let ps = DATA.players.filter(p=>p.r===r && tiers.includes(p.tier)).sort((x,y)=>y.cap-x.cap || y.hold-x.hold);
+    let ps = DATA.players.filter(p=>p.r===r && tiers.includes(p.tier)).sort((x,y)=>x.n.localeCompare(y.n,"it"));
     if (q) ps = ps.filter(p=>(p.n+" "+p.t).toLowerCase().includes(q));
     if (!ps.length) continue;
     html += `<div class="group"><span>${r} — own ${u[r]}/${DATA.roster[r]}</span></div>`;
