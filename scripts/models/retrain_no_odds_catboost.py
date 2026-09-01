@@ -85,6 +85,111 @@ def load_rejection_thresholds() -> Dict[str, float]:
     return state.get("rejection_thresholds", fallback)
 
 
+# Relative release gate: the candidate must not be worse than the INCUMBENT
+# production model measured on the same fold rows — folds neither model trained
+# on. The absolute thresholds froze production for 130 days: the Aug-25
+# candidate was rejected on log_loss 1.0084 > 1.00 while the incumbent it
+# would have replaced scores 1.004 on its OWN (older, different) folds — a
+# cross-condition bar that drifts out of reach as seasons get harder.
+# Tolerance: a candidate within this many nats of the incumbent still ships
+# (it carries a season more of training data; near-ties go to fresh).
+REL_GATE_TOLERANCE = 0.005
+# Catastrophic floors apply in BOTH gate modes — never promote near-random
+# output even against a broken incumbent (random 3-way log-loss = 1.0986).
+CATASTROPHIC_LL = 1.09
+CATASTROPHIC_ACC = 0.42
+
+
+def load_incumbent() -> "dict | None":
+    """The production model + the season it trained through, for the relative
+    gate. Returns None (→ absolute-threshold fallback) when the model, its
+    metadata, or its `trained_through` stamp is missing: without the stamp a
+    fold the incumbent trained on cannot be told apart from a fair one, and
+    in-sample folds flatter it grossly (2024-25 measured at 0.974 accuracy).
+    """
+    model_path = MODELS_DIR / "universal" / "catboost_no_odds.cbm"
+    meta_path = MODELS_DIR / "universal" / "catboost_no_odds_metadata.json"
+    if not (model_path.exists() and meta_path.exists()):
+        return None
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+        trained_through = meta.get("trained_through")
+        if not trained_through:
+            log.warning(
+                "Incumbent metadata has no trained_through stamp — relative "
+                "gate unavailable, falling back to absolute thresholds")
+            return None
+        model = CatBoostClassifier()
+        model.load_model(str(model_path))
+        features = list(model.feature_names_) or list(meta.get("feature_names", []))
+        return {"model": model, "features": features,
+                "trained_through": str(trained_through)}
+    except Exception as e:
+        log.warning("Could not load incumbent for relative gate: %s", e)
+        return None
+
+
+def evaluate_gate(last3: pd.DataFrame, thresholds: Dict[str, float]) -> "tuple[list, dict]":
+    """Promotion decision on the gate folds.
+
+    Relative mode (preferred): folds carrying incumbent numbers are OOS for
+    BOTH models — compare n_test-weighted log-loss; the candidate must be
+    within REL_GATE_TOLERANCE of the incumbent. Catastrophic floors always
+    apply. Absolute mode (fallback when the incumbent cannot be evaluated):
+    the legacy fixed thresholds.
+    """
+    rejections: list = []
+    last3_acc = last3["accuracy"].mean()
+    last3_ll = last3["log_loss"].mean()
+    last3_brier = last3["brier_score"].mean()
+
+    comparable = (
+        last3[last3["inc_log_loss"].notna()]
+        if "inc_log_loss" in last3.columns else last3.iloc[0:0]
+    )
+    if not comparable.empty:
+        w = comparable["n_test"].astype(float)
+        cand_ll = float((comparable["log_loss"] * w).sum() / w.sum())
+        inc_ll = float((comparable["inc_log_loss"] * w).sum() / w.sum())
+        cand_acc = float((comparable["accuracy"] * w).sum() / w.sum())
+        inc_acc = float((comparable["inc_accuracy"] * w).sum() / w.sum())
+        info = {
+            "mode": "relative",
+            "n_folds": int(len(comparable)),
+            "n_matches": int(w.sum()),
+            "candidate_log_loss": round(cand_ll, 4),
+            "incumbent_log_loss": round(inc_ll, 4),
+            "candidate_accuracy": round(cand_acc, 4),
+            "incumbent_accuracy": round(inc_acc, 4),
+            "tolerance": REL_GATE_TOLERANCE,
+        }
+        if cand_ll > inc_ll + REL_GATE_TOLERANCE:
+            rejections.append(
+                f"Candidate log-loss {cand_ll:.4f} worse than incumbent "
+                f"{inc_ll:.4f} (+{cand_ll - inc_ll:.4f} > tol {REL_GATE_TOLERANCE}) "
+                f"on {len(comparable)} shared-OOS fold(s), n={int(w.sum())}")
+        if last3_ll > CATASTROPHIC_LL:
+            rejections.append(
+                f"Log-loss {last3_ll:.4f} > catastrophic floor {CATASTROPHIC_LL}")
+        if last3_acc < CATASTROPHIC_ACC:
+            rejections.append(
+                f"Accuracy {last3_acc:.4f} < catastrophic floor {CATASTROPHIC_ACC}")
+    else:
+        info = {"mode": "absolute",
+                "reason": "incumbent unavailable or no shared-OOS fold"}
+        if last3_acc < thresholds["accuracy_min"]:
+            rejections.append(
+                f"Accuracy {last3_acc:.4f} < {thresholds['accuracy_min']:.4f}")
+        if last3_ll > thresholds["log_loss_max"]:
+            rejections.append(
+                f"Log-loss {last3_ll:.4f} > {thresholds['log_loss_max']:.4f}")
+        if last3_brier > thresholds["brier_max"]:
+            rejections.append(
+                f"Brier {last3_brier:.4f} > {thresholds['brier_max']:.4f}")
+    return rejections, info
+
+
 def walk_forward_validate(
     X: pd.DataFrame,
     y: pd.Series,
@@ -92,6 +197,7 @@ def walk_forward_validate(
     params: dict,
     return_last_fold_model: bool = False,
     return_last_fold_cal_data: bool = False,
+    incumbent: "dict | None" = None,
 ):
     """Run walk-forward cross-validation and return per-fold metrics.
 
@@ -133,8 +239,8 @@ def walk_forward_validate(
     last_fold_proba = None
     last_fold_y_str = None
     last_fold_cal_season = None
-    for fold_idx, (train_seasons, test_seasons) in enumerate(splits):
-        train_mask = X["_season"].isin(train_seasons)
+    for fold_idx, (fold_train_seasons, test_seasons) in enumerate(splits):
+        train_mask = X["_season"].isin(fold_train_seasons)
         test_mask = X["_season"].isin(test_seasons)
 
         X_train_with_meta = X[train_mask].copy()
@@ -154,8 +260,11 @@ def walk_forward_validate(
         y_test_str = y_test_str.reset_index(drop=True)
 
         model = CatBoostClassifier(**params)
-        train_seasons = X_train_with_meta["_season"] if "_season" in X_train_with_meta.columns else None
-        sample_weights = _compute_sample_weights(y_train, seasons=train_seasons)
+        # Per-row season column for time-decay weights. Before 2026-09-01 this
+        # rebind SHADOWED the fold's train_seasons tuple, so the fold row's
+        # "train" field was a join over every row's season string.
+        train_season_col = X_train_with_meta["_season"] if "_season" in X_train_with_meta.columns else None
+        sample_weights = _compute_sample_weights(y_train, seasons=train_season_col)
 
         model.fit(
             X_train, y_train,
@@ -166,13 +275,35 @@ def walk_forward_validate(
         y_proba = model.predict_proba(X_test)
         metrics = compute_metrics(y_test_str, y_proba)  # Use string labels
 
+        # Incumbent on the SAME fold rows — but only when the fold's test
+        # season is strictly after the incumbent's training cutoff. An
+        # in-sample fold flatters the incumbent (2024-25 measured 0.974 acc)
+        # and would make the relative gate unpassable by construction.
+        inc_cols = {"inc_log_loss": None, "inc_accuracy": None}
+        if incumbent is not None:
+            oos_for_incumbent = all(
+                s > incumbent["trained_through"] for s in test_seasons)
+            missing = [c for c in incumbent["features"]
+                       if c not in X_test.columns]
+            if oos_for_incumbent and not missing:
+                inc_proba = incumbent["model"].predict_proba(
+                    X_test[incumbent["features"]])
+                inc_m = compute_metrics(y_test_str, inc_proba)
+                inc_cols = {"inc_log_loss": inc_m["log_loss"],
+                            "inc_accuracy": inc_m["accuracy"]}
+            elif oos_for_incumbent and missing:
+                log.warning(
+                    "Incumbent eval skipped on fold %d: %d feature(s) absent "
+                    "(e.g. %s)", fold_idx, len(missing), missing[:3])
+
         fold_rows.append({
             "fold": fold_idx,
-            "train": ", ".join(train_seasons),
+            "train": ", ".join(fold_train_seasons),
             "test": ", ".join(test_seasons),
             "n_train": len(X_train),
             "n_test": len(X_test),
             **metrics,
+            **inc_cols,
         })
 
         log.info(
@@ -471,6 +602,13 @@ def main(
         log.info("WALK-FORWARD CROSS-VALIDATION")
     log.info("=" * 70)
 
+    # Incumbent production model, evaluated on the same folds for the
+    # relative release gate (None → absolute-threshold fallback).
+    incumbent = load_incumbent()
+    if incumbent is not None:
+        log.info("Relative gate armed: incumbent trained through %s",
+                 incumbent["trained_through"])
+
     # Run CV per seed; remember each seed's last-fold artifacts
     seed_results: list[dict] = []
     seeds = [42 + i for i in range(n_seeds)]
@@ -482,6 +620,7 @@ def main(
             X, y, y_str, params,
             return_last_fold_model=walkforward_final,
             return_last_fold_cal_data=fit_calibrator,
+            incumbent=incumbent,
         )
         if walkforward_final or fit_calibrator:
             cv_df_seed, last_model, last_proba, last_y_str = result
@@ -528,14 +667,19 @@ def main(
     log.info(f"Last 3 folds:     acc={last3_acc:.4f}  logloss={last3_ll:.4f}  brier={last3_brier:.4f}  draw_f1={last3_draw_f1:.4f}")
     log.info("")
 
-    # Check against rejection thresholds (use last 3 folds for decision)
-    rejections = []
-    if last3_acc < thresholds["accuracy_min"]:
-        rejections.append(f"Accuracy {last3_acc:.4f} < {thresholds['accuracy_min']:.4f}")
-    if last3_ll > thresholds["log_loss_max"]:
-        rejections.append(f"Log-loss {last3_ll:.4f} > {thresholds['log_loss_max']:.4f}")
-    if last3_brier > thresholds["brier_max"]:
-        rejections.append(f"Brier {last3_brier:.4f} > {thresholds['brier_max']:.4f}")
+    # Release gate: relative (candidate vs incumbent on shared-OOS folds)
+    # when the incumbent is evaluable, absolute thresholds otherwise.
+    rejections, gate_info = evaluate_gate(last3, thresholds)
+    if gate_info["mode"] == "relative":
+        log.info("RELEASE GATE — relative, %d shared-OOS fold(s), n=%d matches:",
+                 gate_info["n_folds"], gate_info["n_matches"])
+        log.info("  candidate  ll=%.4f  acc=%.4f",
+                 gate_info["candidate_log_loss"], gate_info["candidate_accuracy"])
+        log.info("  incumbent  ll=%.4f  acc=%.4f  (tol %.3f)",
+                 gate_info["incumbent_log_loss"], gate_info["incumbent_accuracy"],
+                 gate_info["tolerance"])
+    else:
+        log.info("RELEASE GATE — absolute fallback (%s)", gate_info.get("reason", ""))
 
     if rejections:
         log.error("=" * 70)
@@ -641,6 +785,16 @@ def main(
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"),
         "training_method": "walk_forward_last_fold" if walkforward_final else "all_data_in_sample",
+        # The newest season in the SAVED model's training data. Load-bearing:
+        # the relative release gate uses it to keep in-sample folds out of the
+        # candidate-vs-incumbent comparison. walkforward_final ships the last
+        # fold's model, which never saw the newest season.
+        "trained_through": (
+            sorted(df["_season"].unique())[-2]
+            if walkforward_final and df["_season"].nunique() >= 2
+            else sorted(df["_season"].unique())[-1]
+        ),
+        "release_gate": gate_info,
         "feature_selection": {
             "method": "walk_forward_importance_based" + (
                 " + xi_quality_extension" if include_new_features else ""
