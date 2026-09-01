@@ -69,6 +69,8 @@ li.row.mine .nums{color:var(--accent)}
 li.row.gone{opacity:.42;text-decoration:line-through}
 li.row .tag{display:inline-block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle;background:var(--surface2);color:var(--muted)}
 li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .tag.est{color:var(--warn)}
+li.row .nums i.lbl{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:0 6px 0 3px}
+li.row .stars{color:var(--accent);font-size:13px;min-width:34px;text-align:right}
 .empty{padding:30px 14px;color:var(--muted);text-align:center}
 
 /* roster + log */
@@ -133,11 +135,9 @@ li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .ta
     </div>
   </header>
   <nav class="tabs" id="tabs" role="tablist">
-    <button role="tab" data-tab="plan">Plan</button>
-    <button role="tab" data-tab="P">P</button>
-    <button role="tab" data-tab="D">D</button>
-    <button role="tab" data-tab="C">C</button>
-    <button role="tab" data-tab="A">A</button>
+    <button role="tab" data-tab="buy">Buy</button>
+    <button role="tab" data-tab="backup">Backups</button>
+    <button role="tab" data-tab="all">All</button>
     <button role="tab" data-tab="mine">My team</button>
     <button role="tab" data-tab="rivals">Rivals</button>
     <button role="tab" data-tab="log">Log</button>
@@ -188,8 +188,9 @@ for (const k of ["mine","gone","goneWho","names"]) state[k] = state[k] || {};
 state.log = state.log || [];
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
 
-let tab = "plan", query = "", current = null;
-try { tab = localStorage.getItem(KEY+":tab") || "plan"; } catch (e) {}
+let tab = "buy", query = "", current = null;
+try { tab = localStorage.getItem(KEY+":tab") || "buy"; } catch (e) {}
+if (!["buy","backup","all","mine","rivals","log"].includes(tab)) tab = "buy";
 
 // ---------- derived numbers ----------
 function spent(){ return Object.values(state.mine).reduce((a,b)=>a+(+b||0),0); }
@@ -240,33 +241,49 @@ function sortPlayers(a,b){
   if (b.cap!==a.cap) return b.cap-a.cap;
   return b.room-a.room;
 }
-function rowHtml(p, b){
+function rowHtml(p, b, simple){
   const mine = p.id in state.mine, gone = p.id in state.gone;
   const cap = effCap(p,b), up = cap>p.cap;
-  const needCls = p.need>=4?"hi":(p.need>=1?"mid":"");
   const tags = (p.inj?'<span class="tag inj">inj</span>':'') + (up?'<span class="tag up">alt ↑</span>':'') + (p.est?'<span class="tag est">est</span>':'');
   const price = mine ? `<span class="num">${state.mine[p.id]}</span>` : (gone && state.gone[p.id] ? `<span class="num">${state.gone[p.id]}</span>` : "");
-  const nums = (mine||gone) ? price : `<span class="num">${p.room}</span><i>→</i><span class="cap num${up?' up':''}">${cap}</span><i>→</i><span class="hold num">${p.hold}</span>`;
+  const nums = (mine||gone) ? price
+    : simple ? `<span class="cap num${up?' up':''}">${cap}</span><i class="lbl">pay</i><span class="hold num">${p.hold}</span><i class="lbl">stop</i>`
+    : `<span class="num">${p.room}</span><i>→</i><span class="cap num${up?' up':''}">${cap}</span><i>→</i><span class="hold num">${p.hold}</span>`;
+  const right = simple
+    ? `<div class="stars">${p.need>=8?"★★★":(p.need>=3?"★★":(p.need>=1?"★":""))}</div>`
+    : `<div class="need num ${p.need>=4?"hi":(p.need>=1?"mid":"")}">${p.need>0?p.need.toFixed(1):''}</div>`;
   return `<li class="row t${p.tier}${mine?' mine':''}${gone?' gone':''}" data-id="${p.id}" tabindex="0">
     <div class="who"><b>${p.n}</b>${tags}<span>${p.t} · ${p.r} · ${p.min}′${mine?' · MINE':(gone?' · taken':'')}</span></div>
-    <div class="nums">${nums}</div>
-    <div class="need num ${needCls}">${p.need>0?p.need.toFixed(1):''}</div></li>`;
+    <div class="nums">${nums}</div>${right}</li>`;
+}
+function renderGrouped(list, tiers, hintText){
+  const b = boosted(), q = query.trim().toLowerCase(), u = slotsUsed();
+  let html = "";
+  for (const r of ROLES){
+    let ps = DATA.players.filter(p=>p.r===r && tiers.includes(p.tier)).sort((x,y)=>y.cap-x.cap || y.hold-x.hold);
+    if (q) ps = ps.filter(p=>(p.n+" "+p.t).toLowerCase().includes(q));
+    if (!ps.length) continue;
+    html += `<div class="group"><span>${r} — own ${u[r]}/${DATA.roster[r]}</span></div>`;
+    html += ps.map(p=>rowHtml(p,b,true)).join("");
+  }
+  document.getElementById("hint").textContent = hintText;
+  list.innerHTML = html || '<div class="empty">Nothing left here.</div>';
 }
 function renderList(){
   const list = document.getElementById("list"), b = boosted();
   const q = query.trim().toLowerCase();
   const hint = document.getElementById("hint");
   document.getElementById("searchwrap").hidden = (tab==="mine"||tab==="log"||tab==="rivals");
-  document.getElementById("legend").hidden = (tab==="mine"||tab==="log"||tab==="rivals");
+  document.getElementById("legend").hidden = (tab!=="all");
   if (tab==="mine"){ return renderMine(list); }
   if (tab==="rivals"){ return renderRivals(list); }
   if (tab==="log"){ return renderLog(list); }
+  if (tab==="buy"){ return renderGrouped(list, [1,2], "Your targets. Bid freely up to PAY; never go above STOP. ★ = how much the plan needs him."); }
+  if (tab==="backup"){ return renderGrouped(list, [3], "If a target is lost, replace him from here. Same rule: PAY freely, STOP is the wall."); }
   let ps = DATA.players.slice();
   if (q) ps = ps.filter(p => (p.n+" "+p.t).toLowerCase().includes(q));
-  else if (tab==="plan") ps = ps.filter(p => p.tier>=1 && p.tier<=3);
-  else ps = ps.filter(p => p.r===tab);
   ps.sort(sortPlayers);
-  hint.textContent = tab==="plan" && !q ? "Green = core, blue = plan, grey = fallback. Tap a row to log a price." : (q ? `${ps.length} matches` : `${ps.filter(isOpen).length} still available`);
+  hint.textContent = q ? `${ps.length} matches` : "Every player. Search when someone gets called and you want his numbers.";
   list.innerHTML = ps.length ? ps.map(p=>rowHtml(p,b)).join("") : '<div class="empty">Nothing here.</div>';
 }
 function renderMine(list){
