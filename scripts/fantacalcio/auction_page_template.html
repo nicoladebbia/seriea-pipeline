@@ -81,6 +81,17 @@ li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .ta
 .io textarea{width:100%;min-height:90px;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:8px;font-size:12px}
 .io .btns{display:flex;gap:8px}
 
+/* rivals + undo */
+.meta button.undo{padding:2px 9px;font-size:11px;border-radius:6px;background:var(--surface2);color:var(--muted)}
+.who9{display:flex;gap:5px;flex-wrap:wrap;margin:0 0 10px}
+.who9 button{flex:1 1 44px;padding:7px 0;font-size:12px;color:var(--muted)}
+.who9 button.on{background:var(--plan);color:#fff;border-color:var(--plan)}
+.rival{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:14px}
+.rival b{font-weight:600}
+.rival .num{font-family:var(--display);font-size:20px;font-weight:600}
+.rival small{display:block;color:var(--muted);font-size:12px;font-weight:400}
+.rival .lowbud{color:var(--warn)}
+
 /* sheet */
 .veil{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:10;background:var(--surface);border-top:1px solid var(--line);border-radius:18px 18px 0 0;padding:14px 16px calc(16px + env(safe-area-inset-bottom));max-height:88vh;overflow:auto}
@@ -118,6 +129,7 @@ li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .ta
       <span>max bid <b class="num" id="maxbid">—</b></span>
       <span>plan margin <b class="num" id="margin">—</b></span>
       <span>table inflation <b class="num" id="infl">—</b></span>
+      <button class="undo" id="bUndo" title="Undo the last logged action">↩ undo</button>
     </div>
   </header>
   <nav class="tabs" id="tabs" role="tablist">
@@ -127,6 +139,7 @@ li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .ta
     <button role="tab" data-tab="C">C</button>
     <button role="tab" data-tab="A">A</button>
     <button role="tab" data-tab="mine">My team</button>
+    <button role="tab" data-tab="rivals">Rivals</button>
     <button role="tab" data-tab="log">Log</button>
   </nav>
   <div class="search" id="searchwrap"><input id="q" type="search" placeholder="Search player or team" autocomplete="off"></div>
@@ -152,9 +165,10 @@ li.row .tag.inj{color:var(--bad)} li.row .tag.up{color:var(--accent)} li.row .ta
   </div>
   <div class="price"><input id="sPrice" type="number" inputmode="numeric" pattern="[0-9]*" min="1" placeholder="0"></div>
   <div class="quick">
-    <button data-q="cap">= pay to</button><button data-q="hold">= hold</button><button data-q="+1">+1</button><button data-q="+5">+5</button>
+    <button data-q="cap">= pay to</button><button data-q="hold">= hold</button><button data-q="-1">−1</button><button data-q="+1">+1</button><button data-q="+5">+5</button>
   </div>
   <div class="verdict" id="sVerdict"></div>
+  <div class="who9" id="sWho" aria-label="Which rival took him"></div>
   <div class="actions">
     <button class="mine" id="bMine">Mine at this price</button>
     <button id="bGone">Someone else took him</button>
@@ -168,8 +182,10 @@ const DATA = /*__DATA__*/null;
 const KEY = "asta2026:v1";
 const ROLES = ["P","D","C","A"];
 const byId = new Map(DATA.players.map(p => [p.id, p]));
-let state = {mine:{}, gone:{}, log:[]};
+let state = {mine:{}, gone:{}, goneWho:{}, names:{}, log:[]};
 try { const s = localStorage.getItem(KEY); if (s) state = Object.assign(state, JSON.parse(s)); } catch (e) {}
+for (const k of ["mine","gone","goneWho","names"]) state[k] = state[k] || {};
+state.log = state.log || [];
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
 
 let tab = "plan", query = "", current = null;
@@ -240,9 +256,10 @@ function renderList(){
   const list = document.getElementById("list"), b = boosted();
   const q = query.trim().toLowerCase();
   const hint = document.getElementById("hint");
-  document.getElementById("searchwrap").hidden = (tab==="mine"||tab==="log");
-  document.getElementById("legend").hidden = (tab==="mine"||tab==="log");
+  document.getElementById("searchwrap").hidden = (tab==="mine"||tab==="log"||tab==="rivals");
+  document.getElementById("legend").hidden = (tab==="mine"||tab==="log"||tab==="rivals");
   if (tab==="mine"){ return renderMine(list); }
+  if (tab==="rivals"){ return renderRivals(list); }
   if (tab==="log"){ return renderLog(list); }
   let ps = DATA.players.slice();
   if (q) ps = ps.filter(p => (p.n+" "+p.t).toLowerCase().includes(q));
@@ -261,8 +278,37 @@ function renderMine(list){
     html += rows.map(p=>rowHtml(p)).join("") || '<div class="hint">—</div>';
   }
   html += `<div class="total"><span>Spent</span><span class="num">${total} / ${DATA.budget}</span></div>`;
+  html += `<div class="io"><div class="btns"><button id="bRoster">Copy roster text</button></div></div>`;
   document.getElementById("hint").textContent = "Tap a player to correct the price or remove him.";
   list.innerHTML = html;
+  document.getElementById("bRoster").onclick = async (e)=>{
+    e.stopPropagation();
+    const lines = ROLES.map(r=>{
+      const rows = DATA.players.filter(p=>p.id in state.mine && p.r===r).sort((a,b)=>state.mine[b.id]-state.mine[a.id]);
+      return r+": "+(rows.map(p=>`${p.n} ${state.mine[p.id]}`).join(", ")||"—");
+    });
+    const txt = lines.join("\n")+`\nTotal ${Object.values(state.mine).reduce((a,b)=>a+ +b,0)} / ${DATA.budget}`;
+    try{ await navigator.clipboard.writeText(txt); document.getElementById("bRoster").textContent="Copied"; }
+    catch(err){ prompt("Copy:", txt); }
+  };
+}
+function renderRivals(list){
+  document.getElementById("hint").textContent = "Tap a rival to name him. Tag buyers via the 'taken by' row when logging a lost player.";
+  let html = "";
+  for (let i=1;i<=9;i++){
+    const k=String(i);
+    const ids = Object.keys(state.goneWho).filter(id=>state.goneWho[id]===k);
+    const spent = ids.reduce((a,id)=>a+(+state.gone[id]||0),0);
+    const bud = DATA.budget - spent;
+    const players = ids.map(id=>{const p=byId.get(+id); return p?`${p.n} ${state.gone[id]||"?"}`:"";}).filter(Boolean).join(", ");
+    html += `<div class="rival" data-rival="${k}"><div><b>${state.names[k]||("Rival "+k)}</b><small>${ids.length} players${players?" · "+players:""}</small></div>
+      <div style="text-align:right"><span class="num ${bud<=60?'lowbud':''}">${bud}</span><small>left</small></div></div>`;
+  }
+  const untagged = Object.keys(state.gone).filter(id=>!(id in state.goneWho)).length;
+  html += `<div class="hint">${untagged} sold players not tagged to a rival.</div>`;
+  list.innerHTML = html;
+  list.querySelectorAll(".rival").forEach(el=>el.onclick=()=>{ const k=el.dataset.rival;
+    const nm = prompt("Name for rival "+k, state.names[k]||""); if(nm!==null){ state.names[k]=nm.trim(); save(); renderList(); } });
 }
 function renderLog(list){
   const lines = state.log.slice().reverse().map(e=>{ const p=byId.get(e.id); if(!p) return "";
@@ -271,11 +317,11 @@ function renderLog(list){
     return `<div class="logline"><span>${hh}</span><div><b>${p.n}</b> <span>${p.t} · ${p.r}</span></div><span class="num">${what}</span></div>`; }).join("");
   document.getElementById("hint").textContent = "Backup: copy the text below and paste it back on another device with Load.";
   list.innerHTML = (lines || '<div class="empty">No bids logged yet.</div>') +
-    `<div class="io"><textarea id="io">${JSON.stringify({mine:state.mine,gone:state.gone,log:state.log})}</textarea>
+    `<div class="io"><textarea id="io">${JSON.stringify({mine:state.mine,gone:state.gone,goneWho:state.goneWho,names:state.names,log:state.log})}</textarea>
      <div class="btns"><button id="bCopy">Copy backup</button><button id="bLoad">Load pasted backup</button><button id="bWipe">Wipe everything</button></div></div>`;
   document.getElementById("bCopy").onclick = async ()=>{ const ta=document.getElementById("io"); ta.select(); try{ await navigator.clipboard.writeText(ta.value); document.getElementById("bCopy").textContent="Copied"; }catch(e){ document.execCommand("copy"); } };
-  document.getElementById("bLoad").onclick = ()=>{ try{ const s=JSON.parse(document.getElementById("io").value); if(s && s.mine){ state={mine:s.mine||{},gone:s.gone||{},log:s.log||[]}; save(); renderAll(); } }catch(e){ alert("That text is not a valid backup."); } };
-  document.getElementById("bWipe").onclick = ()=>{ if(confirm("Delete every logged price?")){ state={mine:{},gone:{},log:[]}; save(); renderAll(); } };
+  document.getElementById("bLoad").onclick = ()=>{ try{ const s=JSON.parse(document.getElementById("io").value); if(s && s.mine){ state={mine:s.mine||{},gone:s.gone||{},goneWho:s.goneWho||{},names:s.names||{},log:s.log||[]}; save(); renderAll(); } }catch(e){ alert("That text is not a valid backup."); } };
+  document.getElementById("bWipe").onclick = ()=>{ if(confirm("Delete every logged price?")){ state={mine:{},gone:{},goneWho:{},names:state.names,log:[]}; save(); renderAll(); } };
 }
 function renderAll(){ renderBoard(); renderList(); }
 
@@ -299,6 +345,10 @@ function openSheet(id){
   inp.value = p.id in state.mine ? state.mine[p.id] : (state.gone[p.id] || cap || "");
   const alts = p.alts.map(a=>byId.get(a)).filter(Boolean).filter(isOpen);
   document.getElementById("sAlts").innerHTML = alts.length ? "If he goes past hold: " + alts.map(a=>`<b>${a.n}</b> (${a.t}, ${effCap(a)}→${a.hold})`).join(", ") : "";
+  const cw = state.goneWho[p.id]||"";
+  document.getElementById("sWho").innerHTML = '<button data-w="" disabled style="flex:0 1 auto;border:none;background:none">taken by:</button>' +
+    Array.from({length:9},(_,i)=>{const k=String(i+1); const nm=(state.names[k]||("R"+k)).slice(0,6);
+      return `<button data-w="${k}" class="${cw===k?'on':''}">${nm}</button>`;}).join("");
   verdict();
   document.getElementById("veil").hidden = false; document.getElementById("sheet").hidden = false;
   setTimeout(()=>{ inp.focus(); inp.select(); }, 50);
@@ -309,20 +359,43 @@ function verdict(){
   const x = +inp.value || 0, cap = effCap(p), mb = maxBid();
   inp.className = "";
   if (!x){ v.textContent = ""; v.className = "verdict"; return; }
+  const roleFull = slotsLeft()[p.r]===0 && !(p.id in state.mine);
+  // margin if bought at x: simulate
+  const had = p.id in state.mine ? state.mine[p.id] : undefined;
+  state.mine[p.id]=x; const mAfter = left()-planCost();
+  if (had===undefined) delete state.mine[p.id]; else state.mine[p.id]=had;
+  const tail = ` · margin after: ${mAfter>=0?"+":""}${mAfter}`;
+  if (roleFull){ v.textContent = `${p.r} slots are FULL — buying him overfills the roster.`; v.className="verdict bad"; inp.className="over"; return; }
   if (x > mb){ v.textContent = `Over your max bid (${mb}) — you could not fill the roster.`; v.className="verdict bad"; inp.className="over"; return; }
-  if (x > p.hold){ v.textContent = `Above hold (${p.hold}): let him go, take an alternative.`; v.className="verdict bad"; inp.className="over"; }
-  else if (x > cap){ v.textContent = `Between pay-to and hold: fine if the plan margin stays ≥ 0.`; v.className="verdict warn"; inp.className="atcap"; }
-  else { v.textContent = `At or under pay-to (${cap}): take him.`; v.className="verdict ok"; }
+  if (x > p.hold){ v.textContent = `Above hold (${p.hold}): let him go, take an alternative.` + tail; v.className="verdict bad"; inp.className="over"; }
+  else if (x > cap){ v.textContent = `Between pay-to and hold: ok while margin stays ≥ 0.` + tail; v.className=`verdict ${mAfter>=0?"warn":"bad"}`; inp.className="atcap"; }
+  else { v.textContent = `At or under pay-to (${cap}): take him.` + tail; v.className="verdict ok"; }
 }
-function logEvent(kind, id, price){ state.log.push({ts:Date.now(), id, kind, price: price||null}); if(state.log.length>600) state.log.shift(); }
+function snap(id){ const s={}; if(id in state.mine) s.m=state.mine[id]; if(id in state.gone) s.g=state.gone[id]; if(id in state.goneWho) s.w=state.goneWho[id]; return s; }
+function logEvent(kind, id, price, prev){ state.log.push({ts:Date.now(), id, kind, price: price||null, prev: prev||{}}); if(state.log.length>600) state.log.shift(); }
+function undoLast(){
+  const e = state.log.pop(); if(!e) return;
+  delete state.mine[e.id]; delete state.gone[e.id]; delete state.goneWho[e.id];
+  const p = e.prev || {};
+  if("m" in p) state.mine[e.id]=p.m;
+  if("g" in p) state.gone[e.id]=p.g;
+  if("w" in p) state.goneWho[e.id]=p.w;
+  save(); renderAll();
+}
 document.getElementById("sPrice").addEventListener("input", verdict);
 document.querySelectorAll(".quick button").forEach(b=>b.onclick=()=>{ const p=current; if(!p) return; const inp=document.getElementById("sPrice"); const q=b.dataset.q;
   if(q==="cap") inp.value=effCap(p); else if(q==="hold") inp.value=p.hold; else inp.value=(+inp.value||0)+(+q); verdict(); });
 document.getElementById("bMine").onclick = ()=>{ const p=current; const x=+document.getElementById("sPrice").value; if(!p||!(x>0)) return;
-  delete state.gone[p.id]; state.mine[p.id]=x; logEvent("mine",p.id,x); save(); closeSheet(); renderAll(); };
+  const prev=snap(p.id); delete state.gone[p.id]; delete state.goneWho[p.id]; state.mine[p.id]=x; logEvent("mine",p.id,x,prev); save(); closeSheet(); renderAll(); };
 document.getElementById("bGone").onclick = ()=>{ const p=current; if(!p) return; const x=+document.getElementById("sPrice").value||null;
-  delete state.mine[p.id]; state.gone[p.id]=x; logEvent("gone",p.id,x); save(); closeSheet(); renderAll(); };
-document.getElementById("bReset").onclick = ()=>{ const p=current; if(!p) return; delete state.mine[p.id]; delete state.gone[p.id]; logEvent("reset",p.id); save(); closeSheet(); renderAll(); };
+  const prev=snap(p.id); const who=document.querySelector("#sWho button.on")?.dataset.w||"";
+  delete state.mine[p.id]; state.gone[p.id]=x; if(who) state.goneWho[p.id]=who; else delete state.goneWho[p.id];
+  logEvent("gone",p.id,x,prev); save(); closeSheet(); renderAll(); };
+document.getElementById("bReset").onclick = ()=>{ const p=current; if(!p) return; const prev=snap(p.id);
+  delete state.mine[p.id]; delete state.gone[p.id]; delete state.goneWho[p.id]; logEvent("reset",p.id,null,prev); save(); closeSheet(); renderAll(); };
+document.getElementById("bUndo").onclick = undoLast;
+document.getElementById("sWho").addEventListener("click", e=>{ const b=e.target.closest("button"); if(!b) return;
+  const was=b.classList.contains("on"); document.querySelectorAll("#sWho button").forEach(x=>x.classList.remove("on")); if(!was) b.classList.add("on"); });
 document.getElementById("veil").onclick = closeSheet;
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeSheet(); if(e.key==="Enter" && current && document.activeElement===document.getElementById("sPrice")) document.getElementById("bMine").click(); });
 
@@ -332,5 +405,10 @@ document.getElementById("list").addEventListener("keydown", e=>{ if(e.key==="Ent
 document.getElementById("q").addEventListener("input", e=>{ query=e.target.value; renderList(); });
 document.querySelectorAll("#tabs button").forEach(b=>{ b.setAttribute("aria-selected", b.dataset.tab===tab);
   b.onclick=()=>{ tab=b.dataset.tab; document.querySelectorAll("#tabs button").forEach(x=>x.setAttribute("aria-selected", x===b)); try{localStorage.setItem(KEY+":tab",tab);}catch(e){} renderList(); window.scrollTo(0,0); }; });
+// keep the screen awake during the auction
+let _wl=null;
+async function _lock(){ try{ _wl=await navigator.wakeLock.request("screen"); }catch(e){} }
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") _lock(); });
+_lock();
 renderAll();
 </script>
