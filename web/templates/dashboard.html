@@ -174,7 +174,7 @@
     <div style="width:1px;height:20px;background:var(--border-subtle);"></div>
     <!-- Odds API quota — hidden until first /api/quota poll succeeds -->
     <div id="quick-quota" style="display:none;align-items:center;gap:8px;">
-      <span style="font-size:11px;color:var(--text-tertiary);">API quota:</span>
+      <span style="font-size:11px;color:var(--text-tertiary);">API credits left:</span>
       <span id="quota-remaining" style="font-size:13px;font-weight:600;color:var(--text-primary);">--</span>
       <span id="quota-reset" style="font-size:11px;color:var(--text-tertiary);">--</span>
       <span id="quota-undercount" style="display:none;font-size:11px;font-weight:600;color:var(--red);padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);" title="Header-derived cost disagreed with estimate — see logs">⚠ undercount</span>
@@ -735,9 +735,9 @@ async function pollQuota() {
     resetEl.textContent = (days !== undefined && days !== null)
       ? `(${days}d to reset)` : '';
 
-    if (q.undercount_events && q.undercount_events > 0) {
+    if (q.undercount_recent && q.undercount_recent > 0) {
       undercountEl.style.display = 'inline-block';
-      undercountEl.title = `${q.undercount_events} API calls where header-reported cost disagreed with estimate. Check logs/launchd-pre-kickoff-monitor.log.`;
+      undercountEl.title = `${q.undercount_recent} recent API calls billed MORE than estimated. Check logs/launchd-pre-kickoff-monitor.log.`;
     } else {
       undercountEl.style.display = 'none';
     }

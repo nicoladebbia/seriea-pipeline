@@ -229,7 +229,9 @@ def track_api_call(
             )
         else:
             real_cost = delta
-            if delta != estimated_cost and estimated_cost > 0:
+            if delta > estimated_cost:
+                # True undercount: the API billed MORE than the caller estimated.
+                # (delta < estimate is a harmless overestimate — do not count it.)
                 usage["undercount_events"] = usage.get("undercount_events", 0) + 1
                 log.warning(
                     "track_api_call: header delta=%d but caller estimated=%d on %s "
@@ -429,7 +431,14 @@ def get_usage_summary() -> Dict:
         "monthly_remaining_tracked": MONTHLY_LIMIT - monthly_used,
         "api_remaining": api_remaining,  # Authoritative if present
         "request_count": usage.get("request_count", 0),
-        "undercount_events": usage.get("undercount_events", 0),
+        "undercount_events": usage.get("undercount_events", 0),  # lifetime, debugging only
+        # Recent TRUE undercounts (billed more than estimated) from the rolling
+        # 200-entry history — this is what the dashboard badge should show, not
+        # the lifetime counter, which never resets and goes stale.
+        "undercount_recent": sum(
+            1 for h in usage.get("history", [])
+            if (h.get("credits_used") or 0) > (h.get("estimated") or 0)
+        ),
         "last_call": usage.get("last_call"),
         "reset_at": reset.isoformat(),
         "days_to_reset": days_to_reset,
