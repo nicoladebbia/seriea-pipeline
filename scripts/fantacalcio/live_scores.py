@@ -125,7 +125,22 @@ def fetch_round(season: str, rnd: int, refresh: bool = False) -> pd.DataFrame | 
     if path.exists() and not refresh:
         return pd.read_parquet(path)
     from curl_cffi import requests as rq
-    r = rq.get(URL.format(season=season, rnd=rnd), impersonate="chrome124", timeout=30)
+    # Transient network errors (curl 6 DNS / 7 connect) killed the whole
+    # tracker run with exit 1 — measured 2026-09-01: same URL served 200
+    # minutes later. Bounded retry with backoff; a real outage still raises.
+    import time as _time
+    last_err = None
+    r = None
+    for _attempt in range(3):
+        try:
+            r = rq.get(URL.format(season=season, rnd=rnd),
+                       impersonate="chrome124", timeout=30)
+            break
+        except rq.exceptions.RequestException as e:
+            last_err = e
+            _time.sleep(5 * (_attempt + 1))
+    if r is None:
+        raise last_err
     if r.status_code != 200:
         return None
     df = parse(r.text)

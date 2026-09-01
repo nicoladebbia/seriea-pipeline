@@ -121,6 +121,18 @@ def step_refresh_fbref_fixtures() -> bool:
         log.info("  ✓ OK")
         return True
     except Exception as e:
+        msg = str(e)
+        if "Page too small" in msg:
+            # Cloudflare Turnstile blocks HEADLESS fetches of FBref since
+            # ~2026-07 (visible browser still works — Jul-16 finding). A
+            # standing upstream condition with a working fallback, same
+            # treatment as the shots_all removal above: gap detection is
+            # covered by the sofascore_fallback step.
+            log.info("  (expected) FBref fixtures blocked by Turnstile "
+                     "(headless-only block): %s — sofascore_fallback covers "
+                     "gap detection; a visible-browser fetch works if a "
+                     "manual refresh is ever needed.", msg)
+            return True
         log.error("  ✗ %s", e)
         return False
 
@@ -227,19 +239,42 @@ def main() -> int:
 
     # --- Step 6: Referee refresh (per active league; SA has scraper, EPL falls back) ---
     try:
-        from scraper.referee import scrape_all_referee_assignments
+        from scraper.referee import scrape_all_referee_assignments, _get_season_id
         import pandas as pd
         ref_dfs = []
+        unpublished = []
         for _league in ACTIVE_LEAGUES:
             cache = PROJECT / "data" / "external" / "referee" / f"referee_assignments_{_league}.parquet"
+            # Force-refresh, but RESTORABLY: the old unconditional unlink()
+            # destroyed the cache before knowing the scrape would succeed —
+            # a failed season (worldfootball publishes late) lost the data.
+            backup = cache.with_suffix(".parquet.bak")
             if cache.exists():
-                cache.unlink()
+                cache.rename(backup)
             try:
                 new_df = scrape_all_referee_assignments(seasons=[CURRENT_SEASON], league=_league)
                 if len(new_df) > 0:
                     ref_dfs.append(new_df)
                     log.info("  ✓ Referees (%s): %d rows", _league, len(new_df))
+                    backup.unlink(missing_ok=True)
+                else:
+                    if backup.exists():
+                        backup.rename(cache)
+                    if _get_season_id(_league, CURRENT_SEASON) is None:
+                        # Verified 2026-09-01: the 2026-27 all_matches page
+                        # 404s and the competition hub has 0 mentions of the
+                        # season — the SOURCE hasn't published it yet. An
+                        # expected early-season condition, self-healing on
+                        # the first run after WF publishes.
+                        unpublished.append(_league)
+                        log.info("  (expected) Referees (%s): worldfootball "
+                                 "has not published %s yet — keeping "
+                                 "existing data", _league, CURRENT_SEASON)
+                    else:
+                        log.warning("  ✗ Referees (%s): scrape returned 0 rows", _league)
             except Exception as e:
+                if backup.exists():
+                    backup.rename(cache)
                 log.warning("  ✗ Referees (%s): %s", _league, e)
         if ref_dfs:
             combined_path = PROJECT / "data" / "external" / "referee" / "referee_assignments.parquet"
@@ -252,6 +287,9 @@ def main() -> int:
                 combined = new_combined
             combined.to_parquet(combined_path, index=False)
             log.info("  ✓ Referees: %d rows total", len(combined))
+            results["referees"] = True
+        elif unpublished and len(unpublished) == len(ACTIVE_LEAGUES):
+            # Source hasn't published the season anywhere — not our failure.
             results["referees"] = True
         else:
             results["referees"] = False

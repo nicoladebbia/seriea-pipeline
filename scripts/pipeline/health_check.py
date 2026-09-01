@@ -1047,15 +1047,20 @@ def check_disk_space() -> Dict:
     import shutil
     try:
         stat = shutil.disk_usage(str(DATA_DIR))
+        free_gb = stat.free / 1e9
         free_pct = (stat.free / stat.total) * 100
+        # Absolute floors, not a bare percentage: on a ~1 TB drive "18.2%
+        # free" is 168 GB — nothing is low, yet the pct threshold warned on
+        # every health cycle. The pipeline's daily growth is well under a
+        # GB, so 30/10 GB give weeks of runway.
         status = "OK"
-        if free_pct < 5:
+        if free_gb < 10:
             status = "CRITICAL"
-        elif free_pct < 20:
+        elif free_gb < 30:
             status = "WARNING"
         return {
             "status": status,
-            "free_gb": round(stat.free / 1e9, 1),
+            "free_gb": round(free_gb, 1),
             "total_gb": round(stat.total / 1e9, 1),
             "free_pct": round(free_pct, 1),
         }
