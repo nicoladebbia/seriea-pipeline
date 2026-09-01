@@ -312,6 +312,33 @@ def step(num: int, total: int, name: str):
     log.info(f"Starting step {num}/{total}: {name}")
 
 
+def _refresh_upcoming_feature_rows(summary: Dict, leagues: list = None,
+                                   max_age_hours: float = 24.0) -> None:
+    """Run the real feature pipeline over the upcoming fixtures so the ML
+    classifiers serve pipeline-built rows instead of the engine's team-cache
+    approximation (P1, 2026-08-31 — 8/126 features reproduced exactly).
+
+    Rebuilds when the historical features were just rebuilt or the upcoming
+    file is older than `max_age_hours`. Takes ~10 min per league, so it must
+    never sit on the T-30 pre-kickoff path: that run only reads the file.
+    """
+    try:
+        from features.build import build_upcoming_feature_rows, upcoming_features_path
+        leagues = list(leagues or ["serie_a"])
+        stale = bool(summary.get("features_rebuilt")) or any(
+            _is_data_stale(upcoming_features_path(lg), max_age_hours) for lg in leagues
+        )
+        if not stale:
+            return
+        print(f"  Building pipeline feature rows for upcoming fixtures ({', '.join(leagues)})...")
+        written = build_upcoming_feature_rows(leagues=leagues)
+        print(f"  Upcoming feature rows: {written or 'none written'}")
+        summary["upcoming_features_built"] = written
+    except Exception as e:
+        print(f"  Upcoming feature rows warning: {e}")
+        log.warning(f"Upcoming feature rows: {e}")
+
+
 def _is_data_stale(filepath: Path, max_age_hours: float) -> bool:
     """Check if a file/directory is older than max_age_hours.
 
@@ -715,6 +742,10 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
         except Exception as e:
             print(f"  Feature rebuild warning: {e}")
             log.warning(f"Incremental feature rebuild: {e}")
+
+    # Pipeline-built rows for the upcoming fixtures (read by the ensemble's
+    # FeatureBuilder; falls back to its team cache when absent/stale).
+    _refresh_upcoming_feature_rows(summary, leagues)
 
     # ── Step 5: Predict new fixtures (or refresh stale predictions) ──
     print(f"\n[5/6] Running predictions...")
@@ -1771,6 +1802,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                     log.warning(f"{league} odds fetch error: {e}")
         except ImportError:
             pass
+
+    # Step 10d: pipeline-built feature rows for the upcoming Serie A fixtures —
+    # read by the ensemble FeatureBuilder in Step 11 (team-cache fallback, with
+    # the ML weight scaled down, when absent). Serie A only: it is the betting
+    # league and each league costs ~10 min; gated by 24h staleness.
+    if not snapshot_only:
+        _refresh_upcoming_feature_rows({}, ["serie_a"])
 
     # =========================================================================
     # Step 11: Generate Ensemble Predictions (Enhanced with injury adjustments)

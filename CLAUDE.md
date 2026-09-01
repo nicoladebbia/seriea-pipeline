@@ -519,6 +519,43 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   3. Verification that the new predictions don't suffer the same systematic over-prediction bias seen in cards (post-isotonic calibration_gap > 0.09)
 - **Prevention rule**: **a model is not "production" because the trainer ran successfully — it's production after a held-out backtest beats the always-predict-base-rate baseline.** Skill score, not log-loss, is the right metric: `1 - brier/baseline_brier > 0` is the floor. Anything below should not be wired into a UI or a bet generator.
 
+### Symptom: "ML classifier probabilities look arbitrary / the ensemble's ML leg disagrees with everything on upcoming matches"
+
+- **What you'll see** (measured 2026-08-31): on upcoming fixtures the CatBoost 1X2 model saw
+  **8 of 126 features reproduced exactly** vs the training rows for the same matches (ML L1
+  0.22 vs market), while the same model scores 51% on walk-forward CV. Nothing errored.
+- **Why**: `FeatureBuilder` in `ensemble_prediction_engine.py` approximated every upcoming row
+  from a **team cache** — each team's most recent played row, whose `home_*`/`away_*` values
+  are the PRE-match state of that PREVIOUS game (one match stale), with matchup/derived
+  features borrowed from the wrong opponent. The real serving path,
+  `features.build.build_upcoming_features` (fixtures through the 58-step pipeline), existed
+  but nothing called it — and it was broken: fixture rows had `match_id=NaN`, so downstream
+  merges joined NaN to NaN (10 fixtures → 1,008,000 rows, OOM), and it wrote the poisoned
+  frames into the PRODUCTION step cache mid-build.
+- **Fix (2026-09-01)**: `_fixture_frame()` gives fixtures the canonical
+  `"{date}_{home}_{away}"` id, NaN scores and `matchweek = last played + 1`;
+  `FeaturePipeline.build(write_cache=False)` for ad-hoc frames; daily
+  `build_upcoming_feature_rows()` → `data/features/upcoming_features_{league}.parquet`
+  (run_full_pipeline Step 10d + after the incremental feature rebuild, 24h gate, never on the
+  T-30 path); `FeatureBuilder._load_prebuilt()` serves that row when (home, away, date)
+  matches and the derived/interaction mirrors become fill-only; `ML_CACHE_FALLBACK_SCALE=0.5`
+  halves the ML weight on any match still served from the cache (EPL, missing file).
+  Blind MW3 rebuild: **94/126 exact**. The remaining 23 inexact features are one cluster
+  (attack/defense strength → poisson_*, league/matchweek avg goals, position momentum) whose
+  TRAINING values contain same-matchweek lookahead — the serving row is now the honest one;
+  making training as-of is open work ("P1b" in `.plans/p1-ml-serving-skew-findings.md`).
+- **Same session, same retrain**: the Aug-25 matchweek retrain shipped a **1-tree draw
+  detector** (P(draw)=0.26 on every row) because the final fit early-stopped on the 10-match
+  current season. Restored from archive; trainer now early-stops on a ≥200-match season and
+  refuses to save a <20-tree / flat model (`tests/test_draw_detector_final_fit.py`).
+- **Prevention rules**: **a serving feature builder is correct only if it is the training
+  pipeline run on the unplayed row — an approximation from cached rows must be measured
+  against the training parquet (exact-match rate per feature) before it is trusted, and any
+  fallback path must announce itself (`last_feature_source`) and cost the model weight.**
+  A fixture row entering the pipeline needs the same identity key as a played row. Ad-hoc
+  pipeline runs must never write the production step cache. And a retrain's early-stopping
+  set must meet the same n-floor as its gate folds.
+
 ### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
 
 - **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is

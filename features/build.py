@@ -25,6 +25,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from config.settings import DATA_DIR
 from typing import List, Optional
 
 import numpy as np
@@ -381,13 +383,19 @@ class FeaturePipeline:
         return df
 
     def build(self, state: FeatureState,
-              use_cache: bool = True) -> FeatureState:
+              use_cache: bool = True,
+              write_cache: bool = True) -> FeatureState:
         """Execute all registered plugins in dependency order.
 
         Args:
             state: The initial FeatureState with matches loaded.
             use_cache: If True, skip plugins with valid cache.
                        If False, force rebuild everything.
+            write_cache: If False, never write step caches. Ad-hoc builds on
+                       a non-production frame (e.g. fixtures appended by
+                       build_upcoming_features) must not overwrite the
+                       production cache — found 2026-08-31 when such a run
+                       left a 1M-row derived_match_level snapshot behind.
 
         Returns:
             The final FeatureState with all features computed.
@@ -451,7 +459,7 @@ class FeaturePipeline:
                     state = plugin.apply(state)
 
                 # Save to cache ONLY if plugin succeeded (don't cache failure states)
-                if not never_cache and plugin_succeeded:
+                if write_cache and not never_cache and plugin_succeeded:
                     try:
                         df_to_cache = (
                             state.team_log if is_team_level
@@ -1530,7 +1538,8 @@ def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
 def _build_features_for_matches(matches: pd.DataFrame,
                                 season: str | None = None,
                                 use_cache: bool = True,
-                                league: str | None = None) -> pd.DataFrame:
+                                league: str | None = None,
+                                write_cache: bool = True) -> pd.DataFrame:
     """Build features for a single league's matches.
 
     This is the core feature-building pipeline extracted from build_features()
@@ -1543,7 +1552,7 @@ def _build_features_for_matches(matches: pd.DataFrame,
     state = FeatureState(matches=matches, season=season, league=league)
 
     # Execute the full pipeline
-    state = pipeline.build(state, use_cache=use_cache)
+    state = pipeline.build(state, use_cache=use_cache, write_cache=write_cache)
 
     feature_df = state.feature_df
 
@@ -1771,9 +1780,62 @@ def build_features(season: str | None = None,
 
 
 
+def _load_historical_matches(league: str) -> pd.DataFrame:
+    """Played matches for one league from matches.parquet, de-duplicated."""
+    matches_p = parsed_path("matches")
+    if not matches_p.exists():
+        raise FileNotFoundError(f"matches.parquet not found at {matches_p}")
+    historical = pd.read_parquet(matches_p)
+    historical = historical.drop_duplicates(
+        subset=["home_team", "away_team", "match_date", "season"], keep="first"
+    )
+    if "league" in historical.columns:
+        historical = historical[historical["league"] == league].copy()
+    return historical
+
+
+def _fixture_frame(fixtures: pd.DataFrame, historical: pd.DataFrame,
+                   league: str) -> pd.DataFrame:
+    """Shape unplayed fixtures like matches.parquet rows (NaN scores, canonical
+    match_id) and return them appended to `historical`, sorted by date."""
+    # every matches.parquet column, NaN where a fixture cannot know it yet
+    fix = fixtures.reindex(columns=historical.columns).copy()
+    fix["league"] = league
+    fix["league_name"] = (
+        historical["league_name"].iloc[0]
+        if "league_name" in historical.columns and len(historical)
+        else league
+    )
+    fix["home_score"] = np.nan
+    fix["away_score"] = np.nan
+    fix["match_date"] = pd.to_datetime(fix["match_date"])
+    # Canonical key, same convention as matches.parquet ("{date}_{home}_{away}").
+    # Without it every fixture row carried match_id=NaN and the per-match
+    # merges downstream joined NaN to NaN (measured 2026-08-31: a 10-fixture
+    # build exploded to 1,008,000 rows at derived_match_level and was OOM-killed).
+    fix["match_id"] = (fix["match_date"].dt.strftime("%Y-%m-%d") + "_"
+                       + fix["home_team"].astype(str) + "_" + fix["away_team"].astype(str))
+    if "matchweek" in fix.columns and "matchweek" in historical.columns:
+        # derived.py: ppg_pace = league_points / matchweek. An unplayed fixture
+        # is the round after the last one played in its season (1 for a new one).
+        season_max_mw = (
+            pd.to_numeric(historical["matchweek"], errors="coerce")
+            .groupby(historical["season"]).max()
+        )
+        next_mw = fix["season"].map(season_max_mw).fillna(0) + 1
+        fix["matchweek"] = pd.to_numeric(fix["matchweek"], errors="coerce").fillna(next_mw)
+
+    combined = pd.concat([historical, fix], ignore_index=True).sort_values(
+        "match_date"
+    ).reset_index(drop=True)
+
+    return combined
+
+
 def build_upcoming_features(
     fixtures: pd.DataFrame,
     league: str = "serie_a",
+    historical: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build feature rows for unplayed fixtures by running them through the
     full 58-step pipeline alongside historical settled matches.
@@ -1811,43 +1873,17 @@ def build_upcoming_features(
     if missing:
         raise ValueError(f"fixtures missing required columns: {sorted(missing)}")
 
-    matches_p = parsed_path("matches")
-    if not matches_p.exists():
-        raise FileNotFoundError(f"matches.parquet not found at {matches_p}")
-
-    historical = pd.read_parquet(matches_p)
-    historical = historical.drop_duplicates(
-        subset=["home_team", "away_team", "match_date", "season"], keep="first"
-    )
-    if "league" in historical.columns:
-        historical = historical[historical["league"] == league].copy()
-
-    fix = pd.DataFrame(index=fixtures.index)
-    for col in historical.columns:
-        if col in fixtures.columns:
-            fix[col] = fixtures[col]
-        else:
-            fix[col] = np.nan
-    fix["league"] = league
-    fix["league_name"] = (
-        historical["league_name"].iloc[0]
-        if "league_name" in historical.columns and len(historical)
-        else league
-    )
-    fix["home_score"] = np.nan
-    fix["away_score"] = np.nan
-    fix["match_date"] = pd.to_datetime(fix["match_date"])
-
-    combined = pd.concat([historical, fix], ignore_index=True).sort_values(
-        "match_date"
-    ).reset_index(drop=True)
+    if historical is None:
+        historical = _load_historical_matches(league)
+    combined = _fixture_frame(fixtures, historical, league)
 
     feats = _build_features_for_matches(
-        combined, season=None, use_cache=False, league=league
+        combined, season=None, use_cache=False, league=league, write_cache=False
     )
 
     feats["match_date"] = pd.to_datetime(feats["match_date"])
-    fix_keys = set(zip(fix["home_team"], fix["away_team"], fix["match_date"]))
+    fix_keys = set(zip(fixtures["home_team"], fixtures["away_team"],
+                       pd.to_datetime(fixtures["match_date"])))
     upcoming_feats = feats[
         feats[["home_team", "away_team", "match_date"]]
         .apply(tuple, axis=1)
@@ -1862,6 +1898,62 @@ def build_upcoming_features(
         )
 
     return upcoming_feats.reset_index(drop=True)
+
+
+def upcoming_features_path(league: str) -> Path:
+    """Where the daily build leaves pipeline-built rows for unplayed fixtures.
+    Read by scripts.prediction.ensemble_prediction_engine.FeatureBuilder."""
+    return DATA_DIR / "features" / f"upcoming_features_{league}.parquet"
+
+
+def build_upcoming_feature_rows(leagues=None, horizon_days: int = 10,
+                                now=None) -> dict:
+    """Run the REAL 58-step feature pipeline over the next `horizon_days` of
+    fixtures and persist one row per fixture to upcoming_features_{league}.parquet.
+
+    This is the serving path for the ML classifiers: the engine's
+    FeatureBuilder used to approximate every upcoming row from a team cache
+    (the pre-match state of the PREVIOUS game), which reproduced 8/126
+    training features exactly (measured 2026-08-31). Returns {league: rows}.
+    """
+    from datetime import datetime, timezone
+
+    from config.settings import get_current_season
+    from scripts.utils.match_timing import _load_sofascore_fixtures
+
+    now = now or datetime.now(timezone.utc)
+    leagues = list(leagues) if leagues else ["serie_a"]
+    fixtures = _load_sofascore_fixtures(now, horizon_days=horizon_days)
+    season = get_current_season()
+    written: dict = {}
+    for league in leagues:
+        rows = [f for f in fixtures if f.get("league") == league]
+        if not rows:
+            log.info("upcoming features: no %s fixtures in the next %dd", league, horizon_days)
+            continue
+        fx = pd.DataFrame({
+            "home_team": [r["home_team"] for r in rows],
+            "away_team": [r["away_team"] for r in rows],
+            "match_date": pd.to_datetime([r["date"] for r in rows]),
+            "season": season,
+        }).drop_duplicates(subset=["home_team", "away_team", "match_date"])
+        try:
+            feats = build_upcoming_features(fx, league=league)
+        except Exception:
+            log.exception("upcoming features: %s build failed", league)
+            continue
+        if feats.empty:
+            log.warning("upcoming features: %s build returned 0 rows for %d fixtures", league, len(fx))
+            continue
+        feats["built_at"] = now.isoformat()
+        out = upcoming_features_path(league)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".tmp")
+        feats.to_parquet(tmp, index=False)
+        tmp.replace(out)
+        written[league] = len(feats)
+        log.info("upcoming features: wrote %d %s rows -> %s", len(feats), league, out.name)
+    return written
 
 
 # ────────────────────────────────────────────────────────────────────────────

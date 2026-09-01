@@ -143,6 +143,13 @@ log = logging.getLogger(__name__)
 # ENSEMBLE WEIGHTS
 # =============================================================================
 
+# When a match has NO pipeline-built feature row (data/features/upcoming_features_
+# {league}.parquet, written by the daily build) the FeatureBuilder falls back to
+# its cache-from-last-row approximation, which cannot reproduce training
+# features (2026-08-31: 8/126 exact, ML L1 0.22). The ML weight is scaled by
+# this factor on those matches and the remainder renormalised over the others.
+ML_CACHE_FALLBACK_SCALE = 0.5
+
 ENSEMBLE_WEIGHTS = {
     "factor": 0.035,       # Market-anchored + situational factors
     "xg": 0.124,           # xG + Poisson distribution
@@ -1226,6 +1233,7 @@ class FeatureBuilder:
 
             # Build team feature cache from most recent matches
             self._build_team_cache()
+            self._load_prebuilt()
 
             log.info(f"Loaded {len(self.df)} historical matches for features")
             return True
@@ -1233,6 +1241,56 @@ class FeatureBuilder:
         except Exception as e:
             log.error(f"Failed to load historical data: {e}")
             return False
+
+    # Rows built for unplayed fixtures by the REAL feature pipeline
+    # (features.build.build_upcoming_feature_rows, daily). Keyed by
+    # (home, away, YYYY-MM-DD). Preferred over the team cache below, which is
+    # an approximation: it serves the PRE-match state of a previous game.
+    def _load_prebuilt(self) -> None:
+        self._prebuilt = {}
+        self.last_feature_source = "cache"
+        try:
+            from features.build import upcoming_features_path
+            path = upcoming_features_path(self.league or "serie_a")
+            if not path.exists():
+                log.info("No pre-built upcoming feature rows at %s — cache fallback", path.name)
+                return
+            rows = pd.read_parquet(path)
+            for _, r in rows.iterrows():
+                key = (str(r["home_team"]), str(r["away_team"]), str(pd.Timestamp(r["match_date"]).date()))
+                self._prebuilt[key] = r
+            log.info("Loaded %d pre-built upcoming feature rows (%s, %s)", len(self._prebuilt), path.name,
+                     pd.Timestamp(path.stat().st_mtime, unit="s").strftime("%Y-%m-%d %H:%M"))
+        except Exception as e:
+            log.warning("Could not load pre-built upcoming rows: %s", e)
+
+    # identity / target / bookkeeping columns of a feature row — never features
+    _PREBUILT_SKIP = frozenset({
+        "match_id", "home_team", "away_team", "match_date", "season", "league",
+        "league_name", "home_score", "away_score", "result", "built_at",
+        "sofascore_id", "fbref_id", "understat_id", "referee", "venue",
+    })
+
+    def _prebuilt_row(self, home_team: str, away_team: str, match_date) -> Optional[Dict]:
+        if not getattr(self, "_prebuilt", None) or match_date is None:
+            return None
+        try:
+            key = (str(home_team), str(away_team), str(pd.Timestamp(match_date).date()))
+        except (ValueError, TypeError):
+            return None
+        row = self._prebuilt.get(key)
+        if row is None:
+            return None
+        out = {}
+        for k, v in row.items():
+            if k in self._PREBUILT_SKIP or k in self._EXCLUDE_FROM_CACHE:
+                continue
+            if isinstance(v, (bool, np.bool_)):
+                v = float(v)
+            if not isinstance(v, (int, float, np.integer, np.floating)) or pd.isna(v):
+                continue  # identity strings, NaN -> engine fillers / model imputation
+            out[k] = float(v)
+        return out
 
     def _load_standings(self) -> dict:
         """Load fresh standings for the current league (cached per instance)."""
@@ -1368,9 +1426,16 @@ class FeatureBuilder:
         if hasattr(self, '_latest_match_features'):
             features.update(self._latest_match_features)
 
-        # Get team features from cache
-        home_cache = self.team_features.get(f"{home_team}_home", {})
-        away_cache = self.team_features.get(f"{away_team}_away", {})
+        # Prefer the pipeline-built row for this exact fixture; the team cache
+        # is the fallback approximation (see _load_prebuilt).
+        prebuilt = self._prebuilt_row(home_team, away_team, match_date)
+        self.last_feature_source = "pipeline" if prebuilt is not None else "cache"
+        if prebuilt is not None:
+            features.update(prebuilt)
+            home_cache, away_cache = {}, {}
+        else:
+            home_cache = self.team_features.get(f"{home_team}_home", {})
+            away_cache = self.team_features.get(f"{away_team}_away", {})
 
         # Build feature row
         for key, val in home_cache.items():
@@ -1379,23 +1444,26 @@ class FeatureBuilder:
         for key, val in away_cache.items():
             features[f"away_{key}"] = val
 
-        # Calculate derived features
+        # Calculate derived features (pipeline-built rows already carry these
+        # from the training formulas — only fill what is missing there)
         home_elo = features.get("home_elo", 1500)
         away_elo = features.get("away_elo", 1500)
-        features["elo_diff"] = home_elo - away_elo
-
         home_attack = features.get("home_attack_strength", 1.0)
         away_defense = features.get("away_defense_strength", 1.0)
         home_defense = features.get("home_defense_strength", 1.0)
         away_attack = features.get("away_attack_strength", 1.0)
-
-        features["home_attack_vs_away_def"] = home_attack - away_defense
-        features["away_attack_vs_home_def"] = away_attack - home_defense
-
-        # Additional derived features for xG model
-        features["attack_strength_diff"] = home_attack - away_attack
-        features["defense_strength_diff"] = home_defense - away_defense
-        features["matchup_competitiveness"] = 1.0 / (1.0 + abs(home_elo - away_elo) / 400.0)
+        _derived = {
+            "elo_diff": home_elo - away_elo,
+            "home_attack_vs_away_def": home_attack - away_defense,
+            "away_attack_vs_home_def": away_attack - home_defense,
+            # Additional derived features for xG model
+            "attack_strength_diff": home_attack - away_attack,
+            "defense_strength_diff": home_defense - away_defense,
+            "matchup_competitiveness": 1.0 / (1.0 + abs(home_elo - away_elo) / 400.0),
+        }
+        for _k, _v in _derived.items():
+            if prebuilt is None or _k not in features:
+                features[_k] = _v
 
         # League position diff — prefer fresh standings over stale cached values
         h_pos = features.get("home_league_pos", 10)
@@ -1716,7 +1784,14 @@ class FeatureBuilder:
         features.update(self._compute_matchup_derived(features))
 
         # --- Compute interaction features (mirrors build.py Step 36) ---
-        features.update(self._compute_interaction_features(features))
+        # A pipeline-built row already has the training-time values; never
+        # overwrite them with the mirror, only fill gaps.
+        _inter = self._compute_interaction_features(features)
+        if prebuilt is not None:
+            for _k, _v in _inter.items():
+                features.setdefault(_k, _v)
+        else:
+            features.update(_inter)
 
         return pd.DataFrame([features])
 
@@ -2587,6 +2662,10 @@ class EnsemblePredictor:
         if "xg" in self.available_methods or "ml" in self.available_methods:
             match_features = self.feature_builder.build_match_features(
                 home, away, form_data, match_date=match.get("date")
+            )
+            self._ml_weight_scale = (
+                1.0 if getattr(self.feature_builder, "last_feature_source", "cache") == "pipeline"
+                else ML_CACHE_FALLBACK_SCALE
             )
             if match_features is not None:
                 match_features = self._inject_odds_into_features(match_features, home, away, match_date=match.get("date"))
@@ -3720,6 +3799,19 @@ class EnsemblePredictor:
         }
 
     def _get_effective_weights(self, predictions: Dict) -> Dict:
+        """Effective weights for the available methods, with the ML weight
+        scaled down when this match's features came from the cache fallback
+        rather than a pipeline-built row (see ML_CACHE_FALLBACK_SCALE)."""
+        weights = dict(self._base_effective_weights(predictions))
+        scale = getattr(self, "_ml_weight_scale", 1.0)
+        if "ml" in weights and scale != 1.0 and weights["ml"] > 0:
+            weights["ml"] = weights["ml"] * scale
+            total = sum(weights.values())
+            if total > 0:
+                weights = {m: w / total for m, w in weights.items()}
+        return weights
+
+    def _base_effective_weights(self, predictions: Dict) -> Dict:
         """Get effective weights based on available methods."""
         available = set(predictions.keys())
         has_market = "market" in available
