@@ -116,7 +116,10 @@ li.row .stars{color:var(--accent);font-size:13px;min-width:34px;text-align:right
 .verdict.ok{color:var(--accent)} .verdict.warn{color:var(--warn)} .verdict.bad{color:var(--bad)}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .actions .mine{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
-.actions .reset{grid-column:1/-1;background:transparent;color:var(--muted)}
+.actions .reset{background:transparent;color:var(--muted)}
+li.row.passed{opacity:.55}
+li.row .tag.pass{color:var(--plan)}
+.alts .scarce{color:var(--warn);font-weight:600}
 .alts{margin-top:10px;font-size:12px;color:var(--muted)}
 .alts b{color:var(--text);font-weight:500}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:up .18s ease-out}@keyframes up{from{transform:translateY(30px);opacity:0}to{transform:none;opacity:1}}}
@@ -172,8 +175,10 @@ li.row .stars{color:var(--accent);font-size:13px;min-width:34px;text-align:right
   <div class="actions">
     <button class="mine" id="bMine">Mine at this price</button>
     <button id="bGone">Someone else took him</button>
+    <button id="bPass">Passed — no sale</button>
     <button class="reset" id="bReset">Reset this player</button>
   </div>
+  <div class="alts" id="sPool"></div>
   <div class="alts" id="sAlts"></div>
 </section>
 
@@ -184,7 +189,7 @@ const ROLES = ["P","D","C","A"];
 const byId = new Map(DATA.players.map(p => [p.id, p]));
 let state = {mine:{}, gone:{}, goneWho:{}, names:{}, log:[]};
 try { const s = localStorage.getItem(KEY); if (s) state = Object.assign(state, JSON.parse(s)); } catch (e) {}
-for (const k of ["mine","gone","goneWho","names"]) state[k] = state[k] || {};
+for (const k of ["mine","gone","goneWho","names","passed"]) state[k] = state[k] || {};
 state.log = state.log || [];
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} }
 
@@ -244,7 +249,8 @@ function sortPlayers(a,b){
 function rowHtml(p, b, simple){
   const mine = p.id in state.mine, gone = p.id in state.gone;
   const cap = effCap(p,b), up = cap>p.cap;
-  const tags = (p.inj?'<span class="tag inj">inj</span>':'') + (up?'<span class="tag up">alt ↑</span>':'') + (p.est?'<span class="tag est">est</span>':'');
+  const passed = p.id in state.passed;
+  const tags = (p.inj?'<span class="tag inj">inj</span>':'') + (up?'<span class="tag up">alt ↑</span>':'') + (passed?'<span class="tag pass">passed</span>':'') + (p.est?'<span class="tag est">est</span>':'');
   const price = mine ? `<span class="num">${state.mine[p.id]}</span>` : (gone && state.gone[p.id] ? `<span class="num">${state.gone[p.id]}</span>` : "");
   const nums = (mine||gone) ? price
     : simple ? `<span class="cap num${up?' up':''}">${cap}</span><i class="lbl">pay</i><span class="hold num">${p.hold}</span><i class="lbl">stop</i>`
@@ -252,7 +258,7 @@ function rowHtml(p, b, simple){
   const right = simple
     ? `<div class="stars">${p.need>=8?"★★★":(p.need>=3?"★★":(p.need>=1?"★":""))}</div>`
     : `<div class="need num ${p.need>=4?"hi":(p.need>=1?"mid":"")}">${p.need>0?p.need.toFixed(1):''}</div>`;
-  return `<li class="row t${p.tier}${mine?' mine':''}${gone?' gone':''}" data-id="${p.id}" tabindex="0">
+  return `<li class="row t${p.tier}${mine?' mine':''}${gone?' gone':''}${passed?' passed':''}" data-id="${p.id}" tabindex="0">
     <div class="who"><b>${p.n}</b>${tags}<span>${p.t} · ${p.r} · ${p.min}′${mine?' · MINE':(gone?' · taken':'')}</span></div>
     <div class="nums">${nums}</div>${right}</li>`;
 }
@@ -330,15 +336,15 @@ function renderRivals(list){
 function renderLog(list){
   const lines = state.log.slice().reverse().map(e=>{ const p=byId.get(e.id); if(!p) return "";
     const t = new Date(e.ts); const hh = t.getHours().toString().padStart(2,"0")+":"+t.getMinutes().toString().padStart(2,"0");
-    const what = e.kind==="mine" ? `mine at ${e.price}` : (e.kind==="gone" ? `taken${e.price?' at '+e.price:''}` : "reset");
+    const what = e.kind==="mine" ? `mine at ${e.price}` : (e.kind==="gone" ? `taken${e.price?' at '+e.price:''}` : e.kind==="pass" ? "passed" : "reset");
     return `<div class="logline"><span>${hh}</span><div><b>${p.n}</b> <span>${p.t} · ${p.r}</span></div><span class="num">${what}</span></div>`; }).join("");
   document.getElementById("hint").textContent = "Backup: copy the text below and paste it back on another device with Load.";
   list.innerHTML = (lines || '<div class="empty">No bids logged yet.</div>') +
-    `<div class="io"><textarea id="io">${JSON.stringify({mine:state.mine,gone:state.gone,goneWho:state.goneWho,names:state.names,log:state.log})}</textarea>
+    `<div class="io"><textarea id="io">${JSON.stringify({mine:state.mine,gone:state.gone,goneWho:state.goneWho,names:state.names,passed:state.passed,log:state.log})}</textarea>
      <div class="btns"><button id="bCopy">Copy backup</button><button id="bLoad">Load pasted backup</button><button id="bWipe">Wipe everything</button></div></div>`;
   document.getElementById("bCopy").onclick = async ()=>{ const ta=document.getElementById("io"); ta.select(); try{ await navigator.clipboard.writeText(ta.value); document.getElementById("bCopy").textContent="Copied"; }catch(e){ document.execCommand("copy"); } };
-  document.getElementById("bLoad").onclick = ()=>{ try{ const s=JSON.parse(document.getElementById("io").value); if(s && s.mine){ state={mine:s.mine||{},gone:s.gone||{},goneWho:s.goneWho||{},names:s.names||{},log:s.log||[]}; save(); renderAll(); } }catch(e){ alert("That text is not a valid backup."); } };
-  document.getElementById("bWipe").onclick = ()=>{ if(confirm("Delete every logged price?")){ state={mine:{},gone:{},goneWho:{},names:state.names,log:[]}; save(); renderAll(); } };
+  document.getElementById("bLoad").onclick = ()=>{ try{ const s=JSON.parse(document.getElementById("io").value); if(s && s.mine){ state={mine:s.mine||{},gone:s.gone||{},goneWho:s.goneWho||{},names:s.names||{},passed:s.passed||{},log:s.log||[]}; save(); renderAll(); } }catch(e){ alert("That text is not a valid backup."); } };
+  document.getElementById("bWipe").onclick = ()=>{ if(confirm("Delete every logged price?")){ state={mine:{},gone:{},goneWho:{},names:state.names,passed:{},log:[]}; save(); renderAll(); } };
 }
 function renderAll(){ renderBoard(); renderList(); }
 
@@ -362,6 +368,14 @@ function openSheet(id){
   inp.value = p.id in state.mine ? state.mine[p.id] : (state.gone[p.id] || cap || "");
   const alts = p.alts.map(a=>byId.get(a)).filter(Boolean).filter(isOpen);
   document.getElementById("sAlts").innerHTML = alts.length ? "If he goes past hold: " + alts.map(a=>`<b>${a.n}</b> (${a.t}, ${effCap(a)}→${a.hold})`).join(", ") : "";
+  const pool = poolAfter(p), sl = slotsLeft()[p.r];
+  const tNames = pool.after.filter(x=>x.tier<=2).map(x=>x.n);
+  const bCount = pool.after.filter(x=>x.tier===3).length;
+  let poolHtml = `Still to come in ${p.r}: <b>${tNames.length} targets</b>${tNames.length?" ("+tNames.slice(0,5).join(", ")+")":""} + ${bCount} backups`;
+  if (pool.round2.length) poolHtml += ` · ${pool.round2.length} passed earlier (come around again)`;
+  if (sl>0 && isOpen(p) && (pool.after.length + pool.round2.length) < sl)
+    poolHtml = `<span class="scarce">SCARCITY: only ${pool.after.length + pool.round2.length} quality names left for ${sl} empty ${p.r} slots — fight for him.</span> ` + poolHtml;
+  document.getElementById("sPool").innerHTML = poolHtml;
   const cw = state.goneWho[p.id]||"";
   document.getElementById("sWho").innerHTML = '<button data-w="" disabled style="flex:0 1 auto;border:none;background:none">taken by:</button>' +
     Array.from({length:9},(_,i)=>{const k=String(i+1); const nm=(state.names[k]||("R"+k)).slice(0,6);
@@ -382,21 +396,36 @@ function verdict(){
   state.mine[p.id]=x; const mAfter = left()-planCost();
   if (had===undefined) delete state.mine[p.id]; else state.mine[p.id]=had;
   const tail = ` · margin after: ${mAfter>=0?"+":""}${mAfter}`;
+  const pool = poolAfter(p), slr = slotsLeft()[p.r];
+  const scarce = slr>0 && isOpen(p) && (pool.after.length + pool.round2.length) < slr;
   if (roleFull){ v.textContent = `${p.r} slots are FULL — buying him overfills the roster.`; v.className="verdict bad"; inp.className="over"; return; }
   if (x > mb){ v.textContent = `Over your max bid (${mb}) — you could not fill the roster.`; v.className="verdict bad"; inp.className="over"; return; }
+  if (scarce && x <= mb){ v.textContent = `SCARCITY OVERRIDE: not enough quality left after him for your ${slr} ${p.r} slots — bid to your max (${mb}) if you must.` + tail; v.className="verdict warn"; inp.className="atcap"; return; }
   if (x > p.hold){ v.textContent = `Above hold (${p.hold}): let him go, take an alternative.` + tail; v.className="verdict bad"; inp.className="over"; }
   else if (x > cap){ v.textContent = `Between pay-to and hold: ok while margin stays ≥ 0.` + tail; v.className=`verdict ${mAfter>=0?"warn":"bad"}`; inp.className="atcap"; }
   else { v.textContent = `At or under pay-to (${cap}): take him.` + tail; v.className="verdict ok"; }
 }
-function snap(id){ const s={}; if(id in state.mine) s.m=state.mine[id]; if(id in state.gone) s.g=state.gone[id]; if(id in state.goneWho) s.w=state.goneWho[id]; return s; }
+function snap(id){ const s={}; if(id in state.mine) s.m=state.mine[id]; if(id in state.gone) s.g=state.gone[id]; if(id in state.goneWho) s.w=state.goneWho[id]; if(id in state.passed) s.p=1; return s; }
+// alphabetical call tracking: a player is "called" once he is mine, sold, or passed
+function called(id){ return (id in state.mine)||(id in state.gone)||(id in state.passed); }
+function poolAfter(p){
+  // plan-relevant names (tier 1-3) of the same role, still open and not yet called,
+  // whose name comes after p in the alphabetical sweep; if the sweep is past the end,
+  // everything open (round 2) counts.
+  const pool = DATA.players.filter(x=>x.r===p.r && x.id!==p.id && x.tier>=1 && x.tier<=3 && isOpen(x) && !(x.id in state.passed));
+  let after = pool.filter(x=>x.n.localeCompare(p.n,"it")>0);
+  const round2 = DATA.players.filter(x=>x.r===p.r && x.tier>=1 && x.tier<=3 && isOpen(x) && (x.id in state.passed));
+  return {after, round2};
+}
 function logEvent(kind, id, price, prev){ state.log.push({ts:Date.now(), id, kind, price: price||null, prev: prev||{}}); if(state.log.length>600) state.log.shift(); }
 function undoLast(){
   const e = state.log.pop(); if(!e) return;
-  delete state.mine[e.id]; delete state.gone[e.id]; delete state.goneWho[e.id];
+  delete state.mine[e.id]; delete state.gone[e.id]; delete state.goneWho[e.id]; delete state.passed[e.id];
   const p = e.prev || {};
   if("m" in p) state.mine[e.id]=p.m;
   if("g" in p) state.gone[e.id]=p.g;
   if("w" in p) state.goneWho[e.id]=p.w;
+  if("p" in p) state.passed[e.id]=1;
   save(); renderAll();
 }
 document.getElementById("sPrice").addEventListener("input", verdict);
@@ -410,6 +439,9 @@ document.getElementById("bGone").onclick = ()=>{ const p=current; if(!p) return;
   logEvent("gone",p.id,x,prev); save(); closeSheet(); renderAll(); };
 document.getElementById("bReset").onclick = ()=>{ const p=current; if(!p) return; const prev=snap(p.id);
   delete state.mine[p.id]; delete state.gone[p.id]; delete state.goneWho[p.id]; logEvent("reset",p.id,null,prev); save(); closeSheet(); renderAll(); };
+document.getElementById("bPass").onclick = ()=>{ const p=current; if(!p) return; const prev=snap(p.id);
+  delete state.mine[p.id]; delete state.gone[p.id]; delete state.goneWho[p.id]; state.passed[p.id]=1;
+  logEvent("pass",p.id,null,prev); save(); closeSheet(); renderAll(); };
 document.getElementById("bUndo").onclick = undoLast;
 document.getElementById("sWho").addEventListener("click", e=>{ const b=e.target.closest("button"); if(!b) return;
   const was=b.classList.contains("on"); document.querySelectorAll("#sWho button").forEach(x=>x.classList.remove("on")); if(!was) b.classList.add("on"); });
