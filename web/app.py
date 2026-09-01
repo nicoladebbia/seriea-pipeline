@@ -337,6 +337,15 @@ def _load_comparison_odds() -> tuple[str, dict]:
     return book, odds
 
 
+def _mtime_iso(path: Path) -> str:
+    """File mtime as ISO string, '' if missing — freshness fallback for JSON
+    artifacts whose generated_at stamp was lost by an intermediate rewrite."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    except OSError:
+        return ""
+
+
 def _load_json(path: Path, default=None):
     """Safely load a JSON file with 60-second mtime-aware cache.
 
@@ -3625,7 +3634,7 @@ def api_dashboard():
         "alerts": alerts,
         "steam_moves": steam_moves,
         "odds_fetched_at": odds_fetched_at,
-        "predictions_generated_at": predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "",
+        "predictions_generated_at": (predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "") or _mtime_iso(UPCOMING_DIR / "predictions.json"),
         "extended_markets_at": extended_raw.get("generated_at", "") if isinstance(extended_raw, dict) else "",
         "market_intelligence_at": market_intel_at,
         "league_filter": league_filter,
@@ -4231,7 +4240,7 @@ def api_betting():
     return jsonify({
         "generated_at": unified.get("generated_at", ""),
         "odds_fetched_at": odds_fetched_at,
-        "predictions_generated_at": predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "",
+        "predictions_generated_at": (predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "") or _mtime_iso(UPCOMING_DIR / "predictions.json"),
         "extended_markets_at": extended_raw.get("generated_at", "") if isinstance(extended_raw, dict) else "",
         "bankroll": bankroll,
         "metrics": metrics,

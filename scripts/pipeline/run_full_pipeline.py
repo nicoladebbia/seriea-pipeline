@@ -1878,6 +1878,10 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                 wrapper = {"predictions": predictions}
         except Exception:
             wrapper = {"predictions": predictions}
+        # A bare wrapper self-perpetuates (bare in -> bare out), and the dashboard
+        # then shows "Preds: N/A" forever. The predictions in memory are from THIS
+        # run, so stamping now is honest whenever the engine's stamp was lost.
+        wrapper.setdefault("generated_at", datetime.now().isoformat())
         # Preserve league field through enrichment (infer from team names when missing)
         from config.leagues import infer_league as _infer_league
         for _p in predictions:
