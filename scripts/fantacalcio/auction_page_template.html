@@ -39,6 +39,7 @@ button:focus-visible,input:focus-visible,li.row:focus-visible{outline:2px solid 
 .slot{font-family:var(--display);font-size:20px;font-weight:600;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:3px 9px;min-width:58px;text-align:center}
 .slot b{font-weight:500;color:var(--muted);font-size:14px;margin-right:4px}
 .slot.full{border-color:var(--accent);color:var(--accent)}
+.slot.now{border-color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn)}
 .meta{grid-column:1/-1;display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
 .meta b{color:var(--text);font-weight:600}
 .meta b.good{color:var(--accent)} .meta b.warn{color:var(--warn)} .meta b.bad{color:var(--bad)}
@@ -134,6 +135,7 @@ li.row .tag.pass{color:var(--plan)}
       <span>max bid <b class="num" id="maxbid">—</b></span>
       <span>plan margin <b class="num" id="margin">—</b></span>
       <span>table inflation <b class="num" id="infl">—</b></span>
+      <span>coming roles need <b class="num" id="reserve">—</b></span>
       <button class="undo" id="bUndo" title="Undo the last logged action">↩ undo</button>
     </div>
   </header>
@@ -211,13 +213,23 @@ function boosted(){ // alternatives of plan players taken by others
 }
 function effCap(p, b){ b = b || boosted(); return b.has(p.id) ? Math.max(p.cap, Math.ceil((p.cap+p.hold)/2)) : p.cap; }
 function isOpen(p){ return !(p.id in state.mine) && !(p.id in state.gone); }
-function planCost(){
-  const l = slotsLeft(), b = boosted(); let cost = 0;
+function planCostByRole(){
+  const l = slotsLeft(), b = boosted(); const byR = {};
   for (const r of ROLES){
     const tgt = DATA.players.filter(p=>p.r===r && p.tier>=1 && p.tier<=2 && isOpen(p)).map(p=>effCap(p,b)).sort((x,y)=>y-x);
-    for (let i=0;i<l[r];i++) cost += (i<tgt.length ? tgt[i] : 1);
+    let c = 0; for (let i=0;i<l[r];i++) c += (i<tgt.length ? tgt[i] : 1);
+    byR[r] = c;
   }
-  return cost;
+  return byR;
+}
+function planCost(){ const c = planCostByRole(); return ROLES.reduce((a,r)=>a+c[r],0); }
+// the auction runs role by role (P then D then C then A): the live phase is the
+// role of the most recently logged player
+function phase(){ for (let i=state.log.length-1;i>=0;i--){ const p=byId.get(state.log[i].id); if(p) return p.r; } return "P"; }
+function reserveLater(){
+  const c = planCostByRole(), i = ROLES.indexOf(phase());
+  const later = ROLES.slice(i+1).filter(r=>c[r]>0);
+  return { roles: later, amt: later.reduce((a,r)=>a+c[r],0) };
 }
 function inflation(){
   let paid=0, room=0;
@@ -230,13 +242,16 @@ function renderBoard(){
   const L = left(), el = document.getElementById("left");
   el.innerHTML = L + '<small>credits left</small>';
   el.className = "left num" + (L<0?" neg":(L<60?" low":""));
-  const u = slotsUsed();
-  document.getElementById("slots").innerHTML = ROLES.map(r=>`<div class="slot num${u[r]>=DATA.roster[r]?' full':''}"><b>${r}</b>${u[r]}/${DATA.roster[r]}</div>`).join("");
+  const u = slotsUsed(), ph = phase();
+  document.getElementById("slots").innerHTML = ROLES.map(r=>`<div class="slot num${u[r]>=DATA.roster[r]?' full':''}${r===ph?' now':''}"><b>${r}</b>${u[r]}/${DATA.roster[r]}</div>`).join("");
   document.getElementById("maxbid").textContent = totalSlotsLeft() ? maxBid() : "—";
   const m = L - planCost(); const me = document.getElementById("margin");
   me.textContent = (m>=0?"+":"") + m; me.className = "num " + (m>=10?"good":(m>=0?"warn":"bad"));
   const inf = inflation(); const ie = document.getElementById("infl");
   ie.textContent = inf==null ? "—" : "×"+inf.toFixed(2); ie.className = "num " + (inf==null?"":(inf>1.15?"bad":(inf>1.05?"warn":"good")));
+  const rv = reserveLater(); const re = document.getElementById("reserve");
+  re.textContent = rv.roles.length ? `${rv.roles.join("+")} ~${rv.amt}` : "—";
+  re.className = "num " + (!rv.roles.length ? "" : (L - rv.amt < 0 ? "bad" : (L - rv.amt < 20 ? "warn" : "good")));
 }
 
 // ---------- list ----------
