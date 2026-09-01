@@ -250,7 +250,26 @@ def main():
                         help="Force-enable betting even if validation fails (use with caution)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print results but don't write deployment_state.json")
+    parser.add_argument("--paper", action="store_true",
+                        help="Report the league's PAPER track against the "
+                             "deployment bar (50+ settled, CLV+) and exit")
     args = parser.parse_args()
+
+    if args.paper:
+        from scripts.betting.bet_journal import get_paper_track_stats
+        s = get_paper_track_stats(args.league)
+        print(f"\nPAPER TRACK — {args.league}")
+        print(f"  settled: {s['n_settled']}  (W {s['n_won']} / L {s['n_lost']})"
+              f"  pending: {s['n_pending']}")
+        print(f"  flat ROI: {s['roi_pct']}%  profit: {s['profit']}")
+        print(f"  mean CLV: {s['mean_clv_pct']}%  (n={s['n_clv']})")
+        bar_n = s["n_settled"] >= 50
+        bar_clv = (s["mean_clv_pct"] or 0) > 0
+        print(f"  deployment bar: settled>=50 [{'PASS' if bar_n else 'not yet'}]"
+              f"  CLV+ [{'PASS' if bar_clv else 'not yet'}]")
+        if bar_n and bar_clv:
+            print("  → bar MET. Re-run validation without --paper to lift the gate.")
+        sys.exit(0)
 
     result = validate_league(args.league, force_enable=args.enable)
     print_validation_report(args.league, result)

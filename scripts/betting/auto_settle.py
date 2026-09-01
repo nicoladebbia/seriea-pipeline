@@ -494,6 +494,14 @@ def run(
                                          r["home_score"], r["away_score"])
                     else:
                         settlement_summary = settle_bets(completed)
+                    # Paper track: grade gated-league paper bets against the
+                    # same results. Separate journal — no bankroll contact.
+                    if not dry_run:
+                        try:
+                            from scripts.betting.bet_journal import settle_paper_bets
+                            settle_paper_bets(completed)
+                        except Exception as e:
+                            log.warning("Paper settle failed: %s", e)
                 else:
                     settlement_summary = {"settled": 0, "pending": 0, "message": "No completed matches"}
             else:

@@ -509,6 +509,16 @@ class AccumulatorBet:
 # =============================================================================
 # 3. DATA LAYER -- Load all live files
 # =============================================================================
+
+# Prediction file → league key. Shared by the real path (load_predictions)
+# and the paper track (run_paper_track) so a league can never fall through
+# both: enabled leagues bet real, gated leagues bet paper.
+PREDICTION_FILES = [
+    ("predictions.json", "serie_a"),
+    ("predictions_premier_league.json", "premier_league"),
+]
+
+
 def load_predictions() -> List[Dict]:
     """Load ensemble predictions from all validated league files.
 
@@ -516,13 +526,8 @@ def load_predictions() -> List[Dict]:
     from leagues that haven't passed deployment validation.
     """
     all_preds = []
-    # Map filename → league key for tagging
-    prediction_files = [
-        ("predictions.json", "serie_a"),
-        ("predictions_premier_league.json", "premier_league"),
-    ]
     found_any = False
-    for fname, league_key in prediction_files:
+    for fname, league_key in PREDICTION_FILES:
         p = UPCOMING / fname
         if not p.exists():
             continue
@@ -650,6 +655,84 @@ def load_goal_predictions() -> List[Dict]:
     with open(p) as f:
         data = json.load(f)
     return data.get("predictions", [])
+
+
+PAPER_STAKE = 10.0  # flat — the deployment bar is count + CLV, not sizing
+
+
+def run_paper_track() -> int:
+    """Scan GATED leagues with the production market config and journal the
+    candidates as flat-stake PAPER bets in the separate paper journal.
+
+    This is the evidence pump for a league's deployment bar ("50+ settled
+    paper bets, CLV+" — premier_league's gated_reason): without it the bar
+    is unearnable, because load_predictions() drops a gated league's file
+    wholesale and nothing ever settles. Zero real exposure by construction:
+    PAPER_JOURNAL_PATH is a different file and bankroll/history/risk derive
+    from the real journal only.
+
+    Called from save_bet_slip's non-dry path so paper bets commit on the
+    same T-30 timing as real ones (>24h-early bets measured -5% ROI, <24h
+    +63% — paper CLV evidence must not be gathered on the losing timing).
+    """
+    from scripts.betting.bet_journal import (
+        PAPER_JOURNAL_PATH, add_bet as journal_add_bet)
+
+    n_journaled = 0
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    for fname, league_key in PREDICTION_FILES:
+        if _league_betting_enabled(league_key):
+            continue  # real path covers it
+        p = UPCOMING / fname
+        if not p.exists():
+            continue
+        try:
+            with open(p) as f:
+                preds = json.load(f).get("predictions", [])
+        except Exception as e:
+            log.warning("Paper track: failed to load %s: %s", fname, e)
+            continue
+        for pred in preds:
+            pred.setdefault("league", league_key)
+        preds = [q for q in preds
+                 if q.get("date", "9999-99-99")[:10] >= today_str]
+        if not preds:
+            continue
+
+        allowed = {q.get("match") for q in preds if q.get("match")}
+        pred_by_match = {q["match"]: q for q in preds if q.get("match")}
+        goal_preds = _gate_aux_predictions(
+            load_goal_predictions(), allowed, f"paper:{league_key}")
+        if not goal_preds:
+            continue
+
+        engine = UnifiedBettingEngine()
+        bets = engine.scan_ou_market(goal_preds, load_odds_full(),
+                                     pred_by_match=pred_by_match)
+        for bet in bets:
+            bet_id = journal_add_bet({
+                "match": bet.match,
+                "date": bet.date,
+                "market": bet.market,
+                "selection": bet.selection,
+                "model_prob": bet.model_prob,
+                "sharp_implied_prob": bet.sharp_implied_prob,
+                "edge_pct": bet.edge_pct,
+                "odds": bet.best_odds,
+                "bookmaker": bet.best_bookmaker,
+                "avg_odds": bet.avg_odds,
+                "pinnacle_odds": bet.pinnacle_odds,
+                "stake": PAPER_STAKE,
+                "confidence": bet.confidence_tier,
+                "league": league_key,
+                "pipeline_status": "paper",
+            }, journal_path=PAPER_JOURNAL_PATH)
+            if bet_id:
+                n_journaled += 1
+        if bets:
+            log.info("Paper track (%s): journaled %d candidate(s)",
+                     league_key, len(bets))
+    return n_journaled
 
 
 def load_btts_predictions() -> List[Dict]:
@@ -3396,6 +3479,15 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
         log.info("Journal: recorded %d bets", len(slip.bets))
     except Exception as e:
         log.debug("Failed to write to bet journal: %s", e)
+
+    # Paper track: gated leagues journal their candidates on the same
+    # commit timing (flat stakes, separate journal, zero real exposure).
+    try:
+        n_paper = run_paper_track()
+        if n_paper:
+            log.info("Paper track: %d bet(s) journaled", n_paper)
+    except Exception as e:
+        log.warning("Paper track failed: %s", e)
 
     return path
 

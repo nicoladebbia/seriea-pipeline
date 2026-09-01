@@ -49,6 +49,12 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent.parent
 DATA_DIR = _PROJECT_ROOT / "data"
 JOURNAL_PATH = DATA_DIR / "betting" / "bet_journal.json"
+# PAPER track: a gated league's candidates are journaled here with flat
+# stakes so it can earn its deployment bar (50+ settled, CLV+) without a
+# cent of real exposure. Deliberately a SEPARATE file: bankroll.json,
+# history.json, risk state and every ROI/drift monitor derive from
+# JOURNAL_PATH only, so paper entries can never contaminate real P&L.
+PAPER_JOURNAL_PATH = DATA_DIR / "betting" / "paper_journal.json"
 
 # Legacy file paths for migration
 LEGACY_FILES = {
@@ -102,11 +108,12 @@ def journal_lock():
 # JOURNAL I/O
 # =============================================================================
 
-def _load_journal() -> Dict:
+def _load_journal(journal_path: Optional[Path] = None) -> Dict:
     """Load the journal file. Returns dict with 'metadata' and 'bets' keys."""
-    if JOURNAL_PATH.exists():
+    journal_path = journal_path or JOURNAL_PATH
+    if journal_path.exists():
         try:
-            with open(JOURNAL_PATH) as f:
+            with open(journal_path) as f:
                 data = json.load(f)
             # Ensure required structure
             if "bets" not in data:
@@ -125,17 +132,18 @@ def _load_journal() -> Dict:
     }
 
 
-def _save_journal(journal: Dict):
+def _save_journal(journal: Dict, journal_path: Optional[Path] = None):
     """Save journal to disk atomically."""
-    JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    journal_path = journal_path or JOURNAL_PATH
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
     journal["metadata"]["updated_at"] = datetime.now().isoformat()
     journal["metadata"]["total_bets"] = len(journal["bets"])
 
     # Write to temp file then rename for atomicity
-    tmp_path = JOURNAL_PATH.with_suffix(".tmp")
+    tmp_path = journal_path.with_suffix(".tmp")
     with open(tmp_path, "w") as f:
         json.dump(journal, f, indent=2, default=str)
-    tmp_path.rename(JOURNAL_PATH)
+    tmp_path.rename(journal_path)
 
 
 def get_clv_lookup() -> Dict[str, float]:
@@ -343,7 +351,7 @@ def _stamp_model_version(entry: Dict) -> None:
 
 
 @_with_journal_lock
-def add_bet(bet_data: Dict) -> str:
+def add_bet(bet_data: Dict, journal_path: Optional[Path] = None) -> str:
     """Add a bet to the journal. Returns bet_id.
 
     Deduplicates by bet_id. If a bet with the same ID already exists
@@ -365,7 +373,7 @@ def add_bet(bet_data: Dict) -> str:
     if not bet_data.get("date"):
         bet_data["date"] = datetime.now().strftime("%Y-%m-%d")
 
-    journal = _load_journal()
+    journal = _load_journal(journal_path)
 
     bet_id = _generate_bet_id(
         bet_data.get("date", ""),
@@ -438,11 +446,12 @@ def add_bet(bet_data: Dict) -> str:
         journal["bets"][bet_id] = entry
         log.debug("Added new bet %s (model=%s)", bet_id, entry.get("model_version"))
 
-    _save_journal(journal)
+    _save_journal(journal, journal_path)
     return bet_id
 
 
-def get_pending_bets(match_date: str = None, include_superseded: bool = True) -> List[Dict]:
+def get_pending_bets(match_date: str = None, include_superseded: bool = True,
+                     journal_path: Optional[Path] = None) -> List[Dict]:
     """Get all unsettled bets, optionally filtered by match date.
 
     Args:
@@ -451,7 +460,7 @@ def get_pending_bets(match_date: str = None, include_superseded: bool = True) ->
             re-ran and generated different bets, but originals may have
             already been placed by the user).
     """
-    journal = _load_journal()
+    journal = _load_journal(journal_path)
     settleable = {"pending", "superseded"} if include_superseded else {"pending"}
     pending = []
     for bet in journal["bets"].values():
@@ -463,9 +472,9 @@ def get_pending_bets(match_date: str = None, include_superseded: bool = True) ->
     return sorted(pending, key=lambda b: (b.get("date") or "", b.get("match") or ""))
 
 
-def get_settled_bets() -> List[Dict]:
+def get_settled_bets(journal_path: Optional[Path] = None) -> List[Dict]:
     """Get all settled bets (won/lost/push/void)."""
-    journal = _load_journal()
+    journal = _load_journal(journal_path)
     settled = []
     for bet in journal["bets"].values():
         if bet.get("status") in _SETTLED_STATUSES:
@@ -476,10 +485,120 @@ def get_settled_bets() -> List[Dict]:
     return sorted(settled, key=lambda b: b.get("settled_at") or "")
 
 
+def settle_paper_bets(results: Dict[str, Dict]) -> Dict:
+    """Grade pending PAPER bets against fetched results and settle them in
+    the paper journal. Flat-stake P&L; bankroll/history caches untouched.
+
+    The paper journal only receives what run_paper_track() journals — O/U
+    markets today — but 1X2 grading is included for when more markets earn
+    enablement. An unknown market is left pending with a loud warning,
+    never silently mis-graded (the priced path and the graded path must
+    enumerate the same market set — 2026-08-31 lesson).
+    """
+    pending = get_pending_bets(journal_path=PAPER_JOURNAL_PATH)
+    summary = {"settled": 0, "won": 0, "push": 0, "voided": 0,
+               "pending": len(pending)}
+    for bet in pending:
+        match = bet.get("match", "")
+        res = results.get(match)
+        if res is None:
+            for rk, rv in results.items():
+                if (rk == match.replace(" vs ", " - ")
+                        or rk.replace(" - ", " vs ") == match):
+                    res = rv
+                    break
+        if res is None:
+            continue
+
+        status = (res.get("status") or "").lower()
+        hs, as_ = res.get("home_score"), res.get("away_score")
+        outcome = None
+        score_str = None
+        if status in ("postponed", "cancelled", "suspended", "walkover"):
+            outcome = "void"
+        elif hs is None or as_ is None:
+            continue
+        else:
+            score_str = f"{int(hs)}-{int(as_)}"
+            total = res.get("total_goals", hs + as_)
+            m = (bet.get("market") or "").upper().strip()
+            sel = (bet.get("selection") or "").upper().strip()
+            if m.startswith("O/U") or m == "TOTALS":
+                try:
+                    line = float(sel.split()[-1])
+                except (ValueError, IndexError):
+                    line = 2.5
+                if total == line:
+                    outcome = "push"
+                elif "OVER" in sel:
+                    outcome = "won" if total > line else "lost"
+                elif "UNDER" in sel:
+                    outcome = "won" if total < line else "lost"
+            elif m in ("1X2", "H2H"):
+                if sel in ("HOME", "1"):
+                    outcome = "won" if hs > as_ else "lost"
+                elif sel in ("DRAW", "X"):
+                    outcome = "won" if hs == as_ else "lost"
+                elif sel in ("AWAY", "2"):
+                    outcome = "won" if as_ > hs else "lost"
+            if outcome is None:
+                log.warning("Paper settle: unknown market %r on %s — left "
+                            "pending", bet.get("market"), match)
+                continue
+
+        stake = float(bet.get("stake") or 0)
+        odds = float(bet.get("odds") or 1)
+        profit = {"won": round(stake * (odds - 1), 2),
+                  "lost": -stake}.get(outcome, 0.0)
+        if settle_bet(bet.get("bet_id", ""), outcome, result_score=score_str,
+                      profit=profit, match_kickoff_at=res.get("kickoff_at"),
+                      journal_path=PAPER_JOURNAL_PATH):
+            summary["settled"] += 1
+            summary["pending"] -= 1
+            if outcome == "won":
+                summary["won"] += 1
+            elif outcome == "push":
+                summary["push"] += 1
+            elif outcome == "void":
+                summary["voided"] += 1
+    if summary["settled"]:
+        log.info("Paper settle: %(settled)d settled (%(won)d W, %(push)d P, "
+                 "%(voided)d V), %(pending)d pending", summary)
+    return summary
+
+
+def get_paper_track_stats(league: str = None) -> Dict:
+    """The gated-league deployment bar, measured: settled count, W/L, flat
+    ROI, mean CLV — read from the paper journal only."""
+    settled = get_settled_bets(journal_path=PAPER_JOURNAL_PATH)
+    pending = get_pending_bets(journal_path=PAPER_JOURNAL_PATH,
+                               include_superseded=False)
+    if league:
+        settled = [b for b in settled if b.get("league") == league]
+        pending = [b for b in pending if b.get("league") == league]
+    wl = [b for b in settled if b.get("status") in ("won", "lost")]
+    staked = sum(float(b.get("stake") or 0) for b in wl)
+    profit = sum(float(b.get("profit") or 0) for b in settled)
+    clvs = [float(b["clv_pct"]) for b in settled
+            if b.get("clv_pct") is not None]
+    return {
+        "league": league or "all",
+        "n_settled": len(settled),
+        "n_won": sum(1 for b in wl if b["status"] == "won"),
+        "n_lost": sum(1 for b in wl if b["status"] == "lost"),
+        "n_pending": len(pending),
+        "roi_pct": round(profit / staked * 100, 2) if staked else None,
+        "profit": round(profit, 2),
+        "mean_clv_pct": round(sum(clvs) / len(clvs), 2) if clvs else None,
+        "n_clv": len(clvs),
+    }
+
+
 @_with_journal_lock
 def settle_bet(bet_id: str, status: str, result_score: str = None,
                profit: float = None,
-               match_kickoff_at: str | None = None) -> bool:
+               match_kickoff_at: str | None = None,
+               journal_path: Optional[Path] = None) -> bool:
     """Mark a bet as won/lost/push/void.
 
     Args:
@@ -499,7 +618,7 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
         return False
     status = _canon_settle_status(status)
 
-    journal = _load_journal()
+    journal = _load_journal(journal_path)
     if bet_id not in journal["bets"]:
         log.warning("Bet %s not found in journal", bet_id)
         return False
@@ -537,7 +656,7 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
     # CLV = placed_implied_prob - sharp_implied_prob (positive = we got better odds than sharp market)
     _compute_clv(bet)
 
-    _save_journal(journal)
+    _save_journal(journal, journal_path)
     log.info("Settled %s as %s (profit: %s, clv: %s%%)",
              bet_id, status, profit, bet.get("clv_pct"))
     return True
