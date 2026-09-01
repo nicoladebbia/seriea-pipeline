@@ -37,6 +37,7 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, MODELS_DIR
+from ml.evaluation import MIN_GATE_TEST_MATCHES
 from storage.paths import features_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -114,6 +115,37 @@ def _inject_draw_features(X: pd.DataFrame) -> pd.DataFrame:
     X["pin_draw_prob"] = np.where(pd_ > 0, 1.0 / pd_.clip(lower=1.01), 0.28)
 
     return X
+
+
+def _pick_final_val_season(season_counts: Dict[str, int],
+                           min_n: int = MIN_GATE_TEST_MATCHES) -> Tuple[str, list]:
+    """Choose the final fit's early-stopping/calibration season.
+
+    val = the NEWEST season with at least `min_n` rows; every other season
+    (including newer, undersized ones) goes to training. Until 2026-08-31 this
+    was `seasons[-1]` unconditionally: in August that is the in-progress season
+    (10 matches), early stopping picked iteration 1 and isotonic calibration
+    on ~2 draws collapsed to a constant 0.10 — a dead detector shipped to
+    production while the ablation gate had scored the (healthy) fold models.
+    """
+    seasons = sorted(season_counts)
+    eligible = [s for s in seasons if season_counts[s] >= min_n]
+    if not eligible:
+        raise ValueError(f"no season has >= {min_n} rows: {season_counts}")
+    val = eligible[-1]
+    return val, [s for s in seasons if s != val]
+
+
+def _final_model_is_sane(tree_count: int, calibrated_val_probs,
+                         min_trees: int = 20, min_std: float = 0.01) -> Tuple[bool, str]:
+    """Refuse to ship a model that cannot discriminate: too few trees, or a
+    calibrator that maps every input to (almost) the same value."""
+    probs = np.asarray(calibrated_val_probs, dtype=float)
+    if tree_count < min_trees:
+        return False, f"only {tree_count} trees (early stopping collapsed; need >= {min_trees})"
+    if probs.size and float(np.std(probs)) < min_std:
+        return False, f"calibrated P(draw) std {np.std(probs):.4f} < {min_std} (constant output)"
+    return True, "ok"
 
 
 def train_and_evaluate(dry_run: bool = False) -> Dict:
@@ -262,8 +294,10 @@ def train_and_evaluate(dry_run: bool = False) -> Dict:
     # ------- Save model (always, even if blending disabled) -------
     if not dry_run:
         # Retrain on ALL data up to latest season for production use
-        val_season = seasons[-1]
-        train_seasons_full = seasons[:-1]
+        season_counts = df["season"].value_counts().to_dict()
+        val_season, train_seasons_full = _pick_final_val_season(season_counts)
+        log.info("Final fit: val season %s (%d rows); train seasons %s",
+                 val_season, season_counts[val_season], train_seasons_full)
 
         X_all_full = _inject_draw_features(df[base_features].fillna(0))
         all_cols = [c for c in X_all_full.columns if X_all_full[c].dtype in [np.float64, np.int64, float, int]]
@@ -290,6 +324,12 @@ def train_and_evaluate(dry_run: bool = False) -> Dict:
         final_calibrator = IsotonicRegression(out_of_bounds="clip")
         final_calibrator.fit(raw_val_full, y_val_full.values)
 
+        sane, why = _final_model_is_sane(final_model.tree_count_,
+                                         final_calibrator.predict(raw_val_full))
+        if not sane:
+            log.error("REFUSING to overwrite draw_detector.cbm: %s", why)
+            return {"enable_blend": enable_blend, "avg_ll_improvement": round(avg_improvement, 5),
+                    "results": all_results, "dry_run": dry_run, "saved": False, "reason": why}
         # Save
         model_path = UNIVERSAL_DIR / "draw_detector.cbm"
         cal_path = UNIVERSAL_DIR / "draw_detector_calibrator.pkl"
