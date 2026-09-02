@@ -244,9 +244,10 @@ def test_bench_is_nine_league_slots_in_role_order():
     # the best benched striker outscores the benched keeper on exp_slot
     best_a = max(x["exp_slot"] for x in adv["bench"] if x["R"] == "A")
     assert best_a > adv["bench"][0]["exp_slot"]
-    # inside a role group, slots descend by exp_slot (that IS the entry order)
+    # inside a role group, slots descend by exp (that IS the entry order:
+    # auto-subs skip no-voto players, so raw expected voto ranks the subs)
     for r in "DCA":
-        grp = [x["exp_slot"] for x in adv["bench"] if x["R"] == r]
+        grp = [x["exp"] for x in adv["bench"] if x["R"] == r]
         assert grp == sorted(grp, reverse=True)
 
 
@@ -1161,3 +1162,190 @@ def test_apply_availability_hierarchy_and_fold():
     assert by["Blu"]["p_play"] == 0.88 \
         and by["Blu"]["p_play_src"] == "probabili" \
         and by["Blu"]["avail_note"] == "news: infortunio"
+
+
+# ---------- blind-spots batch: silent-death visibility (Fix 1) ----------
+
+def test_feed_age_h():
+    from datetime import UTC, datetime, timedelta
+
+    from scripts.fantacalcio.probabili import feed_age_h
+    now = datetime.now(UTC)
+    assert feed_age_h(None) is None
+    assert feed_age_h({}) is None
+    assert feed_age_h({"fetched_at": "garbage"}) is None
+    fresh = feed_age_h({"fetched_at": now.isoformat()})
+    assert fresh is not None and 0 <= fresh < 0.1
+    old = feed_age_h({"fetched_at": (now - timedelta(hours=30)).isoformat()})
+    assert old is not None and 29.9 < old < 30.1
+
+
+def test_feed_age_line():
+    from scripts.fantacalcio.tracker import _feed_age_line
+    assert _feed_age_line(None) is None
+    assert _feed_age_line({}) is None
+    ok = _feed_age_line({"probabili_h": 2.4, "indisponibili_h": 3.0})
+    assert ok is not None and "2h" in ok and "3h" in ok and "⚠" not in ok
+    warn = _feed_age_line({"probabili_h": 30.0, "indisponibili_h": 1.0})
+    assert warn is not None and "⚠" in warn
+    # a feed that never fetched must read as a warning, not crash
+    never = _feed_age_line({"probabili_h": None, "indisponibili_h": 2.0})
+    assert never is not None and "⚠" in never and "mai" in never
+
+
+def test_write_heartbeat(tmp_path):
+    import json as _json
+
+    from scripts.fantacalcio.tracker import _write_heartbeat
+    p = tmp_path / "hb.json"
+    _write_heartbeat(True, None, path=p)
+    hb = _json.loads(p.read_text())
+    assert hb["ok"] is True and hb["error"] is None and hb["ran_at"]
+    _write_heartbeat(False, "boom", path=p)
+    hb = _json.loads(p.read_text())
+    assert hb["ok"] is False and hb["error"] == "boom"
+
+
+def test_fanta_health_gating():
+    from scripts.pipeline.monitor import _fanta_health
+    # dead job trumps everything, season or not
+    assert _fanta_health({"ok": True}, 31.0, 1.0, 1.0, None)["status"] == "CRITICAL"
+    # ran-and-crashed is critical
+    r = _fanta_health({"ok": False, "error": "boom"}, 1.0, 1.0, 1.0, 3.0)
+    assert r["status"] == "CRITICAL" and "boom" in r["detail"]
+    # off-season: frozen feeds are legitimate — no alarm
+    assert _fanta_health({"ok": True}, 2.0, 500.0, 500.0, None)["status"] == "OK"
+    # in-season stale feed warns
+    r = _fanta_health({"ok": True}, 2.0, 31.0, 1.0, 2.0)
+    assert r["status"] == "WARNING" and "probabili" in r["detail"]
+    # in-season never-fetched feed warns too (missing != fine)
+    assert _fanta_health({"ok": True}, 2.0, -1.0, 1.0, 2.0)["status"] == "WARNING"
+    # healthy in-season
+    assert _fanta_health({"ok": True}, 2.0, 3.0, 3.0, 2.0)["status"] == "OK"
+    # tracker alive but its push layer erroring -> visible as warning
+    r = _fanta_health({"ok": True, "error": "push: 500"}, 2.0, 3.0, 3.0, 2.0)
+    assert r["status"] == "WARNING"
+    # no heartbeat yet
+    assert _fanta_health(None, -1.0, 1.0, 1.0, 2.0)["status"] == "WARNING"
+
+
+# ---------- blind-spots batch: bench order (Fix 3) ----------
+
+def test_bench_order_ranks_by_exp_given_plays_not_exp_slot():
+    """Auto-subs SKIP a bench player without a voto, so within a role the
+    entry order must put the best E[voto|plays] first even at low p_play —
+    absent costs nothing, present is the best sub. Selection is untouched."""
+    from scripts.fantacalcio.xi_advisor import _bench_split
+    def mk(n, r, exp, pp):
+        return {"nome": n, "R": r, "exp": exp,
+                "exp_slot": round(pp * exp, 2), "p_play": pp}
+    dubbio_star = mk("Star", "D", 7.5, 0.35)     # exp_slot 2.62
+    solid = mk("Solid", "D", 6.0, 0.90)          # exp_slot 5.40
+    ok = mk("Ok", "D", 5.8, 0.88)                # exp_slot 5.10
+    cand = [dubbio_star, solid, ok,
+            mk("GK2", "P", 5.5, 0.9),
+            mk("M1", "C", 6.0, 0.9), mk("M2", "C", 5.9, 0.9),
+            mk("M3", "C", 5.8, 0.9), mk("A1", "A", 6.5, 0.9),
+            mk("A2", "A", 6.4, 0.9)]
+    bench, trib = _bench_split(cand, xi=[])
+    d_order = [x["nome"] for x in bench if x["R"] == "D"]
+    # rejection-test precondition: the old exp_slot order really differs
+    old = [x["nome"] for x in sorted([dubbio_star, solid, ok],
+                                     key=lambda x: -x["exp_slot"])]
+    assert old == ["Solid", "Ok", "Star"]
+    assert d_order == ["Star", "Solid", "Ok"]
+    assert trib == []
+
+
+# ---------- blind-spots batch: official lineups (Fix 2) ----------
+
+def _mini_confirmed():
+    return {"fetched_at": "2026-09-05T13:00:00+00:00", "matches": {
+        "Lecce vs Roma": {
+            "home_lineup": ["Wladimiro Falcone", "Tiago Gabriel", "K. One",
+                            "A B", "C D", "E F", "G H", "I J", "K L",
+                            "M N", "O P"],
+            "home_bench": ["Nikola Stulic"],
+            "away_lineup": ["Mile Svilar", "Evan Ndicka",
+                            "Andre-Frank Zambo Anguissa", "Q R", "S T",
+                            "U V", "W X", "Y Z", "A2 B2", "C2 D2", "E2 F2"],
+            "away_bench": ["Stephan El Shaarawy"],
+        }}}
+
+
+def test_official_overrides_matching_and_tiers():
+    from scripts.fantacalcio.lineup_check import (
+        P_OFFICIAL_BENCH,
+        P_OFFICIAL_XI,
+        _official_overrides,
+    )
+    players = [
+        {"id": 1, "nome": "Falcone", "team": "Lecce"},
+        {"id": 2, "nome": "Stulić", "team": "Lecce"},          # accent folds
+        {"id": 3, "nome": "Svilar", "team": "Roma"},
+        {"id": 4, "nome": "Zambo Anguissa", "team": "Roma"},   # 2-token suffix
+        {"id": 5, "nome": "N'Dicka", "team": "Roma"},
+    ]
+    out = _official_overrides(_mini_confirmed(), players)
+    assert out[1]["src"] == "official_xi" and out[1]["p_play"] == P_OFFICIAL_XI
+    assert out[2]["src"] == "official_bench" and out[2]["p_play"] == P_OFFICIAL_BENCH
+    assert out[3]["src"] == "official_xi"
+    assert out[4]["src"] == "official_xi"
+
+
+def test_official_out_needs_coverage_and_ambiguity_fails_open():
+    from scripts.fantacalcio.lineup_check import _official_overrides
+    # coverage case: 3 of 4 Lecce board rows match -> the 4th is a real exclusion
+    players = [
+        {"id": 1, "nome": "Falcone", "team": "Lecce"},
+        {"id": 2, "nome": "Stulić", "team": "Lecce"},
+        {"id": 6, "nome": "Gabriel T.", "team": "Lecce"},
+        {"id": 7, "nome": "Ghostinho", "team": "Lecce"},   # in neither list
+    ]
+    out = _official_overrides(_mini_confirmed(), players)
+    assert out[7]["src"] == "official_out"
+    # low-coverage club: unmatched names must NOT be branded excluded
+    players_low = [
+        {"id": 10, "nome": "Nessuno A", "team": "Roma"},
+        {"id": 11, "nome": "Nessuno B", "team": "Roma"},
+        {"id": 12, "nome": "Svilar", "team": "Roma"},
+    ]
+    out2 = _official_overrides(_mini_confirmed(), players_low)
+    assert out2[12]["src"] == "official_xi"
+    assert 10 not in out2 and 11 not in out2
+    # ambiguity: two board rows folding to the same sofa name -> both skipped
+    players_amb = [
+        {"id": 20, "nome": "Svilar", "team": "Roma"},
+        {"id": 21, "nome": "Svilar M.", "team": "Roma"},
+    ]
+    out3 = _official_overrides(_mini_confirmed(), players_amb)
+    assert 20 not in out3 and 21 not in out3
+
+
+def test_apply_official_beats_every_probabilistic_tier():
+    from scripts.fantacalcio.xi_advisor import _apply_official
+    rows = [{"id": 1, "nome": "A", "p_play": 0.35, "p_play_src": "infortunio_dubbio"},
+            {"id": 2, "nome": "B", "p_play": 0.88, "p_play_src": "probabili"},
+            {"id": 3, "nome": "C", "p_play": 0.15, "p_play_src": "probabili"}]
+    _apply_official(rows, {1: {"p_play": 0.97, "src": "official_xi"},
+                           2: {"p_play": 0.03, "src": "official_out"}})
+    assert rows[0]["p_play"] == 0.97 and rows[0]["p_play_src"] == "official_xi"
+    assert rows[1]["p_play"] == 0.03 and rows[1]["p_play_src"] == "official_out"
+    assert rows[2]["p_play"] == 0.15   # untouched
+
+
+# ---------- blind-spots batch: roster export age (Fix 6) ----------
+
+def test_rosters_age_line(tmp_path):
+    import os
+    import time
+
+    from scripts.fantacalcio.tracker import _rosters_age_line
+    p = tmp_path / "league_rosters.json"
+    p.write_text("{}")
+    assert _rosters_age_line(path=p) is None                    # fresh
+    old = time.time() - 20 * 86400
+    os.utime(p, (old, old))
+    line = _rosters_age_line(path=p)
+    assert line is not None and "20 giorni" in line
+    assert _rosters_age_line(path=tmp_path / "missing.json") is None

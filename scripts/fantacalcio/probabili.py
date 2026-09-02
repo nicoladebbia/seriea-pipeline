@@ -133,6 +133,19 @@ def parse(html: str) -> dict | None:
             "teams": teams, "ballots": ballots}
 
 
+def feed_age_h(data: dict | None) -> float | None:
+    """Hours since the feed was actually FETCHED (None when unknown). The
+    caches below serve stale-forever on failure by design, so every consumer
+    that shows a human the data must also show this age — a wedged scraper
+    otherwise looks exactly like a quiet news day."""
+    try:
+        return (datetime.now(UTC)
+                - datetime.fromisoformat(data["fetched_at"])
+                ).total_seconds() / 3600
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
 def fetch_probabili(refresh: bool = False) -> dict | None:
     """Cached fetch. On any failure the last good cache is served — the page
     disappears for hours around deadline sometimes, and stale-but-real beats

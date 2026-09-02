@@ -534,6 +534,79 @@ def _round_digest(state: dict) -> dict | None:
                        + "\n".join(f"• {ln}" for ln in lines)}
 
 
+FEED_STALE_WARN_H = 24.0
+
+
+def _feed_age_line(ages: dict | None) -> str | None:
+    """One human line on how old the probabili/indisponibili FETCHES are.
+    The caches serve stale-forever on failure by design, so the push must say
+    when the data is old — a wedged scraper otherwise looks exactly like a
+    quiet news day."""
+    if not ages:
+        return None
+    parts, warn = [], False
+    for label, key in (("probabili", "probabili_h"),
+                       ("indisponibili", "indisponibili_h")):
+        h = ages.get(key)
+        if h is None:
+            parts.append(f"{label} mai lette")
+            warn = True
+        else:
+            parts.append(f"{label} {h:.0f}h fa")
+            warn = warn or h > FEED_STALE_WARN_H
+    line = "Dati: " + " · ".join(parts)
+    return ("⚠️ " + line) if warn else line
+
+
+ROSTERS_FILE = ROOT / "data" / "fantacalcio" / "league_rosters.json"
+ROSTERS_STALE_D = 14.0
+
+
+def _rosters_age_line(path: Path = ROSTERS_FILE,
+                      max_days: float = ROSTERS_STALE_D) -> str | None:
+    """Nag when the league roster export is old: rival XI forecasts silently
+    drift as other managers trade and sign svincolati, and the only refresh
+    path is Nicola re-dropping the Rose xlsx (the Leghe page 404s)."""
+    try:
+        import os as _os
+        age_d = (datetime.now(UTC).timestamp()
+                 - _os.stat(path).st_mtime) / 86400.0
+    except OSError:
+        return None
+    if age_d <= max_days:
+        return None
+    return (f"📋 Rose avversarie: export di {age_d:.0f} giorni fa — "
+            "ridroppa il file Rose se ci sono stati scambi/svincoli.")
+
+
+def _stamp_and_write_rivals(riv: dict) -> None:
+    try:
+        import os as _os
+        riv["rosters_age_d"] = round(
+            (datetime.now(UTC).timestamp()
+             - _os.stat(ROSTERS_FILE).st_mtime) / 86400.0, 1)
+    except OSError:
+        pass
+    (ROOT / "data" / "fantacalcio" / "rivals.json").write_text(
+        json.dumps(riv, indent=1, ensure_ascii=False))
+
+
+HEARTBEAT = ROOT / "data" / "fantacalcio" / "tracker_heartbeat.json"
+
+
+def _write_heartbeat(ok: bool, error: str | None = None,
+                     path: Path = HEARTBEAT) -> None:
+    """Liveness stamp for the health monitor, written on EVERY run. Absence or
+    staleness means the launchd job is dead; ok=False means it ran and crashed;
+    ok=True with an error means the advice landed but a side channel (push)
+    failed. Best-effort — the stamp must never take the tracker down."""
+    try:
+        path.write_text(json.dumps(
+            {"ran_at": datetime.now(UTC).isoformat(), "ok": ok, "error": error}))
+    except OSError:
+        pass
+
+
 def _push_xi_advice() -> None:
     """Rebuild the weekly XI advice; push once per giornata, then one
     last-hours re-check that fires ONLY if the advice changed.
@@ -558,10 +631,10 @@ def _push_xi_advice() -> None:
     except Exception as e:
         print(f"mercato sync failed (advice unaffected): {e}")
 
-    # Freshen the news accumulator on the same twice-daily cadence. Best-effort:
-    # a feed outage must never block the XI advice. Probabili needs no explicit
-    # refresh here -- build_advice fetches it through a 6h-TTL cache and the
-    # tracker runs are 12h apart, so every run gets a fresh page anyway.
+    # Freshen the news accumulator on the same cadence. Best-effort: a feed
+    # outage must never block the XI advice. Probabili rides build_advice's
+    # 6h-TTL cache here; runs are 4x/day so a mid-day run may legitimately
+    # reuse the morning fetch — the final check below rebuilds fresh=True.
     try:
         from scripts.fantacalcio.news import fetch_news, roster_for_news
         fetch_news(roster_for_news())
@@ -588,8 +661,7 @@ def _push_xi_advice() -> None:
     try:
         from scripts.fantacalcio.xi_advisor import build_rivals
         riv = build_rivals(adv)
-        (ROOT / "data" / "fantacalcio" / "rivals.json").write_text(
-            json.dumps(riv, indent=1, ensure_ascii=False))
+        _stamp_and_write_rivals(riv)
     except Exception as e:
         print(f"rivals build failed (advice unaffected): {e}")
     # Daily press-pulse update: scores today's headlines per club and labels
@@ -673,17 +745,44 @@ def _push_xi_advice() -> None:
            "vs": vs_sig}
 
     if phase == "final":
+        # The last look before the deadline must not ride the 6h cache: a
+        # titolarita flip at T-4h is exactly what this phase exists to catch.
+        try:
+            adv = build_advice(fresh=True)
+            try:
+                (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
+                    json.dumps(adv, indent=1, ensure_ascii=False))
+            except OSError as e:
+                print(f"xi_advice write failed (push continues): {e}")
+            # rebuild the opponent forecast from the SAME fresh advice, so the
+            # vs line pushed alongside the diff cannot contradict the XI
+            try:
+                from scripts.fantacalcio.xi_advisor import build_rivals
+                riv = build_rivals(adv)
+                _stamp_and_write_rivals(riv)
+            except Exception as e:
+                print(f"fresh rivals rebuild failed (keeping earlier): {e}")
+            vs_txt, vs_tg, vs_sig = _vs_block(riv)
+            cur = {"module": adv.get("module"),
+                   "xi": sorted(x["nome"] for x in adv["xi"]),
+                   "bench": [x["nome"] for x in adv["bench"]],
+                   "vs": vs_sig}
+        except Exception as e:
+            print(f"fresh rebuild failed, diffing cached advice: {e}")
         diff = _advice_diff(state.get("advice", {}), cur)
         state.update({"final_checked": True, "advice": cur})
         if diff:
             try:
                 from scripts.pipeline.notify import notify
-                notify(f"Giornata {rnd} — cambi dell'ultima ora\n{diff}",
+                fl = _feed_age_line(adv.get("feed_ages"))
+                notify(f"Giornata {rnd} — cambi dell'ultima ora\n{diff}"
+                       + (f"\n{fl}" if fl else ""),
                        title="Fantacalcio XI — aggiornamento", level="warning",
                        category="system",
                        tg_html=(f"<b>🔁 Giornata {rnd} — cambi dell'ultima ora"
                                 f"</b>\n{diff}"
-                                + (f"\n\n{vs_tg}" if vs_tg else "")),
+                                + (f"\n\n{vs_tg}" if vs_tg else "")
+                                + (f"\n<i>{fl}</i>" if fl else "")),
                        tg_reply_markup=_SCHIERA_BTN)
             except Exception as e:
                 print(f"XI final-check notify failed: {e}")
@@ -708,7 +807,10 @@ def _push_xi_advice() -> None:
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
            + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else "")
-           + (("\nInfermeria: " + "; ".join(infirm)) if infirm else ""))
+           + (("\nInfermeria: " + "; ".join(infirm)) if infirm else "")
+           + ((lambda fl: f"\n{fl}" if fl else "")(
+               _feed_age_line(adv.get("feed_ages"))))
+           + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
     tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
           + (f"{vs_tg}\n\n" if vs_tg else "")
@@ -717,7 +819,10 @@ def _push_xi_advice() -> None:
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
           + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else "")
           + (("\n<b>🚑 Infermeria:</b>\n"
-              + "\n".join(f"• {ln}" for ln in infirm)) if infirm else ""))
+              + "\n".join(f"• {ln}" for ln in infirm)) if infirm else "")
+          + ((lambda fl: f"\n<i>{fl}</i>" if fl else "")(
+              _feed_age_line(adv.get("feed_ages"))))
+          + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
     try:
         from scripts.pipeline.notify import notify
         tg += ("\n\n📸 Un'ora prima: se vedi la formazione avversaria su "
@@ -734,16 +839,23 @@ def _push_xi_advice() -> None:
 
 def main() -> None:
     import sys
-    data = build(refresh="--refresh" in sys.argv)
-    OUT.write_text(json.dumps(data, indent=1))
+    try:
+        data = build(refresh="--refresh" in sys.argv)
+        OUT.write_text(json.dumps(data, indent=1))
+    except Exception as e:
+        _write_heartbeat(False, f"{type(e).__name__}: {e}")
+        raise
     print(f"{OUT.relative_to(ROOT)}  source={data['source']} "
           f"rounds={data['rounds_played']} "
           f"settable={data['totals']['settable']} "
           f"hindsight={data['totals']['hindsight']}")
+    push_err = None
     try:
         _push_xi_advice()
     except Exception as e:
+        push_err = f"push: {type(e).__name__}: {e}"
         print(f"XI advice refresh failed (tracker output unaffected): {e}")
+    _write_heartbeat(True, push_err)
 
 
 if __name__ == "__main__":

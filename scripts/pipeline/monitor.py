@@ -365,6 +365,78 @@ def check_ledger_invariants() -> Dict:
 from scripts.pipeline.notify import notify as _unified_notify
 
 
+def _fanta_health(hb: Dict | None, hb_age: float, prob_age: float,
+                  indisp_age: float, days_to_kick: float | None) -> Dict:
+    """Pure decision core (testable). Tracker liveness always matters; feed
+    staleness only when a round is actually coming — off-season the pages
+    legitimately freeze, and the fantacalcio caches serve stale-forever on
+    fetch failure BY DESIGN, so this check is the only alarm they get."""
+    if hb is None:
+        return {"status": "WARNING", "detail": "No fanta-tracker heartbeat yet"}
+    if hb_age < 0 or hb_age > 30:
+        return {"status": "CRITICAL",
+                "detail": f"fanta-tracker silent {hb_age:.0f}h (runs 4x/day)"}
+    if not hb.get("ok", False):
+        return {"status": "CRITICAL",
+                "detail": f"fanta-tracker last run crashed: {str(hb.get('error'))[:120]}"}
+    if hb_age > 16:
+        return {"status": "WARNING",
+                "detail": f"fanta-tracker last ran {hb_age:.0f}h ago"}
+    issues = []
+    if days_to_kick is not None and days_to_kick <= 10:
+        for label, age in (("probabili", prob_age), ("indisponibili", indisp_age)):
+            if age < 0:
+                issues.append(f"{label} never fetched")
+            elif age > 30:
+                issues.append(f"{label} {age:.0f}h stale")
+    if issues:
+        return {"status": "WARNING",
+                "detail": "feeds stale pre-round: " + ", ".join(issues)}
+    if hb.get("error"):
+        return {"status": "WARNING",
+                "detail": f"tracker ran but: {str(hb['error'])[:120]}"}
+    return {"status": "OK",
+            "detail": f"tracker {hb_age:.1f}h ago, feeds fresh"}
+
+
+def check_fantacalcio_health() -> Dict:
+    """Fantacalcio ops: tracker heartbeat + probabili/indisponibili feed ages,
+    gated on whether a round is imminent (xi_advice.first_kickoff)."""
+    base = DATA_DIR / "fantacalcio"
+    hb = load_json_safe(base / "tracker_heartbeat.json") or None
+    hb_age = _iso_age_hours((hb or {}).get("ran_at", ""))
+    prob_age = _iso_age_hours(
+        (load_json_safe(base / "probabili.json") or {}).get("fetched_at", ""))
+    indisp_age = _iso_age_hours(
+        (load_json_safe(base / "indisponibili.json") or {}).get("fetched_at", ""))
+    days_to_kick = None
+    try:
+        import time
+        fk = (load_json_safe(base / "xi_advice.json") or {}).get("first_kickoff")
+        if fk:
+            days_to_kick = (float(fk) - time.time()) / 86400.0
+            if days_to_kick < -0.5:   # advice still on a played round
+                days_to_kick = None
+    except (TypeError, ValueError):
+        days_to_kick = None
+    return _fanta_health(hb, hb_age, prob_age, indisp_age, days_to_kick)
+
+
+def check_state_backup() -> Dict:
+    """Off-disk state backup freshness (bet journal, fantacalcio state). The
+    backup job is daily; >50h means two misses."""
+    hb = load_json_safe(DATA_DIR / "monitoring" / "state_backup.json")
+    if not hb:
+        return {"status": "WARNING",
+                "detail": "No state backup has ever run (bet journal unprotected)"}
+    age = _iso_age_hours(hb.get("ran_at", ""))
+    if age < 0 or age > 50:
+        return {"status": "WARNING",
+                "detail": f"Last state backup {age:.0f}h ago (daily job)"}
+    return {"status": "OK",
+            "detail": f"backup {age:.0f}h ago -> {hb.get('dest', '?')}"}
+
+
 def send_macos_notification(title: str, message: str):
     """Send notification via all configured channels (macOS + Telegram)."""
     _unified_notify(message, title=title, level="critical", category="alert")
@@ -494,6 +566,19 @@ def run_monitor() -> Dict:
         for v in inv.get("violations", []):
             result["issues"].append(("WARNING", f"[ledger] {v}"))
     log.info(f"  Ledger: {inv['status']} — {inv['detail']}")
+
+    # 8. Fantacalcio ops (tracker liveness + feed staleness) + state backup
+    log.info("Checking fantacalcio ops + state backup...")
+    for name, chk in (("fantacalcio", check_fantacalcio_health),
+                      ("state_backup", check_state_backup)):
+        try:
+            res = chk()
+        except Exception as e:
+            res = {"status": "WARNING", "detail": f"check failed: {e}"}
+        result["checks"][name] = res
+        if res["status"] in ("CRITICAL", "WARNING"):
+            result["issues"].append((res["status"], f"[{name}] {res['detail']}"))
+        log.info(f"  {name}: {res['status']} — {res['detail']}")
 
     # ─── Auto-recovery: if pipeline stale >12h, try to run it ───
     if pipeline.get("status") == "CRITICAL":

@@ -723,6 +723,98 @@ def run_refresh(bankroll: float = 0, leagues: list = None) -> bool:
         return False
 
 
+CAFFEINATE_PID = DATA_DIR / "monitoring" / "caffeinate.pid"
+
+
+def _match_norm(mk: str) -> str:
+    """Canonical form of a 'Home vs Away' key. kickoff sources disagree on
+    names (Sofascore 'Milan' vs Odds API 'AC Milan'), and during a Sofascore
+    ban a match can reappear under the other source's spelling — comparing
+    raw keys would then false-alarm on a commit that actually happened."""
+    parts = mk.split(" vs ")
+    if len(parts) != 2:
+        return mk.strip().lower()
+    return f"{normalize_team(parts[0])} vs {normalize_team(parts[1])}".lower()
+
+
+def _missed_commits(kickoffs: List[Dict], processed: Dict,
+                    alerted: Dict, now) -> List[str]:
+    """Match keys whose kickoff passed within the last 12h and whose T-30
+    prediction_update stage was NEVER ENTERED — i.e. the Mac slept through
+    the whole window. Scope is deliberately narrow: the stage marker is
+    written on window entry (before dispatch, to prevent double-triggers),
+    so an entered-but-failed commit is invisible here — that failure lands
+    in the scheduler log/notify path instead. Pure; skips already-alerted."""
+    committed = {_match_norm(k) for k, v in processed.items()
+                 if "prediction_update" in (v or {}).get("stages", {})}
+    seen_alerts = {_match_norm(k) for k in alerted}
+    out = []
+    for k in kickoffs:
+        mins_past = (now - k["kickoff_utc"]).total_seconds() / 60
+        if not (0 < mins_past <= 12 * 60):
+            continue
+        mk = k["match"]
+        nk = _match_norm(mk)
+        if nk in seen_alerts or nk in committed:
+            continue
+        out.append(mk)
+        seen_alerts.add(nk)
+    return out
+
+
+def _caffeinate_alive(pid: int) -> bool:
+    """The pid must exist AND still be caffeinate — a recycled pid must not
+    satisfy the singleton check."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        comm = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "comm="],
+                              capture_output=True, text=True,
+                              timeout=5).stdout.strip()
+        return "caffeinate" in comm
+    except Exception:
+        return True                      # pid alive, name unknowable: assume held
+
+
+def _ensure_awake_hold(kickoffs: List[Dict], now, spawn=None,
+                       pidfile: Path = CAFFEINATE_PID) -> bool:
+    """Idle-sleep guard for match days: when a kickoff is within 2h, hold the
+    system awake (caffeinate -s — AC power only, by macOS design) through the
+    LAST kickoff of the next 6h + 45 min, so back-to-back Sunday slots do not
+    leave an unheld seam between holds. Singleton via pidfile, pid verified
+    to still be caffeinate. The child is spawned with start_new_session=True:
+    this job is a short-lived launchd tick (KeepAlive=false) and launchd
+    kills the tick's whole process group on exit — without its own session
+    the hold would die seconds after the tick that spawned it. Cannot WAKE a
+    sleeping Mac — that needs a sudo pmset schedule, which is Nicola's call."""
+    trigger = [k["kickoff_utc"] for k in kickoffs
+               if now <= k["kickoff_utc"] <= now + timedelta(hours=2)]
+    if not trigger:
+        return False
+    try:
+        pid = int(pidfile.read_text().strip())
+        if _caffeinate_alive(pid):
+            return True                  # hold already active
+    except (OSError, ValueError):
+        pass
+    horizon = [k["kickoff_utc"] for k in kickoffs
+               if now <= k["kickoff_utc"] <= now + timedelta(hours=6)]
+    secs = int((max(horizon) - now).total_seconds()) + 45 * 60
+    if spawn is None:
+        def spawn(s: int) -> int:
+            return subprocess.Popen(
+                ["/usr/bin/caffeinate", "-s", "-t", str(s)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True).pid
+    pid = spawn(secs)
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(str(pid))
+    log.info("Awake hold: caffeinate -s for %ds (PID %s)", secs, pid)
+    return True
+
+
 def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     """Multi-stage match clock — orchestrates all match-day events.
 
@@ -742,6 +834,37 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     today_italy = _to_italy_date(now)
 
     kickoffs = get_kickoff_times()
+
+    # Blind-spots guards — BEFORE the horizon early-return, so a Mac that
+    # slept through kickoff+3h still reports the missed commit on wake, and
+    # the awake hold arms as soon as a kickoff is near. Both fully guarded.
+    try:
+        gstate = _load_pre_kickoff_state()
+        alerted = gstate.setdefault("missed_alerts", {})
+        stale = [k for k, v in alerted.items()
+                 if str(v)[:10] < (now - timedelta(days=7)).strftime("%Y-%m-%d")]
+        for k in stale:
+            del alerted[k]
+        missed = _missed_commits(kickoffs, gstate.get("processed", {}),
+                                 alerted, now)
+        if missed:
+            from scripts.pipeline.notify import notify
+            notify("T-30 window NEVER ENTERED for: " + ", ".join(missed)
+                   + " — the Mac was asleep through it; no prediction "
+                   "refresh or bet commit was attempted.",
+                   title="Pre-kickoff window missed", level="warning",
+                   category="alert",
+                   tg_html="<b>⚠️ Finestra T-30 mai aperta</b> "
+                           "(Mac in sleep?): " + ", ".join(missed))
+            for mk in missed:
+                alerted[mk] = now.isoformat()
+            _save_pre_kickoff_state(gstate)
+    except Exception as e:
+        log.warning("missed-commit detector failed: %s", e)
+    try:
+        _ensure_awake_hold(kickoffs, now)
+    except Exception as e:
+        log.warning("awake hold failed: %s", e)
 
     # Widened horizon: include any match kicking off within LOOKAHEAD hours AND
     # any match that kicked off up to 3h ago (so settlement_check still fires).
@@ -887,6 +1010,19 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                 if confirmed_matches:
                     log.info("Lineups confirmed for %s (no notification — ticket carries the flag)",
                              ", ".join(confirmed_matches))
+                    # Fantacalcio T-60: official XIs are the biggest p_play
+                    # update of the week — rebuild the advice and push a diff
+                    # while the league deadline (first kickoff) is still open.
+                    # Fully guarded: must never touch the betting path.
+                    try:
+                        from scripts.fantacalcio.lineup_check import (
+                            run_official_lineup_check,
+                        )
+                        log.info("Fanta lineup check: %s",
+                                 run_official_lineup_check())
+                    except Exception as e:
+                        log.warning(
+                            "Fanta lineup check failed (betting unaffected): %s", e)
 
                 # Mark matches WITHOUT confirmed lineups for retry
                 for mk in actions_needed["lineup_fetch"]:

@@ -5748,6 +5748,19 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 
 ---
 
+### `data/monitoring/` state-backup + awake-hold artifacts (2026-09-02)
+
+- **`state_backup.json`** — heartbeat of the daily 04:45 off-disk backup
+  (`com.seriea-pipeline.state-backup` plist → `scripts/utils/state_backup.py`): tars
+  `data/betting` + `data/fantacalcio` + `data/monitoring` + `pipeline_state.json` (~6 MB)
+  into iCloud Drive `~/Library/Mobile Documents/com~apple~CloudDocs/seriea-backups/`,
+  keeps newest 14. `monitor.check_state_backup` warns when >50h old. Restore:
+  `tar -xzf <newest archive>` from the repo root.
+- **`caffeinate.pid`** — singleton pidfile for the match-day awake hold
+  (`scheduler._ensure_awake_hold`): kickoff within 2h → `/usr/bin/caffeinate -s` (AC
+  power only) through the last such kickoff +45 min, so idle sleep cannot swallow the
+  T-30 bet-commit window. Cannot WAKE a sleeping Mac (that needs a sudo pmset schedule).
+
 ### `data/monitoring/reports/`
 
 - **Description:** Monitoring cycle reports  
@@ -5945,7 +5958,9 @@ betting pipeline — nothing here feeds `features_*.parquet` or any model.
 | `tracker.json` | `scripts/fantacalcio/tracker.py` | Per-round scores for that squad. Rebuilt on demand by `/api/fantacalcio/tracker` when the roster moves or the file is >6h old. |
 | `xi_advice.json` | `scripts/fantacalcio/xi_advisor.py` | Who to field next giornata: module + XI + bench (the league's 9 ordered slots: 1P/3D/3C/2A) + tribuna, from live levels x fixture terms x p_play. Priors for vote-less players follow `_board_priors`: auction model (season_points/mv_hat) > real latest-season record shrunk by LEVEL_K (e.g. David 6.33/30g) > 6.0 floor — never a bare 6.0 when history exists. Rebuilt on demand by `/api/fantacalcio/xi-advisor` when roster/tracker move or >6h old. |
 | `indisponibili.json` | `scripts/fantacalcio/probabili.fetch_indisponibili` | Per-club injured/suspended lists from fantacalcio.it/indisponibili-serie-a (names only, no pids — matched by accent-folded surname WITHIN the club, ambiguity fails open). 6h TTL, stale-on-failure, sentinel >=15 clubs incl. Inter. Default for an injured row is OUT (specimen 2026-09-02: 42/43 were hard outs); doubt needs an explicit this-round-hope marker. Drives p_play for players the probabili page does not list: squalificato 0.02, infortunato 0.05, dubbio cap 0.35; title-bound news risk hits are the weakest tier (cap 0.60, never zeroes). Hierarchy: probabili listing (pid-exact fresh) always wins, the injury then rides along as `avail_note`. Every tier labels `p_play_src`, so pred_ledger grades each source against who actually got a voto (the refit path). |
+| `tracker_heartbeat.json` | `scripts/fantacalcio/tracker._write_heartbeat` | Liveness stamp written on EVERY tracker run (`ran_at`, `ok`, `error` — a push failure lands in `error` with `ok: true`). `monitor.check_fantacalcio_health` alarms on absence (>30h CRITICAL — job runs 4×/day), on `ok: false`, and — only when `xi_advice.first_kickoff` is within 10 days — on probabili/indisponibili `fetched_at` older than 30h (the caches serve stale-forever on failure by design, so this check is their only alarm; off-season staleness is legitimate and ignored). |
 | `probabili.json` | `scripts/fantacalcio/probabili.py` | Probable lineups from fantacalcio.it (starters/reserves/ballot pcts per pid + since 2026-09-02 the page's own per-player titolarità bar, `pct` — verified live: 479/479 players, starters 55–90, reserves 1–60). 6h-TTL cache; on fetch/schema failure the last good cache is served. p_play ladder: ballottaggio pct > titolarità bar (src `titolarita`) > flat P_STARTER/P_RESERVE fallback > model. NOTE: the bar measures P(starts), which understates a regular sub's P(voto) — the ledger's per-src buckets are the refit path. |
+| *(consumes)* `data/upcoming/confirmed_lineups.json` | `scripts/fantacalcio/lineup_check.py` (reader; writer is the betting pipeline's `lineup_fetch` stage, T-55) | Official XIs at T-60: the scheduler's lineup_fetch hook calls `run_official_lineup_check()` — accent-folded token-suffix name matching (initial-aware: "Gaspar K." ↔ "Kialonda Gaspar") scoped per club, uniqueness both sides, ambiguity fails open; p_play overrides 0.97 titolare / 0.15 panchina / 0.03 escluso (`official_out` only when ≥70% of the club's board rows matched — a rename must not read as an exclusion). Sources labeled `official_xi/official_bench/official_out` for pred_ledger. Rebuilds xi_advice and pushes a 🚨 diff only while the league deadline (round's first kickoff) is still open; feed older than 3h is refused. |
 | `calendar_coppa_del_nonno.xlsx` / `calendar_hunger_games.xlsx` | manual download (Leghe calendar exports) | Both competitions' full schedules. Re-import: `python3 -m scripts.fantacalcio.import_rosters --calendars`. |
 | `league_schedule.json` | `scripts/fantacalcio/import_rosters.py --calendars` | Parsed calendars: CDN 10 group rounds (gironi A/B, SA 3..29, Riposa rows), HG 36 rounds (SA 3..38). Name-validated parse (never positional — score cells fill in as rounds play). |
 | `club_congestion.json` | `scripts/fantacalcio/xi_advisor._club_congestion` (tracker job) | Per Serie A club: last competitive match (ALL competitions via Sofascore team events — sees Coppa Italia/Europe) + rest days before its next SA fixture. 12h TTL, stale-on-failure, 3-strike breaker. CONTEXT ONLY: measured 2025-26 within-player fantavoto cost of short rest = −0.06 ± 0.08 (zero) — no coefficient, just the 😴 flag. |

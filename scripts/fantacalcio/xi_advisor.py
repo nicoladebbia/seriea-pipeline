@@ -42,6 +42,7 @@ from scripts.fantacalcio.probabili import (
     P_NEWS_CAP,
     P_OUT,
     P_SUSPENDED,
+    feed_age_h,
     fetch_indisponibili,
     fetch_probabili,
     p_play_override,
@@ -204,18 +205,29 @@ def _out_ids(board_players: list, fixtures: dict) -> dict:
 
 # League bench is 9 ORDERED slots -- 1 keeper, 3 defenders, 3 midfielders,
 # 2 strikers, in that order (league rule, Nicola 2026-09-02). Auto-subs promote
-# within the role group top-down, so slot order inside a role = exp_slot order.
+# within the role group top-down and SKIP a bench player without a voto
+# (standard Leghe; max 3 subs total -- both still to be confirmed from the
+# Opzioni screen), so slot order inside a role is by exp, not exp_slot.
 BENCH_SLOTS = (("P", 1), ("D", 3), ("C", 3), ("A", 2))
 
 
 def _bench_split(cand: list, xi: list) -> tuple[list, list]:
     """(bench, tribuna): the 9 league slots filled per role by exp_slot, then
-    everyone else who could still play. Unavailable players belong to neither."""
+    everyone else who could still play. Unavailable players belong to neither.
+
+    SELECTION (who makes the bench) stays p_play-weighted -- a never-plays
+    star burns a slot. Entry ORDER within the role is by exp (E[voto|plays]):
+    because auto-subs skip a player without a voto, putting a low-p_play
+    player first costs nothing when he is absent and yields the best sub when
+    he plays. For a fixed trio this is exactly optimal -- swapping adjacent
+    (i, j) changes the expected recovery by p_i * p_j * (v_i - v_j), so
+    v-descending wins regardless of the p's."""
     rest = [c for c in cand if c not in xi and c["exp_slot"] is not None]
     bench = []
     for role, n in BENCH_SLOTS:
         pool = sorted([c for c in rest if c["R"] == role],
                       key=lambda x: -x["exp_slot"])[:n]
+        pool.sort(key=lambda x: -(x["exp"] if x["exp"] is not None else 0.0))
         bench.extend(pool)
         rest = [c for c in rest if c not in pool]
     return bench, rest
@@ -232,8 +244,8 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
     risk_lambda tilts SELECTION (never the reported numbers) by lambda * p_play
     * sd: positive prefers volatile players — the underdog play, since only
     variance can carry a weaker XI past a stronger opponent — negative prefers
-    steady ones. Bench order stays pure exp_slot: entry order maximizes the
-    expected recovery, whoever the opponent is.
+    steady ones. Bench SELECTION stays pure exp_slot; entry ORDER within a
+    role is by exp -- see _bench_split.
     """
     cand = []
     for p in roster:
@@ -369,7 +381,19 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
     return roster_src, source
 
 
-def build_advice() -> dict:
+def _apply_official(rows: list[dict], official: dict[int, dict]) -> None:
+    """Confirmed lineups are ground truth: applied LAST, over every
+    probabilistic tier (probabili, titolarita, indisponibili, news). The
+    p_play_src labels feed pred_ledger's per-source calibration."""
+    for r in rows:
+        o = official.get(int(r.get("id") or 0))
+        if o:
+            r["p_play"] = o["p_play"]
+            r["p_play_src"] = o["src"]
+
+
+def build_advice(fresh: bool = False,
+                 official: dict[int, dict] | None = None) -> dict:
     board = json.loads(BOARD.read_text())
     by_id = {int(p["id"]): p for p in board["players"]}
     fixtures, rnd = _next_fixtures()
@@ -378,8 +402,9 @@ def build_advice() -> dict:
 
     # Probable lineups beat the appearance-rate model when the page lists the
     # player (fetch is cached 6h and falls back to the last good cache on failure).
-    prob_by_pid = status_by_pid(fetch_probabili())
-    avail = fetch_indisponibili()
+    prob_data = fetch_probabili(refresh=fresh)
+    prob_by_pid = status_by_pid(prob_data)
+    avail = fetch_indisponibili(refresh=fresh)
     roster_src, source = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
     congestion = _club_congestion(fixtures)
@@ -391,12 +416,16 @@ def build_advice() -> dict:
             row["last_comp"] = c["last_comp"]
     _apply_discipline(roster_src, out, discipline_status())
     _apply_availability(roster_src, avail, _news_caps())
+    if official:
+        _apply_official(roster_src, official)
 
     adv = advise(roster_src, fixtures, elo, out)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
     return {"generated_at": datetime.now(UTC).isoformat(),
             "round": rnd, "source": source,
             "first_kickoff": min(kicks) if kicks else None,
+            "feed_ages": {"probabili_h": feed_age_h(prob_data),
+                          "indisponibili_h": feed_age_h(avail)},
             **adv}
 
 
