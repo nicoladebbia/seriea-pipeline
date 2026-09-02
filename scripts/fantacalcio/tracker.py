@@ -252,6 +252,59 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
     }
 
 
+def _push_xi_advice() -> None:
+    """Rebuild the weekly XI advice and push it ONCE per giornata.
+
+    Runs on the twice-daily tracker job. Fires only when the round's first
+    kickoff is within 48h AND this round has not been announced yet (state in
+    xi_notify_state.json) — the fire-only-on-change rule every notify call
+    site owes since the 2026-08-27 Telegram cleanup.
+    """
+    from datetime import UTC, datetime
+
+    from scripts.fantacalcio.xi_advisor import build_advice
+
+    adv = build_advice()
+    (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
+        json.dumps(adv, indent=1, ensure_ascii=False))
+    state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    rnd, kick = adv.get("round"), adv.get("first_kickoff")
+    if not rnd or not adv.get("xi") or state.get("round") == rnd:
+        return
+    if not kick or kick - datetime.now(UTC).timestamp() > 48 * 3600:
+        return
+
+    role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
+    xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
+    lines = [f"{x['R']} {x['nome']} ({x['team']} "
+             f"{'vs' if x['home'] else '@'} {x['opp']})" for x in xi]
+    bench = [f"{x['R']} {x['nome']}" for x in adv["bench"][:7]]
+    inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
+           for x in adv["unavailable"]]
+    msg = (f"Giornata {rnd} — modulo {adv['module']} "
+           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+           + "\n".join(lines)
+           + "\nPanchina (in quest'ordine): " + ", ".join(bench)
+           + (("\nOut: " + "; ".join(inj)) if inj else ""))
+    tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
+          f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+          + "\n".join(lines)
+          + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
+          + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else ""))
+    try:
+        from scripts.pipeline.notify import notify
+        notify(msg, title="Fantacalcio XI", level="info",
+               category="system", tg_html=tg)
+        state_path.write_text(json.dumps({"round": rnd,
+                                          "sent_at": datetime.now(UTC).isoformat()}))
+    except Exception as e:  # advice on disk is the deliverable; push is best-effort
+        print(f"XI notify failed (advice still written): {e}")
+
+
 def main() -> None:
     import sys
     data = build(refresh="--refresh" in sys.argv)
@@ -260,6 +313,10 @@ def main() -> None:
           f"rounds={data['rounds_played']} "
           f"settable={data['totals']['settable']} "
           f"hindsight={data['totals']['hindsight']}")
+    try:
+        _push_xi_advice()
+    except Exception as e:
+        print(f"XI advice refresh failed (tracker output unaffected): {e}")
 
 
 if __name__ == "__main__":

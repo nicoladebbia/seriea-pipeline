@@ -157,7 +157,9 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict) -> dict:
         xi = [x for r, n in need.items() for x in by_role[r][:n]]
         gk_v = next((x["exp_voto"] for x in xi if x["R"] == "P"), None)
         d_v = [x["exp_voto"] for x in xi if x["R"] == "D"]
-        mod = _modifier(gk_v, d_v, [(6.0, 1), (6.5, 3), (7.0, 6)],
+        # League table verified from the Opzioni di Lega screen 2026-09-02:
+        # tiers 6.0->1, 6.5->3, 7.0->6, 7.5->9 (caps at 9; .25 steps repeat).
+        mod = _modifier(gk_v, d_v, [(6.0, 1), (6.5, 3), (7.0, 6), (7.5, 9)],
                         [5.0, 4.5, 4.5]) if nd >= 4 else 0.0
         total = sum(x["exp_slot"] for x in xi) + mod
         if best is None or total > best["total"]:

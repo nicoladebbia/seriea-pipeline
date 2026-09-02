@@ -55,7 +55,9 @@ CARD = {"yellow-card": -0.5, "red-card": -1.0}
 MIN_ROWS = 100
 
 _ROW = re.compile(r"<tr>(.*?)</tr>", re.S)
-_HREF = re.compile(r"/serie-a/squadre/([^/]+)/([^/]+)/(\d+)/")
+# Trailing slash optional: 2026-27 pages dropped it (".../carnesecchi/4431").
+# Team-only links (/squadre/inter) can't match — the pattern needs 3 segments.
+_HREF = re.compile(r"/serie-a/squadre/([^/]+)/([^/]+)/(\d+)\b")
 _ROLE = re.compile(r'class="role"\s*data-value="([^"]*)"')
 _PILL = re.compile(r'<div class="pill">(.*?)</div>', re.S)
 _GRADE = re.compile(r'class="player-grade([^"]*)"\s*data-value="([^"]*)"')
