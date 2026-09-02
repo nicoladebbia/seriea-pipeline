@@ -169,12 +169,6 @@ def evaluate_gate(last3: pd.DataFrame, thresholds: Dict[str, float]) -> "tuple[l
                 f"Candidate log-loss {cand_ll:.4f} worse than incumbent "
                 f"{inc_ll:.4f} (+{cand_ll - inc_ll:.4f} > tol {REL_GATE_TOLERANCE}) "
                 f"on {len(comparable)} shared-OOS fold(s), n={int(w.sum())}")
-        if last3_ll > CATASTROPHIC_LL:
-            rejections.append(
-                f"Log-loss {last3_ll:.4f} > catastrophic floor {CATASTROPHIC_LL}")
-        if last3_acc < CATASTROPHIC_ACC:
-            rejections.append(
-                f"Accuracy {last3_acc:.4f} < catastrophic floor {CATASTROPHIC_ACC}")
     else:
         info = {"mode": "absolute",
                 "reason": "incumbent unavailable or no shared-OOS fold"}
@@ -187,6 +181,14 @@ def evaluate_gate(last3: pd.DataFrame, thresholds: Dict[str, float]) -> "tuple[l
         if last3_brier > thresholds["brier_max"]:
             rejections.append(
                 f"Brier {last3_brier:.4f} > {thresholds['brier_max']:.4f}")
+    # Catastrophic floors apply in BOTH modes — the absolute thresholds come
+    # from deployment_state.json and could drift looser than the floor.
+    if last3_ll > CATASTROPHIC_LL:
+        rejections.append(
+            f"Log-loss {last3_ll:.4f} > catastrophic floor {CATASTROPHIC_LL}")
+    if last3_acc < CATASTROPHIC_ACC:
+        rejections.append(
+            f"Accuracy {last3_acc:.4f} < catastrophic floor {CATASTROPHIC_ACC}")
     return rejections, info
 
 

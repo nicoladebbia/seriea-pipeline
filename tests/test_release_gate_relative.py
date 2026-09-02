@@ -100,3 +100,15 @@ def test_weighting_is_by_n_test():
     )
     rejections, _ = evaluate_gate(last3, TH)
     assert any("worse than incumbent" in r for r in rejections)
+
+
+def test_catastrophic_floor_applies_in_absolute_mode_too():
+    """The absolute thresholds come from deployment_state.json and could be
+    hand-loosened past the floor; the floor must still reject. Regression for
+    the review finding that the floors originally lived only in the relative
+    branch while the docstring claimed both."""
+    loose = {"accuracy_min": 0.30, "log_loss_max": 1.50, "brier_max": 0.90}
+    last3 = _last3((1.20, 0.40, 0.25, 400, None, None))
+    rejections, info = evaluate_gate(last3, loose)
+    assert info["mode"] == "absolute"
+    assert any("catastrophic floor" in r for r in rejections), rejections

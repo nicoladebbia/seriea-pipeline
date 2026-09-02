@@ -123,15 +123,16 @@ def step_refresh_fbref_fixtures() -> bool:
     except Exception as e:
         msg = str(e)
         if "Page too small" in msg:
-            # Cloudflare Turnstile blocks HEADLESS fetches of FBref since
-            # ~2026-07 (visible browser still works — Jul-16 finding). A
-            # standing upstream condition with a working fallback, same
-            # treatment as the shots_all removal above: gap detection is
-            # covered by the sofascore_fallback step.
-            log.info("  (expected) FBref fixtures blocked by Turnstile "
-                     "(headless-only block): %s — sofascore_fallback covers "
-                     "gap detection; a visible-browser fetch works if a "
-                     "manual refresh is ever needed.", msg)
+            # The fetcher already runs headless=False (the Jul-16 fix), so
+            # this firing means Turnstile turned away the VISIBLE fetch too —
+            # under launchd the mechanism is unverified (no interactive
+            # display context?). Non-fatal because gap detection is covered
+            # by the sofascore_fallback step, but keep it at WARNING and do
+            # not call it the known headless-only block: it isn't.
+            log.warning("  FBref fixtures fetch blocked by Turnstile despite "
+                        "headless=False: %s — sofascore_fallback covers gap "
+                        "detection; a manual interactive-session run may "
+                        "still work.", msg)
             return True
         log.error("  ✗ %s", e)
         return False

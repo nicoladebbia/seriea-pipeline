@@ -1906,10 +1906,16 @@ class UnifiedBettingEngine:
                     avg_o = [avg_over, avg_under][side_idx]
                     lme = alt_ou_rules.get("line_min_edge", {})
                     line_edge = lme.get(line) if lme else None
+                    # Pass the max too: the market string resolves to O/U_Over
+                    # inside _make_bet, so Alt_OU's own line_max_edge would
+                    # otherwise never be consulted (dead config).
+                    lxe = alt_ou_rules.get("line_max_edge", {})
+                    line_max = lxe.get(line) if lxe else None
                     bet = self._make_bet(
                         match_key, date, f"O/U {line_str}", sel_name, model_p,
                         true_probs[side_idx], best_o, "Alt totals book",
-                        avg_o, avg_o, n_books, min_edge_override=line_edge)
+                        avg_o, avg_o, n_books, min_edge_override=line_edge,
+                        max_edge_override=line_max)
                     if bet:
                         bets.append(bet)
         return bets

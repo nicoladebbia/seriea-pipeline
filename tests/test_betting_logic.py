@@ -391,13 +391,14 @@ def test_scan_evaluates_home_and_respects_config_enabled_flags():
     assert EDGE_THRESHOLDS["1X2_Home"]["enabled"] is False, "1X2 should be disabled (sharp)"
     assert EDGE_THRESHOLDS["O/U_Over"]["enabled"] is True, "O/U Over should be enabled"
 
-    # 1X2 home edge ~+7% (disabled market) + O/U Over 2.5 edge ~+9% (enabled).
+    # 1X2 home edge ~+7% (disabled market) + O/U Over 2.5 in-band (enabled).
     # O/U fair is de-vigged from the PINNACLE PAIR (over 1.74 / under 2.10) →
-    # over_fair≈0.547; model 0.595 gives ~+8.8%, inside the line-aware
-    # O/U 2.5 band [7, 10] (line_min_edge 7.0 / line_max_edge 10.0 — the
-    # monitor used to ignore per-line bands and admitted 6% here).
+    # over_fair≈0.547; model 0.630 gives +8.3 ABSOLUTE pp — the metric the
+    # band is calibrated on in _make_bet — inside the line-aware O/U 2.5
+    # band [7, 10] (the monitor used to classify on the RELATIVE edge and
+    # ignore per-line bands, admitting 6% relative ≈ 3.3pp here).
     preds = {"A vs B": {"probabilities": {"home": 0.539, "draw": 0.260, "away": 0.201},
-                        "over_2_5": 0.595}}
+                        "over_2_5": 0.630}}
     odds = {"matches": {"A vs B": {
         "h2h": [
             {"bookmaker": "Pinnacle", "home": 1.95, "draw": 3.60, "away": 4.40},

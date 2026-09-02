@@ -547,11 +547,17 @@ def settle_paper_bets(results: Dict[str, Dict]) -> Dict:
                 continue
 
         stake = float(bet.get("stake") or 0)
-        odds = float(bet.get("odds") or 1)
+        odds = float(bet.get("odds") or 0)
+        if outcome == "won" and odds <= 1.0:
+            log.warning("Paper settle: bet %s has no usable odds (%r) — left "
+                        "pending", bet.get("bet_id"), bet.get("odds"))
+            continue
         profit = {"won": round(stake * (odds - 1), 2),
                   "lost": -stake}.get(outcome, 0.0)
+        # Results dicts carry "commence_time" (results_fetcher.parse_scores),
+        # never "kickoff_at" — same key the real settler reads.
         if settle_bet(bet.get("bet_id", ""), outcome, result_score=score_str,
-                      profit=profit, match_kickoff_at=res.get("kickoff_at"),
+                      profit=profit, match_kickoff_at=res.get("commence_time") or None,
                       journal_path=PAPER_JOURNAL_PATH):
             summary["settled"] += 1
             summary["pending"] -= 1

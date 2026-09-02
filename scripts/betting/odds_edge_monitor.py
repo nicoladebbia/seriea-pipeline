@@ -393,6 +393,11 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             true_probs = remove_overround([ref_over, ref_under])
             sharp_implied = true_probs[0] if true_probs else 1.0 / ref_over
             edge_pct = ((model_over - sharp_implied) / sharp_implied * 100) if sharp_implied > 0 else 0
+            # The band values were calibrated in _make_bet against the
+            # ABSOLUTE percentage-point edge (model_p - sharp_p) * 100, not
+            # the relative edge above — classify on the same metric or a
+            # relative 21% masquerades as "in the 7-10 band".
+            edge_pp = (model_over - sharp_implied) * 100
 
             thresholds = EDGE_THRESHOLDS.get("O/U_Over", {"min": 6.0, "max": 8.0})
             # Line-aware band, mirroring _make_bet's line_min_edge/line_max_edge.
@@ -406,6 +411,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 "model_prob": round(model_over, 4),
                 "sharp_implied": round(sharp_implied, 4),
                 "edge_pct": round(edge_pct, 2),
+                "edge_pp": round(edge_pp, 2),
                 "best_odds": round(over_odds, 3),
                 "best_bookmaker": next(
                     (bm.get("bookmaker", "") for bm in total.get("all_bookmakers", [])
@@ -419,10 +425,10 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
             if edge_pct > 50 or edge_pct < -50:
                 continue
 
-            in_band = band_min <= edge_pct <= band_max
+            in_band = band_min <= edge_pp <= band_max
             if in_band and thresholds.get("enabled", False):
                 value_bets.append(bet_info)          # actionable: in-band AND market enabled
-            elif in_band or (0 < edge_pct < band_min
+            elif in_band or (0 < edge_pp < band_min
                              and edge_pct >= band_min - WATCHLIST_PROXIMITY_PP):
                 bet_info["gap_to_threshold"] = round(max(0.0, band_min - edge_pct), 2)
                 if not thresholds.get("enabled", False):
