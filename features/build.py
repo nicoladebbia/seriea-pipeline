@@ -812,7 +812,10 @@ class Step19UnderstatXg(FeaturePlugin):
         _xg_cols_after = set(c for c in df.columns if "xg" in c.lower())
         new_xg_cols = _xg_cols_after - _xg_cols_before
         if new_xg_cols:
-            sample_col = next(iter(new_xg_cols))
+            # sorted() — a set's iteration order varies per run, and different
+            # xG columns have different NaN patterns (measured: 459 rows flipped
+            # each way between two otherwise-identical rebuilds).
+            sample_col = sorted(new_xg_cols)[0]
             df["has_xg_data"] = df[sample_col].notna().astype(int)
             log.info("Added has_xg_data flag (%d rows with xG data)",
                      df["has_xg_data"].sum())
@@ -2634,28 +2637,26 @@ def _add_league_draw_features(feature_df: pd.DataFrame) -> pd.DataFrame:
     # Determine result for historical computation (use existing columns)
     hs = pd.to_numeric(df.get("home_score"), errors="coerce")
     as_ = pd.to_numeric(df.get("away_score"), errors="coerce")
-    df["_is_home_win"] = (hs > as_).astype(float)
-    df["_is_draw"] = (hs == as_).astype(float)
+    # NaN scores (unplayed fixture rows) must stay NaN — (NaN > NaN) casts to
+    # 0.0, which would count fake losses/non-draws into later rows' rates.
+    _played = hs.notna() & as_.notna()
+    df["_is_home_win"] = (hs > as_).astype(float).where(_played)
+    df["_is_draw"] = (hs == as_).astype(float).where(_played)
     df["_total_goals"] = hs + as_
 
-    # --- League-level expanding rates (shift to avoid leakage) ---
+    # --- League-level rates, strictly before each row's date ---
+    # expanding().mean().shift(1) over row order excluded only the row itself:
+    # same-day peers (and, under any non-date sort, future rows) leaked in.
+    # Strictly-before-date matches how an upcoming fixture row computes these.
+    from features.strength import asof_mean_before_date
     league_col = "league" if "league" in df.columns else None
-
-    if league_col:
-        grp = df.groupby(league_col)
-        df["league_home_win_rate"] = grp["_is_home_win"].apply(
-            lambda s: s.expanding().mean().shift(1)
-        ).reset_index(level=0, drop=True)
-        df["league_draw_rate"] = grp["_is_draw"].apply(
-            lambda s: s.expanding().mean().shift(1)
-        ).reset_index(level=0, drop=True)
-        df["league_avg_goals"] = grp["_total_goals"].apply(
-            lambda s: s.expanding().mean().shift(1)
-        ).reset_index(level=0, drop=True)
-    else:
-        df["league_home_win_rate"] = df["_is_home_win"].expanding().mean().shift(1)
-        df["league_draw_rate"] = df["_is_draw"].expanding().mean().shift(1)
-        df["league_avg_goals"] = df["_total_goals"].expanding().mean().shift(1)
+    _group = [league_col] if league_col else []
+    df["league_home_win_rate"] = asof_mean_before_date(
+        df, _group, "_is_home_win", date_col="_sort_date")
+    df["league_draw_rate"] = asof_mean_before_date(
+        df, _group, "_is_draw", date_col="_sort_date")
+    df["league_avg_goals"] = asof_mean_before_date(
+        df, _group, "_total_goals", date_col="_sort_date")
 
     # --- Per-team draw tendency (rolling 10 and 5 matches) ---
     for side in ("home", "away"):

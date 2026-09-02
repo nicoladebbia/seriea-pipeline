@@ -21,6 +21,54 @@ ELO_REVERT = 0.75  # Season-start regression: keep 75%, revert 25% to mean
 ELO_PROMOTED = 1400  # Newly promoted teams start below average
 
 
+def asof_mean_before_date(
+    df: pd.DataFrame,
+    group_cols: list,
+    value_col: str,
+    date_col: str = "match_date",
+) -> pd.Series:
+    """Group-wise mean of ``value_col`` over rows dated STRICTLY BEFORE each
+    row's date — order-independent, so a row can never absorb same-day or
+    future rows regardless of how the frame happens to be sorted.
+
+    Replaces the ``sort → shift(1) → expanding().mean()`` idiom, whose result
+    depends on row order: with the frame sorted team-then-date (strength
+    ratings), a mid-season row's "league average" absorbed entire future
+    seasons of alphabetically earlier teams (P1b training-time lookahead);
+    date-sorted frames still absorbed same-day peers. NaN values (unplayed
+    fixture rows) contribute nothing. Rows with no earlier dated rows in
+    their group get NaN.
+    """
+    group_cols = list(group_cols)
+    work = df[group_cols + [date_col, value_col]].copy() if group_cols else \
+        df[[date_col, value_col]].copy()
+    if not group_cols:
+        work["_asof_all"] = 0
+        group_cols = ["_asof_all"]
+    key = group_cols + [date_col]
+
+    daily = (
+        work.groupby(key, dropna=False)[value_col]
+        .agg(_sum="sum", _cnt="count")
+        .reset_index()
+        .sort_values(key)
+    )
+    gb = daily.groupby(group_cols, dropna=False)
+    cum_sum = gb["_sum"].cumsum() - daily["_sum"]   # exclude the row's own date
+    cum_cnt = gb["_cnt"].cumsum() - daily["_cnt"]
+    daily["_asof"] = cum_sum / cum_cnt.where(cum_cnt > 0)
+
+    mapping = pd.Series(
+        daily["_asof"].to_numpy(),
+        index=pd.MultiIndex.from_frame(daily[key]),
+    )
+    row_idx = pd.MultiIndex.from_frame(work[key])
+    return pd.Series(
+        pd.to_numeric(mapping.reindex(row_idx), errors="coerce").to_numpy(dtype=float),
+        index=df.index,
+    )
+
+
 def add_strength_ratings(team_log: pd.DataFrame) -> pd.DataFrame:
     """Add attack/defense strength ratings (season-expanding averages).
 
@@ -54,13 +102,15 @@ def add_strength_ratings(team_log: pd.DataFrame) -> pd.DataFrame:
             lambda s: s.shift(1).expanding(min_periods=1).mean()
         )
 
-        # League average per season (shifted), scoped by league when present
-        league_for = df.groupby(league_group)[stat].transform(
-            lambda s: s.shift(1).expanding(min_periods=1).mean()
-        )
-        league_against = df.groupby(league_group)[conceded_stat].transform(
-            lambda s: s.shift(1).expanding(min_periods=1).mean()
-        )
+        # League average per season, strictly before each row's match date.
+        # The old shift(1)+expanding ran over the frame's TEAM-then-date sort,
+        # so a mid-season row's league average absorbed entire future seasons
+        # of alphabetically earlier teams — the P1b training-time lookahead
+        # behind the 23-feature strength/poisson cluster (94/126 → blind
+        # parity blocked on exactly these). The team averages above are
+        # per-team date-ordered and were always honest.
+        league_for = asof_mean_before_date(df, league_group, stat)
+        league_against = asof_mean_before_date(df, league_group, conceded_stat)
 
         # Avoid division by zero
         df[f"{prefix}attack_strength"] = (team_for / league_for).fillna(1.0)

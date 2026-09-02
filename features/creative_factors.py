@@ -215,19 +215,17 @@ def add_creative_factors(matches: pd.DataFrame) -> pd.DataFrame:
         as_ = pd.to_numeric(df.get("away_score"), errors="coerce")
         df["_total_goals"] = hs + as_
 
-        # FIX: Group by season only (not matchweek) to prevent same-matchweek
-        # peers from leaking. Matches in the same matchweek happen simultaneously,
-        # so one MW10 match should not see another MW10 match's goals.
-        _group_cols = ["season"] if "season" in df.columns else []
-        if _group_cols:
-            mw_avg = (
-                df.groupby(_group_cols)["_total_goals"]
-                .apply(lambda s: s.expanding().mean().shift(1))
-                .reset_index(level=0, drop=True)
-            )
-        else:
-            mw_avg = df["_total_goals"].expanding().mean().shift(1)
-        df["matchweek_avg_goals"] = mw_avg
+        # Strictly-before-DATE season average. The earlier "group by season"
+        # fix only excluded the row ITSELF (expanding().mean().shift(1) over
+        # row order) — earlier rows of the same matchweek still leaked in,
+        # which is why blind as-of parity measured Δ0.18 on this column.
+        # Same-day peers are simultaneous and unknowable pre-match, so the
+        # honest training value excludes the whole current date — matching
+        # how an upcoming fixture row (all-NaN peers) computes it.
+        from features.strength import asof_mean_before_date
+        _group_cols = [c for c in ("season", "league") if c in df.columns]
+        df["matchweek_avg_goals"] = asof_mean_before_date(
+            df, _group_cols, "_total_goals")
         df.drop(columns=["_total_goals"], inplace=True, errors="ignore")
         added += 1
 
