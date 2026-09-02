@@ -355,6 +355,16 @@ def _push_xi_advice() -> None:
 
     from scripts.fantacalcio.xi_advisor import build_advice
 
+    # Mercato identity sync FIRST (weekly TTL inside): placeholder pids,
+    # club moves, listone arrivals. When it changed the board, re-import the
+    # rosters so every squad points at the corrected pids. Best-effort.
+    try:
+        from scripts.fantacalcio.import_rosters import import_rosters, sync_mercato
+        if sync_mercato():
+            import_rosters()
+    except Exception as e:
+        print(f"mercato sync failed (advice unaffected): {e}")
+
     # Freshen the news accumulator on the same twice-daily cadence. Best-effort:
     # a feed outage must never block the XI advice. Probabili needs no explicit
     # refresh here -- build_advice fetches it through a 6h-TTL cache and the

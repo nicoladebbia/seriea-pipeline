@@ -296,13 +296,17 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
         p_play = (PLAY_K * pp_prior + n_seen) / (PLAY_K + rounds_elapsed)
         p_play = min(max(p_play, 0.02), 0.95)
         p_play, pp_src = p_play_override(pid, p_play, prob_by_pid)
-        roster_src.append({"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
-                           "level": float(lv.get("live_level", prior)),
-                           "voto": float(lv.get("live_voto")
-                                         or p.get("mv_hat") or 6.0),
-                           "p_play": p_play, "p_play_src": pp_src,
-                           "sd": sds.get(pid) or SD_ROLE[p["R"]],
-                           "n_rounds": n_seen})
+        row = {"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
+               "level": float(lv.get("live_level") or prior),
+               "level_src": "live" if lv.get("live_level") else "prior",
+               "voto": float(lv.get("live_voto")
+                             or p.get("mv_hat") or 6.0),
+               "p_play": p_play, "p_play_src": pp_src,
+               "sd": sds.get(pid) or SD_ROLE[p["R"]],
+               "n_rounds": n_seen}
+        if p.get("status") == "DEPARTED":
+            row.update(p_play=0.02, p_play_src="departed", departed=True)
+        roster_src.append(row)
     return roster_src, source
 
 
@@ -474,11 +478,14 @@ def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> li
             if rounds_elapsed else pp_prior
         p_play = min(max(p_play, 0.02), 0.95)
         p_play, pp_src = p_play_override(pid, p_play, prob_by_pid)
-        rows.append({"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
-                     "level": level, "voto": voto,
-                     "p_play": p_play, "p_play_src": pp_src,
-                     "sd": hist["sd"].get(pid) or SD_ROLE[p["R"]],
-                     "n_rounds": n_seen})
+        row = {"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
+               "level": level, "voto": voto,
+               "p_play": p_play, "p_play_src": pp_src,
+               "sd": hist["sd"].get(pid) or SD_ROLE[p["R"]],
+               "n_rounds": n_seen}
+        if p.get("status") == "DEPARTED":
+            row.update(p_play=0.02, p_play_src="departed", departed=True)
+        rows.append(row)
     return rows
 
 
@@ -631,7 +638,11 @@ def build_svincolati(top_n: int = 8) -> dict:
     fixtures, rnd = _next_fixtures()
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
-    free_ids = [pid for pid in by_id if pid not in owned]
+    # DEPARTED = left Serie A (board status from the wiki-transfers pass) —
+    # a free agent you cannot field is not a pickup (Di Gregorio lesson,
+    # 2026-09-02: the radar led with a keeper already at Bournemouth).
+    free_ids = [pid for pid in by_id if pid not in owned
+                and by_id[pid].get("status") != "DEPARTED"]
     rows = _rival_roster({"roster": [{"id": i} for i in free_ids]},
                          by_id, hist, prob_by_pid)
     out = _out_ids(board["players"], fixtures)

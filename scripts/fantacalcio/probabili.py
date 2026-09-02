@@ -68,7 +68,13 @@ def parse(html: str) -> dict | None:
         if not name or st_i < 0 or rs_i < 0:
             continue
         starters = _players_in(card[st_i:rs_i])
-        reserves = _players_in(card[rs_i:])
+        # Bound the reserves to their own </ul>: the card slice continues with
+        # other player lists (indisponibili, squalificati, cross-team strips)
+        # whose links would otherwise be swallowed as fake reserves — and a
+        # fake reserve can overwrite a real starter in status_by_pid. Measured
+        # 2026-09-02: 243 pids double-listed, Genoa starters inside Como.
+        rs_end = card.find("</ul>", rs_i)
+        reserves = _players_in(card[rs_i:rs_end if rs_end > 0 else len(card)])
         form = _FORM.search(card)
         teams[name.group(1).strip()] = {
             "formation": form.group(1).strip() if form else None,
@@ -127,9 +133,15 @@ def status_by_pid(data: dict | None) -> dict[int, dict]:
     for tname, t in (data.get("teams") or {}).items():
         for kind in ("starters", "reserves"):
             for p in t.get(kind, []):
-                out[int(p["pid"])] = {
+                pid = int(p["pid"])
+                # A starter listing is never downgraded by a later reserve
+                # listing of the same pid (stale caches may still carry the
+                # pre-2026-09-02 cross-card bleed).
+                if kind == "reserves" and out.get(pid, {}).get("status") == "starter":
+                    continue
+                out[pid] = {
                     "status": "starter" if kind == "starters" else "reserve",
-                    "ballot_pct": ballots.get(int(p["pid"])),
+                    "ballot_pct": ballots.get(pid),
                     "team": tname,
                 }
     return out

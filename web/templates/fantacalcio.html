@@ -385,6 +385,10 @@
             ? `<span class="fc-lvl-up">▲${fmt(p.delta, 2)}</span>`
             : p.delta <= -0.05
               ? `<span class="fc-lvl-dn">▼${fmt(Math.abs(p.delta), 2)}</span>` : "＝";
+          // No fantavoto yet: fall back to the pre-season prior (tracker), then
+          // the advisor's level (always present), shown as a muted "st" stima.
+          const lvlLive = p.live_level != null;
+          const lvlVal = lvlLive ? p.live_level : (p.prior_level ?? a.level);
           return `<tr>
             <td><span class="fc-pname">${esc(p.nome)}</span>${diffid(a)}${a.yellows
                 ? `<span class="fc-pteam" title="ammonizioni stagionali"> ${a.yellows}🟨</span>` : ""}<br>
@@ -396,8 +400,11 @@
                 ${fmt(a.exp)}</td>
             <td class="num" title="${ppSrcTitle(a)}">${a.p_play == null ? "—"
                 : Math.round(a.p_play * 100) + "%" + ppSrcMark(a)}</td>
-            <td class="num" title="livello live (prior ${fmt(p.prior_level)})">
-                ${fmt(p.live_level)} ${delta}</td>
+            <td class="num" title="${lvlLive
+                ? `livello live (prior ${fmt(p.prior_level)})`
+                : "stima precampionato — nessun fantavoto ancora"}">
+                ${lvlVal == null ? "—" : fmt(lvlVal)}${lvlLive ? " " + delta
+                : '<sup style="opacity:.55" title="stima">st</sup>'}</td>
             <td class="num">${fmt(p.points, 1)}</td>
             <td><span class="fc-chips">${chips.join("")}</span></td>
           </tr>`;

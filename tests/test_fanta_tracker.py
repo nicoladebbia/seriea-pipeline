@@ -694,3 +694,80 @@ def test_advice_diff_reports_only_actionable_changes():
     d2 = _advice_diff(prev, {"module": "3-4-3", "xi": ["A", "B"],
                              "bench": ["D", "C"]})
     assert "Panchina riordinata" in d2
+
+
+# ---------------------------------------------------------------------------
+# mercato sync: live-listone parse, board reconciliation, departed guards
+# ---------------------------------------------------------------------------
+from scripts.fantacalcio.import_rosters import _apply_live, parse_quotazioni  # noqa: E402
+
+
+def _qrow(nome, role, team_slug, pid):
+    return (f'<tr class="player-row" data-index="0" '
+            f'data-filter-keywords="{nome}" data-filter-team-id="1" '
+            f'data-filter-playeds="0" data-filter-role-classic="{role}">'
+            f'<a href="https://www.fantacalcio.it/serie-a/squadre/'
+            f'{team_slug}/x/{pid}">x</a></tr>')
+
+
+def test_parse_quotazioni_extracts_and_unescapes_or_refuses():
+    clubs = ["roma", "milan", "inter", "juventus", "napoli", "lazio",
+             "atalanta", "bologna", "fiorentina", "torino", "genoa", "como",
+             "cagliari", "lecce", "udinese", "sassuolo", "parma", "monza",
+             "frosinone", "venezia"]
+    rows = [_qrow("Svilar", "p", "roma", 5841),
+            _qrow("Kessi&#xE8;", "c", "atalanta", 1850)]
+    pid = 10000
+    for i in range(420):
+        rows.append(_qrow(f"Player{i}", "d", clubs[i % 20], pid + i))
+    live = parse_quotazioni("".join(rows))
+    assert live is not None and len(live) == 422
+    assert live[1850] == {"nome": "Kessiè", "R": "C", "team": "Atalanta"}
+    assert live[5841]["team"] == "Roma"
+    # a page with too few rows is a schema break, not a small week
+    assert parse_quotazioni("".join(rows[:50])) is None
+
+
+def test_apply_live_never_touches_departures_and_adopts_placeholders():
+    board = {"players": [
+        # genuinely departed, still listed on the quotazioni page (measured):
+        {"id": 5876, "nome": "Di Gregorio", "R": "P", "team": "Juventus",
+         "status": "DEPARTED", "note": "→ Bournemouth 2026-08-25"},
+        # intra-SA move the snapshot missed:
+        {"id": 111, "nome": "Mover", "R": "C", "team": "Torino",
+         "status": "TEAM_MISMATCH", "note": ""},
+        # auction-time placeholder pid — exists in no other artifact:
+        {"id": 99004, "nome": "Theate", "R": "D", "team": "Bologna",
+         "status": "OK", "note": "", "fvm": 30.0, "proj_min": 1772.0},
+    ]}
+    live = {5876: {"nome": "Di Gregorio", "R": "P", "team": "Juventus"},
+            111: {"nome": "Mover", "R": "C", "team": "Lecce"},
+            5675: {"nome": "Theate", "R": "D", "team": "Bologna"},
+            222: {"nome": "Nuovo", "R": "A", "team": "Monza"}}
+    changes = _apply_live(board, live)
+    by_id = {p["id"]: p for p in board["players"]}
+    # the departure survives with its note intact — presence on the page
+    # proves nothing (the page keeps rows of players who left)
+    assert by_id[5876]["status"] == "DEPARTED"
+    assert "Bournemouth" in by_id[5876]["note"]
+    # the move lands, the listone club is preserved, status verified
+    assert by_id[111]["team"] == "Lecce"
+    assert by_id[111]["team_listone"] == "Torino"
+    assert by_id[111]["status"] == "OK"
+    # the placeholder row was corrected IN PLACE (auction priors kept),
+    # not duplicated by a bare arrival row
+    assert 99004 not in by_id and by_id[5675]["proj_min"] == 1772.0
+    assert sum(p["nome"] == "Theate" for p in board["players"]) == 1
+    # the true newcomer is appended
+    assert by_id[222]["nome"] == "Nuovo"
+    kinds = {c.split()[0] for c in changes}
+    assert kinds == {"VERIFIED", "MOVED", "PID-FIX", "ARRIVED"}
+
+
+def test_departed_rostered_player_cannot_be_fielded():
+    by_id = {9: {"id": 9, "nome": "Gone", "R": "A", "team": "Milan",
+                 "status": "DEPARTED", "season_points": 38.0}}
+    hist = {"sd": {}, "live": {}, "rounds_elapsed": 2}
+    rows = _rival_roster({"roster": [{"id": 9}]}, by_id, hist, {})
+    assert rows[0]["departed"] is True
+    assert rows[0]["p_play"] == 0.02 and rows[0]["p_play_src"] == "departed"

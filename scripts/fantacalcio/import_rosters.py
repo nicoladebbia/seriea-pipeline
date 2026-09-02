@@ -109,6 +109,141 @@ def import_rosters(xlsx: Path = DEFAULT_XLSX) -> dict:
     return out
 
 
+QUOTAZIONI_URL = "https://www.fantacalcio.it/quotazioni-fantacalcio"
+MERCATO_TTL_H = 7 * 24.0     # window is shut most of the year; weekly is plenty
+_QROW = __import__("re").compile(
+    r'data-filter-keywords="([^"]+)"[^>]*data-filter-role-classic="([pdca])"'
+    r'.*?/serie-a/squadre/([^/"]+)/[^/"]+/(\d+)"', __import__("re").S)
+
+
+def parse_quotazioni(html: str) -> dict[int, dict] | None:
+    """Live fantacalcio.it listone -> {pid: {nome, R, team}}. None on break.
+
+    The quotazioni page is the primary source for WHO IS IN SERIE A right now:
+    a player who left after our auction snapshot is simply absent, an arrival
+    is present. Same pid space as the voti pages and the board, so no name
+    matching. Sentinels: >=400 rows, 20 club slugs, Svilar present.
+    """
+    rows = html.split('<tr class="player-row"')[1:]
+    out: dict[int, dict] = {}
+    clubs: set[str] = set()
+    for row in rows:
+        m = _QROW.search(row)
+        if not m:
+            continue
+        nome, role, team_slug, pid = m.groups()
+        nome = __import__("html").unescape(nome)
+        team = team_slug.replace("-", " ").title()
+        clubs.add(team)
+        out[int(pid)] = {"nome": nome.strip(), "R": role.upper(), "team": team}
+    if len(out) < 400 or len(clubs) < 20 \
+            or not any(v["nome"] == "Svilar" for v in out.values()):
+        return None
+    return out
+
+
+def sync_mercato(force: bool = False) -> list[str] | None:
+    """Reconcile the board against the LIVE listone: arrivals, club moves,
+    placeholder-pid adoption, status verification. Returns the change log
+    (possibly empty), or None when the fetch/parse failed or the last sync is
+    fresh (TTL-gated — the tracker calls this every run; the mercato only
+    matters weekly, and in January).
+
+    What this deliberately does NOT do: mark departures. Measured 2026-09-02:
+    the quotazioni page KEEPS the rows of players who left Serie A (Di
+    Gregorio still listed under JUV a week after moving to Bournemouth), so
+    presence there proves nothing about being gone, and absence is the only
+    signal it gives — used here solely for orphan reporting. DEPARTED comes
+    from the board builder's wiki-transfers pass and is never touched here.
+
+    Never destroys: a failed fetch changes nothing, and rows are only ever
+    annotated (status/team/note) — auction economics (fvm, qt, prices) are
+    frozen at auction day on purpose.
+    """
+    board = json.loads(BOARD.read_text())
+    if not force:
+        try:
+            age_h = (datetime.now(UTC) - datetime.fromisoformat(
+                board["mercato_synced_at"])).total_seconds() / 3600
+            if age_h < MERCATO_TTL_H:
+                return None
+        except (KeyError, ValueError):
+            pass
+    try:
+        from curl_cffi import requests as rq
+        r = rq.get(QUOTAZIONI_URL, impersonate="chrome124", timeout=30)
+        live = parse_quotazioni(r.text) if r.status_code == 200 else None
+    except Exception:
+        live = None
+    if live is None:
+        print("sync_mercato: quotazioni fetch/parse failed — board untouched")
+        return None
+
+    changes = _apply_live(board, live)
+    board["mercato_synced_at"] = datetime.now(UTC).isoformat()
+    tmp = BOARD.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(board, indent=1, ensure_ascii=False))
+    tmp.replace(BOARD)
+    print(f"sync_mercato: {len(changes)} changes")
+    for c in changes:
+        print(f"  {c}")
+    return changes
+
+
+def _apply_live(board: dict, live: dict[int, dict]) -> list[str]:
+    """Pure apply step of sync_mercato — see its docstring for the contract."""
+    today = datetime.now(UTC).date().isoformat()
+    changes: list[str] = []
+    seen = set()
+    for p in board["players"]:
+        pid = int(p["id"])
+        seen.add(pid)
+        lv = live.get(pid)
+        if lv is None or p.get("status") == "DEPARTED":
+            continue    # departures are the wiki-transfers pass's call, not ours
+        if p.get("status") in (None, "UNVERIFIED", "TEAM_MISMATCH"):
+            p["status"] = "OK"
+            changes.append(f"VERIFIED  {p['R']} {p['nome']} (live listone)")
+        if lv["team"] != p["team"]:
+            p.setdefault("team_listone", p["team"])
+            changes.append(f"MOVED     {p['R']} {p['nome']} "
+                           f"{p['team']} -> {lv['team']}")
+            p["team"] = lv["team"]
+    # Placeholder adoption: the auction build stamped post-listone arrivals
+    # with synthetic 99xxx ids. Those ids exist in NO other artifact (voti,
+    # probabili), so the player could never be scored. When the live listone
+    # supplies the real pid, correct the placeholder row IN PLACE — it holds
+    # the auction priors (fvm, proj_min, mv_hat) the bare arrival row lacks.
+    # Match by first surname token, and only when unique both ways.
+    def _tok(nome: str) -> str:
+        return norm(nome).split()[0]
+    placeholders = [p for p in board["players"] if int(p["id"]) >= 99000]
+    for pid, lv in live.items():
+        if pid in seen:
+            continue
+        cand = [f for f in placeholders if _tok(f["nome"]) == _tok(lv["nome"])]
+        if len(cand) == 1:
+            f = cand[0]
+            placeholders.remove(f)
+            changes.append(f"PID-FIX   {lv['R']} {lv['nome']} "
+                           f"{f['id']} -> {pid} ({lv['team']})")
+            if lv["team"] != f["team"]:
+                f.setdefault("team_listone", f["team"])
+            f.update(id=pid, nome=lv["nome"], R=lv["R"], team=lv["team"],
+                     status="OK",
+                     note=f"pid corrected via live listone {today}")
+            continue
+        board["players"].append({
+            "id": pid, "nome": lv["nome"], "R": lv["R"], "team": lv["team"],
+            "status": "OK", "note": f"post-listone arrival {today}",
+            "new": True})
+        changes.append(f"ARRIVED   {lv['R']} {lv['nome']} ({lv['team']})")
+    for f in placeholders:
+        changes.append(f"ORPHANED  placeholder {f['id']} {f['nome']} "
+                       f"({f['team']}) — no live-listone partner, left as-is")
+    return changes
+
+
 CAL_FILES = [ROOT / "data" / "fantacalcio" / "calendar_coppa_del_nonno.xlsx",
              ROOT / "data" / "fantacalcio" / "calendar_hunger_games.xlsx"]
 SCHEDULE_OUT = ROOT / "data" / "fantacalcio" / "league_schedule.json"
@@ -194,7 +329,10 @@ def import_calendars(paths: list[Path] = CAL_FILES) -> dict:
 
 
 if __name__ == "__main__":
-    if "--calendars" in sys.argv:
+    if "--sync-mercato" in sys.argv:
+        sync_mercato(force=True)
+        import_rosters()
+    elif "--calendars" in sys.argv:
         extra = [Path(a) for a in sys.argv[2:] if not a.startswith("-")]
         import_calendars(extra or CAL_FILES)
     else:
