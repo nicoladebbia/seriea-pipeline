@@ -533,9 +533,49 @@ You are responding on Telegram (mobile phone). Adjust accordingly:
 """
 
 
+def _fantacalcio_context() -> str:
+    """Compact fantacalcio block for the chat/vision prompt — current advice,
+    rival matrix, my roster. Lets a Leghe screenshot sent ~1h before kickoff
+    get answered with the exact formation to field. Best-effort: any missing
+    artifact just shrinks the block."""
+    import json as _json
+    from pathlib import Path as _Path
+    base = _Path(__file__).resolve().parents[2] / "data" / "fantacalcio"
+    lines = ["", "FANTACALCIO (la mia lega — Whisky Palermo):"]
+    try:
+        adv = _json.loads((base / "xi_advice.json").read_text())
+        xi = ", ".join(f"{x['R']} {x['nome']}" for x in adv.get("xi", []))
+        bench = ", ".join(x["nome"] for x in adv.get("bench", []))
+        lines.append(f"Giornata {adv.get('round')} consigliata: "
+                     f"{adv.get('module')} attesi {adv.get('total')}")
+        lines.append(f"XI: {xi}")
+        lines.append(f"Panchina (in ordine): {bench}")
+    except (OSError, ValueError):
+        pass
+    try:
+        riv = _json.loads((base / "rivals.json").read_text())
+        rl = riv.get("rivals") or []
+        if isinstance(rl, dict):
+            rl = list(rl.values())
+        lines.append("Sfide: " + "; ".join(
+            f"{r['team']} {r.get('module')} attesi {r.get('total')} "
+            f"p(vittoria mia) {r.get('p_win'):.0%}" for r in rl))
+    except (OSError, ValueError, TypeError):
+        pass
+    lines.append(
+        "Se arriva una FOTO di una schermata Leghe Fantacalcio (formazione "
+        "avversaria o schermata di inserimento): estrai modulo e undici, "
+        "confrontali con l'XI consigliato sopra e rispondi con la formazione "
+        "ESATTA da schierare (modulo + 11 titolari + ordine panchina). Se la "
+        "foto mostra l'XI avversario schierato, dillo esplicitamente e "
+        "chiudi con 'Modulo avversario osservato: <squadra> <modulo>' su una "
+        "riga a sé, così viene registrato.")
+    return "\n".join(lines)
+
+
 def _build_telegram_prompt() -> str:
     """Build system prompt with Telegram-specific addon."""
-    return _build_system_prompt() + _TELEGRAM_SYSTEM_ADDON
+    return _build_system_prompt() + _TELEGRAM_SYSTEM_ADDON + _fantacalcio_context()
 
 
 # Models — use the same routing logic but simplified for Telegram
@@ -2470,6 +2510,29 @@ def _extract_photo(message: dict, token: str) -> dict | None:
     return {"base64": b64, "media_type": media_type}
 
 
+def _record_observed_module(text: str) -> None:
+    """Auto-record 'Modulo avversario osservato: <squadra> <modulo>' lines
+    from vision replies into the rival-modules ledger. Best-effort."""
+    try:
+        import re as _re
+        m = _re.search(r"Modulo avversario osservato:\s*(.+?)\s+(\d-\d-\d)",
+                       text)
+        if not m:
+            return
+        import json as _json
+        from pathlib import Path as _Path
+
+        from scripts.fantacalcio.xi_advisor import record_fielded
+        base = _Path(__file__).resolve().parents[2] / "data" / "fantacalcio"
+        rnd = _json.loads((base / "xi_advice.json").read_text()).get("round")
+        if rnd:
+            record_fielded(m.group(1).strip(), m.group(2), int(rnd))
+            log.info("Recorded observed module: %s %s (round %s)",
+                     m.group(1), m.group(2), rnd)
+    except Exception as e:
+        log.warning("observed-module record failed: %s", e)
+
+
 def _call_claude_with_image(user_text: str, photo: dict,
                             conversation: ConversationManager,
                             token: str, chat_id: str) -> str:
@@ -2557,6 +2620,7 @@ def _call_claude_with_image(user_text: str, photo: dict,
             if response.stop_reason != "tool_use" or not tool_uses:
                 conversation.add_assistant_message(full_text)
                 _delete_message(token, chat_id, status_msg_id)
+                _record_observed_module(full_text)
                 checked = _fact_check_response(full_text, all_tool_results, used_any_tools)
                 return _md_to_html(checked)
 

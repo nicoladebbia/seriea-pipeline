@@ -777,10 +777,8 @@ def test_departed_rostered_player_cannot_be_fielded():
 # standings, risk alerts, round digest, trade scanner
 # ---------------------------------------------------------------------------
 from scripts.fantacalcio.news import classify_risk  # noqa: E402
-from scripts.fantacalcio.tracker import (  # noqa: E402
-    _new_risk_alerts, _round_digest, _standings_from_schedule)
-from scripts.fantacalcio.trades import (  # noqa: E402
-    evaluate_offer, scan_windows, starter_lines, team_strength)
+from scripts.fantacalcio.tracker import _new_risk_alerts, _round_digest, _standings_from_schedule  # noqa: E402
+from scripts.fantacalcio.trades import evaluate_offer, scan_windows, starter_lines, team_strength  # noqa: E402
 
 
 def test_standings_count_only_real_scores_and_split_gironi():
@@ -916,3 +914,86 @@ def test_evaluate_offer_verdicts_and_shape_guard():
     assert down["verdict"] in ("RIFIUTA", "TRATTA")
     cross = evaluate_offer([me[3]], [_trow("Wrong", "A", 7.0)], me)
     assert cross["verdict"] == "ROSA ILLEGALE" and not cross["shape_ok"]
+
+
+def test_board_priors_prefer_model_then_real_history_then_floor():
+    from scripts.fantacalcio.xi_advisor import _board_priors
+    model = {"R": "A", "season_points": 19.0, "mv_hat": 6.4,
+             "proj_min": 38.0 * 60 * 0.8}
+    lvl, voto, pp = _board_priors(model, {"n": 30, "fv": 7.5, "voto": 7.0})
+    assert lvl == 6.5 and voto == 6.4          # the model wins when it scored him
+    # no model projection, REAL 30-game 6.33 season on disk (the David case):
+    lvl2, voto2, pp2 = _board_priors({"R": "A"}, {"n": 30, "fv": 6.33,
+                                                  "voto": 6.1})
+    assert 6.2 < lvl2 < 6.33 and 6.0 < voto2 < 6.1
+    assert pp2 == 30 / 38
+    # nothing known at all: the honest floor, not a fake confidence
+    lvl3, voto3, pp3 = _board_priors({"R": "A"}, None)
+    assert (lvl3, voto3, pp3) == (6.0, 6.0, 0.02)
+
+
+def test_wiki_departure_pass_marks_gone_spares_moves_and_collisions():
+    from scripts.fantacalcio.import_rosters import _mark_departures
+    board = {"players": [
+        # deadline-day departure of a post-listone arrival (Jonathan David):
+        {"id": 5544, "nome": "David", "R": "A", "team": "Juventus",
+         "status": "OK", "note": "post-listone arrival"},
+        # intra-SA move: never a departure
+        {"id": 1, "nome": "Frattesi", "R": "C", "team": "Inter",
+         "status": "OK", "note": ""},
+        # surname near-miss must not fire (Ankeye is not David)
+        {"id": 2, "nome": "Ankeye", "R": "A", "team": "Genoa",
+         "status": "OK", "note": ""},
+        # already departed: untouched
+        {"id": 3, "nome": "Leao", "R": "A", "team": "Milan",
+         "status": "DEPARTED", "note": "→ Galatasaray 2026-08-30"},
+    ]}
+    live = {10: {"nome": "X", "R": "D", "team": "Inter"},
+            11: {"nome": "Y", "R": "D", "team": "Lazio"}}
+    wiki = [
+        {"player_name": "Jonathan David", "from_club": "Juventus",
+         "to_club": "Atlético Madrid", "transfer_date": "2026-09-01"},
+        {"player_name": "Davide Frattesi", "from_club": "Inter",
+         "to_club": "Lazio", "transfer_date": "2026-08-14"},
+        {"player_name": "David Ankeye", "from_club": "Genoa",
+         "to_club": "Krasava ENY", "transfer_date": "2026-01-26"},
+    ]
+    ch = _mark_departures(board, live, wiki, listed_pids={2})
+    by = {p["nome"]: p for p in board["players"]}
+    assert by["David"]["status"] == "DEPARTED"
+    assert "Atlético Madrid" in by["David"]["note"]
+    assert by["Frattesi"]["status"] == "OK"
+    # Ankeye left per wiki, BUT his pid is on the probabili page — the
+    # pid-exact fresh source beats the name-matched wiki row
+    assert by["Ankeye"]["status"] == "OK"
+    assert "Galatasaray" in by["Leao"]["note"]        # untouched
+    assert len(ch) == 1
+    # a row wrongly wiki-marked earlier is restored once he shows up listed
+    board["players"][0].update(status="DEPARTED",
+                               note="→ Atlético Madrid [wiki 2026-09-02]")
+    ch2 = _mark_departures(board, live, wiki, listed_pids={5544})
+    assert by["David"]["status"] == "OK" and ch2 and "RESTORED" in ch2[0]
+
+
+def test_advise_module_restriction_and_fielded_ledger(tmp_path):
+    from scripts.fantacalcio.xi_advisor import _observed_modules, advise, record_fielded
+    roster = ([{"id": 1, "nome": "Gk", "R": "P", "team": "X", "level": 6.0,
+                "voto": 6.0}]
+              + [{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "X",
+                  "level": 6.0, "voto": 6.0} for i in range(5)]
+              + [{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "X",
+                  "level": 6.0, "voto": 6.0} for i in range(5)]
+              + [{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "X",
+                  "level": 7.0, "voto": 6.5} for i in range(3)])
+    fx = {"X": {"opp": "Y", "home": 1}}
+    free = advise(roster, fx, {}, {})
+    # 3 strikers up front, and nd>=4 keeps the defense modifier
+    assert free["module"] == "4-3-3"
+    forced = advise(roster, fx, {}, {}, modules=[(5, 4, 1)])
+    assert forced["module"] == "5-4-1"      # observed repertoire wins
+    led = tmp_path / "rm.json"
+    record_fielded("Munnezz FC", "4-4-2", 3, path=led)
+    record_fielded("Munnezz FC", "3-5-2", 4, path=led)
+    record_fielded("Munnezz FC", "4-4-2", 5, path=led)
+    assert _observed_modules("Munnezz FC", path=led) == [(4, 4, 2), (3, 5, 2)]
+    assert _observed_modules("Sconosciuti", path=led) == []

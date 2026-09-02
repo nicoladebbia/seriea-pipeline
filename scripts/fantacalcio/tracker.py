@@ -645,6 +645,9 @@ def _push_xi_advice() -> None:
           + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else ""))
     try:
         from scripts.pipeline.notify import notify
+        tg += ("\n\n📸 Un'ora prima: se vedi la formazione avversaria su "
+               "Leghe, mandami uno screenshot qui — la leggo e ti confermo "
+               "modulo e XI.")
         notify(msg, title="Fantacalcio XI", level="info",
                category="system", tg_html=tg, tg_reply_markup=_SCHIERA_BTN)
         state_path.write_text(json.dumps(

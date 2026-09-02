@@ -30,6 +30,7 @@ the fielded XI earns, not the ceiling after substitutions.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -37,7 +38,7 @@ import pandas as pd
 
 from config.team_names import normalize_team as NT
 from scripts.fantacalcio.probabili import fetch_probabili, p_play_override, status_by_pid
-from scripts.fantacalcio.tracker import LEVEL_K, MODULES, _modifier, discipline_status
+from scripts.fantacalcio.tracker import LEVEL_K, MODULES, SEASON, _modifier, discipline_status
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARD = ROOT / "data" / "fantacalcio" / "auction_board.json"
@@ -80,8 +81,11 @@ def _history() -> dict:
     if _HISTORY is not None:
         return _HISTORY
     import pandas as pd
-    cur_tag = "round_2026_27"
+    # Derived from SEASON, never a literal — a hardcoded season tag is the
+    # annual-fuse trap this repo keeps paying for (see CLAUDE.md).
+    cur_tag = "round_" + SEASON.replace("-", "_")
     frames, cur_frames = [], []
+    by_tag: dict[str, list] = {}
     for f in sorted(VOTI_DIR.glob("round_*.parquet")):
         try:
             d = pd.read_parquet(f, columns=["pid", "role", "voto",
@@ -92,6 +96,8 @@ def _history() -> dict:
         frames.append(d)
         if f.name.startswith(cur_tag):
             cur_frames.append(d)
+        else:
+            by_tag.setdefault(f.name[:len(cur_tag)], []).append(d)
     sd: dict[int, float] = {}
     live: dict[int, dict] = {}
     if frames:
@@ -108,7 +114,17 @@ def _history() -> dict:
         for pid, grp in curd.groupby("pid"):
             live[int(pid)] = {"n": len(grp), "fv": float(grp.fantavoto.mean()),
                               "voto": float(grp.voto.mean())}
-    _HISTORY = {"sd": sd, "live": live,
+    # Latest completed season: the REAL prior for players the auction model
+    # never scored (arrivals, failed matches) — measured fantamedia beats a
+    # bare 6.0 every time it exists.
+    prev: dict[int, dict] = {}
+    prev_tag = max((t for t in by_tag if t < cur_tag), default=None)
+    if prev_tag:
+        prevd = pd.concat(by_tag[prev_tag])
+        for pid, grp in prevd.groupby("pid"):
+            prev[int(pid)] = {"n": len(grp), "fv": float(grp.fantavoto.mean()),
+                              "voto": float(grp.voto.mean())}
+    _HISTORY = {"sd": sd, "live": live, "prev": prev,
                 "rounds_elapsed": len(list(VOTI_DIR.glob(f"{cur_tag}_*.parquet")))}
     return _HISTORY
 
@@ -197,7 +213,8 @@ def _bench_split(cand: list, xi: list) -> tuple[list, list]:
 
 
 def advise(roster: list, fixtures: dict, elo: dict, out: dict,
-           risk_lambda: float = 0.0) -> dict:
+           risk_lambda: float = 0.0,
+           modules: list[tuple[int, int, int]] | None = None) -> dict:
     """Pure core: pick module + XI by p_play * expected fantavoto. Testable without disk.
 
     Roster rows without a p_play field count as certain starters (p=1.0) so the
@@ -233,7 +250,7 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
     by_role = {r: sorted([c for c in cand if c["R"] == r and c["exp_slot"] is not None],
                          key=lambda x: -key(x)) for r in "PDCA"}
     best, best_obj = None, None
-    for nd, nc, na in MODULES:
+    for nd, nc, na in (modules or MODULES):
         need = {"P": 1, "D": nd, "C": nc, "A": na}
         if any(len(by_role[r]) < n for r, n in need.items()):
             continue
@@ -256,6 +273,40 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
                     "unavailable": [c for c in cand if c["exp_slot"] is None]}
     return best or {"module": None, "total": 0.0, "modifier": 0.0, "xi": [],
                     "bench": [], "tribuna": [], "unavailable": cand}
+
+
+def _board_priors(p: dict, prev: dict | None) -> tuple[float, float, float]:
+    """(level, voto, p_play) priors for a board row, most-real-first.
+
+    1. The auction model's projection (season_points / mv_hat / proj_min) —
+       fit on two seasons of real votes and minutes.
+    2. Else the player's ACTUAL latest-season record, shrunk toward the 6.0
+       role mean by LEVEL_K — arrivals and failed auction matches (19 players
+       measured 2026-09-02, e.g. David 6.33 over 30 games) were riding a
+       bare 6.0 before this.
+    3. Else 6.0 / 2% — the honest nothing-known floor.
+    """
+    sp = p.get("season_points")
+    if sp:
+        level = 6.0 + float(sp) / 38.0
+    elif prev:
+        level = (LEVEL_K * 6.0 + prev["n"] * prev["fv"]) / (LEVEL_K + prev["n"])
+    else:
+        level = 6.0
+    if p.get("mv_hat"):
+        voto = float(p["mv_hat"])
+    elif prev:
+        voto = (LEVEL_K * 6.0 + prev["n"] * prev["voto"]) / (LEVEL_K + prev["n"])
+    else:
+        voto = 6.0
+    pm = float(p.get("proj_min") or 0.0)
+    if pm:
+        pp = pm / (38.0 * APP_MIN[p["R"]])
+    elif prev:
+        pp = prev["n"] / 38.0
+    else:
+        pp = 0.02
+    return level, voto, min(max(pp, 0.02), 0.95)
 
 
 def _my_roster(by_id: dict, prob_by_pid: dict,
@@ -281,7 +332,8 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
             live[p["nome"]] = p
     except (OSError, ValueError):
         pass
-    sds = _history()["sd"]
+    hist = _history()
+    sds = hist["sd"]
 
     roster_src = []
     for pid in ids:
@@ -289,9 +341,8 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
         if not p:
             continue
         lv = live.get(p["nome"], {})
-        prior = 6.0 + float(p.get("season_points") or 0.0) / 38.0
-        pp_prior = min(max(
-            float(p.get("proj_min") or 0.0) / (38.0 * APP_MIN[p["R"]]), 0.02), 0.95)
+        prior, mv_prior, pp_prior = _board_priors(
+            p, (hist.get("prev") or {}).get(pid))
         n_seen = int(lv.get("n_rounds", 0))
         p_play = (PLAY_K * pp_prior + n_seen) / (PLAY_K + rounds_elapsed)
         p_play = min(max(p_play, 0.02), 0.95)
@@ -299,8 +350,7 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
         row = {"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
                "level": float(lv.get("live_level") or prior),
                "level_src": "live" if lv.get("live_level") else "prior",
-               "voto": float(lv.get("live_voto")
-                             or p.get("mv_hat") or 6.0),
+               "voto": float(lv.get("live_voto") or mv_prior),
                "p_play": p_play, "p_play_src": pp_src,
                "sd": sds.get(pid) or SD_ROLE[p["R"]],
                "n_rounds": n_seen}
@@ -465,15 +515,13 @@ def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> li
         if not p:
             continue
         lv = hist["live"].get(pid)
-        prior = 6.0 + float(p.get("season_points") or 0.0) / 38.0
-        mv_prior = float(p.get("mv_hat") or 6.0)
+        prior, mv_prior, pp_prior = _board_priors(
+            p, (hist.get("prev") or {}).get(pid))
         n_seen = int(lv["n"]) if lv else 0
         level = (LEVEL_K * prior + n_seen * lv["fv"]) / (LEVEL_K + n_seen) \
             if lv else prior
         voto = (LEVEL_K * mv_prior + n_seen * lv["voto"]) / (LEVEL_K + n_seen) \
             if lv else mv_prior
-        pp_prior = min(max(
-            float(p.get("proj_min") or 0.0) / (38.0 * APP_MIN[p["R"]]), 0.02), 0.95)
         p_play = (PLAY_K * pp_prior + n_seen) / (PLAY_K + rounds_elapsed) \
             if rounds_elapsed else pp_prior
         p_play = min(max(p_play, 0.02), 0.95)
@@ -494,6 +542,45 @@ def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> li
 # reported only when it moves P(win) by at least ALT_MIN_GAIN.
 RISK_LAMBDAS = (-0.3, -0.15, 0.15, 0.3)
 ALT_MIN_GAIN = 0.01
+
+
+FIELDED = ROOT / "data" / "fantacalcio" / "rival_modules.json"
+
+
+def record_fielded(team: str, module: str, rnd: int,
+                   path: Path = FIELDED) -> dict:
+    """Record the module a league team ACTUALLY fielded in a round.
+
+    The learning input for the rival matrix: observed behaviour beats the
+    optimal-module assumption (a rival who always plays 4-4-2, or forgets
+    lineups, is weaker than his best XI). Fed from Leghe screenshots (the
+    Telegram bot asks the vision reply to end with 'Modulo avversario
+    osservato: <squadra> <modulo>') or by hand via --fielded.
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault(team, {})[str(rnd)] = module
+    path.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+    return data
+
+
+def _observed_modules(team: str, path: Path = FIELDED) -> list[tuple]:
+    """This team's observed-module repertoire, most recent first."""
+    try:
+        data = json.loads(path.read_text()).get(team) or {}
+    except (OSError, ValueError):
+        return []
+    mods = []
+    for rnd in sorted(data, key=int, reverse=True):
+        try:
+            t = tuple(int(x) for x in str(data[rnd]).split("-"))
+        except ValueError:
+            continue
+        if len(t) == 3 and t not in mods:
+            mods.append(t)
+    return mods
 
 
 def build_rivals(adv: dict | None = None) -> dict:
@@ -581,7 +668,11 @@ def build_rivals(adv: dict | None = None) -> dict:
                 row["congested"] = c["congested"]
                 row["last_comp"] = c["last_comp"]
         _apply_discipline(rows, out, disc)
-        radv = advise(rows, fixtures, elo, out)
+        obs = _observed_modules(tname)
+        radv = advise(rows, fixtures, elo, out, modules=obs or None)
+        module_src = "osservato" if obs and radv.get("xi") else "stimato"
+        if obs and not radv.get("xi"):    # repertoire infeasible (bans etc.)
+            radv = advise(rows, fixtures, elo, out)
         n_missing = (len(entry.get("unmatched", []))
                      + len(entry.get("roster", [])) - len(rows))
         if not radv.get("xi"):
@@ -602,6 +693,7 @@ def build_rivals(adv: dict | None = None) -> dict:
                             "in": sorted(alt_names - base_names),
                             "out": sorted(base_names - alt_names)}
         rivals.append({"team": tname, "module": radv["module"],
+                       "module_src": module_src,
                        "total": radv["total"], "sd": radv["xi_sd"],
                        "p_win": round(p0, 3), "n_missing": n_missing,
                        "meetings": meetings.get(tname, []),
@@ -685,6 +777,15 @@ def build_svincolati(top_n: int = 8) -> dict:
 
 
 def main() -> None:
+    if "--fielded" in sys.argv:
+        i = sys.argv.index("--fielded")
+        rnd = int(sys.argv[sys.argv.index("--round") + 1]) \
+            if "--round" in sys.argv else _next_fixtures()[1]
+        for pair in sys.argv[i + 1].split(","):
+            team, mod = (x.strip() for x in pair.split("="))
+            record_fielded(team, mod, rnd)
+            print(f"registrato: {team} {mod} (giornata {rnd})")
+        return
     out = build_advice()
     print(json.dumps({k: out[k] for k in ("round", "module", "total", "modifier")},
                      indent=1))

@@ -181,6 +181,21 @@ def sync_mercato(force: bool = False) -> list[str] | None:
         return None
 
     changes = _apply_live(board, live)
+    try:
+        wiki = pd.read_parquet(ROOT / "data/external/transfermarkt"
+                               / "wiki_transfers_2026_2027.parquet")
+        listed = set()
+        try:
+            pj = json.loads((ROOT / "data" / "fantacalcio"
+                             / "probabili.json").read_text())
+            listed = {int(pp["pid"]) for td in (pj.get("teams") or {}).values()
+                      for g in ("starters", "reserves") for pp in td.get(g, [])}
+        except (OSError, ValueError):
+            pass
+        changes += _mark_departures(board, live,
+                                    wiki.to_dict(orient="records"), listed)
+    except (OSError, ValueError, KeyError) as e:
+        print(f"sync_mercato: wiki departure pass skipped ({e})")
     board["mercato_synced_at"] = datetime.now(UTC).isoformat()
     tmp = BOARD.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(board, indent=1, ensure_ascii=False))
@@ -188,6 +203,64 @@ def sync_mercato(force: bool = False) -> list[str] | None:
     print(f"sync_mercato: {len(changes)} changes")
     for c in changes:
         print(f"  {c}")
+    return changes
+
+
+def _mark_departures(board: dict, live: dict[int, dict],
+                     wiki: list[dict],
+                     listed_pids: set[int] | None = None) -> list[str]:
+    """Mark board rows DEPARTED on wiki-transfers evidence.
+
+    Quotazioni absence proves nothing (the page keeps departed rows), so this
+    is the ONLY departure source in the sync — same parquet the board builder
+    uses, needed here because a post-listone arrival has no builder row to
+    mark (Jonathan David: joined Juve after the listone snapshot, left for
+    Atlético on deadline day, and the arrivals pass re-offered him as a free
+    agent 2026-09-02). Match: last name token + from-club, judged on the
+    player's LATEST move; to-club outside the live Serie A club set = gone.
+
+    `listed_pids` — pids on the CURRENT probabili page — overrides the wiki:
+    that source is pid-exact and fresh, the wiki match is by name. Measured
+    2026-09-02: 8 of 38 wiki verdicts were refuted this way, two of them MW3
+    probable STARTERS (Mandas, Oyono A.). A listed pid is never marked, and
+    a previously wiki-marked row that shows up listed is restored.
+    """
+    listed_pids = listed_pids or set()
+    sa_clubs = {v["team"] for v in live.values()}
+    today = datetime.now(UTC).date().isoformat()
+    by_key: dict[tuple, dict] = {}
+    for w in wiki:
+        name = str(w.get("player_name") or "")
+        if not name:
+            continue
+        key = (norm(name).split()[-1], norm(str(w.get("from_club") or ""))[:5])
+        cur = by_key.get(key)
+        if cur is None or str(w.get("transfer_date")) > str(cur.get("transfer_date")):
+            by_key[key] = w
+    changes = []
+    for p in board["players"]:
+        if p.get("status") == "DEPARTED":
+            # pid-exact, fresh, official listing beats ANY name-matched
+            # departure mark, the builder's included
+            if int(p["id"]) in listed_pids:
+                p["status"] = "OK"
+                p["note"] = "departure mark refuted by probabili listing"
+                changes.append(f"RESTORED  {p['R']} {p['nome']} ({p['team']}) "
+                               f"— listed in probabili")
+            continue
+        if int(p["id"]) in listed_pids:
+            continue
+        key = (norm(p["nome"]).split()[0], norm(p["team"])[:5])
+        w = by_key.get(key)
+        if w is None:
+            continue
+        to_club = str(w.get("to_club") or "")
+        if any(norm(to_club)[:5] == norm(c)[:5] for c in sa_clubs):
+            continue    # intra-SA move — the team update, not a departure
+        p["status"] = "DEPARTED"
+        p["note"] = f"→ {to_club} {w.get('transfer_date')}"
+        changes.append(f"DEPARTED  {p['R']} {p['nome']} ({p['team']}) "
+                       f"→ {to_club} [wiki {today}]")
     return changes
 
 
