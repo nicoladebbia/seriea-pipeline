@@ -1,1410 +1,401 @@
 {% extends "base.html" %}
-{% block title %}Fantacalcio Auction Board — SerieAI{% endblock %}
-{% block page_title %}Fantacalcio 2026-27 · Asta{% endblock %}
+{% block title %}Fantacalcio — Whisky Palermo — SerieAI{% endblock %}
+{% block page_title %}Whisky Palermo{% endblock %}
 
 {% block page_subtitle %}
-<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
-  10 teams · 500 credits · 3P/8D/8C/6A · re-solves live as players go off the board
+<span id="fc-sub" style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Coppa Del Nonno · 2026-27
 </span>
+{% endblock %}
+
+{% block header_actions %}
+<button class="fc-btn" id="fc-refresh" title="Rebuild tracker + advice from live voti">
+  ↻ Refresh
+</button>
 {% endblock %}
 
 {% block head %}
 <style>
-  .fa-wrap { --p:#fbbf24; --d:#4ade80; --c:#818cf8; --a:#f87171; }
-  .fa-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .fc { --rp:#fbbf24; --rd:#4ade80; --rc:#818cf8; --ra:#f87171; }
+  .fc-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .fc-btn { background: var(--bg-tertiary); border: 1px solid var(--border-default);
+            color: var(--text-secondary); border-radius: var(--radius-sm);
+            padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; }
+  .fc-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+  .fc-btn[disabled] { opacity: .5; cursor: wait; }
 
-  /* --- sticky command bar: the only thing that matters at 04:30 --- */
-  .fa-bar { position: sticky; top: 0; z-index: 40; background: var(--bg-secondary);
-            border: 1px solid var(--border-default); border-radius: var(--radius-lg);
-            padding: 12px 16px; margin-bottom: 18px; display: flex; align-items: center;
-            gap: 20px; flex-wrap: wrap; box-shadow: var(--shadow-md); }
-  .fa-bar__big { font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-                 font-size: 26px; font-weight: 700; line-height: 1; color: var(--text-primary); }
-  .fa-bar__lab { font-size: 9px; text-transform: uppercase; letter-spacing: .09em;
-                 color: var(--text-tertiary); margin-bottom: 4px; }
-  .fa-slots { display: flex; gap: 8px; }
-  .fa-slot { border: 1px solid var(--border-default); border-radius: var(--radius-sm);
-             padding: 5px 9px; font-size: 11px; font-family: var(--font-mono);
-             font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-  .fa-slot b { font-weight: 700; }
-  .fa-slot.full { border-color: var(--green); color: var(--green); background: var(--green-muted); }
-  .fa-spacer { flex: 1; }
+  /* ---- header record strip ---- */
+  .fc-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+              gap: 12px; margin-bottom: 20px; }
+  .fc-stat { background: var(--bg-secondary); border: 1px solid var(--border-default);
+             border-radius: var(--radius-lg); padding: 12px 16px; }
+  .fc-stat__lab { font-size: 9px; text-transform: uppercase; letter-spacing: .09em;
+                  color: var(--text-tertiary); margin-bottom: 6px; }
+  .fc-stat__val { font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+                  font-size: 22px; font-weight: 700; color: var(--text-primary);
+                  line-height: 1.1; }
+  .fc-stat__sub { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; }
 
-  .fa-btn { background: var(--bg-tertiary); border: 1px solid var(--border-default);
-            color: var(--text-secondary); border-radius: var(--radius-sm); padding: 6px 11px;
-            font-size: 11px; font-weight: 600; cursor: pointer; }
-  .fa-btn:hover { color: var(--text-primary); border-color: var(--accent); }
-  .fa-btn.buy { color: var(--green); border-color: rgba(74,222,128,.35); }
-  .fa-btn.buy:hover { background: var(--green-muted); border-color: var(--green); }
-  .fa-btn.gone { color: var(--red); border-color: rgba(248,113,113,.3); }
-  .fa-btn.gone:hover { background: var(--red-muted); border-color: var(--red); }
-  .fa-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* ---- section shells ---- */
+  .fc-card { background: var(--bg-secondary); border: 1px solid var(--border-default);
+             border-radius: var(--radius-lg); padding: 18px 20px; margin-bottom: 20px; }
+  .fc-card h2 { font-size: 13px; font-weight: 700; margin: 0 0 4px;
+                color: var(--text-primary); display: flex; align-items: baseline; gap: 10px; }
+  .fc-card h2 small { font-size: 10px; font-weight: 500; color: var(--text-tertiary); }
 
-  .fa-grid { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(0,1fr);
-             gap: 18px; align-items: start; }
-  @media (max-width: 1100px) { .fa-grid { grid-template-columns: minmax(0,1fr); } }
+  /* ---- pitch ---- */
+  .fc-pitch { border-radius: var(--radius-lg); padding: 22px 10px 16px; margin-top: 12px;
+              background: linear-gradient(180deg, rgba(74,222,128,.10), rgba(74,222,128,.03));
+              border: 1px solid rgba(74,222,128,.22); }
+  .fc-line { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
+             margin-bottom: 16px; }
+  .fc-line:last-child { margin-bottom: 0; }
+  .fc-chip { background: var(--bg-primary); border: 1px solid var(--border-default);
+             border-radius: var(--radius-md); padding: 8px 10px; min-width: 118px;
+             text-align: center; position: relative; }
+  .fc-chip__role { position: absolute; top: -7px; left: 50%; transform: translateX(-50%);
+                   font-size: 8px; font-weight: 800; padding: 1px 7px; border-radius: 8px;
+                   color: #0a0a0a; letter-spacing: .06em; }
+  .fc-chip__name { font-size: 12px; font-weight: 700; color: var(--text-primary);
+                   margin-top: 3px; white-space: nowrap; }
+  .fc-chip__fix { font-size: 9.5px; color: var(--text-tertiary); margin-top: 2px; }
+  .fc-chip__nums { display: flex; justify-content: center; gap: 8px; margin-top: 5px;
+                   font-family: var(--font-mono); font-size: 10px; }
+  .fc-chip__exp { color: var(--accent); font-weight: 700; }
+  .fc-playbar { height: 3px; border-radius: 2px; background: var(--bg-tertiary);
+                margin-top: 6px; overflow: hidden; }
+  .fc-playbar i { display: block; height: 100%; background: var(--green); }
 
-  .fa-card { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-             border-radius: var(--radius-lg); padding: 16px; margin-bottom: 18px; }
-  .fa-card__h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-  .fa-card__h h2 { font-size: 13px; font-weight: 700; color: var(--text-primary);
-                   text-wrap: balance; }
-  .fa-card__sub { font-size: 11px; color: var(--text-tertiary); margin-bottom: 14px;
-                  line-height: 1.5; max-width: 62ch; }
+  .fc-benchrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .fc-bench { display: flex; align-items: center; gap: 7px; background: var(--bg-primary);
+              border: 1px solid var(--border-default); border-radius: 999px;
+              padding: 4px 12px 4px 6px; font-size: 11px; color: var(--text-secondary); }
+  .fc-bench__n { width: 18px; height: 18px; border-radius: 50%; background: var(--bg-tertiary);
+                 display: inline-flex; align-items: center; justify-content: center;
+                 font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+                 color: var(--text-primary); }
+  .fc-out { margin-top: 12px; font-size: 11px; color: var(--red); }
 
-  .fa-why { font-size: 11px; line-height: 1.55; color: var(--text-tertiary);
-            padding: 3px 0 5px 2px; max-width: 74ch; }
-  .fa-why b { color: var(--text-secondary); font-weight: 600; }
-  .fa-why.blind { color: #b3453b; }
-  .fa-why.blind b { color: #b3453b; }
-  .fa-why.inj { color: #b3453b; font-weight: 500; }
+  /* ---- squad tables ---- */
+  .fc-rolehead { display: flex; align-items: center; gap: 8px; margin: 18px 0 8px; }
+  .fc-rolehead:first-of-type { margin-top: 10px; }
+  .fc-roledot { width: 10px; height: 10px; border-radius: 3px; }
+  .fc-rolehead b { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                   color: var(--text-secondary); }
+  .fc-tablewrap { overflow-x: auto; }
+  table.fc-t { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .fc-t th { text-align: left; font-size: 9px; text-transform: uppercase;
+             letter-spacing: .08em; color: var(--text-tertiary); font-weight: 600;
+             padding: 4px 10px; border-bottom: 1px solid var(--border-default);
+             white-space: nowrap; }
+  .fc-t td { padding: 7px 10px; border-bottom: 1px solid var(--border-muted, var(--border-default));
+             color: var(--text-secondary); white-space: nowrap; vertical-align: middle; }
+  .fc-t tr:last-child td { border-bottom: none; }
+  .fc-t .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .fc-pname { font-weight: 700; color: var(--text-primary); }
+  .fc-pteam { font-size: 10px; color: var(--text-tertiary); }
+  .fc-lvl-up { color: var(--green); } .fc-lvl-dn { color: var(--red); }
+  .fc-chips { display: inline-flex; gap: 4px; }
+  .fc-fv { display: inline-flex; min-width: 30px; justify-content: center;
+           border-radius: var(--radius-sm); padding: 2px 5px; font-family: var(--font-mono);
+           font-size: 10.5px; font-weight: 700; border: 1px solid transparent; }
+  .fc-fv.good { color: var(--green); background: var(--green-muted); }
+  .fc-fv.ok   { color: var(--text-secondary); background: var(--bg-tertiary); }
+  .fc-fv.bad  { color: var(--red); background: var(--red-muted); }
+  .fc-fv.sv   { color: var(--text-tertiary); background: transparent;
+                border-color: var(--border-default); }
+  .fc-status { font-size: 9.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+               letter-spacing: .04em; }
+  .fc-status.xi    { color: var(--green); background: var(--green-muted); }
+  .fc-status.bench { color: var(--text-secondary); background: var(--bg-tertiary); }
+  .fc-status.out   { color: var(--red); background: var(--red-muted); }
 
-  /* --- season tracker --- */
-  .fa-src { font-size: 10px; color: var(--text-tertiary); }
-  .fa-tot { display: flex; flex-wrap: wrap; gap: 22px; padding: 12px 14px; margin-bottom: 14px;
-            background: var(--bg-tertiary, rgba(255,255,255,.03));
-            border: 1px solid var(--border-subtle); border-radius: var(--radius-md, 8px); }
-  .fa-tot div span { display: block; font-size: 10px; color: var(--text-tertiary);
-                     text-transform: uppercase; letter-spacing: .06em; }
-  .fa-tot div b { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums;
-                  color: var(--text-primary); }
-  .fa-rd { border-top: 1px solid var(--border-subtle); padding: 9px 0; }
-  .fa-rd__h { display: flex; align-items: baseline; gap: 10px; cursor: pointer; }
-  .fa-rd__n { font-size: 11px; font-weight: 700; color: var(--text-secondary);
-              min-width: 62px; }
-  .fa-rd__t { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
-              color: var(--text-primary); min-width: 58px; }
-  .fa-rd__m { font-size: 10px; color: var(--text-tertiary); }
-  .fa-rd__c { font-size: 10px; color: var(--text-tertiary); margin-left: auto; }
-  .fa-xi { display: none; margin: 8px 0 2px; overflow-x: auto; }
-  .fa-rd.open .fa-xi { display: block; }
-  .fa-xi table { width: 100%; border-collapse: collapse; font-size: 11px; min-width: 380px; }
-  .fa-xi td { padding: 3px 6px; border-bottom: 1px solid var(--border-subtle);
-              font-variant-numeric: tabular-nums; }
-  .fa-xi td.n { font-variant-numeric: normal; }
-  .fa-xi tr.sub td.n::after { content: " (sub)"; color: var(--text-tertiary); font-size: 10px; }
-  .fa-xi tr.blank td { color: var(--text-tertiary); }
-  .fa-pos { color: var(--emerald, #2e9e5b); }
-  .fa-neg { color: #b3453b; }
+  /* ---- league ---- */
+  .fc-league { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+               gap: 12px; margin-top: 12px; }
+  .fc-opp { border: 1px solid var(--border-default); border-radius: var(--radius-md);
+            background: var(--bg-primary); overflow: hidden; }
+  .fc-opp summary { cursor: pointer; padding: 10px 14px; display: flex; align-items: center;
+                    gap: 10px; list-style: none; }
+  .fc-opp summary::-webkit-details-marker { display: none; }
+  .fc-opp__name { font-size: 12px; font-weight: 700; color: var(--text-primary); flex: 1; }
+  .fc-opp__meta { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+  .fc-opp table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .fc-opp td { padding: 4px 14px; color: var(--text-secondary);
+               border-top: 1px solid var(--border-default); }
+  .fc-opp .rl { font-weight: 800; width: 20px; }
+  .fc-warn { font-size: 10px; color: var(--yellow, #fbbf24); padding: 6px 14px 10px; }
 
-  /* --- role groups --- */
-  .fa-role { margin-bottom: 14px; }
-  .fa-role__h { display: flex; align-items: center; gap: 8px; padding-bottom: 6px;
-                margin-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
-  .fa-tag { font-size: 10px; font-weight: 800; width: 18px; height: 18px; border-radius: 4px;
-            display: inline-flex; align-items: center; justify-content: center; color: #09090b; }
-  .fa-tag.P { background: var(--p); } .fa-tag.D { background: var(--d); }
-  .fa-tag.C { background: var(--c); } .fa-tag.A { background: var(--a); }
-  .fa-role__n { font-size: 11px; font-weight: 700; color: var(--text-secondary);
-                text-transform: uppercase; letter-spacing: .06em; }
-  .fa-role__spend { margin-left: auto; font-size: 11px; font-family: var(--font-mono);
-                    font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
-
-  /* --- player rows --- */
-  .fa-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px;
-            align-items: center; padding: 7px 8px; border-radius: var(--radius-sm);
-            border: 1px solid transparent; }
-  .fa-row:hover { background: var(--bg-tertiary); border-color: var(--border-default); }
-  .fa-row + .fa-row { margin-top: 1px; }
-  .fa-row__name { font-size: 12.5px; font-weight: 600; color: var(--text-primary);
-                  display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .fa-row__name span.t { font-size: 10.5px; font-weight: 400; color: var(--text-tertiary);
-                         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .fa-price { font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-              font-size: 12px; text-align: right; min-width: 42px; }
-  .fa-price small { display: block; font-size: 8.5px; text-transform: uppercase;
-                    letter-spacing: .07em; color: var(--text-tertiary); font-family: var(--font-sans); }
-  .fa-price.buy b { color: var(--text-primary); font-weight: 700; }
-  .fa-price.max b { color: var(--accent); font-weight: 700; }
-  .fa-acts { display: flex; gap: 5px; }
-  .fa-in { width: 46px; background: var(--bg-primary); border: 1px solid var(--border-default);
-           color: var(--text-primary); border-radius: var(--radius-sm); padding: 5px 6px;
-           font-size: 11px; font-family: var(--font-mono); text-align: right; }
-  .fa-in:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-  /* --- chips --- */
-  .chip { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
-          padding: 2px 5px; border-radius: 3px; white-space: nowrap; }
-  .chip.key   { background: var(--amber-muted); color: var(--amber); }
-  .chip.value { background: var(--green-muted); color: var(--green); }
-  .chip.avoid { background: var(--red-muted);   color: var(--red); }
-  .chip.blind { background: var(--bg-tertiary); color: var(--text-tertiary); }
-  .chip.mine  { background: var(--emerald-muted); color: var(--emerald); }
-
-  /* The right-hand cards are ~450px: buy + max + a price box + two buttons consume the
-     row, leaving the 1fr name column nothing, and the name collapsed to "S...". Stack the
-     row instead of crushing it. Keyed on the CARD's width, not the viewport -- the window
-     is wide, the card is not. */
-  .fa-v { border-left: 2px solid var(--border); padding-left: 7px; margin-top: 3px; }
-  .fa-v.yes  { border-left-color: #2e9e5b; }
-  .fa-v.ok   { border-left-color: #c08a2e; }
-  .fa-v.no   { border-left-color: #b3453b; }
-  .fa-v.nodata { border-left-color: var(--text-tertiary); opacity: .8; }
-  .fa-v .approx { opacity: .6; font-size: 9px; vertical-align: super; margin-left: 1px; }
-  .fa-grid > div { container-type: inline-size; }
-  @container (max-width: 520px) {
-    .fa-row { grid-template-columns: auto auto 1fr; row-gap: 6px; }
-    .fa-row__name { grid-column: 1 / -1; flex-wrap: wrap; }
-    .fa-row .fa-acts { justify-content: flex-end; }
-    .fa-alt { padding-top: 2px; }
-  }
-
-  .fa-alt { font-size: 10.5px; color: var(--text-tertiary); padding: 0 8px 7px 8px;
-            margin-top: -2px; line-height: 1.55; }
-  .fa-alt b { color: var(--text-secondary); font-weight: 600; }
-
-  /* --- search --- */
-  .fa-search { width: 100%; background: var(--bg-primary); border: 1px solid var(--border-default);
-               color: var(--text-primary); border-radius: var(--radius-md); padding: 9px 12px;
-               font-size: 12.5px; margin-bottom: 10px; }
-  .fa-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .fa-results { max-height: 340px; overflow-y: auto; }
-
-  /* --- table --- */
-  .fa-tblwrap { overflow-x: auto; }
-  table.fa-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-  table.fa-tbl th { text-align: left; font-size: 9px; text-transform: uppercase;
-                    letter-spacing: .07em; color: var(--text-tertiary); font-weight: 600;
-                    padding: 6px 8px; border-bottom: 1px solid var(--border-default);
-                    position: sticky; top: 0; background: var(--bg-secondary); cursor: pointer;
-                    white-space: nowrap; }
-  table.fa-tbl th:hover { color: var(--text-secondary); }
-  table.fa-tbl td { padding: 5px 8px; border-bottom: 1px solid var(--border-subtle);
-                    color: var(--text-secondary); white-space: nowrap; }
-  table.fa-tbl td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-                      text-align: right; }
-  table.fa-tbl tr:hover td { background: var(--bg-tertiary); }
-  table.fa-tbl td.nm { color: var(--text-primary); font-weight: 600; }
-  .pos { color: var(--green); } .neg { color: var(--red); }
-  .fa-scroll { max-height: 560px; overflow-y: auto; }
-
-  .fa-filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  .fa-filters button { background: transparent; border: 1px solid var(--border-default);
-                       color: var(--text-tertiary); border-radius: 999px; padding: 4px 11px;
-                       font-size: 10.5px; font-weight: 600; cursor: pointer; }
-  .fa-filters button.on { background: var(--accent-muted); border-color: var(--accent);
-                          color: var(--accent); }
-
-  /* --- alerts --- */
-  .fa-alert { background: var(--red-muted); border: 1px solid rgba(248,113,113,.3);
-              border-left: 3px solid var(--red); border-radius: var(--radius-md);
-              padding: 12px 15px; margin-bottom: 18px; }
-  .fa-alert h3 { font-size: 12px; font-weight: 700; color: var(--red); margin-bottom: 6px; }
-  .fa-alert ul { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--text-secondary);
-                 line-height: 1.75; }
-  .fa-note { background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-             border-left: 3px solid var(--amber); border-radius: var(--radius-md);
-             padding: 12px 15px; margin-bottom: 18px; font-size: 11.5px;
-             color: var(--text-tertiary); line-height: 1.7; }
-  .fa-note b { color: var(--text-secondary); }
-
-  .fa-lim { columns: 2; column-gap: 26px; font-size: 11.5px; color: var(--text-tertiary);
-            line-height: 1.7; }
-  @media (max-width: 900px) { .fa-lim { columns: 1; } }
-  .fa-lim p { break-inside: avoid; margin-bottom: 11px; }
-  .fa-lim b { color: var(--text-secondary); }
-
-  .fa-empty { font-size: 11.5px; color: var(--text-tertiary); padding: 10px 8px; }
+  .fc-empty { color: var(--text-tertiary); font-size: 12px; padding: 30px 0;
+              text-align: center; }
+  @media (max-width: 640px) { .fc-chip { min-width: 96px; } }
 </style>
 {% endblock %}
 
 {% block content %}
-{% if not board %}
-  <div class="fa-alert">
-    <h3>No board built yet</h3>
-    <ul><li>Run <code>python3 scripts/fantacalcio/build_auction_board.py</code>, then reload.</li></ul>
-  </div>
-{% else %}
-<div class="fa-wrap">
+<div class="fc">
+  <div class="fc-strip" id="fc-strip"><div class="fc-empty">Caricamento…</div></div>
 
-  <!-- Rebuild reminder: arms itself from 31 Aug, disarms only when the served board was
-       built after the Italian window shut (1 Sep 14:00 ET). Lives in the page because a
-       reminder that depends on a running session is not a reminder. -->
-  <div id="fa-rebuild-banner" style="display:none;background:#7a2e26;color:#fff;
-       border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;
-       line-height:1.5"></div>
-  <script>
-  (function () {
-    var built = new Date("{{ board.generated_at }}");
-    var now = new Date();
-    var arm = new Date("2026-08-31T00:00:00-04:00");
-    var shut = new Date("2026-09-01T14:00:00-04:00");   // Italian window closes 20:00 CEST
-    if (now < arm) return;
-    if (built >= shut) return;
-    var el = document.getElementById("fa-rebuild-banner");
-    el.style.display = "block";
-    el.innerHTML = (now >= shut)
-      ? "<b>REBUILD NOW — the Italian window has shut and this board predates it.</b> " +
-        "Run <code>python3 -m scripts.fantacalcio.build_auction_board</code> so deadline-day " +
-        "transfers and the latest injury bulletin are priced in. This banner disappears " +
-        "when the served board is fresh."
-      : "<b>Auction eve.</b> This board was built " + built.toISOString().slice(0, 10) +
-        " — rebuild it after the Italian market closes (1 Sep, 2pm ET / 20:00 in Italy) and " +
-        "before the 10:30pm auction, so deadline-day moves and fresh injuries are in.";
-  })();
-  </script>
-
-  <!-- ============ STICKY COMMAND BAR ============ -->
-  <div class="fa-bar">
-    <div>
-      <div class="fa-bar__lab">Credits left</div>
-      <div class="fa-bar__big" id="fa-budget">500</div>
-    </div>
-    <div>
-      <div class="fa-bar__lab">Slots left</div>
-      <div class="fa-slots" id="fa-slots"></div>
-    </div>
-    <div>
-      <div class="fa-bar__lab">Max bid on next target</div>
-      <div class="fa-bar__big" id="fa-nextmax" style="color:var(--accent)">—</div>
-    </div>
-    <div class="fa-spacer"></div>
-    <button class="fa-btn" id="fa-undo">Undo</button>
-    <button class="fa-btn" id="fa-reset">Reset auction</button>
+  <div class="fc-card" id="fc-formation-card">
+    <h2>Formazione consigliata <small id="fc-form-meta"></small></h2>
+    <div id="fc-pitch"></div>
+    <div id="fc-bench"></div>
+    <div id="fc-out"></div>
   </div>
 
-  <!-- ============ DEPARTURES ============ -->
-  <div class="fa-alert">
-    <h3>Do not bid on these — they are in the listone but already gone</h3>
-    <ul>
-      {% for p in board.players if p.status == 'DEPARTED' %}
-        <li><b style="color:var(--text-primary)">{{ p.nome }}</b>
-            ({{ p.team }}, {{ p.R }}, listone FVM {{ p.fvm|int }}) — {{ p.note }}</li>
-      {% endfor %}
-    </ul>
+  <div class="fc-card">
+    <h2>Rosa <small id="fc-squad-meta"></small></h2>
+    <div id="fc-squad"></div>
   </div>
 
-  <div class="fa-grid">
-    <!-- ============ LEFT: THE LIVE PLAN ============ -->
-    <div>
-      <div class="fa-card">
-        <div class="fa-card__h"><h2>Your squad, re-solved right now</h2></div>
-        <p class="fa-card__sub">
-          <b>Read the line under each name, not the Max column.</b> "Bid up to 105, at 106 walk
-          away" is the answer to <i>they said one more, do I go again?</i> — and it is exact, not
-          a rule of thumb: his price is raised one credit at a time and the entire squad
-          re-solved until the plan stops wanting him. The last price it still wants him at is
-          your ceiling. Go one over and you are, measurably, better off losing him and spending
-          the money on the next name in the chain.
-          <br><br>
-          Buy is what I think he goes for. <b style="color:var(--accent)">Max</b> is what the
-          <i>k-th best player at his role</i> costs in this market — a price ladder, not a
-          worth ceiling, so the best player at each role always shows max ≈ buy by construction.
-          Do not read that as "no value there"; that column is context, the walk-away is the
-          decision. <b>Need</b> is what you lose if a rival takes him, after accounting for the
-          credits that frees up and who is still on the shelf — a low Need on an expensive
-          player means <i>let him go</i>. The fallback chain is cumulative: it names who you
-          buy if he goes, then who you buy if that one goes too, with each of their own
-          ceilings measured in the state you would actually be bidding in.
-          <br><br>
-          Everything here is recomputed against the live board. Mark players bought or gone and
-          the ceilings move — lose a substitute and the man you still want gets <i>more</i>
-          irreplaceable, and his walk-away rises. A number with <span style="opacity:.6">≈</span>
-          is a one-solve estimate shaded deliberately low; it firms up to the exact figure a
-          moment later.
-        </p>
-        <p class="fa-card__sub">
-          Your league runs the <b>modificatore di difesa</b>, so the base 6.0 stops
-          cancelling for defenders and the keeper: their raw <i>voto</i> is currency, not
-          just their bonus. Measured, though, it does <b>not</b> change how you bid. The
-          modifier is worth about <b>47 points a season</b> and you collect nearly all of it
-          with any competent back four — pushing spend from 142 to 190 credits in defence
-          bought 13 more modifier points and <i>lost</i> 26 overall. It is a windfall, not a
-          strategy. Its one real effect on this board: Pavlovic (19) displaces Spinazzola on
-          vote quality, and the fourth defender is now a genuine starter rather than a
-          half-slot, because the whole bonus is forfeited if you cannot field four.
-        </p>
-        <div id="fa-mod" class="fa-note" style="border-left-color:var(--green)"></div>
-        <div id="fa-plan"></div>
-        <div id="fa-infeasible" class="fa-note" style="display:none;border-left-color:var(--red)"></div>
-      </div>
-
-      <div class="fa-card">
-        <div class="fa-card__h"><h2>Squad you already own</h2></div>
-        <div id="fa-mine"><div class="fa-empty">Nothing bought yet.</div></div>
-      </div>
-    </div>
-
-    <!-- ============ RIGHT: SEARCH / MARK ============ -->
-    <div>
-      <div class="fa-card">
-        <div class="fa-card__h"><h2>Someone just got called</h2></div>
-        <p class="fa-card__sub">
-          Type the name. <b>Bought</b> records what you actually paid; <b>Gone</b> removes him
-          from the pool. Everything re-solves instantly.
-        </p>
-        <input class="fa-search" id="fa-q" type="text" placeholder="Search any of the 516 players…" autocomplete="off">
-        <div class="fa-results" id="fa-res"><div class="fa-empty">Start typing a surname.</div></div>
-      </div>
-
-      <div class="fa-card">
-        <div class="fa-card__h"><h2>Gone to rivals</h2></div>
-        <div id="fa-gone"><div class="fa-empty">Nobody off the board yet.</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ============ XI ADVISOR ============ -->
-  <div class="fa-card" id="fa-xi-card">
-    <div class="fa-card__h"><h2 id="fa-xi-title">Next giornata — the XI to field</h2>
-      <span class="fa-src" id="fa-xi-src"></span></div>
-    <p class="fa-card__sub">
-      Expected fantavoto = the player's <b>live level</b> plus two fixture terms measured on
-      9,815 player-rounds of last season — home advantage (+0.10 to +0.16 by role) and Elo
-      edge — weighted by <b>titolarit&agrave;</b>, his probability of actually getting a voto.
-      There is deliberately no "he was great last week" boost: round-to-round form is
-      measurably <i>negative</i> (−0.05), so chasing it makes the call worse. The total is a
-      floor — it books nothing for automatic substitutions.
-    </p>
-    <div id="fa-xi"><div class="fa-empty">Loading…</div></div>
-  </div>
-
-  <!-- ============ SEASON TRACKER ============ -->
-  <div class="fa-card" id="fa-season-card">
-    <div class="fa-card__h"><h2>Your season, round by round</h2>
-      <span class="fa-src" id="fa-season-src"></span></div>
-    <p class="fa-card__sub">
-      Scored off the official voti, with your league's modificatore di difesa on the raw
-      voto of the keeper and your best three fielded defenders. <b>Fielded</b> is the eleven
-      you could actually have set — module and XI chosen from the projection before kickoff,
-      then up to three same-role substitutions for starters who never got a vote.
-      <b>Ceiling</b> is the best eleven the same squad could have produced knowing every
-      result. You cannot reach the ceiling; it is there to show what the roster had in it.
-    </p>
-    <div id="fa-season"><div class="fa-empty">Loading…</div></div>
-  </div>
-
-  <!-- ============ FULL BOARD ============ -->
-  <div class="fa-card">
-    <div class="fa-card__h"><h2>The full board</h2></div>
-    <p class="fa-card__sub">
-      Every player in the official listone, priced twice. <b>Edge</b> is max minus buy: positive
-      means the market underrates him at his role's price ladder. Click a column to sort.
-    </p>
-    <div class="fa-filters" id="fa-filters">
-      <button data-f="all" class="on">All</button>
-      <button data-f="P">Portieri</button>
-      <button data-f="D">Difensori</button>
-      <button data-f="C">Centrocampisti</button>
-      <button data-f="A">Attaccanti</button>
-      <button data-f="value">Value only</button>
-      <button data-f="avoid">Avoid only</button>
-      <button data-f="real">Hide no-data</button>
-    </div>
-    <div class="fa-tblwrap"><div class="fa-scroll">
-      <table class="fa-tbl" id="fa-tbl">
-        <thead><tr>
-          <th data-s="nome">Player</th><th data-s="team">Team</th><th data-s="R">R</th>
-          <th data-s="age" class="n">Age</th>
-          <th data-s="proj_min" class="n">Proj min</th>
-          <th data-s="season_points" class="n">Proj pts</th>
-          <th data-s="market_price" class="n">Buy</th>
-          <th data-s="model_price" class="n">Max</th>
-          <th data-s="edge" class="n">Edge</th>
-          <th data-s="verdict">Call</th><th>Mark</th>
-        </tr></thead>
-        <tbody id="fa-tbody"></tbody>
-      </table>
-    </div></div>
-  </div>
-
-  <!-- ============ HONEST LIMITS ============ -->
-  <div class="fa-card">
-    <div class="fa-card__h"><h2>What this board does not know</h2></div>
-    <div class="fa-lim">
-      <p><b>The window shuts the same day you draft.</b> The Italian market closes 1 September
-      and the auction is the night of 1–2 September. Six listone players had already left when
-      this was built; anyone sold on deadline day is not in here. Re-run the builder that
-      afternoon.</p>
-      <p><b>{{ board.counts.blind }} of {{ board.counts.listone }} players have no usable
-      record anywhere.</b> A further <b>{{ board.counts.foreign }}</b> have none in Serie A but a
-      real one abroad — those are priced on their Premier League / La Liga / Bundesliga /
-      Ligue 1 record, converted at factors measured on the 164 players who made the same move
-      since 2017 (goals ×0.93, assists ×1.00, minutes at 85%), a method that beat the
-      market-value fallback on 4 of 6 historical debutant classes. The truly blind rows come
-      from a regression on age, market value and role whose R² is
-      {{ '%.2f'|format(board.validation.blind_fit.C.r2_bonus) }}–{{ '%.2f'|format(board.validation.blind_fit.P.r2_bonus) }}
-      for bonus — close to no signal — so they are capped at replacement level: a bench slot
-      at 1 credit, never upside. They are tagged <span class="chip blind">no data</span>.
-      Do not read a max bid on a blind row as a recommendation.</p>
-      <p><b>Injuries are a snapshot, not a feed.</b> Projected minutes already subtract the
-      known absences from the latest Transfermarkt bulletin (shown in red under the player),
-      but anyone hurt after that snapshot is priced as fit. Skim the news the afternoon of
-      the auction.</p>
-      <p><b>Media voto is a property of the defence, not just the defender.</b> A centre-back
-      who spent last season in a leaky side carries a voto that understates him, and the
-      summer signings are exactly who you will be bidding against other people for. The
-      modifier numbers here do not re-centre a transferred player on his new team's
-      defensive quality, so treat every player marked <span class="chip blind">new</span> in
-      defence as under-rated by this board rather than genuinely cheap.</p>
-      <p><b>The band table is set by your league admin.</b> This board uses the common
-      three-band table (+1 at 6.00, +3 at 6.50, +6 at 7.00). Running it under the six-band
-      table instead changes the modifier's <i>value</i> a lot (47 → 101 points) but returns
-      the same back four, so the ambiguity does not change a single bid.</p>
-      <p><b>It is backtested on {{ board.validation.auction_n }} past auctions, and it wins
-      {{ board.validation.auction_wins }} of them.</b> Each replay uses only what was known
-      before that auction, buys a squad at prices the room would have set, and is scored on
-      what those players actually did — median <b>{{ board.validation.auction_edge_median_pct }}%</b>
-      more realised bonus than buying by last season's points, capturing
-      {{ board.validation.auction_capture_pct }}% of what perfect foresight would have got.
-      Ranking accuracy is a narrower win: Spearman
-      <b>{{ board.validation.spearman_model }}</b> against
-      {{ board.validation.spearman_naive }} for "last season repeats", averaged over eight
-      seasons. Most of the edge comes from buying the right players at the wrong price, not
-      from forecasting them far better.</p>
-      <p><b>Minutes are the dominant error, not scoring rate.</b> A player whose role changes
-      in September breaks the projection in a way no amount of xG modelling fixes — which is
-      why the backtest counts players who vanished as zero rather than dropping them.
-      Refitting the scoring weights to fantacalcio's own scoring was tested and made things
-      <i>worse</i> in five of six seasons, so the 3-per-goal / 1-per-assist rules stand as
-      written.</p>
-      <p><b>Keepers who just became first choice are under-priced by me, not by the market.</b>
-      The model reads historical minutes, so a new number one looks like a backup. Where the
-      market pays far more than my max for a keeper, the market is probably right and I am
-      probably stale.</p>
-      <p><b>It assumes your rules.</b> {{ board.settings.teams }} teams,
-      {{ board.settings.budget }} credits,
-      {{ board.settings.roster.P }}P/{{ board.settings.roster.D }}D/{{ board.settings.roster.C }}C/{{ board.settings.roster.A }}A,
-      {% if board.settings.clean_sheet_bonus %}clean-sheet bonus on{% else %}no clean-sheet bonus{% endif %},
-      and the modificatore di difesa ON (three-band table). If any of that is wrong the
-      defender and keeper valuations move first — tell me and I rebuild.</p>
-      <p><b>Bonus is the currency, not the vote.</b> With 25-man rosters in a 10-team league your
-      bench supplies the 6.0 base vote too, so for outfielders it cancels out and only goals,
-      assists and cards separate players. It does <i>not</i> cancel in goal, where one keeper
-      plays — so keepers are valued on goals prevented against a replacement keeper.</p>
-    </div>
-    <p style="margin-top:12px;font-size:10.5px;color:var(--text-tertiary)">
-      Built {{ board.generated_at[:16] }}Z from
-      <span class="fa-mono">{{ board_path }}</span> ·
-      {{ board.counts.listone }} players · sources: official Fantacalcio listone, Understat
-      big-5 leagues 2017→today (Serie A back to 2014-15), Transfermarkt 2026-27 squads +
-      injury bulletin, official fantacalcio voti 2017-18→2025-26.
-    </p>
+  <div class="fc-card">
+    <h2>Lega <small id="fc-league-meta"></small></h2>
+    <div class="fc-league" id="fc-league"></div>
   </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 (function () {
   "use strict";
-  const BOARD = {{ board_json|safe }};
-  if (!BOARD) return;
+  const ROLES = ["P", "D", "C", "A"];
+  const ROLE_NAME = { P: "Portieri", D: "Difensori", C: "Centrocampisti", A: "Attaccanti" };
+  const ROLE_COLOR = { P: "var(--rp)", D: "var(--rd)", C: "var(--rc)", A: "var(--ra)" };
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const fmt = (v, d = 2) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
 
-  const BUDGET = BOARD.settings.budget;
-  const ROSTER = BOARD.settings.roster;
-  const ROLES  = ["P", "D", "C", "A"];
-  const RNAME  = { P: "Portieri", D: "Difensori", C: "Centrocampisti", A: "Attaccanti" };
-  // How often the k-th best player at a role actually starts for you. This is what stops
-  // the optimiser buying four strikers it can only field two of.
-  // Read from the board, never hardcoded: the builder widens the defensive ladder to four
-  // full starters when the modificatore is on (the whole bonus is forfeited if you cannot
-  // field four), and a stale copy here silently makes this solver disagree with that one.
-  const SLOT_W = (BOARD.settings || {}).slot_w || {
-    P: [1, .05, .05],
-    D: [1, 1, 1, .5, .12, .12, .12, .12],
-    C: [1, 1, 1, 1, .5, .12, .12, .12],
-    A: [1, 1, .6, .12, .12, .12]
-  };
-  const NEG = -1e18;
-  const LS_KEY = "fanta2627.auction";
-
-  // ---- pool -------------------------------------------------------------
-  const ALL = BOARD.players.filter(p => p.status !== "DEPARTED" && p.market_price != null);
-  const BY_ID = new Map(ALL.map(p => [p.id, p]));
-  const NEED = new Map(BOARD.squad.map(s => [s.id, s]));
-  ALL.forEach(p => {
-    p.cost = Math.max(1, Math.round(p.market_price));
-    p.maxb = Math.max(1, Math.round(p.model_price));
-    p.pts  = p.season_points == null ? 0 : p.season_points;
-    p.key  = norm(p.nome + " " + p.team);
-    p.verdict = verdictOf(p);
-  });
-  function norm(s) {
-    return (s || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
-      .replace(/[øØ]/g, "o").replace(/[đĐ]/g, "d").replace(/[łŁ]/g, "l")
-      // apostrophes CLOSE up, they do not become a space: the listone writes "N'Dicka"
-      // and nobody types the apostrophe
-      .replace(/['’`]/g, "").replace(/[^a-z0-9 ]/g, " ");
-  }
-  function verdictOf(p) {
-    if (p.estimated) return "nodata";
-    const e = p.edge == null ? 0 : p.edge;
-    // cut at the 90th / 6th percentile of the real-data edge distribution, which is tight
-    // around zero (median -0.2, p90 +7.9) -- fixed round numbers would tag half the board
-    if (e >= 8) return "value";
-    if (e <= -12) return "avoid";
-    return "fair";
+  function fvClass(fv) {
+    if (fv == null) return "sv";
+    if (fv >= 7.5) return "good";
+    if (fv < 5.5) return "bad";
+    return "ok";
   }
 
-  // ---- state ------------------------------------------------------------
-  let mine = new Map();   // id -> credits actually paid
-  let gone = new Set();   // id -> taken by a rival
-  let undo = [];
-
-  function save() {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify(
-        { mine: [...mine], gone: [...gone] }));
-    } catch (e) { /* private window, quota, blocked storage — the page still works */ }
-    // localStorage lives in ONE browser, and the round scorer is a scheduled job that has
-    // no browser. Mirror the squad server-side so the two agree on what "my team" is.
-    // Never mirror an EMPTY squad: before the auction there is nothing to save, and
-    // writing `[]` would replace the planned-squad fallback with a team of nobody.
-    if (!mine.size) return;
-    try {
-      fetch("/api/fantacalcio/my-team", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ budget: BUDGET, roster: [...mine].map(
-          ([id, paid]) => ({ id: id, paid: paid })) })
-      }).catch(() => {});
-    } catch (e) { /* offline during the auction is survivable — the board still works */ }
-  }
-  function load() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
-      (d.mine || []).forEach(([k, v]) => { if (BY_ID.has(k)) mine.set(k, v); });
-      (d.gone || []).forEach(k => { if (BY_ID.has(k)) gone.add(k); });
-    } catch (e) { /* corrupt or unreadable — start clean */ }
+  function fetchJSON(url) {
+    return fetch(url).then((r) => {
+      if (!r.ok) throw new Error(url + " -> " + r.status);
+      return r.json();
+    });
   }
 
-  // ---- solver -----------------------------------------------------------
-  // Exact 0/1 knapsack per role over (players taken, credits spent), then a max-plus
-  // combination that splits the remaining budget across the four roles. Same algorithm
-  // the Python builder runs; it finishes in a few ms so it can run on every keystroke.
-  function knap(pool, slots, budget, w) {
-    const n = pool.length, S = slots + 1, B = budget + 1;
-    const hist = new Array(n + 1);
-    let cur = new Float64Array(S * B).fill(NEG);
-    cur[0] = 0;
-    hist[0] = cur;
-    for (let i = 0; i < n; i++) {
-      const c = pool[i].cost, add0 = pool[i].pts;
-      const nxt = cur.slice();
-      if (c <= budget) {
-        for (let j = 1; j <= slots; j++) {
-          const src = (j - 1) * B, dst = j * B, add = add0 * w[j - 1];
-          for (let b = 0; b + c <= budget; b++) {
-            const v = cur[src + b];
-            if (v <= NEG / 2) continue;
-            const t = v + add;
-            if (t > nxt[dst + b + c]) nxt[dst + b + c] = t;
+  function kickoffCountdown(ts) {
+    if (!ts) return "";
+    const s = ts - Date.now() / 1000;
+    if (s <= 0) return "in corso";
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+          m = Math.floor((s % 3600) / 60);
+    return d > 0 ? `tra ${d}g ${h}h` : `tra ${h}h ${String(m).padStart(2, "0")}m`;
+  }
+
+  // ---------- header strip ----------
+  function renderStrip(trk, adv, league) {
+    const eff = trk.totals && trk.totals.hindsight
+      ? (100 * trk.totals.settable / trk.totals.hindsight) : null;
+    const mine = league.teams && league.teams[league.my_team];
+    const stats = [
+      { lab: "Crediti spesi", val: mine ? mine.spent : (trk.spent ?? "—"),
+        sub: "su 1000 · rosa " + (trk.roster_n ?? "—") },
+      { lab: "Giornate tracciate", val: trk.rounds_played ?? 0,
+        sub: "punteggi da voti live" },
+      { lab: "Punti (miglior XI ex-ante)", val: fmt(trk.totals && trk.totals.settable, 1),
+        sub: "col senno di poi: " + fmt(trk.totals && trk.totals.hindsight, 1) },
+      { lab: "Efficienza scelte", val: eff == null ? "—" : fmt(eff, 1) + "%",
+        sub: "schierabile / massimo teorico" },
+      { lab: "Prossima giornata", val: adv.round ? "G" + adv.round : "—",
+        sub: adv.first_kickoff ? "primo calcio " + kickoffCountdown(adv.first_kickoff) : "" },
+    ];
+    $("fc-strip").innerHTML = stats.map((s) => `
+      <div class="fc-stat">
+        <div class="fc-stat__lab">${esc(s.lab)}</div>
+        <div class="fc-stat__val">${esc(s.val)}</div>
+        <div class="fc-stat__sub">${esc(s.sub)}</div>
+      </div>`).join("");
+  }
+
+  // ---------- formation ----------
+  function chip(p) {
+    const fix = p.opp ? `${p.home ? "vs" : "@"} ${p.opp}` : "";
+    return `
+      <div class="fc-chip">
+        <span class="fc-chip__role" style="background:${ROLE_COLOR[p.R]}">${p.R}</span>
+        <div class="fc-chip__name">${esc(p.nome)}</div>
+        <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
+        <div class="fc-chip__nums">
+          <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
+          <span title="probabilità di giocare">${Math.round((p.p_play || 0) * 100)}%</span>
+        </div>
+        <div class="fc-playbar"><i style="width:${Math.round((p.p_play || 0) * 100)}%"></i></div>
+      </div>`;
+  }
+
+  function renderFormation(adv) {
+    if (!adv.xi || !adv.xi.length) {
+      $("fc-pitch").innerHTML = `<div class="fc-empty">Nessun consiglio disponibile
+        (${esc(adv.error || "nessuna giornata in arrivo")})</div>`;
+      $("fc-form-meta").textContent = "";
+      $("fc-bench").innerHTML = ""; $("fc-out").innerHTML = "";
+      return;
+    }
+    $("fc-form-meta").textContent =
+      `giornata ${adv.round} · modulo ${adv.module} · attesi ${fmt(adv.total)} pt ` +
+      `(modificatore difesa +${fmt(adv.modifier, 1)})`;
+    const lines = ROLES.map((r) =>
+      `<div class="fc-line">${adv.xi.filter((p) => p.R === r).map(chip).join("")}</div>`);
+    $("fc-pitch").innerHTML = `<div class="fc-pitch">${lines.join("")}</div>`;
+
+    const bench = (adv.bench || []).map((p, i) => `
+      <span class="fc-bench"><span class="fc-bench__n">${i + 1}</span>
+        <b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${esc(p.nome)}
+        <span class="fc-mono" title="p(gioca) × atteso">${fmt(p.exp_slot, 1)}</span>
+      </span>`).join("");
+    $("fc-bench").innerHTML = bench
+      ? `<div style="font-size:10px;color:var(--text-tertiary);margin-top:14px;
+           text-transform:uppercase;letter-spacing:.08em;">Panchina — inserire in
+           quest'ordine (il primo dello stesso ruolo entra in caso di forfait)</div>
+         <div class="fc-benchrow">${bench}</div>` : "";
+    const out = (adv.unavailable || []).map((p) =>
+      `${esc(p.nome)} — ${esc(p.inj || p.why || "non disponibile")}`).join(" · ");
+    $("fc-out").innerHTML = out ? `<div class="fc-out">⚕ ${out}</div>` : "";
+  }
+
+  // ---------- squad ----------
+  function renderSquad(trk, adv, league) {
+    const mine = (league.teams && league.teams[league.my_team]) || { roster: [] };
+    const paidBy = {}, teamBy = {};
+    mine.roster.forEach((r) => { paidBy[r.nome] = r.paid; teamBy[r.nome] = r.team; });
+    const advBy = {};
+    (adv.xi || []).forEach((p, i) => { advBy[p.nome] = { ...p, st: "xi" }; });
+    (adv.bench || []).forEach((p, i) => { advBy[p.nome] = { ...p, st: "bench", bn: i + 1 }; });
+    (adv.unavailable || []).forEach((p) => { advBy[p.nome] = { ...p, st: "out" }; });
+
+    const players = (trk.players || []).slice();
+    // players the tracker has never scored still deserve a row
+    mine.roster.forEach((r) => {
+      if (!players.some((p) => p.nome === r.nome)) {
+        players.push({ nome: r.nome, R: r.R, team: r.team, rounds: [],
+                       live_level: null, prior_level: null, delta: null,
+                       n_rounds: 0, points: 0, live_voto: null });
+      }
+    });
+    const nRounds = trk.rounds_played || 0;
+    const sections = ROLES.map((role) => {
+      const rows = players.filter((p) => p.R === role)
+        .sort((a, b) => (b.live_level ?? -1) - (a.live_level ?? -1))
+        .map((p) => {
+          const a = advBy[p.nome] || {};
+          const status = a.st === "xi"
+            ? '<span class="fc-status xi">TITOLARE</span>'
+            : a.st === "bench"
+              ? `<span class="fc-status bench">PANCA ${a.bn}</span>`
+              : a.st === "out"
+                ? `<span class="fc-status out" title="${esc(a.inj || a.why || "")}">OUT</span>`
+                : "";
+          const fix = a.opp ? `${a.home ? "vs" : "@"} ${esc(a.opp)}` : "—";
+          const chips = [];
+          for (let r = 1; r <= nRounds; r++) {
+            const rr = (p.rounds || []).find((x) => x.round === r);
+            const fv = rr ? rr.fantavoto : null;
+            chips.push(`<span class="fc-fv ${fvClass(fv)}"
+              title="giornata ${r}${rr ? " · voto " + fmt(rr.voto, 1) : " · senza voto"}">
+              ${fv == null ? "sv" : fmt(fv, 1)}</span>`);
           }
-        }
-      }
-      hist[i + 1] = nxt;
-      cur = nxt;
-    }
-    return hist;
-  }
-
-  // Weights for the players you still have to buy, given the ones you already own.
-  // An owned star occupies a starting slot, so the next signing inherits the weight
-  // below him rather than the top one.
-  function leftoverW(role, ownedPts, poolPts, slotsLeft) {
-    const W = SLOT_W[role];
-    const merged = ownedPts.map(v => ({ v: v, own: true })
-      ).concat(poolPts.slice(0, slotsLeft).map(v => ({ v: v, own: false })));
-    merged.sort((a, b) => b.v - a.v);
-    const out = [];
-    merged.forEach((m, i) => { if (!m.own) out.push(i < W.length ? W[i] : 0.12); });
-    while (out.length < slotsLeft) out.push(0.12);
-    return out;
-  }
-
-  function solve(extra) {
-    const spent = [...mine.values()].reduce((a, b) => a + b, 0);
-    const budgetLeft = Math.max(0, BUDGET - spent) + (extra || 0);
-    const owned = {}, slotsLeft = {};
-    ROLES.forEach(r => { owned[r] = []; });
-    mine.forEach((price, id) => { const p = BY_ID.get(id); if (p) owned[p.R].push(p); });
-    ROLES.forEach(r => { slotsLeft[r] = Math.max(0, ROSTER[r] - owned[r].length); });
-
-    const minCost = ROLES.reduce((a, r) => a + slotsLeft[r], 0);
-    if (budgetLeft < minCost) {
-      return { ok: false, budgetLeft: budgetLeft, minCost: minCost,
-               owned: owned, slotsLeft: slotsLeft, picks: {}, spend: {} };
-    }
-
-    const per = {}, tabs = {};
-    ROLES.forEach(r => {
-      const slots = slotsLeft[r];
-      if (slots === 0) {
-        const a = new Float64Array(budgetLeft + 1).fill(NEG);
-        a[0] = 0;
-        per[r] = a;
-        tabs[r] = null;
-        return;
-      }
-      let pool = ALL.filter(p => p.R === r && !mine.has(p.id) && !gone.has(p.id));
-      pool.sort((a, b) => b.pts - a.pts);
-      // Trim to what could plausibly be picked: the best by projection, plus enough
-      // floor-price bodies to fill a bench. Keeps the DP small without changing the answer.
-      const top = pool.slice(0, 55);
-      const cheap = pool.filter(p => p.cost <= 2 && top.indexOf(p) === -1).slice(0, 30);
-      pool = top.concat(cheap).sort((a, b) => b.pts - a.pts);
-      const w = leftoverW(r, owned[r].map(p => p.pts), pool.map(p => p.pts), slots);
-      const hist = knap(pool, slots, budgetLeft, w);
-      const B = budgetLeft + 1;
-      per[r] = hist[pool.length].slice(slots * B, slots * B + B);
-      tabs[r] = { pool: pool, hist: hist, slots: slots, B: B };
+          const delta = p.delta == null ? "" : p.delta >= 0.05
+            ? `<span class="fc-lvl-up">▲${fmt(p.delta, 2)}</span>`
+            : p.delta <= -0.05
+              ? `<span class="fc-lvl-dn">▼${fmt(Math.abs(p.delta), 2)}</span>` : "＝";
+          return `<tr>
+            <td><span class="fc-pname">${esc(p.nome)}</span><br>
+                <span class="fc-pteam">${esc(p.team)}</span></td>
+            <td class="num">${paidBy[p.nome] ?? "—"}</td>
+            <td>${status}</td>
+            <td>${fix}</td>
+            <td class="num" title="fantamedia attesa condizionata al giocare">
+                ${fmt(a.exp)}</td>
+            <td class="num">${a.p_play == null ? "—" : Math.round(a.p_play * 100) + "%"}</td>
+            <td class="num" title="livello live (prior ${fmt(p.prior_level)})">
+                ${fmt(p.live_level)} ${delta}</td>
+            <td class="num">${fmt(p.points, 1)}</td>
+            <td><span class="fc-chips">${chips.join("")}</span></td>
+          </tr>`;
+        }).join("");
+      if (!rows) return "";
+      return `
+        <div class="fc-rolehead">
+          <span class="fc-roledot" style="background:${ROLE_COLOR[role]}"></span>
+          <b>${ROLE_NAME[role]}</b>
+        </div>
+        <div class="fc-tablewrap"><table class="fc-t">
+          <thead><tr>
+            <th>Giocatore</th><th>Pagato</th><th>G${adv.round || "?"}</th>
+            <th>Avversario</th><th>Exp</th><th>Gioca</th>
+            <th>Livello</th><th>Pt tot</th><th>Fantavoti</th>
+          </tr></thead><tbody>${rows}</tbody>
+        </table></div>`;
     });
+    $("fc-squad").innerHTML = sections.join("") ||
+      '<div class="fc-empty">Rosa non disponibile</div>';
+    $("fc-squad-meta").textContent =
+      `${players.length} giocatori · livelli live dopo ${nRounds} giornate`;
+  }
 
-    let cum = new Float64Array(budgetLeft + 1).fill(NEG);
-    cum[0] = 0;
-    const picks = [];
-    ROLES.forEach(r => {
-      const arr = per[r];
-      const nxt = new Float64Array(budgetLeft + 1).fill(NEG);
-      const pick = new Int32Array(budgetLeft + 1);
-      for (let k = 0; k <= budgetLeft; k++) {
-        if (arr[k] <= NEG / 2) continue;
-        for (let b = 0; b + k <= budgetLeft; b++) {
-          if (cum[b] <= NEG / 2) continue;
-          const t = cum[b] + arr[k];
-          if (t > nxt[b + k]) { nxt[b + k] = t; pick[b + k] = k; }
-        }
-      }
-      cum = nxt;
-      picks.push(pick);
+  // ---------- league ----------
+  function renderLeague(league) {
+    const names = Object.keys(league.teams || {})
+      .filter((t) => t !== league.my_team).sort();
+    $("fc-league-meta").textContent = names.length
+      ? `${names.length} avversarie · per scambi e mercato` : "";
+    $("fc-league").innerHTML = names.map((t) => {
+      const team = league.teams[t];
+      const byRole = { P: [], D: [], C: [], A: [] };
+      (team.roster || []).forEach((p) => (byRole[p.R] || byRole.C).push(p));
+      const rows = ROLES.flatMap((r) => byRole[r]
+        .sort((a, b) => b.paid - a.paid)
+        .map((p) => `<tr>
+          <td class="rl" style="color:${ROLE_COLOR[r]}">${r}</td>
+          <td>${esc(p.nome)} <span class="fc-pteam">${esc(p.team)}</span></td>
+          <td class="fc-mono" style="text-align:right">${p.paid}</td>
+        </tr>`)).join("");
+      const un = (team.unmatched || []).map((u) => esc(u.nome)).join(", ");
+      return `<details class="fc-opp">
+        <summary>
+          <span class="fc-opp__name">${esc(t)}</span>
+          <span class="fc-opp__meta">${team.roster.length}${team.unmatched && team.unmatched.length ? "+" + team.unmatched.length : ""} giocatori · ${team.spent} cr</span>
+        </summary>
+        <table>${rows}</table>
+        ${un ? `<div class="fc-warn">⚠ non ancora nel listone: ${un}</div>` : ""}
+      </details>`;
+    }).join("") || '<div class="fc-empty">Rose di lega non importate</div>';
+  }
+
+  // ---------- load ----------
+  function load(refresh) {
+    const q = refresh ? "?refresh=1" : "";
+    return Promise.all([
+      fetchJSON("/api/fantacalcio/tracker" + q),
+      fetchJSON("/api/fantacalcio/xi-advisor" + q),
+      fetchJSON("/api/fantacalcio/league"),
+    ]).then(([trk, adv, league]) => {
+      renderStrip(trk, adv, league);
+      renderFormation(adv);
+      renderSquad(trk, adv, league);
+      renderLeague(league);
+      $("fc-sub").textContent = "Coppa Del Nonno · 2026-27 · aggiornato " +
+        new Date((trk.generated_at || Date.now())).toLocaleString("it-IT",
+          { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }).catch((e) => {
+      $("fc-strip").innerHTML =
+        `<div class="fc-empty">Errore caricamento: ${esc(e.message)}</div>`;
     });
-
-    let bestB = 0, bestV = NEG;
-    for (let b = 0; b <= budgetLeft; b++) if (cum[b] > bestV) { bestV = cum[b]; bestB = b; }
-    if (bestV <= NEG / 2) {
-      return { ok: false, budgetLeft: budgetLeft, minCost: minCost,
-               owned: owned, slotsLeft: slotsLeft, picks: {}, spend: {} };
-    }
-
-    const spend = {};
-    let b = bestB;
-    for (let i = ROLES.length - 1; i >= 0; i--) {
-      const k = picks[i][b];
-      spend[ROLES[i]] = k;
-      b -= k;
-    }
-
-    const out = {};
-    ROLES.forEach(r => {
-      out[r] = [];
-      const t = tabs[r];
-      if (!t) return;
-      let bb = spend[r], j = t.slots, i = t.pool.length;
-      while (i > 0 && j > 0) {
-        // item i-1 was taken here iff removing it lowers the optimum at this exact cell
-        if (t.hist[i][j * t.B + bb] > t.hist[i - 1][j * t.B + bb]) {
-          const p = t.pool[i - 1];
-          out[r].push(p);
-          bb -= p.cost;
-          j -= 1;
-        }
-        i -= 1;
-      }
-      out[r].sort((x, y) => y.pts - x.pts);
-    });
-    return { ok: true, budgetLeft: budgetLeft, minCost: minCost, owned: owned,
-             slotsLeft: slotsLeft, picks: out, spend: spend, score: bestV };
   }
 
-  // ---- modificatore di difesa -------------------------------------------
-  // Same Monte Carlo as the Python builder, for the unit the solver ACTUALLY picked.
-  // The alternative -- baking a per-player credit server-side -- goes stale the moment a
-  // rival takes one of your defenders, which is the same failure the frozen need_loss had.
-  const MODT = (BOARD.settings || {}).mod_table || null;
-  const MSD = (BOARD.settings || {}).mod_sd || { P: 0.35, D: 0.393 };
-  const MOFF = (BOARD.settings || {}).mod_office || [5.0, 4.5, 4.5];
-  const MUP = (BOARD.settings || {}).role_mu_P || 6.17;
-
-  function mulberry32(a) {                 // seeded: the number must not jitter per render
-    return function () {
-      a |= 0; a = (a + 0x6D2B79F5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-  function modifierPts(gk, ds, sims) {
-    if (!MODT || !gk || !ds.length) return null;
-    sims = sims || 900;
-    const weeks = 38, rnd = mulberry32(20260901);
-    let tot = 0, sumAvg = 0, hi = 0;
-    let g2 = null;
-    const gauss = () => {                  // Box-Muller, both draws used
-      if (g2 !== null) { const v = g2; g2 = null; return v; }
-      let u = 0, v = 0;
-      while (u === 0) u = rnd();
-      while (v === 0) v = rnd();
-      const r = Math.sqrt(-2 * Math.log(u));
-      g2 = r * Math.sin(2 * Math.PI * v);
-      return r * Math.cos(2 * Math.PI * v);
-    };
-    for (let s = 0; s < sims * weeks; s++) {
-      const gv = (rnd() < gk.p_play ? gk.mv_hat : MUP - 0.10) + gauss() * MSD.P;
-      let b0 = -Infinity, b1 = -Infinity, b2 = -Infinity;
-      for (let i = 0; i < ds.length; i++) {
-        if (rnd() >= ds[i].p_play) continue;
-        const v = ds[i].mv_hat + gauss() * MSD.D;
-        if (v > b0) { b2 = b1; b1 = b0; b0 = v; }
-        else if (v > b1) { b2 = b1; b1 = v; }
-        else if (v > b2) { b2 = v; }
-      }
-      const arr = [b0, b1, b2];
-      let sum = gv;
-      for (let j = 0; j < 3; j++) sum += (arr[j] === -Infinity ? MOFF[j] : arr[j]);
-      const avg = sum / 4;
-      sumAvg += avg;
-      let p = 0;
-      for (let k = 0; k < MODT.length; k++) if (avg >= MODT[k][0]) p = MODT[k][1];
-      tot += p;
-      if (avg >= MODT[Math.min(1, MODT.length - 1)][0]) hi++;
-    }
-    const n = sims * weeks;
-    return { pts: tot / sims, avg: sumAvg / n, pHi: hi / n };
-  }
-
-  // The unit the plan owns right now: bought keepers/defenders plus the ones it still
-  // intends to buy. p_play/mv_hat ride on the board record.
-  function defenceUnit(S) {
-    const take = r => (S.owned[r] || []).concat(S.picks[r] || [])
-      .map(x => BY_ID.get(x.id) || x).filter(p => p && p.mv_hat != null && p.p_play != null);
-    const gks = take("P").sort((a, b) => (b.p_play || 0) - (a.p_play || 0));
-    return { gk: gks[0] || null, ds: take("D") };
-  }
-
-  // ---- rendering --------------------------------------------------------
-  const $ = id => document.getElementById(id);
-  const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
-    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
-  // Need, recomputed against the CURRENT board. The server ships a clean-board value so
-  // the first paint is instant; once a rival takes someone, that number is stale in the
-  // dangerous direction -- losing a substitute makes the player you still want MORE
-  // irreplaceable, not less -- so every mark recomputes it live.
-  const LIVE_NEED = new Map();
-  const LIVE_WA = new Map();      // exact walk-away price, live, for the current board
-  let LIVE_RATE = null;           // points bought by one more credit, right now
-
-  function needInfo(p) {
-    if (LIVE_NEED.has(p.id)) return LIVE_NEED.get(p.id);
-    const s = NEED.get(p.id);
-    if (!s) return null;
-    return { loss: s.need_loss, alts: null, frozen: true, raw: s.alternatives || [],
-             wa: s.walkaway };
-  }
-
-  // Walk-away by price perturbation: raise his price until the plan drops him. Exact,
-  // monotone, and it needs no force-in mechanism. ~9 solves.
-  function waExact(p) {
-    const orig = p.cost;
-    function keeps(c) {
-      p.cost = c;
-      const R = solve();
-      const got = R.ok && (R.picks[p.R] || []).some(x => x.id === p.id);
-      p.cost = orig;
-      return got;
-    }
-    if (!keeps(orig)) return 0;
-    let lo = orig, hi = Math.max(orig, BUDGET);
-    if (keeps(hi)) return hi;
-    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (keeps(m)) lo = m; else hi = m; }
-    return lo;
-  }
-
-  // Cheap board-wide estimate for rows we have not solved exactly: a credit buys
-  // LIVE_RATE points, so a player worth `need` more than his replacement is worth
-  // `need / rate` more credits. Accurate to about a credit against the exact search,
-  // and biased HIGH -- so it is floored and shaded down, never rounded up.
-  function waApprox(p, loss) {
-    if (!LIVE_RATE || LIVE_RATE <= 0) return null;
-    // Shaded down by two credits, not rounded. Measured against the exact search the
-    // estimate runs about a credit high and occasionally three; overbidding by three is a
-    // worse mistake than losing a player, and the exact number replaces this within a
-    // second or so anyway.
-    return Math.max(p.cost, Math.floor(p.cost + loss / LIVE_RATE) - 2);
-  }
-
-  // Best available answer, in order: solved on THIS board; estimated from this board's
-  // exchange rate; the server's clean-board number. The last is exact but assumes nobody
-  // has been bought or lost yet, so it is the fallback, never the answer.
-  function waOf(p) {
-    if (LIVE_WA.has(p.id)) return { v: LIVE_WA.get(p.id), exact: true };
-    const s = needInfo(p);
-    if (!s) return null;
-    const a = waApprox(p, s.loss);
-    if (a != null) return { v: a, exact: false };
-    if (s.wa != null) return { v: s.wa, exact: false };
-    return null;
-  }
-
-  function chipFor(p) {
-    const s = needInfo(p);
-    if (s && s.loss >= 2.5) return '<span class="chip key">key</span>';
-    if (p.verdict === "nodata") return '<span class="chip blind">no data</span>';
-    if (p.verdict === "value") return '<span class="chip value">value</span>';
-    if (p.verdict === "avoid") return '<span class="chip avoid">avoid</span>';
-    return "";
-  }
-
-  const ROLE_WORD = { P: "keeper", D: "defender", C: "midfielder", A: "attacker" };
-
-  function rowHTML(p, opts) {
-    opts = opts || {};
-    const paid = opts.paid;
-    return '<div class="fa-row" data-id="' + p.id + '">' +
-      '<div class="fa-row__name">' +
-        '<span class="fa-tag ' + p.R + '">' + p.R + '</span>' +
-        '<span style="overflow:hidden;text-overflow:ellipsis">' + esc(p.nome) + '</span>' +
-        chipFor(p) +
-        '<span class="t">' + esc(p.team) + '</span>' +
-      '</div>' +
-      (paid != null
-        ? '<div class="fa-price buy"><b>' + paid + '</b><small>paid</small></div>'
-        : '<div class="fa-price buy"><b>' + p.cost + '</b><small>buy</small></div>') +
-      '<div class="fa-price max"><b>' + p.maxb + '</b><small>max</small></div>' +
-      (opts.actions === false ? '<div></div>' :
-        '<div class="fa-acts">' +
-          (paid != null
-            ? '<button class="fa-btn" data-act="unmine" data-id="' + p.id + '">Undo</button>'
-            : '<input class="fa-in" type="number" min="1" value="' + p.cost +
-              '" data-in="' + p.id + '" aria-label="Price paid for ' + esc(p.nome) + '">' +
-              '<button class="fa-btn buy" data-act="mine" data-id="' + p.id + '">Bought</button>' +
-              '<button class="fa-btn gone" data-act="gone" data-id="' + p.id + '">Gone</button>') +
-        '</div>') +
-      '</div>';
-  }
-
-  // The whole point of the page: is he worth it, and at what price do you stop.
-  function verdictLine(p) {
-    const s = needInfo(p);
-    if (!s) return "";
-    if (p.verdict === "nodata") {
-      return '<div class="fa-alt fa-v nodata">No Serie A record to price him on — ' +
-        'he is in the plan as a <b>' + p.cost + '</b>-credit body, not a call. ' +
-        'Do not bid him up.</div>';
-    }
-    const w = waOf(p);
-    if (!w) return "";
-    const cap = w.v, head = cap - p.cost, ratio = p.cost > 0 ? cap / p.cost : 1;
-    const nextName = (s.alts && s.alts.length) ? s.alts[0].p.nome
-                   : (s.raw && s.raw.length ? s.raw[0].nome : null);
-    let cls, verdict;
-    if (ratio >= 1.5 || head >= 15) { cls = "yes"; verdict = "Worth it — and he is underpriced"; }
-    else if (ratio >= 1.15)         { cls = "yes"; verdict = "Worth it"; }
-    else if (head >= 1)             { cls = "ok";  verdict = "Worth it at the listed price only"; }
-    else                            { cls = "no";  verdict = "Not worth chasing"; }
-    const tail = head >= 1
-      ? 'Bid up to <b>' + cap + '</b>' + (w.exact ? '' : '<span class="approx">≈</span>') +
-        '. At <b>' + (cap + 1) + '</b> walk away' +
-        (nextName ? ' — ' + esc(nextName) + ' becomes the buy.' : '.')
-      : 'Let him go at anything over <b>' + p.cost + '</b>.';
-    return '<div class="fa-alt fa-v ' + cls + '"><b>' + verdict + '.</b> ' + tail + '</div>';
-  }
-
-  // Why this player is in the plan, in the numbers he was actually chosen on. Nothing
-  // here is a new calculation -- every figure is the input the optimiser saw, surfaced so
-  // a 04:30 decision does not have to be taken on trust.
-  const LEAGUE_NAME = { "ENG-Premier League": "Premier League", "ESP-La Liga": "La Liga",
-                        "GER-Bundesliga": "Bundesliga", "FRA-Ligue 1": "Ligue 1" };
-
-  function injLine(p) {
-    if (!p.inj_note) return "";
-    return '<div class="fa-why inj">&#9877; ' + esc(p.inj_note)
-      + ' — already subtracted from his projected minutes.</div>';
-  }
-
-  function whyLine(p) {
-    if (p.blind && !p.foreign) {
-      return '<div class="fa-why blind"><b>Why:</b> no usable record anywhere — Serie A or '
-        + 'abroad. His projection comes from a fallback fit with R&sup2; &asymp; 0.05 — '
-        + 'barely better than a guess. He is a <b>' + p.cost + '</b>-credit bench body. '
-        + 'Do not bid.</div>' + injLine(p);
-    }
-    const n1 = x => (x === null || x === undefined) ? "—" : x.toFixed(1);
-    const n2 = x => (x === null || x === undefined) ? "—" : x.toFixed(2);
-    const mins = p.proj_min ? Math.round(p.proj_min).toLocaleString() : "—";
-    const parts = [];
-    if (p.R === "P") {
-      // A keeper's bonus90 is goals conceded, so the rate framing has to invert or it
-      // reads as though the best keeper in the squad is the worst player in it.
-      parts.push('concedes <b>' + n2(p.ga90) + '</b>/90 against a replacement keeper&rsquo;s '
-        + '<b>' + n2(p.repl_ga90) + '</b>');
-    } else {
-      parts.push('<b>' + n2(p.bonus90) + '</b> expected bonus per 90');
-    }
-    parts.push('<b>' + mins + '</b> projected minutes');
-    parts.push('vote <b>' + n2(p.mv_hat) + '</b>'
-      + (p.pg_w ? ' from <b>' + Math.round(p.pg_w) + '</b> appearances' : ''));
-    if (p.p_play != null) parts.push('starts <b>' + Math.round(p.p_play * 100) + '%</b>');
-    const vor = (p.vor != null && p.vor >= 0.05)
-      ? ' Worth <b>' + n1(p.vor) + '</b> more than a freely available ' + ROLE_WORD[p.R]
-        + ', which is what the ' + p.cost + ' credits actually buy.'
-      : ' No value over a freely available ' + ROLE_WORD[p.R]
-        + ' — he is here as cheap depth, not for his points.';
-    const src = p.foreign
-      ? ' Priced on his record abroad: <b>' + Math.round(p.fo_min).toLocaleString()
-        + '</b> min in the ' + (LEAGUE_NAME[p.fo_league] || 'big five') + ', converted at '
-        + 'the rates measured on 164 players who made the same move (goals &times;0.93, '
-        + 'minutes at 85%). No Serie A voti yet — the vote is a role estimate.'
-      : '';
-    return '<div class="fa-why"><b>Why:</b> ' + parts.join(' &middot; ')
-      + ' &rarr; <b>' + n1(p.season_points) + '</b> projected points.' + vor + src
-      + (p.estimated && !p.foreign ? ' <i>Vote estimated, not measured.</i>' : '')
-      + '</div>' + injLine(p);
-  }
-
-  function altLine(p) {
-    const s = needInfo(p);
-    if (!s) return "";
-    let items;
-    if (s.alts) {
-      items = s.alts.map(a => esc(a.p.nome) + ' (' + a.p.cost +
-        (a.cap != null ? ', to ' + a.cap : '') + ')');
-    } else {
-      items = (s.raw || []).filter(a => {
-        const m = ALL.find(x => x.nome === a.nome && x.team === a.team);
-        return !m || (!gone.has(m.id) && !mine.has(m.id));
-      }).map(a => esc(a.nome) + ' (' + a.buy +
-        (a.walkaway ? ', to ' + a.walkaway : '') + ')');
-    }
-    if (!items.length && s.loss < 0.05) return "";
-    return '<div class="fa-alt">Lose him and you lose <b>' + s.loss.toFixed(1) + '</b> pts' +
-      (items.length
-        ? ' · then, in order: <b>' + items.join('</b> → <b>') + '</b>'
-        : ' · no like-for-like left') + '</div>';
-  }
-
-  // Everything above is measured by re-solving the real board, which costs ~8ms a solve.
-  // A full pass is ~2.5s, so it runs one player per tick AFTER the plan is on screen and
-  // repaints as it goes -- the alternative is a page that freezes on every click.
-  let needToken = 0;
-  function computeNeeds(S) {
-    const token = ++needToken;
-    const picks = [].concat.apply([], ROLES.map(r => S.picks[r] || []));
-    if (!picks.length || !S.ok) return;
-    const baseIds = new Set(picks.map(p => p.id));
-    LIVE_WA.clear();
-
-    // Two passes on purpose. The walk-away is the number you bid on, so every one of
-    // them lands before any chain work starts; the chains are context and can trail.
-    let i = 0, j = 0;
-    function passWalkaway() {
-      if (token !== needToken) return;
-      if (i >= picks.length) { paintPlan(S); setTimeout(passChains, 0); return; }
-      const p = picks[i++];
-      gone.add(p.id);
-      const alt = solve();
-      gone.delete(p.id);
-      LIVE_NEED.set(p.id, { loss: alt.ok ? Math.max(0, S.score - alt.score) : 0,
-                            alts: null, raw: (NEED.get(p.id) || {}).alternatives || [] });
-      LIVE_WA.set(p.id, waExact(p));
-      if (i % 3 === 0) paintPlan(S);
-      setTimeout(passWalkaway, 0);
-    }
-    // Chains are a JOINT assignment, not per-slot lists. Computed independently they
-    // all name the same next-best man -- on the 2026-08-26 board Spinazzola was the
-    // first fallback of FOUR defender slots at once, four IOUs written against one
-    // player. So every claimed fallback is banned from every other chain, depth-major:
-    // each slot claims its primary before any slot gets a second name (if N slots fail
-    // together, each grabs its primary -- depth 2 only matters after further losses).
-    // Claim priority = need_loss: the slot that hurts most to lose picks first.
-    const claimed = new Set();
-    const chainOrder = picks.slice().sort((a, b) =>
-      ((LIVE_NEED.get(b.id) || {}).loss || 0) - ((LIVE_NEED.get(a.id) || {}).loss || 0));
-    const steps = [];
-    for (let k = 0; k < 3; k++) chainOrder.forEach(p => steps.push({ p: p, k: k }));
-    function passChains() {
-      if (token !== needToken) return;
-      if (j >= steps.length) { paintPlan(S); return; }
-      const p = steps[j].p, k = steps[j].k; j++;
-      const cur = LIVE_NEED.get(p.id) || { loss: 0 };
-      if (!cur.alts) cur.alts = [];
-      if (cur.alts.length === k) {          // chain still alive at this depth
-        const banned = new Set(claimed); banned.add(p.id);
-        const added = [];
-        banned.forEach(id => { if (!gone.has(id)) { gone.add(id); added.push(id); } });
-        const st = solve();
-        const fresh = st.ok ? (st.picks[p.R] || []).filter(
-          x => !baseIds.has(x.id) && !banned.has(x.id)) : [];
-        let entry = null;
-        if (fresh.length) {
-          const pick = fresh.slice().sort((x, y) => y.pts - x.pts)[0];
-          // Only the FIRST fallback gets an exact cap -- he is the one you would actually
-          // be bidding on next. Solving all three costs seconds for information you would
-          // only reach after losing two players. Computed BEFORE the banned ids leave
-          // `gone`: the cap means "his walk-away once the man he replaces is lost" -- on
-          // the base board he is not in the squad at all and the search returns 0.
-          const cap = k === 0 ? waExact(pick) : null;
-          entry = { p: pick, cap: cap, loss: st.ok ? S.score - st.score : 0 };
-        }
-        added.forEach(id => gone.delete(id));
-        if (entry) { cur.alts.push(entry); claimed.add(entry.p.id); }
-      }
-      LIVE_NEED.set(p.id, cur);
-      if (j % 3 === 0) paintPlan(S);
-      setTimeout(passChains, 0);
-    }
-    setTimeout(passWalkaway, 0);
-  }
-
-  function paintPlan(S) {
-    if (!S.ok) {
-      $("fa-infeasible").style.display = "block";
-      $("fa-infeasible").innerHTML = "<b>Can't fill the squad.</b> " + S.slotsLeft.P + "P/" +
-        S.slotsLeft.D + "D/" + S.slotsLeft.C + "C/" + S.slotsLeft.A + "A still to buy needs at " +
-        "least " + S.minCost + " credits and you have " + S.budgetLeft +
-        ". Undo an overpay, or you are filling the rest at 1 credit whatever happens.";
-      $("fa-plan").innerHTML = '<div class="fa-empty">No feasible plan at this budget.</div>';
-    } else {
-      $("fa-infeasible").style.display = "none";
-      $("fa-plan").innerHTML = ROLES.map(r => {
-        const list = S.picks[r] || [];
-        const ownedN = S.owned[r].length;
-        if (!list.length && !S.slotsLeft[r]) {
-          return '<div class="fa-role"><div class="fa-role__h">' +
-            '<span class="fa-tag ' + r + '">' + r + '</span>' +
-            '<span class="fa-role__n">' + RNAME[r] + '</span>' +
-            '<span class="fa-role__spend">complete — ' + ownedN + ' owned</span></div></div>';
-        }
-        return '<div class="fa-role"><div class="fa-role__h">' +
-          '<span class="fa-tag ' + r + '">' + r + '</span>' +
-          '<span class="fa-role__n">' + RNAME[r] + '</span>' +
-          '<span class="fa-role__spend">' + S.spend[r] + ' cr for ' + list.length +
-          (ownedN ? ' · ' + ownedN + ' owned' : '') + '</span></div>' +
-          list.map(p => rowHTML(p) + verdictLine(p) + whyLine(p) + altLine(p))
-            .join("") + '</div>';
-      }).join("");
-    }
-  }
-
-  function render() {
-    const S = solve();
-    // One extra solve (~8ms) prices a credit, so every row can show a walk-away
-    // immediately instead of waiting on the background pass.
-    const up = S.ok ? solve(10) : null;
-    LIVE_RATE = (up && up.ok) ? Math.max((up.score - S.score) / 10, 1e-6) : null;
-
-    $("fa-budget").textContent = S.budgetLeft;
-    $("fa-slots").innerHTML = ROLES.map(r => {
-      const left = S.slotsLeft[r], tot = ROSTER[r];
-      return '<div class="fa-slot' + (left === 0 ? " full" : "") + '">' +
-        r + ' <b>' + (tot - left) + '/' + tot + '</b></div>';
-    }).join("");
-
-    // the single most useful number at 04:30: what am I allowed to pay for the guy
-    // the plan wants most right now
-    let next = null;
-    ROLES.forEach(r => (S.picks[r] || []).forEach(p => {
-      if (!next || p.pts > next.pts) next = p;
-    }));
-    $("fa-nextmax").textContent = next ? next.maxb : "—";
-    $("fa-nextmax").title = next ? next.nome : "";
-
-    paintPlan(S);
-    computeNeeds(S);
-
-    const U = defenceUnit(S);
-    const M = modifierPts(U.gk, U.ds);
-    const el = $("fa-mod");
-    if (el) {
-      el.innerHTML = !M
-        ? '<b>Modificatore di difesa</b> — no vote data on this defence yet.'
-        : '<b>Modificatore di difesa</b> · <b style="color:var(--green)">+' +
-          M.pts.toFixed(0) + '</b> pts a season · weekly average voto <b>' +
-          M.avg.toFixed(2) + '</b> · reaches the next band ' +
-          (M.pHi * 100).toFixed(0) + '% of weeks · needs <b>4</b> defenders on the pitch' +
-          (U.ds.length < 5 ? ' — you own ' + U.ds.length + ', thin for rotation' : '');
-    }
-
-    const mineArr = [...mine.entries()].map(([id, v]) => [BY_ID.get(id), v]).filter(x => x[0]);
-    mineArr.sort((a, b) => ROLES.indexOf(a[0].R) - ROLES.indexOf(b[0].R) || b[1] - a[1]);
-    $("fa-mine").innerHTML = mineArr.length
-      ? mineArr.map(([p, v]) => rowHTML(p, { paid: v })).join("")
-      : '<div class="fa-empty">Nothing bought yet.</div>';
-
-    const goneArr = [...gone].map(id => BY_ID.get(id)).filter(Boolean);
-    goneArr.sort((a, b) => b.cost - a.cost);
-    $("fa-gone").innerHTML = goneArr.length
-      ? goneArr.map(p => '<div class="fa-row" style="grid-template-columns:1fr auto auto">' +
-          '<div class="fa-row__name" style="opacity:.55">' +
-          '<span class="fa-tag ' + p.R + '">' + p.R + '</span>' + esc(p.nome) +
-          '<span class="t">' + esc(p.team) + '</span></div>' +
-          '<div class="fa-price buy" style="opacity:.55"><b>' + p.cost + '</b></div>' +
-          '<button class="fa-btn" data-act="ungone" data-id="' + p.id + '">Undo</button></div>').join("")
-      : '<div class="fa-empty">Nobody off the board yet.</div>';
-
-    renderSearch();
-    renderTable();
-    save();
-  }
-
-  // ---- search -----------------------------------------------------------
-  function renderSearch() {
-    const q = norm($("fa-q").value).trim();
-    if (q.length < 2) {
-      $("fa-res").innerHTML = '<div class="fa-empty">Start typing a surname.</div>';
-      return;
-    }
-    const terms = q.split(/\s+/);
-    const hits = ALL.filter(p => !mine.has(p.id) && !gone.has(p.id) &&
-      terms.every(t => p.key.indexOf(t) !== -1))
-      .sort((a, b) => b.cost - a.cost).slice(0, 25);
-    $("fa-res").innerHTML = hits.length
-      ? hits.map(p => rowHTML(p) + injLine(p)).join("")
-      : '<div class="fa-empty">No match. Check the listone spelling (e.g. "Esposito F.P.").</div>';
-  }
-
-  // ---- table ------------------------------------------------------------
-  let sortKey = "edge", sortDir = -1, filt = "all";
-  function renderTable() {
-    let rows = ALL.slice();
-    if (["P", "D", "C", "A"].indexOf(filt) !== -1) rows = rows.filter(p => p.R === filt);
-    else if (filt === "value") rows = rows.filter(p => p.verdict === "value");
-    else if (filt === "avoid") rows = rows.filter(p => p.verdict === "avoid");
-    else if (filt === "real") rows = rows.filter(p => !p.estimated);
-    rows.sort((a, b) => {
-      const x = a[sortKey], y = b[sortKey];
-      if (typeof x === "string" || typeof y === "string")
-        return String(x).localeCompare(String(y)) * sortDir;
-      return (((x == null ? -1e9 : x) - (y == null ? -1e9 : y)) * sortDir);
-    });
-    $("fa-tbody").innerHTML = rows.slice(0, 550).map(p => {
-      const e = p.edge == null ? 0 : p.edge;
-      const st = mine.has(p.id) ? '<span class="chip mine">mine</span>'
-        : gone.has(p.id) ? '<span class="chip avoid">gone</span>' : "";
-      return '<tr' + (gone.has(p.id) ? ' style="opacity:.4"' : '') + '>' +
-        '<td class="nm">' + esc(p.nome) + " " + st + '</td>' +
-        '<td>' + esc(p.team) + '</td>' +
-        '<td><span class="fa-tag ' + p.R + '">' + p.R + '</span></td>' +
-        '<td class="n">' + (p.age == null ? "—" : p.age) + '</td>' +
-        '<td class="n">' + (p.proj_min == null ? "—" : Math.round(p.proj_min)) + '</td>' +
-        '<td class="n">' + (p.season_points == null ? "—" : p.season_points.toFixed(1)) + '</td>' +
-        '<td class="n">' + p.cost + '</td>' +
-        '<td class="n" style="color:var(--accent)">' + p.maxb + '</td>' +
-        '<td class="n ' + (e > 0 ? "pos" : e < 0 ? "neg" : "") + '">' +
-          (e > 0 ? "+" : "") + e.toFixed(0) + '</td>' +
-        '<td>' + chipFor(p) + '</td>' +
-        '<td><button class="fa-btn" data-act="' + (gone.has(p.id) ? "ungone" : "gone") +
-          '" data-id="' + p.id + '">' + (gone.has(p.id) ? "Undo" : "Gone") + '</button></td>' +
-        '</tr>';
-    }).join("");
-  }
-
-  // ---- events -----------------------------------------------------------
-  document.addEventListener("click", function (ev) {
-    const b = ev.target.closest("button[data-act]");
-    if (b) {
-      const id = Number(b.dataset.id), act = b.dataset.act;
-      undo.push({ mine: new Map(mine), gone: new Set(gone) });
-      if (act === "mine") {
-        // read the price box in the row that was actually clicked -- the same player can
-        // be on screen twice (plan + search results) and a document-wide lookup would
-        // silently take the other row's value
-        const row = b.closest(".fa-row");
-        const inp = row ? row.querySelector('input[data-in="' + id + '"]') : null;
-        const v = inp ? Math.max(1, parseInt(inp.value, 10) || 1) : (BY_ID.get(id) || {}).cost || 1;
-        mine.set(id, v);
-        gone.delete(id);
-        $("fa-q").value = "";
-      } else if (act === "gone") { gone.add(id); mine.delete(id); $("fa-q").value = ""; }
-      else if (act === "unmine") { mine.delete(id); }
-      else if (act === "ungone") { gone.delete(id); }
-      render();
-      return;
-    }
-    const f = ev.target.closest("#fa-filters button");
-    if (f) {
-      filt = f.dataset.f;
-      [...document.querySelectorAll("#fa-filters button")].forEach(x => x.classList.remove("on"));
-      f.classList.add("on");
-      renderTable();
-      return;
-    }
-    const th = ev.target.closest("#fa-tbl th[data-s]");
-    if (th) {
-      const k = th.dataset.s;
-      if (k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = -1; }
-      renderTable();
-    }
+  $("fc-refresh").addEventListener("click", function () {
+    this.disabled = true;
+    load(true).finally(() => { this.disabled = false; });
   });
-
-  // Enter in the price box = Bought
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key !== "Enter") return;
-    const inp = ev.target.closest("input[data-in]");
-    if (!inp) return;
-    ev.preventDefault();
-    const row = inp.closest(".fa-row");
-    const btn = row && row.querySelector('button[data-act="mine"]');
-    if (btn) btn.click();
-  });
-
-  $("fa-q").addEventListener("input", renderSearch);
-  $("fa-undo").addEventListener("click", function () {
-    const s = undo.pop();
-    if (!s) return;
-    mine = s.mine; gone = s.gone; render();
-  });
-  $("fa-reset").addEventListener("click", function () {
-    undo.push({ mine: new Map(mine), gone: new Set(gone) });
-    mine = new Map(); gone = new Set(); render();
-  });
-
-  // ---- season tracker ---------------------------------------------------
-  // Rendered from the server's scoring, not the browser's: the voti, the substitutions
-  // and the modifier are all computed where the roster file lives, so the page and a
-  // scheduled run can never disagree about the total.
-  function fmt(x) { return (x === null || x === undefined) ? "—" : x.toFixed(1); }
-
-  function seasonHTML(d) {
-    if (!d || !d.rounds_played) {
-      return '<div class="fa-empty">No rounds played yet. Once the first giornata is '
-        + 'graded this fills in on its own — each round, each player, and the running total.'
-        + '</div>';
-    }
-    const t = d.totals, a = d.average;
-    let h = '<div class="fa-tot">'
-      + '<div><span>Rounds</span><b>' + d.rounds_played + '</b></div>'
-      + '<div><span>Total</span><b>' + fmt(t.settable) + '</b></div>'
-      + '<div><span>Average</span><b>' + fmt(a.settable) + '</b></div>'
-      + '<div><span>Ceiling</span><b>' + fmt(t.hindsight) + '</b></div>'
-      + '<div><span>Left on the bench</span><b>'
-      + fmt(t.hindsight - t.settable) + '</b></div></div>';
-
-    if (d.players && d.players.length) {
-      h += '<div style="margin:2px 0 12px"><table style="width:100%;border-collapse:collapse;'
-        + 'font-size:11px" class="fa-lvl"><tr style="color:var(--text-tertiary);text-align:left">'
-        + '<th style="padding:3px 6px">Player levels</th><th>prior</th><th>seen</th>'
-        + '<th>live level</th><th>trend</th></tr>'
-        + d.players.map(p => {
-            const up = p.delta >= 0.15, dn = p.delta <= -0.15;
-            const col = up ? "var(--emerald,#2e9e5b)" : (dn ? "#b3453b" : "var(--text-tertiary)");
-            return '<tr><td style="padding:3px 6px">' + p.nome + ' <span style="color:'
-              + 'var(--text-tertiary)">' + p.R + '</span></td>'
-              + '<td>' + p.prior_level.toFixed(2) + '</td>'
-              + '<td>' + p.n_rounds + '</td>'
-              + '<td><b>' + p.live_level.toFixed(2) + '</b></td>'
-              + '<td style="color:' + col + '">' + (p.delta > 0 ? "+" : "")
-              + p.delta.toFixed(2) + (up ? " ▲" : (dn ? " ▼" : "")) + '</td></tr>';
-          }).join("")
-        + '</table><div style="font-size:10px;color:var(--text-tertiary);margin-top:4px;'
-        + 'max-width:74ch;line-height:1.5">Live level = the auction projection updated by '
-        + 'the rounds actually played, weighted so ~10 observed rounds equal the prior '
-        + '(measured, not chosen: split-half reliability of a 10-round mean is 0.50). '
-        + 'There is deliberately no last-game form boost — measured round-to-round '
-        + 'autocorrelation is slightly <i>negative</i> (−0.05), so chasing form makes '
-        + 'predictions worse. Keeper priors are approximate (different scale).</div></div>';
-    }
-    h += d.rounds.slice().reverse().map(r => {
-      const s = r.settable;
-      const rows = s.xi.map(e => {
-        const fv = e.fantavoto;
-        const cls = fv === null ? "blank" : (e.slot === "sub" ? "sub" : "");
-        const d0 = fv === null ? "" : (fv >= 6 ? "fa-pos" : (fv < 5.5 ? "fa-neg" : ""));
-        return '<tr class="' + cls + '"><td class="n">' + e.R + '</td>'
-          + '<td class="n">' + e.nome + '</td>'
-          + '<td>' + fmt(e.voto) + '</td>'
-          + '<td class="' + d0 + '"><b>' + (fv === null ? "sv" : fmt(fv)) + '</b></td></tr>';
-      }).join("");
-      return '<div class="fa-rd"><div class="fa-rd__h">'
-        + '<span class="fa-rd__n">Giornata ' + r.round + '</span>'
-        + '<span class="fa-rd__t">' + fmt(s.total) + '</span>'
-        + '<span class="fa-rd__m">' + (s.module || "—")
-        + (s.modifier ? ' · modificatore +' + fmt(s.modifier) : ' · no modificatore')
-        + (s.subs.length ? ' · ' + s.subs.length + ' sub' + (s.subs.length > 1 ? 's' : '') : '')
-        + '</span>'
-        + '<span class="fa-rd__c">ceiling ' + fmt(r.hindsight.total) + '</span>'
-        + '</div><div class="fa-xi"><table>' + rows + '</table></div></div>';
-    }).join("");
-    return h;
-  }
-
-  // ---- XI advisor -------------------------------------------------------
-  // Forward-looking twin of the tracker: same level definition, same modifier bands,
-  // computed server-side so the page and any scheduled consumer agree.
-  function adviceHTML(d) {
-    if (!d || !d.round || !d.xi || !d.xi.length) {
-      return '<div class="fa-empty">No upcoming fixtures found — between rounds, or the '
-        + 'fixture file has not refreshed yet.</div>';
-    }
-    const pct = x => Math.round(x * 100) + '%';
-    const adjTxt = x => (x > 0 ? '+' : '') + x.toFixed(2);
-    let h = '<div class="fa-tot">'
-      + '<div><span>Module</span><b>' + d.module + '</b></div>'
-      + '<div><span>Expected</span><b>' + d.total.toFixed(1) + '</b></div>'
-      + '<div><span>Modificatore</span><b>' + (d.modifier ? '+' + d.modifier.toFixed(1) : '—')
-      + '</b></div></div>';
-    const row = (e, strong) => {
-      const where = e.home ? 'vs ' + e.opp : '@ ' + e.opp;
-      const aCol = e.fix_adj > 0.05 ? 'var(--emerald,#2e9e5b)'
-                 : (e.fix_adj < -0.05 ? '#b3453b' : 'var(--text-tertiary)');
-      return '<tr' + (strong ? '' : ' style="opacity:.62"') + '>'
-        + '<td class="n" style="padding:3px 6px">' + e.R + '</td>'
-        + '<td>' + e.nome + ' <span style="color:var(--text-tertiary)">' + where + '</span></td>'
-        + '<td>' + pct(e.p_play) + '</td>'
-        + '<td style="color:' + aCol + '">' + adjTxt(e.fix_adj) + '</td>'
-        + '<td><b>' + e.exp.toFixed(2) + '</b></td></tr>';
-    };
-    h += '<div style="margin:2px 0 10px"><table style="width:100%;border-collapse:collapse;'
-      + 'font-size:11px"><tr style="color:var(--text-tertiary);text-align:left">'
-      + '<th style="padding:3px 6px"></th><th>Field these eleven</th><th>titolare</th>'
-      + '<th>fixture</th><th>exp. voto</th></tr>'
-      + d.xi.map(e => row(e, true)).join('')
-      + '</table></div>';
-    if (d.bench && d.bench.length) {
-      h += '<div style="font-size:10px;color:var(--text-tertiary);margin:6px 0 2px">'
-        + 'Bench, in substitution order</div>'
-        + '<table style="width:100%;border-collapse:collapse;font-size:11px">'
-        + d.bench.map(e => row(e, false)).join('') + '</table>';
-    }
-    if (d.unavailable && d.unavailable.length) {
-      h += '<div style="font-size:11px;margin-top:8px">'
-        + d.unavailable.map(e => '<div style="color:#b3453b">&#9877; ' + e.nome + ' — '
-          + (e.inj || e.why || 'unavailable') + '</div>').join('') + '</div>';
-    }
-    return h;
-  }
-
-  function loadAdvice() {
-    fetch("/api/fantacalcio/xi-advisor")
-      .then(r => r.json())
-      .then(d => {
-        $("fa-xi").innerHTML = adviceHTML(d);
-        if (d.round) $("fa-xi-title").textContent =
-          "Giornata " + d.round + " — the XI to field";
-        if (d.first_kickoff) {
-          const k = new Date(d.first_kickoff * 1000);
-          $("fa-xi-src").textContent = "first kickoff " + k.toLocaleString("en-GB",
-            { weekday: "short", day: "numeric", month: "short",
-              hour: "2-digit", minute: "2-digit" });
-        }
-      })
-      .catch(() => { $("fa-xi").innerHTML =
-        '<div class="fa-empty">Advice unavailable right now.</div>'; });
-  }
-
-  function loadSeason() {
-    fetch("/api/fantacalcio/tracker")
-      .then(r => r.json())
-      .then(d => {
-        $("fa-season").innerHTML = seasonHTML(d);
-        $("fa-season-src").textContent = d.source === "plan"
-          ? "scoring the planned squad — save a buy and it switches to your real one"
-          : (d.roster_n ? d.roster_n + " players saved" : "");
-      })
-      .catch(() => { $("fa-season").innerHTML =
-        '<div class="fa-empty">Scores unavailable right now.</div>'; });
-  }
-
-  document.addEventListener("click", e => {
-    const hd = e.target.closest(".fa-rd__h");
-    if (hd) hd.parentElement.classList.toggle("open");
-  });
-
-  load();
-  render();
-  loadSeason();
-  loadAdvice();
+  load(false);
 })();
 </script>
-{% endif %}
 {% endblock %}

@@ -1405,26 +1405,34 @@ def api_fantacalcio_xi_advisor():
                         "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/league")
+def api_fantacalcio_league():
+    """All 10 league rosters (scripts/fantacalcio/import_rosters.py artifact).
+
+    Static read: the file only moves when Nicola re-imports a league export,
+    so there is no rebuild-on-stale here — stale means "no trade happened".
+    """
+    try:
+        with open(DATA_DIR / "fantacalcio" / "league_rosters.json",
+                  encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"teams": {}, "my_team": None, "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")
 def fantacalcio_page():
-    """Auction board for the 2026-27 Fantacalcio draft.
+    """Season hub: squad, weekly formation, per-player detail, league rosters.
 
-    The board is a build artifact (scripts/fantacalcio/build_auction_board.py); this
-    route only serves it. Rendered server-side so the page works with no API round-trip
-    at 04:30, which is when the auction actually runs.
+    Replaced the auction board 2026-09-02 (auction over; the board build script
+    survives in scripts/fantacalcio/ and git keeps the old template). Data comes
+    from the tracker / xi-advisor / league endpoints client-side, so this route
+    serves markup only.
     """
-    board_path = DATA_DIR / "fantacalcio" / "auction_board.json"
-    try:
-        with open(board_path, encoding="utf-8") as fh:
-            board = json.load(fh)
-    except (OSError, ValueError):
-        board = None
     resp = app.make_response(render_template(
-        "fantacalcio.html", active_page="fantacalcio",
-        board=board, board_json=json.dumps(board) if board else "null",
-        board_path=str(board_path)))
+        "fantacalcio.html", active_page="fantacalcio"))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
