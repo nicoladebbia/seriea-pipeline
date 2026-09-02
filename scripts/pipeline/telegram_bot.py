@@ -2529,6 +2529,13 @@ def _record_observed_module(text: str) -> None:
             record_fielded(m.group(1).strip(), m.group(2), int(rnd))
             log.info("Recorded observed module: %s %s (round %s)",
                      m.group(1), m.group(2), rnd)
+            # Rebuild the rival matrix on the spot so the observation feeds
+            # the next answer/push instead of waiting for the tracker run.
+            from scripts.fantacalcio.xi_advisor import build_rivals
+            riv = build_rivals()
+            (base / "rivals.json").write_text(
+                _json.dumps(riv, ensure_ascii=False, indent=1))
+            log.info("rivals.json rebuilt with the observed module")
     except Exception as e:
         log.warning("observed-module record failed: %s", e)
 

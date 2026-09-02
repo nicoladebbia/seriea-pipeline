@@ -997,3 +997,39 @@ def test_advise_module_restriction_and_fielded_ledger(tmp_path):
     record_fielded("Munnezz FC", "4-4-2", 5, path=led)
     assert _observed_modules("Munnezz FC", path=led) == [(4, 4, 2), (3, 5, 2)]
     assert _observed_modules("Sconosciuti", path=led) == []
+
+
+def test_vs_block_collapses_comps_and_diff_guard():
+    from scripts.fantacalcio.tracker import _advice_diff, _vs_block
+    riv = {
+        "me": {"team": "Whisky Palermo", "module": "3-4-3"},
+        "next_opponents": [
+            {"competition": "Coppa Del Nonno", "opponent": "Munnezz FC"},
+            {"competition": "Hunger Games", "opponent": "Munnezz FC"},
+        ],
+        "rivals": [{"team": "Munnezz FC", "module": "4-4-2",
+                    "module_src": "osservato", "total": 63.0, "p_win": 0.46,
+                    "alt": {"module": "3-5-2", "p_win": 0.49,
+                            "in": ["Schmid"], "out": ["Simeone"]}}],
+    }
+    txt, tg, sig = _vs_block(riv)
+    # same opponent, same recommendation in both comps -> ONE collapsed line
+    assert txt.count("Munnezz FC") == 1 and "Coppa Del Nonno + Hunger" in txt
+    assert "visto" in txt and "gioca 3-5-2" in txt and "Schmid" in txt
+    assert sig["Coppa Del Nonno"] == sig["Hunger Games"]
+    assert sig["Coppa Del Nonno"]["module"] == "3-5-2"
+    # no alt -> base is the recommendation
+    riv["rivals"][0]["alt"] = None
+    txt2, _, sig2 = _vs_block(riv)
+    assert "già la migliore" in txt2
+    assert sig2["Hunger Games"]["module"] == "3-4-3"
+    # riposo / unknown rival rows are skipped, empty payload is silent
+    assert _vs_block(None) == (None, None, {})
+    riv["next_opponents"] = [{"competition": "CDN", "opponent": None}]
+    assert _vs_block(riv) == (None, None, {})
+    # latch guard: state written BEFORE the vs field existed must not fire
+    base_adv = {"module": "3-4-3", "xi": ["A"], "bench": ["B"]}
+    assert _advice_diff(base_adv, {**base_adv, "vs": sig}) is None
+    # but a genuine recommendation flip fires with the opponent named
+    d = _advice_diff({**base_adv, "vs": sig2}, {**base_adv, "vs": sig})
+    assert d and "Contro Munnezz FC" in d and "3-5-2" in d and "Schmid" in d

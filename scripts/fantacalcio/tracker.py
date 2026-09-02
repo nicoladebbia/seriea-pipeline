@@ -346,7 +346,70 @@ def _advice_diff(prev: dict, cur: dict) -> str | None:
     elif prev.get("bench", []) != cur.get("bench", []):
         lines.append("Panchina riordinata: "
                      + ", ".join(cur.get("bench", [])))
+    if prev.get("vs") is not None and prev.get("vs") != cur.get("vs"):
+        for comp, rec in (cur.get("vs") or {}).items():
+            if (prev["vs"] or {}).get(comp) == rec:
+                continue
+            extra = (f" (dentro {', '.join(rec['in'])} — "
+                     f"fuori {', '.join(rec['out'])})") if rec.get("in") else ""
+            lines.append(f"Contro {rec['opp']} ({comp}): "
+                         f"{rec['module']}{extra}")
     return "\n".join(lines) if lines else None
+
+
+def _vs_block(riv: dict | None) -> tuple[str | None, str | None, dict]:
+    """Per-competition opponent forecast + the formation to play AGAINST it.
+
+    Reads the rival matrix (rivals.json payload): the opponent's predicted
+    module (observed repertoire when the ledger has screenshots, else
+    estimated), my P(win), and the risk-tilted alternative XI when it beats
+    the base by ALT_MIN_GAIN against that specific opponent. Collapses
+    duplicate lines when both competitions meet the same opponent with the
+    same recommendation. The sig dict rides the notify latch so a flipped
+    recommendation (e.g. a screenshot taught us the rival's real module)
+    fires the last-hour diff push.
+    """
+    if not riv:
+        return None, None, {}
+    rows = {r["team"]: r for r in riv.get("rivals", [])}
+    me = riv.get("me") or {}
+    sig, groups = {}, {}
+    for nx in riv.get("next_opponents", []):
+        opp = nx.get("opponent")
+        r = rows.get(opp) if opp else None
+        if not r or r.get("module") is None or r.get("p_win") is None:
+            continue
+        alt = r.get("alt")
+        rec = {"opp": opp,
+               "module": (alt or {}).get("module") or me.get("module"),
+               "in": (alt or {}).get("in") or [],
+               "out": (alt or {}).get("out") or []}
+        sig[nx["competition"]] = rec
+        key = (opp, rec["module"], tuple(rec["in"]), tuple(rec["out"]))
+        g = groups.setdefault(key, {"comps": [], "row": r, "alt": alt})
+        g["comps"].append(nx["competition"])
+    if not sig:
+        return None, None, {}
+    txt, tg = [], []
+    for (opp, _mod, _ins, _outs), g in groups.items():
+        r, alt = g["row"], g["alt"]
+        comps = " + ".join(g["comps"])
+        src = "visto" if r.get("module_src") == "osservato" else "stima"
+        txt.append(f"{comps}: vs {opp} — previsto {r['module']} ({src}, "
+                   f"exp {r['total']}) · P(vittoria) {r['p_win']:.0%}")
+        tg.append(f"🆚 <b>{comps}</b>: {opp} — previsto <b>{r['module']}</b> "
+                  f"({src}, exp {r['total']}) · P(vittoria) "
+                  f"<b>{r['p_win']:.0%}</b>")
+        if alt:
+            ins, outs = ", ".join(alt["in"]), ", ".join(alt["out"])
+            txt.append(f"→ contro di loro gioca {alt['module']}: dentro {ins}"
+                       f" — fuori {outs} (P(vittoria) {alt['p_win']:.0%})")
+            tg.append(f"   → <b>gioca {alt['module']}</b>: dentro {ins} — "
+                      f"fuori {outs} (P(vittoria) {alt['p_win']:.0%})")
+        else:
+            txt.append("→ la formazione base è già la migliore contro di loro")
+            tg.append("   → la base sopra è già la migliore contro di loro")
+    return "\n".join(txt), "\n".join(tg), sig
 
 
 def _standings_from_schedule(schedule: dict) -> dict:
@@ -521,6 +584,7 @@ def _push_xi_advice() -> None:
     # Rival matrix: expected score + win prob vs every league team, so the two
     # competitions (Coppa Del Nonno / Hunger Games) are both covered whoever
     # the weekend's opponent is.
+    riv = None
     try:
         from scripts.fantacalcio.xi_advisor import build_rivals
         riv = build_rivals(adv)
@@ -602,9 +666,11 @@ def _push_xi_advice() -> None:
     phase = _push_phase(state, rnd, kick, datetime.now(UTC).timestamp())
     if phase is None:
         return
+    vs_txt, vs_tg, vs_sig = _vs_block(riv)
     cur = {"module": adv.get("module"),
            "xi": sorted(x["nome"] for x in adv["xi"]),
-           "bench": [x["nome"] for x in adv["bench"]]}
+           "bench": [x["nome"] for x in adv["bench"]],
+           "vs": vs_sig}
 
     if phase == "final":
         diff = _advice_diff(state.get("advice", {}), cur)
@@ -616,7 +682,8 @@ def _push_xi_advice() -> None:
                        title="Fantacalcio XI — aggiornamento", level="warning",
                        category="system",
                        tg_html=(f"<b>🔁 Giornata {rnd} — cambi dell'ultima ora"
-                                f"</b>\n{diff}"),
+                                f"</b>\n{diff}"
+                                + (f"\n\n{vs_tg}" if vs_tg else "")),
                        tg_reply_markup=_SCHIERA_BTN)
             except Exception as e:
                 print(f"XI final-check notify failed: {e}")
@@ -633,12 +700,14 @@ def _push_xi_advice() -> None:
     diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
     msg = (f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+           + (f"{vs_txt}\n\n" if vs_txt else "")
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
            + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else ""))
     tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+          + (f"{vs_tg}\n\n" if vs_tg else "")
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
