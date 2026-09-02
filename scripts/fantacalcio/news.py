@@ -116,6 +116,48 @@ def fetch_news(roster: list[dict], refresh: bool = True) -> dict:
     return out
 
 
+# Escalation lexicon: a headline matched to a rostered player that also hits
+# one of these patterns is a ROSTER RISK — pushed once per (player, category)
+# by the tracker job, never silently scrolled away. Tight on purpose: a false
+# push costs trust in the channel (2026-08-27 lesson), a missed one costs a
+# headline that is still on the page.
+_RISK = {
+    "infortunio": re.compile(
+        r"infortun|lesion|si ferma|frattura|crociat|operazi|stiramento"
+        r"|risonanza|stop di \d|out (?:per )?\d|salta (?:il|la|le|due|tre)",
+        re.I),
+    "mercato-out": re.compile(
+        r"cessione|addio|rescission|saudit|al[- ](?:hilal|ittihad|nassr|ahli"
+        r"|sadd)|ufficiale il trasferimento|lascia (?:la|il|l')", re.I),
+    "squalifica": re.compile(r"squalificat|giudice sportivo", re.I),
+}
+
+
+def classify_risk(item: dict) -> str | None:
+    """First risk category the headline+description hits, else None."""
+    hay = f"{item.get('title', '')} {item.get('desc', '')}"
+    for cat, rx in _RISK.items():
+        if rx.search(hay):
+            return cat
+    return None
+
+
+def risk_hits(item: dict) -> list[tuple[str, str]]:
+    """(player, category) pairs worth alerting for one news item.
+
+    The player's surname must be in the TITLE — a body-only mention is
+    usually somebody else's story ("David to Atletico" name-dropping coach
+    Simeone tagged MY Simeone; pushed once 2026-09-02 before this guard).
+    """
+    cat = classify_risk(item)
+    if not cat:
+        return []
+    title = item.get("title", "")
+    return [(nome, cat) for nome in item.get("players", [])
+            if re.search(r"\b" + re.escape(_surname(nome)) + r"\b",
+                         title, re.I)]
+
+
 def roster_for_news() -> list[dict]:
     """The saved squad joined to board names — the shape fetch_news wants."""
     board = json.loads((ROOT / "data" / "fantacalcio" / "auction_board.json").read_text())

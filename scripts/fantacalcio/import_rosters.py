@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -299,8 +300,23 @@ def parse_calendar_xlsx(path: Path, known_teams: set[str]) -> tuple[str, list]:
                 continue
             names = [t for t in toks if t in known_teams]
             if len(names) == 2:
+                # Score cells (specimen-verified on the UNPLAYED shape only:
+                # home | 0.0 | 0 | away | "-"). Mapping assumption for played
+                # rows — fp_home, fp_away between the teams, goals result
+                # after the away team — MUST be re-verified against the first
+                # settled giornata before trusting standings built on it;
+                # build_standings only counts fixtures whose score matches
+                # N-N, so a wrong guess yields an empty table, not a wrong one.
+                hi, ai = toks.index(names[0]), toks.index(names[1])
+                mid = [t for t in toks[hi + 1:ai]
+                       if re.fullmatch(r"\d+(\.\d+)?", t)]
+                after = next((t for t in toks[ai + 1:]
+                              if re.fullmatch(r"\d+-\d+", t)), None)
                 fixtures.append({"girone": girone, "home": names[0],
-                                 "away": names[1]})
+                                 "away": names[1],
+                                 "fp_home": float(mid[0]) if mid else None,
+                                 "fp_away": float(mid[1]) if len(mid) > 1 else None,
+                                 "score": after})
         if fixtures:
             rounds[lr] = {"league_round": lr, "sa_round": sa,
                           "fixtures": fixtures, "rests": rests}

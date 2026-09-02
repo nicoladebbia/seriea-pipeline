@@ -22,7 +22,7 @@ the modifier rather than assuming the modifier always wins.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.fantacalcio.live_scores import fetch_round, played_rounds
@@ -240,7 +240,7 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
                                / (LEVEL_K + len(vobs)), 2)
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "season": season, "source": source,
         "roster_n": len(roster), "spent": sum(p["paid"] for p in roster),
         "rounds_played": len(rounds),
@@ -256,6 +256,14 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
 # yellow; a red is an automatic ban (length set by the giudice sportivo — we
 # assume 1 match, the modal outcome). Counted from OUR voti parquets, so it is
 # the LEAGUE ladder only (Coppa Italia runs its own, which we cannot see).
+# One-tap target for the push buttons. No deep link can PRE-FILL a
+# formation (probed 2026-09-02: the schiera page is session-gated,
+# no public API) — this just lands you on the league, one tap from
+# Gestione formazioni.
+LEAGUE_URL = "https://leghe.fantacalcio.it/us-fantacalcio-serie-a"
+_SCHIERA_BTN = {"inline_keyboard":
+                [[{"text": "Schiera su Leghe \u2192", "url": LEAGUE_URL}]]}
+
 BAN_STEPS = frozenset({5, 10, 15})
 
 
@@ -341,6 +349,128 @@ def _advice_diff(prev: dict, cur: dict) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def _standings_from_schedule(schedule: dict) -> dict:
+    """League tables from the calendar exports' score cells — the only real
+    H2H source (the Leghe page 404s anonymously, probed 2026-09-02).
+
+    A fixture counts ONLY when its `score` cell matches N-N, so the unplayed
+    "-" shape (and any wrong guess about how Leghe writes played rows) yields
+    an empty table, never a wrong one. 3/1/0 points, fantapunti as tiebreak.
+    """
+    import re as _re
+    comps: dict = {}
+    for comp, cd in (schedule.get("competitions") or {}).items():
+        tables: dict[str, dict] = {}
+        played = 0
+        for rd in cd.get("rounds", []):
+            any_played = False
+            for f in rd.get("fixtures", []):
+                sc = str(f.get("score") or "")
+                if not _re.fullmatch(r"\d+-\d+", sc):
+                    continue
+                gh, ga = (int(x) for x in sc.split("-"))
+                t = tables.setdefault(f.get("girone") or "", {})
+                for name in (f["home"], f["away"]):
+                    t.setdefault(name, {"team": name, "g": 0, "w": 0, "d": 0,
+                                        "l": 0, "gf": 0, "gs": 0, "fp": 0.0,
+                                        "pts": 0})
+                h, a = t[f["home"]], t[f["away"]]
+                h["g"] += 1
+                a["g"] += 1
+                h["gf"] += gh
+                h["gs"] += ga
+                a["gf"] += ga
+                a["gs"] += gh
+                h["fp"] += float(f.get("fp_home") or 0.0)
+                a["fp"] += float(f.get("fp_away") or 0.0)
+                if gh > ga:
+                    h["w"], a["l"] = h["w"] + 1, a["l"] + 1
+                    h["pts"] += 3
+                elif gh < ga:
+                    a["w"], h["l"] = a["w"] + 1, h["l"] + 1
+                    a["pts"] += 3
+                else:
+                    h["d"], a["d"] = h["d"] + 1, a["d"] + 1
+                    h["pts"] += 1
+                    a["pts"] += 1
+                any_played = True
+            played += any_played
+        comps[comp] = {
+            "format": cd.get("format"), "rounds_played": played,
+            "tables": {g: sorted(rows.values(),
+                                 key=lambda r: (-r["pts"], -r["fp"]))
+                       for g, rows in sorted(tables.items())}}
+    return comps
+
+
+def _new_risk_alerts(items: list[dict], state: dict,
+                     now_iso: str, hits) -> list[str]:
+    """Lines to push for headlines that are (player, category)-new.
+
+    `hits(item)` yields (player, category) pairs (news.risk_hits — title-
+    bound). `state` maps "nome|categoria" -> last alerted ISO time; a
+    signature re-alerts only after RISK_REALERT_D days. Mutates state.
+    """
+    lines = []
+    for it in items:
+        for nome, cat in hits(it):
+            key = f"{nome}|{cat}"
+            last = state.get(key, "")
+            if last and (datetime.fromisoformat(now_iso)
+                         - datetime.fromisoformat(last)).days < RISK_REALERT_D:
+                continue
+            state[key] = now_iso
+            lines.append(f"{nome} — {cat}: {it['title'][:90]}")
+    return lines
+
+
+RISK_REALERT_D = 7
+
+
+def _round_digest(state: dict) -> dict | None:
+    """Digest for the newest settled giornata, once (latched in `state`).
+
+    "Cosa avrei fatto": the advised XI's score, the hindsight best, what the
+    bench cost, plus the ledger's predicted-vs-actual once reconciled. All
+    from artifacts already on disk — no network.
+    """
+    try:
+        data = json.loads(OUT.read_text())
+    except (OSError, ValueError):
+        return None
+    played = int(data.get("rounds_played") or 0)
+    if played <= int(state.get("digest_round") or 0) or not data.get("rounds"):
+        return None
+    rd = data["rounds"][-1]
+    rnd = rd["round"]
+    st, hd = rd.get("settable") or {}, rd.get("hindsight") or {}
+    regret = (hd.get("total") or 0.0) - (st.get("total") or 0.0)
+    st_names = {x["nome"] for x in st.get("xi", [])}
+    missed = max((x for x in hd.get("xi", []) if x["nome"] not in st_names),
+                 key=lambda x: x.get("fantavoto") or 0.0, default=None)
+    lines = [f"XI consigliato: {st.get('total')} ({st.get('module')})",
+             f"Col senno di poi: {hd.get('total')} ({hd.get('module')})",
+             f"Panchina costata: {regret:+.1f}"]
+    if missed:
+        lines.append(f"Rimpianto: {missed['nome']} "
+                     f"({missed.get('fantavoto')}) fuori dall'XI")
+    try:
+        led = json.loads((ROOT / "data" / "fantacalcio"
+                          / "pred_ledger.json").read_text())
+        rec = (led.get("rounds") or {}).get(str(rnd))
+        if rec and rec.get("actual_total") is not None:
+            lines.append(f"Previsto {rec.get('predicted_total')} -> "
+                         f"reale {rec.get('actual_total')}")
+    except (OSError, ValueError):
+        pass
+    lines.append("Riesporta i calendari di lega per aggiornare le classifiche")
+    state["digest_round"] = played
+    text = f"Giornata {rnd} — bilancio\n" + "\n".join(lines)
+    return {"title": f"Fantacalcio — giornata {rnd}", "text": text,
+            "tg_html": f"<b>📊 Giornata {rnd} — bilancio</b>\n"
+                       + "\n".join(f"• {ln}" for ln in lines)}
+
+
 def _push_xi_advice() -> None:
     """Rebuild the weekly XI advice; push once per giornata, then one
     last-hours re-check that fires ONLY if the advice changed.
@@ -415,11 +545,57 @@ def _push_xi_advice() -> None:
             json.dumps(sv, indent=1, ensure_ascii=False))
     except Exception as e:
         print(f"svincolati scan failed (advice unaffected): {e}")
+    try:
+        schedule = json.loads((ROOT / "data" / "fantacalcio"
+                               / "league_schedule.json").read_text())
+        (ROOT / "data" / "fantacalcio" / "league_standings.json").write_text(
+            json.dumps({"generated_at": datetime.now(UTC).isoformat(),
+                        "competitions": _standings_from_schedule(schedule)},
+                       indent=1, ensure_ascii=False))
+    except Exception as e:
+        print(f"standings build failed (advice unaffected): {e}")
+    try:
+        from scripts.fantacalcio.trades import build_trades
+        tr = build_trades()
+        print(f"trade scan: {len(tr['windows'])} windows")
+    except Exception as e:
+        print(f"trade scan failed (advice unaffected): {e}")
     state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
     try:
         state = json.loads(state_path.read_text())
     except (OSError, ValueError):
         state = {}
+    # Roster risk alerts: headlines already matched to my players that hit
+    # the risk lexicon, pushed once per (player, category) per week.
+    try:
+        from scripts.fantacalcio.news import risk_hits
+        items = json.loads((ROOT / "data" / "fantacalcio"
+                            / "news.json").read_text()).get("items", [])
+        rstate = state.setdefault("risk_alerts", {})
+        lines = _new_risk_alerts(items, rstate,
+                                 datetime.now(UTC).isoformat(), risk_hits)
+        if lines:
+            from scripts.pipeline.notify import notify
+            notify("Notizie rosa — rischi:\n" + "\n".join(lines),
+                   title="Fantacalcio — rischi rosa", level="warning",
+                   category="alert",
+                   tg_html="<b>⚠️ Rischi rosa</b>\n"
+                           + "\n".join(f"• {ln}" for ln in lines))
+            state_path.write_text(json.dumps(state, indent=1,
+                                             ensure_ascii=False))
+    except Exception as e:
+        print(f"risk alerts failed (advice unaffected): {e}")
+    # Post-round digest: once, when a new giornata lands in the tracker.
+    try:
+        digest = _round_digest(state)
+        if digest:
+            from scripts.pipeline.notify import notify
+            notify(digest["text"], title=digest["title"], level="info",
+                   category="alert", tg_html=digest["tg_html"])
+            state_path.write_text(json.dumps(state, indent=1,
+                                             ensure_ascii=False))
+    except Exception as e:
+        print(f"round digest failed (advice unaffected): {e}")
     rnd, kick = adv.get("round"), adv.get("first_kickoff")
     if not adv.get("xi"):
         return
@@ -440,7 +616,8 @@ def _push_xi_advice() -> None:
                        title="Fantacalcio XI — aggiornamento", level="warning",
                        category="system",
                        tg_html=(f"<b>🔁 Giornata {rnd} — cambi dell'ultima ora"
-                                f"</b>\n{diff}"))
+                                f"</b>\n{diff}"),
+                       tg_reply_markup=_SCHIERA_BTN)
             except Exception as e:
                 print(f"XI final-check notify failed: {e}")
         state_path.write_text(json.dumps(state))
@@ -469,7 +646,7 @@ def _push_xi_advice() -> None:
     try:
         from scripts.pipeline.notify import notify
         notify(msg, title="Fantacalcio XI", level="info",
-               category="system", tg_html=tg)
+               category="system", tg_html=tg, tg_reply_markup=_SCHIERA_BTN)
         state_path.write_text(json.dumps(
             {"round": rnd, "sent_at": datetime.now(UTC).isoformat(),
              "final_checked": False, "advice": cur}))

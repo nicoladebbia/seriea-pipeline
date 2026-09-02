@@ -188,8 +188,18 @@
   </div>
 
   <div class="fc-card">
+    <h2>Scambi <small id="fc-trades-meta"></small></h2>
+    <div id="fc-trades"></div>
+  </div>
+
+  <div class="fc-card">
     <h2>Sfide <small id="fc-rivals-meta"></small></h2>
     <div id="fc-rivals"></div>
+  </div>
+
+  <div class="fc-card">
+    <h2>Classifiche <small id="fc-standings-meta"></small></h2>
+    <div id="fc-standings"></div>
   </div>
 
   <div class="fc-card">
@@ -523,6 +533,68 @@
     }).join("");
   }
 
+  // ---------- trade windows ----------
+  function renderTrades(tr) {
+    const ws = tr.windows || [];
+    $("fc-trades-meta").textContent = ws.length
+      ? "finestre in cui entrambe le squadre guadagnano (p(gioca) × livello)"
+      : "";
+    const strengths = (tr.strengths || []).map((t) =>
+      `<tr${t.me ? ' style="font-weight:600"' : ""}>
+        <td>${esc(t.team)}${t.me ? " ←" : ""}</td>
+        <td class="num">${fmt(t.strength)}</td><td>${esc(t.module || "")}</td>
+      </tr>`).join("");
+    const rows = ws.map((w) => `<tr>
+      <td>${esc(w.rival)}</td>
+      <td>${w.give_R} ${esc(w.give)} <span class="fc-pteam">(${fmt(w.give_score)})</span></td>
+      <td>${w.get_R} ${esc(w.get)} <span class="fc-pteam">(${fmt(w.get_score)})</span></td>
+      <td class="num" title="quanto migliora il mio XI">+${fmt(w.my_gain)}</td>
+      <td class="num" title="quanto migliora il loro — il motivo per cui accettano">+${fmt(w.their_gain)}</td>
+    </tr>`).join("");
+    $("fc-trades").innerHTML =
+      (ws.length ? `<div class="fc-tablewrap"><table class="fc-t">
+        <thead><tr><th>Rivale</th><th>Cedo</th><th>Ricevo</th>
+          <th>Io</th><th>Loro</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : '<div class="fc-empty">Nessuna finestra di scambio conveniente ora</div>')
+      + `<div class="fc-rolehead" style="margin-top:10px"><b>Forza rose</b>
+         <small class="fc-pteam">miglior XI, p(gioca) × livello</small></div>
+        <div class="fc-tablewrap"><table class="fc-t"><tbody>${strengths}</tbody></table></div>`;
+  }
+
+  // ---------- league standings ----------
+  function renderStandings(st) {
+    const comps = st.competitions || {};
+    const names = Object.keys(comps);
+    const played = names.some((n) => comps[n].rounds_played > 0);
+    $("fc-standings-meta").textContent =
+      "dai punteggi del calendario di lega (riesporta i calendari dopo ogni giornata)";
+    if (!played) {
+      $("fc-standings").innerHTML =
+        '<div class="fc-empty">Nessuna giornata di lega ancora giocata</div>';
+      return;
+    }
+    $("fc-standings").innerHTML = names.map((n) => {
+      const c = comps[n];
+      const tables = Object.entries(c.tables || {}).map(([g, rows]) => {
+        const trs = rows.map((r, i) => `<tr${r.team === "Whisky Palermo"
+            ? ' style="font-weight:600"' : ""}>
+          <td class="num">${i + 1}</td><td>${esc(r.team)}</td>
+          <td class="num">${r.pts}</td><td class="num">${r.g}</td>
+          <td class="num">${r.w}-${r.d}-${r.l}</td>
+          <td class="num">${r.gf}:${r.gs}</td>
+          <td class="num">${fmt(r.fp, 1)}</td>
+        </tr>`).join("");
+        return `<div class="fc-rolehead"><b>${esc(n)}${g ? " — Girone " + esc(g) : ""}</b></div>
+          <div class="fc-tablewrap"><table class="fc-t">
+          <thead><tr><th>#</th><th>Squadra</th><th>Pt</th><th>G</th>
+            <th>V-N-P</th><th>Gol</th><th>Fp</th></tr></thead>
+          <tbody>${trs}</tbody></table></div>`;
+      }).join("");
+      return tables;
+    }).join("");
+  }
+
   // ---------- press pulse ----------
   function renderPulse(pu) {
     const ts = pu.teams || [];
@@ -671,14 +743,18 @@
       fetchJSON("/api/fantacalcio/rivals").catch(() => ({ rivals: [] })),
       fetchJSON("/api/fantacalcio/team-pulse").catch(() => ({ teams: [] })),
       fetchJSON("/api/fantacalcio/svincolati").catch(() => ({ picks: {} })),
-    ]).then(([trk, adv, league, news, led, riv, pu, sv]) => {
+      fetchJSON("/api/fantacalcio/trades").catch(() => ({ windows: [] })),
+      fetchJSON("/api/fantacalcio/standings").catch(() => ({ competitions: {} })),
+    ]).then(([trk, adv, league, news, led, riv, pu, sv, tr, st]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
       renderNews(news);
       renderPulse(pu);
       renderSvincolati(sv);
+      renderTrades(tr);
       renderRivals(riv);
+      renderStandings(st);
       renderPred(led);
       renderLeague(league);
       $("fc-sub").textContent = "Coppa Del Nonno · 2026-27 · aggiornato " +

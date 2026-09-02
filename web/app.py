@@ -1486,6 +1486,28 @@ def api_fantacalcio_team_pulse():
         return jsonify({"teams": [], "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/standings")
+def api_fantacalcio_standings():
+    """League tables from calendar score cells (tracker job artifact)."""
+    try:
+        with open(DATA_DIR / "fantacalcio" / "league_standings.json",
+                  encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"competitions": {}, "error": "unavailable"})
+
+
+@app.route("/api/fantacalcio/trades")
+def api_fantacalcio_trades():
+    """Trade windows + team strengths (trades.build_trades artifact)."""
+    try:
+        with open(DATA_DIR / "fantacalcio" / "trades.json",
+                  encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"windows": [], "error": "unavailable"})
+
+
 @app.route("/api/fantacalcio/svincolati")
 def api_fantacalcio_svincolati():
     """Free-agent radar (xi_advisor.build_svincolati artifact; tracker job)."""

@@ -771,3 +771,148 @@ def test_departed_rostered_player_cannot_be_fielded():
     rows = _rival_roster({"roster": [{"id": 9}]}, by_id, hist, {})
     assert rows[0]["departed"] is True
     assert rows[0]["p_play"] == 0.02 and rows[0]["p_play_src"] == "departed"
+
+
+# ---------------------------------------------------------------------------
+# standings, risk alerts, round digest, trade scanner
+# ---------------------------------------------------------------------------
+from scripts.fantacalcio.news import classify_risk  # noqa: E402
+from scripts.fantacalcio.tracker import (  # noqa: E402
+    _new_risk_alerts, _round_digest, _standings_from_schedule)
+from scripts.fantacalcio.trades import (  # noqa: E402
+    evaluate_offer, scan_windows, starter_lines, team_strength)
+
+
+def test_standings_count_only_real_scores_and_split_gironi():
+    sch = {"competitions": {"CDN": {"format": "gironi", "rounds": [
+        {"league_round": 1, "sa_round": 3, "rests": [], "fixtures": [
+            {"girone": "A", "home": "X", "away": "Y", "score": "2-1",
+             "fp_home": 74.5, "fp_away": 68.0},
+            {"girone": "B", "home": "Z", "away": "W", "score": "0-0",
+             "fp_home": 60.0, "fp_away": 61.5},
+            # unplayed shapes must be invisible, whatever the cells hold
+            {"girone": "A", "home": "P", "away": "Q", "score": None,
+             "fp_home": 0.0, "fp_away": 0.0},
+            {"girone": "B", "home": "R", "away": "S", "score": "-",
+             "fp_home": 0.0, "fp_away": 0.0},
+        ]}]}}}
+    st = _standings_from_schedule(sch)["CDN"]
+    assert st["rounds_played"] == 1
+    a = {r["team"]: r for r in st["tables"]["A"]}
+    assert a["X"]["pts"] == 3 and a["X"]["gf"] == 2 and a["X"]["fp"] == 74.5
+    assert a["Y"]["pts"] == 0 and "P" not in a
+    b = {r["team"]: r for r in st["tables"]["B"]}
+    assert b["Z"]["pts"] == 1 and b["W"]["pts"] == 1
+    # no giocata at all -> empty, never wrong
+    for f in sch["competitions"]["CDN"]["rounds"][0]["fixtures"]:
+        f["score"] = "-"
+    st2 = _standings_from_schedule(sch)["CDN"]
+    assert st2["rounds_played"] == 0 and st2["tables"] == {}
+
+
+def test_risk_classifier_and_weekly_latch():
+    from scripts.fantacalcio.news import risk_hits
+    inj = {"title": "Vlasic si ferma: lesione al flessore", "desc": "",
+           "players": ["Vlasic"]}
+    calm = {"title": "Vlasic decisivo, che assist nel derby", "desc": "",
+            "players": ["Vlasic"]}
+    # risky story about SOMEONE ELSE that name-drops my player in the body
+    # (the David-to-Atletico / coach-Simeone false positive): no alert
+    other = {"title": "David all'Atletico: è ufficiale la cessione",
+             "desc": "presentato da Simeone in conferenza",
+             "players": ["Simeone"]}
+    assert classify_risk(inj) == "infortunio"
+    assert classify_risk(calm) is None
+    assert risk_hits(inj) == [("Vlasic", "infortunio")]
+    assert risk_hits(other) == []
+    state: dict = {}
+    l1 = _new_risk_alerts([inj, calm, other], state,
+                          "2026-09-02T10:00:00+00:00", risk_hits)
+    assert len(l1) == 1 and "Vlasic" in l1[0]
+    # same signature two days later: silent
+    l2 = _new_risk_alerts([inj], state, "2026-09-04T10:00:00+00:00",
+                          risk_hits)
+    assert l2 == []
+    # after the re-alert window: fires again
+    l3 = _new_risk_alerts([inj], state, "2026-09-10T10:00:01+00:00",
+                          risk_hits)
+    assert len(l3) == 1
+
+
+def test_round_digest_fires_once_per_settled_round(monkeypatch, tmp_path):
+    import json
+
+    import scripts.fantacalcio.tracker as trk
+    tf = tmp_path / "tracker.json"
+    tf.write_text(json.dumps({"rounds_played": 2, "rounds": [
+        {"round": 1, "settable": {"total": 60.0, "module": "4-3-3", "xi": []},
+         "hindsight": {"total": 62.0, "module": "4-3-3", "xi": []}},
+        {"round": 2,
+         "settable": {"total": 67.0, "module": "3-4-3",
+                      "xi": [{"nome": "A", "fantavoto": 7.0}]},
+         "hindsight": {"total": 74.5, "module": "3-4-3",
+                       "xi": [{"nome": "A", "fantavoto": 7.0},
+                              {"nome": "Douvikas", "fantavoto": 10.0}]}},
+    ]}))
+    monkeypatch.setattr(trk, "OUT", tf)
+    state: dict = {}
+    d = _round_digest(state)
+    assert d and "giornata 2" in d["title"]
+    assert "Panchina costata: +7.5" in d["text"]
+    assert "Douvikas" in d["text"]
+    assert state["digest_round"] == 2
+    assert _round_digest(state) is None       # latched
+
+
+def _trow(nome, R, level, p_play=0.9, pid=None):
+    return {"id": pid or hash(nome) % 10000, "nome": nome, "R": R,
+            "level": level, "p_play": p_play}
+
+
+def test_team_strength_picks_best_legal_module():
+    rows = ([_trow("Gk", "P", 6.0)]
+            + [_trow(f"D{i}", "D", 6.0) for i in range(3)]
+            + [_trow(f"C{i}", "C", 6.0) for i in range(4)]
+            + [_trow(f"A{i}", "A", 7.0) for i in range(3)])
+    tot, mod = team_strength(rows)
+    assert mod == "3-4-3"                    # the only feasible module
+    lines = starter_lines(rows, (3, 4, 3))
+    assert lines["A"] == 0.9 * 7.0 and lines["P"] == 0.9 * 6.0
+
+
+def test_scan_windows_requires_mutual_gain():
+    me = ([_trow("MyGk", "P", 6.2)]
+          + [_trow(f"MyD{i}", "D", 6.4) for i in range(4)]
+          + [_trow("SurplusD", "D", 6.3)]          # would start for the rival
+          + [_trow(f"MyC{i}", "C", 5.8) for i in range(4)]
+          + [_trow(f"MyA{i}", "A", 6.5) for i in range(3)])
+    rival = ([_trow("RGk", "P", 6.0)]
+             + [_trow(f"RD{i}", "D", 5.6) for i in range(4)]   # D poverty
+             + [_trow(f"RC{i}", "C", 6.6) for i in range(4)]
+             + [_trow("SurplusC", "C", 6.5)]       # upgrades my C line
+             + [_trow(f"RA{i}", "A", 6.2) for i in range(3)])
+    ws = scan_windows({"Me": me, "Riv": rival}, "Me")
+    dc = [w for w in ws if w["give_R"] == "D" and w["get_R"] == "C"]
+    assert dc, f"expected a D->C window vs Riv, got {ws}"
+    assert all(w["my_gain"] >= 0.05 and w["their_gain"] >= 0.02 for w in ws)
+    # one best window per (rival, role pair), never a spam of equal swaps
+    assert len(dc) == 1
+    # a rival with no poverty offers no window
+    strong = ([_trow("SGk", "P", 7.0)]
+              + [_trow(f"SD{i}", "D", 7.0) for i in range(5)]
+              + [_trow(f"SC{i}", "C", 7.0) for i in range(5)]
+              + [_trow(f"SA{i}", "A", 7.5) for i in range(3)])
+    assert scan_windows({"Me": me, "Str": strong}, "Me") == []
+
+
+def test_evaluate_offer_verdicts_and_shape_guard():
+    me = ([_trow(f"P{i}", "P", 6.0) for i in range(3)]
+          + [_trow(f"D{i}", "D", 6.0) for i in range(8)]
+          + [_trow(f"C{i}", "C", 6.0) for i in range(8)]
+          + [_trow(f"A{i}", "A", 6.0) for i in range(6)])
+    up = evaluate_offer([me[3]], [_trow("Star", "D", 7.5)], me)
+    assert up["verdict"] == "ACCETTA" and up["delta"] > 0
+    down = evaluate_offer([me[-1]], [_trow("Scrub", "A", 4.0)], me)
+    assert down["verdict"] in ("RIFIUTA", "TRATTA")
+    cross = evaluate_offer([me[3]], [_trow("Wrong", "A", 7.0)], me)
+    assert cross["verdict"] == "ROSA ILLEGALE" and not cross["shape_ok"]
