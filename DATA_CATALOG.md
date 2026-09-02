@@ -5945,6 +5945,7 @@ betting pipeline — nothing here feeds `features_*.parquet` or any model.
 | `tracker.json` | `scripts/fantacalcio/tracker.py` | Per-round scores for that squad. Rebuilt on demand by `/api/fantacalcio/tracker` when the roster moves or the file is >6h old. |
 | `xi_advice.json` | `scripts/fantacalcio/xi_advisor.py` | Who to field next giornata: module + XI + bench (the league's 9 ordered slots: 1P/3D/3C/2A) + tribuna, from live levels x fixture terms x p_play. Rebuilt on demand by `/api/fantacalcio/xi-advisor` when roster/tracker move or >6h old. |
 | `probabili.json` | `scripts/fantacalcio/probabili.py` | Probable lineups from fantacalcio.it (starters/reserves/ballot pcts per pid). 6h-TTL cache; on fetch/schema failure the last good cache is served. p_play source for the advisor when a player is listed. |
+| `pred_ledger.json` | `scripts/fantacalcio/pred_ledger.py` | Predicted-vs-actual loop: per-giornata forecast frozen EX-ANTE at first kickoff (post-kickoff writes refused), reconciled vs the round voti parquet after a 4-day grace, per-player err_fv + play Brier + per-source p_play calibration. The instrument that will refit the probabili heuristics. Served by `/api/fantacalcio/pred-ledger`. |
 | `news.json` | `scripts/fantacalcio/news.py` | Player headlines from Gazzetta/CorSport/Tuttosport RSS, surname-matched to the 25-man roster. 14-day accumulator, dedup by link. Display-only (`/api/fantacalcio/news`); refreshed by the tracker job. |
 
 ### Per-round voti — parsing facts that are not on the rules page

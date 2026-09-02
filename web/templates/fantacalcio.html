@@ -167,6 +167,11 @@
   </div>
 
   <div class="fc-card">
+    <h2>Previsioni <small id="fc-pred-meta"></small></h2>
+    <div id="fc-pred"></div>
+  </div>
+
+  <div class="fc-card">
     <h2>Lega <small id="fc-league-meta"></small></h2>
     <div class="fc-league" id="fc-league"></div>
   </div>
@@ -439,6 +444,50 @@
     }).join("") || '<div class="fc-empty">Nessuna notizia sui tuoi giocatori</div>';
   }
 
+  // ---------- predictions ledger ----------
+  function renderPred(led) {
+    const rounds = led.rounds || [];
+    const recon = rounds.filter((r) => r.reconciled);
+    $("fc-pred-meta").textContent = recon.length
+      ? `${recon.length} giornate riconciliate · errori per ricalibrare il modello`
+      : "predetto vs reale — la prima riconciliazione arriva a giornata conclusa";
+    if (!rounds.length) {
+      $("fc-pred").innerHTML =
+        '<div class="fc-empty">Nessuna previsione ancora congelata</div>';
+      return;
+    }
+    const rows = rounds.map((r) => `<tr>
+      <td>G${r.round}</td>
+      <td>${esc(r.module || "—")}</td>
+      <td class="num">${fmt(r.predicted_total)}</td>
+      <td>${r.reconciled ? "riconciliata"
+            : r.frozen ? "congelata, attende i voti" : "aperta (pre-kickoff)"}</td>
+      <td class="num">${r.mae_fv == null ? "—" : fmt(r.mae_fv)}</td>
+      <td class="num">${r.bias_fv == null ? "—"
+            : (r.bias_fv > 0 ? "+" : "") + fmt(r.bias_fv)}</td>
+      <td class="num">${r.play_brier == null ? "—" : fmt(r.play_brier, 3)}</td>
+    </tr>`).join("");
+    const cal = Object.entries(led.calibration || {});
+    const calHtml = cal.length ? `
+      <div class="fc-rolehead" style="margin-top:14px"><b>Calibrazione p(gioca) per fonte</b></div>
+      <div class="fc-tablewrap"><table class="fc-t">
+        <thead><tr><th>Fonte</th><th>n</th><th>Prevista</th><th>Reale</th><th>Scarto</th></tr></thead>
+        <tbody>${cal.map(([k, c]) => `<tr>
+          <td>${esc(k)}</td><td class="num">${c.n}</td>
+          <td class="num">${Math.round(c.predicted_rate * 100)}%</td>
+          <td class="num">${Math.round(c.realized_rate * 100)}%</td>
+          <td class="num">${(c.realized_rate - c.predicted_rate >= 0 ? "+" : "")
+            + Math.round((c.realized_rate - c.predicted_rate) * 100)}pp</td>
+        </tr>`).join("")}</tbody>
+      </table></div>` : "";
+    $("fc-pred").innerHTML = `
+      <div class="fc-tablewrap"><table class="fc-t">
+        <thead><tr><th>Giornata</th><th>Modulo</th><th>Attesi</th><th>Stato</th>
+          <th>MAE fv</th><th>Bias</th><th>Brier gioca</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>${calHtml}`;
+  }
+
   // ---------- load ----------
   function load(refresh) {
     const q = refresh ? "?refresh=1" : "";
@@ -447,11 +496,13 @@
       fetchJSON("/api/fantacalcio/xi-advisor" + q),
       fetchJSON("/api/fantacalcio/league"),
       fetchJSON("/api/fantacalcio/news" + q).catch(() => ({ items: [] })),
-    ]).then(([trk, adv, league, news]) => {
+      fetchJSON("/api/fantacalcio/pred-ledger").catch(() => ({ rounds: [] })),
+    ]).then(([trk, adv, league, news, led]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
       renderNews(news);
+      renderPred(led);
       renderLeague(league);
       $("fc-sub").textContent = "Coppa Del Nonno · 2026-27 · aggiornato " +
         new Date((trk.generated_at || Date.now())).toLocaleString("it-IT",

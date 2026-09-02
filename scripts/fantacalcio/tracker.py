@@ -277,6 +277,16 @@ def _push_xi_advice() -> None:
     adv = build_advice()
     (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
         json.dumps(adv, indent=1, ensure_ascii=False))
+    # Freeze the forecast pre-kickoff and reconcile any settled round — the
+    # predicted-vs-actual loop that will refit the p_play/exp constants.
+    try:
+        from scripts.fantacalcio.pred_ledger import reconcile, snapshot
+        st = snapshot(adv)
+        rec = reconcile()
+        print(f"pred ledger: snapshot={st}"
+              + (f" reconciled={rec}" if rec else ""))
+    except Exception as e:
+        print(f"pred ledger update failed (advice unaffected): {e}")
     state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
     try:
         state = json.loads(state_path.read_text())

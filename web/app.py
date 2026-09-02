@@ -1442,6 +1442,21 @@ def api_fantacalcio_news():
         return jsonify({"items": [], "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/pred-ledger")
+def api_fantacalcio_pred_ledger():
+    """Predicted-vs-actual per giornata + p_play calibration by source.
+
+    Read-only aggregation of pred_ledger.json (the tracker job writes it);
+    summary() is a cheap in-memory pass, no rebuild semantics here.
+    """
+    try:
+        from scripts.fantacalcio.pred_ledger import summary
+        return jsonify(summary())
+    except Exception as e:
+        app.logger.warning("fantacalcio pred-ledger failed: %s", e)
+        return jsonify({"rounds": [], "calibration": {}, "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")

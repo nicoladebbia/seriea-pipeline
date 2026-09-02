@@ -357,3 +357,97 @@ def test_news_matcher_is_word_bounded_not_substring():
     assert not rx_adams.search("il commissario Adamsberg indaga")
     assert rx_rrah.search("Rrahmani torna titolare")
     assert not rx_rrah.search("il Rahm della situazione")
+
+
+# ---- prediction ledger -----------------------------------------------------
+# The loop that will refit the p_play/exp heuristics: forecasts must be frozen
+# EX-ANTE (post-kickoff writes refused), reconciled only after the grace window
+# (a half-graded weekend must not poison the actuals), and an OUT call is a
+# p_play=0 prediction that a surprise appearance must punish.
+
+import pandas as pd  # noqa: E402
+
+import scripts.fantacalcio.pred_ledger as pl  # noqa: E402
+
+KICK = 1_800_000_000.0
+
+
+def _adv(total=60.0):
+    def p(i, nome, src, pp, exp):
+        return {"id": i, "nome": nome, "R": "C", "team": "Roma", "opp": "Lecce",
+                "home": 1, "p_play": pp, "p_play_src": src,
+                "exp": exp, "exp_voto": 6.0}
+    return {"round": 3, "first_kickoff": KICK, "module": "4-3-3", "total": total,
+            "modifier": 1.0,
+            "xi": [p(1, "Tito", "probabili", 0.88, 6.0)],
+            "bench": [p(2, "Panca", "ballottaggio", 0.40, 6.2)],
+            "tribuna": [p(4, "Trib", "model", 0.30, 6.1)],
+            "unavailable": [{"id": 3, "nome": "Rotto", "R": "D", "team": "Roma",
+                             "p_play": 0.5, "inj": "knee"}]}
+
+
+def _patch(monkeypatch, tmp_path):
+    monkeypatch.setattr(pl, "LEDGER", tmp_path / "pred_ledger.json")
+    monkeypatch.setattr(pl, "VOTI_DIR", tmp_path)
+
+
+def test_snapshot_overwrites_before_kickoff_and_freezes_after(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    assert pl.snapshot(_adv(60.0), now_ts=KICK - 1000) == "updated"
+    assert pl.snapshot(_adv(61.5), now_ts=KICK - 500) == "updated"
+    assert pl.snapshot(_adv(99.9), now_ts=KICK + 10) == "frozen"
+    led = pl._load()
+    e = led["rounds"]["3"]
+    assert e["predicted_total"] == 61.5      # last PRE-kickoff snapshot won
+    assert e["frozen_at"] is not None
+    assert pl.snapshot(_adv(99.9), now_ts=KICK + 20) == "skipped-post-kickoff"
+    assert pl._load()["rounds"]["3"]["predicted_total"] == 61.5
+
+
+def test_round_never_snapshotted_stays_a_hole_not_a_backfill(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    assert pl.snapshot(_adv(), now_ts=KICK + 10) == "skipped-post-kickoff"
+    assert pl._load()["rounds"] == {}
+
+
+def _voti_parquet(tmp_path):
+    pd.DataFrame({
+        "pid": [1, 2, 3],                       # Trib (4) has no row at all
+        "voto": [6.5, None, 6.0],
+        "fantavoto": [9.5, None, 6.0],
+        "played": [True, False, True],          # the OUT player played: worst miss
+    }).to_parquet(pl._round_parquet(3), index=False)
+
+
+def test_reconcile_scores_errors_and_the_out_miss(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    pl.snapshot(_adv(), now_ts=KICK - 1000)
+    _voti_parquet(tmp_path)
+    assert pl.reconcile(now_ts=KICK + 1 * 86400) == []          # grace window holds
+    assert pl.reconcile(now_ts=KICK + 5 * 86400) == [3]
+    e = pl._load()["rounds"]["3"]
+    by = {p["nome"]: p for p in e["players"]}
+    assert by["Tito"]["err_fv"] == pytest.approx(3.5)           # 9.5 - 6.0
+    assert by["Tito"]["play_brier"] == pytest.approx((0.88 - 1) ** 2, abs=1e-4)
+    assert by["Panca"]["play_brier"] == pytest.approx(0.40 ** 2, abs=1e-4)
+    assert "err_fv" not in by["Panca"]                          # sv: no voto error
+    assert by["Rotto"]["p_play"] == 0.0 and by["Rotto"]["play_brier"] == 1.0
+    assert by["Trib"]["actual_played"] is False
+    m = e["metrics"]
+    assert m["n_played"] == 2 and m["n_scored"] == 1
+    assert m["mae_fv"] == pytest.approx(3.5)
+    assert pl.reconcile(now_ts=KICK + 6 * 86400) == []          # idempotent
+
+
+def test_summary_calibration_by_source(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    pl.snapshot(_adv(), now_ts=KICK - 1000)
+    _voti_parquet(tmp_path)
+    pl.reconcile(now_ts=KICK + 5 * 86400)
+    s = pl.summary()
+    assert s["rounds"][0]["reconciled"] is True
+    c = s["calibration"]
+    assert c["probabili"] == {"n": 1, "predicted_rate": 0.88, "realized_rate": 1.0}
+    assert c["ballottaggio"]["realized_rate"] == 0.0
+    assert c["out"] == {"n": 1, "predicted_rate": 0.0, "realized_rate": 1.0}
+    assert c["model"]["realized_rate"] == 0.0
