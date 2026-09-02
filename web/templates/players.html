@@ -49,6 +49,14 @@
   .player-search { width: 100%; max-width: 400px; padding: 8px 12px; font-size: 13px; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); }
   .player-search:focus { outline: none; border-color: var(--accent); }
 
+  /* League tabs */
+  .league-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .league-tab { padding: 6px 18px; font-size: 12px; font-weight: 700; border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; user-select: none; }
+  .league-tab:hover { border-color: var(--text-tertiary); }
+  .league-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .league-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-tertiary); margin: 18px 0 6px 2px; }
+  .league-section-title:first-child { margin-top: 0; }
+
   /* Position filter pills */
   .pos-filters { display: flex; gap: 6px; flex-wrap: wrap; }
   .pos-pill { padding: 4px 14px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); border: 1px solid var(--border-default); border-radius: 20px; background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; user-select: none; }
@@ -95,6 +103,11 @@
   <div class="text-secondary text-sm">Loading players...</div>
 </div>
 <div id="players-content" class="hidden">
+  <div class="league-tabs" id="league-tabs">
+    <button type="button" class="league-tab" data-lg="serie_a" onclick="setLeague('serie_a',this)">Serie A</button>
+    <button type="button" class="league-tab" data-lg="premier_league" onclick="setLeague('premier_league',this)">Premier League</button>
+    <button type="button" class="league-tab" data-lg="all" onclick="setLeague('all',this)">All</button>
+  </div>
   <div class="summary-bar" id="players-summary"></div>
   <div class="player-search-wrap">
     <input type="text" id="player-search-input" class="player-search" placeholder="Search players by name, team, or position..." autocomplete="off">
@@ -116,6 +129,22 @@
 {% block scripts %}
 <script>
 let _playersData = [];
+let _league = 'serie_a';
+try { _league = localStorage.getItem('players_league') || 'serie_a'; } catch (e) {}
+
+function setLeague(lg, el) {
+  _league = lg;
+  try { localStorage.setItem('players_league', lg); } catch (e) {}
+  document.querySelectorAll('.league-tab').forEach(t => t.classList.remove('active'));
+  (el || document.querySelector(`.league-tab[data-lg="${lg}"]`))?.classList.add('active');
+  renderPlayers(_playersData);
+  applyFilters();
+}
+
+function leagueTeams() {
+  if (_league === 'all') return _playersData;
+  return _playersData.filter(t => t.league === _league);
+}
 
 async function loadPlayers() {
   try {
@@ -123,6 +152,7 @@ async function loadPlayers() {
     _playersData = data.teams || [];
     document.getElementById('players-loading').classList.add('hidden');
     document.getElementById('players-content').classList.remove('hidden');
+    document.querySelector(`.league-tab[data-lg="${_league}"]`)?.classList.add('active');
     renderPlayers(_playersData);
     initPlayerSearch();
   } catch (err) {
@@ -212,8 +242,9 @@ function applyFilters() {
   });
 }
 
-function renderPlayers(teams) {
-  // Summary
+function renderPlayers() {
+  const teams = leagueTeams();
+  // Summary (recomputed per league selection)
   const allPlayers = teams.flatMap(t => t.players.map(p => ({ ...p, team: t.team })));
   const totalPlayers = allPlayers.length;
   const totalTeams = teams.length;
@@ -229,13 +260,22 @@ function renderPlayers(teams) {
     ${topRated ? `<div class="summary-stat"><div class="summary-stat__label">Best Rated</div><div class="summary-stat__value" style="font-size:13px;">${topRated.name} (${topRated.rating.toFixed(2)})</div></div>` : ''}
   `;
 
-  // Team cards (single column list)
+  // Team cards (single column list); under "All" the two leagues get
+  // their own alphabetical sections instead of one interleaved list.
   const list = document.getElementById('teams-list');
-  list.innerHTML = teams.map((t, idx) => {
+  const sections = _league === 'all'
+    ? [['Serie A', teams.filter(t => t.league === 'serie_a')],
+       ['Premier League', teams.filter(t => t.league === 'premier_league')]]
+    : [[null, teams]];
+  let idxGlobal = 0;
+  list.innerHTML = sections.map(([title, secTeams]) =>
+    (title ? `<div class="league-section-title">${title}</div>` : '')
+    + secTeams.map(t => {
+      const idx = idxGlobal++;
     const tid = 'team-players-' + idx;
     const teamGoals = t.players.reduce((s, p) => s + (p.goals || 0), 0);
     const teamMV = t.players.reduce((s, p) => s + (p.market_value || 0), 0);
-    const ratings = t.players.filter(p => p.rating && p.matches >= 3).map(p => p.rating);
+    const ratings = t.players.filter(p => p.rating && p.matches >= 1).map(p => p.rating);
     const avgRtg = ratings.length ? (ratings.reduce((a, b) => a + b, 0) / ratings.length) : 0;
 
     return `<div class="team-card" id="card-${idx}">
@@ -286,7 +326,7 @@ function renderPlayers(teams) {
         </div>`).join('')}
       </div>
     </div>`;
-  }).join('');
+    }).join('')).join('');
 }
 
 function toggleTeamCard(idx) {

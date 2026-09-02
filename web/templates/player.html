@@ -258,7 +258,7 @@ function renderPlayer(data) {
   html += `<div id="ptab-matches" class="player-tab-content">${renderMatchLog(ml, p)}</div>`;
 
   // Career tab
-  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career, careerHistory, careerGaps)}</div>`;
+  html += `<div id="ptab-career" class="player-tab-content">${renderCareer(career, careerHistory, careerGaps, p)}</div>`;
 
   // Market value tab
   if (mvh.length) {
@@ -307,29 +307,46 @@ function renderFormChart(ml) {
   </div>`;
 }
 
-function renderMatchLog(ml, p) {
-  if (!ml.length) return '<div class="text-sm text-tertiary text-center py-8">No match log available.</div>';
+// Result from the PLAYER'S team perspective: score + colored W/D/L badge,
+// so "1-0 away" is unambiguous at a glance.
+function resultCell(m) {
+  if (m.home_score == null || m.away_score == null) return '-';
+  const mine = m.is_home ? m.home_score : m.away_score;
+  const theirs = m.is_home ? m.away_score : m.home_score;
+  const letter = mine > theirs ? 'W' : mine < theirs ? 'L' : 'D';
+  const col = letter === 'W' ? 'var(--green)' : letter === 'L' ? 'var(--red)' : 'var(--amber)';
+  return `${m.home_score}-${m.away_score} <span style="color:${col};font-weight:800;">${letter}</span>`;
+}
 
-  const rows = ml.map(m => {
-    const isHome = m.is_home;
-    const opp = m.opponent || '?';
-    const venue = isHome ? 'H' : 'A';
-    const venueCol = isHome ? 'var(--green)' : 'var(--red)';
-    const score = (m.home_score != null && m.away_score != null) ? `${m.home_score}-${m.away_score}` : '-';
-    const homeT = isHome ? p.team : opp;
-    const awayT = isHome ? opp : p.team;
-    const matchDate = m.date || '';
-    const matchLink = `/match/${matchDate}/${encodeURIComponent(homeT)}/${encodeURIComponent(awayT)}`;
-    const rc = ratingCls(m.rating);
+function matchLogRow(m, p, gk) {
+  const isHome = m.is_home;
+  const opp = m.opponent || '?';
+  const venue = isHome ? 'H' : 'A';
+  const venueCol = isHome ? 'var(--green)' : 'var(--red)';
+  const team = m.team || p.team;
+  const homeT = isHome ? team : opp;
+  const awayT = isHome ? opp : team;
+  const matchDate = m.date || '';
+  const matchLink = `/match/${matchDate}/${encodeURIComponent(homeT)}/${encodeURIComponent(awayT)}`;
+  const rc = ratingCls(m.rating);
+  const cs = gk && m.conceded === 0 && m.minutes >= 60;
 
-    return `<tr>
-      <td class="text-tertiary font-mono">${matchDate.slice(5)}</td>
+  const core = `<td class="text-tertiary font-mono">${matchDate.slice(5)}</td>
       <td style="color:${venueCol};font-weight:700;text-align:center;">${venue}</td>
       <td><a href="/team/${encodeURIComponent(opp)}" class="match-link">${opp}</a></td>
-      <td class="text-center match-log__result"><a href="${matchLink}" class="match-link">${score}</a></td>
+      <td class="text-center match-log__result"><a href="${matchLink}" class="match-link">${resultCell(m)}</a></td>
       <td class="text-center">${m.is_starter ? '●' : '<span class="text-tertiary">○</span>'}</td>
       <td class="text-center text-tertiary font-mono">${m.minutes}'</td>
-      <td class="text-center">${m.rating ? `<span class="rating-lg ${rc}">${m.rating}</span>` : '-'}</td>
+      <td class="text-center">${m.rating ? `<span class="rating-lg ${rc}">${m.rating}</span>` : '-'}</td>`;
+  if (gk) {
+    return `<tr>${core}
+      <td class="text-center">${m.saves || 0}</td>
+      <td class="text-center" style="color:${m.conceded ? 'var(--red)' : 'var(--green)'}">${m.conceded ?? '-'}</td>
+      <td class="text-center">${cs ? '<span style="color:var(--green)">✓</span>' : ''}</td>
+      <td class="text-center text-tertiary">${m.total_passes ? Math.round(100 * (m.accurate_passes || 0) / m.total_passes) + '%' : ''}</td>
+    </tr>`;
+  }
+  return `<tr>${core}
       <td class="text-center">${m.goals || ''}</td>
       <td class="text-center">${m.assists || ''}</td>
       <td class="text-center text-tertiary">${m.xg != null ? m.xg.toFixed(2) : ''}</td>
@@ -337,23 +354,84 @@ function renderMatchLog(ml, p) {
       <td class="text-center text-tertiary">${m.key_passes || ''}</td>
       <td class="text-center text-tertiary">${m.tackles || ''}</td>
     </tr>`;
-  }).join('');
+}
 
+function matchLogHead(gk) {
+  const core = '<th>Date</th><th>V</th><th>Opponent</th><th>Result</th><th>XI</th><th>Min</th><th>Rtg</th>';
+  return gk
+    ? core + '<th>Saves</th><th>Conc</th><th>CS</th><th>Pass%</th>'
+    : core + '<th>G</th><th>A</th><th>xG</th><th>Sh</th><th>KP</th><th>Tkl</th>';
+}
+
+function renderMatchLog(ml, p) {
+  if (!ml.length) return '<div class="text-sm text-tertiary text-center py-8">No match log available.</div>';
+  const gk = !!p.is_gk;
+  const rows = ml.map(m => matchLogRow(m, p, gk)).join('');
   return `<div class="section" style="overflow-x:auto;">
     <div class="section__title">Match Log (${ml.length} matches)</div>
     <table class="match-log">
-      <thead><tr>
-        <th>Date</th><th>V</th><th>Opponent</th><th>Score</th><th>XI</th><th>Min</th><th>Rtg</th><th>G</th><th>A</th><th>xG</th><th>Sh</th><th>KP</th><th>Tkl</th>
-      </tr></thead>
+      <thead><tr>${matchLogHead(gk)}</tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;
 }
 
-function renderCareer(career, careerHistory, careerGaps) {
+let _careerSeasons = {};   // click-target id -> by_season rows
+
+function toggleCareerClub(cid) {
+  const el = document.getElementById(cid);
+  if (el) el.hidden = !el.hidden;
+}
+
+async function toggleSeasonLog(rowId, season, club) {
+  const el = document.getElementById(rowId);
+  if (!el) return;
+  if (!el.hidden) { el.hidden = true; return; }
+  el.hidden = false;
+  const cell = el.querySelector('td');
+  if (cell.dataset.loaded) return;
+  cell.innerHTML = '<span class="text-tertiary text-sm">Loading matches…</span>';
+  try {
+    const d = await apiFetch(`/api/player/${encodeURIComponent(PLAYER_TEAM)}/${encodeURIComponent(PLAYER_NAME)}?season=${encodeURIComponent(season)}&club=${encodeURIComponent(club)}`);
+    const ml = d.match_log || [];
+    const gk = !!(d.player || {}).is_gk;
+    cell.innerHTML = ml.length
+      ? `<div style="overflow-x:auto;"><table class="match-log">
+           <thead><tr>${matchLogHead(gk)}</tr></thead>
+           <tbody>${ml.map(m => matchLogRow(m, d.player || {}, gk)).join('')}</tbody>
+         </table></div>`
+      : '<span class="text-tertiary text-sm">No matches recorded.</span>';
+    cell.dataset.loaded = '1';
+  } catch (e) {
+    cell.innerHTML = `<span class="text-red text-sm">Failed: ${e.message}</span>`;
+  }
+}
+
+function seasonRows(t, ci, gk) {
+  const bys = t.by_season || [];
+  if (!bys.length) return '<div class="text-tertiary text-sm" style="padding:8px 12px;">No per-season data in tracked leagues.</div>';
+  const cols = gk
+    ? '<th>Season</th><th>Apps</th><th>Min</th><th>Rtg</th><th>Saves</th><th>Conc</th><th>CS</th>'
+    : '<th>Season</th><th>Apps</th><th>Min</th><th>Rtg</th><th>G</th><th>A</th>';
+  const rows = bys.map((r, si) => {
+    const logId = `cs-log-${ci}-${si}`;
+    const main = gk
+      ? `<td>${r.matches}</td><td>${r.minutes.toLocaleString()}</td><td>${r.avg_rating ?? '-'}</td><td>${r.saves ?? '-'}</td><td>${r.conceded ?? '-'}</td><td>${r.clean_sheets ?? '-'}</td>`
+      : `<td>${r.matches}</td><td>${r.minutes.toLocaleString()}</td><td>${r.avg_rating ?? '-'}</td><td>${r.goals}</td><td>${r.assists}</td>`;
+    return `<tr class="cs-row" style="cursor:pointer;" title="clicca: partite della stagione"
+        onclick="toggleSeasonLog('${logId}', '${r.season}', '${t.team.replace(/'/g, "\\'")}')">
+        <td class="font-mono">${r.season}</td>${main}</tr>
+      <tr id="${logId}" hidden><td colspan="7" style="padding:6px 10px;background:var(--bg-primary);"></td></tr>`;
+  }).join('');
+  return `<table class="match-log" style="margin:4px 0 8px;">
+    <thead><tr>${cols}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderCareer(career, careerHistory, careerGaps, p) {
   let html = '';
   careerHistory = careerHistory || [];
   careerGaps = careerGaps || [];
+  const gk = !!(p && p.is_gk);
 
   // Build a chronological timeline: teams + gaps interleaved
   if (careerHistory.length > 0) {
@@ -389,14 +467,16 @@ function renderCareer(career, careerHistory, careerGaps) {
           ? t.seasons[0] + ' → ' + t.seasons[t.seasons.length - 1]
           : (t.seasons || []).join(', ');
         const matchCount = t.total_matches > 0 ? t.total_matches + ' apps' : '';
-        html += `<div class="${cls}">
+        const cid = 'career-club-' + i;
+        html += `<div class="${cls}" style="cursor:pointer;" title="clicca: dettaglio per stagione" onclick="toggleCareerClub('${cid}')">
           <div class="team-entry__icon">${icon}</div>
           <div class="team-entry__info">
-            <div class="team-entry__name">${t.team}</div>
+            <div class="team-entry__name">${t.team} <span class="text-tertiary" style="font-size:10px;">▾</span></div>
             <div class="team-entry__meta">${seasons}</div>
           </div>
           ${matchCount ? `<div class="team-entry__matches">${matchCount}</div>` : ''}
-        </div>`;
+        </div>
+        <div id="${cid}" hidden style="margin:0 0 6px 26px;">${seasonRows(t, i, gk)}</div>`;
       } else if (entry.type === 'gap') {
         const g = entry.data;
         const seasonRange = g.n_seasons === 1
@@ -416,11 +496,27 @@ function renderCareer(career, careerHistory, careerGaps) {
     html += `</div></div>`;
   }
 
-  // xG career stats
+  // Career stats — GK gets keeper numbers (summed from the per-season
+  // breakdown, all clubs); outfielders keep the xG blocks.
   if (career && Object.keys(career).length > 0) {
-    html += `<div class="section">
-      <div class="section__title">Career Statistics</div>
-      <div class="career-grid">
+    let cells;
+    if (gk) {
+      const bys = careerHistory.flatMap(t => t.by_season || []);
+      const saves = bys.reduce((a, r) => a + (r.saves || 0), 0);
+      const conc = bys.reduce((a, r) => a + (r.conceded || 0), 0);
+      const cs = bys.reduce((a, r) => a + (r.clean_sheets || 0), 0);
+      const mins = career.total_minutes || 0;
+      cells = `
+        <div class="career-item"><div class="career-item__label">Matches</div><div class="career-item__value">${career.total_matches || 0}</div></div>
+        <div class="career-item"><div class="career-item__label">Minutes</div><div class="career-item__value">${mins.toLocaleString()}</div></div>
+        <div class="career-item"><div class="career-item__label">Saves</div><div class="career-item__value">${saves.toLocaleString()}</div></div>
+        <div class="career-item"><div class="career-item__label">Conceded</div><div class="career-item__value">${conc.toLocaleString()}</div></div>
+        <div class="career-item"><div class="career-item__label">Clean Sheets</div><div class="career-item__value">${cs}</div></div>
+        <div class="career-item"><div class="career-item__label">Conc/90</div><div class="career-item__value">${mins ? (conc / (mins / 90)).toFixed(2) : '-'}</div></div>
+        <div class="career-item"><div class="career-item__label">Saves/90</div><div class="career-item__value">${mins ? (saves / (mins / 90)).toFixed(2) : '-'}</div></div>
+        <div class="career-item"><div class="career-item__label">Position</div><div class="career-item__value">GK</div></div>`;
+    } else {
+      cells = `
         <div class="career-item"><div class="career-item__label">Matches</div><div class="career-item__value">${career.total_matches || 0}</div></div>
         <div class="career-item"><div class="career-item__label">Minutes</div><div class="career-item__value">${(career.total_minutes || 0).toLocaleString()}</div></div>
         <div class="career-item"><div class="career-item__label">Goals</div><div class="career-item__value">${career.total_goals || 0}</div></div>
@@ -430,8 +526,11 @@ function renderCareer(career, careerHistory, careerGaps) {
         <div class="career-item"><div class="career-item__label">xG/90</div><div class="career-item__value">${(career.xg_per_90 || 0).toFixed(2)}</div></div>
         <div class="career-item"><div class="career-item__label">xA/90</div><div class="career-item__value">${(career.xa_per_90 || 0).toFixed(2)}</div></div>
         ${career.position ? `<div class="career-item"><div class="career-item__label">Position</div><div class="career-item__value">${career.position}</div></div>` : ''}
-        ${career.recent_form_xg ? `<div class="career-item"><div class="career-item__label">Recent xG/90</div><div class="career-item__value">${career.recent_form_xg.toFixed(2)}</div></div>` : ''}
-      </div>
+        ${career.recent_form_xg ? `<div class="career-item"><div class="career-item__label">Recent xG/90</div><div class="career-item__value">${career.recent_form_xg.toFixed(2)}</div></div>` : ''}`;
+    }
+    html += `<div class="section">
+      <div class="section__title">Career Statistics</div>
+      <div class="career-grid">${cells}</div>
     </div>`;
   }
 

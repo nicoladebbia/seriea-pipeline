@@ -10019,11 +10019,17 @@ def api_players():
 
             enriched.append(entry)
 
-        # Sort: starters by minutes desc, then subs
-        enriched.sort(key=lambda x: -(x.get("minutes") or 0))
+        # Alphabetical within the team (user request 2026-09-02); the
+        # minutes/apps columns still carry the usage signal.
+        enriched.sort(key=lambda x: (str(x.get("name") or "").split() or [""])[-1].lower())
 
         teams_data.append({
             "team": team_name,
+            "league": ("serie_a"
+                       if _team_belongs_to_league(team_name, "serie_a")
+                       else "premier_league"
+                       if _team_belongs_to_league(team_name, "premier_league")
+                       else None),
             "player_count": len(enriched),
             "players": enriched,
         })
@@ -10033,6 +10039,45 @@ def api_players():
         teams_data = [t for t in teams_data if _team_belongs_to_league(t.get("team", ""), league_filter)]
 
     return jsonify({"teams": teams_data})
+
+
+def _pms_match_entry(row) -> dict:
+    """One player-match-stats row -> the match-log payload shape.
+
+    conceded = the opponent's final score — for GK/defender reading of a
+    match ("what did the defense let in"), not minutes-adjusted.
+    """
+    import pandas as pd
+    is_home = bool(row.get("is_home", False))
+    hs = int(row["home_score"]) if pd.notna(row.get("home_score")) else None
+    as_ = int(row["away_score"]) if pd.notna(row.get("away_score")) else None
+    conceded = (as_ if is_home else hs) if hs is not None and as_ is not None \
+        else None
+    def _i(k):
+        return int(row[k]) if pd.notna(row.get(k)) else 0
+    return {
+        "date": str(row.get("date", ""))[:10],
+        "season": str(row.get("season", "")),
+        "team": str(row.get("team", "")),
+        "opponent": str(row.get("opponent", "")),
+        "is_home": is_home,
+        "is_starter": bool(row.get("is_starter", False)),
+        "minutes": _i("minutes"),
+        "rating": round(float(row["rating"]), 1)
+                  if pd.notna(row.get("rating")) else None,
+        "goals": _i("goals"), "assists": _i("assists"),
+        "xg": round(float(row["xg"]), 2) if pd.notna(row.get("xg")) else None,
+        "xa": round(float(row["xa"]), 2) if pd.notna(row.get("xa")) else None,
+        "total_shots": _i("total_shots"), "key_passes": _i("key_passes"),
+        "tackles": _i("tackles"), "interceptions": _i("interceptions"),
+        "accurate_passes": _i("accurate_passes"),
+        "total_passes": _i("total_passes"),
+        "saves": _i("saves") if "saves" in row.index else 0,
+        "conceded": conceded,
+        "home_team": str(row.get("home_team", "")),
+        "away_team": str(row.get("away_team", "")),
+        "home_score": hs, "away_score": as_,
+    }
 
 
 @app.route("/api/player/<team_name>/<player_name>")
@@ -10149,30 +10194,7 @@ def api_player_detail(team_name, player_name):
 
             # Match log (last 40 matches)
             for _, row in player_rows.head(40).iterrows():
-                entry = {
-                    "date": str(row.get("date", ""))[:10],
-                    "season": str(row.get("season", "")),
-                    "opponent": str(row.get("opponent", "")),
-                    "is_home": bool(row.get("is_home", False)),
-                    "is_starter": bool(row.get("is_starter", False)),
-                    "minutes": int(row["minutes"]) if pd.notna(row.get("minutes")) else 0,
-                    "rating": round(float(row["rating"]), 1) if pd.notna(row.get("rating")) else None,
-                    "goals": int(row["goals"]) if pd.notna(row.get("goals")) else 0,
-                    "assists": int(row["assists"]) if pd.notna(row.get("assists")) else 0,
-                    "xg": round(float(row["xg"]), 2) if pd.notna(row.get("xg")) else None,
-                    "xa": round(float(row["xa"]), 2) if pd.notna(row.get("xa")) else None,
-                    "total_shots": int(row["total_shots"]) if pd.notna(row.get("total_shots")) else 0,
-                    "key_passes": int(row["key_passes"]) if pd.notna(row.get("key_passes")) else 0,
-                    "tackles": int(row["tackles"]) if pd.notna(row.get("tackles")) else 0,
-                    "interceptions": int(row["interceptions"]) if pd.notna(row.get("interceptions")) else 0,
-                    "accurate_passes": int(row["accurate_passes"]) if pd.notna(row.get("accurate_passes")) else 0,
-                    "total_passes": int(row["total_passes"]) if pd.notna(row.get("total_passes")) else 0,
-                    "home_team": str(row.get("home_team", "")),
-                    "away_team": str(row.get("away_team", "")),
-                    "home_score": int(row["home_score"]) if pd.notna(row.get("home_score")) else None,
-                    "away_score": int(row["away_score"]) if pd.notna(row.get("away_score")) else None,
-                }
-                result["match_log"].append(entry)
+                result["match_log"].append(_pms_match_entry(row))
     except Exception as e:
         log.warning(f"Error loading player Sofascore stats: {e}")
 
@@ -10242,6 +10264,57 @@ def api_player_detail(team_name, player_name):
                         break
     except Exception as e:
         log.debug("Career history lookup failed: %s", e)
+
+    # --- Per-season club breakdown (career drill-down) + season match log ---
+    try:
+        if not player_rows.empty and "player_id" in player_rows.columns:
+            pid_i = int(player_rows["player_id"].iloc[0])
+            full = pms[pms["player_id"] == pid_i].copy()
+            full["_team"] = full["team"].apply(lambda t: normalize_team(str(t)))
+            gk = False
+            if "position" in full.columns and len(full):
+                mode = full["position"].dropna().astype(str)
+                gk = bool(len(mode)) and mode.mode().iloc[0].upper().startswith("G")
+            result["player"]["is_gk"] = gk
+            per_club: dict[str, list] = {}
+            for (season, club), g in full.groupby(
+                    [full["season"].astype(str), "_team"]):
+                rated = g["rating"].dropna()
+                row = {"season": season,
+                       "matches": int(len(g)),
+                       "minutes": int(g["minutes"].fillna(0).sum()),
+                       "avg_rating": round(float(rated.mean()), 2)
+                                     if len(rated) else None,
+                       "goals": int(g["goals"].fillna(0).sum()),
+                       "assists": int(g["assists"].fillna(0).sum())}
+                if gk and "saves" in g.columns:
+                    conc = g.apply(
+                        lambda r: (r["away_score"] if r.get("is_home")
+                                   else r["home_score"]), axis=1)
+                    conc = pd.to_numeric(conc, errors="coerce")
+                    row["saves"] = int(g["saves"].fillna(0).sum())
+                    row["conceded"] = int(conc.fillna(0).sum())
+                    row["clean_sheets"] = int(
+                        ((conc == 0) & (g["minutes"].fillna(0) >= 60)).sum())
+                per_club.setdefault(club, []).append(row)
+            for rows_ in per_club.values():
+                rows_.sort(key=lambda r: r["season"], reverse=True)
+            for c in result.get("career_history", []):
+                c["by_season"] = per_club.get(
+                    normalize_team(str(c.get("team", ""))), [])
+            # ?season=YYYY-YYYY[&club=X]: replace the log with that season's
+            # FULL log across clubs — the career drill-down fetch.
+            q_season = flask_request.args.get("season", "").strip()
+            if q_season:
+                sel = full[full["season"].astype(str) == q_season]
+                q_club = flask_request.args.get("club", "").strip()
+                if q_club:
+                    sel = sel[sel["_team"] == normalize_team(q_club)]
+                sel = sel.sort_values("date", ascending=False)
+                result["match_log"] = [_pms_match_entry(r)
+                                       for _, r in sel.iterrows()]
+    except Exception as e:
+        log.debug("per-season career breakdown failed: %s", e)
 
     # --- Market value history (across all teams, all seasons) ---
     try:
@@ -10721,9 +10794,25 @@ def api_odds_improved():
 # Main
 # ---------------------------------------------------------------------------
 
+def _warm_caches():
+    """Pre-hit the parquet-heavy endpoints once so the first real visitor
+    never eats the cold load (measured 2026-09-02: /api/team/<x> cold 13.5s,
+    warm 0.2s — the 'Loading team data...' stall). Runs in a daemon thread;
+    any failure only means the first click pays the old price."""
+    try:
+        with app.test_client() as c:
+            for u in ("/api/team/Bologna", "/api/players",
+                      "/api/team/Bologna/match-history?limit=1"):
+                c.get(u)
+        log.info("cache warm-up done")
+    except Exception as e:
+        log.debug("cache warm-up failed: %s", e)
+
+
 def main():
     port = int(os.environ.get("PORT", 5001))
     log.info(f"Starting server on http://localhost:{port}")
+    threading.Thread(target=_warm_caches, daemon=True).start()
     app.run(host="0.0.0.0", port=port, debug=False)
 
 
