@@ -153,6 +153,9 @@
     gap: 8px; background: var(--bg-primary); border: 1px solid var(--border-color);
     border-radius: 6px; padding: 6px 9px; font-size: 12px; }
   @media (max-width: 640px) { .fc-chip { min-width: 96px; } }
+  .fc-plink { color: inherit; text-decoration: none;
+    border-bottom: 1px dotted color-mix(in srgb, currentColor 35%, transparent); }
+  .fc-plink:hover { color: var(--accent, #8b8bf0); border-bottom-style: solid; }
 </style>
 {% endblock %}
 
@@ -280,7 +283,7 @@
     return `
       <div class="fc-chip">
         <span class="fc-chip__role" style="background:${ROLE_COLOR[p.R]}">${p.R}</span>
-        <div class="fc-chip__name">${esc(p.nome)}${tired(p)}${diffid(p)}</div>
+        <div class="fc-chip__name">${plink(p.id, esc(p.nome))}${tired(p)}${diffid(p)}</div>
         <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
@@ -288,6 +291,15 @@
         </div>
         <div class="fc-playbar"><i style="width:${Math.round((p.p_play || 0) * 100)}%"></i></div>
       </div>`;
+  }
+
+  // Click-through: every player name links to his fantacalcio.it page.
+  // The pid alone addresses it (dummy slugs serve the right player —
+  // probed live 2026-09-02), so no slug needs storing anywhere.
+  function plink(id, inner) {
+    return id ? `<a class="fc-plink" target="_blank" rel="noopener"
+      href="https://www.fantacalcio.it/serie-a/squadre/p/p/${id}">${inner}</a>`
+      : inner;
   }
 
   // p_play provenance: the page's own per-player titolarita bar is the
@@ -340,11 +352,11 @@
     const bench = (adv.bench || []).map((p, i) => `
       <span class="fc-bench"><span class="fc-bench__n" style="width:auto;
           padding:0 5px;border-radius:9px">${labels[i]}</span>
-        <b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${esc(p.nome)}
+        <b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${plink(p.id, esc(p.nome))}
         <span class="fc-mono" title="p(gioca) × atteso">${fmt(p.exp_slot, 1)}${ppSrcMark(p)}</span>
       </span>`).join("");
     const trib = (adv.tribuna || []).map((p) =>
-      `<b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${esc(p.nome)}`).join(" · ");
+      `<b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${plink(p.id, esc(p.nome))}`).join(" · ");
     $("fc-bench").innerHTML = bench
       ? `<div style="font-size:10px;color:var(--text-tertiary);margin-top:14px;
            text-transform:uppercase;letter-spacing:.08em;">Panchina — 9 posti di lega
@@ -353,7 +365,7 @@
          <div class="fc-benchrow">${bench}</div>`
          + (trib ? `<div class="fc-trib">Tribuna: ${trib}</div>` : "") : "";
     const out = (adv.unavailable || []).map((p) =>
-      `${esc(p.nome)} — ${esc(p.inj || p.why || "non disponibile")}`).join(" · ");
+      `${plink(p.id, esc(p.nome))} — ${esc(p.inj || p.why || "non disponibile")}`).join(" · ");
     $("fc-out").innerHTML = out ? `<div class="fc-out">⚕ ${out}</div>` : "";
   }
 
@@ -411,7 +423,7 @@
           const lvlLive = p.live_level != null;
           const lvlVal = lvlLive ? p.live_level : (p.prior_level ?? a.level);
           return `<tr>
-            <td><span class="fc-pname">${esc(p.nome)}</span>${diffid(a)}${a.yellows
+            <td><span class="fc-pname">${plink(p.id ?? a.id, esc(p.nome))}</span>${diffid(a)}${a.yellows
                 ? `<span class="fc-pteam" title="ammonizioni stagionali"> ${a.yellows}🟨</span>` : ""}<br>
                 <span class="fc-pteam">${esc(p.team)}</span></td>
             <td class="num">${paidBy[p.nome] ?? "—"}</td>
@@ -464,7 +476,7 @@
         .sort((a, b) => b.paid - a.paid)
         .map((p) => `<tr>
           <td class="rl" style="color:${ROLE_COLOR[r]}">${r}</td>
-          <td>${esc(p.nome)} <span class="fc-pteam">${esc(p.team)}</span></td>
+          <td>${plink(p.id, esc(p.nome))} <span class="fc-pteam">${esc(p.team)}</span></td>
           <td class="fc-mono" style="text-align:right">${p.paid}</td>
         </tr>`)).join("");
       const un = (team.unmatched || []).map((u) => esc(u.nome)).join(", ");
@@ -525,7 +537,7 @@
     }
     $("fc-svincolati").innerHTML = ROLES.map((r) => {
       const rows = (picks[r] || []).map((x) => `<tr>
-        <td><span class="fc-pname">${esc(x.nome)}</span>${diffid(x)}<br>
+        <td><span class="fc-pname">${plink(x.id, esc(x.nome))}</span>${diffid(x)}<br>
             <span class="fc-pteam">${esc(x.team)}</span></td>
         <td class="num" title="${ppSrcTitle(x)}">${Math.round(x.p_play * 100)}%${ppSrcMark(x)}</td>
         <td class="num">${fmt(x.level)}</td>
@@ -673,7 +685,7 @@
         `${m.competition === "Coppa Del Nonno" ? "CDN" : "HG"} L${m.league_round} (SA ${m.sa_round})`).join(", ");
       const rxi = (r.xi || []).map((x) =>
         `<span class="fc-bench"><b style="color:${ROLE_COLOR[x.R]}">${x.R}</b>
-           ${esc(x.nome)}${tired(x)} <span class="fc-mono">${fmt(x.exp)}</span></span>`).join("");
+           ${plink(x.id, esc(x.nome))}${tired(x)} <span class="fc-mono">${fmt(x.exp)}</span></span>`).join("");
       const hl = comps.length ? ' style="background:var(--bg-primary)"' : "";
       return `<tr${hl}>
         <td>${badges}<span title="${esc(meet ? "prossimi incontri: " + meet : "nessun incontro futuro")}">${esc(r.team)}</span>${r.n_missing ? ` <span class="fc-warn" title="giocatori non nel listone: stima per difetto">+${r.n_missing}?</span>` : ""}</td>

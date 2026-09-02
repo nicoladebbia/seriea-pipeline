@@ -829,7 +829,8 @@ def build_rivals(adv: dict | None = None) -> dict:
                        "total": radv["total"], "sd": radv["xi_sd"],
                        "p_win": round(p0, 3), "n_missing": n_missing,
                        "meetings": meetings.get(tname, []),
-                       "xi": [{"nome": x["nome"], "R": x["R"], "team": x["team"],
+                       "xi": [{"id": x.get("id"), "nome": x["nome"],
+                               "R": x["R"], "team": x["team"],
                                "exp": x["exp"], "p_play": x["p_play"],
                                "p_play_src": x.get("p_play_src"),
                                "congested": x.get("congested", False)}
