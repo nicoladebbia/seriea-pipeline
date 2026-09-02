@@ -63,6 +63,7 @@ _FORM = re.compile(r'class="h6 team-formation"[^>]*>\s*([^<]+)')
 _PLAYER = re.compile(
     r'/serie-a/squadre/[^/"]+/([^/"]+)/(\d+)"[^>]*>(.*?)</a>', re.S)
 _SPAN = re.compile(r"<span>([^<]+)</span>")
+_PCT = re.compile(r'aria-valuenow="(\d{1,3})"')
 _BALLOT = re.compile(r"ballot-list(.*?)</ul>", re.S)
 _BALLOT_ROW = re.compile(
     r'/(\d+)"[^>]*>\s*<span>[^<]+</span>\s*</a>\s*'
@@ -75,11 +76,23 @@ MIN_STARTERS = 150
 
 
 def _players_in(block: str) -> list[dict]:
+    """Each <li> also carries the page's own titolarita progress bar
+    (aria-valuenow, verified live 2026-09-02: Bijlow 90, reserves 5) — the
+    per-player measurement that replaces the flat P_STARTER/P_RESERVE."""
     out = []
-    for slug, pid, rest in _PLAYER.findall(block):
-        m = _SPAN.search(rest)
-        if m:
-            out.append({"pid": int(pid), "slug": slug, "nome": m.group(1).strip()})
+    ms = list(_PLAYER.finditer(block))
+    for j, m in enumerate(ms):
+        sp = _SPAN.search(m.group(3))
+        if not sp:
+            continue
+        tail = block[m.end():ms[j + 1].start() if j + 1 < len(ms)
+                     else len(block)]
+        pm = _PCT.search(tail)
+        row = {"pid": int(m.group(2)), "slug": m.group(1),
+               "nome": sp.group(1).strip()}
+        if pm:
+            row["pct"] = int(pm.group(1))
+        out.append(row)
     return out
 
 
@@ -244,6 +257,7 @@ def status_by_pid(data: dict | None) -> dict[int, dict]:
                 out[pid] = {
                     "status": "starter" if kind == "starters" else "reserve",
                     "ballot_pct": ballots.get(pid),
+                    "pct": p.get("pct"),
                     "team": tname,
                 }
     return out
@@ -255,10 +269,15 @@ def p_play_override(pid: int, model_p: float, by_pid: dict[int, dict]) -> tuple[
     info = by_pid.get(pid)
     if not info:
         return model_p, "model"
+    lo, hi = BALLOT_CLAMP
     pct = info.get("ballot_pct")
     if pct is not None:
-        lo, hi = BALLOT_CLAMP
         return min(max(pct / 100.0, lo), hi), "ballottaggio"
+    # The page's own per-player titolarita bar: a measurement, not a flat
+    # constant — its own ledger bucket ("titolarita") so calibration can
+    # judge it separately from the P_STARTER/P_RESERVE fallback.
+    if info.get("pct") is not None:
+        return min(max(info["pct"] / 100.0, lo), hi), "titolarita"
     if info["status"] == "starter":
         return P_STARTER, "probabili"
     return P_RESERVE, "probabili"

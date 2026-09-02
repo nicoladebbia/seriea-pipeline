@@ -288,12 +288,20 @@ from scripts.fantacalcio.probabili import parse as prob_parse  # noqa: E402
 
 
 def _team_card(name, base_pid):
+    # s0 and s2 carry the page's titolarita bar (s0's ballot must still win);
+    # r0 is a 60% super-sub — the bar beats the flat P_RESERVE for him.
+    def bar(i):
+        pct = {0: 35, 2: 65}.get(i)
+        return (f'<div class="progress"><div class="progress-bar" '
+                f'aria-valuenow="{pct}"></div></div>') if pct is not None else ""
     starters = "".join(
         f'<li><a href="/serie-a/squadre/x/s{i}/{base_pid + i}" class="player-name">'
-        f"<span>S{i}</span></a></li>" for i in range(11))
+        f"<span>S{i}</span></a>{bar(i)}</li>" for i in range(11))
     reserves = "".join(
         f'<li><a href="/serie-a/squadre/x/r{i}/{base_pid + 50 + i}" class="player-name">'
-        f"<span>R{i}</span></a></li>" for i in range(4))
+        f"<span>R{i}</span></a>"
+        + ('<div class="progress-bar" aria-valuenow="60"></div>' if i == 0 else "")
+        + "</li>" for i in range(4))
     return (f'<div class="card team-card"><h6 class="h6 team-name">{name}</h6>'
             f'<h6 class="h6 team-formation">3-5-2</h6>'
             f'<ul class="player-list starters">{starters}</ul>'
@@ -328,10 +336,15 @@ def test_probabili_schema_break_returns_none_not_empty():
 
 def test_p_play_override_sources_and_clamp():
     by_pid = status_by_pid(prob_parse(_page()))
+    # ballot beats the bar (s0 has both: ballot 40, bar 35)
     assert p_play_override(1000, 0.5, by_pid) == (0.40, "ballottaggio")
     assert p_play_override(1001, 0.5, by_pid) == (BALLOT_CLAMP[1], "ballottaggio")
-    assert p_play_override(1002, 0.5, by_pid) == (P_STARTER, "probabili")
-    assert p_play_override(1050, 0.5, by_pid) == (P_RESERVE, "probabili")
+    # the page's own titolarita bar beats the flat constants, both ways
+    assert p_play_override(1002, 0.5, by_pid) == (0.65, "titolarita")
+    assert p_play_override(1050, 0.5, by_pid) == (0.60, "titolarita")
+    # no bar on the row -> the flat fallback survives
+    assert p_play_override(1003, 0.5, by_pid) == (P_STARTER, "probabili")
+    assert p_play_override(1051, 0.5, by_pid) == (P_RESERVE, "probabili")
     assert p_play_override(424242, 0.37, by_pid) == (0.37, "model")
 
 

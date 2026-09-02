@@ -290,15 +290,26 @@
       </div>`;
   }
 
-  // p_play provenance: the probabili page beats the appearance model when it
-  // lists the player; ballottaggio percentages beat both.
+  // p_play provenance: the page's own per-player titolarita bar is the
+  // primary source; ballottaggio percentages beat it; flat probabili
+  // status and availability downgrades follow; else the appearance model.
   function ppSrcMark(p) {
-    return p.p_play_src === "probabili" ? "ᵖ"
-      : p.p_play_src === "ballottaggio" ? "ᵇ" : "";
+    return p.p_play_src === "titolarita" ? "ᵗ"
+      : p.p_play_src === "probabili" ? "ᵖ"
+      : p.p_play_src === "ballottaggio" ? "ᵇ"
+      : p.p_play_src === "infortunio_sito" ? "🚑"
+      : p.p_play_src === "infortunio_dubbio" ? "🚑"
+      : p.p_play_src === "squalificato_sito" ? "🟥"
+      : p.p_play_src === "news_risk" ? "📰" : "";
   }
   function ppSrcTitle(p) {
-    return p.p_play_src === "probabili" ? "da probabili formazioni"
+    return p.p_play_src === "titolarita" ? "barra titolarità (probabili formazioni)"
+      : p.p_play_src === "probabili" ? "da probabili formazioni"
       : p.p_play_src === "ballottaggio" ? "percentuale ballottaggio"
+      : p.p_play_src === "infortunio_sito" ? "infortunato (indisponibili)"
+      : p.p_play_src === "infortunio_dubbio" ? "infortunato, in dubbio (indisponibili)"
+      : p.p_play_src === "squalificato_sito" ? "squalificato (indisponibili)"
+      : p.p_play_src === "news_risk" ? "rischio da notizie (titolo)"
       : "stima dal minutaggio";
   }
   // Bench = 9 league slots in entry order (1P, 3D, 3C, 2A); label per role.
