@@ -287,6 +287,16 @@ def _push_xi_advice() -> None:
               + (f" reconciled={rec}" if rec else ""))
     except Exception as e:
         print(f"pred ledger update failed (advice unaffected): {e}")
+    # Rival matrix: expected score + win prob vs every league team, so the two
+    # competitions (Coppa Del Nonno / Hunger Games) are both covered whoever
+    # the weekend's opponent is.
+    try:
+        from scripts.fantacalcio.xi_advisor import build_rivals
+        riv = build_rivals(adv)
+        (ROOT / "data" / "fantacalcio" / "rivals.json").write_text(
+            json.dumps(riv, indent=1, ensure_ascii=False))
+    except Exception as e:
+        print(f"rivals build failed (advice unaffected): {e}")
     state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
     try:
         state = json.loads(state_path.read_text())

@@ -1457,6 +1457,20 @@ def api_fantacalcio_pred_ledger():
         return jsonify({"rounds": [], "calibration": {}, "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/rivals")
+def api_fantacalcio_rivals():
+    """Rival matrix (scripts/fantacalcio/xi_advisor.build_rivals artifact).
+
+    Static read; the tracker job rebuilds it twice a day alongside the advice.
+    """
+    try:
+        with open(DATA_DIR / "fantacalcio" / "rivals.json",
+                  encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"rivals": [], "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")

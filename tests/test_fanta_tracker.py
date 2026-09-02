@@ -451,3 +451,73 @@ def test_summary_calibration_by_source(monkeypatch, tmp_path):
     assert c["ballottaggio"]["realized_rate"] == 0.0
     assert c["out"] == {"n": 1, "predicted_rate": 0.0, "realized_rate": 1.0}
     assert c["model"]["realized_rate"] == 0.0
+
+
+# ---- rival matrix + risk tilt ----------------------------------------------
+# Two competitions, opponents unknown in advance: the advisor prices every
+# rival. The tilt must ONLY change selection (chase variance as underdog, buy
+# stability as favourite) — reported totals stay the honest mean.
+
+from scripts.fantacalcio.xi_advisor import (_p_win, _rival_roster,  # noqa: E402
+                                            SD_ROLE)
+
+
+def _sq_sd():
+    """4 strikers, 3 slots, two locked stars: the LAST slot is Steady (higher
+    exp, low sd) vs Volatile (lower exp, high ceiling) — the tilt's whole job."""
+    squad = _sq([{"id": 40, "nome": "Volatile", "R": "A", "team": "Lecce",
+                  "level": 6.7, "voto": 6.0}])
+    for p in squad:
+        p["p_play"] = 0.9
+        p["sd"] = 1.0
+    star, star2, steady, volatile = [p for p in squad if p["R"] == "A"]
+    star["level"] = 7.5
+    star2.update({"level": 7.4, "sd": 1.2})
+    steady.update({"level": 6.9, "sd": 0.6, "nome": "Steady"})
+    volatile["sd"] = 2.4
+    return squad
+
+
+def test_risk_tilt_changes_selection_not_the_reported_total():
+    squad = _sq_sd()
+    flat = advise(squad, FIX, ELO, {})
+    up = advise(squad, FIX, ELO, {}, risk_lambda=0.5)
+    down = advise(squad, FIX, ELO, {}, risk_lambda=-0.5)
+    names = lambda a: {x["nome"] for x in a["xi"]}  # noqa: E731
+    # precondition: on pure exp Steady (6.81) edges Volatile (6.80)
+    assert "Steady" in names(flat) and "Volatile" not in names(flat)
+    assert "Volatile" in names(up) and "Steady" not in names(up)
+    assert "Steady" in names(down)
+    # the tilted pick reports ITS OWN honest mean, not the tilted objective
+    assert up["total"] == pytest.approx(
+        sum(x["exp_slot"] for x in up["xi"]) + up["modifier"], abs=0.02)
+    assert up["total"] < flat["total"]          # variance was bought, mean paid
+    assert up["xi_sd"] > flat["xi_sd"]
+
+
+def test_xi_sd_is_root_sum_of_variances():
+    squad = _sq_sd()
+    adv = advise(squad, FIX, ELO, {})
+    want = sum(x.get("sd", 0.0) ** 2 for x in adv["xi"]) ** 0.5
+    assert adv["xi_sd"] == pytest.approx(want, abs=0.01)
+
+
+def test_p_win_symmetry_and_monotonicity():
+    assert _p_win(60, 4, 60, 4) == pytest.approx(0.5)
+    assert _p_win(65, 4, 60, 4) + _p_win(60, 4, 65, 4) == pytest.approx(1.0)
+    assert _p_win(65, 4, 60, 4) > _p_win(62, 4, 60, 4)
+    # more noise pulls the favourite toward a coin flip
+    assert _p_win(65, 10, 60, 10) < _p_win(65, 3, 60, 3)
+
+
+def test_rival_roster_uses_priors_and_skips_unknown_ids():
+    by_id = {7: {"id": 7, "nome": "Rivale", "R": "A", "team": "Roma",
+                 "season_points": 38.0, "mv_hat": 6.2, "proj_min": 3000}}
+    hist = {"sd": {}, "live": {}, "rounds_elapsed": 0}
+    entry = {"roster": [{"id": 7}, {"id": 999}], "unmatched": [{"nome": "Ghost"}]}
+    rows = _rival_roster(entry, by_id, hist, {})
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["level"] == pytest.approx(7.0)          # 6.0 + 38/38
+    assert r["sd"] == SD_ROLE["A"]                   # no history -> role prior
+    assert 0.02 <= r["p_play"] <= 0.95

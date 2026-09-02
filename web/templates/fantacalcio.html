@@ -167,6 +167,11 @@
   </div>
 
   <div class="fc-card">
+    <h2>Sfide <small id="fc-rivals-meta"></small></h2>
+    <div id="fc-rivals"></div>
+  </div>
+
+  <div class="fc-card">
     <h2>Previsioni <small id="fc-pred-meta"></small></h2>
     <div id="fc-pred"></div>
   </div>
@@ -444,6 +449,50 @@
     }).join("") || '<div class="fc-empty">Nessuna notizia sui tuoi giocatori</div>';
   }
 
+  // ---------- rivals (both competitions) ----------
+  function renderRivals(riv) {
+    const rs = riv.rivals || [];
+    if (!rs.length) {
+      $("fc-rivals-meta").textContent = "";
+      $("fc-rivals").innerHTML =
+        '<div class="fc-empty">Matrice avversarie non ancora calcolata</div>';
+      return;
+    }
+    const me = riv.me || {};
+    $("fc-rivals-meta").textContent =
+      `G${riv.round || "?"} · io: ${esc(me.module || "?")} attesi ${fmt(me.total)}` +
+      ` — vale per Coppa Del Nonno e Hunger Games: cerca chi affronti`;
+    const rows = rs.map((r) => {
+      const p = r.p_win == null ? null : Math.round(r.p_win * 100);
+      const pCol = p == null ? "var(--text-tertiary)"
+        : p >= 55 ? "var(--accent-green)" : p >= 45 ? "var(--accent-yellow, #d9a441)"
+        : "var(--accent-red)";
+      let advice = "formazione standard";
+      if (r.alt) {
+        const dir = r.alt.lambda > 0 ? "più rischio (sfavorito)" : "più solidità (favorito)";
+        advice = `${dir}: dentro ${r.alt.in.map(esc).join(", ")} per ` +
+          `${r.alt.out.map(esc).join(", ")} → ${Math.round(r.alt.p_win * 100)}%` +
+          (r.alt.module !== me.module ? ` (${esc(r.alt.module)})` : "");
+      }
+      return `<tr>
+        <td>${esc(r.team)}${r.n_missing ? ` <span class="fc-warn" title="giocatori non nel listone: stima per difetto">+${r.n_missing}?</span>` : ""}</td>
+        <td>${esc(r.module || "—")}</td>
+        <td class="num">${fmt(r.total)}</td>
+        <td class="num" style="color:${pCol};font-weight:600">${p == null ? "—" : p + "%"}</td>
+        <td>${advice}</td>
+      </tr>`;
+    }).join("");
+    $("fc-rivals").innerHTML = `
+      <div class="fc-tablewrap"><table class="fc-t">
+        <thead><tr><th>Avversaria</th><th>Loro modulo</th><th>Loro attesi</th>
+          <th>P(vittoria)</th><th>Consiglio formazione</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="fc-trib">P(vittoria) = approssimazione normale sui totali attesi
+        (sd per giocatore misurata su 2 stagioni di voti); il modificatore difesa è
+        incluso nel totale di entrambe le squadre.</div>`;
+  }
+
   // ---------- predictions ledger ----------
   function renderPred(led) {
     const rounds = led.rounds || [];
@@ -497,11 +546,13 @@
       fetchJSON("/api/fantacalcio/league"),
       fetchJSON("/api/fantacalcio/news" + q).catch(() => ({ items: [] })),
       fetchJSON("/api/fantacalcio/pred-ledger").catch(() => ({ rounds: [] })),
-    ]).then(([trk, adv, league, news, led]) => {
+      fetchJSON("/api/fantacalcio/rivals").catch(() => ({ rivals: [] })),
+    ]).then(([trk, adv, league, news, led, riv]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
       renderNews(news);
+      renderRivals(riv);
       renderPred(led);
       renderLeague(league);
       $("fc-sub").textContent = "Coppa Del Nonno · 2026-27 · aggiornato " +
