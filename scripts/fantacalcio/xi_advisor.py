@@ -37,7 +37,7 @@ import pandas as pd
 
 from config.team_names import normalize_team as NT
 from scripts.fantacalcio.probabili import fetch_probabili, p_play_override, status_by_pid
-from scripts.fantacalcio.tracker import LEVEL_K, MODULES, _modifier
+from scripts.fantacalcio.tracker import LEVEL_K, MODULES, _modifier, discipline_status
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARD = ROOT / "data" / "fantacalcio" / "auction_board.json"
@@ -325,6 +325,7 @@ def build_advice() -> dict:
             row["rest_d"] = c["rest_d"]
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
+    _apply_discipline(roster_src, out, discipline_status())
 
     adv = advise(roster_src, fixtures, elo, out)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
@@ -420,6 +421,21 @@ def _club_congestion(fixtures: dict) -> dict:
             indent=1, ensure_ascii=False))
         return clubs
     return (cached or {}).get("clubs", {})
+
+
+def _apply_discipline(rows: list, out: dict, disc: dict) -> None:
+    """Bans become unavailability; yellow counts ride along for display.
+
+    The ban targets exactly the round being advised (trigger measured in the
+    latest PLAYED round), matching how advice always looks one round ahead."""
+    for row in rows:
+        d = disc.get(int(row["id"]))
+        if not d:
+            continue
+        row["yellows"] = d["yellows"]
+        row["diffidato"] = d["diffidato"]
+        if d["banned_next"] and int(row["id"]) not in out:
+            out[int(row["id"])] = d["why"]
 
 
 def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
@@ -527,12 +543,14 @@ def build_rivals(adv: dict | None = None) -> dict:
 
     my_roster, _src = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
+    disc = discipline_status()
     for row in my_roster:
         c = congestion.get(row["team"])
         if c:
             row["rest_d"] = c["rest_d"]
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
+    _apply_discipline(my_roster, out, disc)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
 
@@ -555,6 +573,7 @@ def build_rivals(adv: dict | None = None) -> dict:
                 row["rest_d"] = c["rest_d"]
                 row["congested"] = c["congested"]
                 row["last_comp"] = c["last_comp"]
+        _apply_discipline(rows, out, disc)
         radv = advise(rows, fixtures, elo, out)
         n_missing = (len(entry.get("unmatched", []))
                      + len(entry.get("roster", [])) - len(rows))
@@ -593,6 +612,65 @@ def build_rivals(adv: dict | None = None) -> dict:
                    "congested": sorted({x["nome"] for x in base["xi"]
                                         if x.get("congested")})},
             "rivals": rivals}
+
+
+def build_svincolati(top_n: int = 8) -> dict:
+    """Unowned listone players worth watching, ranked by p_play * level.
+
+    The other half of the listone nobody in the league owns: enriched with the
+    SAME machinery as any roster (live levels from the voti, probabili
+    titolarità, discipline), so a nobody who just became a starter surfaces
+    the day the probabili say so. `upgrade_over` names my weakest same-role
+    player he'd beat on level — the pickup-worth-a-svincolo signal."""
+    board = json.loads(BOARD.read_text())
+    by_id = {int(p["id"]): p for p in board["players"]}
+    league = json.loads(
+        (ROOT / "data" / "fantacalcio" / "league_rosters.json").read_text())
+    owned = {int(r["id"]) for t in league["teams"].values()
+             for r in t.get("roster", [])}
+    fixtures, rnd = _next_fixtures()
+    hist = _history()
+    prob_by_pid = status_by_pid(fetch_probabili())
+    free_ids = [pid for pid in by_id if pid not in owned]
+    rows = _rival_roster({"roster": [{"id": i} for i in free_ids]},
+                         by_id, hist, prob_by_pid)
+    out = _out_ids(board["players"], fixtures)
+    disc = discipline_status()
+    _apply_discipline(rows, out, disc)
+
+    # my weakest per role (by level), for the upgrade comparison
+    team = json.loads((ROOT / "data" / "fantacalcio" / "my_team.json").read_text())
+    my_rows = _rival_roster({"roster": team["roster"]}, by_id, hist, prob_by_pid)
+    # Compare on p_play * level (the ranking currency): a raw-level compare
+    # would let a 15% third keeper's unplayed 6.00 prior "beat" a measured
+    # starter — the prior-vs-observed apples-to-oranges this repo keeps paying
+    # for. Same basis both sides, no mixed currencies.
+    my_worst = {}
+    for ro in "PDCA":
+        mine = [r for r in my_rows if r["R"] == ro]
+        if mine:
+            my_worst[ro] = min(mine, key=lambda r: r["p_play"] * r["level"])
+
+    picks: dict[str, list] = {}
+    for ro in "PDCA":
+        pool = [r for r in rows if r["R"] == ro and int(r["id"]) not in out
+                and r["p_play"] >= 0.10]
+        pool.sort(key=lambda r: -(r["p_play"] * r["level"]))
+        sel = []
+        for r in pool[:top_n]:
+            w = my_worst.get(ro)
+            sel.append({"id": r["id"], "nome": r["nome"], "team": r["team"],
+                        "level": round(r["level"], 2),
+                        "p_play": round(r["p_play"], 2),
+                        "p_play_src": r["p_play_src"],
+                        "score": round(r["p_play"] * r["level"], 2),
+                        "diffidato": r.get("diffidato", False),
+                        "upgrade_over": w["nome"]
+                        if w and r["p_play"] * r["level"]
+                        > w["p_play"] * w["level"] + 0.1 else None})
+        picks[ro] = sel
+    return {"generated_at": datetime.now(UTC).isoformat(), "round": rnd,
+            "n_free": len(free_ids), "picks": picks}
 
 
 def main() -> None:

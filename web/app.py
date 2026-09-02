@@ -1486,6 +1486,17 @@ def api_fantacalcio_team_pulse():
         return jsonify({"teams": [], "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/svincolati")
+def api_fantacalcio_svincolati():
+    """Free-agent radar (xi_advisor.build_svincolati artifact; tracker job)."""
+    try:
+        with open(DATA_DIR / "fantacalcio" / "svincolati.json",
+                  encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"picks": {}, "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")

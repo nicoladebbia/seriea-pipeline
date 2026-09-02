@@ -252,13 +252,104 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
     }
 
 
-def _push_xi_advice() -> None:
-    """Rebuild the weekly XI advice and push it ONCE per giornata.
+# Serie A discipline ladder: a one-match ban lands at the 5th, 10th and 15th
+# yellow; a red is an automatic ban (length set by the giudice sportivo — we
+# assume 1 match, the modal outcome). Counted from OUR voti parquets, so it is
+# the LEAGUE ladder only (Coppa Italia runs its own, which we cannot see).
+BAN_STEPS = frozenset({5, 10, 15})
 
-    Runs on the twice-daily tracker job. Fires only when the round's first
-    kickoff is within 48h AND this round has not been announced yet (state in
-    xi_notify_state.json) — the fire-only-on-change rule every notify call
-    site owes since the 2026-08-27 Telegram cleanup.
+
+def _discipline_from_frames(frames: list) -> dict[int, dict]:
+    """[(round, df with pid/cards)] -> pid: {yellows, diffidato, banned_next, why}.
+
+    banned_next is true only when the trigger fell in the LATEST played round —
+    once the following round is played the flag self-clears, so a served ban
+    never haunts later advice.
+    """
+    yellows: dict[int, int] = {}
+    trigger: dict[int, str] = {}
+    last_rnd = max((r for r, _ in frames), default=0)
+    for rnd, df in sorted(frames, key=lambda x: x[0]):
+        for row in df.itertuples():
+            if row.pid is None or not row.played:
+                continue
+            pid = int(row.pid)
+            c = float(row.cards or 0.0)
+            if c == -0.5:
+                yellows[pid] = yellows.get(pid, 0) + 1
+                if rnd == last_rnd and yellows[pid] in BAN_STEPS:
+                    trigger[pid] = f"squalificato ({yellows[pid]}° giallo)"
+            elif c <= -1.0 and rnd == last_rnd:
+                trigger[pid] = "squalificato (espulsione)"
+    out = {}
+    for pid, y in yellows.items():
+        out[pid] = {"yellows": y, "diffidato": (y % 5) == 4,
+                    "banned_next": pid in trigger, "why": trigger.get(pid)}
+    for pid, why in trigger.items():
+        out.setdefault(pid, {"yellows": 0, "diffidato": False,
+                             "banned_next": True, "why": why})
+    return out
+
+
+def discipline_status(season: str = SEASON) -> dict[int, dict]:
+    """League-wide card ledger from the round parquets on disk (no network)."""
+    import pandas as pd
+    frames = []
+    voti_dir = ROOT / "data" / "fantacalcio" / "voti"
+    tag = f"round_{season.replace('-', '_')}_"
+    for f in sorted(voti_dir.glob(f"{tag}*.parquet")):
+        try:
+            rnd = int(f.stem.rsplit("_", 1)[1])
+            frames.append((rnd, pd.read_parquet(
+                f, columns=["pid", "cards", "played"])))
+        except (OSError, ValueError):
+            continue
+    return _discipline_from_frames(frames)
+
+
+FINAL_WINDOW_H = 6.0
+
+
+def _push_phase(state: dict, rnd: int | None, kick: float | None,
+                now: float) -> str | None:
+    """Which push this run owes: 'first' (once, <=48h out), 'final' (once,
+    inside the last FINAL_WINDOW_H before kickoff — the job cadence includes
+    early-afternoon/evening runs so one lands there), or None."""
+    if not rnd or not kick or now >= kick:
+        return None
+    if state.get("round") != rnd:
+        return "first" if kick - now <= 48 * 3600 else None
+    if state.get("final_checked") or kick - now > FINAL_WINDOW_H * 3600:
+        return None
+    return "final"
+
+
+def _advice_diff(prev: dict, cur: dict) -> str | None:
+    """Human-readable delta between the pushed advice and the current one.
+    None when nothing a manager acts on has changed."""
+    lines = []
+    if prev.get("module") != cur.get("module"):
+        lines.append(f"Modulo: {prev.get('module')} → {cur.get('module')}")
+    p_xi, c_xi = set(prev.get("xi", [])), set(cur.get("xi", []))
+    if p_xi != c_xi:
+        ins = ", ".join(sorted(c_xi - p_xi))
+        outs = ", ".join(sorted(p_xi - c_xi))
+        lines.append(f"Dentro: {ins} — Fuori: {outs}")
+    elif prev.get("bench", []) != cur.get("bench", []):
+        lines.append("Panchina riordinata: "
+                     + ", ".join(cur.get("bench", [])))
+    return "\n".join(lines) if lines else None
+
+
+def _push_xi_advice() -> None:
+    """Rebuild the weekly XI advice; push once per giornata, then one
+    last-hours re-check that fires ONLY if the advice changed.
+
+    The first push goes out when the round's first kickoff is within 48h; the
+    final check runs inside FINAL_WINDOW_H of kickoff and sends a diff
+    ("Dentro X — Fuori Y") when probabili/injury news moved the XI, staying
+    silent otherwise — the fire-only-on-change rule every notify call site
+    owes since the 2026-08-27 Telegram cleanup.
     """
     from datetime import UTC, datetime
 
@@ -306,15 +397,43 @@ def _push_xi_advice() -> None:
               f"pending {len(st.get('pending', []))}")
     except Exception as e:
         print(f"team pulse failed (advice unaffected): {e}")
+    # Free-agent radar: the unowned half of the listone, re-ranked every run.
+    try:
+        from scripts.fantacalcio.xi_advisor import build_svincolati
+        sv = build_svincolati()
+        (ROOT / "data" / "fantacalcio" / "svincolati.json").write_text(
+            json.dumps(sv, indent=1, ensure_ascii=False))
+    except Exception as e:
+        print(f"svincolati scan failed (advice unaffected): {e}")
     state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
     try:
         state = json.loads(state_path.read_text())
     except (OSError, ValueError):
         state = {}
     rnd, kick = adv.get("round"), adv.get("first_kickoff")
-    if not rnd or not adv.get("xi") or state.get("round") == rnd:
+    if not adv.get("xi"):
         return
-    if not kick or kick - datetime.now(UTC).timestamp() > 48 * 3600:
+    phase = _push_phase(state, rnd, kick, datetime.now(UTC).timestamp())
+    if phase is None:
+        return
+    cur = {"module": adv.get("module"),
+           "xi": sorted(x["nome"] for x in adv["xi"]),
+           "bench": [x["nome"] for x in adv["bench"]]}
+
+    if phase == "final":
+        diff = _advice_diff(state.get("advice", {}), cur)
+        state.update({"final_checked": True, "advice": cur})
+        if diff:
+            try:
+                from scripts.pipeline.notify import notify
+                notify(f"Giornata {rnd} — cambi dell'ultima ora\n{diff}",
+                       title="Fantacalcio XI — aggiornamento", level="warning",
+                       category="system",
+                       tg_html=(f"<b>🔁 Giornata {rnd} — cambi dell'ultima ora"
+                                f"</b>\n{diff}"))
+            except Exception as e:
+                print(f"XI final-check notify failed: {e}")
+        state_path.write_text(json.dumps(state))
         return
 
     role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
@@ -324,22 +443,26 @@ def _push_xi_advice() -> None:
     bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
            for x in adv["unavailable"]]
+    diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
     msg = (f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
-           + (("\nOut: " + "; ".join(inj)) if inj else ""))
+           + (("\nOut: " + "; ".join(inj)) if inj else "")
+           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else ""))
     tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
-          + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else ""))
+          + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
+          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else ""))
     try:
         from scripts.pipeline.notify import notify
         notify(msg, title="Fantacalcio XI", level="info",
                category="system", tg_html=tg)
-        state_path.write_text(json.dumps({"round": rnd,
-                                          "sent_at": datetime.now(UTC).isoformat()}))
+        state_path.write_text(json.dumps(
+            {"round": rnd, "sent_at": datetime.now(UTC).isoformat(),
+             "final_checked": False, "advice": cur}))
     except Exception as e:  # advice on disk is the deliverable; push is best-effort
         print(f"XI notify failed (advice still written): {e}")
 

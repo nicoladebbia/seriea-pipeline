@@ -458,8 +458,7 @@ def test_summary_calibration_by_source(monkeypatch, tmp_path):
 # rival. The tilt must ONLY change selection (chase variance as underdog, buy
 # stability as favourite) — reported totals stay the honest mean.
 
-from scripts.fantacalcio.xi_advisor import (_p_win, _rival_roster,  # noqa: E402
-                                            SD_ROLE)
+from scripts.fantacalcio.xi_advisor import SD_ROLE, _p_win, _rival_roster  # noqa: E402
 
 
 def _sq_sd():
@@ -618,3 +617,80 @@ def test_pulse_updates_learns_and_decays(monkeypatch, tmp_path):
     (tmp_path / "pulse.json").write_text(__import__("json").dumps(raw))
     st = tp.update([], next_round=4)
     assert st["teams"]["Torino"]["pulse"] == pytest.approx(p0 / 2, rel=0.05)
+
+
+# ---- discipline, push phases, final-check diff -----------------------------
+
+from scripts.fantacalcio.tracker import _advice_diff, _discipline_from_frames, _push_phase  # noqa: E402
+
+
+def _cards_df(rows):
+    import pandas as pd
+    return pd.DataFrame(rows, columns=["pid", "cards", "played"])
+
+
+def test_discipline_counts_diffida_and_bans():
+    frames = [
+        (1, _cards_df([(7, -0.5, True), (8, 0.0, True)])),
+        (2, _cards_df([(7, -0.5, True), (9, -1.0, True)])),
+        (3, _cards_df([(7, -0.5, True), (10, -0.5, True)])),
+    ]
+    d = _discipline_from_frames(frames)
+    assert d[7]["yellows"] == 3 and not d[7]["diffidato"] and not d[7]["banned_next"]
+    assert d[10] == {"yellows": 1, "diffidato": False, "banned_next": False,
+                     "why": None}
+    # red in a NON-latest round is already served: NO forward state at all
+    assert 9 not in d
+
+
+def test_fifth_yellow_in_latest_round_bans_next():
+    frames = [(r, _cards_df([(7, -0.5, True)])) for r in range(1, 6)]
+    d = _discipline_from_frames(frames)
+    assert d[7]["yellows"] == 5 and d[7]["banned_next"]
+    assert "5°" in d[7]["why"]
+    # once round 6 is played clean, the flag self-clears
+    frames.append((6, _cards_df([(7, 0.0, True)])))
+    assert not _discipline_from_frames(frames)[7]["banned_next"]
+    # 4 yellows = diffidato, no ban
+    d4 = _discipline_from_frames(frames[:4])
+    assert d4[7]["diffidato"] and not d4[7]["banned_next"]
+
+
+def test_red_in_latest_round_bans_even_first_appearance():
+    d = _discipline_from_frames([(1, _cards_df([(9, -1.0, True)]))])
+    assert d[9]["banned_next"] and "espulsione" in d[9]["why"]
+    # sv rows (played=False) never count
+    d2 = _discipline_from_frames([(1, _cards_df([(9, -1.0, False)]))])
+    assert 9 not in d2
+
+
+def test_push_phase_state_machine():
+    kick = 1_800_000_000.0
+    h = 3600
+    # no state yet: first push only inside 48h
+    assert _push_phase({}, 3, kick, kick - 72 * h) is None
+    assert _push_phase({}, 3, kick, kick - 40 * h) == "first"
+    st = {"round": 3, "final_checked": False}
+    # same round, still far out -> silent
+    assert _push_phase(st, 3, kick, kick - 20 * h) is None
+    # inside the final window -> final, once
+    assert _push_phase(st, 3, kick, kick - 3 * h) == "final"
+    assert _push_phase({"round": 3, "final_checked": True}, 3, kick,
+                       kick - 2 * h) is None
+    # after kickoff or missing round: nothing
+    assert _push_phase(st, 3, kick, kick + 60) is None
+    assert _push_phase(st, None, kick, kick - 3 * h) is None
+    # a NEW round resets the machine
+    assert _push_phase(st, 4, kick + 7 * 86400, kick + 6 * 86400) == "first"
+
+
+def test_advice_diff_reports_only_actionable_changes():
+    prev = {"module": "3-4-3", "xi": ["A", "B"], "bench": ["C", "D"]}
+    assert _advice_diff(prev, {"module": "3-4-3", "xi": ["A", "B"],
+                               "bench": ["C", "D"]}) is None
+    d = _advice_diff(prev, {"module": "4-3-3", "xi": ["A", "E"],
+                            "bench": ["C", "D"]})
+    assert "3-4-3 → 4-3-3" in d and "Dentro: E" in d and "Fuori: B" in d
+    d2 = _advice_diff(prev, {"module": "3-4-3", "xi": ["A", "B"],
+                             "bench": ["D", "C"]})
+    assert "Panchina riordinata" in d2

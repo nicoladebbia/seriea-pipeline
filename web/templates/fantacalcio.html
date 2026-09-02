@@ -183,6 +183,11 @@
   </div>
 
   <div class="fc-card">
+    <h2>Svincolati <small id="fc-sv-meta"></small></h2>
+    <div id="fc-svincolati"></div>
+  </div>
+
+  <div class="fc-card">
     <h2>Sfide <small id="fc-rivals-meta"></small></h2>
     <div id="fc-rivals"></div>
   </div>
@@ -265,7 +270,7 @@
     return `
       <div class="fc-chip">
         <span class="fc-chip__role" style="background:${ROLE_COLOR[p.R]}">${p.R}</span>
-        <div class="fc-chip__name">${esc(p.nome)}${tired(p)}</div>
+        <div class="fc-chip__name">${esc(p.nome)}${tired(p)}${diffid(p)}</div>
         <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
@@ -381,7 +386,8 @@
             : p.delta <= -0.05
               ? `<span class="fc-lvl-dn">▼${fmt(Math.abs(p.delta), 2)}</span>` : "＝";
           return `<tr>
-            <td><span class="fc-pname">${esc(p.nome)}</span><br>
+            <td><span class="fc-pname">${esc(p.nome)}</span>${diffid(a)}${a.yellows
+                ? `<span class="fc-pteam" title="ammonizioni stagionali"> ${a.yellows}🟨</span>` : ""}<br>
                 <span class="fc-pteam">${esc(p.team)}</span></td>
             <td class="num">${paidBy[p.nome] ?? "—"}</td>
             <td>${status}</td>
@@ -470,6 +476,44 @@
       ? ` <span class="fc-tired" title="riposo corto: ${p.rest_d}g dall'ultima` +
         ` (${esc(p.last_comp || "?")}) — effetto misurato ~0 sul voto, rischio` +
         ` turnover già prezzato dalle probabili">😴</span>` : "";
+  }
+
+  function diffid(p) {
+    return p.diffidato
+      ? ' <span class="fc-tired" title="diffidato: al prossimo giallo salta un turno">🟡</span>'
+      : "";
+  }
+
+  // ---------- svincolati ----------
+  function renderSvincolati(sv) {
+    const picks = sv.picks || {};
+    const total = ROLES.reduce((a, r) => a + (picks[r] || []).length, 0);
+    $("fc-sv-meta").textContent = total
+      ? `${sv.n_free} giocatori liberi nel listone · i migliori per ruolo (p(gioca) × livello)`
+      : "";
+    if (!total) {
+      $("fc-svincolati").innerHTML = '<div class="fc-empty">Radar svincolati non ancora calcolato</div>';
+      return;
+    }
+    $("fc-svincolati").innerHTML = ROLES.map((r) => {
+      const rows = (picks[r] || []).map((x) => `<tr>
+        <td><span class="fc-pname">${esc(x.nome)}</span>${diffid(x)}<br>
+            <span class="fc-pteam">${esc(x.team)}</span></td>
+        <td class="num" title="${ppSrcTitle(x)}">${Math.round(x.p_play * 100)}%${ppSrcMark(x)}</td>
+        <td class="num">${fmt(x.level)}</td>
+        <td class="num">${fmt(x.score)}</td>
+        <td>${x.upgrade_over
+          ? `<span class="fc-warn">meglio di ${esc(x.upgrade_over)}</span>` : ""}</td>
+      </tr>`).join("");
+      if (!rows) return "";
+      return `<div class="fc-rolehead">
+          <span class="fc-roledot" style="background:${ROLE_COLOR[r]}"></span>
+          <b>${ROLE_NAME[r]}</b></div>
+        <div class="fc-tablewrap"><table class="fc-t">
+          <thead><tr><th>Giocatore</th><th>Gioca</th><th>Livello</th>
+            <th>Valore</th><th>Upgrade</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+    }).join("");
   }
 
   // ---------- press pulse ----------
@@ -619,12 +663,14 @@
       fetchJSON("/api/fantacalcio/pred-ledger").catch(() => ({ rounds: [] })),
       fetchJSON("/api/fantacalcio/rivals").catch(() => ({ rivals: [] })),
       fetchJSON("/api/fantacalcio/team-pulse").catch(() => ({ teams: [] })),
-    ]).then(([trk, adv, league, news, led, riv, pu]) => {
+      fetchJSON("/api/fantacalcio/svincolati").catch(() => ({ picks: {} })),
+    ]).then(([trk, adv, league, news, led, riv, pu, sv]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
       renderNews(news);
       renderPulse(pu);
+      renderSvincolati(sv);
       renderRivals(riv);
       renderPred(led);
       renderLeague(league);
