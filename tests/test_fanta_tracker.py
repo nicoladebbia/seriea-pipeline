@@ -215,3 +215,145 @@ def test_rows_without_p_play_are_certain_starters():
     assert all(x["p_play"] == 1.0 for x in adv["xi"])
     assert adv["total"] == pytest.approx(
         sum(x["exp"] for x in adv["xi"]) + adv["modifier"], abs=0.15)
+
+
+# ---- bench structure ------------------------------------------------------
+# League rule (Nicola 2026-09-02): the bench is 9 ORDERED slots — 1P, 3D, 3C,
+# 2A — and auto-subs promote within the role group. A flat exp_slot sort (the
+# pre-fix behaviour) puts the best striker first, which is the wrong entry order.
+
+
+def _full_squad():
+    """25-man legal roster: 3P/8D/8C/6A, exp gradients inside each role."""
+    def mk(i, n, r, t, lv):
+        return {"id": i, "nome": n, "R": r, "team": t,
+                "level": lv, "voto": 6.0, "p_play": 0.9}
+    ps = [mk(i, f"P{i}", "P", "Roma", 6.5 - i * 0.2) for i in range(3)]
+    ds = [mk(10 + i, f"D{i}", "D", "Roma", 6.4 - i * 0.1) for i in range(8)]
+    cs = [mk(20 + i, f"C{i}", "C", "Lecce", 6.5 - i * 0.1) for i in range(8)]
+    # strikers level HIGH so a flat sort would front-load them on the bench
+    as_ = [mk(30 + i, f"A{i}", "A", "Lecce", 7.4 - i * 0.1) for i in range(6)]
+    return ps + ds + cs + as_
+
+
+def test_bench_is_nine_league_slots_in_role_order():
+    adv = advise(_full_squad(), FIX, ELO, {})
+    roles = [x["R"] for x in adv["bench"]]
+    assert roles == ["P", "D", "D", "D", "C", "C", "C", "A", "A"]
+    # rejection-test precondition: the flat sort really would order differently —
+    # the best benched striker outscores the benched keeper on exp_slot
+    best_a = max(x["exp_slot"] for x in adv["bench"] if x["R"] == "A")
+    assert best_a > adv["bench"][0]["exp_slot"]
+    # inside a role group, slots descend by exp_slot (that IS the entry order)
+    for r in "DCA":
+        grp = [x["exp_slot"] for x in adv["bench"] if x["R"] == r]
+        assert grp == sorted(grp, reverse=True)
+
+
+def test_tribuna_is_the_remainder_and_nothing_is_lost():
+    squad = _full_squad()
+    adv = advise(squad, FIX, ELO, {})
+    xi = {x["nome"] for x in adv["xi"]}
+    bench = {x["nome"] for x in adv["bench"]}
+    trib = {x["nome"] for x in adv["tribuna"]}
+    assert len(xi) == 11 and len(bench) == 9
+    assert not (xi & bench) and not (xi & trib) and not (bench & trib)
+    assert xi | bench | trib == {p["nome"] for p in squad}
+
+
+def test_short_role_pool_leaves_bench_slot_empty_not_stolen():
+    """Only 1 spare keeper -> exactly 1 P bench slot; no role borrows another's."""
+    squad = [p for p in _full_squad() if p["nome"] != "P2"]
+    adv = advise(squad, FIX, ELO, {})
+    roles = [x["R"] for x in adv["bench"]]
+    assert roles.count("P") == 1 and len(roles) == 9 - 0  # 1P still fits (2 keepers)
+    squad = [p for p in squad if p["nome"] != "P1"]       # now only the XI keeper
+    adv = advise(squad, FIX, ELO, {})
+    roles = [x["R"] for x in adv["bench"]]
+    assert roles.count("P") == 0 and roles.count("D") == 3
+
+
+# ---- probabili parser + p_play override -----------------------------------
+# Structure mirrors the live specimen (2026-09-02): team cards with
+# starters/reserves lists, ballot percentages OUTSIDE the cards, pids in hrefs.
+
+from scripts.fantacalcio.probabili import (  # noqa: E402
+    BALLOT_CLAMP,
+    P_RESERVE,
+    P_STARTER,
+    p_play_override,
+    status_by_pid,
+)
+from scripts.fantacalcio.probabili import parse as prob_parse  # noqa: E402
+
+
+def _team_card(name, base_pid):
+    starters = "".join(
+        f'<li><a href="/serie-a/squadre/x/s{i}/{base_pid + i}" class="player-name">'
+        f"<span>S{i}</span></a></li>" for i in range(11))
+    reserves = "".join(
+        f'<li><a href="/serie-a/squadre/x/r{i}/{base_pid + 50 + i}" class="player-name">'
+        f"<span>R{i}</span></a></li>" for i in range(4))
+    return (f'<div class="card team-card"><h6 class="h6 team-name">{name}</h6>'
+            f'<h6 class="h6 team-formation">3-5-2</h6>'
+            f'<ul class="player-list starters">{starters}</ul>'
+            f'<ul class="player-list reserves">{reserves}</ul></div>')
+
+
+def _page(n_teams=20):
+    cards = "".join(_team_card(f"Team{i}", 1000 + 100 * i) for i in range(n_teams))
+    ballots = ('<ul class="ballot-list"><li><a href="/serie-a/squadre/x/s0/1000">'
+               '<span>S0</span></a> <strong class="percentage">40</strong></li>'
+               '<li><a href="/serie-a/squadre/x/s1/1001"><span>S1</span></a> '
+               '<strong class="percentage">99</strong></li></ul>')
+    return f'<span class="matchweek">7</span>{cards}{ballots}'
+
+
+def test_probabili_parse_reads_teams_pids_and_ballots():
+    data = prob_parse(_page())
+    assert data is not None and data["matchweek"] == 7
+    assert len(data["teams"]) == 20
+    t0 = data["teams"]["Team0"]
+    assert t0["formation"] == "3-5-2"
+    assert [p["pid"] for p in t0["starters"]] == list(range(1000, 1011))
+    assert [p["pid"] for p in t0["reserves"]] == list(range(1050, 1054))
+    assert data["ballots"] == {1000: 40, 1001: 99}
+
+
+def test_probabili_schema_break_returns_none_not_empty():
+    """2 cards is a broken page, not a quiet week — cache fallback, never {}."""
+    assert prob_parse(_page(n_teams=2)) is None
+    assert prob_parse("<html>maintenance</html>") is None
+
+
+def test_p_play_override_sources_and_clamp():
+    by_pid = status_by_pid(prob_parse(_page()))
+    assert p_play_override(1000, 0.5, by_pid) == (0.40, "ballottaggio")
+    assert p_play_override(1001, 0.5, by_pid) == (BALLOT_CLAMP[1], "ballottaggio")
+    assert p_play_override(1002, 0.5, by_pid) == (P_STARTER, "probabili")
+    assert p_play_override(1050, 0.5, by_pid) == (P_RESERVE, "probabili")
+    assert p_play_override(424242, 0.37, by_pid) == (0.37, "model")
+
+
+# ---- news surname matching ------------------------------------------------
+
+from scripts.fantacalcio.news import _matcher, _surname  # noqa: E402
+
+
+def test_surname_strips_initials_keeps_double_names():
+    assert _surname("Adams A.") == "Adams"
+    assert _surname("Martinez Jo.") == "Martinez"
+    assert _surname("Pellegrino M.") == "Pellegrino"
+    assert _surname("Tiago Gabriel") == "Tiago Gabriel"
+    assert _surname("Vlasic") == "Vlasic"
+
+
+def test_news_matcher_is_word_bounded_not_substring():
+    roster = [{"nome": "Adams A."}, {"nome": "Rrahmani"}]
+    mm = _matcher(roster)
+    rx_adams = next(rx for p, rx in mm if p["nome"] == "Adams A.")
+    rx_rrah = next(rx for p, rx in mm if p["nome"] == "Rrahmani")
+    assert rx_adams.search("Tony Adams segna ancora")
+    assert not rx_adams.search("il commissario Adamsberg indaga")
+    assert rx_rrah.search("Rrahmani torna titolare")
+    assert not rx_rrah.search("il Rahm della situazione")

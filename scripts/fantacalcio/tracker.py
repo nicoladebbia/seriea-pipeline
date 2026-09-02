@@ -264,6 +264,16 @@ def _push_xi_advice() -> None:
 
     from scripts.fantacalcio.xi_advisor import build_advice
 
+    # Freshen the news accumulator on the same twice-daily cadence. Best-effort:
+    # a feed outage must never block the XI advice. Probabili needs no explicit
+    # refresh here -- build_advice fetches it through a 6h-TTL cache and the
+    # tracker runs are 12h apart, so every run gets a fresh page anyway.
+    try:
+        from scripts.fantacalcio.news import fetch_news, roster_for_news
+        fetch_news(roster_for_news())
+    except Exception as e:
+        print(f"news refresh failed (advice unaffected): {e}")
+
     adv = build_advice()
     (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
         json.dumps(adv, indent=1, ensure_ascii=False))
@@ -282,7 +292,7 @@ def _push_xi_advice() -> None:
     xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
     lines = [f"{x['R']} {x['nome']} ({x['team']} "
              f"{'vs' if x['home'] else '@'} {x['opp']})" for x in xi]
-    bench = [f"{x['R']} {x['nome']}" for x in adv["bench"][:7]]
+    bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
            for x in adv["unavailable"]]
     msg = (f"Giornata {rnd} — modulo {adv['module']} "

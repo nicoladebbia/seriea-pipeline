@@ -38,7 +38,7 @@ LEAGUE_OUT = ROOT / "data" / "fantacalcio" / "league_rosters.json"
 MY_OUT = ROOT / "data" / "fantacalcio" / "my_team.json"
 
 MY_TEAM = "Whisky Palermo"
-BUDGET = 1000
+BUDGET = 500
 
 
 def parse_league_xlsx(path: Path) -> dict[str, list[tuple[str, int]]]:

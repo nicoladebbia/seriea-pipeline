@@ -1420,6 +1420,28 @@ def api_fantacalcio_league():
         return jsonify({"teams": {}, "my_team": None, "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/news")
+def api_fantacalcio_news():
+    """Player headlines for the saved squad (scripts/fantacalcio/news.py cache).
+
+    Static read by default — the tracker job refreshes the accumulator twice a
+    day. ?refresh=1 forces a live multi-feed fetch (a few seconds); any feed
+    failure just serves whatever the cache already holds.
+    """
+    path = DATA_DIR / "fantacalcio" / "news.json"
+    if flask_request.args.get("refresh") == "1":
+        try:
+            from scripts.fantacalcio.news import fetch_news, roster_for_news
+            return jsonify(fetch_news(roster_for_news()))
+        except Exception as e:
+            app.logger.warning("fantacalcio news refresh failed: %s", e)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return jsonify(json.load(fh))
+    except (OSError, ValueError):
+        return jsonify({"items": [], "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")

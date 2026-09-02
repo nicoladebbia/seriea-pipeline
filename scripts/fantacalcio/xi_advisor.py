@@ -36,6 +36,7 @@ from pathlib import Path
 import pandas as pd
 
 from config.team_names import normalize_team as NT
+from scripts.fantacalcio.probabili import fetch_probabili, p_play_override, status_by_pid
 from scripts.fantacalcio.tracker import MODULES, _modifier
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -122,6 +123,25 @@ def _out_ids(board_players: list, fixtures: dict) -> dict:
     return out
 
 
+# League bench is 9 ORDERED slots -- 1 keeper, 3 defenders, 3 midfielders,
+# 2 strikers, in that order (league rule, Nicola 2026-09-02). Auto-subs promote
+# within the role group top-down, so slot order inside a role = exp_slot order.
+BENCH_SLOTS = (("P", 1), ("D", 3), ("C", 3), ("A", 2))
+
+
+def _bench_split(cand: list, xi: list) -> tuple[list, list]:
+    """(bench, tribuna): the 9 league slots filled per role by exp_slot, then
+    everyone else who could still play. Unavailable players belong to neither."""
+    rest = [c for c in cand if c not in xi and c["exp_slot"] is not None]
+    bench = []
+    for role, n in BENCH_SLOTS:
+        pool = sorted([c for c in rest if c["R"] == role],
+                      key=lambda x: -x["exp_slot"])[:n]
+        bench.extend(pool)
+        rest = [c for c in rest if c not in pool]
+    return bench, rest
+
+
 def advise(roster: list, fixtures: dict, elo: dict, out: dict) -> dict:
     """Pure core: pick module + XI by p_play * expected fantavoto. Testable without disk.
 
@@ -163,13 +183,13 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict) -> dict:
                         [5.0, 4.5, 4.5]) if nd >= 4 else 0.0
         total = sum(x["exp_slot"] for x in xi) + mod
         if best is None or total > best["total"]:
-            bench = sorted([c for c in cand if c not in xi and c["exp_slot"] is not None],
-                           key=lambda x: -x["exp_slot"])
+            bench, tribuna = _bench_split(cand, xi)
             best = {"module": f"{nd}-{nc}-{na}", "total": round(total, 2),
                     "modifier": round(mod, 2), "xi": xi, "bench": bench,
+                    "tribuna": tribuna,
                     "unavailable": [c for c in cand if c["exp_slot"] is None]}
     return best or {"module": None, "total": 0.0, "modifier": 0.0, "xi": [],
-                    "bench": [], "unavailable": cand}
+                    "bench": [], "tribuna": [], "unavailable": cand}
 
 
 def build_advice() -> dict:
@@ -201,6 +221,10 @@ def build_advice() -> dict:
     except (OSError, ValueError):
         pass
 
+    # Probable lineups beat the appearance-rate model when the page lists the
+    # player (fetch is cached 6h and falls back to the last good cache on failure).
+    prob_by_pid = status_by_pid(fetch_probabili())
+
     roster_src = []
     for pid in ids:
         p = by_id.get(pid)
@@ -212,11 +236,13 @@ def build_advice() -> dict:
             float(p.get("proj_min") or 0.0) / (38.0 * APP_MIN[p["R"]]), 0.02), 0.95)
         n_seen = int(lv.get("n_rounds", 0))
         p_play = (PLAY_K * pp_prior + n_seen) / (PLAY_K + rounds_elapsed)
+        p_play = min(max(p_play, 0.02), 0.95)
+        p_play, pp_src = p_play_override(pid, p_play, prob_by_pid)
         roster_src.append({"id": pid, "nome": p["nome"], "R": p["R"], "team": p["team"],
                            "level": float(lv.get("live_level", prior)),
                            "voto": float(lv.get("live_voto")
                                          or p.get("mv_hat") or 6.0),
-                           "p_play": min(max(p_play, 0.02), 0.95),
+                           "p_play": p_play, "p_play_src": pp_src,
                            "n_rounds": n_seen})
 
     adv = advise(roster_src, fixtures, elo, out)

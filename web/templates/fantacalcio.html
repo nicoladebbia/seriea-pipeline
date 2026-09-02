@@ -128,6 +128,19 @@
 
   .fc-empty { color: var(--text-tertiary); font-size: 12px; padding: 30px 0;
               text-align: center; }
+  .fc-trib { margin-top: 8px; font-size: 11px; color: var(--text-tertiary); }
+  .fc-news-item { display: flex; gap: 10px; align-items: baseline; padding: 8px 0;
+    border-bottom: 1px solid var(--border-color); font-size: 12px; }
+  .fc-news-item:last-child { border-bottom: none; }
+  .fc-news-src { flex: 0 0 auto; font-size: 9px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--text-tertiary); background: var(--bg-tertiary);
+    border-radius: 3px; padding: 2px 6px; white-space: nowrap; }
+  .fc-news-item a { color: var(--text-primary); text-decoration: none; }
+  .fc-news-item a:hover { text-decoration: underline; }
+  .fc-news-tag { display: inline-block; font-size: 10px; color: var(--accent-blue);
+    margin-left: 6px; }
+  .fc-news-when { flex: 0 0 auto; margin-left: auto; font-size: 10px;
+    color: var(--text-tertiary); white-space: nowrap; }
   @media (max-width: 640px) { .fc-chip { min-width: 96px; } }
 </style>
 {% endblock %}
@@ -146,6 +159,11 @@
   <div class="fc-card">
     <h2>Rosa <small id="fc-squad-meta"></small></h2>
     <div id="fc-squad"></div>
+  </div>
+
+  <div class="fc-card">
+    <h2>Notizie <small id="fc-news-meta"></small></h2>
+    <div id="fc-news"></div>
   </div>
 
   <div class="fc-card">
@@ -197,7 +215,7 @@
     const mine = league.teams && league.teams[league.my_team];
     const stats = [
       { lab: "Crediti spesi", val: mine ? mine.spent : (trk.spent ?? "—"),
-        sub: "su 1000 · rosa " + (trk.roster_n ?? "—") },
+        sub: "su 500 · rosa " + (trk.roster_n ?? "—") },
       { lab: "Giornate tracciate", val: trk.rounds_played ?? 0,
         sub: "punteggi da voti live" },
       { lab: "Punti (miglior XI ex-ante)", val: fmt(trk.totals && trk.totals.settable, 1),
@@ -225,10 +243,30 @@
         <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
-          <span title="probabilità di giocare">${Math.round((p.p_play || 0) * 100)}%</span>
+          <span title="${ppSrcTitle(p)}">${Math.round((p.p_play || 0) * 100)}%${ppSrcMark(p)}</span>
         </div>
         <div class="fc-playbar"><i style="width:${Math.round((p.p_play || 0) * 100)}%"></i></div>
       </div>`;
+  }
+
+  // p_play provenance: the probabili page beats the appearance model when it
+  // lists the player; ballottaggio percentages beat both.
+  function ppSrcMark(p) {
+    return p.p_play_src === "probabili" ? "ᵖ"
+      : p.p_play_src === "ballottaggio" ? "ᵇ" : "";
+  }
+  function ppSrcTitle(p) {
+    return p.p_play_src === "probabili" ? "da probabili formazioni"
+      : p.p_play_src === "ballottaggio" ? "percentuale ballottaggio"
+      : "stima dal minutaggio";
+  }
+  // Bench = 9 league slots in entry order (1P, 3D, 3C, 2A); label per role.
+  function benchLabels(bench) {
+    const n = {};
+    return (bench || []).map((p) => {
+      n[p.R] = (n[p.R] || 0) + 1;
+      return p.R + n[p.R];
+    });
   }
 
   function renderFormation(adv) {
@@ -246,16 +284,22 @@
       `<div class="fc-line">${adv.xi.filter((p) => p.R === r).map(chip).join("")}</div>`);
     $("fc-pitch").innerHTML = `<div class="fc-pitch">${lines.join("")}</div>`;
 
+    const labels = benchLabels(adv.bench);
     const bench = (adv.bench || []).map((p, i) => `
-      <span class="fc-bench"><span class="fc-bench__n">${i + 1}</span>
+      <span class="fc-bench"><span class="fc-bench__n" style="width:auto;
+          padding:0 5px;border-radius:9px">${labels[i]}</span>
         <b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${esc(p.nome)}
-        <span class="fc-mono" title="p(gioca) × atteso">${fmt(p.exp_slot, 1)}</span>
+        <span class="fc-mono" title="p(gioca) × atteso">${fmt(p.exp_slot, 1)}${ppSrcMark(p)}</span>
       </span>`).join("");
+    const trib = (adv.tribuna || []).map((p) =>
+      `<b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${esc(p.nome)}`).join(" · ");
     $("fc-bench").innerHTML = bench
       ? `<div style="font-size:10px;color:var(--text-tertiary);margin-top:14px;
-           text-transform:uppercase;letter-spacing:.08em;">Panchina — inserire in
-           quest'ordine (il primo dello stesso ruolo entra in caso di forfait)</div>
-         <div class="fc-benchrow">${bench}</div>` : "";
+           text-transform:uppercase;letter-spacing:.08em;">Panchina — 9 posti di lega
+           in quest'ordine: 1 portiere, 3 difensori, 3 centrocampisti, 2 attaccanti
+           (entra il primo dello stesso ruolo)</div>
+         <div class="fc-benchrow">${bench}</div>`
+         + (trib ? `<div class="fc-trib">Tribuna: ${trib}</div>` : "") : "";
     const out = (adv.unavailable || []).map((p) =>
       `${esc(p.nome)} — ${esc(p.inj || p.why || "non disponibile")}`).join(" · ");
     $("fc-out").innerHTML = out ? `<div class="fc-out">⚕ ${out}</div>` : "";
@@ -268,7 +312,9 @@
     mine.roster.forEach((r) => { paidBy[r.nome] = r.paid; teamBy[r.nome] = r.team; });
     const advBy = {};
     (adv.xi || []).forEach((p, i) => { advBy[p.nome] = { ...p, st: "xi" }; });
-    (adv.bench || []).forEach((p, i) => { advBy[p.nome] = { ...p, st: "bench", bn: i + 1 }; });
+    const bl = benchLabels(adv.bench);
+    (adv.bench || []).forEach((p, i) => { advBy[p.nome] = { ...p, st: "bench", bn: bl[i] }; });
+    (adv.tribuna || []).forEach((p) => { advBy[p.nome] = { ...p, st: "trib" }; });
     (adv.unavailable || []).forEach((p) => { advBy[p.nome] = { ...p, st: "out" }; });
 
     const players = (trk.players || []).slice();
@@ -290,6 +336,8 @@
             ? '<span class="fc-status xi">TITOLARE</span>'
             : a.st === "bench"
               ? `<span class="fc-status bench">PANCA ${a.bn}</span>`
+              : a.st === "trib"
+              ? '<span class="fc-status bench" style="opacity:.6">TRIBUNA</span>'
               : a.st === "out"
                 ? `<span class="fc-status out" title="${esc(a.inj || a.why || "")}">OUT</span>`
                 : "";
@@ -314,7 +362,8 @@
             <td>${fix}</td>
             <td class="num" title="fantamedia attesa condizionata al giocare">
                 ${fmt(a.exp)}</td>
-            <td class="num">${a.p_play == null ? "—" : Math.round(a.p_play * 100) + "%"}</td>
+            <td class="num" title="${ppSrcTitle(a)}">${a.p_play == null ? "—"
+                : Math.round(a.p_play * 100) + "%" + ppSrcMark(a)}</td>
             <td class="num" title="livello live (prior ${fmt(p.prior_level)})">
                 ${fmt(p.live_level)} ${delta}</td>
             <td class="num">${fmt(p.points, 1)}</td>
@@ -370,6 +419,26 @@
     }).join("") || '<div class="fc-empty">Rose di lega non importate</div>';
   }
 
+  // ---------- news ----------
+  function renderNews(news) {
+    const items = (news.items || []).slice(0, 30);
+    $("fc-news-meta").textContent = items.length
+      ? `${(news.items || []).length} articoli su giocatori della rosa · ultimi 14 giorni`
+      : "";
+    $("fc-news").innerHTML = items.map((it) => {
+      const when = it.published || it.seen_at;
+      const d = when ? new Date(when) : null;
+      const tags = (it.players || []).map((n) =>
+        `<span class="fc-news-tag">${esc(n)}</span>`).join("");
+      return `<div class="fc-news-item">
+        <span class="fc-news-src">${esc(it.source)}</span>
+        <span><a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a>${tags}</span>
+        <span class="fc-news-when">${d ? d.toLocaleString("it-IT",
+          { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+      </div>`;
+    }).join("") || '<div class="fc-empty">Nessuna notizia sui tuoi giocatori</div>';
+  }
+
   // ---------- load ----------
   function load(refresh) {
     const q = refresh ? "?refresh=1" : "";
@@ -377,10 +446,12 @@
       fetchJSON("/api/fantacalcio/tracker" + q),
       fetchJSON("/api/fantacalcio/xi-advisor" + q),
       fetchJSON("/api/fantacalcio/league"),
-    ]).then(([trk, adv, league]) => {
+      fetchJSON("/api/fantacalcio/news" + q).catch(() => ({ items: [] })),
+    ]).then(([trk, adv, league, news]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
+      renderNews(news);
       renderLeague(league);
       $("fc-sub").textContent = "Coppa Del Nonno · 2026-27 · aggiornato " +
         new Date((trk.generated_at || Date.now())).toLocaleString("it-IT",
