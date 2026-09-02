@@ -297,6 +297,15 @@ def _push_xi_advice() -> None:
             json.dumps(riv, indent=1, ensure_ascii=False))
     except Exception as e:
         print(f"rivals build failed (advice unaffected): {e}")
+    # Daily press-pulse update: scores today's headlines per club and labels
+    # parked ones once results land — the layer that "learns each time".
+    try:
+        from scripts.fantacalcio.team_pulse import refresh as pulse_refresh
+        st = pulse_refresh(next_round=adv.get("round"))
+        print(f"team pulse: labeled {st.get('labeled_this_run', 0)}, "
+              f"pending {len(st.get('pending', []))}")
+    except Exception as e:
+        print(f"team pulse failed (advice unaffected): {e}")
     state_path = ROOT / "data" / "fantacalcio" / "xi_notify_state.json"
     try:
         state = json.loads(state_path.read_text())

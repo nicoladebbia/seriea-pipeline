@@ -521,3 +521,100 @@ def test_rival_roster_uses_priors_and_skips_unknown_ids():
     assert r["level"] == pytest.approx(7.0)          # 6.0 + 38/38
     assert r["sd"] == SD_ROLE["A"]                   # no history -> role prior
     assert 0.02 <= r["p_play"] <= 0.95
+
+
+# ---- calendar import, congestion, press pulse ------------------------------
+
+import scripts.fantacalcio.team_pulse as tp  # noqa: E402
+from scripts.fantacalcio.import_rosters import parse_calendar_xlsx  # noqa: E402
+from scripts.fantacalcio.xi_advisor import _congestion_from_events  # noqa: E402
+
+CAL_TEAMS = {"Alpha FC", "Beta United", "Gamma Club", "Delta Town"}
+
+
+def _cal_xlsx(tmp_path):
+    """Synthetic Leghe layout: 2 rounds per row-block, gironi + Riposa + one
+    PLAYED score — the parse must key on team names, never on cell position."""
+    rows = [["Calendario Test Cup"] + [None] * 9,
+            ["https://leghe.example"] + [None] * 9]
+    for blk in range(4):
+        l1, l2 = 2 * blk + 1, 2 * blk + 2
+        rows.append([f"{l1}ª Giornata lega", f"{l1 + 2}ª Giornata serie a",
+                     None, None, None,
+                     f"{l2}ª Giornata lega", f"{l2 + 2}ª Giornata serie a",
+                     None, None, None])
+        score = "71.5" if blk == 0 else "0.0"      # a settled round has scores
+        rows.append(["A", "Alpha FC", score, 1, "Beta United",
+                     "A", "Gamma Club", "0.0", 0, "Delta Town"])
+        rows.append(["A", "Gamma Club", "0.0", 0, "Delta Town",
+                     "A", "Alpha FC", "0.0", 0, "Beta United"])
+        rows.append(["A", "Riposa Alpha FC", None, None, None,
+                     "A", "Riposa Beta United", None, None, None])
+    import pandas as pd
+    path = tmp_path / "cal.xlsx"
+    pd.DataFrame(rows).to_excel(path, header=False, index=False)
+    return path
+
+
+def test_calendar_parser_reads_both_halves_and_survives_scores(tmp_path):
+    comp, rounds = parse_calendar_xlsx(_cal_xlsx(tmp_path), CAL_TEAMS)
+    assert comp == "Test Cup"
+    assert [r["league_round"] for r in rounds] == list(range(1, 9))
+    assert rounds[0]["sa_round"] == 3 and rounds[7]["sa_round"] == 10
+    r1 = rounds[0]
+    assert {(f["home"], f["away"]) for f in r1["fixtures"]} == \
+        {("Alpha FC", "Beta United"), ("Gamma Club", "Delta Town")}
+    assert r1["rests"] == [{"girone": "A", "team": "Alpha FC"}]
+    assert all(f["girone"] == "A" for f in r1["fixtures"])
+
+
+def test_congestion_picks_latest_finished_before_kickoff():
+    now = 1_800_000_000
+    evs = [
+        {"startTimestamp": now - 9 * 86400, "status": {"type": "finished"},
+         "tournament": {"name": "Serie A"}},
+        {"startTimestamp": now - 3 * 86400, "status": {"type": "finished"},
+         "tournament": {"name": "Coppa Italia"}},
+        {"startTimestamp": now + 86400, "status": {"type": "notstarted"},
+         "tournament": {"name": "Serie A"}},
+    ]
+    c = _congestion_from_events(evs, next_ts=now)
+    assert c["last_comp"] == "Coppa Italia"
+    assert c["rest_d"] == pytest.approx(3.0) and c["congested"] is True
+    c2 = _congestion_from_events(evs[:1], next_ts=now)
+    assert c2["congested"] is False
+    assert _congestion_from_events([evs[2]], next_ts=now) is None
+
+
+def test_lexicon_signs():
+    assert tp.lex_score("Vittoria e doppietta, che show") > 0
+    assert tp.lex_score("Crisi nera e infortunio muscolare") < 0
+    assert tp.lex_score("conferenza stampa ordinaria") == 0
+
+
+def test_pulse_updates_learns_and_decays(monkeypatch, tmp_path):
+    monkeypatch.setattr(tp, "STATE", tmp_path / "pulse.json")
+    item = {"link": "l1", "source": "T", "title": "Toro, vittoria e show",
+            "desc": ""}
+    st = tp.update([item], next_round=3)
+    assert st["teams"]["Torino"]["pulse"] > 0          # "Toro" alias matched
+    assert st["pending"] and st["pending"][0]["sa_round"] == 3
+    p0 = st["teams"]["Torino"]["pulse"]
+
+    # same link again: dedup, nothing moves
+    assert tp.update([item], next_round=3)["teams"]["Torino"]["n_items"] == 1
+
+    # the round settles as a WIN -> the words train the NB layer
+    monkeypatch.setattr(tp, "_results_by_round", lambda: {("Torino", 3): 1})
+    st = tp.update([], next_round=4)
+    assert st["nb"]["n_pos"] == 1 and not st["pending"]
+    assert st["nb"]["pos"].get("vittoria") == 1
+
+    # a week of silence halves the pulse (half-life decay)
+    from datetime import UTC, datetime, timedelta
+    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    raw = __import__("json").loads((tmp_path / "pulse.json").read_text())
+    raw["teams"]["Torino"]["updated_at"] = week_ago
+    (tmp_path / "pulse.json").write_text(__import__("json").dumps(raw))
+    st = tp.update([], next_round=4)
+    assert st["teams"]["Torino"]["pulse"] == pytest.approx(p0 / 2, rel=0.05)

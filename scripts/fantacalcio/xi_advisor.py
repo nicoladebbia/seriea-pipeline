@@ -318,6 +318,13 @@ def build_advice() -> dict:
     prob_by_pid = status_by_pid(fetch_probabili())
     roster_src, source = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
+    congestion = _club_congestion(fixtures)
+    for row in roster_src:
+        c = congestion.get(row["team"])
+        if c:
+            row["rest_d"] = c["rest_d"]
+            row["congested"] = c["congested"]
+            row["last_comp"] = c["last_comp"]
 
     adv = advise(roster_src, fixtures, elo, out)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
@@ -325,6 +332,94 @@ def build_advice() -> dict:
             "round": rnd, "source": source,
             "first_kickoff": min(kicks) if kicks else None,
             **adv}
+
+
+CONGESTION_CACHE = ROOT / "data" / "fantacalcio" / "club_congestion.json"
+CONGESTION_TTL_H = 12.0
+SHORT_REST_D = 4.0
+
+
+def _congestion_from_events(events: list[dict], next_ts: float) -> dict | None:
+    """Latest finished match before next_ts -> rest context. Pure, testable."""
+    past = [e for e in events
+            if (e.get("status") or {}).get("type") == "finished"
+            and (e.get("startTimestamp") or 0) < next_ts]
+    if not past:
+        return None
+    last = max(past, key=lambda e: e["startTimestamp"])
+    rest_d = round((next_ts - last["startTimestamp"]) / 86400.0, 1)
+    return {"last_ts": last["startTimestamp"],
+            "last_comp": (last.get("tournament") or {}).get("name"),
+            "rest_d": rest_d, "congested": rest_d <= SHORT_REST_D}
+
+
+def _club_congestion(fixtures: dict) -> dict:
+    """Serie A club -> rest context before ITS next fixture, ALL competitions.
+
+    Sofascore team/events/last sees Coppa Italia and Europe, which the Serie A
+    parquets cannot (probed live 2026-09-02: Sassuolo's Wednesday Coppa win is
+    there). Measured on 2025-26 the fantavoto cost of short rest is -0.06 +-
+    0.08 — statistically ZERO — so this is CONTEXT ONLY, never a coefficient:
+    the real channel is rotation, and probabili already prices that. Cached
+    12h, stale-on-failure, 3-strike breaker (ban discipline)."""
+    cached = None
+    try:
+        cached = json.loads(CONGESTION_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if cached:
+        try:
+            age_h = (datetime.now(UTC) - datetime.fromisoformat(
+                cached["fetched_at"])).total_seconds() / 3600
+            if age_h < CONGESTION_TTL_H:
+                return cached.get("clubs", {})
+        except (KeyError, ValueError):
+            pass
+    # team name -> sofascore id from the fixtures file we already parse
+    try:
+        raw = json.loads(_fixtures_path().read_text())
+    except (OSError, ValueError, StopIteration):
+        return (cached or {}).get("clubs", {})
+    ids: dict[str, int] = {}
+    for x in raw:
+        for side in ("homeTeam", "awayTeam"):
+            t = x.get(side) or {}
+            name = NT(t.get("name", "")) or ""
+            if name and t.get("id"):
+                ids[name] = int(t["id"])
+    clubs: dict[str, dict] = {}
+    failures = 0
+    try:
+        import time
+
+        from curl_cffi import requests as rq
+        for name, fx in fixtures.items():
+            tid, next_ts = ids.get(name), fx.get("ts")
+            if not tid or not next_ts:
+                continue
+            if failures >= 3:      # breaker: do not grind a banned endpoint
+                break
+            try:
+                r = rq.get(f"https://api.sofascore.com/api/v1/team/{tid}"
+                           f"/events/last/0", impersonate="chrome124", timeout=15)
+                if r.status_code != 200:
+                    failures += 1
+                    continue
+                info = _congestion_from_events(r.json().get("events", []), next_ts)
+                if info:
+                    clubs[name] = info
+                failures = 0
+                time.sleep(0.4)
+            except Exception:
+                failures += 1
+    except ImportError:
+        pass
+    if clubs:
+        CONGESTION_CACHE.write_text(json.dumps(
+            {"fetched_at": datetime.now(UTC).isoformat(), "clubs": clubs},
+            indent=1, ensure_ascii=False))
+        return clubs
+    return (cached or {}).get("clubs", {})
 
 
 def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
@@ -396,9 +491,48 @@ def build_rivals(adv: dict | None = None) -> dict:
     league = json.loads(
         (ROOT / "data" / "fantacalcio" / "league_rosters.json").read_text())
     my_name = league.get("my_team")
+    congestion = _club_congestion(fixtures)
+
+    # Calendars (import_rosters --calendars): who I actually face this round,
+    # per competition, and every future meeting per rival.
+    schedule = {}
+    try:
+        schedule = json.loads((ROOT / "data" / "fantacalcio"
+                               / "league_schedule.json").read_text())
+    except (OSError, ValueError):
+        pass
+    next_opps: list[dict] = []
+    meetings: dict[str, list] = {}
+    for comp, cdata in (schedule.get("competitions") or {}).items():
+        for rd in cdata.get("rounds", []):
+            mine = next((f for f in rd["fixtures"]
+                         if my_name in (f["home"], f["away"])), None)
+            resting = any(r["team"] == my_name for r in rd.get("rests", []))
+            if rd["sa_round"] == rnd:
+                if mine:
+                    opp = mine["away"] if mine["home"] == my_name else mine["home"]
+                    next_opps.append({"competition": comp, "opponent": opp,
+                                      "league_round": rd["league_round"],
+                                      "home": mine["home"] == my_name})
+                elif resting:
+                    next_opps.append({"competition": comp, "opponent": None,
+                                      "league_round": rd["league_round"],
+                                      "home": None})
+            if mine and rd["sa_round"] is not None and rnd is not None \
+                    and rd["sa_round"] >= rnd:
+                opp = mine["away"] if mine["home"] == my_name else mine["home"]
+                meetings.setdefault(opp, []).append(
+                    {"competition": comp, "league_round": rd["league_round"],
+                     "sa_round": rd["sa_round"]})
 
     my_roster, _src = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
+    for row in my_roster:
+        c = congestion.get(row["team"])
+        if c:
+            row["rest_d"] = c["rest_d"]
+            row["congested"] = c["congested"]
+            row["last_comp"] = c["last_comp"]
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
 
@@ -415,6 +549,12 @@ def build_rivals(adv: dict | None = None) -> dict:
         if tname == my_name:
             continue
         rows = _rival_roster(entry, by_id, hist, prob_by_pid)
+        for row in rows:
+            c = congestion.get(row["team"])
+            if c:
+                row["rest_d"] = c["rest_d"]
+                row["congested"] = c["congested"]
+                row["last_comp"] = c["last_comp"]
         radv = advise(rows, fixtures, elo, out)
         n_missing = (len(entry.get("unmatched", []))
                      + len(entry.get("roster", [])) - len(rows))
@@ -438,11 +578,20 @@ def build_rivals(adv: dict | None = None) -> dict:
         rivals.append({"team": tname, "module": radv["module"],
                        "total": radv["total"], "sd": radv["xi_sd"],
                        "p_win": round(p0, 3), "n_missing": n_missing,
+                       "meetings": meetings.get(tname, []),
+                       "xi": [{"nome": x["nome"], "R": x["R"], "team": x["team"],
+                               "exp": x["exp"], "p_play": x["p_play"],
+                               "p_play_src": x.get("p_play_src"),
+                               "congested": x.get("congested", False)}
+                              for x in radv["xi"]],
                        "alt": best_alt})
     rivals.sort(key=lambda r: (r["p_win"] is None, r["p_win"]))
     return {"generated_at": datetime.now(UTC).isoformat(), "round": rnd,
+            "next_opponents": next_opps,
             "me": {"team": my_name, "module": base["module"],
-                   "total": base["total"], "sd": base["xi_sd"]},
+                   "total": base["total"], "sd": base["xi_sd"],
+                   "congested": sorted({x["nome"] for x in base["xi"]
+                                        if x.get("congested")})},
             "rivals": rivals}
 
 

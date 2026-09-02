@@ -57,7 +57,8 @@ def _parse_feed(xml_text: str, source: str) -> list[dict]:
         return []
     items = []
     for it in root.iter("item"):
-        title = html_mod.unescape((it.findtext("title") or "").strip())
+        title = html_mod.unescape(
+            re.sub(r"<[^>]+>", " ", it.findtext("title") or "")).strip()
         desc = html_mod.unescape(
             re.sub(r"<[^>]+>", " ", it.findtext("description") or "").strip())
         link = (it.findtext("link") or "").strip()

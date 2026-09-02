@@ -141,6 +141,17 @@
     margin-left: 6px; }
   .fc-news-when { flex: 0 0 auto; margin-left: auto; font-size: 10px;
     color: var(--text-tertiary); white-space: nowrap; }
+  .fc-oppbadge { display: inline-block; font-size: 10px; font-weight: 700;
+    border-radius: 3px; padding: 2px 7px; margin-right: 6px;
+    background: var(--bg-tertiary); color: var(--text-primary); }
+  .fc-tired { cursor: help; font-size: 11px; }
+  .fc-pulse { display: inline-block; min-width: 44px; text-align: center;
+    border-radius: 3px; padding: 2px 6px; font-weight: 700; font-size: 11px; }
+  .fc-pulsegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px; }
+  .fc-pulserow { display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; }
   @media (max-width: 640px) { .fc-chip { min-width: 96px; } }
 </style>
 {% endblock %}
@@ -164,6 +175,11 @@
   <div class="fc-card">
     <h2>Notizie <small id="fc-news-meta"></small></h2>
     <div id="fc-news"></div>
+  </div>
+
+  <div class="fc-card">
+    <h2>Umore stampa <small id="fc-pulse-meta"></small></h2>
+    <div class="fc-pulsegrid" id="fc-pulse"></div>
   </div>
 
   <div class="fc-card">
@@ -249,7 +265,7 @@
     return `
       <div class="fc-chip">
         <span class="fc-chip__role" style="background:${ROLE_COLOR[p.R]}">${p.R}</span>
-        <div class="fc-chip__name">${esc(p.nome)}</div>
+        <div class="fc-chip__name">${esc(p.nome)}${tired(p)}</div>
         <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
@@ -449,6 +465,39 @@
     }).join("") || '<div class="fc-empty">Nessuna notizia sui tuoi giocatori</div>';
   }
 
+  function tired(p) {
+    return p.congested
+      ? ` <span class="fc-tired" title="riposo corto: ${p.rest_d}g dall'ultima` +
+        ` (${esc(p.last_comp || "?")}) — effetto misurato ~0 sul voto, rischio` +
+        ` turnover già prezzato dalle probabili">😴</span>` : "";
+  }
+
+  // ---------- press pulse ----------
+  function renderPulse(pu) {
+    const ts = pu.teams || [];
+    if (!ts.length) {
+      $("fc-pulse-meta").textContent = "";
+      $("fc-pulse").innerHTML = '<div class="fc-empty">Nessun dato stampa</div>';
+      return;
+    }
+    const nb = pu.nb_trained_on || {};
+    $("fc-pulse-meta").textContent =
+      `titoli con decadimento 7g · modello che impara dai risultati ` +
+      `(addestrato su ${(nb.wins || 0) + (nb.losses || 0)} esiti, ` +
+      `${pu.pending_labels || 0} titoli in attesa di etichetta)`;
+    $("fc-pulse").innerHTML = ts.map((t) => {
+      const v = t.pulse;
+      const col = v >= 3 ? "var(--accent-green)" : v <= -2 ? "var(--accent-red)"
+        : "var(--text-secondary)";
+      const tip = (t.recent || []).map((r) => `[${r.source}] ${r.title}`).join("\n");
+      return `<div class="fc-pulserow" title="${esc(tip)}">
+        <span>${esc(t.team)}</span>
+        <span class="fc-pulse" style="color:${col};background:var(--bg-tertiary)">
+          ${v > 0 ? "+" : ""}${fmt(v, 1)}</span>
+      </div>`;
+    }).join("");
+  }
+
   // ---------- rivals (both competitions) ----------
   function renderRivals(riv) {
     const rs = riv.rivals || [];
@@ -459,9 +508,18 @@
       return;
     }
     const me = riv.me || {};
+    const nops = riv.next_opponents || [];
+    const oppOf = {};
+    nops.forEach((n) => {
+      if (n.opponent) (oppOf[n.opponent] = oppOf[n.opponent] || []).push(n.competition);
+    });
+    const banner = nops.length
+      ? nops.map((n) => `${esc(n.competition)}: ${n.opponent
+          ? "vs " + esc(n.opponent) + " (L" + n.league_round + ")"
+          : "riposo (L" + n.league_round + ")"}`).join(" · ")
+      : "calendari non importati";
     $("fc-rivals-meta").textContent =
-      `G${riv.round || "?"} · io: ${esc(me.module || "?")} attesi ${fmt(me.total)}` +
-      ` — vale per Coppa Del Nonno e Hunger Games: cerca chi affronti`;
+      `G${riv.round || "?"} · io: ${esc(me.module || "?")} attesi ${fmt(me.total)} — ${banner}`;
     const rows = rs.map((r) => {
       const p = r.p_win == null ? null : Math.round(r.p_win * 100);
       const pCol = p == null ? "var(--text-tertiary)"
@@ -474,13 +532,26 @@
           `${r.alt.out.map(esc).join(", ")} → ${Math.round(r.alt.p_win * 100)}%` +
           (r.alt.module !== me.module ? ` (${esc(r.alt.module)})` : "");
       }
-      return `<tr>
-        <td>${esc(r.team)}${r.n_missing ? ` <span class="fc-warn" title="giocatori non nel listone: stima per difetto">+${r.n_missing}?</span>` : ""}</td>
+      const comps = oppOf[r.team] || [];
+      const badges = comps.map((c) =>
+        `<span class="fc-oppbadge">${esc(c === "Coppa Del Nonno" ? "CDN" : "HG")}</span>`).join("");
+      const meet = (r.meetings || []).map((m) =>
+        `${m.competition === "Coppa Del Nonno" ? "CDN" : "HG"} L${m.league_round} (SA ${m.sa_round})`).join(", ");
+      const rxi = (r.xi || []).map((x) =>
+        `<span class="fc-bench"><b style="color:${ROLE_COLOR[x.R]}">${x.R}</b>
+           ${esc(x.nome)}${tired(x)} <span class="fc-mono">${fmt(x.exp)}</span></span>`).join("");
+      const hl = comps.length ? ' style="background:var(--bg-primary)"' : "";
+      return `<tr${hl}>
+        <td>${badges}<span title="${esc(meet ? "prossimi incontri: " + meet : "nessun incontro futuro")}">${esc(r.team)}</span>${r.n_missing ? ` <span class="fc-warn" title="giocatori non nel listone: stima per difetto">+${r.n_missing}?</span>` : ""}</td>
         <td>${esc(r.module || "—")}</td>
         <td class="num">${fmt(r.total)}</td>
         <td class="num" style="color:${pCol};font-weight:600">${p == null ? "—" : p + "%"}</td>
         <td>${advice}</td>
-      </tr>`;
+      </tr>` + (rxi ? `<tr><td colspan="5" style="padding:4px 8px 10px">
+        <details><summary style="cursor:pointer;font-size:11px;color:var(--text-tertiary)">
+          XI prevista di ${esc(r.team)}</summary>
+        <div class="fc-benchrow" style="margin-top:8px">${rxi}</div></details>
+      </td></tr>` : "");
     }).join("");
     $("fc-rivals").innerHTML = `
       <div class="fc-tablewrap"><table class="fc-t">
@@ -547,11 +618,13 @@
       fetchJSON("/api/fantacalcio/news" + q).catch(() => ({ items: [] })),
       fetchJSON("/api/fantacalcio/pred-ledger").catch(() => ({ rounds: [] })),
       fetchJSON("/api/fantacalcio/rivals").catch(() => ({ rivals: [] })),
-    ]).then(([trk, adv, league, news, led, riv]) => {
+      fetchJSON("/api/fantacalcio/team-pulse").catch(() => ({ teams: [] })),
+    ]).then(([trk, adv, league, news, led, riv, pu]) => {
       renderStrip(trk, adv, league);
       renderFormation(adv);
       renderSquad(trk, adv, league);
       renderNews(news);
+      renderPulse(pu);
       renderRivals(riv);
       renderPred(led);
       renderLeague(league);

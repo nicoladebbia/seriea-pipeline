@@ -1471,6 +1471,21 @@ def api_fantacalcio_rivals():
         return jsonify({"rivals": [], "error": "unavailable"})
 
 
+@app.route("/api/fantacalcio/team-pulse")
+def api_fantacalcio_team_pulse():
+    """Press pulse per Serie A club (scripts/fantacalcio/team_pulse.py state).
+
+    summary() is an in-memory pass over the persisted state; the tracker job
+    does the fetching and learning.
+    """
+    try:
+        from scripts.fantacalcio.team_pulse import summary
+        return jsonify(summary())
+    except Exception as e:
+        app.logger.warning("fantacalcio team-pulse failed: %s", e)
+        return jsonify({"teams": [], "error": "unavailable"})
+
+
 @app.route("/fantacalcio")
 @app.route("/fanta")
 @app.route("/asta")
