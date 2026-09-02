@@ -20,12 +20,13 @@ def test_below_min_edge_is_recorded_with_gap():
     eng = UnifiedBettingEngine()
     # O/U 2.5 is unshrunk; caller passes line_min_edge 7.0 as the override.
     # model_p 0.60 is the "high" confidence tier -> min_edge 7.0 - 1.5 = 5.5,
-    # and the record must show the band the bet was ACTUALLY judged against.
+    # and _make_bet resolves line_max_edge[2.5] = 10.0 itself — the record
+    # must show the band the bet was ACTUALLY judged against.
     assert _bet(eng, 0.60, 0.58, min_edge_override=7.0) is None
     (m,) = eng.near_misses
     assert m["reason"] == "below_min_edge"
     assert m["edge_pct"] == 2.0
-    assert m["min_edge"] == 5.5 and m["max_edge"] == 7.0
+    assert m["min_edge"] == 5.5 and m["max_edge"] == 10.0
     assert m["gap_pp"] == 3.5
     assert m["match"] == "Inter vs Napoli" and m["market"] == "O/U 2.5"
 
@@ -35,7 +36,8 @@ def test_above_max_edge_is_recorded():
     assert _bet(eng, 0.70, 0.58, min_edge_override=7.0) is None
     (m,) = eng.near_misses
     assert m["reason"] == "above_max_edge"
-    assert m["edge_pct"] == 12.0 and m["gap_pp"] == 5.0
+    # O/U 2.5 max is line_max_edge 10.0 (was market-level 7.0 pre-band-fix)
+    assert m["edge_pct"] == 12.0 and m["gap_pp"] == 2.0
 
 
 def test_dead_zone_odds_recorded_with_zero_gap_when_edge_inside_band():
@@ -63,10 +65,10 @@ def test_disabled_market_is_not_a_near_miss():
 
 def test_top_near_misses_orders_by_gap_then_edge():
     eng = UnifiedBettingEngine()
-    # model_p 0.50 = "medium" tier (no adjustment) -> band [7, 7]
+    # model_p 0.50 = "medium" tier (no adjustment) -> band [7, 10]
     _bet(eng, 0.50, 0.48, min_edge_override=7.0)   # edge 2  -> gap 5.0
     _bet(eng, 0.50, 0.44, min_edge_override=7.0)   # edge 6  -> gap 1.0  <- closest
-    _bet(eng, 0.70, 0.58, min_edge_override=7.0)   # edge 12 -> gap 5.0, higher edge
+    _bet(eng, 0.70, 0.58, min_edge_override=7.0)   # edge 12 -> gap 2.0
     top = eng.top_near_misses(2)
-    assert [m["gap_pp"] for m in top] == [1.0, 5.0]
+    assert [m["gap_pp"] for m in top] == [1.0, 2.0]
     assert top[1]["edge_pct"] == 12.0  # tie on gap -> larger edge first
