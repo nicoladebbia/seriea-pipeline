@@ -698,20 +698,26 @@ def _push_xi_advice() -> None:
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
            for x in adv["unavailable"]]
     diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
+    infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
+              for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
+              if x.get("avail_note")]
     msg = (f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
            + (f"{vs_txt}\n\n" if vs_txt else "")
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
-           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else ""))
+           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else "")
+           + (("\nInfermeria: " + "; ".join(infirm)) if infirm else ""))
     tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
           + (f"{vs_tg}\n\n" if vs_tg else "")
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
-          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else ""))
+          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else "")
+          + (("\n<b>🚑 Infermeria:</b>\n"
+              + "\n".join(f"• {ln}" for ln in infirm)) if infirm else ""))
     try:
         from scripts.pipeline.notify import notify
         tg += ("\n\n📸 Un'ora prima: se vedi la formazione avversaria su "

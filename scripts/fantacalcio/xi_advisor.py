@@ -488,14 +488,49 @@ def _club_congestion(fixtures: dict) -> dict:
     return (cached or {}).get("clubs", {})
 
 
+def _deaccent(t: str) -> str:
+    import unicodedata
+    n = unicodedata.normalize("NFD", t)
+    return "".join(c for c in n if not unicodedata.combining(c)).lower()
+
+
 def _fold(nome: str) -> str:
     """Accent-folded surname key: the indisponibili page writes 'Kon\xe8'
     where the listone writes 'Kon\xe9' — one diacritic, zero matches."""
-    import unicodedata
-
     from scripts.fantacalcio.news import _surname
-    t = unicodedata.normalize("NFD", _surname(nome))
-    return "".join(c for c in t if not unicodedata.combining(c)).lower()
+    return _deaccent(_surname(nome))
+
+
+def _avail_lookup(items: list[dict], rows: list[dict]) -> dict[int, dict]:
+    """row-index -> injured-list item, one club's worth.
+
+    Three tiers, each requiring a UNIQUE match on both sides before the next
+    is tried: exact folded name (the page is the listone's own publisher, so
+    'Kristensen T.' style names usually match verbatim — and an initial
+    disambiguates two same-surname teammates), folded surname, folded last
+    token (catches page 'Anguissa' vs listone 'Zambo Anguissa'). Departed
+    rows are invisible: a ghost teammate must not block his replacement.
+    """
+    live = [(i, r) for i, r in enumerate(rows) if not r.get("departed")]
+    out: dict[int, dict] = {}
+    used: set[int] = set()
+    for keyer in (lambda n: _deaccent(" ".join(n.split())),
+                  _fold,
+                  lambda n: _fold(n).split()[-1]):
+        page: dict[str, list[int]] = {}
+        for j, it in enumerate(items):
+            if j not in used:
+                page.setdefault(keyer(it["nome"]), []).append(j)
+        side: dict[str, list[int]] = {}
+        for i, r in live:
+            if i not in out:
+                side.setdefault(keyer(r["nome"]), []).append(i)
+        for k, idxs in side.items():
+            js = page.get(k)
+            if js and len(js) == 1 and len(idxs) == 1:
+                out[idxs[0]] = items[js[0]]
+                used.add(js[0])
+    return out
 
 
 def _apply_availability(rows: list, avail: dict | None,
@@ -503,36 +538,40 @@ def _apply_availability(rows: list, avail: dict | None,
     """Availability tiers BELOW a probabili listing; mutates p_play in place.
 
     Hierarchy (pid-exact fresh beats name-matched):
-      1. probabili/ballottaggio listing — untouched, but an injured-list row
-         for the same player rides along as avail_note (the conflict flag).
-      2. indisponibili page, matched by folded surname WITHIN the club and
-         only when the match is unique on both sides: squalificato ->
-         P_SUSPENDED, infortunato -> P_OUT, infortunato_dubbio ->
-         min(p, P_DOUBT).
+      1. probabili/ballottaggio listing — p_play untouched; an injured-list
+         row OR a news risk hit rides along as avail_note (the late-breaking
+         conflict a manager should eyeball before kickoff).
+      2. indisponibili page (matched by _avail_lookup within the club):
+         squalificato -> P_SUSPENDED, infortunato -> P_OUT,
+         infortunato_dubbio -> min(p, P_DOUBT).
       3. title-bound news risk hit (infortunio/squalifica, never mercato —
          transfers are the wiki pass's job): min(p, P_NEWS_CAP). Caps only,
          never zeroes — headlines lie.
     Every tier labels p_play_src, so pred_ledger's per-source calibration
     grades each one against who actually got a voto.
     """
-    by_team: dict[str, dict[str, list[dict]]] = {}
+    by_club: dict[str, dict[int, dict]] = {}
+    club_rows: dict[str, list[tuple[int, dict]]] = {}
+    for i, r in enumerate(rows):
+        club_rows.setdefault(r.get("team") or "", []).append((i, r))
     for team, items in ((avail or {}).get("teams") or {}).items():
-        d = by_team.setdefault(team, {})
-        for it in items:
-            d.setdefault(_fold(it["nome"]), []).append(it)
-    seen: dict[tuple[str, str], int] = {}
-    for r in rows:
-        k = (r.get("team") or "", _fold(r["nome"]))
-        seen[k] = seen.get(k, 0) + 1
-    for r in rows:
+        pairs = club_rows.get(team)
+        if not items or not pairs:
+            continue
+        sub = [r for _, r in pairs]
+        found = _avail_lookup(items, sub)
+        by_club[team] = {pairs[j][0]: it for j, it in found.items()}
+    hits = {i: it for d in by_club.values() for i, it in d.items()}
+    for i, r in enumerate(rows):
         if r.get("departed"):
             continue
-        key = _fold(r["nome"])
-        its = by_team.get(r.get("team") or "", {}).get(key)
-        hit = its[0] if its and len(its) == 1             and seen[(r.get("team") or "", key)] == 1 else None
+        hit = hits.get(i)
+        cat = (news_caps or {}).get(r["nome"])
         if r.get("p_play_src") in ("probabili", "ballottaggio"):
             if hit:                      # listed AND on the injured list
                 r["avail_note"] = f"{hit['status']}: {hit['note'][:140]}"
+            elif cat:                    # listed, but headlines disagree
+                r["avail_note"] = f"news: {cat}"
             continue
         if hit:
             if hit["status"] == "squalificato":
@@ -544,7 +583,6 @@ def _apply_availability(rows: list, avail: dict | None,
                 r.update(p_play=P_OUT, p_play_src="infortunio_sito")
             r["avail_note"] = hit["note"][:140]
             continue
-        cat = (news_caps or {}).get(r["nome"])
         if cat:
             r.update(p_play=min(r["p_play"], P_NEWS_CAP),
                      p_play_src="news_risk")

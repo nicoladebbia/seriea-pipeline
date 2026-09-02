@@ -1079,6 +1079,11 @@ def test_apply_availability_hierarchy_and_fold():
         "Roma": [{"nome": "Konè I.", "status": "infortunato_dubbio",
                   "note": "50-50"},
                  {"nome": "Esposito", "status": "infortunato", "note": "x"}],
+        "Napoli": [{"nome": "Anguissa", "status": "infortunato",
+                    "note": "ko"}],
+        "Inter": [{"nome": "Esposito Pio", "status": "infortunato",
+                   "note": "ko"}],
+        "Milan": [{"nome": "Bilbao", "status": "infortunato", "note": "ko"}],
     }}
     rows = [
         # probabili wins outright, injury rides along as the conflict flag
@@ -1089,10 +1094,11 @@ def test_apply_availability_hierarchy_and_fold():
         # accent fold: listone Koné vs page Konè
         {"nome": "Koné I.", "team": "Roma", "p_play": 0.8,
          "p_play_src": "model"},
-        # two same-surname teammates -> ambiguous -> fail open
-        {"nome": "Esposito Pio", "team": "Roma", "p_play": 0.9,
+        # two same-surname teammates (initials stripped by the surname
+        # key) vs a bare page 'Esposito' -> ambiguous -> fail open
+        {"nome": "Esposito F.", "team": "Roma", "p_play": 0.9,
          "p_play_src": "model"},
-        {"nome": "Esposito Seb.", "team": "Roma", "p_play": 0.9,
+        {"nome": "Esposito M.", "team": "Roma", "p_play": 0.9,
          "p_play_src": "model"},
         # nothing structured -> news tier caps, never zeroes
         {"nome": "Verdi", "team": "Milan", "p_play": 0.9,
@@ -1101,10 +1107,26 @@ def test_apply_availability_hierarchy_and_fold():
          "p_play_src": "model"},
         {"nome": "Neri", "team": "Milan", "p_play": 0.9,
          "p_play_src": "model", "departed": True},
+        # page 'Anguissa' must reach listone 'Zambo Anguissa' (last token)
+        {"nome": "Zambo Anguissa", "team": "Napoli", "p_play": 0.9,
+         "p_play_src": "model"},
+        # exact page name picks the right one of two same-surname teammates
+        {"nome": "Esposito Pio", "team": "Inter", "p_play": 0.9,
+         "p_play_src": "model"},
+        {"nome": "Esposito Seb.", "team": "Inter", "p_play": 0.9,
+         "p_play_src": "model"},
+        # a departed same-surname ghost must not block his teammate's match
+        {"nome": "Bilbao B.", "team": "Milan", "p_play": 0.9,
+         "p_play_src": "model"},
+        {"nome": "Bilbao Z.", "team": "Milan", "p_play": 0.9,
+         "p_play_src": "model", "departed": True},
+        # listed player with breaking news keeps p but gets the flag
+        {"nome": "Blu", "team": "Milan", "p_play": 0.88,
+         "p_play_src": "probabili"},
     ]
     _apply_availability(rows, avail,
                         news_caps={"Verdi": "infortunio", "Gialli": "infortunio",
-                                   "Neri": "infortunio"})
+                                   "Neri": "infortunio", "Blu": "infortunio"})
     by = {r["nome"]: r for r in rows}
     assert by["Geubbels"]["p_play"] == 0.88 \
         and by["Geubbels"]["p_play_src"] == "probabili" \
@@ -1113,8 +1135,16 @@ def test_apply_availability_hierarchy_and_fold():
         and by["Rossi"]["p_play_src"] == "squalificato_sito"
     assert by["Koné I."]["p_play"] == 0.35 \
         and by["Koné I."]["p_play_src"] == "infortunio_dubbio"
-    assert by["Esposito Pio"]["p_play_src"] == "model"      # fail open
+    assert by["Esposito F."]["p_play_src"] == "model"       # fail open
+    assert by["Esposito M."]["p_play_src"] == "model"
     assert by["Verdi"]["p_play"] == 0.6 \
         and by["Verdi"]["p_play_src"] == "news_risk"
     assert by["Gialli"]["p_play"] == 0.3                     # cap, no raise
     assert by["Neri"]["p_play"] == 0.9                       # departed skip
+    assert by["Zambo Anguissa"]["p_play_src"] == "infortunio_sito"
+    assert by["Esposito Pio"]["p_play_src"] == "infortunio_sito"
+    assert by["Esposito Seb."]["p_play_src"] == "model"      # untouched
+    assert by["Bilbao B."]["p_play_src"] == "infortunio_sito"
+    assert by["Blu"]["p_play"] == 0.88 \
+        and by["Blu"]["p_play_src"] == "probabili" \
+        and by["Blu"]["avail_note"] == "news: infortunio"

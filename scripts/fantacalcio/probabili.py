@@ -169,6 +169,11 @@ def parse_indisponibili(html: str) -> dict | None:
         items: list[dict] = []
         for col in block.split('<div class="col">')[1:]:
             if "Squalificati" in col.split("<ul")[0]:
+                # OPEN VERIFICATION: every Squalificati column on the
+                # 2026-09-02 specimen was empty ("Nessuno"), so the
+                # non-empty markup is asserted from the Infortunati twin,
+                # not observed. Low exposure: SA bans are independently
+                # measured by the discipline ledger (voti cards).
                 cat = "squalificato"
             elif "Infortunati" in col.split("<ul")[0]:
                 cat = "infortunato"
