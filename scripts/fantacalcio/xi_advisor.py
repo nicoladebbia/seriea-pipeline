@@ -37,7 +37,16 @@ from pathlib import Path
 import pandas as pd
 
 from config.team_names import normalize_team as NT
-from scripts.fantacalcio.probabili import fetch_probabili, p_play_override, status_by_pid
+from scripts.fantacalcio.probabili import (
+    P_DOUBT,
+    P_NEWS_CAP,
+    P_OUT,
+    P_SUSPENDED,
+    fetch_indisponibili,
+    fetch_probabili,
+    p_play_override,
+    status_by_pid,
+)
 from scripts.fantacalcio.tracker import LEVEL_K, MODULES, SEASON, _modifier, discipline_status
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -370,6 +379,7 @@ def build_advice() -> dict:
     # Probable lineups beat the appearance-rate model when the page lists the
     # player (fetch is cached 6h and falls back to the last good cache on failure).
     prob_by_pid = status_by_pid(fetch_probabili())
+    avail = fetch_indisponibili()
     roster_src, source = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
     congestion = _club_congestion(fixtures)
@@ -380,6 +390,7 @@ def build_advice() -> dict:
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(roster_src, out, discipline_status())
+    _apply_availability(roster_src, avail, _news_caps())
 
     adv = advise(roster_src, fixtures, elo, out)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
@@ -475,6 +486,86 @@ def _club_congestion(fixtures: dict) -> dict:
             indent=1, ensure_ascii=False))
         return clubs
     return (cached or {}).get("clubs", {})
+
+
+def _fold(nome: str) -> str:
+    """Accent-folded surname key: the indisponibili page writes 'Kon\xe8'
+    where the listone writes 'Kon\xe9' — one diacritic, zero matches."""
+    import unicodedata
+
+    from scripts.fantacalcio.news import _surname
+    t = unicodedata.normalize("NFD", _surname(nome))
+    return "".join(c for c in t if not unicodedata.combining(c)).lower()
+
+
+def _apply_availability(rows: list, avail: dict | None,
+                        news_caps: dict[str, str] | None = None) -> None:
+    """Availability tiers BELOW a probabili listing; mutates p_play in place.
+
+    Hierarchy (pid-exact fresh beats name-matched):
+      1. probabili/ballottaggio listing — untouched, but an injured-list row
+         for the same player rides along as avail_note (the conflict flag).
+      2. indisponibili page, matched by folded surname WITHIN the club and
+         only when the match is unique on both sides: squalificato ->
+         P_SUSPENDED, infortunato -> P_OUT, infortunato_dubbio ->
+         min(p, P_DOUBT).
+      3. title-bound news risk hit (infortunio/squalifica, never mercato —
+         transfers are the wiki pass's job): min(p, P_NEWS_CAP). Caps only,
+         never zeroes — headlines lie.
+    Every tier labels p_play_src, so pred_ledger's per-source calibration
+    grades each one against who actually got a voto.
+    """
+    by_team: dict[str, dict[str, list[dict]]] = {}
+    for team, items in ((avail or {}).get("teams") or {}).items():
+        d = by_team.setdefault(team, {})
+        for it in items:
+            d.setdefault(_fold(it["nome"]), []).append(it)
+    seen: dict[tuple[str, str], int] = {}
+    for r in rows:
+        k = (r.get("team") or "", _fold(r["nome"]))
+        seen[k] = seen.get(k, 0) + 1
+    for r in rows:
+        if r.get("departed"):
+            continue
+        key = _fold(r["nome"])
+        its = by_team.get(r.get("team") or "", {}).get(key)
+        hit = its[0] if its and len(its) == 1             and seen[(r.get("team") or "", key)] == 1 else None
+        if r.get("p_play_src") in ("probabili", "ballottaggio"):
+            if hit:                      # listed AND on the injured list
+                r["avail_note"] = f"{hit['status']}: {hit['note'][:140]}"
+            continue
+        if hit:
+            if hit["status"] == "squalificato":
+                r.update(p_play=P_SUSPENDED, p_play_src="squalificato_sito")
+            elif hit["status"] == "infortunato_dubbio":
+                r.update(p_play=min(r["p_play"], P_DOUBT),
+                         p_play_src="infortunio_dubbio")
+            else:
+                r.update(p_play=P_OUT, p_play_src="infortunio_sito")
+            r["avail_note"] = hit["note"][:140]
+            continue
+        cat = (news_caps or {}).get(r["nome"])
+        if cat:
+            r.update(p_play=min(r["p_play"], P_NEWS_CAP),
+                     p_play_src="news_risk")
+            r["avail_note"] = f"news: {cat}"
+
+
+def _news_caps() -> dict[str, str]:
+    """nome -> risk category from the accumulated news items, title-bound,
+    availability categories only (mercato moves are handled by the board)."""
+    try:
+        from scripts.fantacalcio.news import risk_hits
+        items = json.loads((ROOT / "data" / "fantacalcio"
+                            / "news.json").read_text()).get("items", [])
+    except (OSError, ValueError):
+        return {}
+    caps: dict[str, str] = {}
+    for it in items:
+        for nome, cat in risk_hits(it):
+            if cat in ("infortunio", "squalifica"):
+                caps[nome] = cat
+    return caps
 
 
 def _apply_discipline(rows: list, out: dict, disc: dict) -> None:
@@ -597,6 +688,7 @@ def build_rivals(adv: dict | None = None) -> dict:
     out = _out_ids(board["players"], fixtures)
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
+    avail = fetch_indisponibili()
 
     league = json.loads(
         (ROOT / "data" / "fantacalcio" / "league_rosters.json").read_text())
@@ -645,6 +737,7 @@ def build_rivals(adv: dict | None = None) -> dict:
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(my_roster, out, disc)
+    _apply_availability(my_roster, avail, _news_caps())
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
 
@@ -668,6 +761,7 @@ def build_rivals(adv: dict | None = None) -> dict:
                 row["congested"] = c["congested"]
                 row["last_comp"] = c["last_comp"]
         _apply_discipline(rows, out, disc)
+        _apply_availability(rows, avail)
         obs = _observed_modules(tname)
         radv = advise(rows, fixtures, elo, out, modules=obs or None)
         module_src = "osservato" if obs and radv.get("xi") else "stimato"
@@ -730,6 +824,7 @@ def build_svincolati(top_n: int = 8) -> dict:
     fixtures, rnd = _next_fixtures()
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
+    avail = fetch_indisponibili()
     # DEPARTED = left Serie A (board status from the wiki-transfers pass) —
     # a free agent you cannot field is not a pickup (Di Gregorio lesson,
     # 2026-09-02: the radar led with a keeper already at Bournemouth).
@@ -740,6 +835,7 @@ def build_svincolati(top_n: int = 8) -> dict:
     out = _out_ids(board["players"], fixtures)
     disc = discipline_status()
     _apply_discipline(rows, out, disc)
+    _apply_availability(rows, avail)
 
     # my weakest per role (by level), for the upgrade comparison
     team = json.loads((ROOT / "data" / "fantacalcio" / "my_team.json").read_text())

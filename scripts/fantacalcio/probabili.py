@@ -18,12 +18,39 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from html import unescape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "fantacalcio" / "probabili.json"
 URL = "https://www.fantacalcio.it/probabili-formazioni-serie-a"
 CACHE_TTL_H = 6.0
+
+INDISP_CACHE = ROOT / "data" / "fantacalcio" / "indisponibili.json"
+INDISP_URL = "https://www.fantacalcio.it/indisponibili-serie-a"
+# Availability tiers BELOW a probabili listing (pid-exact fresh beats
+# name-matched). HEURISTICS with a refit path: every value lands in
+# p_play_src, so pred_ledger's per-source calibration grades each tier
+# against who actually got a voto once ~5 rounds are reconciled.
+P_SUSPENDED = 0.02        # squalificato — deterministic
+P_OUT = 0.05              # infortunato, prose reads as out
+P_DOUBT = 0.35            # infortunato, prose reads as doubtful
+P_NEWS_CAP = 0.60         # title-bound headline risk only — never a zeroing
+# Default for an injured-list row is OUT — the 2026-09-02 specimen (43 real
+# notes) shows most entries are hard outs ("forfait per domenica", "out
+# nella 3a", "salter\xe0"), and anyone genuinely playing is rescued by his
+# probabili listing anyway. Doubt needs an explicit THIS-round-hope marker;
+# "da valutare"/"recuperabile" alone talk about the return DATE, not this
+# match (the Geubbels trap: "terr\xe0 fuori luned\xec... tempi di recupero
+# da valutare").
+_DOUBT_RX = re.compile(
+    r"in dubbio|ci prova|prover\xe0 a esserci|da valutare quotidianamente"
+    r"|dovrebbe farcela|corsa contro il tempo|possibile convocazione"
+    r"|recupero lampo|si tenta il recupero|verso la convocazione", re.I)
+_TEAM_SPAN = re.compile(r'<span class="team-name">([^<]+)</span>')
+_INDISP_ITEM = re.compile(
+    r'<strong class="item-name">([^<]+)</strong>\s*'
+    r'<div class="item-description">(.*?)</div>', re.S)
 
 # p(gets a voto) by probabili status. Heuristic constants — see module docstring.
 P_STARTER = 0.88          # listed titolare, no ballottaggio
@@ -118,6 +145,76 @@ def fetch_probabili(refresh: bool = False) -> dict | None:
             if data is not None:
                 CACHE.parent.mkdir(parents=True, exist_ok=True)
                 CACHE.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+                return data
+    except Exception:
+        pass
+    return cached
+
+
+def parse_indisponibili(html: str) -> dict | None:
+    """Per-club injured/suspended lists from the indisponibili page.
+
+    Structure (specimen verified 2026-09-02): 20 <span class="team-name">
+    blocks, each with Infortunati / Squalificati / Diffidati columns of
+    <strong class="item-name"> + prose description. Names only — no pids —
+    so consumers must match name WITHIN the club. Diffidati are skipped:
+    the tracker's own card ledger is measured, the page is not needed.
+    Sentinel: >=15 club blocks including Inter, else None (schema break).
+    """
+    spans = list(_TEAM_SPAN.finditer(html))
+    teams: dict[str, list[dict]] = {}
+    for i, m in enumerate(spans):
+        block = html[m.end():spans[i + 1].start() if i + 1 < len(spans)
+                     else len(html)]
+        items: list[dict] = []
+        for col in block.split('<div class="col">')[1:]:
+            if "Squalificati" in col.split("<ul")[0]:
+                cat = "squalificato"
+            elif "Infortunati" in col.split("<ul")[0]:
+                cat = "infortunato"
+            else:
+                continue                      # Diffidati or ad column
+            for nome, desc in _INDISP_ITEM.findall(col):
+                nome = unescape(nome)
+                note = unescape(re.sub(r"<[^>]+>", "", desc))
+                note = re.sub(r"\s+", " ", note).strip()
+                status = cat
+                if cat == "infortunato" and _DOUBT_RX.search(note):
+                    status = "infortunato_dubbio"
+                items.append({"nome": nome.strip(), "status": status,
+                              "note": note})
+        teams[m.group(1).strip()] = items
+    if len(teams) < 15 or "Inter" not in teams:
+        return None
+    return {"fetched_at": datetime.now(UTC).isoformat(), "teams": teams}
+
+
+def fetch_indisponibili(refresh: bool = False) -> dict | None:
+    """Cached fetch, same contract as fetch_probabili: 6h TTL, on any
+    failure the last good cache is served (stale-but-real beats empty)."""
+    cached = None
+    try:
+        cached = json.loads(INDISP_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if cached and not refresh:
+        try:
+            age_h = (datetime.now(UTC)
+                     - datetime.fromisoformat(cached["fetched_at"])
+                     ).total_seconds() / 3600
+            if age_h < CACHE_TTL_H:
+                return cached
+        except (KeyError, ValueError):
+            pass
+    try:
+        from curl_cffi import requests as rq
+        r = rq.get(INDISP_URL, impersonate="chrome124", timeout=30)
+        if r.status_code == 200:
+            data = parse_indisponibili(r.text)
+            if data is not None:
+                INDISP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                INDISP_CACHE.write_text(
+                    json.dumps(data, indent=1, ensure_ascii=False))
                 return data
     except Exception:
         pass

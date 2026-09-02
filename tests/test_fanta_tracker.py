@@ -1033,3 +1033,88 @@ def test_vs_block_collapses_comps_and_diff_guard():
     # but a genuine recommendation flip fires with the opponent named
     d = _advice_diff({**base_adv, "vs": sig2}, {**base_adv, "vs": sig})
     assert d and "Contro Munnezz FC" in d and "3-5-2" in d and "Schmid" in d
+
+
+_INDISP_HTML = """
+<span class="team-name">Lecce</span>
+<div class="col"><header><a aria-label="Infortunati">Infortunati</a></header>
+<ul><li><strong class="item-name">Geubbels</strong>
+<div class="item-description"><p>KO, lo terr&agrave; fuori luned&igrave;.
+Tempi di recupero da valutare.</p></div></li></ul></div>
+<div class="col"><header><strong class="label">Squalificati</strong></header>
+<ul><li><strong class="item-name">Rossi</strong>
+<div class="item-description"><p>un turno dal giudice sportivo</p></div></li>
+</ul></div>
+<div class="col"><header><strong class="label">Diffidati</strong></header>
+<ul><li><strong class="item-name">Bianchi</strong>
+<div class="item-description"><p>a rischio</p></div></li></ul></div>
+<span class="team-name">Roma</span>
+<div class="col"><header><a aria-label="Infortunati">Infortunati</a></header>
+<ul><li><strong class="item-name">Kon&#xE8; I.</strong>
+<div class="item-description"><p>da valutare quotidianamente</p></div></li>
+</ul></div>
+""" + "".join(f'<span class="team-name">T{i}</span>' for i in range(14)) \
+    + '<span class="team-name">Inter</span>'
+
+
+def test_parse_indisponibili_categories_doubt_and_sentinel():
+    from scripts.fantacalcio.probabili import parse_indisponibili
+    d = parse_indisponibili(_INDISP_HTML)
+    lecce = {i["nome"]: i for i in d["teams"]["Lecce"]}
+    # "terra' fuori" is a hard out even with "da valutare" in the tail
+    assert lecce["Geubbels"]["status"] == "infortunato"
+    assert lecce["Rossi"]["status"] == "squalificato"
+    assert "Bianchi" not in lecce          # diffidati column skipped
+    roma = {i["nome"]: i for i in d["teams"]["Roma"]}
+    assert roma["Konè I."]["status"] == "infortunato_dubbio"  # unescaped
+    # sentinel: a page without enough club blocks is a schema break
+    assert parse_indisponibili('<span class="team-name">Inter</span>') is None
+
+
+def test_apply_availability_hierarchy_and_fold():
+    from scripts.fantacalcio.xi_advisor import _apply_availability
+    avail = {"teams": {
+        "Lecce": [{"nome": "Geubbels", "status": "infortunato", "note": "ko"},
+                  {"nome": "Rossi", "status": "squalificato", "note": "1t"}],
+        "Roma": [{"nome": "Konè I.", "status": "infortunato_dubbio",
+                  "note": "50-50"},
+                 {"nome": "Esposito", "status": "infortunato", "note": "x"}],
+    }}
+    rows = [
+        # probabili wins outright, injury rides along as the conflict flag
+        {"nome": "Geubbels", "team": "Lecce", "p_play": 0.88,
+         "p_play_src": "probabili"},
+        {"nome": "Rossi", "team": "Lecce", "p_play": 0.7,
+         "p_play_src": "model"},
+        # accent fold: listone Koné vs page Konè
+        {"nome": "Koné I.", "team": "Roma", "p_play": 0.8,
+         "p_play_src": "model"},
+        # two same-surname teammates -> ambiguous -> fail open
+        {"nome": "Esposito Pio", "team": "Roma", "p_play": 0.9,
+         "p_play_src": "model"},
+        {"nome": "Esposito Seb.", "team": "Roma", "p_play": 0.9,
+         "p_play_src": "model"},
+        # nothing structured -> news tier caps, never zeroes
+        {"nome": "Verdi", "team": "Milan", "p_play": 0.9,
+         "p_play_src": "model"},
+        {"nome": "Gialli", "team": "Milan", "p_play": 0.3,
+         "p_play_src": "model"},
+        {"nome": "Neri", "team": "Milan", "p_play": 0.9,
+         "p_play_src": "model", "departed": True},
+    ]
+    _apply_availability(rows, avail,
+                        news_caps={"Verdi": "infortunio", "Gialli": "infortunio",
+                                   "Neri": "infortunio"})
+    by = {r["nome"]: r for r in rows}
+    assert by["Geubbels"]["p_play"] == 0.88 \
+        and by["Geubbels"]["p_play_src"] == "probabili" \
+        and "infortunato" in by["Geubbels"]["avail_note"]
+    assert by["Rossi"]["p_play"] == 0.02 \
+        and by["Rossi"]["p_play_src"] == "squalificato_sito"
+    assert by["Koné I."]["p_play"] == 0.35 \
+        and by["Koné I."]["p_play_src"] == "infortunio_dubbio"
+    assert by["Esposito Pio"]["p_play_src"] == "model"      # fail open
+    assert by["Verdi"]["p_play"] == 0.6 \
+        and by["Verdi"]["p_play_src"] == "news_risk"
+    assert by["Gialli"]["p_play"] == 0.3                     # cap, no raise
+    assert by["Neri"]["p_play"] == 0.9                       # departed skip
