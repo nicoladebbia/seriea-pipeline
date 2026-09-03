@@ -927,6 +927,181 @@ def build_rivals(adv: dict | None = None) -> dict:
             "rivals": rivals}
 
 
+def score_observed_xi(team: str, player_names: list[str],
+                      module: str | None = None,
+                      bench_names: list[str] | None = None) -> dict:
+    """Value an opponent's ACTUALLY-FIELDED XI (names read from a Leghe
+    screenshot) with the same levels/p_play machinery as the rival matrix,
+    and price my current board against it.
+
+    Restricting the rival's roster to the observed players and forcing the
+    observed module makes advise() score exactly the fielded XI — exp_total,
+    sd, defense modifier included — instead of our guess of their best XI.
+    Returns their numbers, my P(win) vs THIS lineup, and the tilted
+    alternative of mine that beats the base against it, if any.
+    """
+    from scripts.fantacalcio.lineup_check import _match_one, _tokens
+
+    board = json.loads(BOARD.read_text())
+    by_id = {int(p["id"]): p for p in board["players"]}
+    fixtures, rnd = _next_fixtures()
+    elo = _current_elo()
+    out = _out_ids(board["players"], fixtures)
+    hist = _history()
+    prob_by_pid = status_by_pid(fetch_probabili())
+    avail = fetch_indisponibili()
+    congestion = _club_congestion(fixtures)
+    disc = discipline_status()
+
+    league = json.loads(
+        (ROOT / "data" / "fantacalcio" / "league_rosters.json").read_text())
+    entry = league.get("teams", {}).get(team)
+    if entry is None:
+        low = team.casefold()
+        hits = [t for t in league.get("teams", {})
+                if low in t.casefold() or t.casefold() in low]
+        if len(hits) == 1:
+            team, entry = hits[0], league["teams"][hits[0]]
+        else:
+            return {"error": f"squadra '{team}' non trovata in lega",
+                    "teams": sorted(league.get("teams", {}))}
+
+    rows = _rival_roster(entry, by_id, hist, prob_by_pid)
+    for row in rows:
+        c = congestion.get(row["team"])
+        if c:
+            row["rest_d"] = c["rest_d"]
+            row["congested"] = c["congested"]
+            row["last_comp"] = c["last_comp"]
+    _apply_discipline(rows, out, disc)
+    _apply_availability(rows, avail)
+
+    def _norm(s: str) -> str:
+        import unicodedata
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        return "".join(c for c in s.casefold() if c.isalnum())
+
+    # Leghe screenshots carry the SAME listone names as our roster, so an
+    # exact (accent/punct-insensitive) match covers ~all; the token matcher
+    # is the fallback for OCR quirks — it alone misses initial-form names
+    # ("Keita M.") when BOTH sides carry the initial.
+    by_norm = {_norm(r["nome"]): i for i, r in enumerate(rows)}
+    roster_toks = [_tokens(r["nome"]) for r in rows]
+    matched, unmatched = [], []
+    seen: set[int] = set()
+    for nm in player_names:
+        idx = by_norm.get(_norm(nm))
+        if idx is None:
+            idx = _match_one(_tokens(nm), roster_toks)
+        if idx is None or idx in seen:
+            unmatched.append(nm)
+        else:
+            seen.add(idx)
+            matched.append(rows[idx])
+
+    mod_tuple = None
+    if module:
+        digs = [int(c) for c in str(module) if c.isdigit()]
+        if len(digs) == 3 and sum(digs) == 10:
+            mod_tuple = tuple(digs)
+    if mod_tuple is None:
+        counts = {"D": 0, "C": 0, "A": 0}
+        for r in matched:
+            if r["R"] in counts:
+                counts[r["R"]] += 1
+        if sum(counts.values()) == 10:
+            mod_tuple = (counts["D"], counts["C"], counts["A"])
+
+    obs_bench = []
+    for nm in bench_names or []:
+        idx = by_norm.get(_norm(nm))
+        if idx is None:
+            idx = _match_one(_tokens(nm), roster_toks)
+        if idx is not None and idx not in seen:
+            seen.add(idx)
+            obs_bench.append(rows[idx])
+
+    radv = advise(matched, fixtures, elo, out,
+                  modules=[mod_tuple] if mod_tuple else None)
+    if not radv.get("xi"):
+        radv = advise(matched, fixtures, elo, out)
+    if not radv.get("xi"):
+        return {"error": "XI avversario non valutabile "
+                         f"({len(matched)}/11 nomi abbinati)",
+                "unmatched": unmatched}
+    if obs_bench:
+        # _role_recovery reads row["exp"], which raw roster rows lack —
+        # apply the same fixture terms advise() uses, keeping screenshot
+        # order (the real auto-sub order).
+        enriched = []
+        for pl in obs_bench:
+            fx = fixtures.get(pl["team"])
+            if fx is None or out.get(pl["id"]):
+                continue
+            d_elo = (elo.get(pl["team"], 1450.0)
+                     - elo.get(fx["opp"], 1450.0)) / 100.0
+            adj = HOME_ADJ[pl["R"]] * fx["home"] + ELO_SLOPE[pl["R"]] * d_elo
+            enriched.append({**pl, "exp": round(pl["level"] + adj, 2),
+                             "p_play": round(float(pl.get("p_play", 1.0)), 2)})
+        bev = _bench_recovery_ev(radv["xi"], enriched)
+        radv["bench_ev"] = round(bev, 2)
+        radv["exp_total"] = round(radv["total"] + bev, 2)
+    else:
+        # No bench visible: compare XI-vs-XI so neither side gets a
+        # phantom bench advantage.
+        radv["exp_total"] = radv["total"]
+
+    # My side — same rebuild as build_rivals, priced vs THIS actual lineup.
+    my_roster, _src = _my_roster(
+        by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
+    for row in my_roster:
+        c = congestion.get(row["team"])
+        if c:
+            row["rest_d"] = c["rest_d"]
+            row["congested"] = c["congested"]
+            row["last_comp"] = c["last_comp"]
+    _apply_discipline(my_roster, out, disc)
+    _apply_availability(my_roster, avail, _news_caps())
+    base = advise(my_roster, fixtures, elo, out)
+    base_names = {x["nome"] for x in base["xi"]}
+    opp_mu = radv["exp_total"]
+    my_mu = (base.get("exp_total", base["total"]) if obs_bench
+             else base["total"])
+    p0 = _p_win(my_mu, base["xi_sd"], opp_mu, radv["xi_sd"])
+    best_alt = None
+    for lam in RISK_LAMBDAS:
+        alt = advise(my_roster, fixtures, elo, out, risk_lambda=lam)
+        alt_names = {x["nome"] for x in alt["xi"]}
+        if alt_names == base_names:
+            continue
+        alt_mu = (alt.get("exp_total", alt["total"]) if obs_bench
+                  else alt["total"])
+        pa = _p_win(alt_mu, alt["xi_sd"], opp_mu, alt["xi_sd"])
+        if pa >= p0 + ALT_MIN_GAIN and (best_alt is None
+                                        or pa > best_alt["p_win"]):
+            best_alt = {"module": alt["module"], "total": alt["total"],
+                        "p_win": round(pa, 3),
+                        "in": sorted(alt_names - base_names),
+                        "out": sorted(base_names - alt_names)}
+    return {
+        "round": rnd, "team": team,
+        "opponent": {"module": radv["module"], "total": radv["total"],
+                     "exp_total": radv.get("exp_total"), "sd": radv["xi_sd"],
+                     "bench_ev": radv.get("bench_ev"),
+                     "bench_seen": len(obs_bench),
+                     "n_matched": len(matched), "unmatched": unmatched,
+                     "xi": [{"nome": x["nome"], "R": x["R"],
+                             "exp": x["exp"], "p_play": x["p_play"]}
+                            for x in radv["xi"]]},
+        "me": {"module": base["module"], "total": base["total"],
+               "exp_total": base.get("exp_total"), "sd": base["xi_sd"],
+               "xi": sorted(base_names)},
+        "p_win": round(p0, 3),
+        "alt": best_alt,
+    }
+
+
 def build_svincolati(top_n: int = 8) -> dict:
     """Unowned listone players worth watching, ranked by p_play * level.
 

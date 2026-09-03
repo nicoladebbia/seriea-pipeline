@@ -1646,3 +1646,48 @@ def test_bot_xi_handler_serves_disk_advice(tmp_path, monkeypatch):
     (fdir / "xi_advice.json").write_text(_json.dumps(_mini_adv()))
     out = tb._handle_xi()
     assert "Skorupski" in out and "aggiornata" in out
+
+
+# ── /formazioni + score_opponent_xi tool wiring ──────────────────────────
+
+
+def test_formazioni_command_asks_for_the_screenshot(tmp_path, monkeypatch):
+    import scripts.pipeline.telegram_bot as tb
+
+    monkeypatch.setattr(tb, "PROJECT_ROOT", tmp_path)
+    out = tb._handle_formazioni()
+    assert "screenshot" in out and "avversari" in out
+
+
+def test_opponent_xi_tool_is_registered_and_dispatches(monkeypatch):
+    import json as _json
+
+    import scripts.pipeline.telegram_bot as tb
+
+    assert any(t["name"] == "score_opponent_xi" for t in tb._TG_TOOLS)
+    assert "score_opponent_xi" in tb._TG_TOOL_HANDLERS
+    # handler passes through to the advisor with all fields
+    captured = {}
+
+    def fake(team, players, module=None, bench_names=None):
+        captured.update(team=team, players=players, module=module,
+                        bench=bench_names)
+        return {"p_win": 0.5}
+
+    import scripts.fantacalcio.xi_advisor as xa
+    monkeypatch.setattr(xa, "score_observed_xi", fake)
+    out = tb._tool_score_opponent_xi({"team": "X", "players": ["A", "B"],
+                                      "module": "3-4-3", "bench": ["C"]})
+    assert _json.loads(out) == {"p_win": 0.5}
+    assert captured == {"team": "X", "players": ["A", "B"],
+                        "module": "3-4-3", "bench": ["C"]}
+
+
+def test_reply_keyboard_has_formazioni_and_all_buttons_mapped():
+    import scripts.pipeline.telegram_bot as tb
+
+    kb = tb._reply_keyboard()
+    labels = [b["text"] for row in kb["keyboard"] for b in row]
+    assert "📸 Formazioni" in labels
+    for lb in labels:
+        assert tb._REPLY_BUTTON_MAP[lb].startswith("/")

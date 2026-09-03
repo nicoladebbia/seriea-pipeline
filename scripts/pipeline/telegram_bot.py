@@ -435,6 +435,7 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "⚽ XI": "/xi",
     "🆚 Sfide": "/sfide",
     "🎯 Picks": "/picks",
+    "📸 Formazioni": "/formazioni",
 }
 
 
@@ -447,8 +448,8 @@ def _reply_keyboard() -> dict:
     2026-09-03: WC-era buttons replaced by the Serie A + fantacalcio set."""
     return {
         "keyboard": [
-            [{"text": "⚽ XI"}, {"text": "🆚 Sfide"}, {"text": "🎯 Picks"}],
-            [{"text": "⚽ Today"}, {"text": "💰 Bets"}, {"text": "📊 Bankroll"}],
+            [{"text": "📸 Formazioni"}, {"text": "⚽ XI"}, {"text": "🆚 Sfide"}],
+            [{"text": "🎯 Picks"}, {"text": "⚽ Today"}, {"text": "💰 Bets"}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
@@ -458,6 +459,7 @@ def _reply_keyboard() -> dict:
 
 # WC-season command menu — populates Telegram's ☰ menu button at input-left.
 _MENU_COMMANDS = [
+    {"command": "formazioni", "description": "📸 Manda la formazione avversaria"},
     {"command": "xi", "description": "⚽ Formazione fantacalcio consigliata"},
     {"command": "sfide", "description": "🆚 Pronostico H2H prossimi avversari"},
     {"command": "picks", "description": "🎯 Miglior angolo per ogni partita"},
@@ -539,6 +541,47 @@ You are responding on Telegram (mobile phone). Adjust accordingly:
 """
 
 
+# Fantacalcio vision tool — opponent lineups read from a screenshot get
+# valued with the real levels machinery, never estimated by eye.
+_FANTA_XI_TOOL = {
+    "name": "score_opponent_xi",
+    "description": (
+        "Value an opponent's actually-fielded fantacalcio XI (names read "
+        "from a Leghe screenshot) against Nicola's current board: their "
+        "expected total from live levels, his P(win) vs THIS exact lineup, "
+        "and whether a tilted module/XI of his beats the base against it. "
+        "ALWAYS call this after reading an opponent lineup from a photo — "
+        "never estimate totals by eye. Pass the bench too when visible."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "team": {"type": "string",
+                     "description": "League team name as shown"},
+            "players": {"type": "array", "items": {"type": "string"},
+                        "description": "The 11 fielded names, as written"},
+            "module": {"type": "string",
+                       "description": "Module like 3-4-3 if visible"},
+            "bench": {"type": "array", "items": {"type": "string"},
+                      "description": "Bench names IN LISTED ORDER if visible"},
+        },
+        "required": ["team", "players"],
+    },
+}
+
+
+def _tool_score_opponent_xi(tool_input: dict) -> str:
+    from scripts.fantacalcio.xi_advisor import score_observed_xi
+    res = score_observed_xi(tool_input.get("team", ""),
+                            tool_input.get("players") or [],
+                            module=tool_input.get("module"),
+                            bench_names=tool_input.get("bench"))
+    return json.dumps(res, ensure_ascii=False, default=str)
+
+
+_TG_TOOLS = list(TOOL_DEFINITIONS) + [_FANTA_XI_TOOL]
+_TG_TOOL_HANDLERS = {**TOOL_HANDLERS, "score_opponent_xi": _tool_score_opponent_xi}
+
+
 def _fantacalcio_context() -> str:
     """Compact fantacalcio block for the chat/vision prompt — current advice,
     rival matrix, my roster. Lets a Leghe screenshot sent ~1h before kickoff
@@ -569,13 +612,16 @@ def _fantacalcio_context() -> str:
     except (OSError, ValueError, TypeError):
         pass
     lines.append(
-        "Se arriva una FOTO di una schermata Leghe Fantacalcio (formazione "
-        "avversaria o schermata di inserimento): estrai modulo e undici, "
-        "confrontali con l'XI consigliato sopra e rispondi con la formazione "
-        "ESATTA da schierare (modulo + 11 titolari + ordine panchina). Se la "
-        "foto mostra l'XI avversario schierato, dillo esplicitamente e "
-        "chiudi con 'Modulo avversario osservato: <squadra> <modulo>' su una "
-        "riga a sé, così viene registrato.")
+        "Se arriva una FOTO di una schermata Leghe Fantacalcio: estrai "
+        "squadra, modulo, gli 11 titolari e la panchina IN ORDINE. Se è "
+        "l'XI AVVERSARIO, CHIAMA SEMPRE il tool score_opponent_xi con "
+        "quei dati — mai stimare i totali a occhio — e rispondi coi suoi "
+        "numeri: atteso loro, atteso mio, P(vittoria), e se il campo 'alt' "
+        "propone un cambio modulo/XI dillo come mossa concreta (dentro X, "
+        "fuori Y). Poi la formazione ESATTA da schierare (modulo + 11 + "
+        "ordine panchina) e chiudi con 'Modulo avversario osservato: "
+        "<squadra> <modulo>' su una riga a sé. Se è la MIA schermata di "
+        "inserimento, confrontala con l'XI consigliato sopra e correggi.")
     return "\n".join(lines)
 
 
@@ -744,7 +790,7 @@ def _call_claude(user_message: str, conversation: ConversationManager,
                     "text": system_prompt,
                     "cache_control": {"type": "ephemeral"},
                 }],
-                tools=TOOL_DEFINITIONS,
+                tools=_TG_TOOLS,
                 messages=messages,
             )
         except anthropic.APIError as e:
@@ -811,7 +857,7 @@ def _call_claude(user_message: str, conversation: ConversationManager,
             else:
                 status_msg_id = _send_status(token, chat_id, status_text)
 
-            handler = TOOL_HANDLERS.get(tool_name)
+            handler = _TG_TOOL_HANDLERS.get(tool_name)
             if handler:
                 try:
                     result_str = handler(tu["input"])
@@ -1909,6 +1955,26 @@ def _handle_sfide() -> str:
     return head + vs_tg + _fanta_age_note(riv.get("generated_at"))
 
 
+def _handle_formazioni() -> str:
+    """/formazioni — guided flow: ask for the opponent-lineup screenshot,
+    which the photo path then reads and scores with score_opponent_xi."""
+    try:
+        adv = _fanta_json("xi_advice.json")
+        rnd = adv.get("round")
+        head = (f"<b>📸 Formazione avversaria — giornata {rnd}</b>\n"
+                if rnd else "<b>📸 Formazione avversaria</b>\n")
+    except Exception:
+        head = "<b>📸 Formazione avversaria</b>\n"
+    return (head
+            + "Mandami lo screenshot della formazione schierata dal tuo "
+              "avversario (Leghe → la sfida → formazioni).\n"
+              "La leggo, la valuto coi livelli reali e ti rispondo con: "
+              "atteso suo, atteso tuo, P(vittoria) e l'XI giusto da "
+              "schierare — cambio modulo incluso se conviene.\n"
+              "<i>Includi la panchina nello screenshot se puoi: l'ordine "
+              "conta per i cambi automatici.</i>")
+
+
 def _handle_picks() -> str:
     """/picks — the best-priced angle for EVERY upcoming match, edge-ranked.
 
@@ -2168,6 +2234,7 @@ def _handle_help() -> str:
     tg.raw("<b>Fantacalcio:</b>")
     tg.raw("  /xi \u2014 formazione consigliata della giornata")
     tg.raw("  /sfide \u2014 pronostico H2H vs i prossimi avversari")
+    tg.raw("  /formazioni \u2014 foto della formazione avversaria \u2192 XI corretto")
     tg.blank()
     tg.raw("<b>Serie A betting:</b>")
     tg.raw("  /picks \u2014 miglior angolo per OGNI partita (tutti i mercati)")
@@ -2735,7 +2802,7 @@ def _call_claude_with_image(user_text: str, photo: dict,
                         "text": system_prompt,
                         "cache_control": {"type": "ephemeral"},
                     }],
-                    tools=TOOL_DEFINITIONS,
+                    tools=_TG_TOOLS,
                     messages=api_messages,
                 )
             except anthropic.APIError as e:
@@ -2787,7 +2854,7 @@ def _call_claude_with_image(user_text: str, photo: dict,
                 _edit_message_status(token, chat_id, status_msg_id,
                                      f"\u23f3 <i>{status_text}...</i>")
 
-                handler = TOOL_HANDLERS.get(tool_name)
+                handler = _TG_TOOL_HANDLERS.get(tool_name)
                 if handler:
                     try:
                         result_str = handler(tu["input"])
@@ -4366,7 +4433,7 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
-                elif cmd in ("/xi", "/formazione"):
+                elif cmd == "/xi":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_xi()
                 elif cmd in ("/sfide", "/h2h"):
@@ -4375,6 +4442,8 @@ def run_bot():
                 elif cmd in ("/picks", "/angoli"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_picks()
+                elif cmd in ("/formazioni", "/avversario"):
+                    response_text = _handle_formazioni()
                 elif cmd in ("/wc", "/worldcup"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_worldcup()
