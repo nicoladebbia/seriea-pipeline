@@ -229,6 +229,109 @@ def reconcile_h2h() -> list[str]:
     return graded
 
 
+def _ladder_observations() -> list[tuple[float, int, bool]]:
+    """(fantapunti, goals, fanta_home) for every played score cell, both
+    competitions. A side under 20 fp is a forfeit/rest artifact, not a real
+    lineup — its pair would poison the fit, so it is dropped per side."""
+    import re
+    try:
+        schedule = json.loads(SCHEDULE.read_text())
+    except (OSError, ValueError):
+        return []
+    seen: set[tuple] = set()
+    obs: list[tuple[float, int, bool]] = []
+    for cd in (schedule.get("competitions") or {}).values():
+        for rd in cd.get("rounds", []):
+            for fx in rd.get("fixtures", []):
+                sc = str(fx.get("score") or "")
+                if not re.fullmatch(r"\d+-\d+", sc):
+                    continue
+                gh, ga = (int(x) for x in sc.split("-"))
+                for team, fp, g, home in (
+                        (fx.get("home"), fx.get("fp_home"), gh, True),
+                        (fx.get("away"), fx.get("fp_away"), ga, False)):
+                    if fp is None or float(fp) < 20.0:
+                        continue
+                    key = (team, rd.get("sa_round"), home, float(fp), g)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    obs.append((float(fp), g, home))
+    return obs
+
+
+def verify_goal_ladder() -> str | None:
+    """Solve the goal ladder (base, step, home fp bonus) from the played
+    score cells and check the configured GOAL_BASE/GOAL_STEP against it.
+
+    The MC's thresholds are an assumption until the first settled giornata
+    (so is the importer's played-row cell mapping — a layout that fits NO
+    ladder is that bug, not a rules change). Verdict persists in the ledger
+    under ``goal_ladder``; the returned alert string is non-None only when
+    the verdict CHANGES — the tracker runs several times a day and a
+    standing mismatch must not re-alert every cycle.
+    """
+    from scripts.fantacalcio.xi_advisor import GOAL_BASE, GOAL_STEP
+
+    obs = _ladder_observations()
+    if not obs:
+        return None
+    bases = [50.0 + 0.5 * i for i in range(61)]      # 50 .. 80
+    steps = [2.0 + 0.5 * i for i in range(13)]       # 2 .. 8
+    advs = (0.0, 1.0, 2.0, 3.0)
+    eps = 1e-9
+
+    def fits(base: float, step: float, adv: float) -> bool:
+        for fp, g, home in obs:
+            eff = fp + (adv if home else 0.0)
+            pred = 0 if eff < base else int((eff - base) / step + eps) + 1
+            if pred != g:
+                return False
+        return True
+
+    feasible = [(b, s, a) for b in bases for s in steps for a in advs
+                if fits(b, s, a)]
+    conf_ok = fits(GOAL_BASE, GOAL_STEP, 0.0)
+    zero_adv = [(b, s) for b, s, a in feasible if a == 0.0]
+    unique_step = len({s for _, s in zero_adv}) == 1 if zero_adv else False
+
+    led = _load()
+    prev = led.get("goal_ladder") or {}
+    verdict = {
+        "checked_at": datetime.now(UTC).isoformat(),
+        "n_obs": len(obs),
+        "configured": [GOAL_BASE, GOAL_STEP],
+        "configured_ok": conf_ok,
+        "n_feasible": len(feasible),
+        "base_range": [min(b for b, _, _ in feasible),
+                       max(b for b, _, _ in feasible)] if feasible else None,
+        "step_range": [min(s for _, s, _ in feasible),
+                       max(s for _, s, _ in feasible)] if feasible else None,
+        "unique_step_at_zero_adv": unique_step,
+    }
+    changed = (prev.get("configured_ok") != conf_ok
+               or (not conf_ok and len(obs) > int(prev.get("n_obs") or 0))
+               or (not prev and conf_ok))
+    led["goal_ladder"] = verdict
+    _save(led)
+    if not changed:
+        return None
+    if not feasible:
+        return (f"NESSUNA scala gol coerente con {len(obs)} celle giocate — "
+                f"probabile mapping celle rotto in import_rosters (fp/gol "
+                f"scambiati?), NON un cambio regole. MC inaffidabile.")
+    if not conf_ok:
+        return (f"Scala gol SMENTITA dai risultati: configurata "
+                f"{GOAL_BASE:g}+{GOAL_STEP:g}, ma {len(obs)} celle giocate "
+                f"ammettono base {verdict['base_range']} step "
+                f"{verdict['step_range']}. Correggere GOAL_BASE/GOAL_STEP "
+                f"in xi_advisor.")
+    prec = ("UNICA" if unique_step and len(zero_adv) <= 3
+            else f"coerente ({len(feasible)} alternative aperte)")
+    return (f"Scala gol {GOAL_BASE:g}+{GOAL_STEP:g} verificata sui "
+            f"risultati reali ({len(obs)} celle): {prec}.")
+
+
 def summary() -> dict:
     """Cross-round calibration: the numbers that will refit the constants."""
     led = _load()

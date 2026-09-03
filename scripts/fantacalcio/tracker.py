@@ -798,6 +798,15 @@ def _push_xi_advice() -> None:
         print(f"pred ledger: snapshot={st}"
               + (f" reconciled={rec}" if rec else "")
               + (f" h2h_graded={h2h}" if h2h else ""))
+        # The MC's goal thresholds are an assumption until real score cells
+        # exist; alerts only when the verdict CHANGES (verified / refuted).
+        from scripts.fantacalcio.pred_ledger import verify_goal_ladder
+        lad = verify_goal_ladder()
+        if lad:
+            from scripts.pipeline.notify import notify
+            notify(lad, title="Fantacalcio — scala gol",
+                   level="alert", category="alert",
+                   tg_html="<b>🥅 Scala gol H2H</b>\n" + lad)
         if rec:
             # Fires at most once per newly-reconciled round, only past the
             # data floor: the G7 refit reminds itself.

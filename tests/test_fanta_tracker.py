@@ -2159,3 +2159,91 @@ def test_market_elo_blend_survives_missing_or_bad_odds(tmp_path, monkeypatch):
     fx = {"Alpha": {"opp": "Beta", "home": True},
           "Beta": {"opp": "Alpha", "home": False}}
     assert xa._apply_market_elo(elo, fx) == elo
+
+
+# ── goal-ladder inference (verify_goal_ladder) ──────────────────────────
+
+
+def _ladder_sched(tmp_path, fixtures):
+    """One-competition schedule whose round 3 holds the given fixtures."""
+    import json
+    sched = {"competitions": {"Coppa": {"rounds": [
+        {"league_round": 1, "sa_round": 3, "fixtures": fixtures}]}}}
+    (tmp_path / "sched.json").write_text(json.dumps(sched))
+
+
+def _fx(home, away, fph, fpa, score):
+    return {"home": home, "away": away, "fp_home": fph, "fp_away": fpa,
+            "score": score, "girone": None}
+
+
+def _ladder_env(monkeypatch, tmp_path):
+    import scripts.fantacalcio.pred_ledger as pl
+    monkeypatch.setattr(pl, "LEDGER", tmp_path / "led.json")
+    monkeypatch.setattr(pl, "SCHEDULE", tmp_path / "sched.json")
+    return pl
+
+
+def test_goal_ladder_verified_and_change_gated(monkeypatch, tmp_path):
+    """66+6 world: away-side cells pin base 66 / step 6 exactly; the alert
+    fires once (verified) and the identical re-check stays silent."""
+    pl = _ladder_env(monkeypatch, tmp_path)
+    _ladder_sched(tmp_path, [
+        _fx("A", "B", 66.0, 65.5, "1-0"),
+        _fx("C", "D", 72.0, 71.5, "2-1"),
+        _fx("E", "F", 78.0, 66.0, "3-1"),
+    ])
+    msg = pl.verify_goal_ladder()
+    assert msg and "verificata" in msg
+    led = pl._load()
+    assert led["goal_ladder"]["configured_ok"] is True
+    assert led["goal_ladder"]["n_obs"] == 6
+    assert pl.verify_goal_ladder() is None  # unchanged verdict = silence
+
+
+def test_goal_ladder_refutes_wrong_step(monkeypatch, tmp_path):
+    """TRUE POSITIVE: cells from a 66+4 league must refute the configured
+    66+6 — and the feasible window must contain the real step 4."""
+    pl = _ladder_env(monkeypatch, tmp_path)
+    _ladder_sched(tmp_path, [
+        _fx("A", "B", 70.0, 65.5, "2-0"),   # 66+6 says 1 goal at 70 fp
+        _fx("C", "D", 74.0, 66.0, "3-1"),
+    ])
+    msg = pl.verify_goal_ladder()
+    assert msg and "SMENTITA" in msg
+    lad = pl._load()["goal_ladder"]
+    assert lad["configured_ok"] is False
+    assert lad["step_range"][0] <= 4.0 <= lad["step_range"][1]
+    # standing mismatch, same evidence: no re-alert
+    assert pl.verify_goal_ladder() is None
+    # NEW contradicting cell -> n_obs grows -> alerts again
+    _ladder_sched(tmp_path, [
+        _fx("A", "B", 70.0, 65.5, "2-0"),
+        _fx("C", "D", 74.0, 66.0, "3-1"),
+        _fx("E", "F", 78.0, 65.0, "4-0"),
+    ])
+    assert pl.verify_goal_ladder() is not None
+
+
+def test_goal_ladder_no_fit_names_the_importer(monkeypatch, tmp_path):
+    """Contradictory cells (same fp, different goals) fit NO ladder — the
+    alert must blame the cell mapping, not a rules change."""
+    pl = _ladder_env(monkeypatch, tmp_path)
+    _ladder_sched(tmp_path, [
+        _fx("A", "B", 70.0, 70.0, "1-3"),
+    ])
+    msg = pl.verify_goal_ladder()
+    assert msg and "import_rosters" in msg
+
+
+def test_goal_ladder_skips_forfeit_and_unplayed(monkeypatch, tmp_path):
+    """A sub-20 fp side (forfeit) and a score-less fixture yield no
+    observations; with zero observations the check is silent."""
+    pl = _ladder_env(monkeypatch, tmp_path)
+    _ladder_sched(tmp_path, [
+        _fx("A", "B", 0.0, 0.0, None),        # unplayed
+        _fx("C", "D", 0.0, 71.0, "0-1"),      # home forfeited
+    ])
+    assert pl._ladder_observations() == [(71.0, 1, False)]
+    _ladder_sched(tmp_path, [_fx("A", "B", 0.0, 0.0, None)])
+    assert pl.verify_goal_ladder() is None
