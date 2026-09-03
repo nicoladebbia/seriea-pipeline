@@ -579,6 +579,16 @@ def _rosters_age_line(path: Path = ROSTERS_FILE,
             "ridroppa il file Rose se ci sono stati scambi/svincoli.")
 
 
+def _first_push_state(state: dict, rnd, cur: dict) -> dict:
+    """Mutate-and-return the notify state for the first push. MUST update in
+    place, never rebuild: the same file carries the digest_round and
+    risk_alerts latches, and replacing it with a fresh literal re-armed both
+    — measured 2026-09-02 19:45/19:47, digest and risk each sent twice."""
+    state.update({"round": rnd, "sent_at": datetime.now(UTC).isoformat(),
+                  "final_checked": False, "advice": cur})
+    return state
+
+
 def _stamp_and_write_rivals(riv: dict) -> None:
     try:
         import os as _os
@@ -830,9 +840,7 @@ def _push_xi_advice() -> None:
                "modulo e XI.")
         notify(msg, title="Fantacalcio XI", level="info",
                category="system", tg_html=tg, tg_reply_markup=_SCHIERA_BTN)
-        state_path.write_text(json.dumps(
-            {"round": rnd, "sent_at": datetime.now(UTC).isoformat(),
-             "final_checked": False, "advice": cur}))
+        state_path.write_text(json.dumps(_first_push_state(state, rnd, cur)))
     except Exception as e:  # advice on disk is the deliverable; push is best-effort
         print(f"XI notify failed (advice still written): {e}")
 

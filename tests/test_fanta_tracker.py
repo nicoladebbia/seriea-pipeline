@@ -1349,3 +1349,20 @@ def test_rosters_age_line(tmp_path):
     line = _rosters_age_line(path=p)
     assert line is not None and "20 giorni" in line
     assert _rosters_age_line(path=tmp_path / "missing.json") is None
+
+
+def test_first_push_state_preserves_sibling_latches():
+    """Regression for the 2026-09-02 double-send: the first-push write used a
+    fresh literal dict, wiping digest_round/risk_alerts so the next run
+    re-sent both. The latch update must preserve every sibling key."""
+    from scripts.fantacalcio.tracker import _first_push_state
+    state = {"digest_round": 2,
+             "risk_alerts": {"Simeone|mercato-out": "2026-09-02T19:47:08Z"},
+             "official_sig": "old"}
+    cur = {"module": "3-5-2", "xi": ["A"], "bench": ["B"], "vs": None}
+    out = _first_push_state(state, 3, cur)
+    assert out is state
+    assert out["digest_round"] == 2
+    assert out["risk_alerts"] == {"Simeone|mercato-out": "2026-09-02T19:47:08Z"}
+    assert out["round"] == 3 and out["final_checked"] is False
+    assert out["advice"] == cur and out["sent_at"]
