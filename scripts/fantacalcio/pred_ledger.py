@@ -29,6 +29,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "data" / "fantacalcio" / "pred_ledger.json"
+SCHEDULE = ROOT / "data" / "fantacalcio" / "league_schedule.json"
+ROSTERS = ROOT / "data" / "fantacalcio" / "league_rosters.json"
 VOTI_DIR = ROOT / "data" / "fantacalcio" / "voti"
 SEASON = "2026-27"
 RECONCILE_GRACE_DAYS = 4.0
@@ -61,7 +63,28 @@ def _row(p: dict, slot: str) -> dict:
             "exp": p.get("exp"), "exp_voto": p.get("exp_voto")}
 
 
-def snapshot(adv: dict, now_ts: float | None = None) -> str:
+def _h2h_forecasts(riv: dict | None) -> list[dict]:
+    """Per-competition opponent + my predicted P(win), lifted from the rival
+    matrix at snapshot time. Ex-ante like everything else in this file."""
+    out = []
+    for nx in ((riv or {}).get("next_opponents") or []):
+        opp = nx.get("opponent")
+        if not opp:
+            continue
+        r = next((r for r in riv.get("rivals", [])
+                  if r.get("team") == opp), None)
+        if not r or r.get("p_win") is None:
+            continue
+        me = riv.get("me") or {}
+        out.append({"competition": nx.get("competition"), "opponent": opp,
+                    "p_win": r["p_win"],
+                    "my_exp": me.get("exp_total") or me.get("total"),
+                    "opp_exp": r.get("exp_total") or r.get("total")})
+    return out
+
+
+def snapshot(adv: dict, riv: dict | None = None,
+             now_ts: float | None = None) -> str:
     """Store/refresh the coming round's forecast. Returns what happened."""
     rnd, kick = adv.get("round"), adv.get("first_kickoff")
     if not rnd or not kick or not adv.get("xi"):
@@ -85,8 +108,12 @@ def snapshot(adv: dict, now_ts: float | None = None) -> str:
         "snapshot_at": datetime.now(UTC).isoformat(),
         "first_kickoff": kick, "frozen_at": None, "reconciled_at": None,
         "module": adv.get("module"), "predicted_total": adv.get("total"),
+        "predicted_exp_total": adv.get("exp_total"),
         "modifier": adv.get("modifier"), "players": players,
     }
+    h2h = _h2h_forecasts(riv)
+    if h2h:
+        led["rounds"][key]["h2h"] = h2h
     _save(led)
     return "updated"
 
@@ -132,6 +159,61 @@ def reconcile(now_ts: float | None = None) -> list[int]:
     if done:
         _save(led)
     return done
+
+
+def _h2h_result(fx: dict, my_name: str) -> dict | None:
+    """W/D/L + fantapunti from one played score cell, from MY side. Pure;
+    an unplayed "-" cell (or a fixture not mine) grades nothing."""
+    import re
+    sc = str(fx.get("score") or "")
+    if not re.fullmatch(r"\d+-\d+", sc):
+        return None
+    gh, ga = (int(x) for x in sc.split("-"))
+    if fx.get("home") == my_name:
+        mine, theirs = gh, ga
+        fp_m, fp_o = fx.get("fp_home"), fx.get("fp_away")
+    elif fx.get("away") == my_name:
+        mine, theirs = ga, gh
+        fp_m, fp_o = fx.get("fp_away"), fx.get("fp_home")
+    else:
+        return None
+    return {"result": "W" if mine > theirs else ("L" if mine < theirs else "D"),
+            "goals": f"{mine}-{theirs}", "fp_mine": fp_m, "fp_opp": fp_o}
+
+
+def reconcile_h2h() -> list[str]:
+    """Grade stored H2H forecasts against the calendar score cells. The cells
+    exist only after a fresh calendar export is re-dropped, so this lags by
+    design and re-runs harmlessly until they appear. Over a season this is
+    the Brier record of the P(win) matrix."""
+    led = _load()
+    try:
+        schedule = json.loads(SCHEDULE.read_text())
+        my_name = json.loads(ROSTERS.read_text()).get("my_team")
+    except (OSError, ValueError):
+        return []
+    if not my_name:
+        return []
+    graded: list[str] = []
+    for key, entry in led["rounds"].items():
+        for h in entry.get("h2h", []):
+            if h.get("result"):
+                continue
+            cd = (schedule.get("competitions") or {}).get(h["competition"]) or {}
+            rd = next((r for r in cd.get("rounds", [])
+                       if r.get("sa_round") == int(key)), None)
+            if not rd:
+                continue
+            mine = next((f for f in rd.get("fixtures", [])
+                         if my_name in (f.get("home"), f.get("away"))), None)
+            res = _h2h_result(mine, my_name) if mine else None
+            if res:
+                h.update(res)
+                h["graded_at"] = datetime.now(UTC).isoformat()
+                graded.append(f"{key}:{h['competition']}")
+    if graded:
+        _save(led)
+    return graded
 
 
 def summary() -> dict:

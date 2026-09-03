@@ -589,6 +589,33 @@ def _first_push_state(state: dict, rnd, cur: dict) -> dict:
     return state
 
 
+_COMP_SHORT = {"Coppa Del Nonno": "CDN", "Hunger Games": "HG"}
+
+
+def _ban_cost_line(rnd, schedule: dict, my_name: str | None) -> str | None:
+    """What a yellow TODAY would cost: my next-round H2H per competition —
+    the decision-relevant fact for benching a diffidato (the ban lands next
+    SA round; a riposo makes the card nearly free in that competition)."""
+    if not rnd or not my_name:
+        return None
+    nxt = []
+    for comp, cd in (schedule.get("competitions") or {}).items():
+        for rd_ in cd.get("rounds", []):
+            if rd_.get("sa_round") != rnd + 1:
+                continue
+            mine = next((f for f in rd_.get("fixtures", [])
+                         if my_name in (f.get("home"), f.get("away"))), None)
+            tag = _COMP_SHORT.get(comp, comp)
+            if mine:
+                opp = mine["away"] if mine["home"] == my_name else mine["home"]
+                nxt.append(f"{tag} vs {opp}")
+            elif any(r.get("team") == my_name for r in rd_.get("rests", [])):
+                nxt.append(f"{tag}: riposo")
+    if not nxt:
+        return None
+    return f"un giallo = salta G{rnd + 1} ({'; '.join(nxt)})"
+
+
 def _stamp_and_write_rivals(riv: dict) -> None:
     try:
         import os as _os
@@ -654,19 +681,8 @@ def _push_xi_advice() -> None:
     adv = build_advice()
     (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
         json.dumps(adv, indent=1, ensure_ascii=False))
-    # Freeze the forecast pre-kickoff and reconcile any settled round — the
-    # predicted-vs-actual loop that will refit the p_play/exp constants.
-    try:
-        from scripts.fantacalcio.pred_ledger import reconcile, snapshot
-        st = snapshot(adv)
-        rec = reconcile()
-        print(f"pred ledger: snapshot={st}"
-              + (f" reconciled={rec}" if rec else ""))
-    except Exception as e:
-        print(f"pred ledger update failed (advice unaffected): {e}")
-    # Rival matrix: expected score + win prob vs every league team, so the two
-    # competitions (Coppa Del Nonno / Hunger Games) are both covered whoever
-    # the weekend's opponent is.
+    # Rival matrix FIRST (expected score + win prob vs every league team,
+    # both competitions) so the ledger can freeze the H2H forecasts with it.
     riv = None
     try:
         from scripts.fantacalcio.xi_advisor import build_rivals
@@ -674,6 +690,23 @@ def _push_xi_advice() -> None:
         _stamp_and_write_rivals(riv)
     except Exception as e:
         print(f"rivals build failed (advice unaffected): {e}")
+    # Freeze the forecast pre-kickoff and reconcile any settled round — the
+    # predicted-vs-actual loop that will refit the p_play/exp constants.
+    # reconcile_h2h grades P(win) whenever a re-dropped calendar has scores.
+    try:
+        from scripts.fantacalcio.pred_ledger import (
+            reconcile,
+            reconcile_h2h,
+            snapshot,
+        )
+        st = snapshot(adv, riv=riv)
+        rec = reconcile()
+        h2h = reconcile_h2h()
+        print(f"pred ledger: snapshot={st}"
+              + (f" reconciled={rec}" if rec else "")
+              + (f" h2h_graded={h2h}" if h2h else ""))
+    except Exception as e:
+        print(f"pred ledger update failed (advice unaffected): {e}")
     # Daily press-pulse update: scores today's headlines per club and labels
     # parked ones once results land — the layer that "learns each time".
     try:
@@ -807,6 +840,17 @@ def _push_xi_advice() -> None:
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
            for x in adv["unavailable"]]
     diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
+    ban_line = None
+    if diffid:
+        try:
+            schedule = json.loads((ROOT / "data" / "fantacalcio"
+                                   / "league_schedule.json").read_text())
+            my_name = json.loads((ROOT / "data" / "fantacalcio"
+                                  / "league_rosters.json").read_text()
+                                 ).get("my_team")
+            ban_line = _ban_cost_line(adv.get("round"), schedule, my_name)
+        except (OSError, ValueError):
+            pass
     infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
               for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
               if x.get("avail_note")]
@@ -816,7 +860,8 @@ def _push_xi_advice() -> None:
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
-           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)) if diffid else "")
+           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)
+               + (f" — {ban_line}" if ban_line else "")) if diffid else "")
            + (("\nInfermeria: " + "; ".join(infirm)) if infirm else "")
            + ((lambda fl: f"\n{fl}" if fl else "")(
                _feed_age_line(adv.get("feed_ages"))))
@@ -827,7 +872,8 @@ def _push_xi_advice() -> None:
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
-          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)) if diffid else "")
+          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)
+              + (f" — <i>{ban_line}</i>" if ban_line else "")) if diffid else "")
           + (("\n<b>🚑 Infermeria:</b>\n"
               + "\n".join(f"• {ln}" for ln in infirm)) if infirm else "")
           + ((lambda fl: f"\n<i>{fl}</i>" if fl else "")(

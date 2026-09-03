@@ -1366,3 +1366,137 @@ def test_first_push_state_preserves_sibling_latches():
     assert out["risk_alerts"] == {"Simeone|mercato-out": "2026-09-02T19:47:08Z"}
     assert out["round"] == 3 and out["final_checked"] is False
     assert out["advice"] == cur and out["sent_at"]
+
+
+# ---------- bring-to-9: substitution-aware objective ----------
+
+def test_role_recovery_formula():
+    from scripts.fantacalcio.xi_advisor import _role_recovery
+    chain = [{"p_play": 0.35, "exp": 7.5},
+             {"p_play": 0.9, "exp": 6.0},
+             {"p_play": 0.88, "exp": 5.8}]
+    expect = 0.35 * 7.5 + 0.65 * (0.9 * 6.0 + 0.1 * 0.88 * 5.8)
+    assert abs(_role_recovery(chain) - expect) < 1e-9
+    assert _role_recovery([]) == 0.0
+
+
+def test_bench_set_selection_prefers_recoverable_star():
+    """A dubbio star (7.5 at 35%) belongs on the bench over a safe mediocrity:
+    absent he is skipped for free, present he is the best sub. The old
+    exp_slot top-n selection excluded him — pinned as the rejection case."""
+    from scripts.fantacalcio.xi_advisor import _best_bench_for_role
+    def mk(n, exp, pp):
+        return {"nome": n, "R": "D", "exp": exp, "p_play": pp,
+                "exp_slot": round(pp * exp, 2)}
+    star, solid = mk("Star", 7.5, 0.35), mk("Solid", 6.0, 0.90)
+    ok, meh = mk("Ok", 5.8, 0.88), mk("Meh", 5.5, 0.85)
+    pool = [star, solid, ok, meh]
+    old = sorted(sorted(pool, key=lambda x: -x["exp_slot"])[:3],
+                 key=lambda x: -x["exp"])
+    assert [x["nome"] for x in old] == ["Solid", "Ok", "Meh"]   # precondition
+    new = _best_bench_for_role(pool, 3)
+    assert [x["nome"] for x in new] == ["Star", "Solid", "Ok"]
+    # all-certain pool: recovery only sees the first sub — tie-break must
+    # still keep the deepest chain, i.e. plain top-n by exp
+    sure = [mk(n, e, 1.0) for n, e in
+            (("A", 6.5), ("B", 6.2), ("C", 6.0), ("D", 5.0))]
+    assert [x["nome"] for x in _best_bench_for_role(sure, 3)] == ["A", "B", "C"]
+
+
+def test_bench_recovery_ev_and_exp_total():
+    from scripts.fantacalcio.xi_advisor import _bench_recovery_ev, _role_recovery
+    xi = [{"R": "D", "p_play": 0.9, "exp": 6.0},
+          {"R": "D", "p_play": 0.8, "exp": 6.2},
+          {"R": "A", "p_play": 1.0, "exp": 7.0}]
+    bench = [{"R": "D", "p_play": 0.9, "exp": 5.9},
+             {"R": "D", "p_play": 0.9, "exp": 5.5}]
+    # expected D absences 0.3, no A chain -> ev = 0.3 * R(D chain)
+    expect = 0.3 * _role_recovery(bench)
+    assert abs(_bench_recovery_ev(xi, bench) - expect) < 1e-9
+    # certain XI recovers nothing
+    assert _bench_recovery_ev([{"R": "D", "p_play": 1.0, "exp": 6.0}],
+                              bench) == 0.0
+
+
+def test_advise_exposes_exp_total():
+    adv = advise(_full_squad(), FIX, ELO, {})
+    assert adv["exp_total"] == round(adv["total"] + adv["bench_ev"], 2)
+    assert adv["bench_ev"] >= 0.0
+
+
+# ---------- bring-to-9: H2H calibration + ban-cost line ----------
+
+def _mini_riv():
+    return {"next_opponents": [
+                {"competition": "Coppa Del Nonno", "opponent": "Munnezz FC"},
+                {"competition": "Hunger Games", "opponent": "Munnezz FC"},
+                {"competition": "X", "opponent": None}],   # riposo -> skipped
+            "me": {"team": "Whisky Palermo", "total": 62.4},
+            "rivals": [{"team": "Munnezz FC", "p_win": 0.61, "total": 58.1}]}
+
+
+def test_h2h_forecasts_lifts_per_competition():
+    from scripts.fantacalcio.pred_ledger import _h2h_forecasts
+    out = _h2h_forecasts(_mini_riv())
+    assert [h["competition"] for h in out] == ["Coppa Del Nonno",
+                                              "Hunger Games"]
+    assert all(h["opponent"] == "Munnezz FC" and h["p_win"] == 0.61
+               and h["opp_exp"] == 58.1 for h in out)
+    assert _h2h_forecasts(None) == []
+
+
+def test_h2h_result_sides_and_unplayed():
+    from scripts.fantacalcio.pred_ledger import _h2h_result
+    fx = {"home": "Whisky Palermo", "away": "Munnezz FC", "score": "1-0",
+          "fp_home": 71.5, "fp_away": 64.0}
+    r = _h2h_result(fx, "Whisky Palermo")
+    assert r["result"] == "W" and r["fp_mine"] == 71.5 and r["goals"] == "1-0"
+    r2 = _h2h_result(fx, "Munnezz FC")
+    assert r2["result"] == "L" and r2["fp_mine"] == 64.0
+    assert _h2h_result({"home": "A", "away": "B", "score": None}, "A") is None
+    assert _h2h_result(fx, "Terzo Incomodo") is None
+
+
+def test_reconcile_h2h_grades_when_scores_appear(tmp_path, monkeypatch):
+    import json as _json
+
+    import scripts.fantacalcio.pred_ledger as pl
+    monkeypatch.setattr(pl, "LEDGER", tmp_path / "led.json")
+    monkeypatch.setattr(pl, "SCHEDULE", tmp_path / "sched.json")
+    monkeypatch.setattr(pl, "ROSTERS", tmp_path / "rosters.json")
+    (tmp_path / "led.json").write_text(_json.dumps({"rounds": {"3": {
+        "first_kickoff": 0,
+        "h2h": [{"competition": "Coppa Del Nonno", "opponent": "Munnezz FC",
+                 "p_win": 0.61}]}}}))
+    (tmp_path / "rosters.json").write_text('{"my_team": "Whisky Palermo"}')
+    sched = {"competitions": {"Coppa Del Nonno": {"rounds": [
+        {"sa_round": 3, "fixtures": [
+            {"home": "Whisky Palermo", "away": "Munnezz FC",
+             "score": "-", "fp_home": 0.0, "fp_away": 0.0}], "rests": []}]}}}
+    (tmp_path / "sched.json").write_text(_json.dumps(sched))
+    assert pl.reconcile_h2h() == []          # unplayed cell grades nothing
+    sched["competitions"]["Coppa Del Nonno"]["rounds"][0]["fixtures"][0].update(
+        score="2-1", fp_home=74.0, fp_away=69.5)
+    (tmp_path / "sched.json").write_text(_json.dumps(sched))
+    assert pl.reconcile_h2h() == ["3:Coppa Del Nonno"]
+    led = _json.loads((tmp_path / "led.json").read_text())
+    h = led["rounds"]["3"]["h2h"][0]
+    assert h["result"] == "W" and h["fp_mine"] == 74.0 and h["graded_at"]
+    assert pl.reconcile_h2h() == []          # idempotent
+
+
+def test_ban_cost_line_names_next_round_h2h():
+    from scripts.fantacalcio.tracker import _ban_cost_line
+    sched = {"competitions": {
+        "Coppa Del Nonno": {"rounds": [
+            {"sa_round": 4, "fixtures": [], "rests":
+                [{"team": "Whisky Palermo"}]}]},
+        "Hunger Games": {"rounds": [
+            {"sa_round": 4, "fixtures": [
+                {"home": "DELICATISSIMI", "away": "Whisky Palermo"}],
+             "rests": []}]}}}
+    line = _ban_cost_line(3, sched, "Whisky Palermo")
+    assert line is not None and "G4" in line
+    assert "CDN: riposo" in line and "HG vs DELICATISSIMI" in line
+    assert _ban_cost_line(3, sched, None) is None
+    assert _ban_cost_line(38, {"competitions": {}}, "Whisky Palermo") is None

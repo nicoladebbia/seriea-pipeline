@@ -211,23 +211,62 @@ def _out_ids(board_players: list, fixtures: dict) -> dict:
 BENCH_SLOTS = (("P", 1), ("D", 3), ("C", 3), ("A", 2))
 
 
-def _bench_split(cand: list, xi: list) -> tuple[list, list]:
-    """(bench, tribuna): the 9 league slots filled per role by exp_slot, then
-    everyone else who could still play. Unavailable players belong to neither.
+def _role_recovery(chain: list) -> float:
+    """Expected sub value of an ORDERED role chain when one XI slot of that
+    role needs a replacement: p1*v1 + (1-p1)*(p2*v2 + (1-p2)*p3*v3) -- the
+    auto-sub takes the first listed player who got a voto and skips the rest."""
+    r, miss = 0.0, 1.0
+    for c in chain:
+        p = float(c.get("p_play", 1.0))
+        r += miss * p * float(c.get("exp") or 0.0)
+        miss *= 1.0 - p
+    return r
 
-    SELECTION (who makes the bench) stays p_play-weighted -- a never-plays
-    star burns a slot. Entry ORDER within the role is by exp (E[voto|plays]):
-    because auto-subs skip a player without a voto, putting a low-p_play
-    player first costs nothing when he is absent and yields the best sub when
-    he plays. For a fixed trio this is exactly optimal -- swapping adjacent
-    (i, j) changes the expected recovery by p_i * p_j * (v_i - v_j), so
-    v-descending wins regardless of the p's."""
+
+def _best_bench_for_role(pool: list, n: int) -> list:
+    """The n spares whose ORDERED chain maximizes recovery value. Order
+    within a set is by exp desc (exchange-optimal under skip-no-voto subs:
+    swapping adjacent (i, j) changes recovery by p_i*p_j*(v_i - v_j)); the
+    SET is brute-forced -- pools are tiny on a 25-man squad. This is where a
+    low-p_play star earns a slot: absent he costs nothing, present he is the
+    best sub. Tie-break (all p==1 leaves only v1 in play) prefers the deeper
+    chain by exp_slot sum."""
+    from itertools import combinations
+    if len(pool) <= n:
+        return sorted(pool, key=lambda x: -(x["exp"] or 0.0))
+    best, best_key = None, None
+    for combo in combinations(pool, n):
+        chain = sorted(combo, key=lambda x: -(x["exp"] or 0.0))
+        k = (_role_recovery(chain), sum(c["exp_slot"] for c in chain))
+        if best_key is None or k > best_key:
+            best, best_key = chain, k
+    return list(best)
+
+
+def _bench_recovery_ev(xi: list, bench: list) -> float:
+    """First-order expected points the ordered bench recovers: expected
+    same-role XI absences x that role chain's recovery value. Understates
+    chain depletion at 2+ same-role absences and ignores the 3-sub cap --
+    both second-order at real starter p_play levels."""
+    ev = 0.0
+    for role in "PDCA":
+        chain = [b for b in bench if b["R"] == role]
+        if not chain:
+            continue
+        absences = sum(1.0 - float(x.get("p_play", 1.0))
+                       for x in xi if x["R"] == role)
+        ev += absences * _role_recovery(chain)
+    return ev
+
+
+def _bench_split(cand: list, xi: list) -> tuple[list, list]:
+    """(bench, tribuna): the 9 league slots filled per role, then everyone
+    else who could still play. Unavailable players belong to neither.
+    Per role the SET+ORDER maximize recovery value -- see _best_bench_for_role."""
     rest = [c for c in cand if c not in xi and c["exp_slot"] is not None]
     bench = []
     for role, n in BENCH_SLOTS:
-        pool = sorted([c for c in rest if c["R"] == role],
-                      key=lambda x: -x["exp_slot"])[:n]
-        pool.sort(key=lambda x: -(x["exp"] if x["exp"] is not None else 0.0))
+        pool = _best_bench_for_role([c for c in rest if c["R"] == role], n)
         bench.extend(pool)
         rest = [c for c in rest if c not in pool]
     return bench, rest
@@ -283,16 +322,24 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         mod = _modifier(gk_v, d_v, [(6.0, 1), (6.5, 3), (7.0, 6), (7.5, 9)],
                         [5.0, 4.5, 4.5]) if nd >= 4 else 0.0
         total = sum(x["exp_slot"] for x in xi) + mod
-        obj = sum(key(x) for x in xi) + mod
+        # Bench recovery is part of the objective: a module that strands the
+        # spare quality in one role leaves real expected points on the table.
+        # "total" stays XI+modifier (ledger/backtest continuity); exp_total
+        # is the honest expected score including auto-sub recovery.
+        bench, tribuna = _bench_split(cand, xi)
+        bench_ev = _bench_recovery_ev(xi, bench)
+        obj = sum(key(x) for x in xi) + mod + bench_ev
         if best_obj is None or obj > best_obj:
-            bench, tribuna = _bench_split(cand, xi)
             best_obj = obj
             best = {"module": f"{nd}-{nc}-{na}", "total": round(total, 2),
+                    "bench_ev": round(bench_ev, 2),
+                    "exp_total": round(total + bench_ev, 2),
                     "xi_sd": round(sum(x.get("sd", 0.0) ** 2 for x in xi) ** 0.5, 2),
                     "modifier": round(mod, 2), "xi": xi, "bench": bench,
                     "tribuna": tribuna,
                     "unavailable": [c for c in cand if c["exp_slot"] is None]}
-    return best or {"module": None, "total": 0.0, "modifier": 0.0, "xi": [],
+    return best or {"module": None, "total": 0.0, "bench_ev": 0.0,
+                    "exp_total": 0.0, "modifier": 0.0, "xi": [],
                     "bench": [], "tribuna": [], "unavailable": cand}
 
 
@@ -841,10 +888,12 @@ def build_rivals(adv: dict | None = None) -> dict:
                            "sd": None, "p_win": None, "n_missing": n_missing,
                            "alt": None})
             continue
-        p0 = _p_win(base["total"], base["xi_sd"], radv["total"], radv["xi_sd"])
+        p0 = _p_win(base.get("exp_total", base["total"]), base["xi_sd"],
+                    radv.get("exp_total", radv["total"]), radv["xi_sd"])
         best_alt = None
         for lam, alt in tilted:
-            pa = _p_win(alt["total"], alt["xi_sd"], radv["total"], radv["xi_sd"])
+            pa = _p_win(alt.get("exp_total", alt["total"]), alt["xi_sd"],
+                        radv.get("exp_total", radv["total"]), radv["xi_sd"])
             if pa >= p0 + ALT_MIN_GAIN and (best_alt is None
                                             or pa > best_alt["p_win"]):
                 alt_names = {x["nome"] for x in alt["xi"]}
@@ -855,7 +904,9 @@ def build_rivals(adv: dict | None = None) -> dict:
                             "out": sorted(base_names - alt_names)}
         rivals.append({"team": tname, "module": radv["module"],
                        "module_src": module_src,
-                       "total": radv["total"], "sd": radv["xi_sd"],
+                       "total": radv["total"],
+                       "exp_total": radv.get("exp_total"),
+                       "sd": radv["xi_sd"],
                        "p_win": round(p0, 3), "n_missing": n_missing,
                        "meetings": meetings.get(tname, []),
                        "xi": [{"id": x.get("id"), "nome": x["nome"],
@@ -869,7 +920,8 @@ def build_rivals(adv: dict | None = None) -> dict:
     return {"generated_at": datetime.now(UTC).isoformat(), "round": rnd,
             "next_opponents": next_opps,
             "me": {"team": my_name, "module": base["module"],
-                   "total": base["total"], "sd": base["xi_sd"],
+                   "total": base["total"],
+                   "exp_total": base.get("exp_total"), "sd": base["xi_sd"],
                    "congested": sorted({x["nome"] for x in base["xi"]
                                         if x.get("congested")})},
             "rivals": rivals}
