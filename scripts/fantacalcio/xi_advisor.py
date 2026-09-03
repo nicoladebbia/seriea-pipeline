@@ -73,6 +73,7 @@ APP_MIN = {"P": 88.7, "D": 68.4, "C": 63.4, "A": 50.8}
 # players of 2025-26), so an observed sd earns weight against the role mean at
 # K = n(1-r)/r ~ 17. Role means measured on the same 11,373 played rows.
 SD_ROLE = {"A": 1.69, "C": 1.19, "D": 0.93, "P": 1.55}
+VOTO_SD_ROLE = {"A": 0.62, "C": 0.55, "D": 0.50, "P": 0.60}  # base-voto spread priors
 SD_K = 17.0
 
 
@@ -109,6 +110,7 @@ def _history() -> dict:
         else:
             by_tag.setdefault(f.name[:len(cur_tag)], []).append(d)
     sd: dict[int, float] = {}
+    voto_sd: dict[int, float] = {}
     live: dict[int, dict] = {}
     if frames:
         alld = pd.concat(frames)
@@ -119,6 +121,13 @@ def _history() -> dict:
             obs = float(r.std) if pd.notna(r.std) else prior
             n = max(int(r.count) - 1, 0)   # sd has n-1 df; one game says nothing
             sd[int(r.pid)] = round((SD_K * prior + n * obs) / (SD_K + n), 3)
+        gv = alld.groupby(["pid", "role"]).voto.agg(["count", "std"]).reset_index()
+        for r in gv.itertuples():
+            role = str(r.role).upper()
+            prior = VOTO_SD_ROLE.get(role, 0.5)
+            obs = float(r.std) if pd.notna(r.std) else prior
+            n = max(int(r.count) - 1, 0)
+            voto_sd[int(r.pid)] = round((SD_K * prior + n * obs) / (SD_K + n), 3)
     if cur_frames:
         curd = pd.concat(cur_frames)
         for pid, grp in curd.groupby("pid"):
@@ -134,7 +143,7 @@ def _history() -> dict:
         for pid, grp in prevd.groupby("pid"):
             prev[int(pid)] = {"n": len(grp), "fv": float(grp.fantavoto.mean()),
                               "voto": float(grp.voto.mean())}
-    _HISTORY = {"sd": sd, "live": live, "prev": prev,
+    _HISTORY = {"sd": sd, "voto_sd": voto_sd, "live": live, "prev": prev,
                 "rounds_elapsed": len(list(VOTI_DIR.glob(f"{cur_tag}_*.parquet")))}
     return _HISTORY
 
@@ -421,6 +430,7 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
                "voto": float(lv.get("live_voto") or mv_prior),
                "p_play": p_play, "p_play_src": pp_src,
                "sd": sds.get(pid) or SD_ROLE[p["R"]],
+               "voto_sd": hist.get("voto_sd", {}).get(pid) or VOTO_SD_ROLE[p["R"]],
                "n_rounds": n_seen}
         if p.get("status") == "DEPARTED":
             row.update(p_play=0.02, p_play_src="departed", departed=True)
@@ -444,7 +454,7 @@ def build_advice(fresh: bool = False,
     board = json.loads(BOARD.read_text())
     by_id = {int(p["id"]): p for p in board["players"]}
     fixtures, rnd = _next_fixtures()
-    elo = _current_elo()
+    elo = _apply_market_elo(_current_elo(), fixtures)
     out = _out_ids(board["players"], fixtures)
 
     # Probable lineups beat the appearance-rate model when the page lists the
@@ -708,6 +718,204 @@ def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
     return 0.5 * (1.0 + erf((mu_a - mu_b) / spread / sqrt(2.0)))
 
 
+# ── Monte Carlo H2H ─────────────────────────────────────────────────────
+# Goal thresholds: Leghe default — first goal at 66 fp, +6 each. The
+# modifier table below WAS verified from the Opzioni screen (2026-09-02);
+# the goal step was NOT — reconcile_h2h grades real W/D/L from the export,
+# so a wrong step shows up as calibration drift at the first graded round.
+GOAL_BASE, GOAL_STEP = 66.0, 6.0
+MC_N = 4000
+# Shared per-club shock loading: same-club players move together (a blowout
+# showers bonuses on everyone). HEURISTIC pending refit from the ledger —
+# the measured path is per-club fv correlation across the voti parquets.
+MC_CLUB_BETA = 0.35
+MOD_TABLE = ((6.0, 1), (6.5, 3), (7.0, 6), (7.5, 9))
+MOD_OFFICE = (5.0, 4.5, 4.5)
+
+
+def _fp_to_goals(fp):
+    """Vector fp → goals under the threshold ladder."""
+    import numpy as np
+    fp = np.asarray(fp, dtype=float)
+    return np.where(fp < GOAL_BASE, 0.0,
+                    np.floor((fp - GOAL_BASE) / GOAL_STEP) + 1.0)
+
+
+def _side_totals(adv: dict, zc: dict, rng, n: int):
+    """Simulated fantapunti totals (length-n vector) for one advise() result.
+
+    Per player: correlated normal shock (club-shared component MC_CLUB_BETA),
+    fv and voto move on the SAME standardized draw; plays with prob p_play;
+    an absent XI slot takes the first same-role bench player (listed order)
+    who played. The Leghe 3-sub global cap is NOT enforced — at starter-level
+    p_play the fourth simultaneous absence is rare enough to ignore, and the
+    error is conservative (slightly optimistic bench recovery on both sides).
+    The defense modifier is computed per-draw from the simulated votes of the
+    FIELDED defenders (subs included), top-3 + GK — so tier-edge risk prices
+    correctly instead of thresholding an expectation (Jensen).
+    """
+    import numpy as np
+    xi = adv.get("xi") or []
+    bench = adv.get("bench") or []
+    rows = xi + bench
+    if not xi:
+        return np.zeros(n)
+    m = len(rows)
+    def _f(r, key, default):
+        v = r.get(key)
+        return default if v is None else float(v)   # 0.0 is a real value
+
+    exp = np.array([_f(r, "exp", 6.0) for r in rows])
+    sd = np.array([_f(r, "sd", SD_ROLE.get(r.get("R"), 1.3)) for r in rows])
+    ev = np.array([_f(r, "exp_voto", _f(r, "voto", 6.0)) for r in rows])
+    vsd = np.array([_f(r, "voto_sd", VOTO_SD_ROLE.get(r.get("R"), 0.5))
+                    for r in rows])
+    pp = np.clip(np.array([float(r.get("p_play", 1.0)) for r in rows]), 0, 1)
+
+    eps = rng.standard_normal((n, m))
+    z = np.empty((n, m))
+    b2 = (1.0 - MC_CLUB_BETA ** 2) ** 0.5
+    for j, r in enumerate(rows):
+        club = zc.get(r.get("team"))
+        z[:, j] = (MC_CLUB_BETA * club + b2 * eps[:, j]
+                   if club is not None else eps[:, j])
+    fv = exp + sd * z
+    voto = ev + vsd * z
+    played = rng.random((n, m)) < pp
+
+    n_xi = len(xi)
+    fielded_fv = np.where(played[:, :n_xi], fv[:, :n_xi], 0.0)
+    total = fielded_fv.sum(axis=1)
+
+    # role-wise bench chains, listed order
+    d_votos = []      # per-draw votes of fielded defenders (for the modifier)
+    gk_voto = np.full(n, np.nan)
+    for role in "PDCA":
+        xi_idx = [j for j in range(n_xi) if rows[j].get("R") == role]
+        ch_idx = [n_xi + j for j in range(len(bench))
+                  if bench[j].get("R") == role]
+        if not xi_idx:
+            continue
+        missing = (~played[:, xi_idx]).sum(axis=1).astype(float)
+        used_before = np.zeros(n)
+        for j in ch_idx:
+            use = played[:, j] & (used_before < missing)
+            total += np.where(use, fv[:, j], 0.0)
+            if role == "P":
+                gk_voto = np.where(use, voto[:, j], gk_voto)
+            elif role == "D":
+                d_votos.append(np.where(use, voto[:, j], -np.inf))
+            used_before += use.astype(float)
+        if role == "P":
+            j0 = xi_idx[0]
+            gk_voto = np.where(played[:, j0], voto[:, j0], gk_voto)
+        elif role == "D":
+            for j in xi_idx:
+                d_votos.append(np.where(played[:, j], voto[:, j], -np.inf))
+
+    try:
+        nd = int(str(adv.get("module") or "0").split("-")[0])
+    except ValueError:
+        nd = 0
+    if nd >= 4 and d_votos:
+        dm = np.sort(np.vstack(d_votos), axis=0)[::-1][:3]   # top-3 fielded
+        for i in range(3):
+            fill = MOD_OFFICE[min(i, len(MOD_OFFICE) - 1)]
+            dm[i] = np.where(np.isinf(dm[i]), fill, dm[i])
+        gk = np.where(np.isnan(gk_voto), np.nan, gk_voto)
+        avg = (gk + dm.sum(axis=0)) / 4.0
+        mod = np.zeros(n)
+        for threshold, value in MOD_TABLE:
+            mod = np.where(avg >= threshold, float(value), mod)
+        total += np.where(np.isnan(avg), 0.0, mod)
+    return total
+
+
+def h2h_mc(mine: dict, theirs: dict, n: int = MC_N,
+           seed: int | None = None) -> dict:
+    """Simulated head-to-head between two advise() results.
+
+    Returns P(win)/P(draw)/P(loss) through the Leghe goal thresholds — the
+    draw band the closed-form Φ ignores — plus expected league points
+    (3·W + D) and the simulated total moments. Club shocks are shared
+    ACROSS the two sides: a Juve player on both rosters cancels variance,
+    which the independence approximation could not see.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    clubs = {r.get("team")
+             for adv in (mine, theirs)
+             for r in (adv.get("xi") or []) + (adv.get("bench") or [])}
+    zc = {c: rng.standard_normal(n) for c in clubs if c}
+    fa = _side_totals(mine, zc, rng, n)
+    fb = _side_totals(theirs, zc, rng, n)
+    ga, gb = _fp_to_goals(fa), _fp_to_goals(fb)
+    p_win = float((ga > gb).mean())
+    p_draw = float((ga == gb).mean())
+    return {"p_win": round(p_win, 3), "p_draw": round(p_draw, 3),
+            "p_loss": round(1.0 - p_win - p_draw, 3),
+            "e_pts": round(3 * p_win + p_draw, 2),
+            "my_mu": round(float(fa.mean()), 2),
+            "my_sd": round(float(fa.std()), 2),
+            "opp_mu": round(float(fb.mean()), 2),
+            "opp_sd": round(float(fb.std()), 2)}
+
+
+def _mc_seed(*parts) -> int:
+    """Stable seed from round + team names: reruns of the same matchup give
+    the same probabilities (no display jitter between tracker runs)."""
+    import zlib
+    return zlib.crc32("|".join(str(x) for x in parts).encode()) & 0x7FFFFFFF
+
+
+# Market → Elo-equivalent blend. The per-role vote slopes (ELO_SLOPE) were
+# FIT in ΔElo units; converting the de-vigged 1X2 into an Elo-equivalent
+# delta lets sharper market information flow through those measured slopes
+# into every player's exp — no invented coefficient. Weights are HEURISTIC
+# with a refit path (ledger grading by round).
+MARKET_ELO_W = 0.7        # market share of the blended delta where odds exist
+HOME_ELO_EDGE = 65.0      # market prices home advantage; the Elo table keeps
+                          # it separate (HOME_ADJ), so strip it before mixing
+
+
+def _apply_market_elo(elo: dict, fixtures: dict) -> dict:
+    """Per fixture pair, shift the two ratings so their delta becomes
+    w·Δ_market + (1−w)·Δ_elo (pair mean preserved). Teams without a priced
+    match keep their table rating; any failure returns the table untouched."""
+    import math
+    try:
+        odds = json.loads((ROOT / "data" / "upcoming"
+                           / "odds_full.json").read_text()).get("matches", {})
+    except (OSError, ValueError):
+        return elo
+    adj = dict(elo)
+    done = set()
+    for team, fx in fixtures.items():
+        opp = fx.get("opp")
+        if not opp or team in done or opp in done:
+            continue
+        home, away = (team, opp) if fx.get("home") else (opp, team)
+        m = odds.get(f"{home} vs {away}")
+        h2h = (m or {}).get("h2h") or {}
+        try:
+            inv = [1.0 / float(h2h[k]) for k in ("home", "draw", "away")]
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            continue
+        tot = sum(inv)
+        if tot <= 0:
+            continue
+        p_home = (inv[0] + 0.5 * inv[1]) / tot        # draw-half score expectancy
+        p_home = min(max(p_home, 0.01), 0.99)
+        d_mkt = -400.0 * math.log10(1.0 / p_home - 1.0) - HOME_ELO_EDGE
+        r_h, r_a = elo.get(home, 1450.0), elo.get(away, 1450.0)
+        d_blend = MARKET_ELO_W * d_mkt + (1.0 - MARKET_ELO_W) * (r_h - r_a)
+        mean = (r_h + r_a) / 2.0
+        adj[home] = mean + d_blend / 2.0
+        adj[away] = mean - d_blend / 2.0
+        done.update((team, opp))
+    return adj
+
+
 def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> list:
     """A rival squad enriched with the SAME formulas as mine — levels from the
     league-wide voti parquets (keyed by pid), p_play prior from projected
@@ -735,6 +943,7 @@ def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> li
                "level": level, "voto": voto,
                "p_play": p_play, "p_play_src": pp_src,
                "sd": hist["sd"].get(pid) or SD_ROLE[p["R"]],
+               "voto_sd": hist.get("voto_sd", {}).get(pid) or VOTO_SD_ROLE[p["R"]],
                "n_rounds": n_seen}
         if p.get("status") == "DEPARTED":
             row.update(p_play=0.02, p_play_src="departed", departed=True)
@@ -798,7 +1007,7 @@ def build_rivals(adv: dict | None = None) -> dict:
     board = json.loads(BOARD.read_text())
     by_id = {int(p["id"]): p for p in board["players"]}
     fixtures, rnd = _next_fixtures()
-    elo = _current_elo()
+    elo = _apply_market_elo(_current_elo(), fixtures)
     out = _out_ids(board["players"], fixtures)
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
@@ -888,18 +1097,19 @@ def build_rivals(adv: dict | None = None) -> dict:
                            "sd": None, "p_win": None, "n_missing": n_missing,
                            "alt": None})
             continue
-        p0 = _p_win(base.get("exp_total", base["total"]), base["xi_sd"],
-                    radv.get("exp_total", radv["total"]), radv["xi_sd"])
+        mc0 = h2h_mc(base, radv, seed=_mc_seed(rnd, my_name, tname))
+        p0 = mc0["p_win"]
         best_alt = None
         for lam, alt in tilted:
-            pa = _p_win(alt.get("exp_total", alt["total"]), alt["xi_sd"],
-                        radv.get("exp_total", radv["total"]), radv["xi_sd"])
-            if pa >= p0 + ALT_MIN_GAIN and (best_alt is None
-                                            or pa > best_alt["p_win"]):
+            mca = h2h_mc(alt, radv, seed=_mc_seed(rnd, my_name, tname, lam))
+            # decision on expected league points (3W+D): with a real draw
+            # band, a tilt can raise P(win) while giving away more E[pts]
+            if mca["e_pts"] >= mc0["e_pts"] + 3 * ALT_MIN_GAIN                     and (best_alt is None or mca["e_pts"] > best_alt["e_pts"]):
                 alt_names = {x["nome"] for x in alt["xi"]}
                 best_alt = {"lambda": lam, "module": alt["module"],
                             "total": alt["total"], "sd": alt["xi_sd"],
-                            "p_win": round(pa, 3),
+                            "p_win": mca["p_win"], "p_draw": mca["p_draw"],
+                            "e_pts": mca["e_pts"],
                             "in": sorted(alt_names - base_names),
                             "out": sorted(base_names - alt_names)}
         rivals.append({"team": tname, "module": radv["module"],
@@ -907,7 +1117,9 @@ def build_rivals(adv: dict | None = None) -> dict:
                        "total": radv["total"],
                        "exp_total": radv.get("exp_total"),
                        "sd": radv["xi_sd"],
-                       "p_win": round(p0, 3), "n_missing": n_missing,
+                       "p_win": p0, "p_draw": mc0["p_draw"],
+                       "p_loss": mc0["p_loss"], "e_pts": mc0["e_pts"],
+                       "n_missing": n_missing,
                        "meetings": meetings.get(tname, []),
                        "xi": [{"id": x.get("id"), "nome": x["nome"],
                                "R": x["R"], "team": x["team"],
@@ -945,7 +1157,7 @@ def score_observed_xi(team: str, player_names: list[str],
     board = json.loads(BOARD.read_text())
     by_id = {int(p["id"]): p for p in board["players"]}
     fixtures, rnd = _next_fixtures()
-    elo = _current_elo()
+    elo = _apply_market_elo(_current_elo(), fixtures)
     out = _out_ids(board["players"], fixtures)
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
@@ -1065,23 +1277,24 @@ def score_observed_xi(team: str, player_names: list[str],
     _apply_availability(my_roster, avail, _news_caps())
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
-    opp_mu = radv["exp_total"]
-    my_mu = (base.get("exp_total", base["total"]) if obs_bench
-             else base["total"])
-    p0 = _p_win(my_mu, base["xi_sd"], opp_mu, radv["xi_sd"])
+    # Like-for-like benches: when their bench is invisible, mine is muted
+    # too so neither side carries a phantom recovery advantage in the sim.
+    their = dict(radv) if obs_bench else {**radv, "bench": []}
+    my_base = base if obs_bench else {**base, "bench": []}
+    mc0 = h2h_mc(my_base, their, seed=_mc_seed(rnd, team))
+    p0 = mc0["p_win"]
     best_alt = None
     for lam in RISK_LAMBDAS:
         alt = advise(my_roster, fixtures, elo, out, risk_lambda=lam)
         alt_names = {x["nome"] for x in alt["xi"]}
         if alt_names == base_names:
             continue
-        alt_mu = (alt.get("exp_total", alt["total"]) if obs_bench
-                  else alt["total"])
-        pa = _p_win(alt_mu, alt["xi_sd"], opp_mu, alt["xi_sd"])
-        if pa >= p0 + ALT_MIN_GAIN and (best_alt is None
-                                        or pa > best_alt["p_win"]):
+        my_alt = alt if obs_bench else {**alt, "bench": []}
+        mca = h2h_mc(my_alt, their, seed=_mc_seed(rnd, team, lam))
+        if mca["e_pts"] >= mc0["e_pts"] + 3 * ALT_MIN_GAIN                 and (best_alt is None or mca["e_pts"] > best_alt["e_pts"]):
             best_alt = {"module": alt["module"], "total": alt["total"],
-                        "p_win": round(pa, 3),
+                        "p_win": mca["p_win"], "p_draw": mca["p_draw"],
+                        "e_pts": mca["e_pts"],
                         "in": sorted(alt_names - base_names),
                         "out": sorted(base_names - alt_names)}
     return {
@@ -1097,7 +1310,8 @@ def score_observed_xi(team: str, player_names: list[str],
         "me": {"module": base["module"], "total": base["total"],
                "exp_total": base.get("exp_total"), "sd": base["xi_sd"],
                "xi": sorted(base_names)},
-        "p_win": round(p0, 3),
+        "p_win": p0, "p_draw": mc0["p_draw"], "p_loss": mc0["p_loss"],
+        "e_pts": mc0["e_pts"],
         "alt": best_alt,
     }
 

@@ -1691,3 +1691,120 @@ def test_reply_keyboard_has_formazioni_and_all_buttons_mapped():
     assert "📸 Formazioni" in labels
     for lb in labels:
         assert tb._REPLY_BUTTON_MAP[lb].startswith("/")
+
+
+# ── Monte Carlo H2H ──────────────────────────────────────────────────────
+
+
+def _mc_side(names_exp, module="4-4-2", bench=None, team="AAA",
+             sd=0.0, p_play=1.0, voto=6.0):
+    xi = [{"nome": f"p{i}", "R": r, "team": team, "exp": e, "sd": sd,
+           "exp_voto": voto, "voto_sd": 0.0, "p_play": p_play}
+          for i, (r, e) in enumerate(names_exp)]
+    return {"module": module, "xi": xi, "bench": bench or []}
+
+
+def _flat_xi(total, module="3-4-3"):
+    # 11 players summing to `total`, module WITHOUT modifier rights (3 D)
+    roles = ["P"] + ["D"] * 3 + ["C"] * 4 + ["A"] * 3
+    return _mc_side([(r, total / 11.0) for r in roles], module=module)
+
+
+def test_mc_deterministic_thresholds_and_draw_band():
+    from scripts.fantacalcio.xi_advisor import h2h_mc
+
+    # 70 fp vs 60 fp, zero variance: 1 goal vs 0 — certain win
+    r = h2h_mc(_flat_xi(70.0), _flat_xi(60.0), n=500, seed=1)
+    assert r["p_win"] == 1.0 and r["p_draw"] == 0.0
+    # 67 vs 66: both 1 goal — certain draw despite the fp gap
+    r2 = h2h_mc(_flat_xi(67.0), _flat_xi(66.0), n=500, seed=1)
+    assert r2["p_draw"] == 1.0
+    assert r2["e_pts"] == 1.0
+
+
+def test_mc_shared_club_cancels_variance():
+    from scripts.fantacalcio.xi_advisor import h2h_mc
+
+    def side(team):
+        s = _flat_xi(66.0)
+        for x in s["xi"]:
+            x["team"] = team
+            x["sd"] = 2.0
+        return s
+
+    same = h2h_mc(side("Inter"), side("Inter"), n=3000, seed=7)
+    diff = h2h_mc(side("Inter"), side("Milan"), n=3000, seed=7)
+    # identical rosters, same club: shared shock cancels a chunk of the
+    # difference variance -> more draws than with independent clubs
+    assert same["p_draw"] > diff["p_draw"]
+
+
+def test_mc_bench_chain_substitutes_absent_starter():
+    from scripts.fantacalcio.xi_advisor import h2h_mc
+
+    a = _flat_xi(66.0)
+    a["xi"][5]["p_play"] = 0.0                    # a C never plays
+    bench = [{"nome": "sub", "R": "C", "team": "BBB", "exp": 6.0,
+              "sd": 0.0, "exp_voto": 6.0, "voto_sd": 0.0, "p_play": 1.0}]
+    a_no_bench = {**a, "bench": []}
+    a_bench = {**a, "bench": bench}
+    b = _flat_xi(63.0)
+    r_nb = h2h_mc(a_no_bench, b, n=400, seed=3)
+    r_wb = h2h_mc(a_bench, b, n=400, seed=3)
+    # without the sub the side loses a player's 6 points (66-6=60 -> 0 goals,
+    # loses to 63? no: 63 -> 0 goals too -> draw); with the sub back at 66 -> 1-0
+    assert r_wb["p_win"] == 1.0
+    assert r_nb["p_win"] == 0.0 and r_nb["p_draw"] == 1.0
+
+
+def test_mc_modifier_applies_only_with_four_defenders():
+    from scripts.fantacalcio.xi_advisor import h2h_mc
+
+    def side(module, nd, voto):
+        roles = ["P"] + ["D"] * nd + ["C"] * (10 - nd - 3) + ["A"] * 3
+        s = _mc_side([(r, 6.0) for r in roles], module=module, voto=voto)
+        return s
+
+    # GK+top3 D at voto 7.0 -> tier +6; total 66 + 6 = 72 -> 2 goals
+    with_mod = h2h_mc(side("4-3-3", 4, 7.0), _flat_xi(60.0), n=300, seed=5)
+    # 3 D: no modifier rights -> 66 -> 1 goal
+    no_mod = h2h_mc(side("3-4-3", 3, 7.0), _flat_xi(60.0), n=300, seed=5)
+    assert with_mod["my_mu"] > no_mod["my_mu"] + 4
+
+
+# ── market → Elo blend ───────────────────────────────────────────────────
+
+
+def test_market_elo_blend_shifts_pair_and_preserves_mean(tmp_path, monkeypatch):
+    import json as _json
+
+    import scripts.fantacalcio.xi_advisor as xa
+
+    up = tmp_path / "data" / "upcoming"
+    up.mkdir(parents=True)
+    # heavy home favourite: market says home much stronger than the table
+    (up / "odds_full.json").write_text(_json.dumps({"matches": {
+        "Alpha vs Beta": {"h2h": {"home": 1.30, "draw": 5.5, "away": 9.0}}}}))
+    monkeypatch.setattr(xa, "ROOT", tmp_path)
+    elo = {"Alpha": 1500.0, "Beta": 1500.0}
+    fx = {"Alpha": {"opp": "Beta", "home": True},
+          "Beta": {"opp": "Alpha", "home": False}}
+    adj = xa._apply_market_elo(elo, fx)
+    assert adj["Alpha"] > 1500.0 > adj["Beta"]
+    assert round(adj["Alpha"] + adj["Beta"], 6) == 3000.0
+    # w=0.7 of the market delta: table delta 0, so blend = 0.7 * d_mkt
+    import math
+    inv = [1 / 1.30, 1 / 5.5, 1 / 9.0]
+    p = (inv[0] + 0.5 * inv[1]) / sum(inv)
+    d_mkt = -400 * math.log10(1 / p - 1) - xa.HOME_ELO_EDGE
+    assert abs((adj["Alpha"] - adj["Beta"]) - 0.7 * d_mkt) < 1e-6
+
+
+def test_market_elo_blend_survives_missing_or_bad_odds(tmp_path, monkeypatch):
+    import scripts.fantacalcio.xi_advisor as xa
+
+    monkeypatch.setattr(xa, "ROOT", tmp_path)      # no odds file at all
+    elo = {"Alpha": 1520.0, "Beta": 1480.0}
+    fx = {"Alpha": {"opp": "Beta", "home": True},
+          "Beta": {"opp": "Alpha", "home": False}}
+    assert xa._apply_market_elo(elo, fx) == elo

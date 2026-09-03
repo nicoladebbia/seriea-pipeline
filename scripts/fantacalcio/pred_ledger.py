@@ -76,10 +76,16 @@ def _h2h_forecasts(riv: dict | None) -> list[dict]:
         if not r or r.get("p_win") is None:
             continue
         me = riv.get("me") or {}
-        out.append({"competition": nx.get("competition"), "opponent": opp,
-                    "p_win": r["p_win"],
-                    "my_exp": me.get("exp_total") or me.get("total"),
-                    "opp_exp": r.get("exp_total") or r.get("total")})
+        row = {"competition": nx.get("competition"), "opponent": opp,
+               "p_win": r["p_win"],
+               "my_exp": me.get("exp_total") or me.get("total"),
+               "opp_exp": r.get("exp_total") or r.get("total")}
+        # MC triple (2026-09-03): draw band + expected league points, so
+        # grading can calibrate W/D/L instead of a binary win prob.
+        for k in ("p_draw", "p_loss", "e_pts"):
+            if r.get(k) is not None:
+                row[k] = r[k]
+        out.append(row)
     return out
 
 

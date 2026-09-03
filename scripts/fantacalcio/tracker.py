@@ -395,17 +395,22 @@ def _vs_block(riv: dict | None) -> tuple[str | None, str | None, dict]:
         r, alt = g["row"], g["alt"]
         comps = " + ".join(g["comps"])
         src = "visto" if r.get("module_src") == "osservato" else "stima"
+        pd_ = r.get("p_draw")
+        draw_txt = f" · pari {pd_:.0%}" if pd_ is not None else ""
         txt.append(f"{comps}: vs {opp} — previsto {r['module']} ({src}, "
-                   f"exp {r['total']}) · P(vittoria) {r['p_win']:.0%}")
+                   f"exp {r['total']}) · P(vittoria) {r['p_win']:.0%}"
+                   + draw_txt)
         tg.append(f"🆚 <b>{comps}</b>: {opp} — previsto <b>{r['module']}</b> "
                   f"({src}, exp {r['total']}) · P(vittoria) "
-                  f"<b>{r['p_win']:.0%}</b>")
+                  f"<b>{r['p_win']:.0%}</b>" + draw_txt)
         if alt:
             ins, outs = ", ".join(alt["in"]), ", ".join(alt["out"])
+            gain = (f"E[punti] {alt['e_pts']:.2f}" if alt.get("e_pts")
+                    else f"P(vittoria) {alt['p_win']:.0%}")
             txt.append(f"→ contro di loro gioca {alt['module']}: dentro {ins}"
-                       f" — fuori {outs} (P(vittoria) {alt['p_win']:.0%})")
+                       f" — fuori {outs} ({gain})")
             tg.append(f"   → <b>gioca {alt['module']}</b>: dentro {ins} — "
-                      f"fuori {outs} (P(vittoria) {alt['p_win']:.0%})")
+                      f"fuori {outs} ({gain})")
         else:
             txt.append("→ la formazione base è già la migliore contro di loro")
             tg.append("   → la base sopra è già la migliore contro di loro")
