@@ -1058,10 +1058,14 @@ def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
 
 
 # ── Monte Carlo H2H ─────────────────────────────────────────────────────
-# Goal thresholds: Leghe default — first goal at 66 fp, +6 each. The
-# modifier table below WAS verified from the Opzioni screen (2026-09-02);
-# the goal step was NOT — reconcile_h2h grades real W/D/L from the export,
-# so a wrong step shows up as calibration drift at the first graded round.
+# Goal thresholds + modifier table: BOTH verified against the league's
+# live Opzioni page (2026-09-03, in-browser read): 1° gol 66 then +6 each
+# (114 = 9°), all four correttivi OFF (limita vittoria, limita pareggio,
+# autogol, ammonito senza voto) so the pure ladder below is exact; difesa
+# modifier ON, best-3+GK, its 0.25-bands collapse to MOD_TABLE; every
+# other modifier OFF. pred_ledger.verify_goal_ladder still cross-checks
+# from real score cells: it additionally guards the calendar importer's
+# played-row cell mapping, which no options page can verify.
 GOAL_BASE, GOAL_STEP = 66.0, 6.0
 MC_N = 4000
 # Shared per-club shock loading: same-club players move together (a blowout
