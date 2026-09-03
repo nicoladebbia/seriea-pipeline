@@ -107,6 +107,9 @@ def parse(html: str, lst: int = LIST_DEFAULT) -> pd.DataFrame:
             "pid": int(m.group(3)), "slug": m.group(2), "team": m.group(1),
             "role": role.group(1).upper() if role else "?",
             "voto": voto, "cards": cards, "bonus": points,
+            # Leghe credits porta inviolata on the GK's own conceded count,
+            # which is this page's "Gol subiti" — not on the team result.
+            "gs": int(bon.get("Gol subiti", 0) or 0),
             # The published fantavoto wins when the player has a voto; ours is only the
             # fallback, so a bonus column we do not know about cannot cost points silently.
             "fantavoto": None if voto is None

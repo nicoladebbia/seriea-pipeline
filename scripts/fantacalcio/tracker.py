@@ -58,6 +58,11 @@ MOD_EV = 47.0 / ROUNDS
 MODULES = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), (5, 4, 1)]
 
 
+# League bonus, +1 to the fielded GK with zero gol subiti. Value verified on
+# the Opzioni di Lega page 2026-09-03 (bonus table row "Porta inviolata": 1).
+PORTA_INVIOLATA = 1.0
+
+
 def _modifier(gk_voto: float | None, d_votos: list[float],
               table: list, office: list[float]) -> float:
     """Modifier points for one round. Missing defenders take the voto d'ufficio."""
@@ -136,9 +141,16 @@ def _pick(roster: list[dict], votes: dict, table: list, office: list[float],
         mod = _modifier(gk_v, d_v, table, office) if nd >= 4 else 0.0
         # A fielded player who never got a voto and could not be replaced scores nothing.
         base = sum(score_of(p) or 0.0 for p in xi)
-        total = base + mod
+        # Porta inviolata rides the FIELDED (post-sub) GK's own gol-subiti
+        # count. gs is None on rounds cached before the column existed —
+        # fail closed, never invent a +1 the league didn't award.
+        gk_rec = next((votes.get(p["id"]) for p in xi if p["R"] == "P"), None)
+        cs_bonus = PORTA_INVIOLATA if (gk_rec and gk_rec.get("voto") is not None
+                                       and gk_rec.get("gs") == 0) else 0.0
+        total = base + mod + cs_bonus
         row = {"module": f"{nd}-{nc}-{na}", "base": round(base, 2),
-               "modifier": round(mod, 2), "total": round(total, 2),
+               "modifier": round(mod, 2), "cs_bonus": cs_bonus,
+               "total": round(total, 2),
                "subs": subs, "xi": [
                    {"id": p["id"], "nome": p["nome"], "R": p["R"], "team": p["team"],
                     "slot": p.get("slot"), "replaced": p.get("replaced"),
@@ -203,7 +215,10 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
                               else float(r.voto),
                               "fantavoto": None if r.fantavoto is None
                               or r.fantavoto != r.fantavoto else float(r.fantavoto),
-                              "bonus": float(r.bonus), "cards": float(r.cards)}
+                              "bonus": float(r.bonus), "cards": float(r.cards),
+                              # rounds cached pre-gs-column stay None (no bonus)
+                              "gs": (int(g) if (g := getattr(r, "gs", None))
+                                     is not None and g == g else None)}
                  for r in df.itertuples() if bool(r.played)}
         settable = _pick(roster, votes, table, office, "proj")
         hindsight = _pick(roster, votes, table, office, "actual")

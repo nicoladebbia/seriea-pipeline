@@ -213,8 +213,10 @@ def test_rows_without_p_play_are_certain_starters():
     """Back-compat: callers that never model titolarita get pure conditional ranking."""
     adv = advise(_sq(), FIX, ELO, {})
     assert all(x["p_play"] == 1.0 for x in adv["xi"])
+    gk_pp = next(x["p_play"] for x in adv["xi"] if x["R"] == "P")
     assert adv["total"] == pytest.approx(
-        sum(x["exp"] for x in adv["xi"]) + adv["modifier"], abs=0.15)
+        sum(x["exp"] for x in adv["xi"]) + adv["modifier"]
+        + adv["p_cs"] * gk_pp, abs=0.15)
 
 
 # ---- bench structure ------------------------------------------------------
@@ -627,8 +629,10 @@ def test_risk_tilt_changes_selection_not_the_reported_total():
     assert "Volatile" in names(up) and "Steady" not in names(up)
     assert "Steady" in names(down)
     # the tilted pick reports ITS OWN honest mean, not the tilted objective
+    gk_pp = next(x["p_play"] for x in up["xi"] if x["R"] == "P")
     assert up["total"] == pytest.approx(
-        sum(x["exp_slot"] for x in up["xi"]) + up["modifier"], abs=0.02)
+        sum(x["exp_slot"] for x in up["xi"]) + up["modifier"]
+        + up["p_cs"] * gk_pp, abs=0.02)
     assert up["total"] < flat["total"]          # variance was bought, mean paid
     assert up["xi_sd"] > flat["xi_sd"]
 
@@ -2247,3 +2251,79 @@ def test_goal_ladder_skips_forfeit_and_unplayed(monkeypatch, tmp_path):
     assert pl._ladder_observations() == [(71.0, 1, False)]
     _ladder_sched(tmp_path, [_fx("A", "B", 0.0, 0.0, None)])
     assert pl.verify_goal_ladder() is None
+
+
+# ── porta inviolata (+1 fielded GK, zero gol subiti) ────────────────────
+
+
+def test_parse_emits_gol_subiti_count():
+    from scripts.fantacalcio.live_scores import parse
+    df = parse(_row("gk", "p", "", "6,5", "4,5", (("Gol subiti", "2"),)))
+    assert int(df.iloc[0].gs) == 2
+    df0 = parse(_row("gk", "p", "", "7", "8"))
+    assert int(df0.iloc[0].gs) == 0
+
+
+def _cs_env(gk_gs):
+    from scripts.fantacalcio.tracker import _pick
+    roster = [
+        {"id": 1, "nome": "Gk", "R": "P", "team": "Inter", "proj": 10.0},
+        *[{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "Inter",
+           "proj": 5.0} for i in range(4)],
+        *[{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "Inter",
+           "proj": 5.0} for i in range(4)],
+        *[{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "Inter",
+           "proj": 5.0} for i in range(2)],
+    ]
+    votes = {p["id"]: {"voto": 6.0, "fantavoto": 6.0, "bonus": 0.0,
+                       "cards": 0.0, "gs": None} for p in roster}
+    votes[1]["gs"] = gk_gs
+    return _pick(roster, votes, [(6.0, 1)], [5.0, 4.5, 4.5], "proj")
+
+
+def test_pick_credits_clean_sheet_gk():
+    """TRUE POSITIVE pair: gs=0 earns exactly +1 over gs=2; a gs=None round
+    (cached before the column existed) must behave like NO clean sheet."""
+    total_cs = _cs_env(0)["total"]
+    total_conceded = _cs_env(2)["total"]
+    total_unknown = _cs_env(None)["total"]
+    assert total_cs == total_conceded + 1.0
+    assert total_unknown == total_conceded
+
+
+def test_advise_total_carries_cs_expectation():
+    import scripts.fantacalcio.xi_advisor as xa
+    roster = [
+        {"id": 1, "nome": "Gk", "R": "P", "team": "Inter", "level": 6.0,
+         "voto": 6.0, "p_play": 1.0},
+        *[{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "Inter",
+           "level": 6.0, "voto": 6.0, "p_play": 1.0} for i in range(3)],
+        *[{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "Inter",
+           "level": 6.0, "voto": 6.0, "p_play": 1.0} for i in range(4)],
+        *[{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "Inter",
+           "level": 6.0, "voto": 6.0, "p_play": 1.0} for i in range(3)],
+    ]
+    fixtures = {"Inter": {"opp": "Nessuno FC", "home": 1, "ts": 0}}
+    adv = xa.advise(roster, fixtures, {}, {})
+    # unpriced fixture -> measured base rate, folded once into both totals
+    assert adv["p_cs"] == round(xa.CS_BASE_RATE, 3)
+    bare = sum(x["exp_slot"] for x in adv["xi"]) + adv["modifier"]
+    assert abs(adv["total"] - (bare + xa.CS_BASE_RATE)) < 0.02
+
+
+def test_mc_totals_shift_by_p_cs():
+    import numpy as np
+
+    import scripts.fantacalcio.xi_advisor as xa
+    xi = [{"nome": "Gk", "R": "P", "team": "Inter", "exp": 6.0, "sd": 0.01,
+           "exp_voto": 6.0, "voto_sd": 0.01, "p_play": 1.0}] +          [{"nome": f"X{i}", "R": r, "team": "Inter", "exp": 6.0, "sd": 0.01,
+           "exp_voto": 6.0, "voto_sd": 0.01, "p_play": 1.0}
+          for i, r in enumerate("DDDCCCCAAA")]
+    rng = np.random.default_rng(7)
+    zc = {"Inter": rng.standard_normal(4000)}
+    base = xa._side_totals({"xi": xi, "bench": [], "module": "3-4-3",
+                            "p_cs": 0.0}, zc, np.random.default_rng(1), 4000)
+    with_cs = xa._side_totals({"xi": xi, "bench": [], "module": "3-4-3",
+                               "p_cs": 0.5}, zc, np.random.default_rng(1), 4000)
+    delta = float(with_cs.mean() - base.mean())
+    assert 0.4 < delta < 0.6      # ~ +p_cs * 1.0 on the mean

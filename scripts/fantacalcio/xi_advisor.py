@@ -52,7 +52,14 @@ from scripts.fantacalcio.probabili import (
     rigoristi_by_pid,
     status_by_pid,
 )
-from scripts.fantacalcio.tracker import LEVEL_K, MODULES, SEASON, _modifier, discipline_status
+from scripts.fantacalcio.tracker import (
+    LEVEL_K,
+    MODULES,
+    PORTA_INVIOLATA,
+    SEASON,
+    _modifier,
+    discipline_status,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 BOARD = ROOT / "data" / "fantacalcio" / "auction_board.json"
@@ -353,6 +360,17 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
                     "modifier": round(mod, 2), "xi": xi, "bench": bench,
                     "tribuna": tribuna,
                     "unavailable": [c for c in cand if c["exp_slot"] is None]}
+    if best and best.get("xi"):
+        # Porta inviolata expectation at TOTAL level only — the published
+        # fantavoto the ledger reconciles player exp against does NOT carry
+        # the league bonus, so it must never enter a player's exp.
+        gk = next((x for x in best["xi"] if x["R"] == "P"), None)
+        p_cs = _p_clean_sheet(gk.get("team") if gk else None, fixtures)
+        cs_ev = (PORTA_INVIOLATA * p_cs * float(gk.get("p_play") or 1.0)
+                 if gk else 0.0)
+        best["p_cs"] = round(p_cs, 3)
+        best["total"] = round(best["total"] + cs_ev, 2)
+        best["exp_total"] = round(best["exp_total"] + cs_ev, 2)
     return best or {"module": None, "total": 0.0, "bench_ev": 0.0,
                     "exp_total": 0.0, "modifier": 0.0, "xi": [],
                     "bench": [], "tribuna": [], "unavailable": cand}
@@ -1068,6 +1086,10 @@ def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
 # played-row cell mapping, which no options page can verify.
 GOAL_BASE, GOAL_STEP = 66.0, 6.0
 MC_N = 4000
+# P(a Serie A side concedes 0): measured on data/parsed/matches.parquet,
+# seasons 2019-20 onward, n=5,360 team-matches (0.2632, 2026-09-03). The
+# market path below overrides this whenever the fixture is priced.
+CS_BASE_RATE = 0.263
 # Shared per-club shock loading: same-club players move together (a blowout
 # showers bonuses on everyone). HEURISTIC pending refit from the ledger —
 # the measured path is per-club fv correlation across the voti parquets.
@@ -1082,6 +1104,24 @@ def _fp_to_goals(fp):
     fp = np.asarray(fp, dtype=float)
     return np.where(fp < GOAL_BASE, 0.0,
                     np.floor((fp - GOAL_BASE) / GOAL_STEP) + 1.0)
+
+
+def _p_clean_sheet(team: str | None, fixtures: dict) -> float:
+    """P(the club keeps a clean sheet): exp(-lam_opponent) from the market
+    team-lambda solver when the fixture is priced, else the measured league
+    base rate. Feeds the porta inviolata (+1 GK) league bonus."""
+    import math
+    fx = fixtures.get(team) if team else None
+    if fx and fx.get("opp"):
+        try:
+            home, away = (team, fx["opp"]) if fx.get("home") else (fx["opp"], team)
+            lams = _market_team_lambdas(home, away)
+            if lams:
+                lam_opp = lams[1] if fx.get("home") else lams[0]
+                return float(math.exp(-lam_opp))
+        except (OSError, ValueError, KeyError):
+            pass
+    return CS_BASE_RATE
 
 
 def _side_totals(adv: dict, zc: dict, rng, n: int):
@@ -1171,6 +1211,19 @@ def _side_totals(adv: dict, zc: dict, rng, n: int):
         for threshold, value in MOD_TABLE:
             mod = np.where(avg >= threshold, float(value), mod)
         total += np.where(np.isnan(avg), 0.0, mod)
+    # Porta inviolata: +1 when the fielded GK's club concedes 0. The
+    # clean-sheet indicator rides the GK club's SHARED shock, so clean
+    # sheets co-move with defender votes (and the modifier) instead of
+    # being independent noise; the marginal rate is exactly p_cs.
+    p_cs = float(adv.get("p_cs") or 0.0)
+    if 0.0 < p_cs < 1.0:
+        from statistics import NormalDist
+        gk_row = next((r for r in xi if r.get("R") == "P"), None)
+        club = zc.get(gk_row.get("team")) if gk_row else None
+        cs = (club > NormalDist().inv_cdf(1.0 - p_cs)) if club is not None             else (rng.random(n) < p_cs)
+        total += PORTA_INVIOLATA * np.where(~np.isnan(gk_voto) & cs, 1.0, 0.0)
+    elif p_cs >= 1.0:
+        total += PORTA_INVIOLATA * np.where(~np.isnan(gk_voto), 1.0, 0.0)
     return total
 
 
