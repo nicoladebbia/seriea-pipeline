@@ -1358,6 +1358,163 @@ def test_titolarita_listing_survives_injury_page():
     assert "infortunato" in combo[0]["avail_note"]
 
 
+# ---- anytime-scorer market tilt (T-60) -------------------------------------
+
+def test_pois_cdf_and_team_lambda_solver():
+    """The solver must invert its own forward model: build fair odds from a
+    known (lam_h, lam_a), recover them."""
+    import math
+
+    from scripts.fantacalcio.xi_advisor import _market_team_lambdas, _pois_cdf
+    assert abs(_pois_cdf(2, 2.4) - (math.exp(-2.4) * (1 + 2.4 + 2.88))) < 1e-9
+    lam_h, lam_a = 1.6, 0.8
+    lam_t = lam_h + lam_a
+    p_under = _pois_cdf(2, lam_t)
+    ph = [math.exp(-lam_h) * lam_h ** i / math.factorial(i) for i in range(13)]
+    pa = [math.exp(-lam_a) * lam_a ** i / math.factorial(i) for i in range(13)]
+    p_hw = sum(ph[i] * pa[j] for i in range(13) for j in range(i))
+    p_aw = sum(ph[i] * pa[j] for i in range(13) for j in range(i + 1, 13))
+    p_d = 1 - p_hw - p_aw
+    vig = 1.06   # any flat vig must cancel in both de-vig ratios
+    odds = {"Casa vs Fuori": {
+        "h2h": {"home": vig / p_hw, "draw": vig / p_d, "away": vig / p_aw},
+        "totals": [{"line": 2.5, "over": vig / (1 - p_under),
+                    "under": vig / p_under},
+                   {"line": 2.0, "over": 1.5, "under": 2.5}]}}
+    r = _market_team_lambdas("Casa", "Fuori", odds=odds)
+    assert r is not None
+    assert abs(r[0] - lam_h) < 0.05 and abs(r[1] - lam_a) < 0.05
+    # missing markets fail open
+    assert _market_team_lambdas("X", "Y", odds={}) is None
+    assert _market_team_lambdas("Casa", "Fuori", odds={
+        "Casa vs Fuori": {"h2h": {"home": 2.0, "draw": 3.0, "away": 4.0},
+                          "totals": [{"line": 2.0, "over": 1.5,
+                                      "under": 2.5}]}}) is None
+
+
+def test_scorer_edges_zero_sum_and_name_ladder(tmp_path, monkeypatch):
+    """Full chain on a synthetic raw file: market full names -> board
+    surnames + understat nicknames via the folded ladder; shares zero-sum
+    per club; the hot-market newcomer gets the positive edge."""
+    import json
+    import math
+
+    import pandas as pd
+
+    import scripts.fantacalcio.xi_advisor as xa
+    (tmp_path / "data" / "upcoming").mkdir(parents=True)
+    (tmp_path / "data" / "parsed").mkdir(parents=True)
+    (tmp_path / "data" / "fantacalcio").mkdir(parents=True)
+    lam_h, lam_a = 1.2, 1.2
+    p_under = xa._pois_cdf(2, lam_h + lam_a)
+    ph = [math.exp(-lam_h) * lam_h ** i / math.factorial(i) for i in range(13)]
+    p_hw = sum(ph[i] * ph[j] for i in range(13) for j in range(i))
+    p_d = 1 - 2 * p_hw
+    (tmp_path / "data" / "upcoming" / "odds_full.json").write_text(json.dumps(
+        {"matches": {"Genoa vs Como": {
+            "h2h": {"home": 1 / p_hw, "draw": 1 / p_d, "away": 1 / p_hw},
+            "totals": [{"line": 2.5, "over": 1 / (1 - p_under),
+                        "under": 1 / p_under}]}}}))
+    raw = {"events": {"ev1": {
+        "home": "Genoa", "away": "Como",
+        "commence": "2026-09-04T18:45:00Z",
+        "fetched_at": "2026-09-03T21:00:00+00:00",
+        # Vecchio: market 25%, history says he IS the man (0.5 g/app).
+        # Nuovo: market 25% but 2-match history — shrinks to market, ~0 edge.
+        # Gregario: market 5%, history 0.05 — small negative absorbs the rest.
+        "prices": {"Anastasios Vecchio": [4.0, 4.0],
+                   "Nico Nuovo": [4.0],
+                   "Luca Gregario": [20.0],
+                   "Carlos Ospite": [3.0]}}}}
+    board = {"players": [
+        {"id": 1, "nome": "Vecchio", "R": "A", "team": "Genoa", "status": "OK"},
+        {"id": 2, "nome": "Nuovo", "R": "A", "team": "Genoa", "status": "OK"},
+        {"id": 3, "nome": "Gregario", "R": "C", "team": "Genoa", "status": "OK"},
+        {"id": 4, "nome": "Ospite", "R": "A", "team": "Como", "status": "OK"},
+        {"id": 5, "nome": "Fuori Rosa", "R": "A", "team": "Genoa",
+         "status": "DEPARTED"}]}
+    (tmp_path / "data" / "fantacalcio" / "auction_board.json").write_text(
+        json.dumps(board))
+    pd.DataFrame([
+        {"league": "ITA-Serie A", "season": "2025-2026", "team": "Genoa",
+         "player": "Tasos Vecchio", "matches": 38, "goals": 19},
+        {"league": "ITA-Serie A", "season": "2026-2027", "team": "Genoa",
+         "player": "Tasos Vecchio", "matches": 2, "goals": 1},
+        {"league": "ITA-Serie A", "season": "2026-2027", "team": "Genoa",
+         "player": "Nico Nuovo", "matches": 2, "goals": 0},
+        {"league": "ITA-Serie A", "season": "2025-2026", "team": "Genoa",
+         "player": "Luca Gregario", "matches": 38, "goals": 2},
+        {"league": "ITA-Serie A", "season": "2025-2026", "team": "Como",
+         "player": "Carlos Ospite", "matches": 30, "goals": 9},
+    ]).to_parquet(tmp_path / "data" / "parsed" / "understat_players.parquet")
+    monkeypatch.setattr(xa, "ROOT", tmp_path)
+    monkeypatch.setattr(xa, "SCORER_RAW",
+                        tmp_path / "data" / "fantacalcio" / "raw.json")
+    monkeypatch.setattr(xa, "SCORER_EDGES",
+                        tmp_path / "data" / "fantacalcio" / "edges.json")
+    monkeypatch.setattr(xa, "BOARD",
+                        tmp_path / "data" / "fantacalcio" / "auction_board.json")
+    xa.SCORER_RAW.write_text(json.dumps(raw))
+    out = xa.build_scorer_edges()
+    assert out is not None and out["matches"][0]["matched"] == 4
+    by = {int(k): v for k, v in out["by_pid"].items()}
+    genoa = [by[i]["edge"] for i in (1, 2, 3)]
+    assert abs(sum(genoa)) < 0.01                     # zero-sum per club
+    # the proven scorer's history out-argues the market -> negative edge;
+    # the 2-match newcomer shrinks to the market -> near zero
+    assert by[1]["edge"] < -0.05
+    assert abs(by[2]["edge"]) < abs(by[1]["edge"])
+    assert by[1]["n_app"] == 40                       # nickname matched, pooled
+    # Como's single priced player IS the whole share -> edge exactly 0
+    assert by[4]["edge"] == 0.0
+    assert 5 not in by                                # departed never priced
+
+
+def test_apply_scorer_tilt_replaces_rig_bonus():
+    from scripts.fantacalcio.xi_advisor import _apply_scorer, advise
+    rows = [
+        {"id": 1, "nome": "Taker", "R": "A", "team": "Genoa", "level": 6.5,
+         "voto": 6.0, "sd": 1.0, "p_play": 1.0, "rigorista": 1,
+         "rig_bonus": 0.20},
+        {"id": 2, "nome": "Altro", "R": "A", "team": "Genoa", "level": 6.5,
+         "voto": 6.0, "sd": 1.0, "p_play": 1.0, "rigorista": 2,
+         "rig_bonus": 0.06},
+    ]
+    _apply_scorer(rows, {1: {"edge": -0.10, "lam_mkt": 0.2, "lam_own": 0.27}})
+    assert rows[0]["scorer_edge"] == -0.10 and "rig_bonus" not in rows[0]
+    assert rows[0]["rigorista"] == 1                  # rank kept for ledger
+    assert rows[1]["rig_bonus"] == 0.06               # unpriced untouched
+    fillers = [{"id": 10 + i, "nome": f"X{i}", "R": r, "team": "Genoa",
+                "level": 6.0, "voto": 6.0, "sd": 1.0, "p_play": 1.0}
+               for i, r in enumerate("P" + "D" * 4 + "C" * 3 + "A")]
+    adv = advise(rows + fillers, {"Genoa": {"opp": "Como", "home": 1}},
+                 {"Genoa": 1500.0, "Como": 1500.0}, {})
+    by = {x["nome"]: x for x in adv["xi"] + adv["bench"]}
+    # market tilt (negative) REPLACED the +0.20 rig bonus for Taker;
+    # Altro still enjoys his +0.06
+    assert round(by["Altro"]["exp"] - by["Taker"]["exp"], 2) == 0.16
+
+
+def test_scorer_events_due_window_and_dedup():
+    from datetime import UTC, datetime
+
+    from scripts.data.odds_fetcher import _scorer_events_due
+    now = datetime(2026, 9, 4, 17, 45, tzinfo=UTC)
+    evs = [
+        {"id": "a", "commence_time": "2026-09-04T18:45:00Z"},   # T-60: due
+        {"id": "b", "commence_time": "2026-09-04T21:00:00Z"},   # outside
+        {"id": "c", "commence_time": "2026-09-04T17:35:00Z"},   # just kicked
+        {"id": "d", "commence_time": "2026-09-04T18:30:00Z"},   # fresh fetch
+        {"id": "e", "commence_time": "2026-09-04T18:30:00Z"},   # stale fetch
+        {"id": "bad"},
+    ]
+    store = {"events": {
+        "d": {"fetched_at": "2026-09-04T17:30:00+00:00"},
+        "e": {"fetched_at": "2026-09-04T16:30:00+00:00"}}}
+    due = [e["id"] for e in _scorer_events_due(evs, store, now, 1.25)]
+    assert due == ["a", "c", "e"]
+
+
 # ---------- blind-spots batch: silent-death visibility (Fix 1) ----------
 
 def test_feed_age_h():

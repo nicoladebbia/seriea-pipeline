@@ -1024,6 +1024,20 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                         log.warning(
                             "Fanta lineup check failed (betting unaffected): %s", e)
 
+                # Fantacalcio T-60 scorer props: independent of lineup
+                # confirmation (a Sofascore ban must not starve it). One
+                # Odds API credit per event, self-deduped inside. Fully
+                # guarded: must never touch the betting path.
+                try:
+                    from scripts.fantacalcio.lineup_check import (
+                        run_scorer_props_check,
+                    )
+                    log.info("Fanta scorer props: %s",
+                             run_scorer_props_check())
+                except Exception as e:
+                    log.warning(
+                        "Fanta scorer props failed (betting unaffected): %s", e)
+
                 # Mark matches WITHOUT confirmed lineups for retry
                 for mk in actions_needed["lineup_fetch"]:
                     match_state = processed.get(mk, {})

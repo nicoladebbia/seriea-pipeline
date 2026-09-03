@@ -63,6 +63,10 @@ def _row(p: dict, slot: str) -> dict:
             # rank on the rigoristi page — the refit handle for the
             # RIGORISTA_BONUS heuristic once ~5 rounds are graded
             "rigorista": p.get("rigorista"),
+            # anytime-scorer market tilt inputs — the refit handles for
+            # SCORER_W / SCORER_K once graded vs realized goals
+            "scorer_edge": p.get("scorer_edge"),
+            "lam_mkt": p.get("lam_mkt"), "lam_own": p.get("lam_own"),
             "exp": p.get("exp"), "exp_voto": p.get("exp_voto")}
 
 

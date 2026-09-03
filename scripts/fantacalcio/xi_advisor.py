@@ -310,7 +310,9 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         d_elo = (elo.get(p["team"], 1450.0) - elo.get(fx["opp"], 1450.0)) / 100.0
         adj = HOME_ADJ[p["R"]] * fx["home"] + ELO_SLOPE[p["R"]] * d_elo
         pp = float(p.get("p_play", 1.0))
-        exp = None if note else p["level"] + adj + float(p.get("rig_bonus") or 0.0)
+        tilt = (p["scorer_edge"] if p.get("scorer_edge") is not None
+                else float(p.get("rig_bonus") or 0.0))
+        exp = None if note else p["level"] + adj + tilt
         cand.append({**p,
                      "exp": None if exp is None else round(exp, 2),
                      "exp_slot": None if exp is None else round(pp * exp, 2),
@@ -479,6 +481,7 @@ def build_advice(fresh: bool = False,
             row["last_comp"] = c["last_comp"]
     _apply_discipline(roster_src, out, discipline_status())
     _apply_rigoristi(roster_src, rig)
+    _apply_scorer(roster_src, _scorer_by_pid())
     _apply_availability(roster_src, avail, _news_caps(), sf=sf)
     if official:
         _apply_official(roster_src, official)
@@ -490,7 +493,8 @@ def build_advice(fresh: bool = False,
             "first_kickoff": min(kicks) if kicks else None,
             "feed_ages": {"probabili_h": feed_age_h(prob_data),
                           "indisponibili_h": feed_age_h(avail),
-                          "sosfanta_h": feed_age_h(sf)},
+                          "sosfanta_h": feed_age_h(sf),
+                          "scorer_h": _scorer_age_h()},
             **adv}
 
 
@@ -676,6 +680,258 @@ def _apply_sosfanta(rows: list, sf: dict | None) -> None:
                          p_play_src="ballottaggio2")
             else:
                 r.update(p_play=p_sf, p_play_src="sosfanta")
+
+
+# ── anytime-scorer market tilt (T-60) ──────────────────────────────────
+# The per-event player_goal_scorer_anytime market (probe-verified live
+# 2026-09-03: eu region, 2 books, full names, 1 credit/event) prices THIS
+# match's goal expectation for ~45 players — lineup news, matchup and pens
+# included. Only "Yes" is quoted, so the overround of a 45-outcome market
+# is unobservable and a flat vig divisor is a guess (the first live build
+# proved it: every edge came out positive). The formulation is therefore
+# SHARE vs SHARE — vig cancels in the ratio:
+#   s_i  = λ_raw_i / Σ_club λ_raw          (market share of club goals)
+#   ŝ_i  = rate_shrunk_i / Σ_club rate     (his historical share)
+#   Δexp = W · 3 · λ_club · (s_i − ŝ_i), capped — zero-sum within the club,
+# so team strength stays priced by the market-Elo blend and ONLY the
+# within-team allocation moves. λ_club comes from the totals+h2h markets
+# already on disk (_market_team_lambdas: de-vig, Poisson-solve the total,
+# bisect the home/away split — all measured, no invented constants).
+# DECLARED HEURISTICS, refit path = pred_ledger rows carry both λs:
+#   SCORER_W   — half-weight hedge (market λ and the level's own bonus
+#                content overlap), same convention as RIGORISTA_BONUS.
+#   SCORER_CAP — thin 2-book markets misprice; bound the damage.
+#   SCORER_K   — own rate shrunk toward his market-implied rate with K=10:
+#                a 2-match arrival cannot out-argue the market, a 38-match
+#                veteran can. λ_own uses understat goals-per-appearance,
+#                both seasons pooled.
+# Priced player with a rig_bonus: the market λ already contains his
+# penalties, so the tilt REPLACES the bonus (rank kept for the ledger).
+SCORER_W = 0.5
+SCORER_CAP = 0.45
+SCORER_K = 10.0
+SCORER_RAW = ROOT / "data" / "fantacalcio" / "scorer_odds_raw.json"
+SCORER_EDGES = ROOT / "data" / "fantacalcio" / "scorer_edges.json"
+
+
+def _lam_from_prices(prices: list[float]) -> tuple[float, float] | None:
+    """(p_raw, lambda_raw) from the quoted prices, median across books.
+    RAW implied probability — the vig is never divided out here, it cancels
+    later in the within-club share."""
+    import math
+    import statistics
+    ps = [x for x in prices if x and x > 1.01]
+    if not ps:
+        return None
+    p = min(max(1.0 / statistics.median(ps), 0.005), 0.9)
+    return p, -math.log(1.0 - p)
+
+
+def _pois_cdf(k: int, lam: float) -> float:
+    import math
+    t, term = 0.0, math.exp(-lam)
+    for i in range(k + 1):
+        t += term
+        term *= lam / (i + 1)
+    return t
+
+
+def _market_team_lambdas(home: str, away: str,
+                         odds: dict | None = None) -> tuple[float, float] | None:
+    """(λ_home, λ_away) implied by the totals + h2h markets on disk.
+
+    λ_total: de-vig the half-integer totals line closest to 2.5, solve
+    P_Pois(N ≤ ⌊line⌋) = p_under by bisection. Split: bisect the difference
+    so the independent-Poisson P(H>A)/(P(H>A)+P(A>H)) matches the de-vigged
+    h2h ratio. None when either market is missing — callers fail open."""
+    if odds is None:
+        try:
+            odds = json.loads((ROOT / "data" / "upcoming"
+                               / "odds_full.json").read_text()).get("matches", {})
+        except (OSError, ValueError):
+            return None
+    m = odds.get(f"{home} vs {away}") or {}
+    h2h = m.get("h2h") or {}
+    try:
+        inv = [1.0 / float(h2h[k]) for k in ("home", "draw", "away")]
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    r_target = inv[0] / (inv[0] + inv[2])
+    cands = [t for t in (m.get("totals") or [])
+             if t.get("line") and float(t["line"]) % 1 == 0.5
+             and t.get("over") and t.get("under")]
+    if not cands:
+        return None
+    tot = min(cands, key=lambda t: abs(float(t["line"]) - 2.5))
+    io, iu = 1.0 / float(tot["over"]), 1.0 / float(tot["under"])
+    p_under = iu / (io + iu)
+    k_floor = int(float(tot["line"]))
+    lo, hi = 0.05, 8.0
+    for _ in range(50):
+        mid = (lo + hi) / 2.0
+        if _pois_cdf(k_floor, mid) > p_under:
+            lo = mid
+        else:
+            hi = mid
+    lam_tot = (lo + hi) / 2.0
+
+    import math
+
+    def _ratio(d: float) -> float:
+        lh, la = (lam_tot + d) / 2.0, (lam_tot - d) / 2.0
+        ph = [math.exp(-lh) * lh ** i / math.factorial(i) for i in range(13)]
+        pa = [math.exp(-la) * la ** i / math.factorial(i) for i in range(13)]
+        w = sum(ph[i] * pa[j] for i in range(13) for j in range(i))
+        l_ = sum(ph[i] * pa[j] for i in range(13) for j in range(i + 1, 13))
+        return w / (w + l_) if (w + l_) > 0 else 0.5
+    lo_d, hi_d = -lam_tot + 0.02, lam_tot - 0.02
+    for _ in range(50):
+        mid = (lo_d + hi_d) / 2.0
+        if _ratio(mid) < r_target:
+            lo_d = mid
+        else:
+            hi_d = mid
+    d = (lo_d + hi_d) / 2.0
+    return (lam_tot + d) / 2.0, (lam_tot - d) / 2.0
+
+
+def build_scorer_edges() -> dict | None:
+    """scorer_odds_raw.json -> scorer_edges.json (pid-keyed, advisor-ready).
+
+    All fragile work happens HERE, once per fetch, inspectable in the
+    artifact: market full name -> board pid and -> understat rate, both via
+    the same 3-tier folded-name ladder (_avail_lookup) scoped to the event's
+    two clubs. Ambiguity fails open — an unmatched price is dropped, never
+    guessed."""
+    try:
+        raw = json.loads(SCORER_RAW.read_text())
+    except (OSError, ValueError):
+        return None
+    board = json.loads(BOARD.read_text())
+    brows_by_team: dict[str, list[dict]] = {}
+    for pl in board["players"]:
+        if pl.get("status") != "DEPARTED":
+            brows_by_team.setdefault(NT(pl["team"]), []).append(pl)
+    us = pd.read_parquet(ROOT / "data" / "parsed" / "understat_players.parquet",
+                         columns=["league", "season", "team", "player",
+                                  "matches", "goals"])
+    us = us[(us.league == "ITA-Serie A")
+            & (us.season.isin(_us_seasons()))].copy()
+    us["tnorm"] = [NT(t) for t in us.team]
+    by_pid: dict = {}
+    matches_out = []
+    for eid, ev in (raw.get("events") or {}).items():
+        prices = ev.get("prices") or {}
+        if not prices:
+            continue
+        names = list(prices)
+        items = [{"nome": n} for n in names]
+        matched = 0
+        lams = _market_team_lambdas(NT(ev.get("home") or ""),
+                                    NT(ev.get("away") or ""))
+        for side, club in enumerate((ev.get("home"), ev.get("away"))):
+            club = NT(club or "")
+            brows = brows_by_team.get(club) or []
+            if not brows or lams is None:
+                continue
+            lam_club = lams[side]
+            found = _avail_lookup(items, brows)      # board-idx -> item
+            urows_src = us[us.tnorm == club]
+            grp = urows_src.groupby("player", as_index=False).agg(
+                matches=("matches", "sum"), goals=("goals", "sum"))
+            urows = [{"nome": r.player, "matches": int(r.matches),
+                      "goals": int(r.goals)} for r in grp.itertuples()]
+            ufound = {}                              # market name -> u row
+            if urows:
+                for j, it in _avail_lookup(items, urows).items():
+                    ufound[it["nome"]] = urows[j]
+            # pass 1: raw market lambdas + own rates for this club's matches
+            side_rows = []
+            for j, it in found.items():
+                pl = brows[j]
+                lam = _lam_from_prices(prices[it["nome"]])
+                if lam is None:
+                    continue
+                p_raw, lam_raw = lam
+                u = ufound.get(it["nome"])
+                n_app = int(u["matches"]) if u else 0
+                rate = (u["goals"] / u["matches"]) if u and u["matches"] else 0.0
+                side_rows.append((pl, it["nome"], p_raw, lam_raw, n_app, rate))
+            s_lam = sum(r[3] for r in side_rows)
+            if not side_rows or s_lam <= 0:
+                continue
+            # pass 2: shares. Own rate shrunk toward the player's OWN
+            # market-implied rate (K=SCORER_K), then renormalized — the
+            # edge is zero-sum within the club by construction.
+            shrunk = []
+            for _pl, _nome, _p, lam_raw, n_app, rate in side_rows:
+                implied = lam_club * lam_raw / s_lam
+                shrunk.append((SCORER_K * implied + n_app * rate)
+                              / (SCORER_K + n_app))
+            s_shr = sum(shrunk) or 1.0
+            for (pl, nome, p_raw, lam_raw, n_app, _r), rs in zip(side_rows,
+                                                                 shrunk):
+                s_i = lam_raw / s_lam
+                sh_i = rs / s_shr
+                lam_mkt = lam_club * s_i
+                lam_own = lam_club * sh_i
+                edge = SCORER_W * 3.0 * (lam_mkt - lam_own)
+                edge = min(max(edge, -SCORER_CAP), SCORER_CAP)
+                by_pid[int(pl["id"])] = {
+                    "nome": pl["nome"], "team": pl["team"],
+                    "p_raw": round(p_raw, 4),
+                    "lam_mkt": round(lam_mkt, 4),
+                    "lam_own": round(lam_own, 4), "n_app": n_app,
+                    "n_books": len(prices[nome]),
+                    "edge": round(edge, 3),
+                }
+                matched += 1
+        matches_out.append({"event": eid, "home": ev.get("home"),
+                            "away": ev.get("away"),
+                            "commence": ev.get("commence"),
+                            "priced": len(prices), "matched": matched})
+    out = {"built_at": datetime.now(UTC).isoformat(),
+           "matches": matches_out,
+           "by_pid": {str(k): v for k, v in by_pid.items()}}
+    SCORER_EDGES.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    return out
+
+
+def _us_seasons() -> list[str]:
+    """Current + previous season tags in understat format, derived from
+    SEASON ('2026-27' -> ['2025-2026', '2026-2027']) — never a literal."""
+    y1 = int("20" + SEASON.split("-")[0][-2:]) if len(SEASON.split("-")[0]) == 2 \
+        else int(SEASON.split("-")[0])
+    return [f"{y1 - 1}-{y1}", f"{y1}-{y1 + 1}"]
+
+
+def _scorer_by_pid() -> dict[int, dict]:
+    try:
+        d = json.loads(SCORER_EDGES.read_text())
+        return {int(k): v for k, v in (d.get("by_pid") or {}).items()}
+    except (OSError, ValueError):
+        return {}
+
+
+def _scorer_age_h() -> float | None:
+    try:
+        d = json.loads(SCORER_EDGES.read_text())
+        return (datetime.now(UTC)
+                - datetime.fromisoformat(d["built_at"])).total_seconds() / 3600
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _apply_scorer(rows: list, sco_by_pid: dict[int, dict] | None) -> None:
+    """pid-exact join; sets the market tilt and drops rig_bonus on priced
+    rows (the market λ already contains penalties). No-op without edges."""
+    for r in rows:
+        e = (sco_by_pid or {}).get(int(r.get("id") or 0))
+        if e:
+            r["scorer_edge"] = e["edge"]
+            r["lam_mkt"] = e["lam_mkt"]
+            r["lam_own"] = e["lam_own"]
+            r.pop("rig_bonus", None)
 
 
 # Penalty-taker premium, DECLARED HEURISTIC with a refit path (per the
@@ -1146,6 +1402,7 @@ def build_rivals(adv: dict | None = None) -> dict:
             row["last_comp"] = c["last_comp"]
     _apply_discipline(my_roster, out, disc)
     _apply_rigoristi(my_roster, rig)
+    _apply_scorer(my_roster, _scorer_by_pid())
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1171,6 +1428,7 @@ def build_rivals(adv: dict | None = None) -> dict:
                 row["last_comp"] = c["last_comp"]
         _apply_discipline(rows, out, disc)
         _apply_rigoristi(rows, rig)
+        _apply_scorer(rows, _scorer_by_pid())
         _apply_availability(rows, avail, sf=sf)
         obs = _observed_modules(tname)
         radv = advise(rows, fixtures, elo, out, modules=obs or None)
@@ -1276,6 +1534,7 @@ def score_observed_xi(team: str, player_names: list[str],
             row["last_comp"] = c["last_comp"]
     _apply_discipline(rows, out, disc)
     _apply_rigoristi(rows, rig)
+    _apply_scorer(rows, _scorer_by_pid())
     _apply_availability(rows, avail, sf=sf)
 
     def _norm(s: str) -> str:
@@ -1365,6 +1624,7 @@ def score_observed_xi(team: str, player_names: list[str],
             row["last_comp"] = c["last_comp"]
     _apply_discipline(my_roster, out, disc)
     _apply_rigoristi(my_roster, rig)
+    _apply_scorer(my_roster, _scorer_by_pid())
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1438,6 +1698,7 @@ def build_svincolati(top_n: int = 8) -> dict:
     disc = discipline_status()
     _apply_discipline(rows, out, disc)
     _apply_rigoristi(rows, rig)
+    _apply_scorer(rows, _scorer_by_pid())
     _apply_availability(rows, avail, sf=sf)
 
     # my weakest per role (by level), for the upgrade comparison

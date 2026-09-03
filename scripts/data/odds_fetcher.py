@@ -867,6 +867,121 @@ def fetch_extra_markets_per_event(use_cache: bool = True, league: str = "serie_a
     return all_extra
 
 
+SCORER_ODDS_FILE = Path(__file__).resolve().parents[2] / "data" / "fantacalcio" / "scorer_odds_raw.json"
+SCORER_REFRESH_MIN = 45.0   # a per-event fetch younger than this is not repeated
+
+
+def fetch_anytime_scorer_odds(hours_ahead: float = 1.25,
+                              league: str = "serie_a") -> dict:
+    """Fanta T-60 fetch: player_goal_scorer_anytime for events kicking off
+    within `hours_ahead`. Probe-verified 2026-09-03: region eu carries the
+    market (2 books, 41-45 players, FULL names in outcome `description`,
+    name="Yes", decimal price), billed 1 credit per event (1 region x 1
+    market). Budget ceiling: 10 SA events/round x 1 credit — negligible;
+    the free /events listing gates everything else.
+
+    Merge-writes data/fantacalcio/scorer_odds_raw.json keyed by event id;
+    an event fetched < SCORER_REFRESH_MIN ago is skipped, so the scheduler
+    can call this every cycle for free. All timestamps UTC ISO (display
+    layers render local time — America/New_York on this machine)."""
+    sport_key = _resolve_sport_key(league)
+    if not check_api_key() or not HAS_REQUESTS:
+        return {}
+    store: dict = {"events": {}}
+    try:
+        store = json.loads(SCORER_ODDS_FILE.read_text())
+    except (OSError, ValueError):
+        pass
+    ok, msg = check_rate_limit()
+    if not ok:
+        log.error(f"Scorer props: rate limit: {msg}")
+        return store
+    try:
+        resp = requests.get(f"{API_BASE_URL}/sports/{sport_key}/events",
+                            params={"apiKey": API_KEY}, timeout=30)
+        resp.raise_for_status()
+        events = resp.json()
+        remaining_hdr = resp.headers.get("x-requests-remaining")
+        track_api_call(credits_remaining=int(remaining_hdr) if remaining_hdr
+                       else None, estimated_cost=0,
+                       endpoint=f"events_list_{sport_key}")
+    except Exception as e:
+        log.error(f"Scorer props: events list failed: {e}")
+        return store
+    now = datetime.now(timezone.utc)  # noqa: UP017 — module style
+    due = _scorer_events_due(events, store, now, hours_ahead)
+    for ev in due:
+        eid = ev["id"]
+        try:
+            r = requests.get(
+                f"{API_BASE_URL}/sports/{sport_key}/events/{eid}/odds",
+                params={"apiKey": API_KEY, "regions": REGIONS,
+                        "markets": "player_goal_scorer_anytime",
+                        "oddsFormat": ODDS_FORMAT}, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            remaining_hdr = r.headers.get("x-requests-remaining")
+            track_api_call(credits_remaining=int(remaining_hdr)
+                           if remaining_hdr else None,
+                           estimated_cost=len(REGIONS.split(",")),
+                           endpoint=f"scorer_props_{sport_key}")
+        except Exception as e:
+            log.warning(f"Scorer props fetch failed for {eid}: {e}")
+            continue
+        prices: dict = {}
+        for bm in data.get("bookmakers", []):
+            for mkt in bm.get("markets", []):
+                if mkt.get("key") != "player_goal_scorer_anytime":
+                    continue
+                for o in mkt.get("outcomes", []):
+                    if o.get("name") != "Yes" or not o.get("description"):
+                        continue
+                    prices.setdefault(o["description"], []).append(
+                        float(o.get("price") or 0))
+        store["events"][eid] = {
+            "home": normalize_team(ev.get("home_team", "")),
+            "away": normalize_team(ev.get("away_team", "")),
+            "commence": ev.get("commence_time"),
+            "fetched_at": now.isoformat(),
+            "prices": prices,
+        }
+        log.info(f"Scorer props: {ev.get('home_team')} vs "
+                 f"{ev.get('away_team')}: {len(prices)} players priced")
+        time.sleep(0.3)
+    if due:
+        store["fetched_at"] = now.isoformat()
+        SCORER_ODDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SCORER_ODDS_FILE.write_text(
+            json.dumps(store, indent=1, ensure_ascii=False))
+    return store
+
+
+def _scorer_events_due(events: list, store: dict, now, hours_ahead: float) -> list:
+    """Pure selection: events kicking off within the window whose last fetch
+    (if any) is older than SCORER_REFRESH_MIN and predates kickoff."""
+    due = []
+    for ev in events:
+        try:
+            ko = datetime.fromisoformat(
+                ev["commence_time"].replace("Z", "+00:00"))
+        except (KeyError, ValueError, AttributeError):
+            continue
+        if not (now - timedelta(minutes=15) <= ko
+                <= now + timedelta(hours=hours_ahead)):
+            continue
+        prev = (store.get("events") or {}).get(ev.get("id"))
+        if prev:
+            try:
+                age_min = (now - datetime.fromisoformat(
+                    prev["fetched_at"])).total_seconds() / 60
+                if age_min < SCORER_REFRESH_MIN:
+                    continue
+            except (KeyError, ValueError):
+                pass
+        due.append(ev)
+    return due
+
+
 def process_extra_markets(raw_extra: Dict[str, Dict]) -> Dict[str, Dict]:
     """Process per-event extra markets into a clean odds structure.
 

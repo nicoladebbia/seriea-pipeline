@@ -128,6 +128,70 @@ def _official_overrides(confirmed: dict, players: list[dict]) -> dict[int, dict]
     return out
 
 
+def run_scorer_props_check(hours_ahead: float = 1.25) -> str:
+    """T-60 companion to the official-lineup check: fetch the anytime-scorer
+    market for Serie A events kicking off within the window (1 credit per
+    event, self-deduped by SCORER_REFRESH_MIN) and rebuild the pid-keyed
+    edges the XI advisor consumes. Independent of lineup confirmation, so a
+    Sofascore ban cannot starve it. Returns a status line for the scheduler
+    log; never raises past its own guard rails."""
+    from scripts.data.odds_fetcher import SCORER_ODDS_FILE, fetch_anytime_scorer_odds
+    from scripts.fantacalcio.xi_advisor import SCORER_EDGES, build_scorer_edges
+    store = fetch_anytime_scorer_odds(hours_ahead=hours_ahead)
+    if not (store.get("events") or {}):
+        return "no scorer odds fetched yet"
+    try:
+        raw_m = SCORER_ODDS_FILE.stat().st_mtime
+        edges_m = SCORER_EDGES.stat().st_mtime if SCORER_EDGES.exists() else 0.0
+    except OSError:
+        return "scorer raw file unreadable"
+    if raw_m <= edges_m:
+        return "scorer edges current"
+    out = build_scorer_edges()
+    if not out:
+        return "scorer edges build failed"
+    n = len(out.get("by_pid") or {})
+    snap = _snapshot_ledger()
+    return f"scorer edges rebuilt: {n} players priced across " \
+           f"{len(out.get('matches') or [])} events; ledger {snap}"
+
+
+def _snapshot_ledger() -> str:
+    """Refresh the pred-ledger forecast with the CURRENT advice.
+
+    The tracker's calendar runs (9:15/12:45/18:30/21:15 local) can all miss
+    the T-60 window — for a 20:45 CET kickoff the last pre-kickoff tracker
+    snapshot predates officials AND scorer edges, so neither ever reached
+    the ledger (found 2026-09-03). Snapshotting from the T-60 paths closes
+    both gaps. Official overrides are folded in when the confirmed feed is
+    fresh — this snapshot may run AFTER the officials push in the same
+    scheduler cycle and must never overwrite official_xi labels with model
+    ones. Guarded: a failure here must never break the caller."""
+    try:
+        from scripts.fantacalcio.pred_ledger import snapshot
+        from scripts.fantacalcio.xi_advisor import build_advice
+        overrides = None
+        try:
+            confirmed = json.loads(CONFIRMED.read_text())
+            from scripts.fantacalcio.probabili import feed_age_h
+            age = feed_age_h(confirmed)
+            if age is not None and age <= MAX_FEED_AGE_H:
+                players = json.loads(BOARD.read_text())["players"]
+                overrides = _official_overrides(confirmed, players) or None
+        except (OSError, ValueError, KeyError):
+            pass
+        adv = build_advice(official=overrides)
+        riv = None
+        try:
+            riv = json.loads((ROOT / "data" / "fantacalcio"
+                              / "rivals.json").read_text())
+        except (OSError, ValueError):
+            pass
+        return snapshot(adv, riv=riv)
+    except Exception as e:  # noqa: BLE001 — advisory side effect only
+        return f"snapshot failed: {e}"
+
+
 def run_official_lineup_check(now_ts: float | None = None) -> str:
     """Rebuild advice with official lineups and push a diff. Returns a status
     line for the scheduler log; never raises past its own guard rails."""
@@ -157,6 +221,17 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
     if not adv.get("xi"):
         return "no XI buildable"
     ADVICE.write_text(json.dumps(adv, indent=1, ensure_ascii=False))
+    try:
+        from scripts.fantacalcio.pred_ledger import snapshot
+        riv = None
+        try:
+            riv = json.loads((ROOT / "data" / "fantacalcio"
+                              / "rivals.json").read_text())
+        except (OSError, ValueError):
+            pass
+        snapshot(adv, riv=riv)   # official p_plays reach the ledger (T-60)
+    except Exception:  # noqa: BLE001, S110 — advisory side effect only
+        pass
 
     try:
         state = json.loads(STATE.read_text())
