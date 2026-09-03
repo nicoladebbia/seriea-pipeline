@@ -6577,6 +6577,180 @@ def api_scheduler_toggle():
     return jsonify({"ok": True, "active": True})
 
 
+
+def _automation_registry() -> list:
+    """Every in-process automation — the hooks that ride inside other launchd
+    jobs and therefore have no row of their own in the jobs list. Each row
+    reads the automation's REAL state file; nothing here is hardcoded status.
+    Read-only; any single failing source degrades to its fallback row."""
+    rows = []
+    fanta = DATA_DIR / "fantacalcio"
+    mon = DATA_DIR / "monitoring"
+
+    def _iso_short(s):
+        if not s:
+            return ""
+        try:
+            dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            return str(s)[:16]
+
+    def _mtime_short(path):
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            return ""
+
+    def add(name, rides_on, trigger, last="", state="armed", detail=""):
+        rows.append({"name": name, "rides_on": rides_on, "trigger": trigger,
+                     "last": last, "state": state, "detail": detail})
+
+    # ── Fantacalcio: XI push chain (xi_notify_state.json) ──
+    try:
+        st = _load_json(fanta / "xi_notify_state.json") or {}
+        rnd = st.get("round")
+        add("XI first push", "fanta-tracker", "board ready, ≤48h from deadline",
+            last=_iso_short(st.get("sent_at")),
+            state="fired" if rnd else "armed",
+            detail=f"G{rnd}" if rnd else "")
+        add("XI final check (fresh rebuild)", "fanta-tracker", "T-6h before first kickoff",
+            state="fired" if st.get("final_checked") else "armed",
+            detail="push only on diff vs latched XI")
+        add("Official lineups T-60", "pre-kickoff-monitor", "lineup_fetch hook, pre-deadline",
+            state="fired" if st.get("official_sig") else "armed",
+            detail="p_play 0.97/0.15/0.03, coverage-gated")
+        dr = st.get("digest_round")
+        add("Post-round digest", "fanta-tracker", "voti published for the round",
+            state="fired" if dr else "armed",
+            detail=f"G{dr}" if dr else "")
+        ra = st.get("risk_alerts") or {}
+        add("Risk alerts (mercato/injury/ballottaggio)", "fanta-tracker",
+            "new signal on a projected starter",
+            last=_iso_short(max(ra.values())) if ra else "",
+            state="fired" if ra else "armed",
+            detail=f"{len(ra)} latched" if ra else "")
+    except Exception as e:
+        add("XI push chain", "fanta-tracker", "state unreadable", state="error", detail=str(e)[:80])
+
+    # ── Fantacalcio: voti finalization window (live_scores cache) ──
+    try:
+        import time as _t
+        rounds = sorted((fanta / "voti").glob("round_*.parquet"),
+                        key=lambda q: q.stat().st_mtime)
+        if rounds:
+            newest = rounds[-1]
+            age_h = (_t.time() - newest.stat().st_mtime) / 3600
+            in_window = age_h <= 72.0
+            add("Voti finalization window", "fanta-tracker",
+                "re-fetch while cache <72h old, rewrite only on change",
+                last=_mtime_short(newest),
+                state="in window" if in_window else "finalized",
+                detail=f"{newest.stem.split('_')[-1].lstrip('0') or '0'}ª · cache {age_h:.0f}h")
+        else:
+            add("Voti finalization window", "fanta-tracker", "no round cache yet")
+    except Exception:
+        add("Voti finalization window", "fanta-tracker", "cache unreadable", state="error")
+
+    # ── Fantacalcio: H2H freeze/grading + refit trigger (pred_ledger.json) ──
+    try:
+        led = _load_json(fanta / "pred_ledger.json") or {}
+        lrounds = led.get("rounds") or {}
+        if lrounds:
+            cur = max(lrounds, key=lambda k: int(k))
+            r = lrounds[cur]
+            graded = bool(r.get("h2h")) and all(
+                (fx or {}).get("result") for fx in (r.get("h2h") or []))
+            state = ("graded" if graded else
+                     "frozen" if r.get("frozen_at") else "snapshotted")
+            add("H2H freeze + grading", "fanta-tracker",
+                "freeze at first kickoff, grade when Leghe cells appear",
+                last=_iso_short(r.get("reconciled_at") or r.get("frozen_at")
+                                or r.get("snapshot_at")),
+                state=state, detail=f"G{cur}")
+            rec = sum(1 for v in lrounds.values() if v.get("reconciled_at"))
+            add("p_play calibration refit", "fanta-tracker",
+                "auto-fires at 5 reconciled rounds",
+                state="ready" if rec >= 5 else "accumulating",
+                detail=f"{rec}/5 rounds reconciled")
+        else:
+            add("H2H freeze + grading", "fanta-tracker", "no snapshots yet")
+            add("p_play calibration refit", "fanta-tracker",
+                "auto-fires at 5 reconciled rounds", detail="0/5")
+    except Exception:
+        add("H2H freeze + grading", "fanta-tracker", "ledger unreadable", state="error")
+
+    # ── Fantacalcio: rival module learning + mercato sync ──
+    rm = fanta / "rival_modules.json"
+    add("Rival module learning", "fanta-tracker", "observed lineups per rival",
+        last=_mtime_short(rm),
+        state="learning" if rm.exists() else "waiting for G1 officials")
+    try:
+        merc = [fanta / n for n in
+                ("svincolati.json", "trades.json", "league_rosters.json")]
+        merc = [q for q in merc if q.exists()]
+        if merc:
+            newest = max(merc, key=lambda q: q.stat().st_mtime)
+            add("Mercato / rosters sync", "fanta-tracker", "TTL refresh inside tracker run",
+                last=_mtime_short(newest), state="live",
+                detail=f"{len(merc)}/3 sources on disk")
+    except Exception:
+        pass
+
+    # ── Fantacalcio: tracker heartbeat ──
+    try:
+        hb = _load_json(fanta / "tracker_heartbeat.json") or {}
+        add("Tracker heartbeat", "fanta-tracker", "written on every run, monitored 30-min",
+            last=_iso_short(hb.get("ran_at")),
+            state="ok" if hb.get("ok") else ("error" if hb else "never ran"),
+            detail=(hb.get("error") or "")[:80])
+    except Exception:
+        add("Tracker heartbeat", "fanta-tracker", "heartbeat unreadable", state="error")
+
+    # ── Ops: T-30 commit chain + missed-commit detector (pre_kickoff_state) ──
+    try:
+        pk = _load_json(_BASE / "data" / "pipeline" / "pre_kickoff_state.json") or {}
+        processed = pk.get("processed") or {}
+        stamps = [s.get("triggered_at") for m in processed.values()
+                  for s in (m.get("stages") or {}).values() if s.get("triggered_at")]
+        add("T-30 bet commit chain", "pre-kickoff-monitor",
+            "staged windows T-72h → T-5m per match",
+            last=_iso_short(max(stamps)) if stamps else "",
+            state="live" if stamps else "armed",
+            detail=f"{len(processed)} matches staged")
+        ma = pk.get("missed_alerts") or {}
+        add("Missed-commit detector", "scheduler", "kickoff passed, T-30 never entered",
+            last=_iso_short(max(ma.values())) if ma else "",
+            state="alerted" if ma else "clear",
+            detail=f"{len(ma)} missed" if ma else "no gaps")
+    except Exception:
+        add("T-30 bet commit chain", "pre-kickoff-monitor", "state unreadable", state="error")
+
+    # ── Ops: match-day awake hold ──
+    pidf = mon / "caffeinate.pid"
+    add("Match-day awake hold (caffeinate)", "scheduler", "kickoff within 2h on AC power",
+        last=_mtime_short(pidf),
+        state="holding" if pidf.exists() else "armed")
+
+    # ── Ops: monitor checks covering the fanta stack ──
+    try:
+        hs = _load_json(mon / "health_status.json") or {}
+        for key, label in (("fantacalcio", "Monitor: fantacalcio health"),
+                           ("state_backup", "Monitor: state backup age")):
+            chk = (hs.get("checks") or {}).get(key)
+            if chk:
+                add(label, "monitor (30-min)", "escalates via Telegram on CRITICAL",
+                    last=_iso_short(hs.get("timestamp")),
+                    state=(chk.get("status") or "?").lower(),
+                    detail=(chk.get("detail") or "")[:90])
+    except Exception:
+        pass
+
+    return rows
+
+
 @app.route("/api/scheduler/status")
 def api_scheduler_status():
     """Get scheduler status, config, launchd jobs, upcoming match windows, and log."""
@@ -6621,14 +6795,40 @@ def api_scheduler_status():
             short_name = label.replace("com.seriea-pipeline.", "")
             loaded = label in loaded_labels
 
-            # Get last run from log
-            log_path = _BASE / "logs" / f"launchd-{short_name}.log"
+            # Get last run from log — newer plists write -out/-err variants,
+            # so probe all three names and take the newest mtime.
             last_run = ""
             log_size = 0
-            if log_path.exists():
-                log_size = log_path.stat().st_size
-                mtime = log_path.stat().st_mtime
-                last_run = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            newest_mtime = 0.0
+            for cand in (f"launchd-{short_name}.log",
+                         f"launchd-{short_name}-out.log",
+                         f"launchd-{short_name}-err.log"):
+                lp = _BASE / "logs" / cand
+                if lp.exists():
+                    stt = lp.stat()
+                    log_size = max(log_size, stt.st_size)
+                    newest_mtime = max(newest_mtime, stt.st_mtime)
+            if newest_mtime:
+                last_run = datetime.fromtimestamp(newest_mtime).strftime("%Y-%m-%d %H:%M")
+
+            # Heartbeat overrides: these jobs stamp a state file on every
+            # successful run — trust that over log mtime.
+            hb_map = {
+                "fanta-tracker": DATA_DIR / "fantacalcio" / "tracker_heartbeat.json",
+                "state-backup": DATA_DIR / "monitoring" / "state_backup.json",
+            }
+            hb_path = hb_map.get(short_name)
+            if hb_path is not None:
+                hb = _load_json(hb_path) or {}
+                ran = hb.get("ran_at")
+                if ran:
+                    try:
+                        dt = datetime.fromisoformat(str(ran).replace("Z", "+00:00"))
+                        if dt.tzinfo is not None:
+                            dt = dt.astimezone().replace(tzinfo=None)
+                        last_run = dt.strftime("%Y-%m-%d %H:%M")
+                    except (ValueError, TypeError):
+                        pass
 
             launchd_jobs.append({
                 "name": short_name,
@@ -6693,6 +6893,7 @@ def api_scheduler_status():
         "config": _scheduler_config,
         "next_runs": next_runs,
         "launchd_jobs": launchd_jobs,
+        "automations": _automation_registry(),
         "match_windows": match_windows[:20],
         "log": _scheduler_log[-20:],
         "pipeline_running": _pipeline_running,

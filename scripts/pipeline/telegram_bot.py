@@ -454,6 +454,8 @@ def _reply_keyboard() -> dict:
 
 # WC-season command menu — populates Telegram's ☰ menu button at input-left.
 _WC_COMMANDS = [
+    {"command": "xi", "description": "⚽ Formazione fantacalcio consigliata"},
+    {"command": "sfide", "description": "🆚 Pronostico H2H prossimi avversari"},
     {"command": "wc", "description": "🌍 Today's World Cup slate + best combos"},
     {"command": "ladder", "description": "🪜 Today's ladder (add 'risk' for spicy)"},
     {"command": "mybets", "description": "🎫 My bets + balance"},
@@ -1815,6 +1817,63 @@ def _handle_digest() -> str:
         return f"Failed to generate digest: {e}"
 
 
+def _fanta_json(name: str) -> dict:
+    try:
+        return json.loads((PROJECT_ROOT / "data" / "fantacalcio"
+                           / name).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _fanta_age_note(iso: str | None) -> str:
+    """'aggiornata Xh fa' footer so an on-demand read is honest about age."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        age_h = (datetime.now(UTC) - dt).total_seconds() / 3600
+        return (f"\n<i>aggiornata {age_h * 60:.0f}min fa</i>" if age_h < 1
+                else f"\n<i>aggiornata {age_h:.1f}h fa</i>")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _handle_xi() -> str:
+    """/xi — the tracker's latest XI board, on demand (no rebuild: the
+    tracker refreshes it 3x/day + T-6h, so serving the file is honest as
+    long as the age footer says how old it is)."""
+    adv = _fanta_json("xi_advice.json")
+    if not adv.get("xi"):
+        return ("Nessuna formazione consigliata sul disco — il tracker "
+                "non ha ancora costruito la giornata.")
+    riv = _fanta_json("rivals.json") or None
+    try:
+        from scripts.fantacalcio.tracker import render_xi
+        _, tg = render_xi(adv, riv)
+    except Exception as e:
+        log.warning("/xi render failed: %s", e)
+        return f"Formazione non renderizzabile: {e}"
+    return tg + _fanta_age_note(adv.get("generated_at"))
+
+
+def _handle_sfide() -> str:
+    """/sfide — next-round H2H forecast vs each opponent, both competitions."""
+    riv = _fanta_json("rivals.json")
+    if not riv.get("next_opponents"):
+        return "Nessuna sfida in calendario nel file rivali."
+    try:
+        from scripts.fantacalcio.tracker import _vs_block
+        _, vs_tg, _ = _vs_block(riv)
+    except Exception as e:
+        log.warning("/sfide render failed: %s", e)
+        return f"Sfide non renderizzabili: {e}"
+    if not vs_tg:
+        return "Nessuna sfida in calendario nel file rivali."
+    rnd = riv.get("round")
+    head = f"<b>🆚 Sfide giornata {rnd}</b>\n" if rnd else "<b>🆚 Sfide</b>\n"
+    return head + vs_tg + _fanta_age_note(riv.get("generated_at"))
+
+
 def _handle_worldcup() -> str:
     """World Cup digest: today's slate + the three best-combo tiers.
 
@@ -2051,6 +2110,10 @@ def _handle_help() -> str:
     tg.raw("<b>Reports:</b>")
     tg.raw("  /digest \u2014 daily summary")
     tg.raw("  /wc — World Cup: today's slate + best combos")
+    tg.blank()
+    tg.raw("<b>Fantacalcio:</b>")
+    tg.raw("  /xi \u2014 formazione consigliata della giornata")
+    tg.raw("  /sfide \u2014 pronostico H2H vs i prossimi avversari")
     tg.blank()
     tg.raw("<b>Session:</b>")
     tg.raw("  /clear \u2014 reset conversation")
@@ -4231,6 +4294,12 @@ def run_bot():
                 elif cmd == "/digest":
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_digest()
+                elif cmd in ("/xi", "/formazione"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _handle_xi()
+                elif cmd in ("/sfide", "/h2h"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _handle_sfide()
                 elif cmd in ("/wc", "/worldcup"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_worldcup()

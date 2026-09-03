@@ -329,6 +329,9 @@
       </div>
       <!-- Launchd jobs always visible (compact) -->
       <div id="sched-launchd-jobs" style="display:grid;gap:4px;font-size:11px;margin-bottom:var(--space-3);"></div>
+      <!-- In-process automations (ride inside other jobs, no launchd row) -->
+      <div style="font-size:9px;text-transform:uppercase;color:var(--text-tertiary);letter-spacing:0.5px;margin-bottom:4px;">In-Process Automations</div>
+      <div id="sched-automations" style="display:grid;gap:4px;font-size:11px;margin-bottom:var(--space-3);"></div>
       <!-- Match day windows always visible -->
       <div id="sched-match-windows" style="margin-bottom:var(--space-3);"></div>
       <!-- Recent log (last 3) -->
@@ -1488,6 +1491,31 @@ async function loadSchedulerStatus() {
       }).join('');
     } else {
       jobsEl.innerHTML = '<div style="font-size:10px;color:var(--text-tertiary);">No launchd jobs detected. Run: <code>python -m scripts.pipeline.launchd_setup --install</code></div>';
+    }
+
+    // ── In-process automations ──
+    const autoEl = document.getElementById('sched-automations');
+    const autos = data.automations || [];
+    if (autoEl && autos.length) {
+      const stateColor = (s) => {
+        if (['fired','live','ok','holding','graded','learning','ready','in window'].includes(s)) return 'var(--green)';
+        if (['error','critical','alerted'].includes(s)) return 'var(--red)';
+        if (['warning','accumulating','snapshotted'].includes(s)) return 'var(--amber)';
+        return 'var(--text-tertiary)';
+      };
+      autoEl.innerHTML = autos.map(a => {
+        const dot = `<span style="color:${stateColor(a.state)};">&#9679;</span>`;
+        const last = a.last ? ` &middot; last: ${a.last}` : '';
+        const det = a.detail ? ` &middot; ${a.detail}` : '';
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);gap:8px;">
+          <span style="min-width:0;">${dot} <span style="font-weight:500;color:var(--text-primary);">${a.name}</span>
+            <span style="color:var(--text-tertiary);font-size:10px;">&nbsp;on ${a.rides_on}</span>
+            <div style="font-size:9px;color:var(--text-tertiary);margin-left:14px;">${a.trigger}</div></span>
+          <span style="font-family:var(--font-mono);color:var(--text-tertiary);font-size:10px;white-space:nowrap;text-align:right;">${(a.state || '').toUpperCase()}${last}${det}</span>
+        </div>`;
+      }).join('');
+    } else if (autoEl) {
+      autoEl.innerHTML = '<div style="font-size:10px;color:var(--text-tertiary);">No in-process automation state found</div>';
     }
 
     // ── Match day windows ──

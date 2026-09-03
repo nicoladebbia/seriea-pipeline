@@ -524,6 +524,17 @@ def _round_digest(state: dict) -> dict | None:
         if rec and rec.get("actual_total") is not None:
             lines.append(f"Previsto {rec.get('predicted_total')} -> "
                          f"reale {rec.get('actual_total')}")
+        # H2H results ride the same digest once the calendar cells graded
+        # them; until then, nag for the export the grading waits on.
+        graded = [h for h in (rec or {}).get("h2h", []) if h.get("result")]
+        for h in graded:
+            lines.append(f"{_COMP_SHORT.get(h['competition'], h['competition'])}"
+                         f": {h['result']} {h.get('goals', '')} "
+                         f"(fp {h.get('fp_mine')}-{h.get('fp_opp')}, "
+                         f"P(vittoria) era {h.get('p_win', 0):.0%})")
+        if (rec or {}).get("h2h") and not graded:
+            lines.append("📥 Ridroppa i calendari Leghe: mancano i risultati "
+                         "H2H (grading automatico appena arrivano)")
     except (OSError, ValueError):
         pass
     lines.append("Riesporta i calendari di lega per aggiornare le classifiche")
@@ -589,6 +600,24 @@ def _first_push_state(state: dict, rnd, cur: dict) -> dict:
     return state
 
 
+REFIT_READY_N = 5
+
+
+def _refit_lines(summ: dict, min_rounds: int = REFIT_READY_N) -> list[str] | None:
+    """Calibration table lines once enough rounds are reconciled — the
+    automated trigger for the p_play refit (no one has to remember G7)."""
+    n_rec = sum(1 for r in summ.get("rounds", []) if r.get("reconciled"))
+    cal = summ.get("calibration") or {}
+    if n_rec < min_rounds or not cal:
+        return None
+    lines = [f"Round riconciliati: {n_rec} — dati refit pronti"]
+    for k in sorted(cal):
+        v = cal[k]
+        lines.append(f"{k}: previsto {v['predicted_rate']:.0%} vs reale "
+                     f"{v['realized_rate']:.0%} (n={v['n']})")
+    return lines
+
+
 _COMP_SHORT = {"Coppa Del Nonno": "CDN", "Hunger Games": "HG"}
 
 
@@ -642,6 +671,64 @@ def _write_heartbeat(ok: bool, error: str | None = None,
             {"ran_at": datetime.now(UTC).isoformat(), "ok": ok, "error": error}))
     except OSError:
         pass
+
+
+def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
+    """(plaintext, telegram-HTML) render of the XI advice board.
+
+    Shared by the weekly push and the bot's on-demand /xi command, so the
+    two can never drift apart in content.
+    """
+    rnd = adv.get("round")
+    vs_txt, vs_tg, _ = _vs_block(riv)
+    role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
+    xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
+    lines = [f"{x['R']} {x['nome']} ({x['team']} "
+             f"{'vs' if x['home'] else '@'} {x['opp']})" for x in xi]
+    bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
+    inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
+           for x in adv["unavailable"]]
+    diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
+    ban_line = None
+    if diffid:
+        try:
+            schedule = json.loads((ROOT / "data" / "fantacalcio"
+                                   / "league_schedule.json").read_text())
+            my_name = json.loads((ROOT / "data" / "fantacalcio"
+                                  / "league_rosters.json").read_text()
+                                 ).get("my_team")
+            ban_line = _ban_cost_line(adv.get("round"), schedule, my_name)
+        except (OSError, ValueError):
+            pass
+    infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
+              for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
+              if x.get("avail_note")]
+    msg = (f"Giornata {rnd} — modulo {adv['module']} "
+           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+           + (f"{vs_txt}\n\n" if vs_txt else "")
+           + "\n".join(lines)
+           + "\nPanchina (in quest'ordine): " + ", ".join(bench)
+           + (("\nOut: " + "; ".join(inj)) if inj else "")
+           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)
+               + (f" — {ban_line}" if ban_line else "")) if diffid else "")
+           + (("\nInfermeria: " + "; ".join(infirm)) if infirm else "")
+           + ((lambda fl: f"\n{fl}" if fl else "")(
+               _feed_age_line(adv.get("feed_ages"))))
+           + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
+    tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
+          f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+          + (f"{vs_tg}\n\n" if vs_tg else "")
+          + "\n".join(lines)
+          + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
+          + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
+          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)
+              + (f" — <i>{ban_line}</i>" if ban_line else "")) if diffid else "")
+          + (("\n<b>🚑 Infermeria:</b>\n"
+              + "\n".join(f"• {ln}" for ln in infirm)) if infirm else "")
+          + ((lambda fl: f"\n<i>{fl}</i>" if fl else "")(
+              _feed_age_line(adv.get("feed_ages"))))
+          + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
+    return msg, tg
 
 
 def _push_xi_advice() -> None:
@@ -705,6 +792,18 @@ def _push_xi_advice() -> None:
         print(f"pred ledger: snapshot={st}"
               + (f" reconciled={rec}" if rec else "")
               + (f" h2h_graded={h2h}" if h2h else ""))
+        if rec:
+            # Fires at most once per newly-reconciled round, only past the
+            # data floor: the G7 refit reminds itself.
+            from scripts.fantacalcio.pred_ledger import summary
+            rl = _refit_lines(summary())
+            if rl:
+                from scripts.pipeline.notify import notify
+                notify("Calibrazione p_play\n" + "\n".join(rl),
+                       title="Fantacalcio — calibrazione pronta",
+                       level="info", category="alert",
+                       tg_html="<b>📊 Calibrazione p_play</b>\n"
+                               + "\n".join(rl))
     except Exception as e:
         print(f"pred ledger update failed (advice unaffected): {e}")
     # Daily press-pulse update: scores today's headlines per club and labels
@@ -832,53 +931,7 @@ def _push_xi_advice() -> None:
         state_path.write_text(json.dumps(state))
         return
 
-    role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
-    xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
-    lines = [f"{x['R']} {x['nome']} ({x['team']} "
-             f"{'vs' if x['home'] else '@'} {x['opp']})" for x in xi]
-    bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
-    inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
-           for x in adv["unavailable"]]
-    diffid = [x["nome"] for x in adv["xi"] + adv["bench"] if x.get("diffidato")]
-    ban_line = None
-    if diffid:
-        try:
-            schedule = json.loads((ROOT / "data" / "fantacalcio"
-                                   / "league_schedule.json").read_text())
-            my_name = json.loads((ROOT / "data" / "fantacalcio"
-                                  / "league_rosters.json").read_text()
-                                 ).get("my_team")
-            ban_line = _ban_cost_line(adv.get("round"), schedule, my_name)
-        except (OSError, ValueError):
-            pass
-    infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
-              for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
-              if x.get("avail_note")]
-    msg = (f"Giornata {rnd} — modulo {adv['module']} "
-           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
-           + (f"{vs_txt}\n\n" if vs_txt else "")
-           + "\n".join(lines)
-           + "\nPanchina (in quest'ordine): " + ", ".join(bench)
-           + (("\nOut: " + "; ".join(inj)) if inj else "")
-           + (("\nDiffidati (4 gialli): " + ", ".join(diffid)
-               + (f" — {ban_line}" if ban_line else "")) if diffid else "")
-           + (("\nInfermeria: " + "; ".join(infirm)) if infirm else "")
-           + ((lambda fl: f"\n{fl}" if fl else "")(
-               _feed_age_line(adv.get("feed_ages"))))
-           + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
-    tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
-          f"(exp {adv['total']}, mod +{adv['modifier']})\n"
-          + (f"{vs_tg}\n\n" if vs_tg else "")
-          + "\n".join(lines)
-          + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
-          + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
-          + (("\n<b>⚠ Diffidati:</b> " + ", ".join(diffid)
-              + (f" — <i>{ban_line}</i>" if ban_line else "")) if diffid else "")
-          + (("\n<b>🚑 Infermeria:</b>\n"
-              + "\n".join(f"• {ln}" for ln in infirm)) if infirm else "")
-          + ((lambda fl: f"\n<i>{fl}</i>" if fl else "")(
-              _feed_age_line(adv.get("feed_ages"))))
-          + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
+    msg, tg = render_xi(adv, riv)
     try:
         from scripts.pipeline.notify import notify
         tg += ("\n\n📸 Un'ora prima: se vedi la formazione avversaria su "

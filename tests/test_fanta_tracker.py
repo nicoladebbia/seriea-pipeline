@@ -1500,3 +1500,149 @@ def test_ban_cost_line_names_next_round_h2h():
     assert "CDN: riposo" in line and "HG vs DELICATISSIMI" in line
     assert _ban_cost_line(3, sched, None) is None
     assert _ban_cost_line(38, {"competitions": {}}, "Whisky Palermo") is None
+
+
+# ---------- automation sweep: voti finalization window ----------
+
+def _fr_setup(tmp_path, monkeypatch, rows=350, voto=6.0):
+    import pandas as pd
+
+    import scripts.fantacalcio.live_scores as ls
+    monkeypatch.setattr(ls, "CACHE", tmp_path)
+    df = pd.DataFrame({"pid": range(rows), "voto": [voto] * rows})
+    monkeypatch.setattr(ls, "parse", lambda html: df.copy())
+
+    class _R:
+        status_code = 200
+        text = "<html/>"
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        return _R()
+    import curl_cffi.requests as rq
+    monkeypatch.setattr(rq, "get", fake_get)
+    return ls, df, calls
+
+
+def test_fetch_round_finalization_window(tmp_path, monkeypatch):
+    """A young cache re-fetches (provisional voti may still be corrected) but
+    rewrites ONLY on change, so the mtime ages the file out of the window;
+    an old cache never touches the network."""
+    import os
+    import time
+
+    import pandas as pd
+    ls, df, calls = _fr_setup(tmp_path, monkeypatch)
+    p = tmp_path / "round_2026_27_03.parquet"
+
+    out = ls.fetch_round("2026-27", 3)           # first fetch: writes
+    assert len(out) == 350 and len(calls) == 1 and p.exists()
+    mt1 = p.stat().st_mtime
+
+    out = ls.fetch_round("2026-27", 3)           # young + unchanged: fetches,
+    assert len(calls) == 2                        # but does NOT rewrite
+    assert p.stat().st_mtime == mt1
+
+    df["voto"] = 6.5                              # correction lands: rewrites
+    time.sleep(0.01)
+    out = ls.fetch_round("2026-27", 3)
+    assert len(calls) == 3 and out["voto"].iloc[0] == 6.5
+    assert p.stat().st_mtime > mt1
+
+    old = time.time() - (ls.FINALIZE_H + 1) * 3600
+    os.utime(p, (old, old))                       # settled: no network at all
+    out = ls.fetch_round("2026-27", 3)
+    assert len(calls) == 3 and out["voto"].iloc[0] == 6.5
+
+
+def test_fetch_round_finalization_failures_keep_cache(tmp_path, monkeypatch):
+    """During the window a failed or floor-rejected re-fetch must serve the
+    cached round, never lose it."""
+    ls, df, calls = _fr_setup(tmp_path, monkeypatch)
+    ls.fetch_round("2026-27", 3)
+
+    class _Bad:
+        status_code = 503
+        text = ""
+    import curl_cffi.requests as rq
+    monkeypatch.setattr(rq, "get", lambda *a, **k: _Bad())
+    out = ls.fetch_round("2026-27", 3)
+    assert out is not None and len(out) == 350    # 503 -> cached
+
+    monkeypatch.setattr(ls, "parse",
+                        lambda html: df.head(10))  # under MIN_ROWS floor
+    class _Ok:
+        status_code = 200
+        text = "<html/>"
+    monkeypatch.setattr(rq, "get", lambda *a, **k: _Ok())
+    out = ls.fetch_round("2026-27", 3)
+    assert out is not None and len(out) == 350    # floor -> cached
+
+
+def test_refit_lines_threshold_and_table():
+    from scripts.fantacalcio.tracker import _refit_lines
+    summ = {"rounds": [{"reconciled": True}] * 4,
+            "calibration": {"probabili": {"n": 40, "predicted_rate": 0.88,
+                                          "realized_rate": 0.79}}}
+    assert _refit_lines(summ) is None                    # below the floor
+    summ["rounds"].append({"reconciled": True})
+    lines = _refit_lines(summ)
+    assert lines and "5" in lines[0]
+    assert any("88%" in ln and "79%" in ln and "n=40" in ln for ln in lines)
+    assert _refit_lines({"rounds": [{"reconciled": True}] * 9,
+                         "calibration": {}}) is None     # no data, no push
+
+
+# ── render_xi (shared by weekly push and bot /xi) ─────────────────────────
+
+
+def _mini_adv():
+    def row(nome, r, team="Inter", opp="Como", home=True, **kw):
+        d = {"nome": nome, "R": r, "team": team, "opp": opp, "home": home,
+             "p_play": kw.pop("p_play", 0.9)}
+        d.update(kw)
+        return d
+
+    return {
+        "round": 3, "module": "3-5-2", "total": 62.5, "modifier": 0.0,
+        "generated_at": "2026-09-03T12:00:00+00:00",
+        "feed_ages": {"probabili": 2.0, "indisponibili": 2.0},
+        "xi": [row("Skorupski", "P"), row("Dimarco", "D"),
+               row("Vlasic", "C"), row("Simeone", "A", diffidato=True)],
+        "bench": [row("Theate", "D"), row("Lontani", "P")],
+        "tribuna": [],
+        "unavailable": [{"nome": "Zappacosta", "inj": "infortunato",
+                         "why": "infortunato"}],
+    }
+
+
+def test_render_xi_both_formats_carry_the_board():
+    from scripts.fantacalcio.tracker import render_xi
+
+    msg, tg = render_xi(_mini_adv(), riv=None)
+    for out in (msg, tg):
+        assert "3-5-2" in out and "Giornata 3" in out.replace("giornata", "Giornata")
+        assert "Skorupski" in out and "Theate" in out
+        assert "Zappacosta" in out          # Out line
+        assert "Simeone" in out             # diffidato listed
+    # XI is role-ordered P→D→C→A in the body
+    assert msg.index("Skorupski") < msg.index("Dimarco") < msg.index("Vlasic")
+    # HTML only in the tg variant
+    assert "<b>" in tg and "<b>" not in msg
+
+
+def test_bot_xi_handler_serves_disk_advice(tmp_path, monkeypatch):
+    import scripts.pipeline.telegram_bot as tb
+
+    monkeypatch.setattr(tb, "PROJECT_ROOT", tmp_path)
+    # No file on disk → graceful message, no crash
+    assert "tracker" in tb._handle_xi()
+    assert "rivali" in tb._handle_sfide()
+    # With a real advice file → rendered board + age footer
+    fdir = tmp_path / "data" / "fantacalcio"
+    fdir.mkdir(parents=True)
+    import json as _json
+    (fdir / "xi_advice.json").write_text(_json.dumps(_mini_adv()))
+    out = tb._handle_xi()
+    assert "Skorupski" in out and "aggiornata" in out

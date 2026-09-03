@@ -116,16 +116,28 @@ def parse(html: str, lst: int = LIST_DEFAULT) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+FINALIZE_H = 72.0
+
+
 def fetch_round(season: str, rnd: int, refresh: bool = False) -> pd.DataFrame | None:
     """One round. Returns None when the round has not been played.
 
-    Cached on disk because a played round never changes once the voti settle, and the
-    tracker re-reads every round of the season on each run.
+    Cached on disk. A cache YOUNGER than FINALIZE_H is treated as possibly
+    provisional — fantacalcio.it corrections and voto d'ufficio land a day or
+    two after the round — and re-fetched, but REWRITTEN only when the content
+    actually changed: the mtime then stops moving once the voti settle and
+    the file ages out of the window on its own. Grades, the digest and the
+    pred ledger converge on the FINAL voti with no manual --refresh. (This
+    is the anti-"cache keyed on exists" rule from the project bug catalogue.)
     """
     CACHE.mkdir(parents=True, exist_ok=True)
     path = CACHE / f"round_{season.replace('-', '_')}_{rnd:02d}.parquet"
+    cached = None
     if path.exists() and not refresh:
-        return pd.read_parquet(path)
+        import time as _t
+        if (_t.time() - path.stat().st_mtime) / 3600 > FINALIZE_H:
+            return pd.read_parquet(path)
+        cached = pd.read_parquet(path)
     from curl_cffi import requests as rq
     # Transient network errors (curl 6 DNS / 7 connect) killed the whole
     # tracker run with exit 1 — measured 2026-09-01: same URL served 200
@@ -142,12 +154,17 @@ def fetch_round(season: str, rnd: int, refresh: bool = False) -> pd.DataFrame | 
             last_err = e
             _time.sleep(5 * (_attempt + 1))
     if r is None:
+        if cached is not None:
+            return cached          # finalization re-check must not lose the round
         raise last_err
     if r.status_code != 200:
-        return None
+        return cached
     df = parse(r.text)
     if len(df) < MIN_ROWS:
-        return None
+        return cached
+    if cached is not None and df.reset_index(drop=True).equals(
+            cached.reset_index(drop=True)):
+        return cached              # unchanged: no rewrite, mtime ages out
     df.to_parquet(path, index=False)
     return df
 
