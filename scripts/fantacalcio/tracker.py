@@ -411,13 +411,14 @@ def _vs_block(riv: dict | None) -> tuple[str | None, str | None, dict]:
         comps = " + ".join(g["comps"])
         src = "visto" if r.get("module_src") == "osservato" else "stima"
         pd_ = r.get("p_draw")
-        draw_txt = f" · pari {pd_:.0%}" if pd_ is not None else ""
-        txt.append(f"{comps}: vs {opp} — previsto {r['module']} ({src}, "
-                   f"exp {r['total']}) · P(vittoria) {r['p_win']:.0%}"
-                   + draw_txt)
-        tg.append(f"🆚 <b>{comps}</b>: {opp} — previsto <b>{r['module']}</b> "
-                  f"({src}, exp {r['total']}) · P(vittoria) "
-                  f"<b>{r['p_win']:.0%}</b>" + draw_txt)
+        wdl = f"P(vittoria) {r['p_win']:.0%}"
+        if pd_ is not None:
+            ko = max(1.0 - float(r["p_win"]) - float(pd_), 0.0)
+            wdl += f" · pari {pd_:.0%} · ko {ko:.0%}"
+        txt.append(f"{comps}: vs {opp} — {wdl} — previsto {r['module']} "
+                   f"({src}, exp {r['total']})")
+        tg.append(f"🆚 <b>{comps}</b>: {opp} — <b>{wdl}</b>\n"
+                  f"previsto <b>{r['module']}</b> ({src}, exp {r['total']})")
         if alt:
             ins, outs = ", ".join(alt["in"]), ", ".join(alt["out"])
             gain = (f"E[punti] {alt['e_pts']:.2f}" if alt.get("e_pts")
@@ -724,9 +725,9 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
               for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
               if x.get("avail_note")]
-    msg = (f"Giornata {rnd} — modulo {adv['module']} "
+    msg = ((f"{vs_txt}\n\n" if vs_txt else "")
+           + f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
-           + (f"{vs_txt}\n\n" if vs_txt else "")
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
@@ -736,9 +737,9 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
            + ((lambda fl: f"\n{fl}" if fl else "")(
                _feed_age_line(adv.get("feed_ages"))))
            + ((lambda rl: f"\n{rl}" if rl else "")(_rosters_age_line())))
-    tg = (f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
+    tg = ((f"{vs_tg}\n\n" if vs_tg else "")
+          + f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
-          + (f"{vs_tg}\n\n" if vs_tg else "")
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")

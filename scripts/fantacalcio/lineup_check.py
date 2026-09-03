@@ -33,6 +33,19 @@ P_OFFICIAL_BENCH = 0.15
 P_OFFICIAL_OUT = 0.03
 OUT_COVERAGE_MIN = 0.7   # below this, a missing name is a rename risk, not an exclusion
 MAX_FEED_AGE_H = 3.0
+# Pre-lock alert: once the round's FIRST Serie A match kicks off the
+# formation is FROZEN (Leghe locks at first kickoff) — any move worth making
+# must reach Nicola before then. A P(win) shift of this size (either
+# competition) triggers the push even when my own XI did not change (e.g.
+# the OPPONENT's star turns up benched in the officials).
+P_WIN_ALERT_DELTA = 0.05
+
+
+def _p_win_moves(prev: dict, cur: dict) -> list[str]:
+    '''Competitions whose P(win) moved >= the alert delta. Pure.'''
+    return [f"{c}: P(vittoria) {prev[c]:.0%} → {v:.0%}"
+            for c, v in cur.items()
+            if c in prev and abs(v - prev[c]) >= P_WIN_ALERT_DELTA]
 
 
 def _tokens(name: str) -> tuple[str, ...]:
@@ -221,14 +234,23 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
     if not adv.get("xi"):
         return "no XI buildable"
     ADVICE.write_text(json.dumps(adv, indent=1, ensure_ascii=False))
+    # Rival matrix FRESH from the official-adjusted advice: the pre-lock
+    # P(win) must price the same information the alert is about. Falls back
+    # to the artifact on failure (stale but better than nothing).
+    riv = None
     try:
-        from scripts.fantacalcio.pred_ledger import snapshot
-        riv = None
+        from scripts.fantacalcio.tracker import _stamp_and_write_rivals
+        from scripts.fantacalcio.xi_advisor import build_rivals
+        riv = build_rivals(adv)
+        _stamp_and_write_rivals(riv)
+    except Exception:  # noqa: BLE001, S110 — alert must survive a riv failure
         try:
             riv = json.loads((ROOT / "data" / "fantacalcio"
                               / "rivals.json").read_text())
         except (OSError, ValueError):
             pass
+    try:
+        from scripts.fantacalcio.pred_ledger import snapshot
         snapshot(adv, riv=riv)   # official p_plays reach the ledger (T-60)
     except Exception:  # noqa: BLE001, S110 — advisory side effect only
         pass
@@ -241,31 +263,50 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
     if state.get("round") != rnd or "advice" not in state:
         return "baseline push not sent yet (tracker owns the first push)"
 
-    from scripts.fantacalcio.tracker import _advice_diff
+    from scripts.fantacalcio.tracker import _advice_diff, _vs_block
+    vs_txt, vs_tg, vs_sig = _vs_block(riv)
+    p_now: dict[str, float] = {}
+    rows = {r["team"]: r for r in (riv or {}).get("rivals", [])}
+    for nx in (riv or {}).get("next_opponents", []):
+        r = rows.get(nx.get("opponent"))
+        if r and r.get("p_win") is not None:
+            p_now[nx["competition"]] = float(r["p_win"])
     cur = {"module": adv.get("module"),
            "xi": sorted(x["nome"] for x in adv["xi"]),
            "bench": [x["nome"] for x in adv["bench"]],
-           "vs": (state.get("advice") or {}).get("vs")}
-    sig = json.dumps(cur, sort_keys=True, ensure_ascii=False)
+           "vs": vs_sig}
+    sig = json.dumps({**cur, "p": {c: round(v, 2) for c, v in p_now.items()}},
+                     sort_keys=True, ensure_ascii=False)
     if state.get("official_sig") == sig:
         return "unchanged since last official check"
     diff = _advice_diff(state.get("advice", {}), cur)
+    p_moved = _p_win_moves(state.get("p_win") or {}, p_now)
     n_xi = sum(1 for o in overrides.values() if o["src"] == "official_xi")
-    if not diff:
-        state["official_sig"] = sig
+    if not diff and not p_moved:
+        state.update({"official_sig": sig, "p_win": p_now})
         STATE.write_text(json.dumps(state))
         return f"officials in ({n_xi} confirmed titolari), advice unchanged"
 
+    from datetime import datetime
+
     from scripts.fantacalcio.tracker import _SCHIERA_BTN, _feed_age_line
     from scripts.pipeline.notify import notify
+    # local wall clock (machine tz = Miami) — the lock is the FIRST kickoff
+    lock = datetime.fromtimestamp(float(fk)).strftime("%H:%M")
+    head = f"⏰ Formazione modificabile fino alle {lock}"
+    body = "\n".join(x for x in (vs_txt, diff, *p_moved) if x)
     fl = _feed_age_line(adv.get("feed_ages"))
-    notify(f"Giornata {rnd} — FORMAZIONI UFFICIALI, cambia la formazione\n"
-           f"{diff}" + (f"\n{fl}" if fl else ""),
+    notify(f"{head}\nGiornata {rnd} — FORMAZIONI UFFICIALI\n{body}"
+           + (f"\n{fl}" if fl else ""),
            title="Fantacalcio XI — ufficiali", level="warning",
            category="system",
-           tg_html=(f"<b>🚨 Giornata {rnd} — formazioni UFFICIALI</b>\n{diff}"
+           tg_html=(f"<b>{head}</b>\n"
+                    + (f"{vs_tg}\n" if vs_tg else "")
+                    + f"<b>🚨 Giornata {rnd} — formazioni UFFICIALI</b>"
+                    + (f"\n{diff}" if diff else "")
+                    + ("".join(f"\n📈 {ln}" for ln in p_moved))
                     + (f"\n<i>{fl}</i>" if fl else "")),
            tg_reply_markup=_SCHIERA_BTN)
-    state.update({"advice": cur, "official_sig": sig})
+    state.update({"advice": cur, "official_sig": sig, "p_win": p_now})
     STATE.write_text(json.dumps(state))
     return "pushed official-lineup update"

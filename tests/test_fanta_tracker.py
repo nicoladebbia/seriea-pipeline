@@ -2390,3 +2390,51 @@ def test_sticky_module_ignores_other_rounds(monkeypatch, tmp_path):
     _write_prev_advice(xa, tmp_path, monkeypatch, other, rnd=2)
     adv = xa._sticky_module(best, squad, fixtures, {}, {}, 3)
     assert adv["module"] == best["module"]      # new round chooses freely
+
+
+# ── pre-lock alert pieces (percentages on top, p_win trigger) ───────────
+
+
+def test_p_win_moves_threshold():
+    from scripts.fantacalcio.lineup_check import _p_win_moves
+    prev = {"Coppa Del Nonno": 0.36, "Hunger Games": 0.36}
+    # 6pp move fires, 2pp stays silent, a comp with no baseline never fires
+    out = _p_win_moves(prev, {"Coppa Del Nonno": 0.42,
+                              "Hunger Games": 0.38, "Nuova": 0.10})
+    assert out == ["Coppa Del Nonno: P(vittoria) 36% → 42%"]
+    assert _p_win_moves({}, {"Coppa Del Nonno": 0.99}) == []
+
+
+def test_vs_block_shows_ko_percent():
+    from scripts.fantacalcio.tracker import _vs_block
+    riv = {
+        "me": {"module": "3-4-3"},
+        "next_opponents": [
+            {"competition": "Coppa Del Nonno", "opponent": "Munnezz FC"}],
+        "rivals": [{"team": "Munnezz FC", "module": "4-4-2",
+                    "module_src": "stimato", "total": 63.0,
+                    "p_win": 0.36, "p_draw": 0.30, "alt": None}],
+    }
+    txt, tg, _sig = _vs_block(riv)
+    assert "P(vittoria) 36%" in txt and "pari 30%" in txt and "ko 34%" in txt
+    assert "ko 34%" in tg
+
+
+def test_render_xi_leads_with_percentages():
+    from scripts.fantacalcio.tracker import render_xi
+    adv = {"round": 3, "module": "3-4-3", "total": 63.2, "modifier": 0.0,
+           "xi": [{"R": "P", "nome": "Gk", "team": "Inter", "home": 1,
+                   "opp": "Napoli"}],
+           "bench": [], "unavailable": [], "tribuna": []}
+    riv = {
+        "me": {"module": "3-4-3"},
+        "next_opponents": [
+            {"competition": "Coppa Del Nonno", "opponent": "Munnezz FC"}],
+        "rivals": [{"team": "Munnezz FC", "module": "4-4-2",
+                    "module_src": "stimato", "total": 63.0,
+                    "p_win": 0.36, "p_draw": 0.30, "alt": None}],
+    }
+    msg, tg = render_xi(adv, riv)
+    # the W/D/KO line is the FIRST thing in both renders
+    assert msg.index("P(vittoria)") < msg.index("Giornata 3")
+    assert tg.index("P(vittoria)") < tg.index("Formazione giornata")

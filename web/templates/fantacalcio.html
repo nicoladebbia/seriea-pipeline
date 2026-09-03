@@ -165,6 +165,7 @@
 
   <div class="fc-card" id="fc-formation-card">
     <h2>Formazione consigliata <small id="fc-form-meta"></small></h2>
+    <div id="fc-winprob" style="margin:6px 0 10px;font-size:1.05em"></div>
     <div id="fc-pitch"></div>
     <div id="fc-bench"></div>
     <div id="fc-out"></div>
@@ -666,6 +667,29 @@
       : "calendari non importati";
     $("fc-rivals-meta").textContent =
       `G${riv.round || "?"} · io: ${esc(me.module || "?")} attesi ${fmt(me.total)} — ${banner}`;
+    // W/D/L headline on top of the formation card — the numbers read first
+    const wpEl = $("fc-winprob");
+    if (wpEl) {
+      const byTeam = {};
+      rs.forEach((r) => { byTeam[r.team] = r; });
+      const groups = {};
+      nops.forEach((n) => {
+        const r = n.opponent && byTeam[n.opponent];
+        if (!r || r.p_win == null) return;
+        (groups[n.opponent] = groups[n.opponent] || { comps: [], r }).comps
+          .push(n.competition === "Coppa Del Nonno" ? "CDN" : "HG");
+      });
+      wpEl.innerHTML = Object.entries(groups).map(([opp, g]) => {
+        const w = Math.round(g.r.p_win * 100);
+        const d = g.r.p_draw == null ? null : Math.round(g.r.p_draw * 100);
+        const k = d == null ? null : Math.max(100 - w - d, 0);
+        return `<span style="color:var(--text-secondary)">vs <b>${esc(opp)}</b>` +
+          ` (${g.comps.join(" + ")}):</span> ` +
+          `<b style="color:var(--accent-green)">Vittoria ${w}%</b>` +
+          (d == null ? "" : ` · <b style="color:var(--text-tertiary)">Pari ${d}%</b>` +
+            ` · <b style="color:var(--accent-red)">KO ${k}%</b>`);
+      }).join("<br>") || "";
+    }
     const rows = rs.map((r) => {
       const p = r.p_win == null ? null : Math.round(r.p_win * 100);
       const pCol = p == null ? "var(--text-tertiary)"
