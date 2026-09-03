@@ -169,6 +169,84 @@ def run_scorer_props_check(hours_ahead: float = 1.25) -> str:
            f"{len(out.get('matches') or [])} events; ledger {snap}"
 
 
+REMINDER_WINDOW_H = 2.0
+FIELDED_FILE = ROOT / "data" / "fantacalcio" / "rival_modules.json"
+
+
+def _screenshot_reminder_due(adv: dict, modules_data: dict, state: dict,
+                             now_ts: float) -> tuple[str | None, list[str]]:
+    """(skip_reason, opponents_missing_this_round's_screenshot). Pure.
+
+    Fires only inside REMINDER_WINDOW_H before the round's FIRST kickoff —
+    after that the formation is locked and the photo can no longer change
+    anything — and only once per round (state latch)."""
+    rnd = adv.get("round")
+    fk = adv.get("first_kickoff")
+    if not rnd or not fk:
+        return "no round/kickoff in advice", []
+    if now_ts >= float(fk):
+        return "formation locked", []
+    if float(fk) - now_ts > REMINDER_WINDOW_H * 3600:
+        return "outside reminder window", []
+    if state.get("shot_reminder") == rnd:
+        return "already reminded this round", []
+    opps = [nx.get("opponent") for nx in (adv.get("next_opponents") or [])
+            if nx.get("opponent")]
+    missing = sorted({o for o in opps
+                      if str(rnd) not in (modules_data.get(o) or {})})
+    if not missing:
+        return "screenshots already in", []
+    return None, missing
+
+
+def run_screenshot_reminder(now_ts: float | None = None) -> str:
+    """Nudge Nicola to send the opponent's formation photo BEFORE the lock,
+    so /formazioni can teach the rival matrix the observed module and the
+    pre-lock alert reprices with it. Artifact reads only — never rebuilds."""
+    import time
+    now_ts = now_ts if now_ts is not None else time.time()
+    try:
+        adv = json.loads(ADVICE.read_text())
+    except (OSError, ValueError):
+        return "no advice artifact"
+    try:
+        riv = json.loads((ROOT / "data" / "fantacalcio"
+                          / "rivals.json").read_text())
+        adv = {**adv, "next_opponents": riv.get("next_opponents") or []}
+    except (OSError, ValueError):
+        pass
+    try:
+        modules_data = json.loads(FIELDED_FILE.read_text())
+    except (OSError, ValueError):
+        modules_data = {}
+    try:
+        state = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        state = {}
+    skip, missing = _screenshot_reminder_due(adv, modules_data, state, now_ts)
+    if skip:
+        return skip
+    from datetime import datetime
+
+    from scripts.pipeline.notify import notify
+    lock = datetime.fromtimestamp(float(adv["first_kickoff"])).strftime("%H:%M")
+    opps = ", ".join(missing)
+    notify(f"Manda la foto della formazione di {opps} prima delle {lock} "
+           f"(/formazioni) — la previsione si aggiorna con il modulo vero",
+           title="Fantacalcio — foto avversario", level="warning",
+           category="system",
+           tg_html=(f"<b>📸 Foto avversario</b>\nManda lo screenshot della "
+                    f"formazione di <b>{opps}</b> prima delle <b>{lock}</b> "
+                    f"(/formazioni) — la previsione si aggiorna col modulo "
+                    f"vero."))
+    state["shot_reminder"] = adv.get("round")
+    try:
+        STATE.write_text(json.dumps(state))
+    except OSError:
+        pass
+    return f"reminder sent ({opps})"
+
+
 def _snapshot_ledger() -> str:
     """Refresh the pred-ledger forecast with the CURRENT advice.
 

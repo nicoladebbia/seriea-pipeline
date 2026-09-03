@@ -2438,3 +2438,33 @@ def test_render_xi_leads_with_percentages():
     # the W/D/KO line is the FIRST thing in both renders
     assert msg.index("P(vittoria)") < msg.index("Giornata 3")
     assert tg.index("P(vittoria)") < tg.index("Formazione giornata")
+
+
+# ── opponent-screenshot reminder (pre-lock, once per round) ─────────────
+
+
+def test_screenshot_reminder_gating():
+    from scripts.fantacalcio.lineup_check import _screenshot_reminder_due
+    adv = {"round": 3, "first_kickoff": 10_000.0,
+           "next_opponents": [
+               {"competition": "CDN", "opponent": "Munnezz FC"},
+               {"competition": "HG", "opponent": "Munnezz FC"}]}
+    # in window, no screenshot for round 3 -> due, opponent deduped
+    skip, missing = _screenshot_reminder_due(adv, {}, {}, 9_000.0)
+    assert skip is None and missing == ["Munnezz FC"]
+    # screenshot for THIS round already in -> silent
+    skip, _ = _screenshot_reminder_due(
+        adv, {"Munnezz FC": {"3": "4-4-2"}}, {}, 9_000.0)
+    assert skip == "screenshots already in"
+    # an OLD round's screenshot does not count for round 3
+    skip, missing = _screenshot_reminder_due(
+        adv, {"Munnezz FC": {"2": "4-4-2"}}, {}, 9_000.0)
+    assert skip is None and missing == ["Munnezz FC"]
+    # latch: reminded once this round -> silent
+    skip, _ = _screenshot_reminder_due(adv, {}, {"shot_reminder": 3}, 9_000.0)
+    assert skip == "already reminded this round"
+    # outside the window / after lock -> silent
+    assert _screenshot_reminder_due(adv, {}, {}, 100.0)[0] \
+        == "outside reminder window"
+    assert _screenshot_reminder_due(adv, {}, {}, 10_001.0)[0] \
+        == "formation locked"

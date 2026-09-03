@@ -1031,9 +1031,12 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                 try:
                     from scripts.fantacalcio.lineup_check import (
                         run_scorer_props_check,
+                        run_screenshot_reminder,
                     )
                     log.info("Fanta scorer props: %s",
                              run_scorer_props_check())
+                    log.info("Fanta screenshot reminder: %s",
+                             run_screenshot_reminder())
                 except Exception as e:
                     log.warning(
                         "Fanta scorer props failed (betting unaffected): %s", e)
