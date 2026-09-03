@@ -473,6 +473,47 @@ def _apply_official(rows: list[dict], official: dict[int, dict]) -> None:
             r["p_play_src"] = o["src"]
 
 
+ADVICE = ROOT / "data" / "fantacalcio" / "xi_advice.json"
+# Hysteresis on the recommended MODULE: once a round's advice has shown one,
+# a new best must beat it by this many exp_total fantapunti to displace it.
+# Near-tied modules otherwise flip on every tenth-point input nudge — paid
+# 2026-09-03: 3-5-2 was shown and SAVED on the league site, then the board
+# flipped to 3-4-3 over a 0.15-point bench-recovery edge. HEURISTIC margin;
+# the ledger's per-round module record is the refit path.
+STICKY_MODULE_MARGIN = 1.0
+
+
+def _sticky_module(adv: dict, roster: list, fixtures: dict, elo: dict,
+                   out: dict, rnd: int | None) -> dict:
+    """Keep the previously shown module unless the new best REALLY beats it.
+
+    Re-evaluates the held module under CURRENT inputs (officials included),
+    so a hold is never stale data — only a stable label. A new round, an
+    infeasible previous module, or a gap >= STICKY_MODULE_MARGIN switches."""
+    try:
+        prev = json.loads(ADVICE.read_text())
+    except (OSError, ValueError):
+        return adv
+    pm = prev.get("module")
+    if not pm or prev.get("round") != rnd or pm == adv.get("module"):
+        return adv
+    try:
+        shape = tuple(int(x) for x in pm.split("-"))
+    except ValueError:
+        return adv
+    if len(shape) != 3:
+        return adv
+    held = advise(roster, fixtures, elo, out, modules=[shape])
+    if not held.get("xi"):
+        return adv
+    gap = float(adv.get("exp_total") or 0.0) - float(held.get("exp_total") or 0.0)
+    if gap >= STICKY_MODULE_MARGIN:
+        return adv
+    held["module_held"] = {"over": adv.get("module"),
+                           "gain_forgone": round(max(gap, 0.0), 2)}
+    return held
+
+
 def build_advice(fresh: bool = False,
                  official: dict[int, dict] | None = None) -> dict:
     board = json.loads(BOARD.read_text())
@@ -504,7 +545,8 @@ def build_advice(fresh: bool = False,
     if official:
         _apply_official(roster_src, official)
 
-    adv = advise(roster_src, fixtures, elo, out)
+    adv = _sticky_module(advise(roster_src, fixtures, elo, out),
+                         roster_src, fixtures, elo, out, rnd)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
     return {"generated_at": datetime.now(UTC).isoformat(),
             "round": rnd, "source": source,

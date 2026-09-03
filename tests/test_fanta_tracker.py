@@ -2327,3 +2327,66 @@ def test_mc_totals_shift_by_p_cs():
                                "p_cs": 0.5}, zc, np.random.default_rng(1), 4000)
     delta = float(with_cs.mean() - base.mean())
     assert 0.4 < delta < 0.6      # ~ +p_cs * 1.0 on the mean
+
+
+# ── module hysteresis (_sticky_module) ──────────────────────────────────
+
+
+def _sticky_squad(weak_c=False):
+    """Squad where 3-4-3 and 3-5-2 are near-tied unless weak_c starves the
+    5th midfielder, making 3-5-2 clearly worse."""
+    rows = [{"id": 1, "nome": "Gk", "R": "P", "team": "Inter", "level": 6.0,
+             "voto": 6.0, "p_play": 1.0}]
+    rows += [{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "Inter",
+              "level": 6.0, "voto": 6.0, "p_play": 1.0} for i in range(4)]
+    lvls = [6.5, 6.4, 6.3, 6.2, 2.0 if weak_c else 6.1]
+    rows += [{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "Inter",
+              "level": lv, "voto": 6.0, "p_play": 1.0}
+             for i, lv in enumerate(lvls)]
+    rows += [{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "Inter",
+              "level": 6.15, "voto": 6.0, "p_play": 1.0} for i in range(3)]
+    return rows
+
+
+def _write_prev_advice(xa, tmp_path, monkeypatch, module, rnd=3):
+    import json
+    path = tmp_path / "xi_advice.json"
+    path.write_text(json.dumps({"module": module, "round": rnd}))
+    monkeypatch.setattr(xa, "ADVICE", path)
+
+
+def test_sticky_module_holds_inside_margin(monkeypatch, tmp_path):
+    import scripts.fantacalcio.xi_advisor as xa
+    fixtures = {"Inter": {"opp": "Nessuno FC", "home": 1, "ts": 0}}
+    squad = _sticky_squad()
+    best = xa.advise(squad, fixtures, {}, {})
+    held_from = "3-5-2" if best["module"] != "3-5-2" else "3-4-3"
+    _write_prev_advice(xa, tmp_path, monkeypatch, held_from)
+    adv = xa._sticky_module(best, squad, fixtures, {}, {}, 3)
+    assert adv["module"] == held_from
+    assert adv["module_held"]["over"] == best["module"]
+    assert adv["module_held"]["gain_forgone"] < xa.STICKY_MODULE_MARGIN
+
+
+def test_sticky_module_switches_on_real_gap(monkeypatch, tmp_path):
+    """TRUE POSITIVE: a held module a full 4 points worse must be dropped."""
+    import scripts.fantacalcio.xi_advisor as xa
+    fixtures = {"Inter": {"opp": "Nessuno FC", "home": 1, "ts": 0}}
+    squad = _sticky_squad(weak_c=True)          # 5th C is a 2.0 stub
+    best = xa.advise(squad, fixtures, {}, {})
+    assert best["module"] != "3-5-2"            # precondition: gap is real
+    _write_prev_advice(xa, tmp_path, monkeypatch, "3-5-2")
+    adv = xa._sticky_module(best, squad, fixtures, {}, {}, 3)
+    assert adv["module"] == best["module"]
+    assert "module_held" not in adv
+
+
+def test_sticky_module_ignores_other_rounds(monkeypatch, tmp_path):
+    import scripts.fantacalcio.xi_advisor as xa
+    fixtures = {"Inter": {"opp": "Nessuno FC", "home": 1, "ts": 0}}
+    squad = _sticky_squad()
+    best = xa.advise(squad, fixtures, {}, {})
+    other = "3-5-2" if best["module"] != "3-5-2" else "3-4-3"
+    _write_prev_advice(xa, tmp_path, monkeypatch, other, rnd=2)
+    adv = xa._sticky_module(best, squad, fixtures, {}, {}, 3)
+    assert adv["module"] == best["module"]      # new round chooses freely
