@@ -38,6 +38,7 @@ import pandas as pd
 
 from config.team_names import normalize_team as NT
 from scripts.fantacalcio.probabili import (
+    BALLOT_CLAMP,
     P_DOUBT,
     P_NEWS_CAP,
     P_OUT,
@@ -45,7 +46,10 @@ from scripts.fantacalcio.probabili import (
     feed_age_h,
     fetch_indisponibili,
     fetch_probabili,
+    fetch_rigoristi,
+    fetch_sosfanta,
     p_play_override,
+    rigoristi_by_pid,
     status_by_pid,
 )
 from scripts.fantacalcio.tracker import LEVEL_K, MODULES, SEASON, _modifier, discipline_status
@@ -306,7 +310,7 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         d_elo = (elo.get(p["team"], 1450.0) - elo.get(fx["opp"], 1450.0)) / 100.0
         adj = HOME_ADJ[p["R"]] * fx["home"] + ELO_SLOPE[p["R"]] * d_elo
         pp = float(p.get("p_play", 1.0))
-        exp = None if note else p["level"] + adj
+        exp = None if note else p["level"] + adj + float(p.get("rig_bonus") or 0.0)
         cand.append({**p,
                      "exp": None if exp is None else round(exp, 2),
                      "exp_slot": None if exp is None else round(pp * exp, 2),
@@ -462,6 +466,8 @@ def build_advice(fresh: bool = False,
     prob_data = fetch_probabili(refresh=fresh)
     prob_by_pid = status_by_pid(prob_data)
     avail = fetch_indisponibili(refresh=fresh)
+    sf = fetch_sosfanta(refresh=fresh)
+    rig = rigoristi_by_pid(fetch_rigoristi(refresh=fresh))
     roster_src, source = _my_roster(
         by_id, prob_by_pid, [int(sq["id"]) for sq in board["squad"]])
     congestion = _club_congestion(fixtures)
@@ -472,7 +478,8 @@ def build_advice(fresh: bool = False,
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(roster_src, out, discipline_status())
-    _apply_availability(roster_src, avail, _news_caps())
+    _apply_rigoristi(roster_src, rig)
+    _apply_availability(roster_src, avail, _news_caps(), sf=sf)
     if official:
         _apply_official(roster_src, official)
 
@@ -482,7 +489,8 @@ def build_advice(fresh: bool = False,
             "round": rnd, "source": source,
             "first_kickoff": min(kicks) if kicks else None,
             "feed_ages": {"probabili_h": feed_age_h(prob_data),
-                          "indisponibili_h": feed_age_h(avail)},
+                          "indisponibili_h": feed_age_h(avail),
+                          "sosfanta_h": feed_age_h(sf)},
             **adv}
 
 
@@ -619,8 +627,82 @@ def _avail_lookup(items: list[dict], rows: list[dict]) -> dict[int, dict]:
     return out
 
 
+# p_play_src labels that mean "a probabili page listed this player" — the
+# availability tiers below only annotate these, never override them (the
+# lineup pages are fresher than the injury page; a listed player's injury
+# rides along as avail_note). "titolarita" was MISSING from this set from
+# its introduction until 2026-09-03, which silently inverted the hierarchy
+# for every pct-listed player (393 of 479 listings) once the pct bar
+# replaced the flat P_STARTER tier.
+_LISTED_SRCS = ("probabili", "ballottaggio", "titolarita",
+                "titolarita2", "ballottaggio2", "sosfanta")
+
+
+def _apply_sosfanta(rows: list, sf: dict | None) -> None:
+    """Second probabili source (SosFanta) — mutates p_play in place, BEFORE
+    the availability tiers so _LISTED_SRCS sees the combined labels.
+
+    The page carries its own per-player titolarita pct but no pids, so the
+    join is by name within the club via the same 3-tier unique matcher the
+    indisponibili page uses. Combination rule (each outcome its own ledger
+    bucket, so per-source calibration judges every arm separately):
+      fantacalcio pct  + sosfanta -> mean, "titolarita2"
+      fantacalcio ballot + sosfanta -> mean, "ballottaggio2"
+      flat P_STARTER/P_RESERVE or model prior + sosfanta -> sosfanta pct
+        alone ("sosfanta") — one measurement beats a constant.
+    Unmatched rows are untouched."""
+    if not sf:
+        return
+    lo, hi = BALLOT_CLAMP
+    club_rows: dict[str, list[tuple[int, dict]]] = {}
+    for i, r in enumerate(rows):
+        club_rows.setdefault(r.get("team") or "", []).append((i, r))
+    for team, t in (sf.get("teams") or {}).items():
+        pairs = club_rows.get(team)
+        players = t.get("players") or {}
+        if not pairs or not players:
+            continue
+        items = [{"nome": n, "pct": v} for n, v in players.items()]
+        sub = [r for _, r in pairs]
+        for j, it in _avail_lookup(items, sub).items():
+            r = pairs[j][1]
+            p_sf = min(max(it["pct"] / 100.0, lo), hi)
+            src = r.get("p_play_src")
+            if src == "titolarita":
+                r.update(p_play=round((r["p_play"] + p_sf) / 2, 4),
+                         p_play_src="titolarita2")
+            elif src == "ballottaggio":
+                r.update(p_play=round((r["p_play"] + p_sf) / 2, 4),
+                         p_play_src="ballottaggio2")
+            else:
+                r.update(p_play=p_sf, p_play_src="sosfanta")
+
+
+# Penalty-taker premium, DECLARED HEURISTIC with a refit path (per the
+# real-data directive): league priors ~0.24 pens/team-match x (0.78 conv
+# x +3 fv - 0.22 miss x 3) = +0.40 fv/match for an ever-present rank-1
+# taker. Rank 1 is HALVED because an incumbent taker's level already
+# prices his own past penalty income (double-count); rank 2 takes only
+# the minutes rank 1 is absent. pred_ledger rows carry the rank, so ~5
+# graded rounds fit the residual premium properly.
+RIGORISTA_BONUS = {1: 0.20, 2: 0.06}
+
+
+def _apply_rigoristi(rows: list, rig_by_pid: dict[int, int] | None) -> None:
+    """pid-exact join (the page links carry pids); sets the rank flag and
+    the exp bump advise() consumes. No-op without the feed."""
+    for r in rows:
+        rank = (rig_by_pid or {}).get(int(r.get("id") or 0))
+        if rank:
+            r["rigorista"] = rank
+            b = RIGORISTA_BONUS.get(rank)
+            if b:
+                r["rig_bonus"] = b
+
+
 def _apply_availability(rows: list, avail: dict | None,
-                        news_caps: dict[str, str] | None = None) -> None:
+                        news_caps: dict[str, str] | None = None,
+                        sf: dict | None = None) -> None:
     """Availability tiers BELOW a probabili listing; mutates p_play in place.
 
     Hierarchy (pid-exact fresh beats name-matched):
@@ -636,6 +718,7 @@ def _apply_availability(rows: list, avail: dict | None,
     Every tier labels p_play_src, so pred_ledger's per-source calibration
     grades each one against who actually got a voto.
     """
+    _apply_sosfanta(rows, sf)
     by_club: dict[str, dict[int, dict]] = {}
     club_rows: dict[str, list[tuple[int, dict]]] = {}
     for i, r in enumerate(rows):
@@ -653,7 +736,7 @@ def _apply_availability(rows: list, avail: dict | None,
             continue
         hit = hits.get(i)
         cat = (news_caps or {}).get(r["nome"])
-        if r.get("p_play_src") in ("probabili", "ballottaggio"):
+        if r.get("p_play_src") in _LISTED_SRCS:
             if hit:                      # listed AND on the injured list
                 r["avail_note"] = f"{hit['status']}: {hit['note'][:140]}"
             elif cat:                    # listed, but headlines disagree
@@ -1012,6 +1095,8 @@ def build_rivals(adv: dict | None = None) -> dict:
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
     avail = fetch_indisponibili()
+    sf = fetch_sosfanta()
+    rig = rigoristi_by_pid(fetch_rigoristi())
 
     league = json.loads(
         (ROOT / "data" / "fantacalcio" / "league_rosters.json").read_text())
@@ -1060,7 +1145,8 @@ def build_rivals(adv: dict | None = None) -> dict:
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(my_roster, out, disc)
-    _apply_availability(my_roster, avail, _news_caps())
+    _apply_rigoristi(my_roster, rig)
+    _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
 
@@ -1084,7 +1170,8 @@ def build_rivals(adv: dict | None = None) -> dict:
                 row["congested"] = c["congested"]
                 row["last_comp"] = c["last_comp"]
         _apply_discipline(rows, out, disc)
-        _apply_availability(rows, avail)
+        _apply_rigoristi(rows, rig)
+        _apply_availability(rows, avail, sf=sf)
         obs = _observed_modules(tname)
         radv = advise(rows, fixtures, elo, out, modules=obs or None)
         module_src = "osservato" if obs and radv.get("xi") else "stimato"
@@ -1162,6 +1249,8 @@ def score_observed_xi(team: str, player_names: list[str],
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
     avail = fetch_indisponibili()
+    sf = fetch_sosfanta()
+    rig = rigoristi_by_pid(fetch_rigoristi())
     congestion = _club_congestion(fixtures)
     disc = discipline_status()
 
@@ -1186,7 +1275,8 @@ def score_observed_xi(team: str, player_names: list[str],
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(rows, out, disc)
-    _apply_availability(rows, avail)
+    _apply_rigoristi(rows, rig)
+    _apply_availability(rows, avail, sf=sf)
 
     def _norm(s: str) -> str:
         import unicodedata
@@ -1274,7 +1364,8 @@ def score_observed_xi(team: str, player_names: list[str],
             row["congested"] = c["congested"]
             row["last_comp"] = c["last_comp"]
     _apply_discipline(my_roster, out, disc)
-    _apply_availability(my_roster, avail, _news_caps())
+    _apply_rigoristi(my_roster, rig)
+    _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
     # Like-for-like benches: when their bench is invisible, mine is muted
@@ -1334,6 +1425,8 @@ def build_svincolati(top_n: int = 8) -> dict:
     hist = _history()
     prob_by_pid = status_by_pid(fetch_probabili())
     avail = fetch_indisponibili()
+    sf = fetch_sosfanta()
+    rig = rigoristi_by_pid(fetch_rigoristi())
     # DEPARTED = left Serie A (board status from the wiki-transfers pass) —
     # a free agent you cannot field is not a pickup (Di Gregorio lesson,
     # 2026-09-02: the radar led with a keeper already at Bournemouth).
@@ -1344,7 +1437,8 @@ def build_svincolati(top_n: int = 8) -> dict:
     out = _out_ids(board["players"], fixtures)
     disc = discipline_status()
     _apply_discipline(rows, out, disc)
-    _apply_availability(rows, avail)
+    _apply_rigoristi(rows, rig)
+    _apply_availability(rows, avail, sf=sf)
 
     # my weakest per role (by level), for the upgrade comparison
     team = json.loads((ROOT / "data" / "fantacalcio" / "my_team.json").read_text())

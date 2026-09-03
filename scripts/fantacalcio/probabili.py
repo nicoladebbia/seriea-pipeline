@@ -28,6 +28,27 @@ CACHE_TTL_H = 6.0
 
 INDISP_CACHE = ROOT / "data" / "fantacalcio" / "indisponibili.json"
 INDISP_URL = "https://www.fantacalcio.it/indisponibili-serie-a"
+
+# Second probabili source: SosFanta's per-giornata page. Independent
+# editorial desk, same shape of signal (per-player titolarita %). Names
+# only, no pids (join by name within the club, like the indisponibili
+# page). Specimen verified live 2026-09-03: 10 match blocks, 20 teams,
+# Titolari/Ballottaggi/Panchina/In dubbio/Indisponibili sections, pct
+# badges per player (Paz N. 95, Diao 55), ballots as "A - B" 60-40 pairs.
+# NOTE the similarly-named /news/probabili-formazioni-serie-a/ URL is a
+# FOSSIL — it serves a 2015 article (datePublished checked); only the
+# lista-formazioni path is the live product.
+SOSFANTA_CACHE = ROOT / "data" / "fantacalcio" / "sosfanta.json"
+SOSFANTA_URL = ("https://www.sosfanta.com/lista-formazioni/"
+                "probabili-formazioni-serie-a/")
+
+# Penalty takers, same publisher and card markup as the probabili page.
+# Specimen verified live 2026-09-03 (freshness by CONTENT, not names alone:
+# Dovbyk under Bologna, Kean under Como, Krstovic under Atalanta — all
+# summer-2026 moves listed at the NEW club). Player hrefs carry pids, so
+# the join is by id. The page renders one ranked "Rigori" <ol> per team.
+RIGORISTI_CACHE = ROOT / "data" / "fantacalcio" / "rigoristi.json"
+RIGORISTI_URL = "https://www.fantacalcio.it/rigoristi-serie-a"
 # Availability tiers BELOW a probabili listing (pid-exact fresh beats
 # name-matched). HEURISTICS with a refit path: every value lands in
 # p_play_src, so pred_ledger's per-source calibration grades each tier
@@ -133,6 +154,126 @@ def parse(html: str) -> dict | None:
             "teams": teams, "ballots": ballots}
 
 
+_RIG_COL = re.compile(
+    r'<header class="primary">Rigori</header>(.*?)</ol>', re.S)
+
+
+def parse_rigoristi(html: str) -> dict | None:
+    """None on schema break — callers must fall back to the cache, never {}.
+
+    {"teams": {team: [{"pid", "nome", "rank"}, ...]}} — rank is 1-based
+    list position (the page's own ordering; #1 is the designated taker)."""
+    teams: dict[str, list[dict]] = {}
+    for card in html.split('class="card team-card"')[1:]:
+        tn = _TEAM_SPAN.search(card)
+        col = _RIG_COL.search(card)
+        if not tn or not col:
+            continue
+        takers = []
+        for k, m in enumerate(_PLAYER.finditer(col.group(1))):
+            sp = _SPAN.search(m.group(3))
+            if sp:
+                takers.append({"pid": int(m.group(2)),
+                               "nome": unescape(sp.group(1)).strip(),
+                               "rank": k + 1})
+        teams[unescape(tn.group(1)).strip()] = takers
+    if len(teams) < MIN_TEAMS or sum(1 for t in teams.values() if t) < MIN_TEAMS:
+        return None
+    return {"fetched_at": datetime.now(UTC).isoformat(), "teams": teams}
+
+
+def rigoristi_by_pid(data: dict | None) -> dict[int, int]:
+    """pid -> rank (1 = designated taker)."""
+    out: dict[int, int] = {}
+    for takers in ((data or {}).get("teams") or {}).values():
+        for t in takers:
+            out[int(t["pid"])] = int(t["rank"])
+    return out
+
+
+_SF_TEAM = re.compile(
+    r'<h2 class="[^"]*truncate">([^<]+)</h2>\s*'
+    r'<span class="[^"]*text-primary">([^<]+)</span>', re.S)
+_SF_TIME = re.compile(r'<time datetime="([^"]+)"')
+_SF_H3 = re.compile(
+    r"<h3[^>]*>\s*(Titolari|Ballottaggi|Panchina|In dubbio|Indisponibili)"
+    r"\s*</h3>")
+_SF_UL = re.compile(r'<ul class="flex flex-col min-w-0">(.*?)</ul>', re.S)
+_SF_PLAYER = re.compile(
+    r'>\s*(\d{1,3})%\s*</span>\s*<span[^>]*truncate">([^<]+)</span>')
+_SF_BALLOT = re.compile(
+    r'>\s*(\d{1,3})%\s*</span>\s*<span aria-hidden="true">-</span>\s*'
+    r'<span[^>]*>\s*(\d{1,3})%\s*</span>\s*</div>\s*'
+    r'<span[^>]*truncate">\s*([^<]+?)\s*</span>', re.S)
+_SF_NAME = re.compile(r'<span[^>]*truncate">\s*([^<]+?)\s*</span>')
+_SF_STATUS = re.compile(r'title="([^"]+)"')
+_SF_NOTE = re.compile(r'text-\[#7b809a\]">([^<]*)</span>')
+
+
+def parse_sosfanta(html: str) -> dict | None:
+    """None on schema break — callers must fall back to the cache, never {}.
+
+    Match blocks are segmented by header h2 pairs (home, away — each h2 is
+    followed by its formation span, which is what separates a team header
+    from nav h2s). Every section is a grid of two <ul>s, ul[0]=home,
+    ul[1]=away (verified: Como players carry items-end/text-right)."""
+    heads = list(_SF_TEAM.finditer(html))
+    if len(heads) < 2 or len(heads) % 2:
+        return None
+    teams: dict = {}
+    matches: list[dict] = []
+    n_pct = 0
+    for k in range(0, len(heads), 2):
+        block = html[heads[k].start():
+                     heads[k + 2].start() if k + 2 < len(heads) else len(html)]
+        pair = [unescape(heads[k + i].group(1)).strip() for i in (0, 1)]
+        forms = [heads[k + i].group(2).strip() for i in (0, 1)]
+        tm = _SF_TIME.search(block)
+        kick = tm.group(1) if tm else None
+        matches.append({"home": pair[0], "away": pair[1], "kickoff": kick})
+        sides = [{"formation": forms[i], "kickoff": kick, "players": {},
+                  "out": [], "doubt": []} for i in (0, 1)]
+        secs = list(_SF_H3.finditer(block))
+        for si, sm in enumerate(secs):
+            chunk = block[sm.end():secs[si + 1].start() if si + 1 < len(secs)
+                          else len(block)]
+            uls = _SF_UL.findall(chunk)[:2]
+            for side, ul in zip(sides, uls):
+                if sm.group(1) in ("Titolari", "Panchina"):
+                    for pct, nome in _SF_PLAYER.findall(ul):
+                        side["players"].setdefault(
+                            unescape(nome).strip(), int(pct))
+                        n_pct += 1
+                elif sm.group(1) == "Ballottaggi":
+                    for p1, p2, names in _SF_BALLOT.findall(ul):
+                        parts = unescape(names).split(" - ")
+                        if len(parts) == 2:
+                            for nome, pct in zip(parts, (p1, p2)):
+                                side["players"].setdefault(
+                                    nome.strip(), int(pct))
+                else:                       # In dubbio / Indisponibili
+                    for li in ul.split("<li")[1:]:
+                        nm = _SF_NAME.search(li)
+                        if not nm:
+                            continue
+                        st = _SF_STATUS.search(li)
+                        nt = _SF_NOTE.search(li)
+                        row = {"nome": unescape(nm.group(1)).strip(),
+                               "status": (st.group(1).lower()
+                                          if st else "indisponibile"),
+                               "note": unescape(nt.group(1)).strip()
+                                       if nt else ""}
+                        key = ("doubt" if sm.group(1) == "In dubbio"
+                               else "out")
+                        side[key].append(row)
+        for name, side in zip(pair, sides):
+            teams[name] = side
+    if len(teams) < MIN_TEAMS or n_pct < MIN_STARTERS:
+        return None
+    return {"fetched_at": datetime.now(UTC).isoformat(),
+            "matches": matches, "teams": teams}
+
+
 def feed_age_h(data: dict | None) -> float | None:
     """Hours since the feed was actually FETCHED (None when unknown). The
     caches below serve stale-forever on failure by design, so every consumer
@@ -146,35 +287,52 @@ def feed_age_h(data: dict | None) -> float | None:
         return None
 
 
-def fetch_probabili(refresh: bool = False) -> dict | None:
-    """Cached fetch. On any failure the last good cache is served — the page
-    disappears for hours around deadline sometimes, and stale-but-real beats
-    empty."""
+def _cached_feed(url: str, cache: Path, parse_fn,
+                 refresh: bool = False) -> dict | None:
+    """One cached-fetch contract for every feed in this module: 6h TTL, and
+    on ANY failure (network, 403, schema break) the last good cache is
+    served — the pages disappear for hours around deadline sometimes, and
+    stale-but-real beats empty. feed_age_h is how consumers show staleness."""
     cached = None
     try:
-        cached = json.loads(CACHE.read_text())
+        cached = json.loads(cache.read_text())
     except (OSError, ValueError):
         pass
     if cached and not refresh:
         try:
             age_h = (datetime.now(UTC)
-                     - datetime.fromisoformat(cached["fetched_at"])).total_seconds() / 3600
+                     - datetime.fromisoformat(cached["fetched_at"])
+                     ).total_seconds() / 3600
             if age_h < CACHE_TTL_H:
                 return cached
         except (KeyError, ValueError):
             pass
     try:
         from curl_cffi import requests as rq
-        r = rq.get(URL, impersonate="chrome124", timeout=30)
+        r = rq.get(url, impersonate="chrome124", timeout=30)
         if r.status_code == 200:
-            data = parse(r.text)
+            data = parse_fn(r.text)
             if data is not None:
-                CACHE.parent.mkdir(parents=True, exist_ok=True)
-                CACHE.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps(data, indent=1,
+                                            ensure_ascii=False))
                 return data
     except Exception:
         pass
     return cached
+
+
+def fetch_probabili(refresh: bool = False) -> dict | None:
+    return _cached_feed(URL, CACHE, parse, refresh)
+
+
+def fetch_sosfanta(refresh: bool = False) -> dict | None:
+    return _cached_feed(SOSFANTA_URL, SOSFANTA_CACHE, parse_sosfanta, refresh)
+
+
+def fetch_rigoristi(refresh: bool = False) -> dict | None:
+    return _cached_feed(RIGORISTI_URL, RIGORISTI_CACHE, parse_rigoristi,
+                        refresh)
 
 
 def parse_indisponibili(html: str) -> dict | None:
@@ -221,35 +379,8 @@ def parse_indisponibili(html: str) -> dict | None:
 
 
 def fetch_indisponibili(refresh: bool = False) -> dict | None:
-    """Cached fetch, same contract as fetch_probabili: 6h TTL, on any
-    failure the last good cache is served (stale-but-real beats empty)."""
-    cached = None
-    try:
-        cached = json.loads(INDISP_CACHE.read_text())
-    except (OSError, ValueError):
-        pass
-    if cached and not refresh:
-        try:
-            age_h = (datetime.now(UTC)
-                     - datetime.fromisoformat(cached["fetched_at"])
-                     ).total_seconds() / 3600
-            if age_h < CACHE_TTL_H:
-                return cached
-        except (KeyError, ValueError):
-            pass
-    try:
-        from curl_cffi import requests as rq
-        r = rq.get(INDISP_URL, impersonate="chrome124", timeout=30)
-        if r.status_code == 200:
-            data = parse_indisponibili(r.text)
-            if data is not None:
-                INDISP_CACHE.parent.mkdir(parents=True, exist_ok=True)
-                INDISP_CACHE.write_text(
-                    json.dumps(data, indent=1, ensure_ascii=False))
-                return data
-    except Exception:
-        pass
-    return cached
+    return _cached_feed(INDISP_URL, INDISP_CACHE, parse_indisponibili,
+                        refresh)
 
 
 def status_by_pid(data: dict | None) -> dict[int, dict]:

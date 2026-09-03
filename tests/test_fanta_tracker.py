@@ -349,6 +349,131 @@ def test_p_play_override_sources_and_clamp():
     assert p_play_override(424242, 0.37, by_pid) == (0.37, "model")
 
 
+# ---- SosFanta second source (markup verbatim from the 2026-09-03 live
+# specimen: h2+formation header pairs, two-ul grids per section, pct badge
+# before the truncate name span, ballots as "A - B" with paired badges) ----
+
+from scripts.fantacalcio.probabili import parse_sosfanta  # noqa: E402
+
+
+def _sf_pl(pct, nome):
+    return (f'<li><div><span class="badge"> {pct}% </span>'
+            f'<span class="text-sm truncate">{nome}</span></div></li>')
+
+
+def _sf_match(i):
+    home, away = f"Casa{i}", f"Ospite{i}"
+    xi_h = "".join(_sf_pl(95, f"H{i}n{j}") for j in range(11))
+    xi_a = "".join(_sf_pl(95, f"A{i}n{j}") for j in range(11))
+    ul = '<ul class="flex flex-col min-w-0">'
+    body = (
+        f'<h2 class="t truncate">{home}</h2>'
+        f'<span class="s text-primary">3-5-2</span>'
+        f'<time datetime="2026-09-0{4 + i % 3}T18:45:00.000Z"></time>'
+        f'<h2 class="t truncate">{away}</h2>'
+        f'<span class="s text-primary">4-2-3-1</span>'
+        f"<h3>Titolari</h3>{ul}{xi_h}</ul>{ul}{xi_a}</ul>")
+    if i == 0:
+        body += (
+            f"<h3>Ballottaggi</h3>{ul}"
+            '<li><div><span> 60% </span><span aria-hidden="true">-</span>'
+            '<span> 40% </span></div>'
+            '<span class="x truncate"> H0n0 - Panchinaro </span></li>'
+            f"</ul>{ul}</ul>"
+            f"<h3>Panchina</h3>{ul}{_sf_pl(40, 'Panchinaro')}"
+            f"{_sf_pl(5, 'Terzo')}</ul>{ul}</ul>"
+            f"<h3>In dubbio</h3>{ul}"
+            '<li><div><span class="x truncate">Forse</span></div>'
+            '<span class="text-[#7b809a]">problema muscolare</span></li>'
+            f"</ul>{ul}</ul>"
+            f"<h3>Indisponibili</h3>{ul}"
+            '<li><div><span class="x truncate">Rotto</span>'
+            '<span title="Infortunato"><img></span></div>'
+            '<span class="text-[#7b809a]">stagione finita</span></li>'
+            '<li><div><span class="x truncate">Boh</span></div></li>'
+            f"</ul>{ul}</ul>")
+    return body
+
+
+def _sf_page(n_matches=8):
+    return "<html>" + "".join(_sf_match(i) for i in range(n_matches)) + "</html>"
+
+
+def test_sosfanta_parse_teams_ballots_and_status():
+    d = parse_sosfanta(_sf_page())
+    assert d is not None and len(d["teams"]) == 16 and len(d["matches"]) == 8
+    assert d["matches"][0] == {"home": "Casa0", "away": "Ospite0",
+                               "kickoff": "2026-09-04T18:45:00.000Z"}
+    t = d["teams"]["Casa0"]
+    assert t["formation"] == "3-5-2"
+    assert d["teams"]["Ospite0"]["formation"] == "4-2-3-1"
+    # titolari pct wins over the same player's ballot entry (setdefault)
+    assert t["players"]["H0n0"] == 95
+    # ballot loser folded in from the pair; bench keeps its own badge
+    assert t["players"]["Panchinaro"] == 40 and t["players"]["Terzo"] == 5
+    assert t["doubt"] == [{"nome": "Forse", "status": "indisponibile",
+                           "note": "problema muscolare"}]
+    assert t["out"] == [
+        {"nome": "Rotto", "status": "infortunato", "note": "stagione finita"},
+        {"nome": "Boh", "status": "indisponibile", "note": ""}]
+    # away side of match 0 has none of Casa0's sections bleeding in
+    assert "Panchinaro" not in d["teams"]["Ospite0"]["players"]
+
+
+def _rig_card(name, base_pid):
+    takers = "".join(
+        f'<li><a href="/serie-a/squadre/x/t{k}/{base_pid + k}" '
+        f'class="player-name"><span>T{k}</span></a></li>' for k in range(3))
+    return (f'<div class="card team-card"><span class="team-name">{name}'
+            f'</span><header class="primary">Rigori</header>'
+            f'<ol class="pill-list ranked">{takers}</ol></div>')
+
+
+def test_rigoristi_parse_ranks_and_sentinel():
+    from scripts.fantacalcio.probabili import parse_rigoristi, rigoristi_by_pid
+    page = "".join(_rig_card(f"Team{i}", 2000 + 100 * i) for i in range(20))
+    d = parse_rigoristi(page)
+    assert d is not None and len(d["teams"]) == 20
+    assert d["teams"]["Team0"] == [
+        {"pid": 2000, "nome": "T0", "rank": 1},
+        {"pid": 2001, "nome": "T1", "rank": 2},
+        {"pid": 2002, "nome": "T2", "rank": 3}]
+    assert rigoristi_by_pid(d)[2101] == 2
+    # 2 cards is a broken page — cache fallback, never {}
+    assert parse_rigoristi(_rig_card("A", 1) + _rig_card("B", 5)) is None
+    assert parse_rigoristi("<html>maintenance</html>") is None
+
+
+def test_rigorista_bump_flows_into_exp():
+    """Rank-1 taker outranks an otherwise IDENTICAL teammate by exactly the
+    declared premium; rank 3 gets the flag but no bump (refit handle only)."""
+    from scripts.fantacalcio.xi_advisor import RIGORISTA_BONUS, _apply_rigoristi, advise
+    def mk(pid, nome):
+        return {"id": pid, "nome": nome, "R": "A", "team": "Genoa",
+                "level": 6.5, "voto": 6.0, "sd": 1.0, "p_play": 1.0}
+    rows = ([mk(1, "Taker"), mk(2, "Vice"), mk(3, "Terzo"), mk(4, "Nessuno")]
+            + [mk(10 + i, f"D{i}") for i in range(8)])
+    for i, r in enumerate(rows[4:]):
+        r.update(R="P" if i == 0 else ("D" if i < 5 else "C"), level=6.0)
+    _apply_rigoristi(rows, {1: 1, 2: 2, 3: 3})
+    assert rows[0]["rig_bonus"] == RIGORISTA_BONUS[1]
+    assert rows[1]["rig_bonus"] == RIGORISTA_BONUS[2]
+    assert rows[2] == {**mk(3, "Terzo"), "rigorista": 3}   # flag, no bump
+    assert "rig_bonus" not in rows[3]
+    adv = advise(rows, {"Genoa": {"opp": "Como", "home": 1}},
+                 {"Genoa": 1500.0, "Como": 1500.0}, {})
+    by = {x["nome"]: x for x in adv["xi"] + adv["bench"]}
+    assert round(by["Taker"]["exp"] - by["Nessuno"]["exp"], 2) == 0.20
+    assert round(by["Vice"]["exp"] - by["Nessuno"]["exp"], 2) == 0.06
+
+
+def test_sosfanta_schema_break_returns_none_not_empty():
+    """A 2-match page is a broken page (or the 2015 fossil article) — cache
+    fallback, never {}."""
+    assert parse_sosfanta(_sf_page(n_matches=2)) is None
+    assert parse_sosfanta("<html>maintenance</html>") is None
+
+
 # ---- news surname matching ------------------------------------------------
 
 from scripts.fantacalcio.news import _matcher, _surname  # noqa: E402
@@ -1162,6 +1287,75 @@ def test_apply_availability_hierarchy_and_fold():
     assert by["Blu"]["p_play"] == 0.88 \
         and by["Blu"]["p_play_src"] == "probabili" \
         and by["Blu"]["avail_note"] == "news: infortunio"
+
+
+def test_apply_sosfanta_combines_sources_per_label():
+    from scripts.fantacalcio.xi_advisor import _apply_sosfanta
+    sf = {"teams": {"Genoa": {"players": {
+        "Tito": 90, "Ballo": 70, "Modello": 55, "Flat": 25, "Certo": 99}}}}
+    rows = [
+        {"nome": "Tito", "team": "Genoa", "p_play": 0.8,
+         "p_play_src": "titolarita"},
+        {"nome": "Ballo", "team": "Genoa", "p_play": 0.5,
+         "p_play_src": "ballottaggio"},
+        {"nome": "Modello", "team": "Genoa", "p_play": 0.4,
+         "p_play_src": "model"},
+        {"nome": "Flat", "team": "Genoa", "p_play": 0.88,
+         "p_play_src": "probabili"},
+        {"nome": "Certo", "team": "Genoa", "p_play": 0.4,
+         "p_play_src": "model"},
+        {"nome": "Assente", "team": "Genoa", "p_play": 0.4,
+         "p_play_src": "model"},
+        {"nome": "Altro", "team": "Como", "p_play": 0.4,
+         "p_play_src": "model"},
+    ]
+    _apply_sosfanta(rows, sf)
+    by = {r["nome"]: r for r in rows}
+    assert by["Tito"]["p_play"] == 0.85 \
+        and by["Tito"]["p_play_src"] == "titolarita2"
+    assert by["Ballo"]["p_play"] == 0.6 \
+        and by["Ballo"]["p_play_src"] == "ballottaggio2"
+    assert by["Modello"]["p_play"] == 0.55 \
+        and by["Modello"]["p_play_src"] == "sosfanta"
+    # one measurement beats the flat P_STARTER/P_RESERVE constant
+    assert by["Flat"]["p_play"] == 0.25 \
+        and by["Flat"]["p_play_src"] == "sosfanta"
+    assert by["Certo"]["p_play"] == 0.95            # clamp
+    assert by["Assente"]["p_play_src"] == "model"   # unmatched untouched
+    assert by["Altro"]["p_play_src"] == "model"     # club not on the page
+
+
+def test_titolarita_listing_survives_injury_page():
+    """Restores the documented hierarchy: a probabili LISTING (any pct
+    label) beats the injury page, which only rides along as avail_note.
+    Pre-2026-09-03 the skip tuple lacked 'titolarita', so every pct-listed
+    player (393/479 listings) was silently zeroed by the injury page."""
+    from scripts.fantacalcio.xi_advisor import P_OUT, _apply_availability
+    avail = {"teams": {"Genoa": [
+        {"nome": "Vitinha", "status": "infortunato", "note": "ko"}]}}
+    # TRUE POSITIVE first: an unlisted row IS dropped for this exact
+    # name/club shape — proves the injury match actually fires here.
+    unlisted = [{"nome": "Vitinha", "team": "Genoa", "p_play": 0.9,
+                 "p_play_src": "model"}]
+    _apply_availability(unlisted, avail)
+    assert unlisted[0]["p_play"] == P_OUT \
+        and unlisted[0]["p_play_src"] == "infortunio_sito"
+    # the fix: same player listed with a pct keeps his listing
+    listed = [{"nome": "Vitinha", "team": "Genoa", "p_play": 0.62,
+               "p_play_src": "titolarita"}]
+    _apply_availability(listed, avail)
+    assert listed[0]["p_play"] == 0.62 \
+        and listed[0]["p_play_src"] == "titolarita"
+    assert "infortunato" in listed[0]["avail_note"]
+    # end-to-end with the second source: overlay first (mean, relabel),
+    # then the injury page still only annotates
+    combo = [{"nome": "Vitinha", "team": "Genoa", "p_play": 0.62,
+              "p_play_src": "titolarita"}]
+    sf = {"teams": {"Genoa": {"players": {"Vitinha": 80}}}}
+    _apply_availability(combo, avail, sf=sf)
+    assert combo[0]["p_play"] == 0.71 \
+        and combo[0]["p_play_src"] == "titolarita2"
+    assert "infortunato" in combo[0]["avail_note"]
 
 
 # ---------- blind-spots batch: silent-death visibility (Fix 1) ----------

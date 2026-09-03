@@ -60,6 +60,9 @@ def _row(p: dict, slot: str) -> dict:
     return {"id": p.get("id"), "nome": p["nome"], "R": p["R"], "team": p["team"],
             "slot": slot, "opp": p.get("opp"), "home": p.get("home"),
             "p_play": pp, "p_play_src": p.get("p_play_src"),
+            # rank on the rigoristi page — the refit handle for the
+            # RIGORISTA_BONUS heuristic once ~5 rounds are graded
+            "rigorista": p.get("rigorista"),
             "exp": p.get("exp"), "exp_voto": p.get("exp_voto")}
 
 

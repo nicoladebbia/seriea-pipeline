@@ -688,8 +688,9 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     vs_txt, vs_tg, _ = _vs_block(riv)
     role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
     xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
-    lines = [f"{x['R']} {x['nome']} ({x['team']} "
-             f"{'vs' if x['home'] else '@'} {x['opp']})" for x in xi]
+    lines = [f"{x['R']} {x['nome']}{'®' if x.get('rigorista') == 1 else ''}"
+             f" ({x['team']} {'vs' if x['home'] else '@'} {x['opp']})"
+             for x in xi]
     bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"
            for x in adv["unavailable"]]
