@@ -631,7 +631,7 @@ def _build_telegram_prompt() -> str:
 
 
 # Models — use the same routing logic but simplified for Telegram
-_MODEL_SONNET = "claude-sonnet-4-6"
+_MODEL_SONNET = "claude-sonnet-5"
 _MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 _SONNET_PATTERNS = {
