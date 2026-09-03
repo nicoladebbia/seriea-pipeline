@@ -432,19 +432,23 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "🎲 Risk": "/ladder risk",
     "🎫 My bets": "/mybets",
     "💰 Balance": "/balance",
+    "⚽ XI": "/xi",
+    "🆚 Sfide": "/sfide",
+    "🎯 Picks": "/picks",
 }
 
 
 def _reply_keyboard() -> dict:
-    """WC-only button grid, COLLAPSED by default (Nicola 2026-06-12: the old
+    """Button grid, COLLAPSED by default (Nicola 2026-06-12: the old
     persistent 9-button grid ate half the screen; full removal killed the
     toggle too). one_time_keyboard + not persistent = the grid hides after
     use and lives behind the keyboard toggle icon in the input bar — pops
-    up only when summoned. Slash commands also sit in the left ☰ menu."""
+    up only when summoned. Slash commands also sit in the left ☰ menu.
+    2026-09-03: WC-era buttons replaced by the Serie A + fantacalcio set."""
     return {
         "keyboard": [
-            [{"text": "🌍 World Cup"}, {"text": "🪜 Ladder"}, {"text": "🎲 Risk"}],
-            [{"text": "🎫 My bets"}, {"text": "💰 Balance"}],
+            [{"text": "⚽ XI"}, {"text": "🆚 Sfide"}, {"text": "🎯 Picks"}],
+            [{"text": "⚽ Today"}, {"text": "💰 Bets"}, {"text": "📊 Bankroll"}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
