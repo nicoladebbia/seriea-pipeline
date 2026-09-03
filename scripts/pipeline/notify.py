@@ -2277,6 +2277,23 @@ def notify_daily_digest() -> dict:
         # tomorrow's candidates don't exist until tomorrow's morning run.
         tg.raw("  <i>Candidates generate tomorrow morning; selections arrive "
                "on the T-30 ticket.</i>")
+        # Best angle per tomorrow match — the edge-ranked advisory the slip
+        # carries (in-band only; real money still commits at T-30, edge-gated).
+        try:
+            _bp = (slip.get("best_picks") or []) if isinstance(slip, dict) else []
+            _bp_tmrw = [pk for pk in _bp
+                        if (pk.get("date") or "").startswith(tomorrow_str)
+                        and (pk.get("best") or {}).get("in_band")]
+            if _bp_tmrw and not slip_is_stale:
+                tg.raw("  <b>\U0001f3af Best angles</b> (advisory — /picks for all):")
+                for pk in _bp_tmrw[:6]:
+                    b = pk["best"]
+                    tg.raw(f"    • {_html_escape(str(pk.get('match')))}: "
+                           f"{_html_escape(str(b.get('market')))} "
+                           f"{_html_escape(str(b.get('selection')))} @ {b.get('odds')} "
+                           f"(edge {b.get('edge_pct', 0):+.1f}%)")
+        except Exception as e:
+            log.debug("Digest best-picks section failed: %s", e)
     elif next_bet_date:
         tg.raw(f"\n\U0001f4c5 <b>Next card:</b> {_html_escape(next_bet_date)}")
     else:

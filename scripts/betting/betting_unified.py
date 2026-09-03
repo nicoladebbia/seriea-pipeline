@@ -2971,6 +2971,18 @@ class UnifiedBettingEngine:
         self.all_bets = all_bets
         self._log_near_misses()
 
+        # Advisory: the best-priced angle for EVERY match on the slate,
+        # regardless of whether anything cleared the betting bar. Never
+        # enters the money path.
+        try:
+            self.best_picks = best_pick_per_match(
+                predictions, odds_full, goal_preds, extra_odds, btts_preds,
+                band=(cfg.min_edge_pct, cfg.max_edge_pct))
+            log.info("  Best-pick advisory: %d matches ranked", len(self.best_picks))
+        except Exception as e:
+            self.best_picks = []
+            log.warning("  Best-pick advisory failed (bets unaffected): %s", e)
+
         # -- Portfolio optimization --
         log.info("\nOptimizing portfolio...")
         selected = self.optimize_portfolio(all_bets)
@@ -3038,6 +3050,133 @@ class UnifiedBettingEngine:
             log.debug("Entry timing enrichment skipped: %s", e)
 
         return slip, all_bets
+
+
+def best_pick_per_match(predictions: List[Dict], odds_full: Dict,
+                        goal_preds: List[Dict], extra_odds: Dict,
+                        btts_preds: List[Dict] = None,
+                        band: Tuple[float, float] = (2.0, 12.0)) -> List[Dict]:
+    """One ranked best pick for EVERY match on the gated slate — advisory only.
+
+    Scans every market where we hold BOTH a model probability and a real
+    price: 1X2 (ensemble), O/U half-integer lines (dedicated goals model),
+    DC/DNB (arithmetic on the ensemble), BTTS (noise-tier model, labeled).
+    Ranks by edge = p*best_odds - 1. Tiers: VALIDATED (1X2, O/U) and DERIVED
+    (DC, DNB — same ensemble, thinner market) compete on edge; NOISE (BTTS)
+    can only top a match when nothing validated has a price, and is labeled.
+
+    Edges are only credible inside the betting band: live results showed
+    edges past ~max_edge are model overconfidence (>10% edge = 38% WR),
+    so a pick is `in_band` when band[0] <= edge <= band[1]. In-band picks
+    outrank out-of-band ones regardless of raw edge size; an out-of-band
+    "monster edge" surfaces last and flagged, never as the headline.
+
+    INFORMATIONAL ONLY: this list never touches the money path — journaled
+    bets still come exclusively from the edge-gated scanners above. It exists
+    so every match shows its best-priced angle even when nothing clears the
+    betting bar.
+    """
+    gp_by_match = {g.get("match"): g for g in (goal_preds or [])}
+    btts_by_match = {b.get("match"): b for b in (btts_preds or [])}
+    picks = []
+    for pred in predictions:
+        match = pred.get("match")
+        probs = pred.get("probabilities") or {}
+        ph, pd_, pa = (probs.get("home"), probs.get("draw"), probs.get("away"))
+        if None in (ph, pd_, pa):
+            continue
+        cands = []
+
+        def cand(market, sel, prob, odds, tier, books=99):
+            if not odds or odds <= 1.01 or prob is None or books < 2:
+                return
+            cands.append({"market": market, "selection": sel,
+                          "model_prob": round(float(prob), 4),
+                          "odds": round(float(odds), 2),
+                          "edge_pct": round((float(prob) * float(odds) - 1) * 100, 1),
+                          "tier": tier})
+
+        om = odds_full.get(match) or {}
+        h2h = om.get("h2h") or {}
+        cand("1X2", "Home", ph, h2h.get("best_home"), "validated",
+             h2h.get("bookmakers_count", 0))
+        cand("1X2", "Draw", pd_, h2h.get("best_draw"), "validated",
+             h2h.get("bookmakers_count", 0))
+        cand("1X2", "Away", pa, h2h.get("best_away"), "validated",
+             h2h.get("bookmakers_count", 0))
+
+        xm = extra_odds.get(match) or {}
+        gp = gp_by_match.get(match) or {}
+        # O/U: dedicated goals model carries over_0_5..over_4_5 → half lines only
+        seen_lines = set()
+        def ou_cand(line, best_over, best_under, books):
+            if line in seen_lines or (line * 2) % 2 != 1:
+                return
+            key = f"over_{str(line).replace('.', '_')}"
+            p_over = gp.get(key)
+            if p_over is None:
+                return
+            seen_lines.add(line)
+            cand("O/U", f"Over {line}", p_over, best_over, "validated", books)
+            cand("O/U", f"Under {line}", 1 - p_over, best_under, "validated", books)
+        for t in om.get("totals") or []:
+            try:
+                ou_cand(float(t.get("line")), t.get("best_over"),
+                        t.get("best_under"), t.get("bookmakers_count", 0))
+            except (TypeError, ValueError):
+                continue
+        for line_s, t in (xm.get("alternate_totals") or {}).items():
+            try:
+                ou_cand(float(line_s), t.get("best_over"), t.get("best_under"),
+                        t.get("bookmakers_count", 0))
+            except (TypeError, ValueError):
+                continue
+
+        dc = xm.get("double_chance") or {}
+        for sel, prob in (("1X", ph + pd_), ("X2", pd_ + pa), ("12", ph + pa)):
+            d = dc.get(sel) or {}
+            cand("DC", sel, prob, d.get("best"), "derived",
+                 d.get("bookmakers_count", 0))
+        dnb = xm.get("draw_no_bet") or {}
+        if ph + pa > 0:
+            cand("DNB", "Home", ph / (ph + pa), dnb.get("best_home"),
+                 "derived", dnb.get("bookmakers_count", 0))
+            cand("DNB", "Away", pa / (ph + pa), dnb.get("best_away"),
+                 "derived", dnb.get("bookmakers_count", 0))
+
+        bt = btts_by_match.get(match) or {}
+        bto = xm.get("btts") or {}
+        cand("BTTS", "Yes", bt.get("btts_yes"), bto.get("best_yes"),
+             "noise", bto.get("bookmakers_count", 0))
+        cand("BTTS", "No", bt.get("btts_no"), bto.get("best_no"),
+             "noise", bto.get("bookmakers_count", 0))
+
+        if not cands:
+            continue
+        lo, hi = band
+        for c in cands:
+            c["in_band"] = lo <= c["edge_pct"] <= hi
+        trusted = [c for c in cands if c["tier"] != "noise"]
+        pool = trusted or cands
+        # in-band first (credible edges), then by closeness to the band from
+        # below (a +1% edge beats a +150% mirage), then raw edge
+        pool.sort(key=lambda c: (
+            not c["in_band"],
+            -c["edge_pct"] if c["in_band"] else abs(c["edge_pct"] - hi),
+        ))
+        picks.append({
+            "match": match,
+            "date": pred.get("date"),
+            "time": pred.get("time"),
+            "league": pred.get("league"),
+            "best": pool[0],
+            "top3": pool[:3],
+            "n_markets_scanned": len(cands),
+        })
+    picks.sort(key=lambda x: (not x["best"]["in_band"],
+                              -x["best"]["edge_pct"] if x["best"]["in_band"]
+                              else abs(x["best"]["edge_pct"])))
+    return picks
 
 
 # =============================================================================
@@ -3406,7 +3545,8 @@ def print_monte_carlo(mc: Dict):
 def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                   accumulators: List[AccumulatorBet] = None,
                   dry_run: bool = False,
-                  near_misses: List[Dict] = None) -> Optional[Path]:
+                  near_misses: List[Dict] = None,
+                  best_picks: List[Dict] = None) -> Optional[Path]:
     """Save bet slip to JSON for tracking."""
     output = {
         "generated_at": slip.generated_at,
@@ -3425,6 +3565,9 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
         "rejected_bets": [asdict(b) for b in all_value if not b.is_selected],
         # closest post-edge rejections — why "0 bets" is 0 bets
         "near_misses": list(near_misses or []),
+        # advisory best angle per match (all markets, edge-ranked, tiered) —
+        # informational, never journaled
+        "best_picks": list(best_picks or []),
     }
 
     if accumulators:
@@ -3563,7 +3706,8 @@ def save_report(report: Dict):
     slip = report.get("_slip")
     engine = report.get("_engine")
     if slip and engine:
-        save_bet_slip(slip, engine.all_bets, near_misses=engine.top_near_misses(10))
+        save_bet_slip(slip, engine.all_bets, near_misses=engine.top_near_misses(10),
+                      best_picks=getattr(engine, 'best_picks', []))
     else:
         # No slip/engine attached: nothing to journal. The old fallback wrote
         # data/betting/unified_report.json — a legacy file that froze in
@@ -3706,6 +3850,12 @@ Examples:
     slip, all_bets = engine.run()
 
     if not slip.bets:
+        # Still persist the slip: near_misses and the best-pick advisory are
+        # exactly what a 0-bet day needs on disk (dashboard, /picks, digest).
+        if not cfg.dry_run:
+            save_bet_slip(slip, all_bets,
+                          near_misses=engine.top_near_misses(10),
+                          best_picks=getattr(engine, 'best_picks', []))
         if args.json:
             print(json.dumps({"bets": [], "message": "No value bets found"},
                              indent=2))
@@ -3767,7 +3917,8 @@ Examples:
     # -- Save --
     if not cfg.dry_run:
         save_bet_slip(slip, all_bets, engine.accumulators,
-                      near_misses=engine.top_near_misses(10))
+                      near_misses=engine.top_near_misses(10),
+                      best_picks=getattr(engine, 'best_picks', []))
         n_recorded = record_bets(slip)
         log.info("Recorded %d bets to history tracker", n_recorded)
 

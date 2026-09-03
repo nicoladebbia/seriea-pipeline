@@ -453,25 +453,25 @@ def _reply_keyboard() -> dict:
 
 
 # WC-season command menu — populates Telegram's ☰ menu button at input-left.
-_WC_COMMANDS = [
+_MENU_COMMANDS = [
     {"command": "xi", "description": "⚽ Formazione fantacalcio consigliata"},
     {"command": "sfide", "description": "🆚 Pronostico H2H prossimi avversari"},
-    {"command": "wc", "description": "🌍 Today's World Cup slate + best combos"},
-    {"command": "ladder", "description": "🪜 Today's ladder (add 'risk' for spicy)"},
-    {"command": "mybets", "description": "🎫 My bets + balance"},
-    {"command": "bet", "description": "Log a bet: /bet 60 @ 1.80 Canada win"},
-    {"command": "balance", "description": "💰 Show or set balance"},
-    {"command": "settle", "description": "Settle a free-text bet: won|lost|void"},
-    {"command": "guard", "description": "🛡 Show betting guardrail status"},
-    {"command": "lossstop", "description": "🛑 Set loss-stop limit: /lossstop 50"},
+    {"command": "picks", "description": "🎯 Miglior angolo per ogni partita"},
+    {"command": "today", "description": "📅 Partite di oggi + previsioni"},
+    {"command": "bets", "description": "🎫 Value bet nello slip"},
+    {"command": "live", "description": "🔴 Risultati live"},
+    {"command": "bankroll", "description": "💰 Bilancio, ROI, streak"},
+    {"command": "player", "description": "👤 Scheda giocatore: /player Dzeko"},
+    {"command": "digest", "description": "📰 Riassunto del giorno"},
+    {"command": "help", "description": "❓ Tutti i comandi"},
 ]
 
 
 def _register_commands(token: str):
-    """Register the WC command set → Telegram shows them in the left ☰ menu."""
-    result = _tg_request(token, "setMyCommands", {"commands": _WC_COMMANDS}, timeout=10)
+    """Register the command menu → Telegram shows it in the left ☰ button."""
+    result = _tg_request(token, "setMyCommands", {"commands": _MENU_COMMANDS}, timeout=10)
     if result is not None:
-        log.info("Registered %d WC commands in the menu button", len(_WC_COMMANDS))
+        log.info("Registered %d commands in the menu button", len(_MENU_COMMANDS))
     else:
         log.warning("Failed to register command menu")
 
@@ -671,6 +671,33 @@ _TOOL_STATUS = {
 }
 
 
+_AI_USAGE_FILE = PROJECT_ROOT / "data" / "monitoring" / "tg_ai_usage.json"
+_AI_DAILY_CALLS = int(os.environ.get("TG_AI_DAILY_CALLS", "300"))
+
+
+def _ai_budget_ok() -> bool:
+    """Daily call cap on the bot's Claude usage — a runaway loop or a
+    flooded chat must not run an unbounded API bill. 300 calls/day is far
+    above any human usage; env TG_AI_DAILY_CALLS overrides."""
+    from datetime import date
+    today = date.today().isoformat()
+    try:
+        st = json.loads(_AI_USAGE_FILE.read_text())
+    except (OSError, ValueError):
+        st = {}
+    if st.get("date") != today:
+        st = {"date": today, "calls": 0}
+    if st["calls"] >= _AI_DAILY_CALLS:
+        return False
+    st["calls"] += 1
+    try:
+        _AI_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _AI_USAGE_FILE.write_text(json.dumps(st))
+    except OSError:
+        pass
+    return True
+
+
 def _call_claude(user_message: str, conversation: ConversationManager,
                  token: str, chat_id: str) -> str:
     """Call Claude with tool loop. Returns HTML-formatted response.
@@ -683,6 +710,10 @@ def _call_claude(user_message: str, conversation: ConversationManager,
     api_key = _get_env("ANTHROPIC_API_KEY")
     if not api_key:
         return "ANTHROPIC_API_KEY not configured."
+
+    if not _ai_budget_ok():
+        return ("Limite giornaliero AI raggiunto "
+                f"({_AI_DAILY_CALLS} chiamate). Riparte a mezzanotte.")
 
     client = anthropic.Anthropic(api_key=api_key)
     system_prompt = _build_telegram_prompt()
@@ -1874,6 +1905,39 @@ def _handle_sfide() -> str:
     return head + vs_tg + _fanta_age_note(riv.get("generated_at"))
 
 
+def _handle_picks() -> str:
+    """/picks — the best-priced angle for EVERY upcoming match, edge-ranked.
+
+    Serves best_picks from the unified bet slip (written by the betting
+    engine each run). Advisory: real-money bets remain the edge-gated slip
+    ('/bets'); this shows the top credible angle per game even when nothing
+    clears the betting bar."""
+    try:
+        slip = json.loads((PROJECT_ROOT / "data" / "upcoming"
+                           / "unified_bet_slip.json").read_text())
+    except (OSError, ValueError):
+        return "Nessuno slip su disco — il motore scommesse non ha ancora girato."
+    picks = slip.get("best_picks") or []
+    if not picks:
+        return ("Lo slip attuale non ha ancora la sezione best-pick "
+                "(arriva col prossimo giro del motore).")
+    n_bets = len(slip.get("selected_bets") or [])
+    lines = [f"<b>🎯 Miglior angolo per partita</b> "
+             f"(bet reali in slip: {n_bets})"]
+    for pk in picks[:15]:
+        b = pk.get("best") or {}
+        flag = "✅" if b.get("in_band") else "⚠️"
+        lines.append(
+            f"{flag} {pk.get('date', '?')[5:]} <b>{pk.get('match')}</b>\n"
+            f"     {b.get('market')} {b.get('selection')} @ {b.get('odds')} "
+            f"— edge {b.get('edge_pct', 0):+.1f}%, p={b.get('model_prob', 0):.0%} "
+            f"<i>[{b.get('tier')}]</i>")
+    if any(not (pk.get("best") or {}).get("in_band") for pk in picks[:15]):
+        lines.append("<i>⚠️ = edge fuori banda 2-12%: storicamente "
+                     "overconfidence del modello, non value.</i>")
+    return "\n".join(lines) + _fanta_age_note(slip.get("generated_at"))
+
+
 def _handle_worldcup() -> str:
     """World Cup digest: today's slate + the three best-combo tiers.
 
@@ -2091,36 +2155,36 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
 
 
 def _handle_help() -> str:
-    """Handle /help — all available commands."""
+    """Handle /help — all available commands, grouped by what they serve."""
     from scripts.pipeline.notify import TgMsg
 
     tg = TgMsg()
     tg.raw("<b>SerieAI Commands</b>")
     tg.blank()
-    tg.raw("<b>Quick data:</b>")
-    tg.raw("  /bets \u2014 value bets in the slip")
-    tg.raw("  /parlays \u2014 top parlay picks")
-    tg.raw("  /bankroll \u2014 balance, ROI, streak")
-    tg.raw("  /today \u2014 today's matches + predictions")
-    tg.raw("  /match \u2014 tap a match for full analysis")
-    tg.raw("  /live \u2014 live scores + your bets")
-    tg.raw("  /fill \u2014 ticket lines + confirm a fill (/fill 2 1.95)")
-    tg.raw("  /league \u2014 filter by league (EPL, Serie A)")
-    tg.blank()
-    tg.raw("<b>Reports:</b>")
-    tg.raw("  /digest \u2014 daily summary")
-    tg.raw("  /wc — World Cup: today's slate + best combos")
-    tg.blank()
     tg.raw("<b>Fantacalcio:</b>")
     tg.raw("  /xi \u2014 formazione consigliata della giornata")
     tg.raw("  /sfide \u2014 pronostico H2H vs i prossimi avversari")
     tg.blank()
-    tg.raw("<b>Session:</b>")
-    tg.raw("  /clear \u2014 reset conversation")
+    tg.raw("<b>Serie A betting:</b>")
+    tg.raw("  /picks \u2014 miglior angolo per OGNI partita (tutti i mercati)")
+    tg.raw("  /bets \u2014 value bet nello slip (edge-gated, soldi veri)")
+    tg.raw("  /today \u2014 partite di oggi + previsioni")
+    tg.raw("  /match \u2014 tocca una partita per l'analisi completa")
+    tg.raw("  /live \u2014 risultati live + le tue bet")
+    tg.raw("  /bankroll \u2014 bilancio, ROI, streak")
+    tg.raw("  /player \u2014 scheda giocatore: /player Dzeko")
+    tg.raw("  /digest \u2014 riassunto del giorno")
+    tg.raw("  /league \u2014 filtro per lega (EPL, Serie A)")
+    tg.raw("  /fill \u2014 conferma una giocata (/fill 2 1.95)")
     tg.blank()
-    tg.raw("<b>Natural language:</b>")
-    tg.italic("Just ask anything \u2014 'analyze Milan vs Torino',")
-    tg.italic("'should I bet on this?', 'best bets today'")
+    tg.raw("<b>🤖 AI chat \u2014 scrivimi e basta:</b>")
+    tg.italic("Niente comando: qualsiasi messaggio va all'AI con accesso a")
+    tg.italic("previsioni, quote, bankroll, storico 21 stagioni, fantacalcio.")
+    tg.italic("Es: 'analizza Genoa-Como', 'come sta andando il bankroll?',")
+    tg.italic("'chi schiero in porta?' \u2014 anche screenshot di formazioni.")
+    tg.blank()
+    tg.raw("<b>Legacy World Cup:</b> /wc /ladder /mybets /bet /settle /balance /guard /lossstop")
+    tg.raw("<b>Session:</b> /clear \u2014 reset conversazione")
     return tg.build()
 
 
@@ -2616,6 +2680,10 @@ def _call_claude_with_image(user_text: str, photo: dict,
     api_key = _get_env("ANTHROPIC_API_KEY")
     if not api_key:
         return "ANTHROPIC_API_KEY not configured."
+
+    if not _ai_budget_ok():
+        return ("Limite giornaliero AI raggiunto "
+                f"({_AI_DAILY_CALLS} chiamate). Riparte a mezzanotte.")
 
     client = anthropic.Anthropic(api_key=api_key)
     system_prompt = _build_telegram_prompt()
@@ -4300,6 +4368,9 @@ def run_bot():
                 elif cmd in ("/sfide", "/h2h"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_sfide()
+                elif cmd in ("/picks", "/angoli"):
+                    _tg_send_typing(token, chat_id)
+                    response_text = _handle_picks()
                 elif cmd in ("/wc", "/worldcup"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_worldcup()
