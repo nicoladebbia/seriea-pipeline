@@ -840,6 +840,11 @@ def _push_xi_advice() -> None:
     adv = build_advice()
     (ROOT / "data" / "fantacalcio" / "xi_advice.json").write_text(
         json.dumps(adv, indent=1, ensure_ascii=False))
+    try:
+        from scripts.fantacalcio.xi_advisor import build_round_context
+        build_round_context()
+    except Exception as e:
+        print(f"round context failed (advice unaffected): {e}")
     # Rival matrix FIRST (expected score + win prob vs every league team,
     # both competitions) so the ledger can freeze the H2H forecasts with it.
     riv = None

@@ -44,6 +44,8 @@
   .fc-card h2 small { font-size: 10px; font-weight: 500; color: var(--text-tertiary); }
 
   /* ---- pitch ---- */
+  .fc-ctx { margin-top: 10px; } .fc-ctx summary { cursor: pointer; font-size: 0.85em; opacity: 0.8; }
+  .fc-ctx-xi { font-weight: 600; } .fc-ctx-bn { opacity: 0.65; }
   .fc-pitch { border-radius: var(--radius-lg); padding: 22px 10px 16px; margin-top: 12px;
               background: linear-gradient(180deg, rgba(74,222,128,.10), rgba(74,222,128,.03));
               border: 1px solid rgba(74,222,128,.22); }
@@ -167,6 +169,7 @@
     <h2>Formazione consigliata <small id="fc-form-meta"></small></h2>
     <div id="fc-winprob" style="margin:6px 0 10px;font-size:1.05em"></div>
     <div id="fc-pitch"></div>
+    <div id="fc-roundctx"></div>
     <div id="fc-bench"></div>
     <div id="fc-out"></div>
   </div>
@@ -279,6 +282,35 @@
   }
 
   // ---------- formation ----------
+
+  // Hub -> fanta bridge: the main prediction system's card per fixture of the
+  // round (1X2, xG, draw score) with my exposed players. Times render in the
+  // browser's locale — Nicola's machine, i.e. Miami wall time.
+  function renderRoundCtx(ctx) {
+    const el = $("fc-roundctx");
+    if (!el) return;
+    if (!ctx || !(ctx.fixtures || []).length) { el.innerHTML = ""; return; }
+    const rows = ctx.fixtures.map((f) => {
+      const t = f.ts ? new Date(f.ts * 1000).toLocaleString([], {
+        weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+      const h = f.hub;
+      const probs = h && h.p_home != null
+        ? `${Math.round(h.p_home * 100)}/${Math.round(h.p_draw * 100)}/${Math.round(h.p_away * 100)}%`
+        : "—";
+      const xg = h && h.xg_home != null ? ` · xG ${fmt(h.xg_home, 1)}-${fmt(h.xg_away, 1)}` : "";
+      const mine = (f.mine || []).map((m) =>
+        `<span class="${m.slot === "xi" ? "fc-ctx-xi" : "fc-ctx-bn"}">${esc(m.nome)}</span>`).join(" ");
+      return `<tr><td>${esc(t)}</td><td>${esc(f.home)}–${esc(f.away)}</td>
+        <td class="num" title="P(1/X/2) dal sistema predizioni">${probs}${xg}</td>
+        <td>${mine || ""}</td></tr>`;
+    }).join("");
+    el.innerHTML = `<details class="fc-ctx"><summary>Le 10 partite della giornata
+      — probabilità dal sistema predizioni</summary>
+      <table class="fc-table"><thead><tr><th>Quando</th><th>Partita</th>
+      <th>1/X/2 · xG</th><th>Miei giocatori</th></tr></thead>
+      <tbody>${rows}</tbody></table></details>`;
+  }
+
   function chip(p) {
     const fix = p.opp ? `${p.home ? "vs" : "@"} ${p.opp}` : "";
     return `
@@ -351,6 +383,7 @@
     const lines = ROLES.map((r) =>
       `<div class="fc-line">${adv.xi.filter((p) => p.R === r).map(chip).join("")}</div>`);
     $("fc-pitch").innerHTML = `<div class="fc-pitch">${lines.join("")}</div>`;
+    renderRoundCtx(adv.round_context);
 
     const labels = benchLabels(adv.bench);
     const bench = (adv.bench || []).map((p, i) => `

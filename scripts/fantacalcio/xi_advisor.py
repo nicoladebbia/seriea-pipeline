@@ -546,6 +546,8 @@ def _apply_official(rows: list[dict], official: dict[int, dict]) -> None:
 
 
 ADVICE = ROOT / "data" / "fantacalcio" / "xi_advice.json"
+ROUND_CONTEXT = ROOT / "data" / "fantacalcio" / "round_context.json"
+HUB_PREDICTIONS = ROOT / "data" / "upcoming" / "predictions.json"
 # Hysteresis on the recommended MODULE: once a round's advice has shown one,
 # a new best must beat it by this many exp_total fantapunti to displace it.
 # Near-tied modules otherwise flip on every tenth-point input nudge — paid
@@ -614,6 +616,78 @@ def _frozen_advice(ent: dict, rnd: int) -> dict:
             "tribuna": slots["tribuna"], "unavailable": slots["out"],
             "note": ("giornata in corso — formazione bloccata al primo "
                      "calcio; pagelle e verdetto dopo il turno")}
+
+
+def _round_fixture_list(rnd: int | None) -> list[dict]:
+    """ALL fixtures of the round, played included — _next_fixtures serves
+    only the future ones, which is the wrong universe for round context."""
+    if rnd is None:
+        return []
+    try:
+        raw = json.loads(_fixtures_path().read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for x in raw:
+        if (x.get("roundInfo") or {}).get("round") != rnd:
+            continue
+        h = NT((x.get("homeTeam") or {}).get("name", "")) or ""
+        a = NT((x.get("awayTeam") or {}).get("name", "")) or ""
+        if h and a:
+            out.append({"home": h, "away": a, "ts": x.get("startTimestamp")})
+    return sorted(out, key=lambda f: f.get("ts") or 0)
+
+
+def build_round_context() -> dict | None:
+    """Hub -> fanta bridge: the main prediction system's card for every
+    fixture of the advice round (1X2 probs, expected goals, draw score,
+    confidence, market presence) plus which of MY players are exposed to
+    each game. Written to round_context.json; the dashboard renders it."""
+    try:
+        adv = json.loads(ADVICE.read_text())
+    except (OSError, ValueError):
+        adv = {}
+    rnd = adv.get("round")
+    fixtures = _round_fixture_list(rnd)
+    if not fixtures:
+        return None
+    preds: dict = {}
+    try:
+        pj = json.loads(HUB_PREDICTIONS.read_text())
+        for r in pj.get("predictions", []):
+            # predictions.json is single-league by construction (the league
+            # leak of 2026-08-27 is gated upstream), but stay row-strict.
+            if r.get("league") not in (None, "serie_a"):
+                continue
+            preds[(NT(r.get("home_team") or "") or "",
+                   NT(r.get("away_team") or "") or "")] = r
+    except (OSError, ValueError):
+        pass
+    mine: dict[str, list] = {}
+    for slot in ("xi", "bench"):
+        for pl in adv.get(slot) or []:
+            mine.setdefault(pl.get("team") or "", []).append(
+                {"nome": pl["nome"], "slot": slot})
+    out_fx = []
+    for f in fixtures:
+        r = preds.get((f["home"], f["away"]))
+        card = None
+        if r:
+            bp = r.get("betting_probabilities") or {}
+            card = {"p_home": bp.get("home"), "p_draw": bp.get("draw"),
+                    "p_away": bp.get("away"),
+                    "xg_home": r.get("home_xg"), "xg_away": r.get("away_xg"),
+                    "confidence": r.get("confidence"),
+                    "market": bool((r.get("market_implied") or {}).get("home")),
+                    "draw_score": (r.get("draw_analysis") or {}).get("draw_score")}
+        out_fx.append({**f, "hub": card,
+                       "mine": mine.get(f["home"], []) + mine.get(f["away"], [])})
+    payload = {"round": rnd, "generated_at": datetime.now(UTC).isoformat(),
+               "fixtures": out_fx}
+    tmp = ROUND_CONTEXT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False))
+    tmp.replace(ROUND_CONTEXT)
+    return payload
 
 
 def build_advice(fresh: bool = False,

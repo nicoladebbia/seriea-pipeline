@@ -1394,15 +1394,28 @@ def api_fantacalcio_xi_advisor():
             data = build_advice()
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=1)
-            return jsonify(data)
+            return jsonify(_with_round_context(data))
         except (OSError, ValueError, KeyError, ImportError) as exc:
             app.logger.warning("xi advisor rebuild failed: %s", exc)
     try:
         with open(out, encoding="utf-8") as fh:
-            return jsonify(json.load(fh))
+            return jsonify(_with_round_context(json.load(fh)))
     except (OSError, ValueError):
         return jsonify({"round": None, "xi": [], "bench": [], "unavailable": [],
                         "error": "unavailable"})
+
+
+def _with_round_context(data: dict) -> dict:
+    """Attach the hub->fanta per-fixture card (round_context.json) when it
+    matches the advice round — one payload, no extra request."""
+    try:
+        ctx = json.loads((DATA_DIR / "fantacalcio"
+                          / "round_context.json").read_text())
+        if ctx.get("round") == data.get("round"):
+            data["round_context"] = ctx
+    except (OSError, ValueError):
+        pass
+    return data
 
 
 @app.route("/api/fantacalcio/league")

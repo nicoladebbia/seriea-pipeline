@@ -2906,3 +2906,52 @@ def test_advise_adds_rate_tilt_only_without_market_edge():
     b = {x["nome"]: x for x in base["xi"] + base["bench"]}
     assert g["A0"]["exp"] == round(b["A0"]["exp"] + 0.25, 2)
     assert g["A1"]["exp"] == round(b["A1"]["exp"] + 0.10, 2)   # edge only
+
+
+# ---------------------------------------------------------------------------
+# Hub -> fanta round context (T7).
+
+
+def test_round_context_joins_hub_cards_and_my_exposure(monkeypatch, tmp_path):
+    import json
+    fixtures = [
+        {"roundInfo": {"round": 7}, "startTimestamp": 2000,
+         "homeTeam": {"name": "Inter"}, "awayTeam": {"name": "Napoli"}},
+        {"roundInfo": {"round": 7}, "startTimestamp": 1000,
+         "homeTeam": {"name": "Genoa"}, "awayTeam": {"name": "Como"}},
+        {"roundInfo": {"round": 8}, "startTimestamp": 3000,   # other round: out
+         "homeTeam": {"name": "Roma"}, "awayTeam": {"name": "Lazio"}},
+    ]
+    fxp = tmp_path / "fx.json"
+    fxp.write_text(json.dumps(fixtures))
+    monkeypatch.setattr(xa, "_fixtures_path", lambda: fxp)
+    adv = {"round": 7,
+           "xi": [{"nome": "Douvikas", "team": "Como"}],
+           "bench": [{"nome": "Dimarco", "team": "Inter"}]}
+    ap = tmp_path / "advice.json"
+    ap.write_text(json.dumps(adv))
+    monkeypatch.setattr(xa, "ADVICE", ap)
+    preds = {"predictions": [
+        {"league": "serie_a", "home_team": "Genoa", "away_team": "Como",
+         "betting_probabilities": {"home": 0.12, "draw": 0.30, "away": 0.58},
+         "home_xg": 0.9, "away_xg": 1.8, "confidence": 0.58,
+         "market_implied": {"home": 0.17},
+         "draw_analysis": {"draw_score": 0.26}},
+        {"league": "premier_league", "home_team": "Inter",   # foreign league:
+         "away_team": "Napoli",                              # must be ignored
+         "betting_probabilities": {"home": 0.9, "draw": 0.05, "away": 0.05}},
+    ]}
+    pp = tmp_path / "preds.json"
+    pp.write_text(json.dumps(preds))
+    monkeypatch.setattr(xa, "HUB_PREDICTIONS", pp)
+    outp = tmp_path / "ctx.json"
+    monkeypatch.setattr(xa, "ROUND_CONTEXT", outp)
+    ctx = xa.build_round_context()
+    assert ctx["round"] == 7 and len(ctx["fixtures"]) == 2
+    first, second = ctx["fixtures"]
+    assert first["home"] == "Genoa"                    # sorted by kickoff
+    assert first["hub"]["p_away"] == 0.58 and first["hub"]["market"] is True
+    assert [m["nome"] for m in first["mine"]] == ["Douvikas"]
+    assert second["hub"] is None                       # EPL row never leaks in
+    assert [m["nome"] for m in second["mine"]] == ["Dimarco"]
+    assert json.loads(outp.read_text())["round"] == 7  # persisted atomically
