@@ -342,7 +342,7 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
         return "baseline push not sent yet (tracker owns the first push)"
 
     from scripts.fantacalcio.tracker import _advice_diff, _vs_block
-    vs_txt, vs_tg, vs_sig = _vs_block(riv)
+    vs_txt, vs_tg, vs_sig = _vs_block(riv, adv)
     p_now: dict[str, float] = {}
     rows = {r["team"]: r for r in (riv or {}).get("rivals", [])}
     for nx in (riv or {}).get("next_opponents", []):

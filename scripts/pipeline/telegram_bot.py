@@ -1944,7 +1944,7 @@ def _handle_sfide() -> str:
         return "Nessuna sfida in calendario nel file rivali."
     try:
         from scripts.fantacalcio.tracker import _vs_block
-        _, vs_tg, _ = _vs_block(riv)
+        _, vs_tg, _ = _vs_block(riv, _fanta_json("xi_advice.json") or None)
     except Exception as e:
         log.warning("/sfide render failed: %s", e)
         return f"Sfide non renderizzabili: {e}"

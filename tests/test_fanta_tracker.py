@@ -2521,3 +2521,39 @@ def test_benched_player_vote_still_updates_his_level(tmp_path, monkeypatch):
     assert row["n_rounds"] == 1
     assert row["live_level"] > row["prior_level"]
     assert row["starts"] == 0 and row["points"] == 0.0
+
+
+def test_vs_block_renders_module_grid_with_diffs_vs_advice_xi():
+    """The push shows every formation's win% and who swaps in/out vs the
+    XI actually recommended in the same message."""
+    from scripts.fantacalcio.tracker import _vs_block
+
+    grid = [{"module": "3-4-3", "p_win": 0.37, "p_draw": 0.29, "p_loss": 0.34,
+             "e_pts": 1.40, "exp_total": 70.0, "xi": ["A", "B", "Pellegrino M."]},
+            {"module": "3-5-2", "p_win": 0.36, "p_draw": 0.31, "p_loss": 0.33,
+             "e_pts": 1.39, "exp_total": 69.8, "xi": ["A", "B", "Anguissa"]}]
+    riv = {"next_opponents": [{"competition": "Coppa", "opponent": "Munnezz FC"}],
+           "rivals": [{"team": "Munnezz FC", "module": "4-4-2",
+                       "module_src": "osservato", "total": 69.7,
+                       "p_win": 0.37, "p_draw": 0.29, "alt": None,
+                       "module_grid": grid}],
+           "me": {"module": "3-4-3"}}
+    adv = {"module": "3-4-3",
+           "xi": [{"nome": "A"}, {"nome": "B"}, {"nome": "Pellegrino M."}]}
+
+    txt, tg, sig = _vs_block(riv, adv)
+    assert "Moduli contro Munnezz FC" in txt and "Moduli contro" in tg
+    assert "3-4-3 37% ⭐" in txt                      # recommended, no diff
+    assert "3-5-2 36% — dentro Anguissa, fuori Pellegrino M." in txt
+    assert "<b>36%</b>" in tg
+    # the grid must NOT ride the push-latch signature (MC decimals re-pushing)
+    assert "module_grid" not in str(sig) and "37" not in str(sig)
+
+    # no adv riding along (bot /sfide): diffs fall back to the grid top row
+    txt2, _, _ = _vs_block(riv, None)
+    assert "3-5-2 36% — dentro Anguissa, fuori Pellegrino M." in txt2
+
+    # no grid on the rival row: block renders exactly as before
+    riv["rivals"][0].pop("module_grid")
+    txt3, tg3, _ = _vs_block(riv, adv)
+    assert "Moduli" not in txt3 and "Moduli" not in tg3

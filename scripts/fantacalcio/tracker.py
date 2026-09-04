@@ -383,7 +383,8 @@ def _advice_diff(prev: dict, cur: dict) -> str | None:
     return "\n".join(lines) if lines else None
 
 
-def _vs_block(riv: dict | None) -> tuple[str | None, str | None, dict]:
+def _vs_block(riv: dict | None,
+              adv: dict | None = None) -> tuple[str | None, str | None, dict]:
     """Per-competition opponent forecast + the formation to play AGAINST it.
 
     Reads the rival matrix (rivals.json payload): the opponent's predicted
@@ -441,6 +442,26 @@ def _vs_block(riv: dict | None) -> tuple[str | None, str | None, dict]:
         else:
             txt.append("→ la formazione base è già la migliore contro di loro")
             tg.append("   → la base sopra è già la migliore contro di loro")
+        grid = r.get("module_grid")
+        if grid:
+            # Diffs vs the XI actually recommended in this message (grid-top
+            # when no advice rides along, e.g. the bot's /sfide). Deliberately
+            # NOT part of the sig latch: MC decimals must never re-push.
+            ref = set(sorted(x["nome"] for x in adv["xi"])
+                      if adv and adv.get("xi") else grid[0]["xi"])
+            rec_mod = (adv or {}).get("module") or grid[0]["module"]
+            txt.append(f"Moduli contro {opp}:")
+            tg.append(f"📊 <b>Moduli contro {opp}</b>:")
+            for g_ in grid:
+                names = set(g_["xi"])
+                din = sorted(names - ref)
+                dout = sorted(ref - names)
+                star = " ⭐" if g_["module"] == rec_mod else ""
+                d_ = (f" — dentro {', '.join(din)}, fuori {', '.join(dout)}"
+                      if din or dout else "")
+                txt.append(f"  {g_['module']} {g_['p_win']:.0%}{star}{d_}")
+                tg.append(f"   {g_['module']} <b>{g_['p_win']:.0%}</b>"
+                          f"{star}{d_}")
     return "\n".join(txt), "\n".join(tg), sig
 
 
@@ -712,7 +733,7 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     two can never drift apart in content.
     """
     rnd = adv.get("round")
-    vs_txt, vs_tg, _ = _vs_block(riv)
+    vs_txt, vs_tg, _ = _vs_block(riv, adv)
     role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
     xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
     lines = [f"{x['R']} {x['nome']}{'®' if x.get('rigorista') == 1 else ''}"
@@ -922,7 +943,7 @@ def _push_xi_advice() -> None:
     phase = _push_phase(state, rnd, kick, datetime.now(UTC).timestamp())
     if phase is None:
         return
-    vs_txt, vs_tg, vs_sig = _vs_block(riv)
+    vs_txt, vs_tg, vs_sig = _vs_block(riv, adv)
     cur = {"module": adv.get("module"),
            "xi": sorted(x["nome"] for x in adv["xi"]),
            "bench": [x["nome"] for x in adv["bench"]],
@@ -946,7 +967,7 @@ def _push_xi_advice() -> None:
                 _stamp_and_write_rivals(riv)
             except Exception as e:
                 print(f"fresh rivals rebuild failed (keeping earlier): {e}")
-            vs_txt, vs_tg, vs_sig = _vs_block(riv)
+            vs_txt, vs_tg, vs_sig = _vs_block(riv, adv)
             cur = {"module": adv.get("module"),
                    "xi": sorted(x["nome"] for x in adv["xi"]),
                    "bench": [x["nome"] for x in adv["bench"]],

@@ -1514,6 +1514,16 @@ def build_rivals(adv: dict | None = None) -> dict:
         if {x["nome"] for x in alt["xi"]} != base_names:
             tilted.append((lam, alt))
 
+    # Module menu: my best XI under EVERY module, priced per NEXT opponent so
+    # the push can show what each formation is worth (the XIs are opponent-
+    # independent, so build the seven once and MC-price them per rival below).
+    opp_names = {nx["opponent"] for nx in next_opps if nx.get("opponent")}
+    menu = []
+    for m in MODULES:
+        a = advise(my_roster, fixtures, elo, out, modules=[m])
+        if a.get("xi"):
+            menu.append((f"{m[0]}-{m[1]}-{m[2]}", a))
+
     rivals = []
     for tname, entry in league.get("teams", {}).items():
         if tname == my_name:
@@ -1543,6 +1553,16 @@ def build_rivals(adv: dict | None = None) -> dict:
             continue
         mc0 = h2h_mc(base, radv, seed=_mc_seed(rnd, my_name, tname))
         p0 = mc0["p_win"]
+        grid = None
+        if tname in opp_names:
+            grid = []
+            for mname, a in menu:
+                mg = h2h_mc(a, radv, seed=_mc_seed(rnd, my_name, tname, mname))
+                grid.append({"module": mname, "p_win": mg["p_win"],
+                             "p_draw": mg["p_draw"], "p_loss": mg["p_loss"],
+                             "e_pts": mg["e_pts"], "exp_total": a["exp_total"],
+                             "xi": sorted(x["nome"] for x in a["xi"])})
+            grid.sort(key=lambda g: -g["e_pts"])
         best_alt = None
         for lam, alt in tilted:
             mca = h2h_mc(alt, radv, seed=_mc_seed(rnd, my_name, tname, lam))
@@ -1557,7 +1577,7 @@ def build_rivals(adv: dict | None = None) -> dict:
                             "in": sorted(alt_names - base_names),
                             "out": sorted(base_names - alt_names)}
         rivals.append({"team": tname, "module": radv["module"],
-                       "module_src": module_src,
+                       "module_src": module_src, "module_grid": grid,
                        "total": radv["total"],
                        "exp_total": radv.get("exp_total"),
                        "sd": radv["xi_sd"],
