@@ -163,17 +163,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 #### ⚫ `scraper/fbref_auto_scraper.py` — grade B · keep
 - **Does:** Fully automated FBref scraper using persistent botasaurus browser session with Cloudflare bypass, rate limiting, and per-league support (Serie A, EPL).
 - **Talks to:** imported_by: none; imports: botasaurus.browser (optional), logs to stderr
-- **Quality signals:** 300 LOC, standalone CLI with argparse, proper League/Season configuration, rate-limit tuning per league (4s Serie A, 8s EPL), comprehensive HTML validation. Sits alongside fbref_fast.py and fbref_selenium.py as tier-based fallback options but is not imported.
+- **Quality signals:** 300 LOC, standalone CLI with argparse, proper League/Season configuration, rate-limit tuning per league (4s Serie A, 8s EPL), comprehensive HTML validation. Sits alongside fbref_fast.py as a fallback option but is not imported (fbref_selenium.py deleted 2026-09-04).
 
 #### ⚫ `scraper/fbref_fast.py` — grade B · keep
 - **Does:** Fast FBref scraper with botasaurus browser reuse, parsing full match reports (team stats, player stats, shots) for bulk seasonal data.
 - **Talks to:** imported_by: none; imports: config/settings.py (DATA_DIR, REQUEST_DELAY_SECONDS), config/team_names.py (normalize_team), botasaurus.browser (optional)
 - **Quality signals:** 609 LOC, large FBrefFastScraper class with comprehensive table parsing, match report scraping, fixtures/player stats methods. 403/429 detection with exponential backoff. Well-structured but not called by live modules.
 
-#### ⚫ `scraper/fbref_selenium.py` — grade A · keep
-- **Does:** Fallback FBref scraper using visible Selenium Chrome (Tier 2) or undetected-chromedriver (Tier 3) when botasaurus fails.
-- **Talks to:** imported_by: none; imports: config/settings.py (FBREF_BASE_URL, SERIE_A_COMP_ID), storage/paths.py (html_match_path, html_season_dir), Selenium/undetected-chromedriver (optional)
-- **Quality signals:** 226 LOC, clean FBrefSeleniumScraper class with context manager support (__enter__/__exit__), proper Cloudflare wait logic, dynamic table polling (scrolling), rate limiting. Implements visible (human-like) browsing for bot evasion.
 
 #### 🟢 `scraper/fixtures.py` — grade A · keep
 - **Does:** Scrape Serie A fixture/results page from FBref with date parsing, team normalization, xG extraction, and CSV output for the season.
@@ -1687,25 +1683,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imports from config/team_names (normalize_team function). Imported at runtime by scripts/pipeline/run_full_pipeline.py inside the main pipeline's step 2.5 (refreshing historical odds), specifically calling update_parquet_with_odds() and reading TOTAL_SA_ROWS module-level state.
 - **Quality signals:** Well-documented module docstring and function docstrings. Comprehensive CSV→parquet merge logic with old-to-new column mapping (lines 50-61), robust CSV reading with error handling (lines 74-78), team name normalization (lines 98-99), date parsing with mixed format support (lines 102-105), and deduplication logic (lines 186-188). Type hints absent (no from __future__ import annotations used, though line 7 does import it—inconsistently applied). Global mutable state (TOTAL_SA_ROWS, lines 128, 231) exposed for caller convenience, which is acceptable for a pipeline utility. Some code repetition in the date normalization (line 103-105 vs 162-164) but minor. Logging is clear and informative throughout.
 
-### `tools/` — 3 files
-
-#### 🔧 `tools/generate_download_urls.py` — grade B · **delete**
-- **Does:** Generates FBref URLs and download instructions for manual in-browser HTML downloads, supporting batch manual save workflows with per-season directory organization.
-- **Talks to:** No imports/importers. Standalone CLI script with self-contained FBref URL template logic.
-- **Quality signals:** Well-structured, documented, uses type hints (dict[str, str], list[str]), has docstrings on all functions. 188 LOC. However, superseded by fbref_auto_scraper.py which automates the entire workflow. No test coverage. Has multiple helper functions that are logically sound (generate_season_urls, check_existing_downloads).
-- **Verdict reason:** This script was designed to help with manual Cloudflare bypass via browser (save HTML manually). The project now has fbref_auto_scraper.py which fully automates FBref scraping with Cloudflare handling via Playwright/curl_cffi. The tools/ scripts are one-time developer utilities from the initial commit (Feb 3) with zero git history or active usage. CLAUDE.md project rule: 'One-shot scripts (migrations, backfills, ablations) should be deleted after they run successfully.' This qualifies as a manual workaround now replaced by automation. No production code imports it.
-
-#### 🔧 `tools/open_urls_in_browser.py` — grade B · **delete**
-- **Does:** Opens FBref URLs in default browser tabs with configurable delays, supporting manual per-season HTML download workflows.
-- **Talks to:** Imports from tools/generate_download_urls (generate_season_urls, AVAILABLE_SEASONS). Standalone CLI script, no inbound references.
-- **Quality signals:** Well-documented with clear docstring and usage examples. Type-hinted function signatures. 100 LOC. Portable cross-platform code (macOS/Linux/Windows detection). However, it's a manual workflow helper that relies on generate_download_urls.py for URL generation; no test coverage; the manual save workflow is inherently fragile and is now replaced by fbref_auto_scraper.py.
-- **Verdict reason:** This script automates opening URLs in a browser but still requires manual HTML saves—a partial automation that is fully superseded by fbref_auto_scraper.py. Created Feb 3, no git history, zero production imports. Fits the project rule for one-shot developer utilities that should be deleted when superseded. Keeping it creates maintenance debt and confusion about whether to use the old manual workflow or the new automated one.
-
-#### 🔧 `tools/verify_downloaded_html.py` — grade B · **delete**
-- **Does:** Validates FBref HTML files after download: checks file existence, detects Cloudflare challenge pages, verifies FBref content markers, and attempts table parsing to ensure data integrity.
-- **Talks to:** No imports/importers. Standalone CLI script using only pandas, BeautifulSoup, pathlib, argparse stdlib.
-- **Quality signals:** Well-structured with clear module docstring. Multiple validation functions (check_file_exists, check_not_cloudflare, check_has_fbref_content, check_can_parse_tables) each with type hints and docstrings. 214 LOC. Logical progression of checks. Human-readable output with emoji status indicators and detailed error messages. However, no test coverage; written as a manual verification step in a workflow now automated by fbref_auto_scraper.py which performs these checks inline or via dedicated healthchecks.
-- **Verdict reason:** This script was created as a validation step for manual FBref downloads. The automated fbref_auto_scraper.py workflow eliminates the need for post-hoc manual HTML verification—it validates inline during download or delegates to dedicated health-check scripts. Created Feb 3, only one commit, zero production imports, zero usage in current pipeline. Fits project rule: 'One-shot scripts should be deleted after they run successfully.' Keeping it suggests the manual download workflow is still recommended, which contradicts the move to automation.
 
 ### `tests/` — 23 files
 

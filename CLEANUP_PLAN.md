@@ -27,7 +27,6 @@ Zero importers, but valid standalone backfills/diagnostics/scrapers. Project rul
 - `scraper/cloudflare_solver.py`
 - `scraper/fbref_auto_scraper.py`
 - `scraper/fbref_fast.py`
-- `scraper/fbref_selenium.py`
 - `scraper/upcoming.py`
 - `scraper/xcomp_scraper.py`
 - `scripts/models/generate_match_reasoning.py`
@@ -50,9 +49,6 @@ Zero importers, but valid standalone backfills/diagnostics/scrapers. Project rul
 - `ml/comparison.py`
 - `ml/ou_model.py`
 - `ml/prediction.py`
-- `tools/generate_download_urls.py`
-- `tools/open_urls_in_browser.py`
-- `tools/verify_downloaded_html.py`
 
 ## 3. Architecture gaps — should-be-connected-but-isn't
 Validated all 7 narrator-flagged files against .plans/repo-audit/import_graph.json plus precise import-grep cross-checks. Core finding: ZERO of the 7 are genuine "missing wires" — the narrators' should-be-connected premise is wrong for this file class. They split into three real actions. (1) DEDUPE: subset_alpha_fresh.py and subset_alpha_fresh_epl.py differ by exactly 6 lines (all league-param swaps) — collapse to one league-parametrized file. The narrator's separate "subset_alpha_search is an exact duplicate" claim is FALSE; search.py has genuinely different model-selection logic and stays. (2) DELETE dead twins where a live replacement already exists: formation_analyzer.py (live = features/formation_analysis.py + scripts/prediction/formation_predictor.py); plus three orphans the narrators MISSED — ml/ou_model.py (live = scripts/models/over_under_model.py), ml/meta_learner.py (live = inline MetaLearnerCombiner in ensemble_prediction_engine.py:631), and ml/prediction.py + ml/comparison.py (zero importers, no successor). Wiring any of these in would be wrong — they're superseded. (3) FALSE ALARMS, working as designed: backtest_multimarket.py (narrator's "imports player_xg_model without using it" is false — it instantiates LineupXGPredictor at lines 469-476; and it imports backtest_unified rather than being superseded by it), backtest_player_props.py, calibration_analysis.py, data_quality_report.py — all are __main__ diagnostics/backtests; imported_by=[] is the intended architecture, and the live data-quality wire already exists via health_check.py. Ranked dedupe + dead-twin deletes above false alarms. Key caveat: import_graph.json's imported_by is accurate for module imports but cannot see reimplementations (meta_learner) — I verified the four dead modules with direct grep, not graph alone.

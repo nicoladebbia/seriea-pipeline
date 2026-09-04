@@ -13,7 +13,6 @@
 - **`pipeline/`** — Pipeline step orchestration
 - **`scripts/`** — Standalone scripts (scraping, data processing)
 - **`storage/`** — Data storage abstractions
-- **`tools/`** — Developer tools and utilities
 - **`web/`** — Flask dashboard
 - **`tests/`** — Test suite
 - **`data/`** — Parquet files, trained models, cache (in .claudeignore — 5GB+)
