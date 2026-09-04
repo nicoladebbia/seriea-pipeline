@@ -138,6 +138,21 @@ def snapshot(adv: dict, riv: dict | None = None,
     return "updated"
 
 
+def frozen_entry(rnd: int | None) -> dict | None:
+    """The stored, frozen forecast for a round still in play — or None.
+
+    frozen_at is only ever stamped once the round's first kickoff has passed,
+    so its presence alone means "locked": advisory rebuilds must serve this
+    forecast instead of re-optimizing against the remaining fixtures — which
+    drops already-kicked-off teams as "no fixture this round" and churns the
+    module on the dashboard mid-round (the Douvikas 2026-09-04 complaint).
+    """
+    if rnd is None:
+        return None
+    entry = _load()["rounds"].get(str(rnd))
+    return entry if entry and entry.get("frozen_at") else None
+
+
 def reconcile(now_ts: float | None = None) -> list[int]:
     """Join every ripe, unreconciled round against its voti parquet."""
     now = datetime.now(UTC).timestamp() if now_ts is None else now_ts

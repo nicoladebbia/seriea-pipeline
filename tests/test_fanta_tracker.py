@@ -2700,3 +2700,67 @@ def test_post_lock_snapshot_freezes_instead_of_overwriting(tmp_path, monkeypatch
     assert r3["frozen_at"]
     # and a second post-lock call changes nothing further
     assert pl2.snapshot(adv2, now_ts=lock + 9000) == "skipped-post-kickoff"
+
+
+# ---------------------------------------------------------------------------
+# Mid-round advice freeze (2026-09-04): once the round locks, advice rebuilds
+# must serve the frozen ledger forecast, never re-optimize on the fixtures
+# still to play (which dropped Douvikas as "no fixture this round").
+from pathlib import Path as _Path  # noqa: E402
+
+import scripts.fantacalcio.xi_advisor as xa  # noqa: E402
+
+
+def _frozen_r3_entry(lock=1_000_000.0):
+    return {
+        "snapshot_at": "s", "first_kickoff": lock,
+        "frozen_at": "2026-09-04T21:39:55+00:00", "reconciled_at": None,
+        "module": "3-5-2", "predicted_total": 60.27,
+        "predicted_exp_total": 70.29, "modifier": 0.0,
+        "players": [
+            {"id": 1, "nome": "Skorupski", "R": "P", "team": "Bologna",
+             "slot": "xi", "opp": "Sassuolo", "home": 1, "p_play": 0.93,
+             "exp": 6.6, "exp_voto": 6.2},
+            {"id": 2, "nome": "Douvikas", "R": "A", "team": "Como",
+             "slot": "xi", "opp": "Genoa", "home": 0, "p_play": 0.53,
+             "exp": 6.9, "exp_voto": 6.1},
+            {"id": 3, "nome": "Pessina Mas.", "R": "P", "team": "Monza",
+             "slot": "bench", "opp": "Parma", "home": 0, "p_play": 0.05,
+             "exp": 6.0, "exp_voto": 6.0},
+            {"id": 4, "nome": "Ghost", "R": "C", "team": "Lecce",
+             "slot": "out", "opp": "Cagliari", "home": 0, "p_play": 0.0,
+             "exp": None, "exp_voto": None},
+        ],
+    }
+
+
+def test_build_advice_serves_frozen_forecast_mid_round(monkeypatch):
+    monkeypatch.setattr(xa, "_next_fixtures", lambda: ({}, 3))
+    ent = _frozen_r3_entry()
+    monkeypatch.setattr(xa, "frozen_entry",
+                        lambda rnd: ent if rnd == 3 else None)
+    adv = xa.build_advice()
+    assert adv["locked"] is True and adv["source"] == "frozen"
+    assert adv["module"] == "3-5-2"
+    assert [p["nome"] for p in adv["xi"]] == ["Skorupski", "Douvikas"]
+    assert adv["first_kickoff"] == 1_000_000.0     # ORIGINAL lock, not rolled
+    assert adv["xi"][1]["exp_slot"] == round(0.53 * 6.9, 2)
+    assert adv["unavailable"][0]["why"]            # render never sees None
+
+
+def test_build_advice_unfrozen_round_takes_the_live_path(monkeypatch):
+    """True-positive guard: without a frozen entry the live path runs — proven
+    by it hitting the poisoned BOARD read, which the frozen path never touches."""
+    monkeypatch.setattr(xa, "_next_fixtures", lambda: ({}, 3))
+    monkeypatch.setattr(xa, "frozen_entry", lambda rnd: None)
+    monkeypatch.setattr(xa, "BOARD", _Path("/nonexistent/board.json"))
+    with pytest.raises(OSError):
+        xa.build_advice()
+
+
+def test_frozen_advice_renders_locked_line():
+    from scripts.fantacalcio.tracker import render_xi
+    adv = xa._frozen_advice(_frozen_r3_entry(), 3)
+    msg, tg = render_xi(adv)
+    assert "🔒" in tg and "3-5-2" in tg
+    assert "Douvikas" in msg

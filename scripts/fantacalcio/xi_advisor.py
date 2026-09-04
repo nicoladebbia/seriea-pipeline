@@ -52,6 +52,7 @@ from scripts.fantacalcio.probabili import (
     rigoristi_by_pid,
     status_by_pid,
 )
+from scripts.fantacalcio.pred_ledger import frozen_entry
 from scripts.fantacalcio.tracker import (
     LEVEL_K,
     MODULES,
@@ -572,11 +573,48 @@ def _sticky_module(adv: dict, roster: list, fixtures: dict, elo: dict,
     return held
 
 
+def _frozen_advice(ent: dict, rnd: int) -> dict:
+    """Render the frozen ledger forecast in the advice schema, verbatim.
+
+    Once the round locks (first SA kickoff) the decision is made; rebuilding
+    against the remaining fixtures only produces churn nobody can act on.
+    The stored rows carry everything the Telegram/dashboard renders need;
+    exp_slot is recomputed since _row doesn't persist it.
+    """
+    slots: dict[str, list] = {"xi": [], "bench": [], "tribuna": [], "out": []}
+    for p in ent.get("players", []):
+        row = dict(p)
+        if row.get("exp") is not None and row.get("p_play") is not None:
+            row["exp_slot"] = round(float(row["p_play"]) * float(row["exp"]), 2)
+        if row.get("slot") == "out" and not row.get("why"):
+            row["why"] = "out alla chiusura"
+        slots.get(row.get("slot") or "tribuna", slots["tribuna"]).append(row)
+    return {"generated_at": datetime.now(UTC).isoformat(),
+            "round": rnd, "source": "frozen", "locked": True,
+            "first_kickoff": ent.get("first_kickoff"),
+            "feed_ages": {},
+            "module": ent.get("module"),
+            "total": ent.get("predicted_total"),
+            "exp_total": ent.get("predicted_exp_total"),
+            "modifier": ent.get("modifier") or 0.0,
+            "xi": slots["xi"], "bench": slots["bench"],
+            "tribuna": slots["tribuna"], "unavailable": slots["out"],
+            "note": ("giornata in corso — formazione bloccata al primo "
+                     "calcio; pagelle e verdetto dopo il turno")}
+
+
 def build_advice(fresh: bool = False,
                  official: dict[int, dict] | None = None) -> dict:
+    fixtures, rnd = _next_fixtures()
+    # Round already locked and in play: serve the frozen forecast, never
+    # re-optimize on partial fixtures. Also restores the ORIGINAL
+    # first_kickoff, which lineup_check's deadline guard reads — a rolled-
+    # forward kickoff would re-arm "formation still editable" mid-round.
+    ent = frozen_entry(rnd)
+    if ent is not None:
+        return _frozen_advice(ent, rnd)
     board = json.loads(BOARD.read_text())
     by_id = {int(p["id"]): p for p in board["players"]}
-    fixtures, rnd = _next_fixtures()
     elo = _apply_market_elo(_current_elo(), fixtures)
     out = _out_ids(board["players"], fixtures)
 

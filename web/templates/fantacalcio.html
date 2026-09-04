@@ -344,7 +344,8 @@
     }
     $("fc-form-meta").textContent =
       `giornata ${adv.round} · modulo ${adv.module} · attesi ${fmt(adv.total)} pt ` +
-      `(modificatore difesa +${fmt(adv.modifier, 1)})`;
+      `(modificatore difesa +${fmt(adv.modifier, 1)})` +
+      (adv.locked ? ` · 🔒 ${adv.note || "formazione bloccata"}` : "");
     const lines = ROLES.map((r) =>
       `<div class="fc-line">${adv.xi.filter((p) => p.R === r).map(chip).join("")}</div>`);
     $("fc-pitch").innerHTML = `<div class="fc-pitch">${lines.join("")}</div>`;

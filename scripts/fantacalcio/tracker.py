@@ -757,9 +757,11 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     infirm = [f"{x['nome']} ({x['p_play']:.0%}): {x['avail_note'][:70]}"
               for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
               if x.get("avail_note")]
+    lock_line = f"🔒 {adv['note']}\n" if adv.get("locked") else ""
     msg = ((f"{vs_txt}\n\n" if vs_txt else "")
            + f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+           + lock_line
            + "\n".join(lines)
            + "\nPanchina (in quest'ordine): " + ", ".join(bench)
            + (("\nOut: " + "; ".join(inj)) if inj else "")
@@ -772,6 +774,7 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     tg = ((f"{vs_tg}\n\n" if vs_tg else "")
           + f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
+          + (f"<i>🔒 {adv['note']}</i>\n" if adv.get("locked") else "")
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
