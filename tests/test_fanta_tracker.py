@@ -2468,3 +2468,56 @@ def test_screenshot_reminder_gating():
         == "outside reminder window"
     assert _screenshot_reminder_due(adv, {}, {}, 10_001.0)[0] \
         == "formation locked"
+
+
+def test_benched_player_vote_still_updates_his_level(tmp_path, monkeypatch):
+    """A roster player who PLAYED but sat on my bench must still feed his live
+    level and appearance count. The broken version built per_player from the
+    settable XI only, so a benched player stayed on his auction prior forever
+    (never picked because never seen, never seen because never picked)."""
+    import json
+
+    import scripts.fantacalcio.tracker as tr
+
+    players, pid = [], 1
+    for role, n, proj in (("P", 1, 80.0), ("D", 4, 60.0),
+                          ("C", 5, 50.0), ("A", 4, 70.0)):
+        for i in range(n):
+            players.append({"id": pid, "nome": f"{role}{i}", "R": role,
+                            "team": "X", "mv_hat": 6.0, "season_points": proj})
+            pid += 1
+    bench_pid = pid
+    players.append({"id": bench_pid, "nome": "Panchinaro", "R": "C",
+                    "team": "X", "mv_hat": 6.0, "season_points": 0.0})
+
+    board = {"settings": {"budget": 500,
+                          "mod_table": [[6.0, 1], [6.5, 3], [7.0, 6], [7.5, 9]],
+                          "mod_office": [5.0, 4.5, 4.5]},
+             "players": players, "squad": []}
+    team = {"roster": [{"id": p["id"], "paid": 1} for p in players]}
+    bp, tp = tmp_path / "board.json", tmp_path / "team.json"
+    bp.write_text(json.dumps(board))
+    tp.write_text(json.dumps(team))
+
+    votes = pd.DataFrame([{"pid": p["id"], "voto": 6.0, "fantavoto": 6.0,
+                           "bonus": 0.0, "cards": 0.0, "played": True,
+                           "gs": 0 if p["R"] == "P" else None}
+                          for p in players])
+    votes.loc[votes.pid == bench_pid, ["voto", "fantavoto", "bonus"]] \
+        = [7.5, 10.5, 3.0]
+
+    monkeypatch.setattr(tr, "BOARD", bp)
+    monkeypatch.setattr(tr, "TEAM", tp)
+    monkeypatch.setattr(tr, "played_rounds", lambda season, refresh=False: [1])
+    monkeypatch.setattr(tr, "fetch_round", lambda season, rnd: votes)
+
+    out = tr.build()
+    # True positive precondition: he genuinely sat out the settable XI.
+    fielded = {e["id"] for e in out["rounds"][0]["settable"]["xi"]}
+    assert bench_pid not in fielded
+    agg = {p["nome"]: p for p in out["players"]}
+    assert "Panchinaro" in agg, "benched player's vote never reached the aggregate"
+    row = agg["Panchinaro"]
+    assert row["n_rounds"] == 1
+    assert row["live_level"] > row["prior_level"]
+    assert row["starts"] == 0 and row["points"] == 0.0

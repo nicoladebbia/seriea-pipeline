@@ -230,8 +230,19 @@ def build(season: str = SEASON, refresh: bool = False) -> dict:
                                                 "points": 0.0, "rounds": []})
             d["starts"] += 1
             d["points"] += e["fantavoto"] or 0.0
-            d["rounds"].append({"round": rnd, "fantavoto": e["fantavoto"],
-                                "voto": e["voto"]})
+        # The level/appearance input is every OBSERVED vote of every roster player,
+        # fielded or not. Building it from the settable XI alone locks a benched
+        # player on his auction prior forever: never picked because never seen,
+        # never seen because never picked (Gonzalez G2 10.5 was invisible).
+        for rp in roster:
+            v = votes.get(rp["id"])
+            if not v:
+                continue
+            d = per_player.setdefault(rp["id"], {"nome": rp["nome"], "R": rp["R"],
+                                                 "team": rp["team"], "starts": 0,
+                                                 "points": 0.0, "rounds": []})
+            d["rounds"].append({"round": rnd, "fantavoto": v["fantavoto"],
+                                "voto": v["voto"]})
         rounds.append({"round": rnd, "settable": settable, "hindsight": hindsight})
 
     for pid, d in per_player.items():
