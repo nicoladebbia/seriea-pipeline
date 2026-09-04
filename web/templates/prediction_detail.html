@@ -575,7 +575,7 @@ function getMatchEdges(m) {
 
 function getAgreement(m) {
   const comp = m.component_methods || {};
-  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source','over_under_ml'].includes(k));
   if (methods.length < 2) return null;
   const calls = methods.map(([, p]) => {
     const pH = p.prob_H||0, pD = p.prob_D||0, pA = p.prob_A||0;
@@ -985,7 +985,7 @@ function renderPredictionAnalysis(m) {
   // Ensemble Components
   const comp = m.component_methods || {};
   const wts = m.weights_applied || {};
-  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source','over_under_ml'].includes(k));
   if (methods.length) {
     const nameMap = { ml:'ML CatBoost', market:'Market Odds', xg:'xG Poisson', player_xg:'Player xG', factor:'Factor', deep:'Deep Learn' };
     const order = ['ml','market','xg','player_xg','factor','deep'];
