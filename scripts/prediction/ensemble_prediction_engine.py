@@ -2384,12 +2384,16 @@ class EnsemblePredictor:
         if weights is not None:
             self.weights = weights
         else:
-            # Priority: feedback-optimized (if active) > hardcoded (backtest-validated)
+            # Priority: ledger-refit (holdout-gated) > feedback-optimized (if
+            # active) > hardcoded (backtest-validated).
             # NOTE: BETTING_STRATEGIES weights are NOT used — they are stale relics
             # from an earlier phase with market=0.22 instead of the validated 0.45.
             # ENSEMBLE_WEIGHTS were optimized via LOO CV on 989 matches (2023-2026).
+            ledger = self._load_ledger_weights()
             optimized = self._load_optimized_weights()
-            if optimized:
+            if ledger:
+                self.weights = ledger
+            elif optimized:
                 self.weights = optimized
             else:
                 self.weights = ENSEMBLE_WEIGHTS
@@ -2428,6 +2432,42 @@ class EnsemblePredictor:
         # Track which methods are available
         self.available_methods = []
         self.phase4_features = []  # Track Phase 4 feature availability
+
+    @staticmethod
+    def _load_ledger_weights() -> Optional[Dict[str, float]]:
+        """Load component-ledger refit weights if a gated refit has deployed.
+
+        Written only by scripts.prediction.component_ledger.refit_weights on a
+        holdout log-loss improvement (>=100 ex-ante graded matches, fit shrunk
+        0.5 toward current). Unlike the feedback optimizer, every graded row
+        was frozen pre-kickoff and settled against matches.parquet — the same
+        production conditions this engine runs under (the Phase 6 revert was
+        an offline sweep graded on odds production didn't have).
+        """
+        path = DATA_DIR / "models" / "ensemble_weights.json"
+        if not path.exists():
+            return None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            w = data.get("weights", {})
+            if set(w) != set(ENSEMBLE_WEIGHTS):
+                log.warning("Ledger weights keys %s != expected %s, ignoring",
+                            sorted(w), sorted(ENSEMBLE_WEIGHTS))
+                return None
+            vals = list(w.values())
+            if not all(isinstance(v, (int, float)) and 0.0 <= v <= 0.95 for v in vals):
+                log.warning("Ledger weights out of [0, 0.95], ignoring: %s", w)
+                return None
+            if abs(sum(vals) - 1.0) > 0.01:
+                log.warning("Ledger weights sum to %.3f, ignoring", sum(vals))
+                return None
+            log.info("Loaded ledger-refit ensemble weights (n=%s, fitted %s): %s",
+                     data.get("n_settled", "?"), data.get("fitted_at", "?"), w)
+            return dict(w)
+        except Exception as e:
+            log.debug("Could not load ledger weights: %s", e)
+            return None
 
     @staticmethod
     def _load_optimized_weights() -> Optional[Dict[str, float]]:

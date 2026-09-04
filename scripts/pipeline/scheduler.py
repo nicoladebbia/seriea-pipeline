@@ -835,6 +835,14 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
 
     kickoffs = get_kickoff_times()
 
+    # Component ledger: freeze the current per-component forecasts ex-ante.
+    # Fail-soft — a ledger error must never delay the T-30 bet commit.
+    try:
+        from scripts.prediction import component_ledger
+        component_ledger.snapshot()
+    except Exception as e:
+        log.debug("component ledger snapshot skipped: %s", e)
+
     # Blind-spots guards — BEFORE the horizon early-return, so a Mac that
     # slept through kickoff+3h still reports the missed commit on wake, and
     # the awake hold arms as soon as a kickoff is near. Both fully guarded.
@@ -1576,6 +1584,14 @@ def run_settle() -> bool:
     """
     _maybe_proof_of_edge()
 
+    # Component ledger: snapshot + settle vs matches.parquet + rot alarm +
+    # floor-gated weight refit. Fail-soft — settlement must never block on it.
+    try:
+        from scripts.prediction import component_ledger
+        log.info("component ledger: %s", component_ledger.run())
+    except Exception as e:
+        log.debug("component ledger run skipped: %s", e)
+
     # Check for pending bets even on non-match days (late finishes, postponed games)
     has_pending = False
     try:
@@ -1987,6 +2003,13 @@ def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
     t0 = _t.time()
     success = run_pipeline(bankroll, quick, leagues=leagues)
     elapsed = _t.time() - t0
+
+    # Component ledger sweep after the pipeline refreshed predictions.json.
+    try:
+        from scripts.prediction import component_ledger
+        log.info("component ledger: %s", component_ledger.run())
+    except Exception as e:
+        log.debug("component ledger run skipped: %s", e)
 
     # Infer which schedule this is (morning vs evening) from wall-clock hour
     hour = datetime.now().hour
