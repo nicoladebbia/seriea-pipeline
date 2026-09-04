@@ -10,10 +10,27 @@
 set -u -o pipefail
 ROOT="/Users/nicoladebbia/Projects/seriea-pipeline"
 LOG="$ROOT/logs/fanta_redeploy.log"
+LOCK="$ROOT/logs/.fanta_redeploy.lock"
 cd "$ROOT" || exit 1
+# One redeploy at a time: two quick commits must not run two concurrent
+# tracker rebuilds over the same JSONs. mkdir is atomic; a lock older than
+# 10 min is stale (crashed run) and is taken over.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+  if [ "$age" -lt 600 ]; then
+    echo "=== redeploy $(date '+%F %T') SKIPPED: another run holds the lock (${age}s)" >> "$LOG"
+    exit 0
+  fi
+  rm -rf "$LOCK"; mkdir "$LOCK" || exit 1
+fi
+trap 'rm -rf "$LOCK"' EXIT
 {
   echo "=== redeploy $(date '+%F %T') trigger=${1:-manual} ${2:-}"
-  if ! python3 -m pytest tests/test_fanta_tracker.py -q 2>&1 | tail -2; then
+  # full output kept: a red gate must name the exact assert (an intermittent
+  # failure diagnosed from a summary line is a guess, not a measurement)
+  TESTOUT=$(python3 -m pytest tests/test_fanta_tracker.py -q 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "$TESTOUT"
     echo "TESTS RED -- artifacts NOT rebuilt, services NOT restarted"
     python3 -c "
 from scripts.pipeline.notify import notify
@@ -21,6 +38,7 @@ notify('Fanta redeploy BLOCCATO: test rossi - il sistema serve ancora il codice 
        title='Fanta redeploy', level='warning', category='system')" || true
     exit 1
   fi
+  echo "$TESTOUT" | tail -1
   # normal build path: tracker + advice + rivals; the XI push stays
   # change-gated inside, so an unchanged recommendation redeploys silently
   python3 -m scripts.fantacalcio.tracker 2>&1 | tail -4
