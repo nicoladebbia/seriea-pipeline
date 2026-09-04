@@ -743,6 +743,11 @@ class MLClassifier:
         # boost (e.g. only when raw P(D) > threshold) is designed and validated.
         # See docs/2026-04-28_paper_trade_h4_negative.md.
         self._draw_boost = float(os.environ.get("DRAW_BOOST", "0.0"))
+        # Last prepared feature vector + its drift report, for explain_last()
+        # and the serving-skew tripwire (P1: skewed features served for months
+        # with no instrument to notice).
+        self._last_X = None
+        self.last_drift = None
 
     def _league_model_dir(self) -> Path:
         """Return the model directory for the configured league."""
@@ -962,6 +967,12 @@ class MLClassifier:
 
         try:
             X = self._prepare_features(features)
+            self._last_X = X
+            try:
+                self.last_drift = self._check_drift(X)
+            except Exception as drift_e:
+                log.debug("Drift check failed: %s", drift_e)
+                self.last_drift = None
 
             if self.use_ensemble:
                 # Ensemble blends all 3 models (calibrator already disabled)
@@ -1056,6 +1067,108 @@ class MLClassifier:
             if X[col].isna().any():
                 X[col] = X[col].fillna(train_means.get(col, 0.0))
         return X
+
+    def _get_train_quantiles(self) -> dict:
+        """Per-feature [q0.005, q0.995] training bands, persisted next to the
+        model and rebuilt when features.parquet moves (source_mtime, not the
+        cache's own mtime — the data/parsed lesson)."""
+        if hasattr(self, "_train_quantiles_cache"):
+            return self._train_quantiles_cache
+        self._train_quantiles_cache = {}
+        try:
+            features_path = Path(__file__).parent.parent.parent / "data" / "features" / "features.parquet"
+            qpath = MODELS_DIR / "universal" / "feature_quantiles.json"
+            if not features_path.exists() or not self.feature_names:
+                return self._train_quantiles_cache
+            src_mtime = features_path.stat().st_mtime
+            if qpath.exists():
+                try:
+                    data = json.loads(qpath.read_text())
+                    if (data.get("source_mtime") == src_mtime
+                            and set(self.feature_names)
+                            <= set(data.get("quantiles", {}))):
+                        self._train_quantiles_cache = data["quantiles"]
+                        return self._train_quantiles_cache
+                except (OSError, ValueError):
+                    pass
+            import pandas as _pd
+            import pyarrow.parquet as _pq
+            schema = _pq.read_schema(features_path)
+            available = set(schema.names)
+            cols = [c for c in self.feature_names if c in available]
+            read_cols = cols + (["season"] if "season" in available else [])
+            df = _pd.read_parquet(features_path, columns=list(set(read_cols)))
+            if "season" in df.columns:
+                seasons = sorted(df["season"].dropna().unique())
+                if len(seasons) > 1:
+                    df = df[df["season"] != seasons[-1]]
+            quantiles = {}
+            for col in cols:
+                s = _pd.to_numeric(df[col], errors="coerce").dropna()
+                if len(s) >= 100:
+                    quantiles[col] = [float(s.quantile(0.005)),
+                                      float(s.quantile(0.995))]
+            qpath.write_text(json.dumps({
+                "source_mtime": src_mtime,
+                "built_at": datetime.now(timezone.utc).isoformat(),
+                "n_features": len(quantiles),
+                "quantiles": quantiles,
+            }))
+            self._train_quantiles_cache = quantiles
+            log.info("ML classifier: built %d training quantile bands", len(quantiles))
+        except Exception as e:
+            log.warning("Failed to build training quantiles: %s", e)
+        return self._train_quantiles_cache
+
+    def _check_drift(self, X: pd.DataFrame) -> Optional[Dict]:
+        """Count serving features outside their training [q0.005, q0.995] band."""
+        q = self._get_train_quantiles()
+        if not q or X is None or len(X) == 0:
+            return None
+        row = X.iloc[0]
+        out = []
+        checked = 0
+        for col in X.columns:
+            band = q.get(col)
+            if not band:
+                continue
+            checked += 1
+            lo, hi = band
+            eps = 1e-9 + 0.001 * max(abs(lo), abs(hi))
+            v = float(row[col])
+            if v < lo - eps or v > hi + eps:
+                out.append(col)
+        return {"n_out": len(out), "n_checked": checked, "out": out[:8]}
+
+    def explain_last(self) -> Optional[Dict]:
+        """Top-5 SHAP drivers of the last prediction (single-CatBoost only).
+
+        Uses CatBoost's native ShapValues on the exact served vector; explains
+        the RAW model's argmax class (pre-isotonic — calibration is per-class
+        monotone, so drivers stay meaningful even when the calibrated pick
+        differs)."""
+        if self.use_ensemble or self.model is None or self._last_X is None:
+            return None
+        try:
+            from catboost import Pool
+            arr = np.asarray(self.model.get_feature_importance(
+                type="ShapValues", data=Pool(self._last_X)))
+            if arr.ndim == 3:
+                cls = int(np.argmax(self.model.predict_proba(self._last_X)[0]))
+                row = arr[0, cls, :-1]
+                cls_label = ["H", "D", "A"][cls]
+            else:
+                row, cls_label = arr[0, :-1], None
+            names = list(self._last_X.columns)
+            top = np.argsort(-np.abs(row))[:5]
+            return {"class": cls_label,
+                    "drivers": [{"feature": names[i],
+                                 "value": round(float(self._last_X.iloc[0, i]), 4),
+                                 "shap": round(float(row[i]), 4)}
+                                for i in top if abs(row[i]) > 1e-9]}
+        except Exception as e:
+            log.debug("SHAP explain failed: %s", e)
+            return None
 
 
 # =============================================================================
@@ -2768,11 +2881,14 @@ class EnsemblePredictor:
                 }
 
         # 3. ML CLASSIFIER PREDICTION
+        ml_explain = ml_drift = None
         if "ml" in self.available_methods and match_features is not None:
             ml_result = self.ml_classifier.predict(match_features)
             if ml_result:
                 predictions["ml"] = ml_result
                 component_probs["ml"] = ml_result
+                ml_explain = self.ml_classifier.explain_last()
+                ml_drift = self.ml_classifier.last_drift
 
         # 4. PLAYER XG PREDICTION
         if "player_xg" in self.available_methods:
@@ -3031,6 +3147,12 @@ class EnsemblePredictor:
             "strategy": self.strategy,
             "lineup_source": lineup_source,
         }
+
+        # ML explainability + serving-skew tripwire
+        if ml_explain:
+            result["ml_reasons"] = ml_explain
+        if ml_drift:
+            result["ml_drift"] = ml_drift
 
         # Add draw analysis if available
         if draw_analysis:

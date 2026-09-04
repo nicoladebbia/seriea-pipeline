@@ -41,6 +41,7 @@ ROT_BRIER_DELTA = 0.04
 REFIT_N = 100         # settled rows with all core components before refit
 REFIT_HOLDOUT = 0.2   # newest slice, time-ordered
 REFIT_SHRINK = 0.5    # pull fitted weights halfway toward current
+DRIFT_ALERT_N = 15    # serving features outside the training band per row
 
 
 def _load() -> dict:
@@ -138,6 +139,7 @@ def snapshot(now_ts: float | None = None) -> dict:
             "ensemble": {k: round(float(v), 4) for k, v in bp.items()
                          if isinstance(v, (int, float))},
             "ml_reasons": r.get("ml_reasons"),
+            "ml_drift": r.get("ml_drift"),
             "settled_at": (entry or {}).get("settled_at"),
             "outcome": (entry or {}).get("outcome"),
             "grades": (entry or {}).get("grades"),
@@ -257,6 +259,30 @@ def rot_alarm() -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def drift_alarm() -> str | None:
+    """Change-gated serving-skew alert: an upcoming row whose ML feature
+    vector has >= DRIFT_ALERT_N features outside the training quantile band
+    (the P1 signature — cache-served rows were skewed for months, silently).
+    Fires on the none->degraded transition, clears when no row is skewed."""
+    led = _load()
+    bad = []
+    for e in led["matches"].values():
+        d = e.get("ml_drift") or {}
+        if not e.get("settled_at") and d.get("n_out", 0) >= DRIFT_ALERT_N:
+            bad.append(f"{e['home']}–{e['away']}: {d['n_out']}/{d.get('n_checked', '?')} "
+                       f"features fuori banda training ({', '.join(d.get('out', [])[:4])}…)")
+    state = led.setdefault("alarm_state", {})
+    fired = None
+    if bad and state.get("ml_drift") != "degraded":
+        state["ml_drift"] = "degraded"
+        fired = "\n".join(bad[:6])
+        _save(led)
+    elif not bad and state.get("ml_drift") == "degraded":
+        state["ml_drift"] = "ok"
+        _save(led)
+    return fired
+
+
 def _mix_ll(rows: list[dict], w: dict) -> float:
     tot = 0.0
     for e in rows:
@@ -334,6 +360,15 @@ def run(now_ts: float | None = None) -> str:
     """snapshot + settle + rot alarm + (floor-gated) refit — one line out."""
     snap = snapshot(now_ts)
     n = settle()
+    drift = drift_alarm()
+    if drift:
+        try:
+            from scripts.pipeline.notify import notify
+            notify("ML feature drift\n" + drift, title="Ensemble — ML drift",
+                   level="alert", category="alert",
+                   tg_html="<b>⚠️ ML serving drift</b>\n" + drift)
+        except Exception:
+            pass
     alarm = rot_alarm()
     if alarm:
         try:

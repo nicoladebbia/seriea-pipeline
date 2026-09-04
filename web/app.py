@@ -3602,6 +3602,8 @@ def api_dashboard():
 
             # Component methods
             "component_methods": pred.get("component_predictions", pred.get("component_methods", pred.get("method_predictions", {}))),
+            "ml_reasons": pred.get("ml_reasons"),
+            "ml_drift": pred.get("ml_drift"),
 
             # Draw analysis
             "draw_analysis": pred.get("draw_analysis", {}),

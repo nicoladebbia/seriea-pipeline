@@ -151,3 +151,62 @@ def test_engine_loader_validates_and_loads(monkeypatch, tmp_path):
     assert load() is None                                    # weight > 0.95
     path.write_text(json.dumps({"weights": {k: v * 2 for k, v in good.items()}}))
     assert load() is None                                    # sum != 1
+
+def test_drift_alarm_fires_on_skewed_upcoming_row_and_clears(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    led = {"matches": {"2026-09-10_Genoa_Como": {
+        "date": "2026-09-10", "home": "Genoa", "away": "Como",
+        "settled_at": None,
+        "ml_drift": {"n_out": 20, "n_checked": 126, "out": ["home_elo", "away_elo"]},
+    }}, "alarm_state": {}}
+    cl.LEDGER.write_text(json.dumps(led))
+    first = cl.drift_alarm()
+    assert first and "Genoa" in first and "20/126" in first
+    assert cl.drift_alarm() is None            # change-gated: no repeat
+    led["matches"]["2026-09-10_Genoa_Como"]["ml_drift"]["n_out"] = 0
+    led["alarm_state"] = {"ml_drift": "degraded"}
+    cl.LEDGER.write_text(json.dumps(led))
+    assert cl.drift_alarm() is None            # clears silently
+    assert json.loads(cl.LEDGER.read_text())["alarm_state"]["ml_drift"] == "ok"
+
+
+def _toy_classifier(tmp_path):
+    """MLClassifier wrapping a tiny CatBoost where feature 'driver' decides."""
+    import numpy as np
+    from catboost import CatBoostClassifier
+    import scripts.prediction.ensemble_prediction_engine as eng
+    rng = np.random.default_rng(7)
+    X = pd.DataFrame({"driver": rng.normal(0, 1, 300),
+                      "noise_a": rng.normal(0, 1, 300),
+                      "noise_b": rng.normal(0, 1, 300)})
+    y = np.where(X.driver > 0.5, 0, np.where(X.driver < -0.5, 2, 1))
+    model = CatBoostClassifier(iterations=30, depth=3, verbose=0,
+                               loss_function="MultiClass", random_seed=1)
+    model.fit(X, y)
+    clf = eng.MLClassifier()
+    clf.model = model
+    clf.loaded = True
+    clf.use_ensemble = False
+    clf.feature_names = list(X.columns)
+    return clf, X
+
+
+def test_explain_last_names_the_real_driver(tmp_path):
+    clf, X = _toy_classifier(tmp_path)
+    clf._last_X = X.iloc[[0]]
+    exp = clf.explain_last()
+    assert exp is not None
+    assert exp["class"] in ("H", "D", "A")
+    assert exp["drivers"][0]["feature"] == "driver"   # top |SHAP| = true cause
+    assert abs(exp["drivers"][0]["shap"]) > 0
+
+
+def test_check_drift_counts_out_of_band_features(tmp_path):
+    clf, X = _toy_classifier(tmp_path)
+    clf._train_quantiles_cache = {"driver": [-2.0, 2.0], "noise_a": [-2.0, 2.0],
+                                  "noise_b": [-2.0, 2.0]}
+    inside = pd.DataFrame([{"driver": 0.1, "noise_a": 0.2, "noise_b": -0.3}])
+    assert clf._check_drift(inside) == {"n_out": 0, "n_checked": 3, "out": []}
+    skewed = pd.DataFrame([{"driver": 9.9, "noise_a": -8.0, "noise_b": 0.0}])
+    d = clf._check_drift(skewed)
+    assert d["n_out"] == 2 and set(d["out"]) == {"driver", "noise_a"}

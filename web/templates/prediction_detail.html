@@ -1032,6 +1032,32 @@ function renderPredictionAnalysis(m) {
     html += '</div>';
   }
 
+  // ML drivers — top-5 SHAP features behind the CatBoost leg's pick
+  const mlr = m.ml_reasons;
+  if (mlr && Array.isArray(mlr.drivers) && mlr.drivers.length) {
+    const clsName = mlr.class === 'H' ? 'Home' : mlr.class === 'A' ? 'Away' : 'Draw';
+    const clsCol = mlr.class === 'H' ? 'text-green' : mlr.class === 'A' ? 'text-red' : 'text-amber';
+    const maxAbs = Math.max(...mlr.drivers.map(d => Math.abs(d.shap))) || 1;
+    html += `<div style="margin-top:var(--space-4)"><div class="text-label mb-2">Why the ML leg says <span class="${clsCol}">${clsName}</span></div>`;
+    for (const d of mlr.drivers) {
+      const pct = Math.round(Math.abs(d.shap) / maxAbs * 100);
+      const col = d.shap >= 0 ? 'var(--green)' : 'var(--red)';
+      const sign = d.shap >= 0 ? 'per' : 'contro';
+      html += `<div class="ens-row" title="${sign} ${clsName}: SHAP ${d.shap > 0 ? '+' : ''}${d.shap}">
+        <span class="ens-name" style="font-family:var(--font-mono,monospace);font-size:11px">${d.feature}</span>
+        <span class="ens-weight">${d.value}</span>
+        <div class="ens-bar-wrap"><div class="ens-bar-seg" style="width:${pct}%;background:${col}"></div></div>
+        <span class="ens-call" style="color:${col}">${d.shap > 0 ? '+' : ''}${d.shap.toFixed(3)}</span>
+        <span class="ens-agree-icon"></span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  const mld = m.ml_drift;
+  if (mld && mld.n_out >= 5) {
+    html += `<div class="text-small" style="color:var(--amber);margin-top:var(--space-2)" title="${(mld.out||[]).join(', ')}">⚠ ${mld.n_out}/${mld.n_checked} ML features outside their training range — treat the ML leg with caution</div>`;
+  }
+
   return html || '<div class="text-small text-tertiary">No prediction data</div>';
 }
 
