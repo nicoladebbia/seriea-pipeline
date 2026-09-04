@@ -399,6 +399,7 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         # recovery -- only the greedy search never visited the swap. One-swap
         # hill climb over same-role spares, margin-gated so feed jitter
         # cannot flip a coin-toss pick between rebuilds.
+        risky: set = set()
         improved = True
         while improved:
             improved = False
@@ -412,6 +413,7 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
                     t = evaluate(trial)
                     if t[0] > obj + RISKY_START_MARGIN:
                         xi, (obj, mod, bench, tribuna, bench_ev) = trial, t
+                        risky.add(b["nome"])
                         improved = True
                         break
                 if improved:
@@ -424,7 +426,7 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
                     "exp_total": round(total + bench_ev, 2),
                     "xi_sd": round(sum(x.get("sd", 0.0) ** 2 for x in xi) ** 0.5, 2),
                     "modifier": round(mod, 2), "xi": xi, "bench": bench,
-                    "tribuna": tribuna,
+                    "tribuna": tribuna, "risky": sorted(risky),
                     "unavailable": [c for c in cand if c["exp_slot"] is None]}
     if best and best.get("xi"):
         # Porta inviolata expectation at TOTAL level only — the published
@@ -437,9 +439,44 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         best["p_cs"] = round(p_cs, 3)
         best["total"] = round(best["total"] + cs_ev, 2)
         best["exp_total"] = round(best["exp_total"] + cs_ev, 2)
+        _annotate_reasons(best)
     return best or {"module": None, "total": 0.0, "bench_ev": 0.0,
                     "exp_total": 0.0, "modifier": 0.0, "xi": [],
                     "bench": [], "tribuna": [], "unavailable": cand}
+
+
+def _annotate_reasons(best: dict) -> None:
+    """Human-readable 'why' per selection — the decision, not the diagnostic.
+
+    XI risky starts name the mechanism (the objective preferred the ceiling
+    with the safe man covering from the bench); bench players name who beat
+    them and on what (playing chance vs expected return); tribuna names the
+    depth cut. Existing why/inj notes (no fixture, injury) are never
+    overwritten."""
+    worst: dict[str, dict] = {}
+    for x in best.get("xi") or []:
+        w = worst.get(x["R"])
+        if x.get("exp_slot") is not None and (w is None
+                                              or x["exp_slot"] < w["exp_slot"]):
+            worst[x["R"]] = x
+    risky = set(best.get("risky") or [])
+    for x in best.get("xi") or []:
+        if x["nome"] in risky and not x.get("why"):
+            x["why"] = (f"scommessa calcolata: p gioco {x['p_play']:.0%}, ma "
+                        "titolare vale di più col rimpiazzo pronto in panchina")
+    for b in best.get("bench") or []:
+        if b.get("why") or b.get("exp_slot") is None:
+            continue
+        w = worst.get(b["R"])
+        if w is None:
+            continue
+        cause = ("probabilità di giocare" if b["p_play"] < w["p_play"] - 0.15
+                 else "rendimento atteso")
+        b["why"] = (f"panchina: {b['exp_slot']:.2f} vs {w['exp_slot']:.2f} di "
+                    f"{w['nome']} — decide la {cause}")
+    for t_ in best.get("tribuna") or []:
+        if not t_.get("why") and t_.get("exp_slot") is not None:
+            t_["why"] = "tribuna: dietro ai compagni di ruolo per valore atteso"
 
 
 def _board_priors(p: dict, prev: dict | None) -> tuple[float, float, float]:

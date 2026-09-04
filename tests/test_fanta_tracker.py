@@ -2955,3 +2955,22 @@ def test_round_context_joins_hub_cards_and_my_exposure(monkeypatch, tmp_path):
     assert second["hub"] is None                       # EPL row never leaks in
     assert [m["nome"] for m in second["mine"]] == ["Dimarco"]
     assert json.loads(outp.read_text())["round"] == 7  # persisted atomically
+
+
+def test_selection_reasons_annotated():
+    """Every non-obvious selection carries a 'why': the risky start names the
+    mechanism, the bench names who beat him and on what."""
+    squad = _sq()
+    for p in squad:
+        p.setdefault("p_play", 0.9)
+    spare = {"id": 77, "nome": "Spare", "R": "A", "team": "Lecce",
+             "level": 6.2, "voto": 6.1, "p_play": 0.85}
+    adv = advise(squad + [spare], FIX, ELO, {})
+    sp = next(x for x in adv["bench"] if x["nome"] == "Spare")
+    assert "panchina:" in sp["why"] and "A" in sp["why"]
+    # no-fixture note must survive untouched
+    ghost = {"id": 88, "nome": "Ghost", "R": "C", "team": "Sassuolo",
+             "level": 7.0, "voto": 6.5, "p_play": 0.9}
+    adv2 = advise(squad + [ghost], FIX, ELO, {})
+    g = next(x for x in adv2["unavailable"] if x["nome"] == "Ghost")
+    assert g["why"] == "no fixture this round"

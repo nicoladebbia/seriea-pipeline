@@ -316,7 +316,7 @@
     return `
       <div class="fc-chip">
         <span class="fc-chip__role" style="background:${ROLE_COLOR[p.R]}">${p.R}</span>
-        <div class="fc-chip__name">${plink(p.id, esc(p.nome))}${tired(p)}${diffid(p)}</div>
+        <div class="fc-chip__name" title="${esc(p.why || "")}">${plink(p.id, esc(p.nome))}${tired(p)}${diffid(p)}</div>
         <div class="fc-chip__fix">${esc(p.team)} ${esc(fix)}</div>
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
@@ -387,7 +387,7 @@
 
     const labels = benchLabels(adv.bench);
     const bench = (adv.bench || []).map((p, i) => `
-      <span class="fc-bench"><span class="fc-bench__n" style="width:auto;
+      <span class="fc-bench" title="${esc(p.why || "")}"><span class="fc-bench__n" style="width:auto;
           padding:0 5px;border-radius:9px">${labels[i]}</span>
         <b style="color:${ROLE_COLOR[p.R]}">${p.R}</b> ${plink(p.id, esc(p.nome))}
         <span class="fc-mono" title="p(gioca) × atteso">${fmt(p.exp_slot, 1)}${ppSrcMark(p)}</span>
