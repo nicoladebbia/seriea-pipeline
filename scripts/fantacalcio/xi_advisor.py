@@ -243,39 +243,66 @@ def _role_recovery(chain: list) -> float:
     return r
 
 
-def _best_bench_for_role(pool: list, n: int) -> list:
+def _role_recovery_ev(starters: list, chain: list) -> float:
+    """EXACT expected points the ordered chain recovers for one role: each
+    absent starter takes the next AVAILABLE unused chain player (auto-subs
+    skip a bench player without a voto), and a chain player covers at most
+    one slot -- so recovery saturates instead of scaling with absences.
+    Poisson-binomial convolutions over the tiny role pools. Ignores only the
+    cross-role 3-sub cap (second-order at real p_play levels). The first-
+    order version (absences x undepleted chain value) over-credited configs
+    with several risky same-role starters, which the risky-start hill climb
+    in advise() would have farmed."""
+    pmf = [1.0]                        # miss-count distribution over starters
+    for x in starters:
+        q = 1.0 - float(x.get("p_play", 1.0))
+        pmf = [(pmf[i] if i < len(pmf) else 0.0) * (1.0 - q)
+               + (pmf[i - 1] * q if i else 0.0)
+               for i in range(len(pmf) + 1)]
+    ev, avail = 0.0, [1.0]             # avail-count pmf over EARLIER chain
+    for c in chain:
+        pc = float(c.get("p_play", 1.0))
+        # used iff c is available AND misses exceed the earlier available subs
+        p_need = sum(pa * sum(pmf[a + 1:]) for a, pa in enumerate(avail))
+        ev += pc * p_need * float(c.get("exp") or 0.0)
+        avail = [(avail[i] if i < len(avail) else 0.0) * (1.0 - pc)
+                 + (avail[i - 1] * pc if i else 0.0)
+                 for i in range(len(avail) + 1)]
+    return ev
+
+
+def _best_bench_for_role(pool: list, n: int, starters: list | None = None) -> list:
     """The n spares whose ORDERED chain maximizes recovery value. Order
     within a set is by exp desc (exchange-optimal under skip-no-voto subs:
     swapping adjacent (i, j) changes recovery by p_i*p_j*(v_i - v_j)); the
     SET is brute-forced -- pools are tiny on a 25-man squad. This is where a
     low-p_play star earns a slot: absent he costs nothing, present he is the
-    best sub. Tie-break (all p==1 leaves only v1 in play) prefers the deeper
-    chain by exp_slot sum."""
+    best sub. With `starters` the set is ranked on the EXACT recovery EV
+    against those starters' miss distribution; the chain-only value and the
+    exp_slot sum stay as tie-breaks (all-certain starters make every set's
+    exact EV zero, e.g. callers that never model titolarita)."""
     from itertools import combinations
     if len(pool) <= n:
         return sorted(pool, key=lambda x: -(x["exp"] or 0.0))
     best, best_key = None, None
     for combo in combinations(pool, n):
         chain = sorted(combo, key=lambda x: -(x["exp"] or 0.0))
-        k = (_role_recovery(chain), sum(c["exp_slot"] for c in chain))
+        k = (round(_role_recovery_ev(starters or [], chain), 9),
+             _role_recovery(chain), sum(c["exp_slot"] for c in chain))
         if best_key is None or k > best_key:
             best, best_key = chain, k
     return list(best)
 
 
 def _bench_recovery_ev(xi: list, bench: list) -> float:
-    """First-order expected points the ordered bench recovers: expected
-    same-role XI absences x that role chain's recovery value. Understates
-    chain depletion at 2+ same-role absences and ignores the 3-sub cap --
-    both second-order at real starter p_play levels."""
+    """Expected points the ordered bench recovers -- exact per role, see
+    _role_recovery_ev."""
     ev = 0.0
     for role in "PDCA":
         chain = [b for b in bench if b["R"] == role]
         if not chain:
             continue
-        absences = sum(1.0 - float(x.get("p_play", 1.0))
-                       for x in xi if x["R"] == role)
-        ev += absences * _role_recovery(chain)
+        ev += _role_recovery_ev([x for x in xi if x["R"] == role], chain)
     return ev
 
 
@@ -286,7 +313,8 @@ def _bench_split(cand: list, xi: list) -> tuple[list, list]:
     rest = [c for c in cand if c not in xi and c["exp_slot"] is not None]
     bench = []
     for role, n in BENCH_SLOTS:
-        pool = _best_bench_for_role([c for c in rest if c["R"] == role], n)
+        pool = _best_bench_for_role([c for c in rest if c["R"] == role], n,
+                                    [x for x in xi if x["R"] == role])
         bench.extend(pool)
         rest = [c for c in rest if c not in pool]
     return bench, rest
@@ -336,21 +364,50 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         need = {"P": 1, "D": nd, "C": nc, "A": na}
         if any(len(by_role[r]) < n for r, n in need.items()):
             continue
+
+        def evaluate(xi: list, nd: int = nd) -> tuple:
+            gk_v = next((x["exp_voto"] for x in xi if x["R"] == "P"), None)
+            d_v = [x["exp_voto"] for x in xi if x["R"] == "D"]
+            # League table verified from the Opzioni di Lega screen 2026-09-02:
+            # tiers 6.0->1, 6.5->3, 7.0->6, 7.5->9 (caps at 9; .25 steps repeat).
+            mod = _modifier(gk_v, d_v, [(6.0, 1), (6.5, 3), (7.0, 6), (7.5, 9)],
+                            [5.0, 4.5, 4.5]) if nd >= 4 else 0.0
+            # Bench recovery is part of the objective: a module that strands the
+            # spare quality in one role leaves real expected points on the table.
+            # "total" stays XI+modifier (ledger/backtest continuity); exp_total
+            # is the honest expected score including auto-sub recovery.
+            bench, tribuna = _bench_split(cand, xi)
+            bench_ev = _bench_recovery_ev(xi, bench)
+            return (sum(key(x) for x in xi) + mod + bench_ev,
+                    mod, bench, tribuna, bench_ev)
+
         xi = [x for r, n in need.items() for x in by_role[r][:n]]
-        gk_v = next((x["exp_voto"] for x in xi if x["R"] == "P"), None)
-        d_v = [x["exp_voto"] for x in xi if x["R"] == "D"]
-        # League table verified from the Opzioni di Lega screen 2026-09-02:
-        # tiers 6.0->1, 6.5->3, 7.0->6, 7.5->9 (caps at 9; .25 steps repeat).
-        mod = _modifier(gk_v, d_v, [(6.0, 1), (6.5, 3), (7.0, 6), (7.5, 9)],
-                        [5.0, 4.5, 4.5]) if nd >= 4 else 0.0
+        obj, mod, bench, tribuna, bench_ev = evaluate(xi)
+        # Start-risky-cover-safe: the greedy exp_slot ranking starts the
+        # SAFEST eleven, but a lower-p_play higher-ceiling spare can be worth
+        # more STARTED, with the safe man covering from the bench (Douvikas
+        # 0.53x7.77 benched under Pellegrino 0.70x6.55 was measured +2.5pp
+        # win vs the same opponent). The objective above already prices the
+        # recovery -- only the greedy search never visited the swap. One-swap
+        # hill climb over same-role spares, margin-gated so feed jitter
+        # cannot flip a coin-toss pick between rebuilds.
+        improved = True
+        while improved:
+            improved = False
+            for i, x in enumerate(xi):
+                for b in by_role[x["R"]]:
+                    if any(b is q for q in xi):
+                        continue
+                    trial = list(xi)
+                    trial[i] = b
+                    t = evaluate(trial)
+                    if t[0] > obj + RISKY_START_MARGIN:
+                        xi, (obj, mod, bench, tribuna, bench_ev) = trial, t
+                        improved = True
+                        break
+                if improved:
+                    break
         total = sum(x["exp_slot"] for x in xi) + mod
-        # Bench recovery is part of the objective: a module that strands the
-        # spare quality in one role leaves real expected points on the table.
-        # "total" stays XI+modifier (ledger/backtest continuity); exp_total
-        # is the honest expected score including auto-sub recovery.
-        bench, tribuna = _bench_split(cand, xi)
-        bench_ev = _bench_recovery_ev(xi, bench)
-        obj = sum(key(x) for x in xi) + mod + bench_ev
         if best_obj is None or obj > best_obj:
             best_obj = obj
             best = {"module": f"{nd}-{nc}-{na}", "total": round(total, 2),
@@ -1128,6 +1185,12 @@ def _p_win(mu_a: float, sd_a: float, mu_b: float, sd_b: float) -> float:
 # played-row cell mapping, which no options page can verify.
 GOAL_BASE, GOAL_STEP = 66.0, 6.0
 MC_N = 4000
+# Accept a start-risky-cover-safe swap only when it beats the greedy XI by
+# this much on the full objective (XI + modifier + bench recovery). DECLARED
+# HEURISTIC: churn damper, the player-level analog of STICKY_MODULE_MARGIN --
+# titolarita feeds wiggle exp_slot by ~0.1 between rebuilds; a real case
+# (Douvikas) clears it 3x over. Refit path: pred_ledger grades every pick.
+RISKY_START_MARGIN = 0.15
 # P(a Serie A side concedes 0): measured on data/parsed/matches.parquet,
 # seasons 2019-20 onward, n=5,360 team-matches (0.2632, 2026-09-03). The
 # market path below overrides this whenever the fixture is priced.

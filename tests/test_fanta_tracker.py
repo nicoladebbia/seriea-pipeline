@@ -1759,18 +1759,29 @@ def test_bench_set_selection_prefers_recoverable_star():
 
 
 def test_bench_recovery_ev_and_exp_total():
-    from scripts.fantacalcio.xi_advisor import _bench_recovery_ev, _role_recovery
+    from scripts.fantacalcio.xi_advisor import _bench_recovery_ev
     xi = [{"R": "D", "p_play": 0.9, "exp": 6.0},
           {"R": "D", "p_play": 0.8, "exp": 6.2},
           {"R": "A", "p_play": 1.0, "exp": 7.0}]
     bench = [{"R": "D", "p_play": 0.9, "exp": 5.9},
              {"R": "D", "p_play": 0.9, "exp": 5.5}]
-    # expected D absences 0.3, no A chain -> ev = 0.3 * R(D chain)
-    expect = 0.3 * _role_recovery(bench)
+    # exact: miss pmf over D starters (q .1, .2) = [.72, .26, .02];
+    # c1 used iff m>=1 (.28): .9*.28*5.9; c2 used iff (c1 out AND m>=1) or
+    # (c1 in AND m>=2): (.1*.28 + .9*.02) = .046 -> .9*.046*5.5
+    expect = 0.9 * 0.28 * 5.9 + 0.9 * 0.046 * 5.5
     assert abs(_bench_recovery_ev(xi, bench) - expect) < 1e-9
     # certain XI recovers nothing
     assert _bench_recovery_ev([{"R": "D", "p_play": 1.0, "exp": 6.0}],
                               bench) == 0.0
+    # DEPLETION CAP -- the first-order rejection case: however many risky
+    # starters there are, a 1-man chain can never recover more than his own
+    # availability-weighted exp (absences x chain-value scales past it)
+    shaky = [{"R": "D", "p_play": 0.5, "exp": 6.0} for _ in range(4)]
+    one = [{"R": "D", "p_play": 0.9, "exp": 6.0}]
+    first_order = (4 * 0.5) * (0.9 * 6.0)          # 10.8 -- the old formula
+    exact = _bench_recovery_ev(shaky, one)
+    assert first_order > 0.9 * 6.0                  # precondition: it overshoots
+    assert exact <= 0.9 * 6.0 + 1e-9                # exact saturates
 
 
 def test_advise_exposes_exp_total():
@@ -2557,3 +2568,52 @@ def test_vs_block_renders_module_grid_with_diffs_vs_advice_xi():
     riv["rivals"][0].pop("module_grid")
     txt3, tg3, _ = _vs_block(riv, adv)
     assert "Moduli" not in txt3 and "Moduli" not in tg3
+
+
+def test_risky_high_ceiling_starter_displaces_the_safe_pick():
+    """Start-risky-cover-safe: a 0.5-p_play spare whose ceiling is far above
+    the safe man's must START, with the safe man covering from the bench —
+    the objective prices the recovery, the greedy ranking alone benches him
+    (the Douvikas case, measured +2.5pp win). Margin-gated: a near-tie spare
+    must NOT displace the safe pick, so feed jitter cannot flip the XI."""
+    squad = [
+        {"id": 1, "nome": "GK", "R": "P", "team": "Roma", "level": 6.1,
+         "voto": 6.2},
+        *[{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "Roma",
+           "level": 6.0, "voto": 6.1} for i in range(4)],
+        *[{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "Lecce",
+           "level": 6.3, "voto": 6.2} for i in range(3)],
+        *[{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "Lecce",
+           "level": 6.8, "voto": 6.3} for i in range(2)],
+        {"id": 97, "nome": "Safe", "R": "A", "team": "Roma",
+         "level": 6.3, "voto": 6.2, "p_play": 0.70},
+        {"id": 98, "nome": "Risky", "R": "A", "team": "Roma",
+         "level": 7.8, "voto": 6.8, "p_play": 0.53},
+    ]
+    for p in squad:
+        p.setdefault("p_play", 0.93)
+    adv = advise(squad, FIX, ELO, {})
+    r = next(x for x in adv["xi"] + adv["bench"] if x["nome"] == "Risky")
+    s = next(x for x in adv["xi"] + adv["bench"] if x["nome"] == "Safe")
+    # true-positive precondition: greedy exp_slot really ranks Safe above
+    # Risky for the contested third slot, so pure top-N benches Risky
+    assert s["exp_slot"] > r["exp_slot"]
+    assert r in adv["xi"], "risky ceiling must start"
+    # whoever sits, the cover must be a SAFE man (the objective may bench
+    # Safe or a certain starter -- both valid; benching the ceiling is not)
+    benched_a = [x for x in adv["bench"] if x["R"] == "A"]
+    assert benched_a and all(x["p_play"] >= 0.70 for x in benched_a)
+
+    # margin gate: a spare whose swap-in gain is real but under the margin
+    # stays benched (greedy exp_slot ranks him last, the recovery arithmetic
+    # nets him ~+0.09 -- feed jitter territory, must not churn the XI)
+    tepid = {"id": 96, "nome": "Tepid", "R": "A", "team": "Roma",
+             "level": 6.77, "voto": 6.3, "p_play": 0.60}
+    squad2 = _sq([tepid])
+    for p in squad2:
+        p.setdefault("p_play", 0.93)
+    adv2 = advise(squad2, FIX, ELO, {})
+    t = next(x for x in adv2["xi"] + adv2["bench"] if x["nome"] == "Tepid")
+    assert t["exp_slot"] < min(x["exp_slot"] for x in adv2["xi"]
+                               if x["R"] == "A")   # greedy ranks him below XI
+    assert t in adv2["bench"], "sub-margin gain must not churn the XI"
