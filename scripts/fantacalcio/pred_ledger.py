@@ -105,9 +105,16 @@ def snapshot(adv: dict, riv: dict | None = None,
     now = datetime.now(UTC).timestamp() if now_ts is None else now_ts
     led = _load()
     key = str(rnd)
-    if now >= kick:
+    entry = led["rounds"].get(key)
+    # The lock is the round's ORIGINAL first kickoff, held by the stored
+    # entry. The advice's first_kickoff rolls forward to the next remaining
+    # fixture once matches start, so comparing against `kick` alone let a
+    # post-lock rebuild OVERWRITE the frozen-worthy forecast with slot=out
+    # rows and a Saturday lock (paid 2026-09-04 17:34: the 3-5-2 snapshot
+    # was clobbered by 4-4-2 junk and restored from the state backup).
+    lock = float((entry or {}).get("first_kickoff") or kick)
+    if now >= lock:
         # Freeze: mark the last pre-kickoff snapshot, never write a new one.
-        entry = led["rounds"].get(key)
         if entry and not entry.get("frozen_at"):
             entry["frozen_at"] = datetime.now(UTC).isoformat()
             _save(led)

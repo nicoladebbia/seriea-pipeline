@@ -2670,3 +2670,33 @@ def test_hill_climb_never_starts_a_sub_30pct_player():
     adv_t = advise(squad, FIX, ELO, {}, risk_lambda=0.6)
     lot_t = next(x for x in adv_t["xi"] + adv_t["bench"] if x["nome"] == "Lottery")
     assert lot_t in adv_t["bench"]
+
+
+def test_post_lock_snapshot_freezes_instead_of_overwriting(tmp_path, monkeypatch):
+    """Once the round's stored first kickoff has passed, a rebuild whose
+    advice rolled first_kickoff to the next remaining fixture must FREEZE
+    the stored forecast — not replace it (paid 2026-09-04: the pre-lock
+    3-5-2 snapshot was clobbered by a post-lock 4-4-2)."""
+    import json
+
+    import scripts.fantacalcio.pred_ledger as pl2
+
+    led_path = tmp_path / "pred_ledger.json"
+    monkeypatch.setattr(pl2, "LEDGER", led_path)
+    lock = 1_000_000.0
+    adv1 = {"round": 3, "first_kickoff": lock, "module": "3-5-2",
+            "total": 60.0, "exp_total": 70.0, "modifier": 0.0,
+            "xi": [{"id": 1, "nome": "A", "R": "A", "team": "X", "exp": 6.0,
+                    "exp_slot": 5.5, "p_play": 0.9}],
+            "bench": [], "tribuna": [], "unavailable": []}
+    assert "skipped" not in pl2.snapshot(adv1, now_ts=lock - 3600)
+    adv2 = dict(adv1, module="4-4-2", first_kickoff=lock + 90_000)
+    out = pl2.snapshot(adv2, now_ts=lock + 7200)   # post-lock rebuild
+    assert out == "frozen"
+    led = json.loads(led_path.read_text())
+    r3 = led["rounds"]["3"]
+    assert r3["module"] == "3-5-2"                 # forecast NOT replaced
+    assert r3["first_kickoff"] == lock
+    assert r3["frozen_at"]
+    # and a second post-lock call changes nothing further
+    assert pl2.snapshot(adv2, now_ts=lock + 9000) == "skipped-post-kickoff"
