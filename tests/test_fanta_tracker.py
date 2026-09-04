@@ -2642,3 +2642,31 @@ def test_round_probe_throttle_degrades_instead_of_killing_the_build(monkeypatch)
     monkeypatch.setattr(ls, "fetch_round", dead)
     with pytest.raises(rq.exceptions.RequestException):
         ls.played_rounds("2026-27")
+
+
+def test_hill_climb_never_starts_a_sub_30pct_player():
+    """The free-option exploit: a 0.10-p_play spare with a huge (prior-based)
+    exp 'costs nothing' to start because the benched near-certain starter
+    recovers the slot — pushed 'dentro Pessina Mas. (p 0.05)' live on
+    2026-09-04. The p_play floor keeps him benched no matter the arithmetic."""
+    squad = [
+        {"id": 1, "nome": "GK", "R": "P", "team": "Roma", "level": 6.1,
+         "voto": 6.2},
+        *[{"id": 10 + i, "nome": f"D{i}", "R": "D", "team": "Roma",
+           "level": 6.0, "voto": 6.1} for i in range(4)],
+        *[{"id": 20 + i, "nome": f"C{i}", "R": "C", "team": "Lecce",
+           "level": 6.3, "voto": 6.2} for i in range(3)],
+        *[{"id": 30 + i, "nome": f"A{i}", "R": "A", "team": "Lecce",
+           "level": 6.5, "voto": 6.3} for i in range(3)],
+        {"id": 95, "nome": "Lottery", "R": "A", "team": "Roma",
+         "level": 9.0, "voto": 7.0, "p_play": 0.10},
+    ]
+    for p in squad:
+        p.setdefault("p_play", 0.93)
+    adv = advise(squad, FIX, ELO, {})
+    lot = next(x for x in adv["xi"] + adv["bench"] if x["nome"] == "Lottery")
+    assert lot in adv["bench"], "sub-30% player must never be started"
+    # and the same under the underdog risk tilt (where it actually fired)
+    adv_t = advise(squad, FIX, ELO, {}, risk_lambda=0.6)
+    lot_t = next(x for x in adv_t["xi"] + adv_t["bench"] if x["nome"] == "Lottery")
+    assert lot_t in adv_t["bench"]

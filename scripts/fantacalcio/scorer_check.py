@@ -118,11 +118,16 @@ def main() -> None:
     print(verdict)
     print(body)
     if once and SELF_PLIST.exists():
-        subprocess.run(  # noqa: S603 — fixed argv, own plist
-            ["/bin/launchctl", "unload", str(SELF_PLIST)],
-            capture_output=True)
+        # Order matters: `launchctl unload` SIGTERMs THIS process, so on
+        # 2026-09-04 the unlink below it never ran and buffered stdout was
+        # lost (empty logs, plist left behind). Delete + flush FIRST; dying
+        # inside the final unload is then harmless.
         SELF_PLIST.unlink(missing_ok=True)
         print("one-shot plist removed")
+        sys.stdout.flush()
+        subprocess.run(  # noqa: S603 — fixed argv, own label
+            ["/bin/launchctl", "remove", "com.seriea-pipeline.scorer-check-once"],
+            capture_output=True)
 
 
 if __name__ == "__main__":

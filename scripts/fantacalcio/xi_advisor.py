@@ -396,7 +396,8 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
             improved = False
             for i, x in enumerate(xi):
                 for b in by_role[x["R"]]:
-                    if any(b is q for q in xi):
+                    if any(b is q for q in xi) \
+                            or b["p_play"] < RISKY_START_MIN_P:
                         continue
                     trial = list(xi)
                     trial[i] = b
@@ -1191,6 +1192,14 @@ MC_N = 4000
 # titolarita feeds wiggle exp_slot by ~0.1 between rebuilds; a real case
 # (Douvikas) clears it 3x over. Refit path: pred_ledger grades every pick.
 RISKY_START_MARGIN = 0.15
+# Never START a player the model itself gives under this chance of playing.
+# Without the floor the climb (worst under the underdog risk tilt) monetized
+# a free-option artifact: start a 0.05 backup whose PRIOR exp beats the
+# starter's LIVE level, bank the near-certain sub recovery — pushed to
+# Telegram as "dentro Pessina Mas. (p 0.05), fuori Skorupski" on 2026-09-04.
+# The upside is a prior-vs-live artifact and the cross-role 3-sub cap the
+# per-role EV ignores binds hard once several starters are lotteries.
+RISKY_START_MIN_P = 0.30
 # P(a Serie A side concedes 0): measured on data/parsed/matches.parquet,
 # seasons 2019-20 onward, n=5,360 team-matches (0.2632, 2026-09-03). The
 # market path below overrides this whenever the fixture is priced.

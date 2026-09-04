@@ -2280,14 +2280,11 @@ def fetch_tagged_snapshot(
 
     try:
         from scripts.data.odds_tracker import save_snapshot as save_ts_snapshot
-        save_ts_snapshot(odds_data=None, tag=tag or None)
-    except TypeError:
-        # odds_tracker.save_snapshot may not support tag= yet — fall back silently
-        try:
-            from scripts.data.odds_tracker import save_snapshot as save_ts_snapshot
-            save_ts_snapshot(odds_data=None)
-        except Exception as e:
-            log.warning("Snapshot[%s]: tracker save failed: %s", tag or "?", e)
+        # signature is save_snapshot(odds=None); the old odds_data=/tag=
+        # kwargs raised TypeError on BOTH attempts, so tagged runs (incl.
+        # the T-5m closing snapshot) never saved a tracker snapshot at all
+        # (caught live 2026-09-04 14:41, Genoa-Como).
+        save_ts_snapshot()
     except Exception as e:
         log.warning("Snapshot[%s]: tracker save failed: %s", tag or "?", e)
 
