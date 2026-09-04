@@ -1703,7 +1703,7 @@ def build_features(season: str | None = None,
     matches_path = parsed_path("matches")
     if not matches_path.exists():
         raise FileNotFoundError(
-            f"matches.parquet not found at {matches_path}. Run 'parse' first."
+            f"matches.parquet not found at {matches_path}. It is produced by scripts/pipeline/refresh_weekly_data.py."
         )
 
     matches = pd.read_parquet(matches_path)

@@ -1,6 +1,6 @@
 """Shared helpers for tracking failed scraper downloads.
 
-Used by scrape_sofascore, backfill_match_reports, scrape_understat_matches
+Used by scrape_sofascore, scrape_understat_matches
 to persist/load a JSON dict of failed URLs for retry.
 """
 

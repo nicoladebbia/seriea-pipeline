@@ -1735,14 +1735,16 @@ def run_settle() -> bool:
 # =============================================================================
 
 def run_weekly_monitoring() -> bool:
-    """Run full monitoring cycle: drift detection, calibration check, retrain check.
+    """Weekly CLV trend check.
 
-    Designed to run weekly (Sunday morning). Detects feature drift, checks model
-    calibration, and triggers retraining if accuracy has degraded.
+    Runs Monday 06:00 via the weekly-monitor plist. The former drift /
+    calibration / retrain cycle (monitoring/ package) was removed 2026-09-04:
+    its retrainer was a placeholder that trained nothing and its validator
+    scored random predictions. Real retraining is scripts/pipeline/weekly_retrain.py.
     """
     import time as _t
     log.info("=" * 60)
-    log.info("WEEKLY MONITORING CYCLE")
+    log.info("WEEKLY CLV TREND CHECK")
     log.info("=" * 60)
 
     t0 = _t.time()
@@ -1751,50 +1753,19 @@ def run_weekly_monitoring() -> bool:
     error_msg = None
 
     try:
-        from scripts.pipeline.run_monitoring import MonitoringSystem
-        monitor = MonitoringSystem()
-        result = monitor.run_full_cycle()
-
-        mon_status = result.get("status", "unknown")
-        drift = result.get("drift", {})
-        retrain = result.get("retrain", {})
-        calibration = result.get("calibration", {})
-
-        n_drifted = drift.get("features_drifted", 0)
-        details["Drift status"] = mon_status
-        details["Features drifted"] = n_drifted
-        if calibration.get("status"):
-            details["Calibration"] = calibration.get("status")
-        if retrain.get("retrained", False):
-            details["Retrain"] = "executed"
-            status = "warn"
-        elif n_drifted > 5:
-            details["Retrain"] = "recommended"
-            status = "warn"
+        from scripts.analysis.clv_analysis import analyze_trends
+        trends = analyze_trends(window_weeks=2)
+        if trends.get("periods") and len(trends["periods"]) >= 2:
+            latest_clv = trends["periods"][-1]["avg_clv"]
+            prev_clv = trends["periods"][-2]["avg_clv"]
+            details["CLV (latest)"] = f"{latest_clv:.2f}%"
+            if prev_clv - latest_clv > 1.5:
+                from scripts.pipeline.notify import notify_clv_degradation
+                notify_clv_degradation(latest_clv, prev_clv, period="2 weeks")
+                log.warning("CLV degradation: %.2f%% -> %.2f%%", prev_clv, latest_clv)
+                status = "warn"
         else:
-            details["Retrain"] = "not needed"
-
-        if n_drifted > 0:
-            log.warning("Feature drift detected: %d features drifted", n_drifted)
-
-        cal_status = calibration.get("status", "ok")
-        if cal_status != "ok":
-            log.warning("Calibration issue: %s", cal_status)
-
-        try:
-            from scripts.analysis.clv_analysis import analyze_trends
-            trends = analyze_trends(window_weeks=2)
-            if trends.get("periods") and len(trends["periods"]) >= 2:
-                latest_clv = trends["periods"][-1]["avg_clv"]
-                prev_clv = trends["periods"][-2]["avg_clv"]
-                details["CLV (latest)"] = f"{latest_clv:.2f}%"
-                if prev_clv - latest_clv > 1.5:
-                    from scripts.pipeline.notify import notify_clv_degradation
-                    notify_clv_degradation(latest_clv, prev_clv, period="2 weeks")
-                    log.warning("CLV degradation: %.2f%% -> %.2f%%", prev_clv, latest_clv)
-                    status = "warn"
-        except Exception as e:
-            log.debug("CLV trend check failed: %s", e)
+            details["CLV"] = "not enough settled periods"
 
         success = True
 

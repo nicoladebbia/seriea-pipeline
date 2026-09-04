@@ -3,7 +3,7 @@ Module: scraper/client.py
 Purpose: Rate-limited HTTP client with Cloudflare bypass via curl_cffi Chrome TLS impersonation and exponential backoff retries
 Inputs:  URLs to fetch, optional Cloudflare cookies, optional user agent
 Outputs: HTTP response objects with retry logic and rate limiting enforced
-Called by: scripts/backfill_match_reports.py (bulk scraping), other scrapers needing Cloudflare bypass
+Called by: scraper/fixtures.py (scrape_season_fixtures), other scrapers needing Cloudflare bypass
 Depends on: config.settings (REQUEST_DELAY_SECONDS, MAX_RETRIES, BACKOFF_FACTOR, HEADERS)
 """
 

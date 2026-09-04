@@ -127,7 +127,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imported by 29 files (per fact card) across features, parser, scraper, scripts, storage, web. Exports: per-league name dicts (SERIE_A_NAMES, PREMIER_LEAGUE_NAMES, etc.), TEAM_NAME_MAP (combined), current-season team lists (SERIE_A_2025_26, PREMIER_LEAGUE_2025_26), normalize_team(), normalize_team_safe(), strip_accents().
 - **Quality signals:** Comprehensive mappings: 123 Serie A variants, 81 Premier League, 71 La Liga, 72 Bundesliga, 73 Ligue 1. Case-insensitive fallback with pre-built lowercase dict. Helper functions with NaN safety and accent normalization for fuzzy matching. Actively maintained with 2025-2026 season lists. 563 LOC but highly repetitive (data, not code complexity). No dead code.
 
-### `storage/` — 4 files
+### `storage/` — 2 files
 
 #### ⚫ `storage/__init__.py` — grade F · **delete**
 - **Does:** Empty module initialization file.
@@ -140,15 +140,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imports from: config.settings (DATA_DIR, FEATURES_DIR, MODELS_DIR, PARSED_DIR, RAW_FIXTURES_DIR, RAW_HTML_DIR, REGISTRY_PATH). Imported by: cli.py, 13 features/*.py files, 4 ml/*.py files, 4 scraper/*.py files, 6 parser/scripts/analysis/*.py files, 7 scripts/models/*.py files, 2 scripts/pipeline/*.py files, storage/raw.py, storage/structured.py, tests/test_integration.py.
 - **Quality signals:** Type-hinted function signatures (return Path, str|None league param). Clear docstrings for all public functions. DRY: centralized logic for mkdir operations prevents scattered mkdir calls. 59 LOC, no dead code or unused imports. Critical infrastructure: used by 45+ files. Predictable naming convention (html_*_path, fixtures_*_path, parsed_path, features_path, registry_path).
 
-#### 🟢 `storage/raw.py` — grade A · keep
-- **Does:** I/O primitives for raw HTML match pages: save HTML to disk, load from disk, check existence. Wraps storage/paths.html_match_path() to hide path construction.
-- **Talks to:** Imports from: storage.paths (html_match_path). Imported by: scraper/match_reports.py.
-- **Quality signals:** Type-hinted functions (season: str, match_id: str -> Path/str/bool). Docstrings for all functions. 23 LOC, no dead code. Clean abstraction: three focused functions with clear intent (save_html, load_html, html_exists). Uses pathlib for cross-platform compatibility.
 
-#### 🟢 `storage/structured.py` — grade B · keep
-- **Does:** Transform and write parsed match data (MatchData objects) into structured Parquet tables (matches, player_stats, goalkeeper_stats, shots, lineups, events). Handles data type coercion, matchweek inference from Sofascore fixtures or chronology, deduplication, and atomic append operations with file locking.
-- **Talks to:** Imports from: config.settings (atomic_write_parquet), config.team_names (normalize_team), models.schemas (MatchData), parser.events (events_to_records), parser.lineups (lineups_to_records), storage.paths (parsed_path). Imported by: cli.py.
-- **Quality signals:** Type hints on key functions (list[MatchData], list[dict], pd.DataFrame). Docstrings on public and private functions. 369 LOC with substantial logic: _coerce_numeric_columns handles FBref data type issues, _fill_missing_matchweeks implements two-tier fallback (Sofascore lookup + chronological inference), _append_or_create uses fcntl advisory locking to prevent concurrent R-M-W races and atomic writes (tmp+rename). Logging throughout. Exception handling around Sofascore fixture loading. Minor: optional conditional import of normalize_team (lines 102-104) is defensive but slightly verbose; hardcoded KNOWN_NUMERIC list (lines 51-59) could drift from schema.
 
 ### `scraper/` — 24 files
 
@@ -160,7 +152,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 
 #### 🟢 `scraper/client.py` — grade A · keep
 - **Does:** Rate-limited HTTP client with Cloudflare bypass via curl_cffi Chrome TLS impersonation and exponential backoff retries.
-- **Talks to:** imported_by: scraper/fixtures.py, scraper/match_reports.py; imports: config/settings.py (REQUEST_DELAY_SECONDS, MAX_RETRIES, BACKOFF_FACTOR, HEADERS, REQUEST_TIMEOUT, MAX_BACKOFF)
+- **Talks to:** imported_by: scraper/fixtures.py; imports: config/settings.py (REQUEST_DELAY_SECONDS, MAX_RETRIES, BACKOFF_FACTOR, HEADERS, REQUEST_TIMEOUT, MAX_BACKOFF)
 - **Quality signals:** Well-structured with docstrings, type hints, clean separation of concerns (cffi vs requests fallback). FBrefClient class with _HttpError exception, _wait() rate limiter, exponential backoff logic. Handles transient 429/50x errors gracefully. ~140 LOC.
 
 #### ⚫ `scraper/cloudflare_solver.py` — grade B · keep
@@ -208,10 +200,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: features/player_xg_model.py, scraper/squad_fetcher.py, scripts/analysis/player_analyzer.py, scripts/pipeline/run_full_pipeline.py, web/app.py; imports: config/leagues.py (get_league_config, LEAGUE_REGISTRY), config/settings.py, config/team_names.py (normalize_team), features/player_xg_model.py, scraper/footballdata_lineups.py, scraper/sofascore_lineups.py, scripts/utils/match_timing.py
 - **Quality signals:** 100+ LOC (partial read), LineupFetcher class with API key fallback, player name normalization (unicode handling, accent stripping), fuzzy matching threshold (0.75), @dataclass MatchLineup, comprehensive multi-league support.
 
-#### 🟢 `scraper/match_reports.py` — grade A · keep
-- **Does:** Download match report HTML pages from FBref incrementally, tracking state in registry for resumable downloads.
-- **Talks to:** imported_by: cli.py; imports: config/settings.py (OLD_HTML_DIR), scraper/client.py (FBrefClient), scraper/registry.py (Registry), storage/paths.py (fixtures_csv_path, html_match_path), storage/raw.py (save_html)
-- **Quality signals:** 80+ LOC (partial read), incremental download with skip-existing logic, registry-based state tracking, error counting with retry, CSV-based fixture input.
 
 #### 🟢 `scraper/odds.py` — grade A · keep
 - **Does:** Download historical betting odds from football-data.co.uk (FREE CSVs with 15+ bookmakers, 1993-present).
@@ -223,10 +211,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: cli.py, features/build.py, scripts/pipeline/refresh_weekly_data.py; imports: config/settings.py (DATA_DIR), config/team_names.py (normalize_team), pandas, requests, BeautifulSoup
 - **Quality signals:** 80+ LOC (partial read), worldfootball.net scraper with season ID mappings, regex-based referee/team parsing, multi-league support (WF_LEAGUE_SLUGS, WF_COMP_CODES).
 
-#### 🟢 `scraper/registry.py` — grade A · keep
-- **Does:** JSON-backed manifest tracking scraping and parsing state per match (downloaded_at, parsed, parsed_at) for resumable downloads.
-- **Talks to:** imported_by: cli.py, parser/match_page.py, scraper/match_reports.py; imports: storage/paths.py (registry_path)
-- **Quality signals:** @dataclass RegistryEntry with ISO timestamps, Registry class with load/save logic, query methods (is_downloaded, is_parsed, get_unparsed), mutation methods (mark_downloaded, mark_parsed), file-based persistence at data/registry.json.
 
 #### 🟢 `scraper/sofascore_events.py` — grade A · keep
 - **Does:** Scrape match incidents (goals, cards, subs, captain data) from Sofascore API with persistent session, connection reuse, and exponential backoff.
@@ -275,7 +259,9 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: none; imports: config/settings.py (DATA_DIR), requests
 - **Quality signals:** 80+ LOC (partial read), standalone scrape_competition() function with FotMob league IDs, per-season match collection, JSON-based output.
 
-### `parser/` — 11 files
+### `parser/` — 8 files
+
+> **2026-09-04:** `match_page.py`, `scorebox.py`, `team_stats.py` and the `storage/raw.py` / `storage/structured.py` spine they fed were deleted (only `cli.py parse`/`run-all` reached them; registry frozen Feb-2026; transport Turnstile-blocked). The remaining leaf parsers are consumed by `scripts/data/parse_all_*.py` (weekly-data-refresh) and `scripts/data/scrape_epl_match_reports.py`, not by anything in `parser/` itself. `monitoring/` and `scripts/pipeline/run_monitoring.py` were deleted the same day: its retrainer trained nothing and its validator scored random predictions.
 
 #### ⚫ `parser/__init__.py` — grade A · keep
 - **Does:** Package initialization file (empty).
@@ -309,10 +295,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** 148 LOC with type hints. Complex formation regex (lines 43-45), player extraction fallbacks for <tr>, <li>, and <a> tags, bench detection with multiple language support (Substitutes, panchina). One minor issue: normalize_team is imported but never used in the module.
 - **Verdict reason:** Live, working well, but remove unused import of normalize_team from config/team_names.py.
 
-#### 🟢 `parser/match_page.py` — grade A · keep
-- **Does:** Orchestrator: parses complete FBref match reports by calling all specialized parsers (scorebox, team_stats, players, GK, shots, lineups, events) and assembles into MatchData.
-- **Talks to:** Imported by: cli.py (parse_all_matches, parse_match). Imports: models/schemas.py (MatchData), parser/events.py (parse_events), parser/goalkeeper_stats.py (parse_goalkeeper_stats), parser/html_utils.py (get_soup), parser/lineups.py (parse_lineups), parser/player_stats.py (parse_player_stats), parser/scorebox.py (parse_scorebox), parser/shots.py (parse_shots), parser/team_stats.py (parse_team_stats), scraper/registry.py (Registry), storage/paths.py (html_match_path).
-- **Quality signals:** 176 LOC with clear orchestration pattern. Robust team hash discovery from regex patterns on table IDs (handles fallbacks). Detailed logging of parsed row counts. Registry integration for progress tracking. Graceful error handling with exc_info=True. Warnings collection for partial parse failures. All specialized parsers tested as dependencies.
 
 #### 🟢 `parser/player_stats.py` — grade B · edit
 - **Does:** Extracts and merges all 6 per-player stat tables (summary, passing, passing_types, defense, possession, misc) per team from FBref.
@@ -320,20 +302,12 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** 101 LOC with type hints, clear TABLE_TYPES constant (lines 24-31). Handles missing summary table gracefully (line 69 warning). Column prefixing for non-summary tables (lines 72-78) avoids clashes. Left merge preserves summary structure. Pyright warns about unresolved pandas import (environment issue, not code issue). One minor: line 73 redundant replace (table_type already replaced in prefix).
 - **Verdict reason:** Live parser with solid merging logic. Minor: remove redundant .replace('_types', '_types') on line 73; just use table_type directly in prefix.
 
-#### 🟢 `parser/scorebox.py` — grade A · keep
-- **Does:** Extracts match metadata from FBref scorebox: teams, scores, xG, date, venue, attendance, referee, managers, captains.
-- **Talks to:** Imported by: parser/match_page.py (parse_scorebox). Imports: config/team_names.py (normalize_team), models/schemas.py (MatchMetadata), parser/html_utils.py (safe_int).
-- **Quality signals:** 216 LOC with thorough type hints. Handles multiple date formats (7 formats, lines 209-214). Regex patterns for matchweek, attendance, venue, referee. Robust fallbacks for missing data (direct children indexing line 35-40, venuetime @data-* attributes line 66, strong>a tags line 73). Safe text extraction with normalize_team.
 
 #### 🟢 `parser/shots.py` — grade A · keep
 - **Does:** Extracts shot data (player, xG, outcome, body part, distance) from FBref shots_all table.
 - **Talks to:** Imported by: parser/match_page.py (parse_shots). Imports: config/team_names.py (normalize_team), parser/html_utils.py (find_table, table_to_dataframe).
 - **Quality signals:** 49 LOC with clear type hints. Handles missing table gracefully. Normalizes team names for cross-team identification (line 45). Adds context columns (match_id, is_home_team_shot). Clean lambda expression for normalization.
 
-#### 🟢 `parser/team_stats.py` — grade A · keep
-- **Does:** Extracts team-level aggregate statistics from div#team_stats (possession, passes, shots, tackles, cards, etc.) and div#team_stats_extra.
-- **Talks to:** Imported by: parser/match_page.py (parse_team_stats). Imports: parser/html_utils.py (safe_float, safe_int).
-- **Quality signals:** 163 LOC with clear helper functions (_parse_main_stats, _parse_extra_stats, _normalize_stat_key, _parse_stat_value). Handles FBref's HTML structure quirks: colspan headers, <strong> value extraction, icon-based card counts, and fraction parsing (e.g., '2 of 4 — 50%'). Comprehensive type hints.
 
 ### `features/` — 59 files
 
@@ -850,42 +824,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported by: scripts/prediction/simulate_upcoming.py, tests/simulator/test_phase2_rates.py, test_phase5_player_props.py. imports: models/simulator/engine/simulator.py. Defines: all_player_market_probs(), all_phase2_market_probs(), all_goal_market_probs().
 - **Quality signals:** 93 LOC. Type hints. Imports simulator.MatchSimulation. Clean separation of simulation output from market pricing. No import errors.
 
-### `monitoring/` — 7 files
-
-#### 🟢 `monitoring/__init__.py` — grade A · keep
-- **Does:** Package initialization for the monitoring module; re-exports key classes (ModelRetrainer, ProbabilityCalibrator, FeatureDriftDetector, ABTestFramework, PerformanceDashboard, etc.) for convenient public API access.
-- **Talks to:** Imports from monitoring/retraining.py (ModelRetrainer, WalkForwardValidator), monitoring/calibration.py (ProbabilityCalibrator, CalibrationTracker), monitoring/drift_detection.py (FeatureDriftDetector, AccuracyMonitor), monitoring/ab_testing.py (ABTestFramework, ModelComparator), monitoring/dashboard.py (PerformanceDashboard, MetricsCollector). No code imports this file (imported_by is empty).
-- **Quality signals:** Clean, minimal __init__ file (30 lines); properly structured with docstring explaining module phases; explicit __all__ list; imports only what is needed. Zero logic, pure re-export.
-
-#### 🟢 `monitoring/ab_testing.py` — grade A · keep
-- **Does:** A/B testing framework for comparing two production models side-by-side; includes ModelComparator (McNemar's test, log loss, Brier score comparison), ABExperiment (records paired predictions), ABTestFramework (manages multiple experiments), and AutoPromoter (auto-promotes winning models based on statistical significance).
-- **Talks to:** Imports from config/settings.py (DATA_DIR, MODELS_DIR), monitoring/utils.py (load_json_history, save_json_history). Imported by scripts/pipeline/run_monitoring.py which orchestrates the monitoring pipeline.
-- **Quality signals:** Well-structured, ~546 lines with clear class separation. Type hints throughout (Dict, List, Optional, np.ndarray). Detailed docstrings for each method. Graceful scipy fallback (lines 21-25, approximations for stats when scipy unavailable). Proper state management with JSON history persistence. Handles edge cases (empty windows, single model predictions, division by zero).
-
-#### 🟢 `monitoring/calibration.py` — grade A · keep
-- **Does:** Probability calibration system providing Platt scaling and isotonic regression methods; includes ProbabilityCalibrator (selects best method automatically), CalibrationTracker (tracks calibration metrics over time), and DynamicThresholdAdjuster (adjusts confidence thresholds based on calibration drift).
-- **Talks to:** Imports from config/settings.py (DATA_DIR, MODELS_DIR), monitoring/utils.py (load_json_history, save_json_history). Imported by scripts/pipeline/run_monitoring.py which calls calibration operations during monitoring cycles.
-- **Quality signals:** ~427 lines with solid engineering. Type hints throughout. Graceful sklearn fallback (lines 21-27). Well-documented ECE (Expected Calibration Error) calculation and reliability bucketing. Clear separation of concerns (PlattScaler vs IsotonicCalibrator). Historical tracking with JSON persistence. Handles edge cases (division by zero on line 146-147, empty history fallbacks).
-
-#### 🟢 `monitoring/dashboard.py` — grade A · keep
-- **Does:** Real-time performance monitoring dashboard; MetricsCollector stores predictions and betting results with daily aggregation; PerformanceDashboard generates accuracy summaries, P&L metrics, daily trends, model comparisons, and alerts; AlertManager dispatches alerts with handlers.
-- **Talks to:** Imports from config/settings.py (DATA_DIR, MODELS_DIR). Imported by scripts/pipeline/run_monitoring.py which feeds predictions and bets to the dashboard for real-time monitoring.
-- **Quality signals:** ~544 lines, well-organized three-class design. Type hints throughout. Comprehensive metrics (accuracy by outcome, by confidence, by edge bucket). Robust alert logic (lines 357-401) with severity thresholds. Daily stats aggregation with periodic saves (line 119-120). Handles missing data gracefully (lines 206-207, 260-261). Human-readable print_summary method.
-
-#### 🟢 `monitoring/drift_detection.py` — grade A · keep
-- **Does:** Data and concept drift detection system; FeatureDriftDetector monitors feature distributions (mean shift, variance change, IQR/range shifts); AccuracyMonitor tracks accuracy degradation over rolling windows; ConceptDriftDetector detects shifts in prediction error distribution using t-tests.
-- **Talks to:** Imports from config/settings.py (DATA_DIR), monitoring/utils.py (load_json_history, save_json_history). Imported by scripts/pipeline/run_monitoring.py which runs drift checks as part of continuous monitoring.
-- **Quality signals:** ~532 lines with strong statistical foundation. Type hints throughout. Multiple drift test implementations per feature (mean_shift z-test line 183-193, variance_ratio line 196-206, IQR ratio line 213-221, range_shift line 224-236). Graceful scipy fallback for stats tests. Clear confidence bucketing (lines 394-417). Historical tracking with summary aggregation (lines 240-260). Well-documented docstrings.
-
-#### 🟢 `monitoring/retraining.py` — grade A · keep
-- **Does:** Automated model retraining orchestration; WalkForwardValidator implements time-series cross-validation avoiding look-ahead bias; ModelRetrainer monitors triggers (accuracy threshold, new data, time interval) and manages model versioning; RetrainingScheduler coordinates full validation before retrain.
-- **Talks to:** Imports from config/settings.py (DATA_DIR, MODELS_DIR). Imported by scripts/pipeline/run_monitoring.py which calls retraining operations when conditions are met.
-- **Quality signals:** ~441 lines, well-architected. Type hints throughout. Walk-forward validation properly avoids look-ahead bias (lines 56-81). Version management with increment logic (lines 234-241). Multi-criteria trigger logic (accuracy, new_data, interval) on lines 243-276. State persistence with JSON (lines 210-226). Helper factory functions (lines 425-440). Handles edge cases (dataframe date conversion lines 145-146).
-
-#### 🟢 `monitoring/utils.py` — grade A · keep
-- **Does:** Shared utility functions for monitoring modules: load_json_history (safe file loading with default fallback), save_json_history (JSON persistence with optional max_entries truncation).
-- **Talks to:** Imported by monitoring/ab_testing.py (load_json_history, save_json_history lines 19), monitoring/calibration.py (load_json_history, save_json_history lines 19), monitoring/drift_detection.py (load_json_history, save_json_history lines 19). Does not import any monitoring modules (imports only json and pathlib).
-- **Quality signals:** Very concise (36 lines), utility-focused. Proper type hints (Path, List[Dict], Optional[int]). Docstrings for both functions. Defensive programming: graceful fallback when file missing (line 16) and optional truncation (line 33). Zero duplication across callers.
 
 ### `web/` — 5 files
 
@@ -967,10 +905,6 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imported by: scheduler.py, web/app.py. Imports: ~40 modules across config, scraper, features, scripts/models, scripts/analysis, scripts/prediction, scripts/betting. Core hub importing nearly all pipeline components.
 - **Quality signals:** ~1500 LOC orchestrating massive pipeline. Has nested functions (_run_parallel_data_collection with 5 parallel groups), step timing tracking, file locking, incremental mode (--quick, --bankroll, --snapshot-only, --pre-kickoff, --live-*), CLI argument parsing. Well-documented 32-step process. Good error handling patterns.
 
-#### 🟢 `scripts/pipeline/run_monitoring.py` — grade B · keep
-- **Does:** Monitoring system main entry point: orchestrates continuous learning (drift detection, retraining, calibration, A/B testing, dashboards) via monitoring module classes.
-- **Talks to:** Imported by: scheduler.py. Imports: monitoring/{retraining,calibration,drift_detection,ab_testing,dashboard}.py. CLI interface to monitoring subsystem.
-- **Quality signals:** ~50 LOC with MonitoringSystem class (incomplete in visible code). Imports show integration with retraining, calibration, drift detection, A/B testing. Has argparse for --check, --dashboard, --retrain, --drift, --full modes. Structured logging. Thin wrapper over monitoring module.
 
 #### 🟢 `scripts/pipeline/scheduler.py` — grade A · keep
 - **Does:** Automated betting pipeline scheduler with match-day detection, adaptive scheduling, and retry logic. Runs pipeline at fixed times daily + match-day-adaptive times with APScheduler or simple cron.

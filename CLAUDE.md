@@ -15,7 +15,6 @@
 - **`storage/`** — Data storage abstractions
 - **`tools/`** — Developer tools and utilities
 - **`web/`** — Flask dashboard
-- **`monitoring/`** — Pipeline monitoring
 - **`tests/`** — Test suite
 - **`data/`** — Parquet files, trained models, cache (in .claudeignore — 5GB+)
 

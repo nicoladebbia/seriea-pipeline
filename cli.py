@@ -19,7 +19,7 @@ log = logging.getLogger("seriea")
 
 @click.group()
 def main():
-    """Serie A FBref scraper and feature engineering pipeline."""
+    """Serie A pipeline: feature engineering, models, retraining."""
     ensure_dirs()
 
 
@@ -37,33 +37,6 @@ def scrape_fixtures(season: str):
     log.info("Scraping fixtures for %s", season)
     df = scrape_season_fixtures(season)
     log.info("Scraped %d fixtures", len(df))
-
-
-@main.command()
-@click.option("--season", default=SEASONS[-1], help="Season to scrape")
-@click.option("--limit", default=0, help="Max matches to download (0 = all)")
-def scrape_matches(season: str, limit: int):
-    """Download match report HTML pages (incremental)."""
-    from scraper.match_reports import download_match_reports
-
-    log.info("Downloading match reports for %s", season)
-    result = download_match_reports(season, limit=limit or None)
-    log.info(
-        "Done: %d downloaded, %d skipped, %d failed",
-        result["downloaded"],
-        result["skipped"],
-        result["failed"],
-    )
-
-
-@main.command()
-def import_existing():
-    """Import existing HTML files from the old project structure."""
-    from scraper.match_reports import import_old_html_files
-
-    log.info("Importing existing HTML files...")
-    count = import_old_html_files()
-    log.info("Imported %d files", count)
 
 
 @main.command()
@@ -86,7 +59,7 @@ def fetch_weather():
 
     matches_path = parsed_path("matches")
     if not matches_path.exists():
-        log.error("matches.parquet not found. Run 'parse' first.")
+        log.error("matches.parquet not found. It is produced by scripts/pipeline/refresh_weekly_data.py (weekly-data-refresh).")
         return
 
     matches = pd.read_parquet(matches_path)
@@ -137,20 +110,6 @@ def fetch_referees(season: str | None):
 # ---------------------------------------------------------------------------
 
 
-@main.command()
-@click.option("--season", default=None, help="Season to parse (default: all)")
-@click.option("--reparse", is_flag=True, help="Re-parse already-parsed matches")
-def parse(season: str | None, reparse: bool):
-    """Parse raw HTML into structured Parquet tables."""
-    from parser.match_page import parse_all_matches
-    from storage.structured import save_all
-
-    log.info("Parsing matches%s", f" for {season}" if season else "")
-    results = parse_all_matches(season=season, reparse=reparse)
-    save_all(results)
-    log.info("Parsed %d matches into Parquet", len(results))
-
-
 # ---------------------------------------------------------------------------
 # Feature engineering commands
 # ---------------------------------------------------------------------------
@@ -173,49 +132,8 @@ def features(season: str | None):
 
 
 @main.command()
-@click.option("--season", default=SEASONS[-1], help="Season to process")
-@click.option("--limit", default=0, help="Max matches to download (0 = all)")
-def run_all(season: str, limit: int):
-    """Run the full pipeline: scrape -> parse -> features."""
-    from features.build import build_features
-    from parser.match_page import parse_all_matches
-    from scraper.fixtures import scrape_season_fixtures
-    from scraper.match_reports import download_match_reports
-    from storage.structured import save_all
-
-    log.info("=== Full pipeline for %s ===", season)
-
-    log.info("Step 1: Scraping fixtures")
-    scrape_season_fixtures(season)
-
-    log.info("Step 2: Downloading match reports")
-    download_match_reports(season, limit=limit or None)
-
-    log.info("Step 3: Parsing HTML")
-    results = parse_all_matches(season=season, reparse=False)
-    save_all(results)
-
-    log.info("Step 4: Building features")
-    build_features(season=season)
-
-    log.info("=== Pipeline complete ===")
-
-
-@main.command()
 def status():
-    """Show pipeline status: downloaded, parsed, feature counts."""
-    from scraper.registry import Registry
-
-    reg = Registry()
-    total = reg.count_total()
-    downloaded = reg.count_downloaded()
-    parsed = reg.count_parsed()
-
-    click.echo(f"Registry entries:  {total}")
-    click.echo(f"  Downloaded HTML: {downloaded}")
-    click.echo(f"  Parsed:          {parsed}")
-    click.echo(f"  Pending parse:   {downloaded - parsed}")
-
+    """Show pipeline status: parsed-table and feature counts."""
     from storage.paths import parsed_path, features_path
     import pandas as pd
 
