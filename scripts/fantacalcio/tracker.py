@@ -668,6 +668,10 @@ def _refit_lines(summ: dict, min_rounds: int = REFIT_READY_N) -> list[str] | Non
         v = cal[k]
         lines.append(f"{k}: previsto {v['predicted_rate']:.0%} vs reale "
                      f"{v['realized_rate']:.0%} (n={v['n']})")
+    for role in sorted(summ.get("exp_bias") or {}):
+        v = summ["exp_bias"][role]
+        lines.append(f"bias exp {role}: {v['bias']:+.2f} (n={v['n']}, "
+                     f"correzione {v['corr']:+.2f} auto-applicata)")
     return lines
 
 

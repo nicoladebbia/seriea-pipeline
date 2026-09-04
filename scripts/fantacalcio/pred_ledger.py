@@ -67,6 +67,9 @@ def _row(p: dict, slot: str) -> dict:
             # SCORER_W / SCORER_K once graded vs realized goals
             "scorer_edge": p.get("scorer_edge"),
             "lam_mkt": p.get("lam_mkt"), "lam_own": p.get("lam_own"),
+            # flywheel write-back actually applied to this forecast, so a
+            # graded round can audit its own correction
+            "exp_bias": p.get("exp_bias"),
             "exp": p.get("exp"), "exp_voto": p.get("exp_voto")}
 
 
@@ -136,6 +139,37 @@ def snapshot(adv: dict, riv: dict | None = None,
         led["rounds"][key]["h2h"] = h2h
     _save(led)
     return "updated"
+
+
+EXP_BIAS_N0 = 60.0   # pseudo-observations: at n=60 graded player-rounds the
+EXP_BIAS_CAP = 0.5   # correction is half the measured bias; hard cap ±0.5 fv
+
+
+def exp_bias() -> dict[str, dict]:
+    """Per-role forecast bias (actual − predicted fantavoto) across every
+    reconciled round, with the shrunk correction the advisor writes back.
+
+    This is the calibration flywheel's closing arc: reconcile() grades each
+    frozen forecast, this aggregates the signed errors, and _apply_exp_bias
+    in xi_advisor feeds the correction into the next round's exp. Shrinkage
+    n/(n+N0) means it self-arms smoothly — ~5% of the bias after one round,
+    half at 60 graded player-rounds — with no cliff and no manual refit.
+    """
+    agg: dict[str, list[float]] = {}
+    for e in _load()["rounds"].values():
+        if not e.get("reconciled_at"):
+            continue
+        for p in e.get("players", []):
+            if p.get("err_fv") is not None and p.get("R"):
+                agg.setdefault(p["R"], []).append(float(p["err_fv"]))
+    out: dict[str, dict] = {}
+    for role, errs in agg.items():
+        n = len(errs)
+        b = sum(errs) / n
+        corr = max(-EXP_BIAS_CAP,
+                   min(EXP_BIAS_CAP, n / (n + EXP_BIAS_N0) * b))
+        out[role] = {"n": n, "bias": round(b, 3), "corr": round(corr, 3)}
+    return out
 
 
 def frozen_entry(rnd: int | None) -> dict | None:
@@ -381,6 +415,7 @@ def summary() -> dict:
                  "realized_rate": round(a["played"] / a["n"], 3)}
              for k, a in src.items() if a["n"]}
     return {"season": led.get("season"), "rounds": rounds, "calibration": calib,
+            "exp_bias": exp_bias(),
             "updated_at": led.get("updated_at")}
 
 

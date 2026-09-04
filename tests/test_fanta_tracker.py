@@ -2764,3 +2764,48 @@ def test_frozen_advice_renders_locked_line():
     msg, tg = render_xi(adv)
     assert "🔒" in tg and "3-5-2" in tg
     assert "Douvikas" in msg
+
+
+# ---------------------------------------------------------------------------
+# Calibration flywheel write-back: exp_bias aggregation + advise application.
+
+
+def test_exp_bias_shrinks_caps_and_skips_unreconciled(monkeypatch, tmp_path):
+    import json
+
+    import scripts.fantacalcio.pred_ledger as pl3
+
+    led = {"rounds": {
+        "1": {"reconciled_at": "x", "players":
+              [{"R": "A", "err_fv": 1.0}] * 30},
+        "2": {"reconciled_at": "x", "players":
+              [{"R": "P", "err_fv": 5.0}] * 600},
+        "3": {"reconciled_at": None, "players":       # in play — ignored
+              [{"R": "A", "err_fv": -9.0}] * 50},
+    }}
+    path = tmp_path / "led.json"
+    path.write_text(json.dumps(led))
+    monkeypatch.setattr(pl3, "LEDGER", path)
+    eb = pl3.exp_bias()
+    assert eb["A"]["n"] == 30
+    assert eb["A"]["corr"] == round(30 / 90 * 1.0, 3)   # shrunk n/(n+60)
+    assert eb["P"]["corr"] == 0.5                       # capped
+    assert set(eb) == {"A", "P"}                        # round 3 never counted
+
+
+def test_exp_bias_correction_moves_advise_exp_by_role(monkeypatch):
+    squad = _sq()
+    for p in squad:
+        p.setdefault("p_play", 0.9)
+    base = advise([dict(p) for p in squad], FIX, ELO, {})
+    biased_rows = [dict(p) for p in squad]
+    monkeypatch.setattr(xa, "ledger_exp_bias",
+                        lambda: {"A": {"n": 30, "bias": 1.0, "corr": 0.33}})
+    xa._apply_exp_bias(biased_rows)
+    adv = advise(biased_rows, FIX, ELO, {})
+    a_base = next(x for x in base["xi"] if x["nome"] == "A0")
+    a_new = next(x for x in adv["xi"] if x["nome"] == "A0")
+    gk_base = next(x for x in base["xi"] if x["R"] == "P")
+    gk_new = next(x for x in adv["xi"] if x["R"] == "P")
+    assert a_new["exp"] == round(a_base["exp"] + 0.33, 2)   # corrected role
+    assert gk_new["exp"] == gk_base["exp"]                  # untouched role

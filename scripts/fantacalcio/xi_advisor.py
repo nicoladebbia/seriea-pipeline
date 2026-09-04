@@ -52,6 +52,7 @@ from scripts.fantacalcio.probabili import (
     rigoristi_by_pid,
     status_by_pid,
 )
+from scripts.fantacalcio.pred_ledger import exp_bias as ledger_exp_bias
 from scripts.fantacalcio.pred_ledger import frozen_entry
 from scripts.fantacalcio.tracker import (
     LEVEL_K,
@@ -348,7 +349,11 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         pp = float(p.get("p_play", 1.0))
         tilt = (p["scorer_edge"] if p.get("scorer_edge") is not None
                 else float(p.get("rig_bonus") or 0.0))
-        exp = None if note else p["level"] + adj + tilt
+        # exp_bias: measured per-role forecast error written back by the
+        # calibration flywheel (_apply_exp_bias); absent -> 0, so callers
+        # that never grade rounds are unchanged.
+        exp = (None if note else
+               p["level"] + adj + tilt + float(p.get("exp_bias") or 0.0))
         cand.append({**p,
                      "exp": None if exp is None else round(exp, 2),
                      "exp_slot": None if exp is None else round(pp * exp, 2),
@@ -637,6 +642,7 @@ def build_advice(fresh: bool = False,
     _apply_discipline(roster_src, out, discipline_status())
     _apply_rigoristi(roster_src, rig)
     _apply_scorer(roster_src, _scorer_by_pid())
+    _apply_exp_bias(roster_src)
     _apply_availability(roster_src, avail, _news_caps(), sf=sf)
     if official:
         _apply_official(roster_src, official)
@@ -1076,6 +1082,26 @@ def _scorer_age_h() -> float | None:
                 - datetime.fromisoformat(d["built_at"])).total_seconds() / 3600
     except (OSError, ValueError, KeyError):
         return None
+
+
+def _apply_exp_bias(rows: list) -> None:
+    """Write the calibration flywheel's per-role correction onto each row.
+
+    pred_ledger.exp_bias() aggregates actual-vs-predicted fantavoto errors
+    over every reconciled round, shrunk n/(n+60) and capped ±0.5. Applied to
+    MY roster and rival rosters alike — it corrects the shared exp model, so
+    H2H win probabilities stay consistent. No-op until rounds grade."""
+    try:
+        corr = {r: v["corr"] for r, v in ledger_exp_bias().items()
+                if v.get("corr")}
+    except Exception:
+        return
+    if not corr:
+        return
+    for r in rows:
+        c = corr.get(r.get("R"))
+        if c:
+            r["exp_bias"] = c
 
 
 def _apply_scorer(rows: list, sco_by_pid: dict[int, dict] | None) -> None:
@@ -1612,6 +1638,7 @@ def build_rivals(adv: dict | None = None) -> dict:
     _apply_discipline(my_roster, out, disc)
     _apply_rigoristi(my_roster, rig)
     _apply_scorer(my_roster, _scorer_by_pid())
+    _apply_exp_bias(my_roster)
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1648,6 +1675,7 @@ def build_rivals(adv: dict | None = None) -> dict:
         _apply_discipline(rows, out, disc)
         _apply_rigoristi(rows, rig)
         _apply_scorer(rows, _scorer_by_pid())
+        _apply_exp_bias(rows)
         _apply_availability(rows, avail, sf=sf)
         obs = _observed_modules(tname)
         radv = advise(rows, fixtures, elo, out, modules=obs or None)
@@ -1764,6 +1792,7 @@ def score_observed_xi(team: str, player_names: list[str],
     _apply_discipline(rows, out, disc)
     _apply_rigoristi(rows, rig)
     _apply_scorer(rows, _scorer_by_pid())
+    _apply_exp_bias(rows)
     _apply_availability(rows, avail, sf=sf)
 
     def _norm(s: str) -> str:
@@ -1854,6 +1883,7 @@ def score_observed_xi(team: str, player_names: list[str],
     _apply_discipline(my_roster, out, disc)
     _apply_rigoristi(my_roster, rig)
     _apply_scorer(my_roster, _scorer_by_pid())
+    _apply_exp_bias(my_roster)
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1928,6 +1958,7 @@ def build_svincolati(top_n: int = 8) -> dict:
     _apply_discipline(rows, out, disc)
     _apply_rigoristi(rows, rig)
     _apply_scorer(rows, _scorer_by_pid())
+    _apply_exp_bias(rows)
     _apply_availability(rows, avail, sf=sf)
 
     # my weakest per role (by level), for the upgrade comparison
