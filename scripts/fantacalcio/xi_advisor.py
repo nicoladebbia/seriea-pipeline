@@ -52,6 +52,7 @@ from scripts.fantacalcio.probabili import (
     rigoristi_by_pid,
     status_by_pid,
 )
+from scripts.fantacalcio.player_rates import load_rates, p_from_lam
 from scripts.fantacalcio.pred_ledger import exp_bias as ledger_exp_bias
 from scripts.fantacalcio.pred_ledger import frozen_entry
 from scripts.fantacalcio.tracker import (
@@ -348,7 +349,8 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         adj = HOME_ADJ[p["R"]] * fx["home"] + ELO_SLOPE[p["R"]] * d_elo
         pp = float(p.get("p_play", 1.0))
         tilt = (p["scorer_edge"] if p.get("scorer_edge") is not None
-                else float(p.get("rig_bonus") or 0.0))
+                else float(p.get("rig_bonus") or 0.0)
+                + float(p.get("rate_tilt") or 0.0))
         # exp_bias: measured per-role forecast error written back by the
         # calibration flywheel (_apply_exp_bias); absent -> 0, so callers
         # that never grade rounds are unchanged.
@@ -509,6 +511,12 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
         prior, mv_prior, pp_prior = _board_priors(
             p, (hist.get("prev") or {}).get(pid))
         n_seen = int(lv.get("n_rounds", 0))
+        # Observations behind the level: live rounds + last-season votes (or
+        # the auction model's two-season fit). _apply_rates uses the flat-
+        # prior share LEVEL_K/(LEVEL_K + n_level) to size the rate tilt.
+        prev_n = int(((hist.get("prev") or {}).get(pid) or {}).get("n") or 0)
+        if p.get("season_points"):
+            prev_n = max(prev_n, 38)
         p_play = (PLAY_K * pp_prior + n_seen) / (PLAY_K + rounds_elapsed)
         p_play = min(max(p_play, 0.02), 0.95)
         p_play, pp_src = p_play_override(pid, p_play, prob_by_pid)
@@ -519,7 +527,7 @@ def _my_roster(by_id: dict, prob_by_pid: dict,
                "p_play": p_play, "p_play_src": pp_src,
                "sd": sds.get(pid) or SD_ROLE[p["R"]],
                "voto_sd": hist.get("voto_sd", {}).get(pid) or VOTO_SD_ROLE[p["R"]],
-               "n_rounds": n_seen}
+               "n_rounds": n_seen, "n_level": n_seen + prev_n}
         if p.get("status") == "DEPARTED":
             row.update(p_play=0.02, p_play_src="departed", departed=True)
         roster_src.append(row)
@@ -643,6 +651,7 @@ def build_advice(fresh: bool = False,
     _apply_rigoristi(roster_src, rig)
     _apply_scorer(roster_src, _scorer_by_pid())
     _apply_exp_bias(roster_src)
+    _apply_rates(roster_src)
     _apply_availability(roster_src, avail, _news_caps(), sf=sf)
     if official:
         _apply_official(roster_src, official)
@@ -1104,6 +1113,75 @@ def _apply_exp_bias(rows: list) -> None:
             r["exp_bias"] = c
 
 
+RATE_CAP = 0.35     # bound on the per-player rate tilt (fantavoto)
+
+_RATES_CTX: dict | None = None
+
+
+def _rates_ctx() -> dict | None:
+    """Rates payload + per-role mean lambdas over the full listone.
+
+    Role means come from the BOARD join (computed once per process): a mean
+    taken over one 25-man roster would drift team by team, and the tilt must
+    price the same player identically in my XI and a rival's."""
+    global _RATES_CTX
+    if _RATES_CTX is not None:
+        return _RATES_CTX or None
+    rates = load_rates()
+    board = []
+    try:
+        board = json.loads(BOARD.read_text())["players"]
+    except (OSError, ValueError, KeyError):
+        pass
+    if not rates or not board:
+        _RATES_CTX = {}
+        return None
+    items = [{"nome": n, **v} for n, v in rates["players"].items()]
+    hit = _avail_lookup(items, board)
+    role_lam: dict[str, list] = {}
+    for i, it in hit.items():
+        role = board[i].get("R")
+        if role:
+            role_lam.setdefault(role, []).append(
+                (rates["c_goal"] * it["xg90"] * it["min_pa"] / 90,
+                 rates["c_assist"] * it["ast90"] * it["min_pa"] / 90))
+    means = {r: (sum(a for a, _ in v) / len(v), sum(b for _, b in v) / len(v))
+             for r, v in role_lam.items() if v}
+    _RATES_CTX = {"rates": rates, "means": means, "items": items}
+    return _RATES_CTX
+
+
+def _apply_rates(rows: list) -> None:
+    """Attach p_goal / p_assist and the identity rate tilt to each row.
+
+    Validated before wiring (2026-09-04, held-out 2025-26+): P(goal) skill
+    +0.073, P(assist) +0.020. The tilt is the bonus signal the shrunk level
+    has NOT yet absorbed: role-mean-relative (so T2's role bias and this
+    stay orthogonal), weighted by the flat-prior share LEVEL_K/(LEVEL_K+n)
+    — it fades to ~0 as a player's own fanta history accumulates — and
+    capped ±RATE_CAP. Market-priced players keep the market's p_goal
+    (measured better than our own rates, Jun 04) and get NO tilt on top of
+    scorer_edge."""
+    ctx = _rates_ctx()
+    if not ctx:
+        return
+    rates = ctx["rates"]
+    hit = _avail_lookup(ctx["items"], rows)
+    for i, it in hit.items():
+        r = rows[i]
+        lam_g = rates["c_goal"] * it["xg90"] * it["min_pa"] / 90
+        lam_a = rates["c_assist"] * it["ast90"] * it["min_pa"] / 90
+        r["p_goal"] = (p_from_lam(r["lam_mkt"])
+                       if r.get("lam_mkt") is not None else p_from_lam(lam_g))
+        r["p_assist"] = p_from_lam(lam_a)
+        mean = ctx["means"].get(r.get("R"))
+        if not mean or r.get("scorer_edge") is not None:
+            continue
+        w0 = LEVEL_K / (LEVEL_K + float(r.get("n_level") or 0))
+        tilt = w0 * (3.0 * (lam_g - mean[0]) + (lam_a - mean[1]))
+        r["rate_tilt"] = round(max(-RATE_CAP, min(RATE_CAP, tilt)), 3)
+
+
 def _apply_scorer(rows: list, sco_by_pid: dict[int, dict] | None) -> None:
     """pid-exact join; sets the market tilt and drops rig_bonus on priced
     rows (the market λ already contains penalties). No-op without edges."""
@@ -1518,7 +1596,8 @@ def _rival_roster(entry: dict, by_id: dict, hist: dict, prob_by_pid: dict) -> li
                "p_play": p_play, "p_play_src": pp_src,
                "sd": hist["sd"].get(pid) or SD_ROLE[p["R"]],
                "voto_sd": hist.get("voto_sd", {}).get(pid) or VOTO_SD_ROLE[p["R"]],
-               "n_rounds": n_seen}
+               "n_rounds": n_seen,
+               "n_level": n_seen + (38 if p.get("season_points") else 0)}
         if p.get("status") == "DEPARTED":
             row.update(p_play=0.02, p_play_src="departed", departed=True)
         rows.append(row)
@@ -1639,6 +1718,7 @@ def build_rivals(adv: dict | None = None) -> dict:
     _apply_rigoristi(my_roster, rig)
     _apply_scorer(my_roster, _scorer_by_pid())
     _apply_exp_bias(my_roster)
+    _apply_rates(my_roster)
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1676,6 +1756,7 @@ def build_rivals(adv: dict | None = None) -> dict:
         _apply_rigoristi(rows, rig)
         _apply_scorer(rows, _scorer_by_pid())
         _apply_exp_bias(rows)
+        _apply_rates(rows)
         _apply_availability(rows, avail, sf=sf)
         obs = _observed_modules(tname)
         radv = advise(rows, fixtures, elo, out, modules=obs or None)
@@ -1793,6 +1874,7 @@ def score_observed_xi(team: str, player_names: list[str],
     _apply_rigoristi(rows, rig)
     _apply_scorer(rows, _scorer_by_pid())
     _apply_exp_bias(rows)
+    _apply_rates(rows)
     _apply_availability(rows, avail, sf=sf)
 
     def _norm(s: str) -> str:
@@ -1884,6 +1966,7 @@ def score_observed_xi(team: str, player_names: list[str],
     _apply_rigoristi(my_roster, rig)
     _apply_scorer(my_roster, _scorer_by_pid())
     _apply_exp_bias(my_roster)
+    _apply_rates(my_roster)
     _apply_availability(my_roster, avail, _news_caps(), sf=sf)
     base = advise(my_roster, fixtures, elo, out)
     base_names = {x["nome"] for x in base["xi"]}
@@ -1959,6 +2042,7 @@ def build_svincolati(top_n: int = 8) -> dict:
     _apply_rigoristi(rows, rig)
     _apply_scorer(rows, _scorer_by_pid())
     _apply_exp_bias(rows)
+    _apply_rates(rows)
     _apply_availability(rows, avail, sf=sf)
 
     # my weakest per role (by level), for the upgrade comparison

@@ -70,6 +70,10 @@ def _row(p: dict, slot: str) -> dict:
             # flywheel write-back actually applied to this forecast, so a
             # graded round can audit its own correction
             "exp_bias": p.get("exp_bias"),
+            # rate-prior fields (player_rates): graded vs realized goals /
+            # assists once voti land — the refit handles for RATE_CAP
+            "p_goal": p.get("p_goal"), "p_assist": p.get("p_assist"),
+            "rate_tilt": p.get("rate_tilt"),
             "exp": p.get("exp"), "exp_voto": p.get("exp_voto")}
 
 

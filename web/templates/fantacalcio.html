@@ -289,6 +289,8 @@
         <div class="fc-chip__nums">
           <span class="fc-chip__exp" title="fantavoto atteso">${fmt(p.exp)}</span>
           <span title="${ppSrcTitle(p)}">${Math.round((p.p_play || 0) * 100)}%${ppSrcMark(p)}</span>
+          ${(p.p_goal || 0) >= 0.10 ? `<span title="probabilità gol">⚽${Math.round(p.p_goal * 100)}%</span>` : ""}
+          ${(p.p_assist || 0) >= 0.10 ? `<span title="probabilità assist">🅰${Math.round(p.p_assist * 100)}%</span>` : ""}
         </div>
         <div class="fc-playbar"><i style="width:${Math.round((p.p_play || 0) * 100)}%"></i></div>
       </div>`;

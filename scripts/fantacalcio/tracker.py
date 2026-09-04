@@ -740,8 +740,19 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
     vs_txt, vs_tg, _ = _vs_block(riv, adv)
     role_order = {"P": 0, "D": 1, "C": 2, "A": 3}
     xi = sorted(adv["xi"], key=lambda x: role_order[x["R"]])
+    def _pct(x: dict) -> str:
+        """⚽/🅰 chance badges — the 'is this guy going to score' number,
+        shown once it's a real signal (>=10%)."""
+        parts = []
+        if (x.get("p_goal") or 0) >= 0.10:
+            parts.append(f"⚽{x['p_goal']:.0%}")
+        if (x.get("p_assist") or 0) >= 0.10:
+            parts.append(f"🅰{x['p_assist']:.0%}")
+        return (" " + " ".join(parts)) if parts else ""
+
     lines = [f"{x['R']} {x['nome']}{'®' if x.get('rigorista') == 1 else ''}"
              f" ({x['team']} {'vs' if x['home'] else '@'} {x['opp']})"
+             f"{_pct(x)}"
              for x in xi]
     bench = [f"{x['R']} {x['nome']}" for x in adv["bench"]]
     inj = [f"{x['nome']}: {x.get('inj') or x.get('why')}"

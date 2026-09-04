@@ -2809,3 +2809,100 @@ def test_exp_bias_correction_moves_advise_exp_by_role(monkeypatch):
     gk_new = next(x for x in adv["xi"] if x["R"] == "P")
     assert a_new["exp"] == round(a_base["exp"] + 0.33, 2)   # corrected role
     assert gk_new["exp"] == gk_base["exp"]                  # untouched role
+
+
+# ---------------------------------------------------------------------------
+# Player rate priors (T3/T4): era filter, watermark cache, tilt application.
+import scripts.fantacalcio.player_rates as pr  # noqa: E402
+
+
+def _rates_frame():
+    import pandas as pd
+    rows = []
+    # pre-era row that must be EXCLUDED (would deflate the prior 4x)
+    rows.append(dict(date="2019-01-01", player_name="Bomber", minutes=90,
+                     xg=0.0, goals=0, assists=0))
+    for _ in range(20):   # era: hot striker, 0.5 xg / 90'
+        rows.append(dict(date="2024-01-01", player_name="Bomber", minutes=90,
+                         xg=0.5, goals=1, assists=0))
+    for _ in range(20):   # era: NaN xg == no shots (verified repo fact)
+        rows.append(dict(date="2024-01-01", player_name="Wall", minutes=90,
+                         xg=float("nan"), goals=0, assists=0))
+    return pd.DataFrame(rows)
+
+
+def test_player_rates_era_filter_shrink_and_fit():
+    out = pr._build(_rates_frame())
+    b = out["players"]["Bomber"]
+    # 20 era matches only: (20*0.5 + mean*10) / (1800+900) * 90 — the pre-era
+    # zero row must not enter, so xg90 sits well above the diluted value.
+    assert b["n_app"] == 20            # pre-era appearance not counted
+    assert 0.30 < b["xg90"] < 0.50     # shrunk toward league mean, not 0
+    assert out["players"]["Wall"]["xg90"] < b["xg90"]
+    assert 0.2 <= out["c_goal"] <= 5.0
+
+
+def test_player_rates_cache_watermark_idempotent(monkeypatch, tmp_path):
+    import pandas as pd
+    src = tmp_path / "pms.parquet"
+    _rates_frame().to_parquet(src)
+    monkeypatch.setattr(pr, "SOURCE", src)
+    monkeypatch.setattr(pr, "CACHE", tmp_path / "rates.json")
+    calls = {"n": 0}
+    real = pd.read_parquet
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+    monkeypatch.setattr(pd, "read_parquet", counting)
+    r1 = pr.load_rates()
+    r2 = pr.load_rates()          # second call must serve the cache
+    assert calls["n"] == 1
+    assert r1["players"] == r2["players"]
+    src.touch()                   # source moved -> rebuild
+    pr.load_rates()
+    assert calls["n"] == 2
+
+
+def test_apply_rates_tilt_shrinks_with_history_and_respects_market(monkeypatch):
+    fake = {"rates": {"c_goal": 1.0, "c_assist": 1.0},
+            "means": {"A": (0.10, 0.05)},
+            "items": [{"nome": "Nuovo", "xg90": 0.45, "ast90": 0.10,
+                       "min_pa": 90.0, "n_app": 30},
+                      {"nome": "Vecchio", "xg90": 0.45, "ast90": 0.10,
+                       "min_pa": 90.0, "n_app": 30},
+                      {"nome": "Prezzato", "xg90": 0.45, "ast90": 0.10,
+                       "min_pa": 90.0, "n_app": 30}]}
+    monkeypatch.setattr(xa, "_RATES_CTX", fake)
+    rows = [{"nome": "Nuovo", "R": "A", "n_level": 0},
+            {"nome": "Vecchio", "R": "A", "n_level": 40},
+            {"nome": "Prezzato", "R": "A", "n_level": 0,
+             "scorer_edge": 0.2, "lam_mkt": 0.60}]
+    xa._apply_rates(rows)
+    nuovo, vecchio, prezzato = rows
+    assert nuovo["p_goal"] == round(1 - __import__("math").exp(-0.45), 3)
+    # identical rates: the thin-history player carries the bigger tilt
+    assert nuovo["rate_tilt"] > vecchio["rate_tilt"] > 0
+    assert nuovo["rate_tilt"] <= xa.RATE_CAP
+    # market-priced: p_goal comes from lam_mkt, and NO tilt on top of the edge
+    assert prezzato["p_goal"] == round(1 - __import__("math").exp(-0.60), 3)
+    assert "rate_tilt" not in prezzato
+
+
+def test_advise_adds_rate_tilt_only_without_market_edge():
+    squad = _sq()
+    for p in squad:
+        p.setdefault("p_play", 0.9)
+    base = advise([dict(p) for p in squad], FIX, ELO, {})
+    tilted = [dict(p) for p in squad]
+    for p in tilted:
+        if p["nome"] == "A0":
+            p["rate_tilt"] = 0.25
+        if p["nome"] == "A1":
+            p["rate_tilt"] = 0.25
+            p["scorer_edge"] = 0.10       # market wins: tilt must be ignored
+    adv = advise(tilted, FIX, ELO, {})
+    g = {x["nome"]: x for x in adv["xi"] + adv["bench"]}
+    b = {x["nome"]: x for x in base["xi"] + base["bench"]}
+    assert g["A0"]["exp"] == round(b["A0"]["exp"] + 0.25, 2)
+    assert g["A1"]["exp"] == round(b["A1"]["exp"] + 0.10, 2)   # edge only
