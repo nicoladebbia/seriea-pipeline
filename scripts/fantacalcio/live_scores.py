@@ -155,7 +155,7 @@ def fetch_round(season: str, rnd: int, refresh: bool = False) -> pd.DataFrame | 
             break
         except rq.exceptions.RequestException as e:
             last_err = e
-            _time.sleep(5 * (_attempt + 1))
+            _time.sleep(10 * (_attempt + 1))
     if r is None:
         if cached is not None:
             return cached          # finalization re-check must not lose the round
@@ -178,9 +178,22 @@ def played_rounds(season: str, upto: int = 38, refresh: bool = False) -> list[in
     Deliberately stops rather than scanning all 38: a mid-season gap would mean a schema
     break, and continuing past it would report the break as "those rounds were not played".
     """
+    from curl_cffi import requests as rq
     out = []
     for rnd in range(1, upto + 1):
-        if fetch_round(season, rnd, refresh) is None:
+        try:
+            df = fetch_round(season, rnd, refresh)
+        except rq.exceptions.RequestException:
+            # Transient throttle while PROBING the next round must not kill
+            # the whole build (paid 2026-09-03, 21:15 run): rounds already
+            # collected are correct, so stopping here equals "not played yet"
+            # and the next run converges. An error with NOTHING collected is
+            # indistinguishable from a full outage -- raise, because building
+            # from zero rounds would silently reset every level to priors.
+            if not out:
+                raise
+            break
+        if df is None:
             break
         out.append(rnd)
     return out

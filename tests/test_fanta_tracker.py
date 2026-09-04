@@ -2617,3 +2617,28 @@ def test_risky_high_ceiling_starter_displaces_the_safe_pick():
     assert t["exp_slot"] < min(x["exp_slot"] for x in adv2["xi"]
                                if x["R"] == "A")   # greedy ranks him below XI
     assert t in adv2["bench"], "sub-margin gain must not churn the XI"
+
+
+def test_round_probe_throttle_degrades_instead_of_killing_the_build(monkeypatch):
+    """A transient connect error while probing the round AFTER the known-played
+    ones stops the scan (stale-but-correct); the same error with zero rounds
+    collected still raises — building from nothing would silently reset every
+    level to its prior."""
+    from curl_cffi import requests as rq
+
+    import scripts.fantacalcio.live_scores as ls
+
+    def flaky(season, rnd, refresh=False):
+        if rnd >= 3:
+            raise rq.exceptions.RequestException("curl 7")
+        return object()   # played round sentinel
+
+    monkeypatch.setattr(ls, "fetch_round", flaky)
+    assert ls.played_rounds("2026-27") == [1, 2]
+
+    def dead(season, rnd, refresh=False):
+        raise rq.exceptions.RequestException("curl 7")
+
+    monkeypatch.setattr(ls, "fetch_round", dead)
+    with pytest.raises(rq.exceptions.RequestException):
+        ls.played_rounds("2026-27")
