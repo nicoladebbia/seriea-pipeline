@@ -3017,9 +3017,33 @@ class EnsemblePredictor:
         else:
             pre_predicted = "DRAW"
 
-        # Lessons system DISABLED — it produces noise (method_boost does nothing,
-        # confidence_shift can produce negative probs, xg_bias overrides other corrections)
+        # Lessons run in SHADOW mode (2026-09-05; live-apply disabled since
+        # 2026-04-14, fa2c0ea). The adjusted probabilities are computed and
+        # RECORDED next to their base but never served — settlement grades
+        # shadow-vs-base per match (lesson_writer.update_lesson_effectiveness),
+        # building the evidence a live re-enable would need. Serving stays
+        # byte-identical to the no-lessons path.
         lessons_applied = []
+        lessons_shadow = None
+        if self._lessons_data:
+            try:
+                _shadow_base = {k: ensemble_probs[k]
+                                for k in ("prob_H", "prob_D", "prob_A")}
+                _shadow_probs, lessons_applied = self._apply_lessons(
+                    dict(_shadow_base), home, away, pre_predicted,
+                    lesson_home_xg, lesson_away_xg,
+                    match_key=f"{match.get('date', '')}_{home}_{away}",
+                )
+                if lessons_applied:
+                    lessons_shadow = {
+                        "base": {k: round(float(v), 4) for k, v in _shadow_base.items()},
+                        "adjusted": {k: round(float(_shadow_probs[k]), 4)
+                                     for k in ("prob_H", "prob_D", "prob_A")},
+                        "ids": lessons_applied,
+                    }
+            except Exception as e:
+                log.debug(f"Lesson shadow failed: {e}")
+                lessons_applied = []
 
         # Build features dict for calibration (reuse match_features if available)
         features_dict = {}
@@ -3166,9 +3190,11 @@ class EnsemblePredictor:
         if formation_adjustment:
             result["formation_adjustment"] = formation_adjustment
 
-        # Add lessons applied
+        # Add lessons applied (shadow-only — see the shadow block above)
         if lessons_applied:
             result["lessons_applied"] = lessons_applied
+        if lessons_shadow:
+            result["lessons_shadow"] = lessons_shadow
 
         # Add correction layer deltas
         if correction_deltas:
@@ -4249,6 +4275,7 @@ class EnsemblePredictor:
     def _apply_lessons(
         self, probs: Dict, home: str, away: str, predicted: str,
         home_xg: float = 1.3, away_xg: float = 1.1,
+        match_key: str = "",
     ) -> tuple:
         """Apply persistent lessons to adjust probabilities.
 
@@ -4309,8 +4336,9 @@ class EnsemblePredictor:
 
                 if level == current_level:
                     shift = correction.get("confidence_adjust", 0) * confidence
-                    # Apply shift: positive = band is too optimistic, shrink dominant prob
-                    # negative = band underperforms, boost dominant prob
+                    # Shift sign follows (hit_rate - expected)/2 from the
+                    # writer: positive = band UNDERSTATES its hit rate, boost
+                    # the dominant prob; negative = band overclaims, shrink.
                     if predicted == "HOME":
                         prob_H += shift
                     elif predicted == "AWAY":
@@ -4336,8 +4364,16 @@ class EnsemblePredictor:
 
             if matched_lesson:
                 applied_ids.append(lesson["id"])
-                lesson["applied_count"] = lesson.get("applied_count", 0) + 1
-                self._lessons_dirty = True
+                # applied_count counts DISTINCT MATCHES. The pipeline
+                # re-predicts the same fixtures 2-3x/day; counting raw calls
+                # burned a "20 match" expiry in about a week of regenerations.
+                seen = lesson.setdefault("applied_matches", [])
+                if not match_key or match_key not in seen:
+                    if match_key:
+                        seen.append(match_key)
+                        del seen[:-80]
+                    lesson["applied_count"] = lesson.get("applied_count", 0) + 1
+                    self._lessons_dirty = True
 
         # If xG was adjusted, recompute probabilities through Poisson
         if adj_home_xg != home_xg or adj_away_xg != away_xg:

@@ -87,6 +87,11 @@ def archive_predictions():
                 "neutral_factors": pred.get("neutral_factors", []),
                 "n_factors": pred.get("n_factors", 0),
                 "lineup_source": pred.get("lineup_source", ""),
+                # Lesson feedback fields — without these the settle-time
+                # effectiveness update never fired (helped_count stayed 0
+                # for every lesson in the subsystem's history).
+                "lessons_applied": pred.get("lessons_applied", []),
+                "lessons_shadow": pred.get("lessons_shadow"),
             }
             added += 1
 

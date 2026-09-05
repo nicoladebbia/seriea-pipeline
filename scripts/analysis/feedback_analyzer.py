@@ -139,6 +139,7 @@ def match_predictions_to_results(league: str | None = "serie_a"):
             "lineup_source": pred.get("lineup_source", ""),
             "date": pred.get("date", ""),
             "lessons_applied": pred.get("lessons_applied", []),
+            "lessons_shadow": pred.get("lessons_shadow"),
         })
 
     return matched

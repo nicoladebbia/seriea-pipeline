@@ -47,6 +47,15 @@ class _NumpySafeEncoder(json.JSONEncoder):
 # Agent A: Prediction Auditor
 # =============================================================================
 
+def _se(errors: list) -> float:
+    """Standard error of the mean error (0 when n < 2 — gates fail closed)."""
+    n = len(errors)
+    if n < 2:
+        return 0.0
+    import statistics
+    return statistics.stdev(errors) / (n ** 0.5)
+
+
 def _run_prediction_audit() -> dict:
     """Per-team calibration, lineup reconciliation, confidence band accuracy.
 
@@ -68,6 +77,7 @@ def _run_prediction_audit() -> dict:
             update_lesson_effectiveness(
                 m["match"], m.get("predicted_outcome", ""),
                 m["actual_outcome"], applied,
+                shadow=m.get("lessons_shadow"),
             )
             lessons_updated += 1
 
@@ -132,6 +142,7 @@ def _run_prediction_audit() -> dict:
             "win_rate_bias": round(win_rate_predicted - win_rate_actual, 3),
             "xg_mae": round(mae, 3),
             "xg_mean_bias": round(mean_bias, 3),
+            "xg_bias_se": round(_se(stats["xg_errors"]), 3),
         }
 
         # Venue splits

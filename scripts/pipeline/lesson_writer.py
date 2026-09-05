@@ -81,14 +81,19 @@ def _generate_xg_bias_lessons(audit: dict, existing_ids: set) -> list:
 
     for team, stats in calibration.items():
         n = stats.get("matches", 0)
-        if n < 3:
+        if n < 8:
             continue
 
         mean_bias = stats.get("xg_mean_bias", 0)
         mae = stats.get("xg_mae", 0)
+        se = stats.get("xg_bias_se", 0)
 
-        # Only create lesson if bias is significant (>0.25 xG) and MAE is notably worse than average
-        if abs(mean_bias) < 0.25:
+        # Significance gate (2026-09-05): the bias is xG-vs-GOALS, so it
+        # carries full finishing variance — at n~13 the old bare 0.25
+        # threshold sat below one sigma and 15/20 teams triggered at once.
+        # Require the mean to clear 2 standard errors; se<=0 (audit too old
+        # to carry it, or n<2) fails closed.
+        if se <= 0 or abs(mean_bias) < max(0.25, 2 * se):
             continue
 
         # Check if a lesson for this team already exists
@@ -96,7 +101,9 @@ def _generate_xg_bias_lessons(audit: dict, existing_ids: set) -> list:
         if scope_key in existing_ids:
             continue
 
-        correction = -mean_bias  # Counter the bias
+        # Shrink toward zero before capping — n/(n+10) tempers the
+        # small-sample estimates the gate lets through near its boundary.
+        correction = -mean_bias * n / (n + 10)
         correction = max(-MAX_XG_ADJUST, min(MAX_XG_ADJUST, correction))
 
         # Determine if bias is for home or away xG (or both)
@@ -107,7 +114,7 @@ def _generate_xg_bias_lessons(audit: dict, existing_ids: set) -> list:
             "type": "xg_bias",
             "scope": {"team": team},
             "correction": {"team_xg_adjust": round(correction, 2)},
-            "evidence": f"{n} matches, MAE {mae:.2f}, mean bias {mean_bias:+.2f}",
+            "evidence": f"{n} matches, MAE {mae:.2f}, mean bias {mean_bias:+.2f} (se {se:.2f})",
             "confidence": min(0.9, 0.3 + n * 0.05),  # Confidence grows with sample size
             "expires_after_n": DEFAULT_EXPIRY,
             "applied_count": 0,
@@ -246,11 +253,17 @@ def generate_lessons() -> dict:
     lessons_data = _load_lessons()
     existing = lessons_data["lessons"]
 
-    # Build set of existing scope keys (to avoid duplicates)
+    # Build set of blocking scope keys. An ACTIVE lesson blocks its scope,
+    # and one killed for measured low help rate stays blocked (the idea
+    # failed); a lesson that merely EXPIRED frees its scope so fresh
+    # evidence can re-derive it — the old any-lesson-ever rule made the
+    # subsystem self-extinguishing (every scope died once, then forever).
     existing_scope_keys = set()
     for l in existing:
         sk = l.get("_scope_key", "")
-        if sk:
+        if not sk:
+            continue
+        if l.get("active", True) or "low help rate" in l.get("deactivated_reason", ""):
             existing_scope_keys.add(sk)
 
     # Generate new lessons
@@ -276,15 +289,19 @@ def generate_lessons() -> dict:
             l["deactivated_reason"] = "expired"
             expired_count += 1
 
-    # Deactivate underperformers
+    # Deactivate underperformers — judged on GRADED matches (settled and
+    # shadow-scored), never on applied_count: applications include matches
+    # that haven't settled yet, and before 2026-09-05 helped_count could
+    # never increment at all (the archive dropped lessons_applied), so this
+    # review executed every lesson at 10 applications as "0% helpful".
     deactivated_count = 0
     for l in existing:
         if not l.get("active", True):
             continue
-        applied = l.get("applied_count", 0)
+        graded = l.get("graded_count", 0)
         helped = l.get("helped_count", 0)
-        if applied >= MIN_APPLICATIONS_FOR_REVIEW:
-            help_rate = helped / applied
+        if graded >= MIN_APPLICATIONS_FOR_REVIEW:
+            help_rate = helped / graded
             if help_rate < MIN_HELP_RATE:
                 l["active"] = False
                 l["deactivated_reason"] = f"low help rate ({help_rate:.1%})"
@@ -311,11 +328,28 @@ def generate_lessons() -> dict:
     }
 
 
-def update_lesson_effectiveness(match_name: str, predicted_outcome: str,
-                                actual_outcome: str, lessons_applied: list):
-    """After results settle, update helped_count for applied lessons.
+def _brier(probs: dict, actual: str) -> float:
+    """Multiclass Brier for a {prob_H, prob_D, prob_A} dict vs HOME/DRAW/AWAY."""
+    key = {"HOME": "prob_H", "DRAW": "prob_D", "AWAY": "prob_A"}
+    total = 0.0
+    for outcome, k in key.items():
+        y = 1.0 if outcome == actual.upper() else 0.0
+        total += (float(probs.get(k, 0.0)) - y) ** 2
+    return total
 
-    Called by the learning loop after settlement.
+
+def update_lesson_effectiveness(match_name: str, predicted_outcome: str,
+                                actual_outcome: str, lessons_applied: list,
+                                shadow: dict | None = None):
+    """After results settle, grade the applied lessons — once per match.
+
+    `shadow` is the engine's lessons_shadow record: {"base": probs,
+    "adjusted": probs, "ids": [...]}. helped = the lesson-adjusted
+    probabilities strictly beat their own base on Brier for this match —
+    an A/B on the same layer, immune to calibration differences. Without a
+    shadow record (pre-2026-09-05 archive rows) it falls back to
+    pick-correctness. graded_matches dedups: the learning loop re-feeds
+    every settled match on every run.
     """
     if not lessons_applied:
         return
@@ -323,14 +357,30 @@ def update_lesson_effectiveness(match_name: str, predicted_outcome: str,
     lessons_data = _load_lessons()
     lesson_map = {l["id"]: l for l in lessons_data["lessons"]}
 
-    was_correct = predicted_outcome.upper() == actual_outcome.upper()
+    helped = None
+    if shadow and shadow.get("base") and shadow.get("adjusted"):
+        helped = (_brier(shadow["adjusted"], actual_outcome)
+                  < _brier(shadow["base"], actual_outcome))
+    if helped is None:
+        helped = predicted_outcome.upper() == actual_outcome.upper()
 
+    dirty = False
     for lid in lessons_applied:
-        if lid in lesson_map:
-            if was_correct:
-                lesson_map[lid]["helped_count"] = lesson_map[lid].get("helped_count", 0) + 1
+        lesson = lesson_map.get(lid)
+        if lesson is None:
+            continue
+        graded = lesson.setdefault("graded_matches", [])
+        if match_name in graded:
+            continue
+        graded.append(match_name)
+        del graded[:-80]
+        lesson["graded_count"] = lesson.get("graded_count", 0) + 1
+        if helped:
+            lesson["helped_count"] = lesson.get("helped_count", 0) + 1
+        dirty = True
 
-    _save_lessons(lessons_data)
+    if dirty:
+        _save_lessons(lessons_data)
 
 
 if __name__ == "__main__":
