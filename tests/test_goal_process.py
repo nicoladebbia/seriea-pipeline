@@ -212,3 +212,24 @@ def test_calibration_saturates_at_the_upper_bound_too_and_warns(caplog):
     assert s["calibration_saturated"] is True and s["calibration_k"] == gp.K_BOUNDS[1]
     assert s["calibration_achieved"] < 0.999
     assert any("calibration saturated" in r.message for r in caplog.records)
+
+
+def test_rare_event_conditioning_is_walk_forward_and_gated():
+    """A referee who ALWAYS gives a red card in training must lift the test
+    prediction above the base rate; the gate still refuses on n < 200."""
+    rows, sids = [], []
+    for season in ("2021-2022", "2022-2023", "2023-2024"):
+        for i in range(60):
+            sid = len(rows) + 1
+            rows.append({"match_id": f"{season}_{i}", "sofascore_id": sid, "season": season, "league": "serie_a",
+                         "home_team": f"H{i % 5}", "away_team": f"A{i % 7}", "referee": "Strict" if i % 3 == 0 else "Lenient"})
+            sids.append((sid, i % 3 == 0))
+    mp = pd.DataFrame(rows)
+    matches = mp[["match_id", "referee"]]
+    inc = pd.DataFrame([{"match_id": sid, "incident_type": "card", "incident_class": "red", "minute": 50, "added_time": 0,
+                         "player_id": "1", "player_in_id": "", "is_home": True, "card_type": "red", "goal_type": None,
+                         "confirmed": None} for sid, red in sids if red])
+    out = gp.rare_event_conditioning(inc, mp, matches, None, "serie_a", min_train=100)
+    assert out["red_card"]["ref"]["skill"] > 0.5 and out["red_card"]["ref"]["n"] == 60
+    assert out["red_card"]["ref"]["passed"] is False                     # 60 rows < N_GATE
+    assert out["red_card"]["teams"]["skill"] < out["red_card"]["ref"]["skill"]

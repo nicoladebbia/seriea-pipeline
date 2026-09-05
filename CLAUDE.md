@@ -172,6 +172,14 @@ REPLACES the independent-Poisson artifact row for the same bet).
   under review and `confirmed=False` means it was OVERTURNED (goalAwarded+False → 0/18
   had the goal in the goal list; penaltyNotAwarded+False → 10/12 followed by a penalty
   goal). So "Gol annullato" = goalAwarded+False, "Rigore VAR" = penaltyNotAwarded+False.
+- **Rare events are tier C because conditioning was MEASURED dead, not because it was
+  skipped.** `rare_event_conditioning` (reruns inside every `--rare-events`) walks forward a
+  shrunk referee / home / away rate for own goal, red card, first-minute goal, bench goal,
+  penalty, and the VAR markets: on Serie A 2023-26 every event, every conditioning scored
+  ≤ +0.002 skill (referee on penalties), most negative. More matches tighten the base rate;
+  nothing per-match moves it. The rebuild logs a WARNING the day a conditioning passes the
+  gate — that is the signal to build a per-match row, not a hunch. Don't re-run the hunt
+  by hand; read `rare_events.json["conditioning"]` after the next backfill instead.
 - **Player per-half split (E3, `scripts/betting/player_predictions.py`)**: expected events
   in a half = per-90 rate × minutes on the pitch in that half (starter 45/rest, sub
   late) × the league's timing share. Measured before building: a player's OWN 1st-half

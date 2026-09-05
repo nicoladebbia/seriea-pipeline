@@ -539,6 +539,87 @@ def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.D
     return out
 
 
+def rare_event_conditioning(incidents: pd.DataFrame, mapping: pd.DataFrame, matches: pd.DataFrame,
+                            shots: pd.DataFrame | None, league: str = "serie_a", shrink_k: float = 20.0,
+                            first_test_season: str = "2023-2024", min_train: int = 300) -> dict:
+    """Does the referee, the two teams, or both carry per-match information for a
+    rare event? Walk-forward by season: a shrunk (empirical-Bayes, k=shrink_k)
+    rate per referee / team from the seasons before the test season, multiplied
+    onto the base rate, scored by Brier skill against the base rate. Measured
+    2026-09-05 on Serie A 2023-26: every event, every conditioning ≤ +0.002
+    (var_goal_cancelled teams −0.047). A tier C base rate is the honest ceiling
+    until this says otherwise — it reruns with every --rare-events."""
+    mp = mapping[["match_id", "sofascore_id", "season", "league", "home_team", "away_team"]].dropna(subset=["sofascore_id"]).copy()
+    mp["sofascore_id"] = mp["sofascore_id"].astype("int64")
+    mp = mp[mp["league"] == league]
+    ref_col = next((c for c in matches.columns if c.lower() in ("referee", "ref", "referee_name")), None)
+    df = mp.merge(matches[["match_id", ref_col]] if ref_col else matches[["match_id"]], on="match_id", how="left")
+    inc = incidents.rename(columns={"match_id": "sofascore_id"}).copy()
+    inc["sofascore_id"] = inc["sofascore_id"].astype("int64")
+    inc = inc[inc["sofascore_id"].isin(set(df["sofascore_id"]))]
+    goals = inc[inc["incident_type"] == "goal"]
+    var = inc[inc["incident_type"] == "varDecision"]
+    over = var[var["confirmed"] == False] if "confirmed" in var.columns else var.iloc[0:0]  # noqa: E712
+    checked = set(inc[inc["incident_type"].isin(["varDecision", "inGamePenalty", "var_checked"])]["sofascore_id"])
+    subs = inc[inc["incident_type"] == "substitution"][["sofascore_id", "player_in_id", "minute"]].rename(
+        columns={"player_in_id": "player_id", "minute": "sub_minute"})
+    bench = goals.merge(subs, on=["sofascore_id", "player_id"])
+    events = {
+        "own_goal": set(goals[goals["goal_type"] == "ownGoal"]["sofascore_id"]),
+        "red_card": set(inc[inc["card_type"].isin(["red", "yellowRed"])]["sofascore_id"]),
+        "goal_minute_1": set(goals[goals["minute"] == 1]["sofascore_id"]),
+        "goal_from_bench": set(bench[bench["minute"] >= bench["sub_minute"]]["sofascore_id"]),
+        "var_any": set(var["sofascore_id"]),
+        "var_goal_cancelled": set(over[over["incident_class"] == "goalAwarded"]["sofascore_id"]),
+        "var_penalty": set(over[over["incident_class"] == "penaltyNotAwarded"]["sofascore_id"]),
+    }
+    if shots is not None and len(shots):
+        sid = pd.to_numeric(shots["match_id"], errors="coerce")
+        events["penalty_awarded"] = set(sid[shots["is_penalty"].astype(bool)].dropna().astype("int64"))
+
+    def shrunk(train: pd.DataFrame, key: str) -> dict:
+        base = train["y"].mean()
+        g = train.groupby(key)["y"].agg(["sum", "count"])
+        return {i: (r["sum"] + shrink_k * base) / (r["count"] + shrink_k) for i, r in g.iterrows()}
+
+    out: dict = {}
+    for name, ids in events.items():
+        d = df.copy()
+        d["y"] = d["sofascore_id"].isin(ids).astype(float)
+        if name.startswith("var"):
+            d = d[d["sofascore_id"].isin(checked)]
+        tests = [s for s in sorted(d["season"].unique()) if s >= first_test_season and (d["season"] < s).sum() >= min_train]
+        res = {}
+        for cond in (("ref",) if ref_col else ()) + ("teams", "both"):
+            ys, ps, pbs = [], [], []
+            for ts in tests:
+                tr, te = d[d["season"] < ts], d[d["season"] == ts]
+                if len(te) < 50:
+                    continue
+                base = tr["y"].mean()
+                if base <= 0:            # no training event at all: nothing to condition on
+                    continue
+                rr = shrunk(tr, ref_col) if ref_col else {}
+                hr, ar = shrunk(tr, "home_team"), shrunk(tr, "away_team")
+                for _, r in te.iterrows():
+                    f = 1.0
+                    if cond in ("ref", "both") and ref_col:
+                        f *= rr.get(r[ref_col], base) / base
+                    if cond in ("teams", "both"):
+                        f *= (hr.get(r["home_team"], base) / base) * (ar.get(r["away_team"], base) / base)
+                    ys.append(r["y"])
+                    ps.append(min(0.97, base * f))
+                    pbs.append(base)
+            if ys:
+                y, ph, pb = np.asarray(ys), np.asarray(ps), np.asarray(pbs)
+                bb = float(np.mean((pb - y) ** 2))
+                skill = float(1 - np.mean((ph - y) ** 2) / bb) if bb > 0 else 0.0
+                res[cond] = {"skill": round(skill, 4), "n": int(len(y)), "n_events": int(y.sum()),
+                             "passed": bool(skill >= SKILL_GATE and min(int(y.sum()), len(y) - int(y.sum())) >= N_GATE)}
+        out[name] = res
+    return out
+
+
 def build_rare_events(seasons_back: int = 3) -> dict:
     """Serie A base rates over the last `seasons_back` complete seasons plus
     the current one, written to rare_events.json with the season list."""
@@ -546,9 +627,17 @@ def build_rare_events(seasons_back: int = 3) -> dict:
     sa_seasons = sorted(mp[mp["league"] == "serie_a"]["season"].dropna().unique())
     seasons = sa_seasons[-(seasons_back + 1):]
     shots = pd.read_parquet(SHOTS_PATH) if SHOTS_PATH.exists() else None
-    rates = rare_event_rates(pd.read_parquet(INCIDENTS_PATH), mp, shots, "serie_a", seasons)
+    inc = pd.read_parquet(INCIDENTS_PATH)
+    rates = rare_event_rates(inc, mp, shots, "serie_a", seasons)
+    conditioning: dict = {}
+    matches_path = DATA_DIR / "parsed" / "matches.parquet"
+    if matches_path.exists():
+        conditioning = rare_event_conditioning(inc, mp, pd.read_parquet(matches_path), shots, "serie_a")
+        if any(c.get("passed") for r in conditioning.values() for c in r.values()):
+            log.warning("rare-event conditioning PASSED the gate for %s: a per-match model is now warranted",
+                        [k for k, r in conditioning.items() if any(c.get("passed") for c in r.values())])
     out = {"generated_at": pd.Timestamp.utcnow().isoformat(), "league": "serie_a",
-           "seasons": list(seasons), "rates": rates}
+           "seasons": list(seasons), "rates": rates, "conditioning": conditioning}
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     RARE_PATH.write_text(json.dumps(out, indent=2))
     return out
