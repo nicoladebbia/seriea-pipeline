@@ -57,11 +57,26 @@
     font-style: italic;
   }
 
-  /* O/U column — model vs de-vigged market Over prob at the bettable line */
-  .ou-cell { font-family:var(--font-mono); font-size:11px; }
-  .ou-cell__line { color:var(--text-tertiary); margin-right:6px; }
-  .ou-cell__mkt { color:var(--text-tertiary); }
-  .ou-cell__raw { font-size:10px; margin-left:6px; }
+  /* O/U column — model vs de-vigged market Over prob at the bettable line.
+     Fixed-width, right-aligned sub-columns so the eye can run DOWN the column:
+     the table is scanned for the exception, then that row is read alone. */
+  .ou-cell { font-family:var(--font-mono); font-size:11px; white-space:nowrap; }
+  .ou-cell > span { display:inline-block; text-align:right; }
+  .ou-cell__line { color:var(--text-tertiary); width:3em; text-align:left !important; }
+  .ou-cell__model { width:3em; }
+  .ou-cell__vs { color:var(--text-tertiary); width:2.2em; text-align:center !important; font-size:10px; }
+  .ou-cell__mkt { color:var(--text-tertiary); width:3em; }
+  .ou-cell__raw { width:3.4em; font-size:10px; }
+
+  /* Triage: rows with a verdict lead the day group; rows with none recede. */
+  .dash-row--signal td { background:rgba(74,222,128,0.04); }
+  .dash-row--signal .dash-row__match a { color:var(--text-primary); }
+  .dash-row--quiet { opacity:0.55; }
+  .dash-row--quiet:hover { opacity:1; }
+  .dash-row--gated { display:none; opacity:0.45; }
+  .matchday-group.show-gated .dash-row--gated { display:table-row; }
+  .dash-gated-toggle td { padding:5px 10px; font-size:10px; color:var(--text-tertiary); cursor:pointer; background:var(--bg-tertiary); }
+  .dash-gated-toggle td:hover { color:var(--accent); }
 
   /* Bet column — the gate's verdict, never a recomputed edge */
   .bet-pill {
@@ -226,10 +241,7 @@ function renderOUCell(ou) {
   const rawCls = raw == null ? 'text-tertiary' : raw >= 5 ? 'text-green' : raw <= -5 ? 'text-red' : 'text-tertiary';
   const rawTxt = raw == null ? '' : `<span class="ou-cell__raw ${rawCls}">${raw > 0 ? '+' : ''}${Math.round(raw)}</span>`;
   const title = `Over ${ou.line}: model ${_pct(ou.model_over)} vs market ${_pct(ou.market_over)} (Pinnacle de-vigged, else consensus). Raw gap, before shrinkage/situational gates.` + (ou.expected_total_goals ? ` xTotal ${ou.expected_total_goals.toFixed(2)}` : '');
-  return `<td class="ou-cell" title="${title}">
-    <span class="ou-cell__line">O${ou.line}</span><span class="text-primary">${_pct(ou.model_over)}</span>
-    <span class="ou-cell__mkt"> vs ${_pct(ou.market_over)}</span>${rawTxt}
-  </td>`;
+  return `<td class="ou-cell" title="${title}"><span class="ou-cell__line">O${ou.line}</span><span class="ou-cell__model text-primary">${_pct(ou.model_over)}</span><span class="ou-cell__vs">vs</span><span class="ou-cell__mkt">${_pct(ou.market_over)}</span>${rawTxt}</td>`;
 }
 
 function renderBetCell(ou) {
@@ -256,6 +268,23 @@ function renderBetCell(ou) {
   return `<td class="bet-cell"><span class="bet-pill bet-pill--${st}" title="${title}">${label}${sub ? `<span class="bet-pill__sub">${sub}</span>` : ''}</span></td>`;
 }
 
+// Triage order: what the gate said, then kickoff. 0-2 = a verdict worth reading,
+// 3-4 = nothing to act on, 5 = league gated (collapsed by default).
+const _BET_TIER = { selected: 0, candidate: 1, near_miss: 2, none: 3, no_odds: 4, no_model: 4, gated: 5 };
+function _betTier(m) { return _BET_TIER[m.ou?.bet?.status] ?? 3; }
+function _triageSort(a, b) {
+  const t = _betTier(a) - _betTier(b);
+  return t !== 0 ? t : (a.commence_time || '').localeCompare(b.commence_time || '');
+}
+function toggleGated(ev, el) {
+  ev.stopPropagation();
+  const grp = el.closest('.matchday-group');
+  if (!grp) return;
+  grp.classList.toggle('show-gated');
+  const n = el.dataset.n;
+  el.querySelector('td').textContent = grp.classList.contains('show-gated') ? `hide ${n} gated` : `${n} gated (league betting off) · show`;
+}
+
 function renderMatchRow(m, idx) {
   // Ensure commence_time is populated from date+time if missing
   if (!m.commence_time && m.date && m.time) {
@@ -275,9 +304,11 @@ function renderMatchRow(m, idx) {
   const matchRaw = m.match || `${m.home_team} vs ${m.away_team}`;
   const matchSlug = matchRaw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-  return `<tr data-match-key="${matchRaw}" onclick="window.location='/prediction/${matchSlug}'">
+  const tier = _betTier(m);
+  const rowCls = tier <= 2 ? 'dash-row--signal' : tier === 5 ? 'dash-row--gated' : 'dash-row--quiet';
+  return `<tr class="${rowCls}" data-match-key="${matchRaw}" onclick="window.location='/prediction/${matchSlug}'">
     <td class="dash-row__time text-mono text-tertiary" style="font-size:11px">${formatKickoffTime(m.commence_time) || '--:--'}</td>
-    <td>
+    <td class="dash-row__match">
       <div class="flex items-center gap-2">
         <a href="/team/${encodeURIComponent(m.home_team)}" class="text-secondary font-medium" onclick="event.stopPropagation()">${m.home_team}</a>
         <span class="text-tertiary">vs</span>
@@ -558,7 +589,17 @@ async function loadDashboard() {
               <th title="The betting gate's verdict — journaled, candidate (commits at T-30), or near miss">Bet</th>
               <th></th>
             </tr></thead>
-            <tbody>${matches.map(m => renderMatchRow(m)).join('')}</tbody>
+            <tbody>${(() => {
+              const sorted = [...matches].sort(_triageSort);
+              const live = sorted.filter(m => _betTier(m) !== 5);
+              const gated = sorted.filter(m => _betTier(m) === 5);
+              let rows = live.map(m => renderMatchRow(m)).join('');
+              if (gated.length) {
+                rows += `<tr class="dash-gated-toggle" data-n="${gated.length}" onclick="toggleGated(event, this)"><td colspan="5">${gated.length} gated (league betting off) · show</td></tr>`;
+                rows += gated.map(m => renderMatchRow(m)).join('');
+              }
+              return rows;
+            })()}</tbody>
           </table>
           <div class="dash-summary-strip">
             <span>${_betSummary(matches, data)}</span>

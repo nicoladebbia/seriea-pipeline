@@ -98,6 +98,14 @@ Nothing on the row drove a bet.
   bar, not because it duplicated EDGE.
 - **Stale-odds muting targets classes, not column positions** (`.ou-cell`, `.bet-cell`,
   `.dash-row__badges`). `nth-last-child` selectors broke every time a column moved.
+- **The table is scanned for the exception, then that row is read alone — design for
+  triage, not comparison and not isolated reading.** Within a day group rows sort by
+  verdict tier (selected > candidate > near miss > none > no odds/model), then kickoff;
+  verdict rows are highlighted, no-signal rows recede at 55% opacity (full on hover),
+  gated-league rows collapse behind a one-line "N gated · show" toggle (EPL was 7 of 10
+  rows on a Saturday, all saying GATED). The O/U cell is fixed-width right-aligned
+  sub-columns so the eye can run down the column. Never re-sort by kickoff alone: the
+  row that matters would be buried under seven that don't.
 - **Any new column needs a rank in the table above and a reason it beats #5.** If it
   cannot flip a decision, it belongs on the detail page.
 - Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin
