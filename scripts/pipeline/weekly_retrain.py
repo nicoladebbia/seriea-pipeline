@@ -210,6 +210,23 @@ def _refresh_predictions():
         return False
 
 
+def _refresh_goal_predictions() -> bool:
+    """Regenerate goal_predictions.json — the file scan_ou_market prices.
+
+    The engine refresh above rewrites predictions.json only; goal_predictions.json
+    is pipeline Step 19's output. Without this, a promoted O/U classifier serves
+    the betting layer only after the next morning pipeline.
+    """
+    try:
+        from scripts.models.over_under_model import refresh_from_predictions
+        n = refresh_from_predictions()
+        log.info("goal_predictions.json refreshed: %d matches", n)
+        return True
+    except Exception as e:
+        log.error("goal_predictions refresh failed: %s", e)
+        return False
+
+
 def _load_current_cv_metrics() -> dict | None:
     """Load CV results from current production ensemble."""
     cv_path = MODELS_DIR / "universal" / "ensemble" / "cv_results.json"
@@ -328,27 +345,70 @@ def _append_metrics_history(entry: dict):
         f.write(json.dumps(entry) + "\n")
 
 
-def _retrain_ou_classifiers():
-    """Retrain O/U binary classifiers for active lines (1.5, 2.5).
+def _retrain_ou_classifiers(dry_run: bool = False) -> dict:
+    """Retrain the O/U binary classifiers for the active lines (1.5, 2.5).
 
-    Prevents model drift on the only profitable market. Called automatically
-    after the main ensemble is promoted during quick/full retrain.
+    These are the models behind the ONLY enabled betting markets (O/U Over,
+    Alt O/U) and they are self-gated: the trainer scores each candidate against
+    the incumbent on a shared holdout, sends a refused candidate to
+    over_under/candidate/ and never overwrites _latest on a loss. So this runs
+    with the other auxiliary models, NOT inside the ensemble's promote branch —
+    until 2026-09-05 an ensemble held "within tolerance" froze the money model
+    along with it, and a promoted ensemble refreshed predictions BEFORE the O/U
+    retrain had even run.
+
+    Returns the auxiliary-model contract: ``{"model": "over_under", "promoted":
+    <any line promoted>, "lines": {line: "promoted" | "held" | "would_promote" |
+    "would_hold"}}`` plus ``"error"`` on failure. A dry run trains and gates but
+    writes only to candidate/.
     """
+    labels = {
+        "promoted": "PROMOTED",
+        "held": "HELD (latest untouched)",
+        "would_promote": "DRY RUN — would promote",
+        "would_hold": "DRY RUN — would hold",
+    }
+    result: dict = {"model": "over_under", "promoted": False, "lines": {}}
     try:
         from scripts.models.train_over_under import train_over_under
-        log.info("Retraining O/U classifiers (lines 1.5, 2.5)...")
-        report = train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
+        log.info("Retraining O/U classifiers (lines 1.5, 2.5)%s...",
+                 " [DRY RUN]" if dry_run else "")
+        report = train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0,
+                                  dry_run=dry_run)
         for line, info in report.get("lines", {}).items():
-            cv = info.get("cv_results", {})
+            cv = info.get("cv_metrics", {})
+            promoted = bool(info.get("promoted"))
+            if dry_run:
+                verdict = "would_promote" if info.get("would_promote") else "would_hold"
+            else:
+                verdict = "promoted" if promoted else "held"
+            result["lines"][line] = verdict
+            result["promoted"] = result["promoted"] or promoted
             log.info(
-                "  O/U %s: acc=%.3f, brier=%.4f, ll=%.4f",
-                line,
+                "  O/U %s: %s — %s | CV acc=%.3f brier=%.4f ll=%.4f",
+                line, labels[verdict], info.get("promotion_reason", "?"),
                 cv.get("overall_accuracy", 0),
                 cv.get("overall_brier", 0),
                 cv.get("overall_log_loss", 0),
             )
+            entry = {
+                "model": f"ou_{line}",
+                "mode": f"ou_{line}",          # shown in `seriea ml retrain-history`
+                "timestamp": report.get("timestamp"),
+                "promoted": promoted,
+                "reason": info.get("promotion_reason"),
+                "comparison": info.get("promotion_reason"),
+                "holdout": info.get("holdout"),
+                "cv_log_loss": cv.get("overall_log_loss"),
+                "cv_calibration_gap": cv.get("overall_calibration_gap"),
+            }
+            if dry_run:
+                entry["dry_run"] = True
+            _append_metrics_history(entry)
     except Exception as e:
         log.error("O/U classifier retrain failed: %s", e)
+        result["error"] = str(e)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -651,12 +711,9 @@ def quick_retrain(dry_run: bool = False) -> dict:
 
             result["promoted"] = True
 
-            # Retrain O/U classifiers (prevents model drift on active market)
-            _retrain_ou_classifiers()
-
-            # Re-run predictions with the new model
-            _refresh_predictions()
-
+            # The O/U classifiers and the prediction refresh are NOT here: the
+            # caller runs them after every retrain step, promoted or not
+            # (_retrain_auxiliary_models / _refresh_after_retrain).
             log.info("Quick retrain complete. LL: %.4f (%s)", new_metrics.get('ensemble_log_loss', 0), reason)
             try:
                 from scripts.pipeline.notify import notify_retrain
@@ -669,7 +726,7 @@ def quick_retrain(dry_run: bool = False) -> dict:
                     reason=reason,
                 )
             except Exception:
-                _notify("Quick retrain complete. Predictions refreshed.", "Retrain SUCCESS")
+                _notify("Quick retrain complete. Ensemble promoted.", "Retrain SUCCESS")
 
         except Exception as e:
             log.error("Model promotion failed: %s", e)
@@ -817,30 +874,26 @@ def full_retrain(dry_run: bool = False) -> dict:
         # train_optimized already saves models to _latest
         result["promoted"] = True
 
-        # Retrain O/U classifiers (prevents model drift on active market)
-        _retrain_ou_classifiers()
-
-        # Re-run predictions with the new model
-        _refresh_predictions()
-
+        # The O/U classifiers and the prediction refresh are NOT here: the
+        # caller runs them after every retrain step, promoted or not
+        # (_retrain_auxiliary_models / _refresh_after_retrain).
         msg = (
             f"Full retrain complete. "
             f"LL: {new_metrics.get('ensemble_log_loss', 0):.4f} "
-            f"({reason}). Predictions refreshed."
+            f"({reason})."
         )
         log.info(msg)
         _notify(msg, "Full Retrain SUCCESS")
     else:
         # Not a rejection. train_optimized already wrote every league's models to
-        # *_latest above, so nothing here un-deploys them — what is actually
-        # skipped is the O/U retrain and the prediction refresh. Reporting this as
-        # "REJECTED" told a human the bad model had been held back when it was
-        # already serving.
+        # *_latest above, so nothing here un-deploys them; the O/U classifiers
+        # and the prediction refresh run in the caller regardless of this
+        # decision. Reporting this as "REJECTED" told a human the bad model had
+        # been held back when it was already serving.
         log.error(
             "Comparison FAILED for %s (%s) — but the new models are ALREADY LIVE "
-            "at *_latest: train_optimized saves before this check runs. Skipping "
-            "the O/U retrain and prediction refresh only. Roll back manually if "
-            "the new model must not serve.",
+            "at *_latest: train_optimized saves before this check runs. Roll back "
+            "manually if the new model must not serve.",
             metrics_league, reason,
         )
         result["models_live_despite_failed_comparison"] = True
@@ -916,6 +969,56 @@ def _is_last_week_of_month() -> bool:
     today = datetime.now()
     _, last_day = calendar.monthrange(today.year, today.month)
     return today.day > last_day - 7
+# ---------------------------------------------------------------------------
+# Everything that runs AFTER the ensemble decision, promoted or not
+# ---------------------------------------------------------------------------
+
+def _retrain_auxiliary_models(dry_run: bool = False) -> dict:
+    """Retrain every model that is NOT gated by the ensemble comparison.
+
+    catboost_no_odds (the ML leg), the xG regressors, the draw detector and the
+    O/U classifiers behind the only enabled betting markets. Each carries its
+    own promotion gate, so none of them waits on the 1X2 decision.
+    """
+    log.info("Retraining auxiliary models (catboost_no_odds + xG + draw detector + O/U)...")
+    aux = {
+        "no_odds": retrain_no_odds(dry_run=dry_run),
+        "xg": retrain_xg_models(dry_run=dry_run),
+        "draw_detector": retrain_draw_detector(dry_run=dry_run),
+        "over_under": _retrain_ou_classifiers(dry_run=dry_run),
+    }
+    ok = sum(1 for r in aux.values() if r.get("promoted"))
+    fail = sum(1 for r in aux.values() if r.get("error"))
+    log.info("Auxiliary models: %d promoted, %d failed", ok, fail)
+    return aux
+
+
+def _refresh_after_retrain(result: dict, dry_run: bool = False) -> list:
+    """Re-run predictions ONCE, after every retrain step, if anything new is serving.
+
+    The refresh used to live inside the ensemble's promote branch — before
+    catboost_no_odds and the O/U classifiers had been retrained, so the slate it
+    produced was made with the models that were about to be replaced, and an O/U
+    promotion under a held ensemble never reached goal_predictions.json until
+    the next morning pipeline (the engine writes predictions.json only, so the
+    O/U file is regenerated here too). Returns the models that triggered it.
+    """
+    if dry_run:
+        return []
+    changed = ["ensemble"] if result.get("promoted") else []
+    changed += [name for name, r in result.get("auxiliary_models", {}).items()
+                if r.get("promoted")]
+    if not changed:
+        log.info("Nothing promoted — predictions not refreshed")
+        return []
+    log.info("Refreshing predictions after promotion of: %s", ", ".join(changed))
+    if not _refresh_predictions():
+        result["predictions_refresh_failed"] = True
+        return []
+    _refresh_goal_predictions()
+    result["predictions_refreshed_for"] = changed
+    return changed
+
 
 
 def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
@@ -978,18 +1081,11 @@ def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
         log.info("Normal matchweek — running QUICK retrain")
         result = quick_retrain(dry_run=dry_run)
 
-    # Also retrain auxiliary models (catboost_no_odds + xG regressors)
-    # These are not part of the ensemble but are critical production models.
-    aux_results = {}
-    log.info("Retraining auxiliary models (catboost_no_odds + xG)...")
-    aux_results["no_odds"] = retrain_no_odds(dry_run=dry_run)
-    aux_results["xg"] = retrain_xg_models(dry_run=dry_run)
-    aux_results["draw_detector"] = retrain_draw_detector(dry_run=dry_run)
-    result["auxiliary_models"] = aux_results
-
-    aux_ok = sum(1 for r in aux_results.values() if r.get("promoted"))
-    aux_fail = sum(1 for r in aux_results.values() if r.get("error"))
-    log.info("Auxiliary models: %d promoted, %d failed", aux_ok, aux_fail)
+    # The auxiliary models (catboost_no_odds, xG, draw detector, O/U classifiers)
+    # are production models with their own gates — they retrain whether or not
+    # the ensemble was promoted. Then ONE prediction refresh, after everything.
+    result["auxiliary_models"] = _retrain_auxiliary_models(dry_run=dry_run)
+    _refresh_after_retrain(result, dry_run=dry_run)
 
     # Record that we retrained for this matchweek.
     #
@@ -1088,13 +1184,10 @@ def main():
             result = full_retrain(dry_run=args.dry_run)
         else:
             result = quick_retrain(dry_run=args.dry_run)
-        # Also retrain auxiliary models
-        log.info("Retraining auxiliary models (catboost_no_odds + xG)...")
-        result["auxiliary_models"] = {
-            "no_odds": retrain_no_odds(dry_run=args.dry_run),
-            "xg": retrain_xg_models(dry_run=args.dry_run),
-            "draw_detector": retrain_draw_detector(dry_run=args.dry_run),
-        }
+        # Auxiliary models (incl. the O/U classifiers) retrain regardless of the
+        # ensemble decision, then one prediction refresh after everything.
+        result["auxiliary_models"] = _retrain_auxiliary_models(dry_run=args.dry_run)
+        _refresh_after_retrain(result, dry_run=args.dry_run)
         # A forced retrain has to close the gate too. auto_retrain stamps the
         # state, but this branch bypasses it entirely — so before the season fix
         # a manual --quick left needs_retrain true and the scheduled job simply
@@ -1125,6 +1218,12 @@ def main():
     if result.get("new_metrics"):
         m = result["new_metrics"]
         print(f"New metrics: acc={m.get('ensemble_accuracy', 0):.4f}  ll={m.get('ensemble_log_loss', 0):.4f}")
+    ou = (result.get("auxiliary_models") or {}).get("over_under") or {}
+    if ou:
+        ou_lines = ", ".join(f"{k} {v}" for k, v in ou.get("lines", {}).items())
+        print(f"O/U classifiers: {ou_lines or ou.get('error', '?')}")
+    if result.get("predictions_refreshed_for"):
+        print(f"Predictions refreshed for: {', '.join(result['predictions_refreshed_for'])}")
     print(f"{'=' * 60}")
 
     # Hard teardown: the in-process ensemble training (train_universal) spins up

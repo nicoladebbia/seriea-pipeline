@@ -2097,15 +2097,13 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     try:
         from scripts.models.over_under_model import (
             generate_over_under_predictions,
-            save_over_under_predictions
+            ml_probs_from_predictions,
+            save_over_under_predictions,
         )
 
-        # Extract ML O/U probabilities from ensemble predictions (step 11)
-        ml_ou_probs = {}
-        for p in predictions:
-            ou_ml = p.get("component_predictions", {}).get("over_under_ml", {})
-            if ou_ml:
-                ml_ou_probs[p["match"]] = {float(k): v for k, v in ou_ml.items()}
+        # ML O/U probabilities from the ensemble predictions (step 11) — same
+        # extractor weekly_retrain uses to refresh this file after a promotion
+        ml_ou_probs = ml_probs_from_predictions(predictions)
         if ml_ou_probs:
             print(f"  ML O/U probs available for {len(ml_ou_probs)} matches")
 

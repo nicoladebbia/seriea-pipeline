@@ -1550,29 +1550,12 @@ class UnifiedBettingEngine:
                 if total.get("bookmakers_count", len(bookmakers)) < 3:
                     continue
 
-                # Map line to probability: prefer ML O/U model, fall back to Poisson
-                model_over = 0
-
-                # Try ML model first (3-model ensemble, better calibrated)
-                ml_ou = gp.get("ml_over_under", {})
-                if isinstance(ml_ou, dict) and line in ml_ou:
-                    model_over = ml_ou[line]
-
-                # Fall back to Poisson predictions
-                if model_over <= 0:
-                    if line == 2.5:
-                        model_over = gp.get("over_2_5", 0)
-                    elif line == 1.5:
-                        model_over = gp.get("over_1_5", 0)
-                    elif line == 3.5:
-                        model_over = gp.get("over_3_5", 0)
-                    elif line == 0.5:
-                        model_over = gp.get("over_0_5", 0)
-                    elif line == 4.5:
-                        model_over = gp.get("over_4_5", 0)
-                    else:
-                        key = f"over_{str(line).replace('.', '_')}"
-                        model_over = gp.get(key, 0)
+                # Map line to probability. over_X_Y already IS the served blend
+                # (w_ml × O/U CatBoost + (1 − w_ml) × Poisson, made in
+                # over_under_model; legs audited in ou_ml / ou_poisson). A former
+                # "prefer ml_over_under" branch here read a key nothing ever wrote.
+                key = f"over_{str(line).replace('.', '_')}"
+                model_over = gp.get(key, 0)
 
                 if model_over <= 0:
                     continue
