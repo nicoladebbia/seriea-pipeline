@@ -429,6 +429,13 @@ Organised by *symptom-first* so you can grep for what you're seeing:
     → `403 Varnish` = blanket IP deny; `200` = IP is fine, problem is elsewhere.
   - While blanket-denied, `football-data.co.uk` still serves results (verified 200 the
     same minute) — that is the working third source for scores, not Sofascore HTML.
+  - **Third shape, measured 2026-09-05 (Roma–Atalanta, T-39 lineup fetch):** `robots.txt`
+    **200** (so not the blanket deny) while BOTH `api.sofascore.com/api/v1/event/<id>/lineups`
+    and `www.sofascore.com/api/v1/...` answer `403 {"error":{"code":403,"reason":"challenge"}}`,
+    `server: Varnish`. A JS challenge on the API tier only. The lineup chain then produced
+    nothing: the football-data.org backup needs `FOOTBALLDATA_KEY` (unset) and logs nothing
+    when it is missing, so `Lineup NOT confirmed` is the only trace. Player rows are priced off
+    the PREDICTED XI in that state and the /picks card marks them `XI prob.`.
 - **Throttling ≠ ban.** Rapid successive requests return `CurlError (7) Failed to connect
   ... port 443` — a *connection* error, not a 403. Back off ~20s; it recovers. Don't read it
   as the ban returning.
