@@ -848,6 +848,15 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   It is an anti-live switch. Never touch it to "go live".**
 - The system is de-facto paper exactly when the Odds API key is dead (engine finds no odds →
   0 bets). With a live key the chain is armed end-to-end and nothing needs flipping.
+- **Stake size is Nicola's 2026-09-05 decision: Kelly 0.15 (was 0.05), cap 2.5%.** Three
+  places must agree or `_make_bet` silently rescales: `BettingConfig.kelly_fraction`,
+  `_LEAGUE_KELLY_DEFAULTS["serie_a"]` (the per-league scaler divides by the cfg value) and
+  `market_rules["O/U_Over"]["kelly_fraction"]` (the 1.5 line's own fraction). A test pins all
+  three. Dry run on the MW3 slate: EUR 5–8 a bet → EUR 18–22 (the 1.5 line sits at the cap ×
+  the 0.85 marginal-edge multiplier = 2.1%). Same day, the cold_home / away_fav_ref veto was
+  scoped to 1X2/DC/DNB (`_veto_applies`): O/U candidates are judged on edge alone, 1 → 3
+  selected on the same inputs. Both changes reach the T-30 run only after
+  `launchctl kickstart -k` of the pre-kickoff monitor.
 - **Go-live checklist that actually matters** (all verified 2026-08-27): key alive; ledger
   invariants green (journal-derived == bankroll.json); `pre-kickoff-monitor` + `telegram-bot`
   + `settlement` jobs loaded; `betting_unified --dry-run` produces a sane slate (enabled

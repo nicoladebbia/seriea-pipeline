@@ -748,7 +748,7 @@ class TestBettingPipeline:
 
         cfg = BettingConfig()
         assert cfg.bankroll == 1000.0
-        assert cfg.kelly_fraction == 0.05
+        assert cfg.kelly_fraction == 0.15   # 3x on 2026-09-05 (Nicola), was 0.05
         assert cfg.min_edge_pct > 0
         assert cfg.max_edge_pct > cfg.min_edge_pct
         assert cfg.max_stake_pct > cfg.min_stake_pct
@@ -1400,10 +1400,15 @@ class TestCrossModuleConsistency:
         """Kelly fraction defaults match between prediction and betting configs."""
         from scripts.betting.betting_unified import BettingConfig
 
+        from scripts.betting.betting_unified import _LEAGUE_KELLY_DEFAULTS, _load_league_kelly_fraction
+
         cfg = BettingConfig()
-        assert cfg.kelly_fraction == 0.05, (
-            "BettingConfig default Kelly should be 0.10 (conservative Kelly)"
-        )
+        assert cfg.kelly_fraction == 0.15, "BettingConfig default Kelly is 0.15 (3x on 2026-09-05)"
+        # the per-league scaler must agree with the dataclass, or _make_bet
+        # silently multiplies every Serie A stake by league/cfg
+        assert _LEAGUE_KELLY_DEFAULTS["serie_a"] == cfg.kelly_fraction
+        assert _load_league_kelly_fraction("serie_a") == cfg.kelly_fraction
+        assert cfg.market_rules["O/U_Over"]["kelly_fraction"] == cfg.kelly_fraction
 
     def test_data_dir_consistency(self):
         """DATA_DIR is the same across all modules."""

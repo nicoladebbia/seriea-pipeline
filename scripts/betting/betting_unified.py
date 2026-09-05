@@ -91,12 +91,14 @@ def _fmt_hc(val: float) -> str:
 # 1. CONFIGURATION — BettingConfig dataclass with ALL tunables
 # =============================================================================
 _LEAGUE_KELLY_DEFAULTS = {
-    "serie_a": 0.05,        # Live production — calibrated Apr 2026.
-    "premier_league": 0.04, # One notch tighter — pending 50+ EPL settled bets.
+    "serie_a": 0.15,        # Live production. 0.05 Apr–Sep 2026 (EUR 5–10 a bet); 3x on
+                            # 2026-09-05, Nicola's call on the settled O/U record (1.5: +10.5%
+                            # ROI n=47, CLV +2.4; 2.5: CLV +4.8) — worst drawdown so far -5.4%.
+    "premier_league": 0.12, # One notch tighter (0.8x SA) — pending 50+ EPL settled bets.
 }
 
 
-def _load_league_kelly_fraction(league: str, default: float = 0.05) -> float:
+def _load_league_kelly_fraction(league: str, default: float = 0.15) -> float:
     """Return Kelly fraction for *league*. Read order:
 
       1. Per-league deployment_state.json[kelly_fraction] (if present)
@@ -145,11 +147,13 @@ class BettingConfig:
     # is parallel walkforward infrastructure NOT yet wired into production.
     #
     # 5% Kelly: conservative sizing to reduce variance and drawdown.
-    # At 5%, a bet with 5% edge gets ~0.25% of bankroll (EUR 2.50 on 1000).
-    # At 5%, a bet with 10% edge gets ~0.75% (EUR 7.50). Scales naturally.
-    # Kept conservative at 0.05 given the 2026-04-28 finding of edge erosion
-    # on 2025-26 data — see docs/2026-04-28_subset_alpha_findings.md.
-    kelly_fraction: float = 0.05
+    # At 0.15 a typical O/U 1.5 bet (p 0.73 @ 1.44) sizes ~1.6% (EUR 16 on 1000),
+    # a 3% edge @ 1.35 ~2.1%; the 2.5% cap is rarely hit, so edge still drives size.
+    # Was 0.05 (EUR 5–10 a bet) Apr–Sep 2026 after the 2026-04-28 edge-erosion
+    # finding; raised 3x on 2026-09-05 (Nicola) on the settled O/U record — see
+    # _LEAGUE_KELLY_DEFAULTS. The O/U_Over market rule below carries the same
+    # 0.15 so the 1.5 line is not sized on a different fraction.
+    kelly_fraction: float = 0.15
 
     # -- Edge thresholds (revised Apr 2026 — deep journal analysis, 153 bets) --
     # 3-5% edge = +113% ROI (70% WR). 5-7% = +2%. 7-10% = -1%. 10%+ = -13%.
@@ -261,7 +265,7 @@ class BettingConfig:
         "1X2_Away":   {"enabled": False, "min_edge_pct": 7.0,  "max_edge_pct": 7.0, "edge_shrinkage": 0.6},
         "1X2_Draw":   {"enabled": False, "min_edge_pct": 5.0,  "max_edge_pct": 8.0, "edge_shrinkage": 0.6},
         "O/U_Over":   {"enabled": True,  "min_edge_pct": 5.0,  "max_edge_pct": 7.0,    # O/U 1.5: +10.1% ROI (74% WR, 46 bets), realized CLV +2.5%.
-                       "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.08,             # 2026-06-01: PER-LINE shrinkage. 1.5 model claims ~8% edge but
+                       "allowed_lines": [1.5, 2.5], "kelly_fraction": 0.15,             # 2026-06-01: PER-LINE shrinkage. 1.5 model claims ~8% edge but
                        "line_shrinkage": {1.5: 0.6},                                     # CLV says ~2.5% (3x over-claim) → shrink 1.5 to size Kelly on the
                        "line_min_edge": {2.5: 7.0},                                     # deflated edge. 2.5 UNSHRUNK (best CLV +4.8%, gated at >=7.0).
                        "line_max_edge": {2.5: 10.0}},                                   # 2026-09-01: line 2.5 band was [7,7] = EMPTY (market max 7 met the
@@ -3810,7 +3814,7 @@ Examples:
                         help="Minimum edge %% (default: 2.0)")
     parser.add_argument("--max-edge", type=float, default=12.0,
                         help="Maximum edge %% (default: 12.0)")
-    parser.add_argument("--kelly", type=float, default=0.10,
+    parser.add_argument("--kelly", type=float, default=0.15,
                         help="Kelly fraction (default: 0.10)")
     parser.add_argument("--max-stake", type=float, default=2.5,
                         help="Max stake %% of bankroll (default: 2.5)")
