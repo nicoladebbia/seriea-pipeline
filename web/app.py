@@ -1984,6 +1984,50 @@ def _lineup_entries(side_lineup: dict) -> list:
     return out
 
 
+def _recent_xi(pms, team: str) -> list:
+    """Fallback likely-XI: the team's most-recent match starters from pms.
+
+    Used when lineup_predictions has no matching entry (off-season / stale
+    lineup file). Names + ids come straight from sofascore so they resolve.
+    """
+    tdf = pms[pms["team"] == team]
+    if not len(tdf):
+        return []
+    last_date = tdf["date"].max()
+    last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
+    return [{
+        "player_name": r["player_name"], "player_id": r["player_id"],
+        "position": r["position"], "is_starter": True,
+        "proj_minutes": None,  # engine uses the player's leak-free min_prior
+    } for _, r in last.iterrows()]
+
+
+def _match_player_floors(match_key: str, home: str, away: str, league: str = "serie_a"):
+    """Player floor markets for one fixture, or None when there is no engine
+    (parquet missing) or no XI to price. Predicted XI from lineup_predictions,
+    else the most recent starters."""
+    if league != "serie_a":
+        # _player_engine() builds priors from the Serie A parquet only; an EPL
+        # XI would be priced off Serie A position base rates and look real.
+        return None
+    pms, base_rates = _player_engine()
+    if pms is None:
+        return None
+    from scripts.betting.player_predictions import predict_match_players
+    lineups = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
+    lp = (lineups.get("matches", {}) if isinstance(lineups, dict) else {}).get(match_key)
+    if lp:
+        home_xi = _lineup_entries(lp.get("home_lineup", {}))
+        away_xi = _lineup_entries(lp.get("away_lineup", {}))
+    else:
+        home_xi = _recent_xi(pms, home)
+        away_xi = _recent_xi(pms, away)
+    if not home_xi and not away_xi:
+        return None
+    return predict_match_players(home, away, home_xi, away_xi, pms=pms,
+                                 base_rates=base_rates, league=league)
+
+
 def _attach_player_floors(proj_by_match: dict) -> None:
     """Attach top player floor markets to each projection (display only).
 
@@ -1998,23 +2042,6 @@ def _attach_player_floors(proj_by_match: dict) -> None:
 
     lineups = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
     lp_matches = lineups.get("matches", {}) if isinstance(lineups, dict) else {}
-
-    def _recent_xi(team):
-        """Fallback likely-XI: the team's most-recent match starters from pms.
-
-        Used when lineup_predictions has no matching entry (off-season / stale
-        lineup file). Names + ids come straight from sofascore so they resolve.
-        """
-        tdf = pms[pms["team"] == team]
-        if not len(tdf):
-            return []
-        last_date = tdf["date"].max()
-        last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
-        return [{
-            "player_name": r["player_name"], "player_id": r["player_id"],
-            "position": r["position"], "is_starter": True,
-            "proj_minutes": None,  # engine uses the player's leak-free min_prior
-        } for _, r in last.iterrows()]
 
     from scripts.betting.player_predictions import TARGETS as _FLOOR_TARGETS
     # Only grade HIT/MISS above this confidence — a 17% goal call that doesn't
@@ -2046,8 +2073,8 @@ def _attach_player_floors(proj_by_match: dict) -> None:
             home_xi = _lineup_entries(lp.get("home_lineup", {}))
             away_xi = _lineup_entries(lp.get("away_lineup", {}))
         else:
-            home_xi = _recent_xi(proj.get("home_team", ""))
-            away_xi = _recent_xi(proj.get("away_team", ""))
+            home_xi = _recent_xi(pms, proj.get("home_team", ""))
+            away_xi = _recent_xi(pms, proj.get("away_team", ""))
         if not home_xi and not away_xi:
             continue
         result = predict_match_players(
@@ -3256,6 +3283,75 @@ def api_match_intel(match_slug):
         },
     }
     return jsonify(out)
+
+
+def _match_slug(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+
+
+def _rows_of(raw) -> list:
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    if isinstance(raw, dict):
+        return [r for r in (raw.get("predictions") or []) if isinstance(r, dict)]
+    return []
+
+
+@app.route("/api/match-markets/<match_slug>")
+def api_match_markets(match_slug):
+    """Every market the system can price for ONE match, each with the engine
+    that wrote it and its honesty tier (web/match_markets.py). Nothing is
+    computed here; the page renders this list and never derives a number."""
+    from web.match_markets import build_match_markets
+
+    preds = _rows_of(_load_json(UPCOMING_DIR / "predictions.json", default=[])) + \
+        _rows_of(_load_json(UPCOMING_DIR / "predictions_premier_league.json", default=[]))
+    pred = next((p for p in preds if _match_slug(p.get("match", "")) == match_slug), None)
+    if pred is None:
+        return jsonify({"error": "no prediction for this match", "match_slug": match_slug}), 404
+    match_key = pred.get("match", "")
+    league = pred.get("league", "serie_a")
+
+    goal = next((g for g in _rows_of(_load_json(UPCOMING_DIR / "goal_predictions.json", default=[]))
+                 if g.get("match") == match_key), None)
+    btts = next((b for b in _rows_of(_load_json(UPCOMING_DIR / "btts_predictions.json", default=[]))
+                 if b.get("match") == match_key), None)
+    ext_raw = _load_json(UPCOMING_DIR / "extended_markets.json", default={})
+    ext = (ext_raw.get("matches", {}) if isinstance(ext_raw, dict) else {}).get(match_key)
+
+    odds_file = "odds_full.json" if league == "serie_a" else f"odds_full_{league}.json"
+    odds_raw = _load_json(UPCOMING_DIR / odds_file, default={})
+    odds = ((odds_raw.get("matches", {}) if isinstance(odds_raw, dict) else {}).get(match_key)) or {}
+
+    slip_raw = _load_json(UPCOMING_DIR / "unified_bet_slip.json", default={})
+    slip_raw = slip_raw if isinstance(slip_raw, dict) else {}
+    sel = next((b for b in (slip_raw.get("selected_bets") or []) if isinstance(b, dict) and b.get("match") == match_key), None)
+    near = None
+    for nm in slip_raw.get("near_misses") or []:
+        if isinstance(nm, dict) and nm.get("match") == match_key and \
+                (near is None or (nm.get("edge_pct") or 0) > (near.get("edge_pct") or 0)):
+            near = nm
+    cand_raw = _load_json(UPCOMING_DIR / "betting_candidates.json", default={})
+    cand = next((c for c in ((cand_raw.get("candidates") if isinstance(cand_raw, dict) else None) or [])
+                 if isinstance(c, dict) and c.get("match") == match_key), None)
+    try:
+        from scripts.betting.betting_unified import _league_betting_enabled
+        enabled = _league_betting_enabled(league)
+    except Exception:
+        enabled = league == "serie_a"
+    engine_bet = _ou_signal(match_key, league, goal, odds.get("totals", []), sel, near, enabled,
+                            candidate=cand)["bet"]
+
+    try:
+        players = _match_player_floors(match_key, pred.get("home_team", ""), pred.get("away_team", ""), league)
+    except Exception as exc:  # the floor engine must never take the page down
+        log.warning("match-markets: player floors failed for %s: %s", match_key, exc)
+        players = None
+
+    return jsonify(build_match_markets(
+        match_key, pred=pred, goal_pred=goal, ext=ext, btts=btts, engine_bet=engine_bet,
+        players=players, kickoff_utc=odds.get("commence_time"), league=league))
 
 
 def _compute_epl_h2h() -> dict:

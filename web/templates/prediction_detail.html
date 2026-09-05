@@ -520,6 +520,20 @@
       <div class="pd-card__body" id="body-betting"></div>
     </div>
   </div>
+
+  <!-- 10. Every market (full-width): /api/match-markets, tiered -->
+  <div class="pd-grid">
+    <div class="pd-card pd-card--full" id="sec-markets">
+      <div class="pd-card__header">
+        <span class="pd-card__title">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Every market
+        </span>
+        <span id="markets-count" class="text-small text-tertiary"></span>
+      </div>
+      <div class="pd-card__body" id="body-markets"><div class="text-small text-tertiary">Loading markets…</div></div>
+    </div>
+  </div>
 </div>
 
 <!-- Error State -->
@@ -1427,6 +1441,77 @@ function renderBetting(m) {
 
 
 // ═══════════════════════════════════════════════════════════════
+// RENDER: Every market (/api/match-markets) — tiered, read-only
+// ═══════════════════════════════════════════════════════════════
+const _TIER_STYLE = {
+  A: 'background:rgba(74,222,128,0.15);color:var(--green)',
+  B: 'background:rgba(148,163,184,0.15);color:var(--text-secondary)',
+  C: 'background:rgba(251,191,36,0.12);color:var(--amber)',
+};
+function _tierBadge(t) {
+  return `<span class="badge" style="${_TIER_STYLE[t] || ''};font-weight:600;font-size:10px;margin-left:6px" title="${t === 'A' ? 'skill above base rate on held-out data' : t === 'B' ? 'priceable; expect about base rate' : 'base rate only'}">${t}</span>`;
+}
+function renderMarkets(d) {
+  if (!d || d.error) return `<div class="text-small text-tertiary">Markets unavailable: ${sanitizeHTML((d && d.error) || '')}</div>`;
+  const groups = {};
+  for (const r of d.markets || []) (groups[r.group] = groups[r.group] || []).push(r);
+  let html = '';
+  const reasons = d.reasoning || [];
+  if (reasons.length) {
+    html += `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">${reasons.map(sanitizeHTML).join(' · ')}</div>`;
+  }
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3)">';
+  for (const [g, rows] of Object.entries(groups)) {
+    const tierC = rows.every(r => r.tier === 'C');
+    html += `<div style="border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3)${tierC ? ';opacity:.7' : ''}">
+      <div class="text-label" style="margin-bottom:4px">${sanitizeHTML(g)}${_tierBadge(rows[0].tier)}</div>`;
+    let lastType = null;
+    for (const r of rows) {
+      if (r.bet_type !== lastType && Object.keys(groups).length && rows.some(x => x.bet_type !== rows[0].bet_type)) {
+        html += `<div class="text-tertiary" style="font-size:10px;margin-top:4px">${sanitizeHTML(r.bet_type)}</div>`;
+        lastType = r.bet_type;
+      }
+      html += `<div style="display:flex;justify-content:space-between;font-size:12px;line-height:1.6${r.bet_line ? ';font-weight:600' : ''}">
+        <span>${sanitizeHTML(r.selection)}${r.bet_line ? ' <span class="text-tertiary" style="font-size:10px">(bet line)</span>' : ''}</span>
+        <span class="text-mono">${Number(r.probability_pct).toFixed(1)}%</span></div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  // Players: one line per player, top three floors, grouped by team
+  const players = d.players || [];
+  if (players.length) {
+    const byPlayer = {};
+    for (const p of players) {
+      const k = `${p.team}|${p.player}`;
+      (byPlayer[k] = byPlayer[k] || { team: p.team, player: p.player, position: p.position, mins: p.proj_minutes, rows: [] }).rows.push(p);
+    }
+    const list = Object.values(byPlayer).map(pl => {
+      pl.rows.sort((a, b) => b.probability_pct - a.probability_pct);
+      pl.top = pl.rows.filter(r => r.tier === 'A').slice(0, 3);
+      return pl;
+    }).filter(pl => pl.top.length).sort((a, b) => (a.team > b.team ? 1 : a.team < b.team ? -1 : b.top[0].probability_pct - a.top[0].probability_pct));
+    html += `<div class="text-label" style="margin-top:var(--space-4);margin-bottom:4px">Giocatori${_tierBadge('A')} <span class="text-tertiary" style="font-weight:400;font-size:10px">floor lines from the player engine; Giocatore marcatore is tier C and hidden</span></div>`;
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px 16px;font-size:12px">';
+    for (const pl of list) {
+      html += `<div style="display:flex;gap:8px;line-height:1.6"><span style="min-width:150px"><b>${sanitizeHTML(pl.player)}</b> <span class="text-tertiary" style="font-size:10px">${sanitizeHTML(pl.position || '')} · ${sanitizeHTML(pl.team || '')} · ${pl.mins != null ? Math.round(pl.mins) + "'" : ''}</span></span>
+        <span class="text-secondary">${pl.top.map(r => `${sanitizeHTML(r.bet_type)} ${sanitizeHTML(r.selection)} <span class="text-mono">${Number(r.probability_pct).toFixed(0)}%</span>`).join(' · ')}</span></div>`;
+    }
+    html += '</div>';
+  }
+  const ex = d.excluded || [], nb = d.not_built || [], miss = d.missing || [];
+  if (ex.length || nb.length || miss.length) {
+    html += '<div class="text-small text-tertiary" style="margin-top:var(--space-4)">';
+    for (const e of ex) html += `<div>Excluded: <b>${sanitizeHTML(e.bet_type)}</b> (${sanitizeHTML(e.selection)}): ${sanitizeHTML(e.reason)}</div>`;
+    for (const n of nb) html += `<div>Not built: <b>${sanitizeHTML(n.bet_type)}</b> — ${sanitizeHTML(n.engine)}: ${sanitizeHTML(n.note)}</div>`;
+    for (const m of miss) html += `<div>Missing: ${sanitizeHTML(m)}</div>`;
+    html += '</div>';
+  }
+  return html;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
 // LIVE: Score Display
 // ═══════════════════════════════════════════════════════════════
 function renderLiveScore(live, match) {
@@ -1731,6 +1816,18 @@ async function loadMatchDetail() {
       .catch(e => {
         document.getElementById('body-match-intel').innerHTML =
           `<div class="text-small text-tertiary">Match intelligence unavailable: ${e.message || e}</div>`;
+      });
+
+    apiFetch(`/api/match-markets/${MATCH_SLUG}`)
+      .then(mk => {
+        document.getElementById('body-markets').innerHTML = renderMarkets(mk);
+        const c = mk && mk.counts ? mk.counts : null;
+        const el = document.getElementById('markets-count');
+        if (el && c) el.textContent = `${(mk.markets || []).length} match markets · ${(mk.players || []).length} player lines · tiers A ${c.A} / B ${c.B} / C ${c.C}`;
+      })
+      .catch(e => {
+        document.getElementById('body-markets').innerHTML =
+          `<div class="text-small text-tertiary">Markets unavailable: ${e.message || e}</div>`;
       });
 
     // Match slip bets from unified_bet_slip to this match
