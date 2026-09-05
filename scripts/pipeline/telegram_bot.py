@@ -146,6 +146,8 @@ def _tg_send_message(token: str, chat_id: str, text: str,
     """
     chunks = _split_message(text)
     for i, chunk in enumerate(chunks):
+        if i:
+            time.sleep(0.6)  # back-to-back POSTs got "connection reset" on chunk 2 twice (2026-09-05)
         params = {
             "chat_id": chat_id,
             "text": chunk,
