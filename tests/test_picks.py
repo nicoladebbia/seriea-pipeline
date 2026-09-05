@@ -228,10 +228,14 @@ def test_journal_lean_keeps_two_players_apart_and_carries_extra(tmp_path, monkey
     lean_b = dict(lean_a, player="Francisco Conceição")
     ida = P.journal_lean("Juventus vs Milan", "2026-09-06", lean_a, "serie_a", placed_at=now)
     idb = P.journal_lean("Juventus vs Milan", "2026-09-06", lean_b, "serie_a", placed_at=now)
+    # same player, same text, different market (shots vs shots on target): two entries, not a "duplicate"
+    lean_c = dict(lean_a, market_key="player_shots_on_target", bet_type="Tiri in porta del giocatore")
+    idc = P.journal_lean("Juventus vs Milan", "2026-09-06", lean_c, "serie_a", placed_at=now)
+    assert len({ida, idb, idc}) == 3
     assert ida and idb and ida != idb
     from scripts.betting.bet_journal import get_pending_bets
     pend = get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH)
-    assert len(pend) == 2
+    assert len(pend) == 3
     b = next(x for x in pend if x["bet_id"] == ida)
     assert b["market"] == "player_shots" and b["selection"] == "Gonçalo Ramos Over 0.5"
     assert b["stake"] == 10.0 and b["pipeline_status"] == "pick:lean"
@@ -629,3 +633,66 @@ def test_measure_start_calibration_joins_archives_to_the_next_fixture(tmp_path, 
     assert table["knots"][-1][0] == 1.0 and 0.0 <= table["knots"][-1][1] <= 1.0
     thin = pp.measure_start_calibration(arch, pms, min_rows=50, write=False)
     assert thin["knots"] is None and "3 joined rows" in thin["reason"]
+
+
+def test_t30_journals_every_in_band_angle_not_just_the_headline(monkeypatch, tmp_path):
+    """The promotion bar is per MARKET (50 settled); a market that only ever
+    takes the second slot never reaches it. Headline first, then the best
+    exotic, then every other in-band angle; below-band angles are shown, not
+    journaled; the same bet reached twice is one entry."""
+    import web.match_markets as mm
+    now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
+    monkeypatch.setattr(P, "PICKS_FILE", tmp_path / "picks.json")
+    monkeypatch.setattr(P, "PICKS_JOURNAL_PATH", tmp_path / "picks_journal.json")
+    monkeypatch.setattr(P, "_read", lambda path, default: {
+        "predictions.json": {"predictions": [
+            {"match": "Bologna vs Sassuolo", "date": "2026-09-06", "league": "serie_a", "home_team": "Bologna", "away_team": "Sassuolo"}]},
+        "odds_full.json": {"matches": {"Bologna vs Sassuolo": {"commence_time": "2026-09-06T16:00:00Z"}}},
+    }.get(getattr(path, "name", ""), default))
+    monkeypatch.setattr(mm, "assemble_market_inputs", lambda *a, **k: {"pred": {}, "goal_pred": None, "ext": None,
+                                                                        "btts": None, "players": None, "sim": None,
+                                                                        "halves_gate": None, "kickoff_utc": None,
+                                                                        "league": "serie_a"})
+    monkeypatch.setattr(mm, "build_match_markets", lambda *a, **k: {
+        "markets": [_row("1x2 finale", "1", 54.0, "A", group="Principali"),        # +4.0 in band
+                    _row("Under/over", "Over 2.5", 55.0, "A", group="Principali"),  # +5.0 in band
+                    _row("Goal", "Sì", 52.0, "B", group="Goal"),                    # +0.7 positive, below band
+                    _row("1° tempo 1x2", "1", 36.0, "A", group="Tempi")],           # +4.4 in band, exotic
+        "players": [{"group": "Giocatori", "bet_type": "Assist giocatore", "selection": "Sì", "player": "Federico Dimarco",
+                     "probability_pct": 23.0, "tier": "C", "source": "s"},                                  # +3.5 exotic
+                    {"group": "Giocatori", "bet_type": "Tiri totali del giocatore", "selection": "Over 0.5",
+                     "player": "Federico Dimarco", "probability_pct": 80.0, "tier": "A", "source": "s"}]})  # -3.3
+    monkeypatch.setattr(P, "build_price_book", lambda *a: {
+        ("h2h", "home", None, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 10},
+        ("totals", "over", 2.5, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 10},
+        ("btts", "yes", None, None): {"odds": 1.95, "book": "b", "avg": 1.95, "n_books": 10},
+        ("h2h_h1", "home", None, None): {"odds": 2.9, "book": "Pinnacle", "avg": 2.8, "n_books": 3},
+        ("player_assists", "over", 0.5, "federico dimarco"): {"odds": 4.5, "book": "WH", "avg": 4.5, "n_books": 1},
+        ("player_shots", "over", 0.5, "federico dimarco"): {"odds": 1.2, "book": "1xBet", "avg": 1.2, "n_books": 1}})
+    out = P.build_picks("serie_a", journal=True, now=now)
+    (line,) = out["picks"]
+    from scripts.betting.bet_journal import get_pending_bets
+    pend = get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH)
+    markets = sorted(b["market"] for b in pend)
+    assert markets == ["h2h", "h2h_h1", "player_assists", "totals"]
+    assert out["n_journaled"] == 4 and len(line["journaled_bet_ids"]) == 4
+    assert line["journaled_bet_id"] == line["journaled_bet_ids"][0]
+    head = next(b for b in pend if b["bet_id"] == line["journaled_bet_id"])
+    assert head["market"] == P.price_key_for_row(line["pick"])[0]
+    assert all(b["pipeline_status"] == "pick:lean" and b["extra"]["side"] in ("over", None) for b in pend)
+    # a second run inside the window is idempotent
+    out2 = P.build_picks("serie_a", journal=True, now=now + timedelta(minutes=15))
+    assert len(get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH)) == 4 and out2["n_journaled"] == 4
+
+
+def test_journal_candidates_dedup_and_band_rule():
+    lean = {"market_key": "h2h", "selection": "1", "player": None, "in_band": False, "edge_pct": 1.0}
+    ex1 = {"market_key": "h2h_h1", "selection": "1", "player": None, "in_band": True}
+    alt_dup = dict(lean)
+    alt_in = {"market_key": "totals", "selection": "Over 2.5", "player": None, "in_band": True}
+    alt_out = {"market_key": "btts", "selection": "Sì", "player": None, "in_band": False}
+    no_key = {"market_key": None, "selection": "x", "in_band": True}
+    line = {"alternatives": [alt_dup, alt_out, alt_in, no_key], "exotic": [ex1, alt_out]}
+    got = P._journal_candidates(line, lean)
+    assert [c["market_key"] for c in got] == ["h2h", "h2h_h1", "totals"]
+    assert P._journal_candidates({"alternatives": [], "exotic": []}, None) == []

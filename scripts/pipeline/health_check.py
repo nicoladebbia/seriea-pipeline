@@ -1123,6 +1123,62 @@ def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
 STATS_GRACE_HOURS = 14.0   # the evening (20:00) and morning (08:00) runs both get a chance
 
 
+def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: float) -> List[Tuple[str, str, str]]:
+    """[(date, home, away)] of Serie A fixtures whose kickoff lies between
+    `min_age_s` and `max_age_s` ago, from the cached fixture file (known weeks
+    ahead, so no check built on it depends on Sofascore being up). Canceled /
+    postponed fixtures keep their original timestamp forever and are excluded."""
+    from scripts.utils.match_timing import _sofascore_fixture_files
+    fx_path = next(p for p, lg in _sofascore_fixture_files() if lg == "serie_a")
+    raw = json.loads(fx_path.read_text())
+    fixtures = raw if isinstance(raw, list) else next(v for v in raw.values() if isinstance(v, list))
+    out = []
+    for f in fixtures:
+        ts = f.get("startTimestamp")
+        if not ts:
+            continue
+        ko = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        if (f.get("status") or {}).get("type") in ("canceled", "postponed"):
+            continue
+        if min_age_s <= (now - ko).total_seconds() <= max_age_s:
+            out.append((ko.strftime("%Y-%m-%d"), (f.get("homeTeam") or {}).get("name"), (f.get("awayTeam") or {}).get("name")))
+    return out
+
+
+PICKS_JOURNAL_GRACE_MIN = 30.0   # the T-30 run is the last chance to journal a pick
+
+
+def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
+    """Did the T-30 path paper-journal anything for the Serie A matches that
+    kicked off in the last 24h? The T-30 run is a child process
+    (`run_full_pipeline --pre-kickoff`, stdout captured by the scheduler), so
+    a pick engine that raises, or one that never ran, is invisible unless
+    something reads the outcome; on 2026-09-05 Roma–Atalanta journaled
+    nothing and only a by-hand log read said why. WARNING, never CRITICAL: a
+    slate where no angle beats its price is legal, just rare with 40+ priced
+    rows a match."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        due = _serie_a_fixtures_kicked_off(now, PICKS_JOURNAL_GRACE_MIN * 60, 24 * 3600)
+    except (OSError, ValueError, StopIteration) as e:
+        return {"status": "WARNING", "detail": f"fixture file unreadable: {e}"}
+    if not due:
+        return {"status": "OK", "detail": "no Serie A kickoff in the last 24h"}
+    try:
+        bets = json.loads((DATA_DIR / "betting" / "picks_journal.json").read_text()).get("bets", {})
+    except (OSError, ValueError):
+        bets = {}
+    dates = sorted({d for d, _, _ in due})
+    n = sum(1 for b in bets.values() if str(b.get("date") or "")[:10] in dates)
+    if n == 0:
+        return {"status": "WARNING", "dates": dates, "n_matches": len(due),
+                "detail": f"{len(due)} Serie A match(es) kicked off on {', '.join(dates)} and the T-30 path "
+                          "journaled no paper pick — grep logs/pipeline.log for 'Pick engine' / 'Picks:' "
+                          "around T-30 (the child's output is captured, not in the monitor log)"}
+    return {"status": "OK", "dates": dates, "n_matches": len(due), "n_journaled": n,
+            "detail": f"{n} paper pick(s) journaled for {len(due)} Serie A match(es) on {', '.join(dates)}"}
+
+
 def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
     """Did the Sofascore player stats land for every Serie A match that finished
     more than STATS_GRACE_HOURS ago? Player-prop paper picks grade from
@@ -1132,22 +1188,9 @@ def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
     ahead), so this check does not itself depend on Sofascore being up."""
     now = now or datetime.now(timezone.utc)
     try:
-        from scripts.utils.match_timing import _sofascore_fixture_files
-        fx_path = next(p for p, lg in _sofascore_fixture_files() if lg == "serie_a")
-        raw = json.loads(fx_path.read_text())
-        fixtures = raw if isinstance(raw, list) else next(v for v in raw.values() if isinstance(v, list))
+        played = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400)
     except (OSError, ValueError, StopIteration) as e:
         return {"status": "WARNING", "detail": f"fixture file unreadable: {e}"}
-    played = []
-    for f in fixtures:
-        ts = f.get("startTimestamp")
-        if not ts:
-            continue
-        ko = datetime.fromtimestamp(int(ts), tz=timezone.utc)
-        if (f.get("status") or {}).get("type") in ("canceled", "postponed"):
-            continue
-        if STATS_GRACE_HOURS * 3600 <= (now - ko).total_seconds() <= 7 * 86400:
-            played.append((ko.strftime("%Y-%m-%d"), (f.get("homeTeam") or {}).get("name"), (f.get("awayTeam") or {}).get("name")))
     if not played:
         return {"status": "OK", "detail": "no Serie A match finished in the last 7 days past the grace window"}
     pms = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
@@ -1395,6 +1438,7 @@ def run_health_check() -> Dict:
         "disk_space": check_disk_space(),
         "lineup_sources": check_lineup_sources(),
         "player_stats_coverage": check_player_stats_coverage(),
+        "picks_journal_activity": check_picks_journal_activity(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
@@ -1485,6 +1529,9 @@ def run_health_check() -> Dict:
     ps = result.get("player_stats_coverage", {})
     if ps.get("status") in ("CRITICAL", "WARNING"):
         issues.append((ps["status"], f"Player stats: {ps.get('detail')}"))
+    pj = result.get("picks_journal_activity", {})
+    if pj.get("status") == "WARNING":
+        issues.append(("WARNING", f"Picks journal: {pj.get('detail')}"))
 
     disk = result.get("disk_space", {})
     if disk.get("status") == "CRITICAL":

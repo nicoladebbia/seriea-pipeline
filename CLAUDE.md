@@ -326,9 +326,22 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `closing_odds` (`closing_price_for`), so CLV exists only where a closing price does.
   **Do not lower the bar to hit an income target and do not promote a market by editing the
   state file** — the gate is the product.
-- The pre-kickoff monitor is a long-lived process: **a change to `picks.py` /
-  `betting_unified.py` reaches the T-30 run only after `launchctl kickstart -k`**. The first
-  T-30 of 2026-09-05 journaled nothing for exactly this reason, not a code defect.
+- **The T-30 run re-reads the code every time — no kickstart needed for `picks.py` /
+  `betting_unified.py`.** The pre-kickoff monitor is a launchd `StartInterval 900` job (not
+  a long-lived process; `launchctl list` shows PID `-` between cycles) and the T-30 itself is
+  a child `run_full_pipeline.py --pre-kickoff` with `capture_output=True`, so its log lines
+  live in `logs/pipeline.log`, NOT in `launchd-pre-kickoff-monitor-err.log`. The earlier
+  claim that the first T-30 of 2026-09-05 "needed a kickstart" was wrong: measured from
+  `pipeline.log`, the Roma–Atalanta T-30 ran at 14:10 EDT and the pick-engine hook was
+  committed at 14:35. `health_check.check_picks_journal_activity` (WARNING) now says when a
+  Serie A kickoff passed with nothing paper-journaled.
+- **Every in-band angle is paper-journaled at T-30, not just the headline** (2026-09-05
+  evening): `_journal_candidates` = headline, best exotic, then every alternative / exotic
+  with `in_band`; the promotion bar is per MARKET and a market that only ever took the second
+  slot could never reach 50 settled. The journal dedup is scoped to the market for picks
+  (`add_bet(dedup_by_market=True)`): "1" is both the full-time and first-half home win,
+  "Dimarco Over 0.5" is shots and shots on target — the fan-out test caught the full-time 1x2
+  being blocked as a duplicate of the first-half one.
 - Tests: `tests/test_picks.py` (specimen naming, row→price map, name join incl.
   ambiguity, ranking, VALUE-from-slip, engine note, journal dedup across players, every
   grading family, ungradable stays pending, fetch refresh window — the last one caught a
@@ -884,6 +897,26 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   pipeline runs must never write the production step cache. And a retrain's early-stopping
   set must meet the same n-floor as its gate folds.
 
+### Symptom: "the T-30 log says `Journal: recorded 1 bets` but bet_journal.json has nothing new" (FIXED 2026-09-05)
+
+- **What you'll see**: `Selected: 1 bets`, `Saved bet slip`, `Journal: recorded 1 bets` in
+  `logs/pipeline.log`, and one line above them
+  `Duplicate blocked: Lazio vs Milan OVER 1.5 already exists as 2026-03-15_Lazio_vs_Milan_OU_1.5_OVER_1.5`.
+  The real journal took **zero** bets from go-live (2026-08-27) to 2026-09-05.
+- **Why**: `bet_journal.add_bet` has a second dedup after the id check — same match + same
+  selection, any market name — meant to catch market-name variants (`O/U 1.5` vs `OU_1.5`)
+  on the same fixture. It was **date-blind**. Serie A fixtures repeat every season, the bet
+  is always O/U Over on the same pair, so a settled bet from last season swallowed this
+  season's and returned the OLD id. The caller then logged `len(slip.bets)` as "recorded".
+- **Fix**: the guard requires the same `date`; picks additionally require the same market
+  (`dedup_by_market=True`); `save_bet_slip` counts ids that start with the bet's own date and
+  logs `Journal: N of M bets NOT recorded: …` at WARNING when any were blocked. Test:
+  `test_last_seasons_settled_bet_never_blocks_this_seasons`.
+- **Prevention rule**: **a "recorded N" log must count what the store accepted, never what
+  the caller offered** — and any dedup key on a recurring event (fixtures, matchweeks,
+  rounds) must include the date. The real-journal count since go-live is the check:
+  `python3 -c "import json;d=json.load(open('data/betting/bet_journal.json'))['bets'];print(sum(1 for b in d.values() if (b.get('placed_at') or '')>='2026-08-27'))"`.
+
 ### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
 
 - **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is
@@ -904,8 +937,8 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   three. Dry run on the MW3 slate: EUR 5–8 a bet → EUR 18–22 (the 1.5 line sits at the cap ×
   the 0.85 marginal-edge multiplier = 2.1%). Same day, the cold_home / away_fav_ref veto was
   scoped to 1X2/DC/DNB (`_veto_applies`): O/U candidates are judged on edge alone, 1 → 3
-  selected on the same inputs. Both changes reach the T-30 run only after
-  `launchctl kickstart -k` of the pre-kickoff monitor.
+  selected on the same inputs. Both changes reach the T-30 run at its next cycle (the T-30
+  is a child process that re-reads the code; see the pick-engine section).
 - **Go-live checklist that actually matters** (all verified 2026-08-27): key alive; ledger
   invariants green (journal-derived == bankroll.json); `pre-kickoff-monitor` + `telegram-bot`
   + `settlement` jobs loaded; `betting_unified --dry-run` produces a sane slate (enabled

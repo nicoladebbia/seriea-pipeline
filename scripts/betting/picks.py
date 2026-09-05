@@ -550,20 +550,21 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
                      "prices_fetched_at": (ev or {}).get("fetched_at")})
         lean = line.get("pick") if line["label"] == LABEL_LEAN else line.get("lean")
         if journal and ko and timedelta(0) <= (ko - now) <= timedelta(hours=PICK_JOURNAL_WINDOW_H):
-            # the headline LEAN and the best exotic angle both build a record;
-            # add_bet dedups when they are the same bet
+            # the headline, the best exotic angle AND every other in-band angle
+            # build a record: the promotion bar is per MARKET (50 settled), and
+            # a market that only ever takes the second slot never reaches it.
+            # add_bet dedups match+selection; edges above its cap are rejected there
             ids = []
             real_ids = []
-            for cand in (lean, (line.get("exotic") or [None])[0]):
-                if cand:
-                    bet_id = journal_lean(match_key, pred.get("date") or today, cand, league, placed_at=now)
-                    if bet_id and bet_id not in ids:
-                        ids.append(bet_id)
-                        # a market that cleared the promotion bar is ALSO a real
-                        # bet, Kelly-sized, linked to this paper entry
-                        real_id = _mirror_if_promoted(bet_id, promo_state)
-                        if real_id:
-                            real_ids.append(real_id)
+            for cand in _journal_candidates(line, lean):
+                bet_id = journal_lean(match_key, pred.get("date") or today, cand, league, placed_at=now)
+                if bet_id and bet_id not in ids:
+                    ids.append(bet_id)
+                    # a market that cleared the promotion bar is ALSO a real
+                    # bet, Kelly-sized, linked to this paper entry
+                    real_id = _mirror_if_promoted(bet_id, promo_state)
+                    if real_id:
+                        real_ids.append(real_id)
             if ids:
                 n_journaled += len(ids)
                 line["journaled_bet_id"] = ids[0]
@@ -581,8 +582,29 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
            "n_journaled": n_journaled, "picks": picks}
     from config.settings import atomic_write_json
     atomic_write_json(PICKS_FILE, out)
-    log.info("Picks: %d matches (%s), %d LEAN paper-journaled", len(picks),
+    log.info("Picks: %d matches (%s), %d paper entries journaled", len(picks),
              ", ".join(f"{v} {k}" for k, v in out["counts"].items()), n_journaled)
+    return out
+
+
+def _journal_candidates(line: dict, lean: dict | None) -> list[dict]:
+    """What the T-30 run paper-journals for one match, in order: the headline
+    (even below the band — it is what the card shows), the best exotic angle,
+    then every other alternative / exotic angle INSIDE the credible band. An
+    angle below the band is shown, not journaled: the record must be of bets
+    the engine would size, or the bar it feeds measures the wrong thing."""
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    head = [lean, (line.get("exotic") or [None])[0]]
+    rest = [c for c in (line.get("alternatives") or []) + (line.get("exotic") or []) if c.get("in_band")]
+    for cand in head + rest:
+        if not cand or not cand.get("market_key"):
+            continue
+        key = (cand.get("market_key"), cand.get("selection"), cand.get("player"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
     return out
 
 
@@ -606,7 +628,10 @@ def _mirror_if_promoted(picks_bet_id: str, state: dict | None) -> str | None:
 def journal_lean(match_key: str, date: str, lean: dict, league: str, *, placed_at: datetime) -> str:
     """Flat-stake paper entry in PICKS_JOURNAL_PATH. Selection embeds the
     player so two players' 'Over 0.5' never collide on the journal's
-    match+selection dedup."""
+    match+selection dedup; the dedup is scoped to the market too, because
+    '1' is both the full-time and the first-half home win and 'Dimarco Over
+    0.5' is shots as well as shots on target (found by the fan-out test:
+    the full-time 1x2 was blocked as a duplicate of the first-half one)."""
     from scripts.betting.bet_journal import add_bet
     from scripts.betting.betting_unified import PAPER_STAKE
     ou = _ou_parts(lean.get("selection") or "") if lean.get("market_key") != "player_assists" else ("over", 0.5)
@@ -628,7 +653,7 @@ def journal_lean(match_key: str, date: str, lean: dict, league: str, *, placed_a
                   # the XI basis at journal time, so the paper record can be split
                   # confirmed vs predicted before any market earns real stakes
                   "lineup": lean.get("lineup"), "start_pct": lean.get("start_pct")},
-    }, journal_path=PICKS_JOURNAL_PATH)
+    }, journal_path=PICKS_JOURNAL_PATH, dedup_by_market=True)
 
 
 # ---------------------------------------------------------------------------

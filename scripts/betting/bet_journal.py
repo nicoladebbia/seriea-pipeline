@@ -351,7 +351,8 @@ def _stamp_model_version(entry: Dict) -> None:
 
 
 @_with_journal_lock
-def add_bet(bet_data: Dict, journal_path: Optional[Path] = None) -> str:
+def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
+            dedup_by_market: bool = False) -> str:
     """Add a bet to the journal. Returns bet_id.
 
     Deduplicates by bet_id. If a bet with the same ID already exists
@@ -361,6 +362,14 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None) -> str:
     can enter the journal regardless of which pathway produced it.
 
     Required fields: match, date, market, selection, odds, stake
+
+    `dedup_by_market`: the same-match+selection guard below exists for the
+    real engine, whose market NAMES drift ("O/U_Over" vs "Over/Under") while
+    the selection is the key. The picks journal has canonical market keys and
+    the SAME selection text across markets by design — "1" is both the
+    full-time and the first-half home win, "Dimarco Over 0.5" is shots and
+    shots on target — so there the guard must also require the same market,
+    or every second angle of a match is silently blocked as a duplicate.
     """
     edge = bet_data.get("edge_pct")
     if edge is not None and abs(edge) > MAX_EDGE_PCT:
@@ -389,12 +398,20 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None) -> str:
             return bet_id
     else:
         # Extra safety: check for same match+selection with different bet_id
-        # (catches market name variants that produce different IDs)
+        # (catches market name variants that produce different IDs).
+        # Scoped to the SAME DATE: Serie A fixtures repeat every season, and
+        # until 2026-09-05 a settled "Lazio vs Milan Over 1.5" from March
+        # blocked the September one — the T-30 run logged "recorded 1 bets"
+        # and the real journal stayed empty for the whole go-live.
         match_norm = bet_data.get("match", "").strip()
         sel_norm = bet_data.get("selection", "").strip().upper()
+        market_norm = str(bet_data.get("market", "")).strip()
+        date_norm = str(bet_data.get("date", ""))[:10]
         for existing_id, existing_bet in journal["bets"].items():
             if (existing_bet.get("match", "").strip() == match_norm and
+                str(existing_bet.get("date", ""))[:10] == date_norm and
                 existing_bet.get("selection", "").strip().upper() == sel_norm and
+                (not dedup_by_market or str(existing_bet.get("market", "")).strip() == market_norm) and
                 existing_bet.get("status") not in ("superseded",)):
                 log.warning("Duplicate blocked: %s %s already exists as %s",
                            match_norm, sel_norm, existing_id)

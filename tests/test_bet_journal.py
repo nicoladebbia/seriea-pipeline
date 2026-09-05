@@ -413,3 +413,25 @@ class TestCLVComputation:
         from scripts.betting.clv_tracker import compute_clv
         assert compute_clv(0.5, 3.0) == 0.0
         assert compute_clv(3.0, 0.5) == 0.0
+
+
+def test_last_seasons_settled_bet_never_blocks_this_seasons(tmp_path):
+    """Serie A fixtures repeat every season. Until 2026-09-05 the
+    match+selection duplicate guard was date-blind: the settled March
+    'Lazio vs Milan Over 1.5' swallowed the September one (the T-30 run logged
+    'recorded 1 bets', the journal took nothing). Same date + same selection
+    under a market-name variant is still one bet."""
+    import scripts.betting.bet_journal as BJ
+    jp = tmp_path / "journal.json"
+    base = {"match": "Lazio vs Milan", "market": "O/U 1.5", "selection": "Over 1.5",
+            "odds": 1.3, "stake": 5.0, "edge_pct": 4.0}
+    old = BJ.add_bet(dict(base, date="2026-03-15"), journal_path=jp)
+    j = BJ._load_journal(jp)
+    j["bets"][old]["status"] = "lost"
+    BJ._save_journal(j, jp)
+    new = BJ.add_bet(dict(base, date="2026-09-06"), journal_path=jp)
+    assert new != old and new.startswith("2026-09-06")
+    assert set(BJ._load_journal(jp)["bets"]) == {old, new}
+    # same fixture, same date, market spelled differently -> the guard still holds
+    variant = BJ.add_bet(dict(base, date="2026-09-06", market="OU_1.5"), journal_path=jp)
+    assert variant == new and len(BJ._load_journal(jp)["bets"]) == 2

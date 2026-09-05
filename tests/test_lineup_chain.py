@@ -242,3 +242,43 @@ def test_player_stats_coverage_flags_a_finished_match_with_no_stats(tmp_path, mo
     assert out["status"] == "CRITICAL" and out["missing_dates"] == ["2026-09-05"] and "1 finished" in out["detail"]
     pd.DataFrame({"date": ["2026-09-04", "2026-09-05"]}).to_parquet(pms)
     assert hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))["status"] == "OK"
+
+
+def test_picks_journal_activity_warns_when_a_kickoff_passed_with_nothing_journaled(tmp_path, monkeypatch):
+    """The first T-30 of 2026-09-05 journaled nothing (monitor running stale
+    code) and nothing said so. Fixture kickoffs vs dated picks_journal entries;
+    30-minute grace so the T-30 run has happened; WARNING, never CRITICAL."""
+    from datetime import UTC, datetime
+
+    import scripts.pipeline.health_check as hc
+    import scripts.utils.match_timing as mt
+    fx = tmp_path / "fixtures.json"
+    monkeypatch.setattr(mt, "_sofascore_fixture_files", lambda: [(fx, "serie_a")])
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    ko = lambda s: int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())  # noqa: E731
+    fx.write_text(json.dumps([
+        {"startTimestamp": ko("2026-09-05T18:45:00"), "status": {"type": "inprogress"},
+         "homeTeam": {"name": "Roma"}, "awayTeam": {"name": "Atalanta"}},
+        {"startTimestamp": ko("2026-09-05T13:00:00"), "status": {"type": "postponed"},
+         "homeTeam": {"name": "X"}, "awayTeam": {"name": "Y"}},
+        {"startTimestamp": ko("2026-09-06T16:00:00"), "status": {"type": "notstarted"},
+         "homeTeam": {"name": "Bologna"}, "awayTeam": {"name": "Sassuolo"}},
+    ]))
+    # 5 minutes after kickoff: inside the grace window, nothing due yet
+    assert hc.check_picks_journal_activity(now=datetime(2026, 9, 5, 18, 50, tzinfo=UTC))["status"] == "OK"
+    # 45 minutes in, no journal file at all -> WARNING naming the date and the kickstart remedy
+    out = hc.check_picks_journal_activity(now=datetime(2026, 9, 5, 19, 30, tzinfo=UTC))
+    assert out["status"] == "WARNING" and out["dates"] == ["2026-09-05"] and out["n_matches"] == 1
+    assert "pipeline.log" in out["detail"]
+    # a paper entry dated that day -> OK
+    pj = tmp_path / "betting" / "picks_journal.json"
+    pj.parent.mkdir(parents=True)
+    pj.write_text(json.dumps({"bets": {"abc": {"date": "2026-09-05", "match": "Roma vs Atalanta", "status": "pending"}}}))
+    out = hc.check_picks_journal_activity(now=datetime(2026, 9, 5, 19, 30, tzinfo=UTC))
+    assert out["status"] == "OK" and out["n_journaled"] == 1
+    # entries for another day do not cover this one
+    pj.write_text(json.dumps({"bets": {"abc": {"date": "2026-09-04", "status": "won"}}}))
+    assert hc.check_picks_journal_activity(now=datetime(2026, 9, 5, 19, 30, tzinfo=UTC))["status"] == "WARNING"
+    # Sunday's Bologna kickoff is inside 24h next morning (still WARNING); two days on nothing is due
+    assert hc.check_picks_journal_activity(now=datetime(2026, 9, 7, 9, 0, tzinfo=UTC))["dates"] == ["2026-09-06"]
+    assert hc.check_picks_journal_activity(now=datetime(2026, 9, 8, 12, 0, tzinfo=UTC))["status"] == "OK"

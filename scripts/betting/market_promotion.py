@@ -264,8 +264,8 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     b = ("<b>", "</b>") if html else ("", "")
     i = ("<i>", "</i>") if html else ("", "")
     if not rows:
-        return (f"{b[0]}Record mercati{b[1]}\nNessuna scelta ancora liquidata: il registro carta parte "
-                "dal primo T-30 (Bologna–Sassuolo, 6 set).")
+        return (f"{b[0]}Record mercati{b[1]}\nNessuna scelta ancora liquidata: ogni mercato è carta finché "
+                f"non ha {PROMOTION_BAR['min_settled']} scelte liquidate con ROI > 0.")
     order = {"promoted": 0, "paper": 1}
     lines = [f"{b[0]}Record mercati{b[1]} · soglia {PROMOTION_BAR['min_settled']} carta, ROI > 0, z ≥ {PROMOTION_BAR['min_z']:.0f}"]
     for mk, r in sorted(rows.items(), key=lambda kv: (order.get(kv[1].get("status"), 2), -(kv[1].get("paper") or {}).get("n", 0))):

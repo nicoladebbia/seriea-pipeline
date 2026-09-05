@@ -3621,8 +3621,10 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
     # Also write to unified journal
     try:
         from scripts.betting.bet_journal import add_bet as journal_add_bet
+        n_recorded = 0
+        blocked: list[str] = []
         for bet in slip.bets:
-            journal_add_bet({
+            bet_id = journal_add_bet({
                 "match": bet.match,
                 "date": bet.date,
                 "market": bet.market,
@@ -3639,7 +3641,17 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                 "placed_at": slip.generated_at,
                 "league": getattr(bet, 'league', 'serie_a'),
             })
-        log.info("Journal: recorded %d bets", len(slip.bets))
+            # add_bet answers with the id it kept: the bet's own id (new or
+            # refreshed) or an OLDER entry's id when its duplicate guard fired.
+            # "recorded N" used to be len(slip.bets) — it said 1 on 2026-09-05
+            # while the journal took nothing.
+            if bet_id and bet_id.startswith(str(bet.date)[:10]):
+                n_recorded += 1
+            else:
+                blocked.append(f"{bet.match} {bet.selection} -> {bet_id or 'rejected'}")
+        if blocked:
+            log.warning("Journal: %d of %d bets NOT recorded: %s", len(blocked), len(slip.bets), "; ".join(blocked))
+        log.info("Journal: recorded %d of %d bets", n_recorded, len(slip.bets))
     except Exception as e:
         log.debug("Failed to write to bet journal: %s", e)
 

@@ -455,6 +455,7 @@ _REPLY_BUTTON_MAP: dict[str, str] = {
     "⚽ XI": "/xi",
     "🆚 Sfide": "/sfide",
     "🎯 Picks": "/picks",
+    "📊 Record": "/record",
     "📸 Formazioni": "/formazioni",
 }
 
