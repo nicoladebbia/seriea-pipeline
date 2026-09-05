@@ -13,8 +13,11 @@ every stat the /live card renders — plus goals, cards and substitutions as
 
 Output is in the SAME shape ``scripts.data.live_sofascore`` produces
 (``events`` newest-first, ``statistics`` keyed ``{"home": v, "away": v}``), so
-``live_monitor`` and the /live template need no branching. ``player_stats`` is
-never produced here: ESPN's boxscore has no per-player live stats.
+``live_monitor`` and the /live template need no branching. ``player_stats``
+comes from the summary ``rosters`` (shots, on target, goals, assists, fouls
+committed/suffered, offsides, cards, saves, goals conceded, own goals — no
+minutes, passes, tackles, duels or rating); ``minutes_played`` is derived from
+the substitution events and the clock.
 
 Specimens (2026-09-05, saved under ``tests/fixtures/espn/``):
 
@@ -50,6 +53,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 
@@ -82,6 +86,24 @@ _STAT_KEYS = {
 }
 
 _CLOCK_RE = re.compile(r"(\d+)'(?:\+(\d+)')?")
+
+# ESPN roster stat name -> our live_player_stats key (Sofascore's names, so the
+# prop tracker and the substitution tracker read both feeds the same way).
+# ESPN has no minutes, passes, tackles, duels or rating per player.
+_PLAYER_STAT_KEYS = {
+    "totalShots": "shots",
+    "shotsOnTarget": "shots_on_target",
+    "totalGoals": "goals",
+    "goalAssists": "assists",
+    "foulsCommitted": "fouls_committed",
+    "foulsSuffered": "fouls_drawn",
+    "offsides": "offsides",
+    "yellowCards": "yellow_cards",
+    "redCards": "red_cards",
+    "saves": "saves",
+    "goalsConceded": "goals_conceded",
+    "ownGoals": "own_goals",
+}
 
 # scoreboard cache: slug -> (fetched_at_monotonic, payload)
 _scoreboards: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -232,6 +254,77 @@ def parse_key_events(key_events: list[dict[str, Any]], home_id: str) -> list[dic
     return parsed
 
 
+def _fold(name: str) -> str:
+    """Accent-folded lowercase: the roster says "Matìas Soulè", the event feed "Matias Soulè"."""
+    return "".join(c for c in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(c)).lower().strip()
+
+
+def _parse_roster_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    athlete = entry.get("athlete") or {}
+    out: dict[str, Any] = {
+        "name": athlete.get("displayName") or "",
+        "short_name": athlete.get("shortName") or "",
+        "position": (entry.get("position") or {}).get("abbreviation") or "",
+        "jersey_number": str(entry.get("jersey") or ""),
+        "substitute": not bool(entry.get("starter")),
+        "subbed_in": bool(entry.get("subbedIn")),
+        "subbed_out": bool(entry.get("subbedOut")),
+    }
+    # A stat ESPN omits is OMITTED, not zero-filled (same contract as Sofascore).
+    for item in entry.get("stats") or []:
+        key = _PLAYER_STAT_KEYS.get(item.get("name") or "")
+        if key:
+            val = _num(item.get("displayValue"))
+            if val is not None:
+                out[key] = val
+    return out
+
+
+def _minutes_played(player: dict[str, Any], events: list[dict[str, Any]], clock_minute: int) -> int | None:
+    """Minutes on the pitch derived from the substitution events and the clock.
+
+    ESPN carries no minutes per player. A starter has played the clock; a
+    player subbed off played until his substitution; a sub has played since
+    his. Stoppage time is ignored; None when the clock is unknown or the
+    substitution event cannot be found.
+    """
+    if clock_minute is None:
+        return None
+    me = _fold(player["name"])
+    if player["subbed_in"]:
+        for e in events:
+            if e.get("type") == "substitution" and _fold(e.get("player_in", "")) == me:
+                return max(0, clock_minute - int(e.get("minute") or 0))
+        return None
+    if player["substitute"]:
+        return 0
+    if player["subbed_out"]:
+        for e in events:
+            if e.get("type") == "substitution" and _fold(e.get("player_out", "")) == me:
+                return int(e.get("minute") or 0)
+        return None
+    return clock_minute
+
+
+def parse_rosters(rosters: list[dict[str, Any]], events: list[dict[str, Any]] | None = None,
+                  clock_minute: int | None = None) -> dict[str, list[dict[str, Any]]]:
+    """live_player_stats for one match: {"home": [...], "away": [...]}."""
+    out: dict[str, list[dict[str, Any]]] = {"home": [], "away": []}
+    for team in rosters or []:
+        side = team.get("homeAway")
+        if side not in out:
+            continue
+        for entry in team.get("roster") or []:
+            player = _parse_roster_entry(entry)
+            if not player["name"]:
+                continue
+            minutes = _minutes_played(player, events or [], clock_minute)
+            if minutes is not None:
+                player["minutes_played"] = minutes
+            out[side].append(player)
+    return out
+
+
 def score_from_events(events: list[dict[str, Any]]) -> list[int]:
     """[home, away] counted from goal events; an own goal credits the opponent."""
     home = away = 0
@@ -307,12 +400,20 @@ def fetch_live_data_for_match(home: str, away: str) -> dict[str, Any] | None:
                 log.info("ESPN header score %s trails goal events %s for %s vs %s — using %s",
                          score, derived, home, away, merged)
             score = merged
+        clock_minute, _ = _minute({"displayValue": clock})
+        if state == "post":
+            clock_minute = 90
+        elif not _CLOCK_RE.search(clock or ""):
+            clock_minute = 45 if clock == "HT" else None
+        rosters = summary.get("rosters") or []
+        player_stats = parse_rosters(rosters, events, clock_minute) if rosters else {}
+        has_players = bool(player_stats.get("home") or player_stats.get("away"))
         return {
             "espn_id": event.get("id"),
             "events": events,
             "statistics": parse_boxscore(summary.get("boxscore") or {}),
-            "player_stats": {},
-            "fetched": {"events": True, "statistics": True, "player_stats": False},
+            "player_stats": player_stats if has_players else {},
+            "fetched": {"events": True, "statistics": True, "player_stats": has_players},
             "score": score,
             "clock": clock,
             "state": state,

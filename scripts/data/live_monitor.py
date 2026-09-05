@@ -810,6 +810,15 @@ LIVE_STATUSES = ("first_half", "half_time", "second_half")
 FAST_FRESH_S = 60
 
 
+def _stamp_age_s(stamp: str | None) -> float:
+    if not stamp:
+        return float("inf")
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds()
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def _fast_is_fresh(entry: Dict, now: datetime | None = None) -> bool:
     stamp = entry.get("live_fast_at")
     if not stamp:
@@ -842,7 +851,14 @@ def _apply_live_data(mk: str, entry: Dict, live_data: Dict, fast: bool = False) 
     if flags.get("statistics"):
         entry["live_stats"] = live_data.get("statistics", {})
     if flags.get("player_stats"):
-        entry["live_player_stats"] = live_data.get("player_stats", {})
+        # Sofascore's per-player stats are richer (minutes, passes, tackles,
+        # rating); while a Sofascore read is recent the fast ESPN roster does
+        # not replace it. When Sofascore is blocked, ESPN's roster is the data.
+        sofa_fresh = (entry.get("live_player_source") == "sofascore"
+                      and _stamp_age_s(entry.get("sofascore_fetched_at")) < 180)
+        if not (fast and source == "espn" and sofa_fresh):
+            entry["live_player_stats"] = live_data.get("player_stats", {})
+            entry["live_player_source"] = source
     if live_data.get("sofascore_id"):
         entry["sofascore_id"] = live_data["sofascore_id"]
     if fast:

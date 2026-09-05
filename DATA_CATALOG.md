@@ -5864,8 +5864,12 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 - **Schema:** dict with 5 keys: `['date', 'polls', 'api_calls', 'matches', 'bet_tracking']`
 - **Per-match live enrichment keys (2026-09-05):** `live_events` (newest first), `live_stats`
   (`{key: {home, away}}`), `live_player_stats`, `sofascore_id`, `sofascore_fetched_at`, plus
-  `live_source` (`sofascore` | `espn` — which feed answered the last cycle; ESPN never fills
-  `live_player_stats`) and `live_fetch_error` (present only when NO source answered; the
+  `live_source` (`sofascore` | `espn` — which feed answered the last cycle) and
+  `live_player_source` (which feed wrote `live_player_stats`: ESPN's roster gives shots,
+  on target, goals, assists, fouls committed/drawn, offsides, cards, saves, goals conceded,
+  own goals and a `minutes_played` DERIVED from the substitution events — no passes,
+  tackles, duels or rating; a Sofascore read <180s old is not replaced by the fast tick)
+  and `live_fetch_error` (present only when NO source answered; the
   previous cycle's events/stats are kept, never blanked). Writer:
   `scripts/data/live_monitor.poll_once` via `live_sofascore.fetch_live_data_for_matches`
   (Sofascore first, `live_espn` fallback, 10-min 403 breaker). A field is overwritten only

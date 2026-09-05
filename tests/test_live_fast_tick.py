@@ -156,3 +156,26 @@ def test_goal_ping_mode_reads_state_and_defaults_to_all(monkeypatch):
     assert lm._goal_ping_mode() == "all"
     monkeypatch.setattr(ps, "load_state", lambda: {})
     assert lm._goal_ping_mode() == "all"
+
+
+def test_fast_espn_roster_fills_player_stats_when_sofascore_is_absent(monkeypatch):
+    monkeypatch.setattr(lm, "_send_live_event_notifications", lambda *a, **k: None)
+    entry = {"status": "first_half"}
+    data = _espn()
+    data["player_stats"] = {"home": [{"name": "A", "shots": 2}], "away": []}
+    data["fetched"]["player_stats"] = True
+    lm._apply_live_data("m", entry, data, fast=True)
+    assert entry["live_player_stats"]["home"][0]["shots"] == 2 and entry["live_player_source"] == "espn"
+
+
+def test_fresh_sofascore_player_stats_are_not_replaced_by_the_fast_roster(monkeypatch):
+    monkeypatch.setattr(lm, "_send_live_event_notifications", lambda *a, **k: None)
+    entry = {"status": "first_half"}
+    sofa = _sofa()
+    sofa["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    lm._apply_live_data("m", entry, sofa)
+    data = _espn()
+    data["player_stats"] = {"home": [{"name": "A", "shots": 2}], "away": []}
+    data["fetched"]["player_stats"] = True
+    lm._apply_live_data("m", entry, data, fast=True)
+    assert entry["live_player_stats"] == {"home": [{"name": "X"}]} and entry["live_player_source"] == "sofascore"

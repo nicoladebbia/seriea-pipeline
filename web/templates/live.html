@@ -120,6 +120,13 @@
   .live-event__icon { font-size: 16px; min-width: 24px; text-align: center; }
   .live-event__text { flex: 1; }
 
+  /* Players (fast ESPN roster) */
+  .live-players { margin-top: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); }
+  .live-player { display: flex; justify-content: space-between; gap: var(--space-3); padding: 3px 0; font-size: 12px; border-bottom: 1px solid var(--border-subtle); }
+  .live-player:last-child { border-bottom: none; }
+  .live-player__name { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .live-player__bits { white-space: nowrap; font-size: 11px; }
+
   /* Bet tracker */
   .live-bets {
     margin-top: var(--space-4); border-top: 1px solid var(--border-subtle);
@@ -326,6 +333,35 @@ function lpRenderEvent(ev) {
   </div>`;
 }
 
+// Per-player live lines: who has done something (goal, assist, shot, card,
+// save) — sorted by involvement, starters and subs alike. Full roster is on
+// the match detail page; the card is for the glance.
+function lpRenderPlayers(ps, home, away) {
+  if (!ps || (!(ps.home || []).length && !(ps.away || []).length)) return '';
+  const line = p => {
+    const bits = [];
+    if (p.goals) bits.push(`⚽×${p.goals}`.replace('×1', ''));
+    if (p.assists) bits.push(`🅰${p.assists > 1 ? '×' + p.assists : ''}`);
+    if (p.shots) bits.push(`${p.shots} sh${p.shots_on_target ? ` (${p.shots_on_target} on)` : ''}`);
+    if (p.saves) bits.push(`${p.saves} sv`);
+    if (p.fouls_committed) bits.push(`${p.fouls_committed} fl`);
+    if (p.yellow_cards) bits.push('🟨');
+    if (p.red_cards) bits.push('🟥');
+    return bits;
+  };
+  const weight = p => (p.goals || 0) * 10 + (p.assists || 0) * 5 + (p.shots || 0) + (p.saves || 0) + (p.fouls_committed || 0) * 0.5 + (p.yellow_cards || 0) + (p.red_cards || 0) * 3;
+  const side = (list, team) => {
+    const rows = (list || []).filter(p => weight(p) > 0).sort((a, b) => weight(b) - weight(a)).slice(0, 8);
+    if (!rows.length) return '';
+    return `<div><div class="text-small text-tertiary mb-2" style="font-weight:600">${team}</div>` + rows.map(p =>
+      `<div class="live-player"><span class="live-player__name">${p.short_name || p.name}${p.substitute ? ' <span class="text-tertiary" style="font-size:10px">sub</span>' : ''}${p.minutes_played != null ? ` <span class="text-tertiary" style="font-size:10px">${p.minutes_played}'</span>` : ''}</span><span class="live-player__bits text-tertiary">${line(p).join(' · ')}</span></div>`
+    ).join('') + '</div>';
+  };
+  const h = side(ps.home, home), a = side(ps.away, away);
+  if (!h && !a) return '';
+  return `<div class="live-players"><div class="text-label mb-3">Players <span class="text-tertiary" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0">via ESPN · involved only</span></div><div class="live-detail-grid">${h || '<div></div>'}${a || '<div></div>'}</div></div>`;
+}
+
 function lpRenderOddCell(label, cur, pre) {
   let shift = '';
   if (pre && cur) {
@@ -461,6 +497,7 @@ function lpRenderMatch(mk, md, bets) {
           <div class="live-events">${eventsHtml}</div>
         </div>
       </div>
+      ${md.live_player_source === 'espn' ? lpRenderPlayers(md.live_player_stats, md.home_team || mk.split(' vs ')[0], md.away_team || mk.split(' vs ')[1]) : ''}
       ${betsHtml}
     </div>
   </div>`;

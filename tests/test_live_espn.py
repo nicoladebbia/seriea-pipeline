@@ -191,3 +191,48 @@ def test_score_never_trails_the_goal_events(monkeypatch, board):
     monkeypatch.setattr(live_espn, "_get_json", lambda url: summary if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
     assert out["score"] == [2, 1] and out["state"] == "in"
+
+
+# ---------------------------------------------------------------- per-player (rosters)
+
+@pytest.fixture
+def roma():
+    return _load("summary_401874781.json")
+
+
+def test_rosters_give_both_sides_with_sofascore_key_names(roma):
+    ps = live_espn.parse_rosters(roma["rosters"], parse_key_events(roma["keyEvents"], "104"), 90)
+    assert len(ps["home"]) == 23 and len(ps["away"]) == 23
+    svilar = next(p for p in ps["home"] if p["name"] == "Mile Svilar")
+    assert svilar["position"] == "G" and svilar["substitute"] is False and svilar["saves"] == 1
+    assert svilar["goals_conceded"] == 1 and "passes" not in svilar  # absent stats stay absent
+    castro = next(p for p in ps["home"] if p["name"] == "Santiago Castro")
+    assert castro["substitute"] is True and castro["subbed_in"] is True and castro["shots"] == 4
+
+
+def test_minutes_are_derived_from_substitutions_and_the_clock(roma):
+    home_id = next(c["team"]["id"] for c in roma["header"]["competitions"][0]["competitors"] if c["homeAway"] == "home")
+    events = parse_key_events(roma["keyEvents"], home_id)
+    ps = live_espn.parse_rosters(roma["rosters"], events, 90)
+    by = {live_espn._fold(p["name"]): p for side in ps.values() for p in side}
+    assert by["mile svilar"]["minutes_played"] == 90                  # starter, never subbed
+    assert by["evan ndicka"]["minutes_played"] == 67                  # off at 67'
+    assert by["leonardo balerdi"]["minutes_played"] == 90 - 67        # on at 67'
+    assert by["rodrigo mora"]["minutes_played"] == 54                 # off at 54' (Soulé on)
+    assert by["matias soule"]["minutes_played"] == 90 - 54
+    unused = [p for p in ps["home"] if p["substitute"] and not p["subbed_in"]]
+    assert unused and all(p["minutes_played"] == 0 for p in unused)
+
+
+def test_accent_variants_between_roster_and_events_still_join():
+    # roster "Matìas Soulè" / events "Matias Soulè" (real ESPN inconsistency, 2026-09-05)
+    player = {"name": "Matìas Soulè", "substitute": True, "subbed_in": True, "subbed_out": False}
+    events = [{"type": "substitution", "minute": 54, "player_in": "Matias Soulè", "player_out": "Rodrigo Mora"}]
+    assert live_espn._minutes_played(player, events, 80) == 26
+
+
+def test_fetch_carries_player_stats_and_flags_them(monkeypatch, board, roma):
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_get_json", lambda url: roma if "summary" in url else None)
+    out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
+    assert out["fetched"]["player_stats"] is True and len(out["player_stats"]["away"]) == 23
