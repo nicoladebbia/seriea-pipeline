@@ -542,9 +542,17 @@ def get_metrics(
     # --- CLV (per-bet values only) -------------------------------------------
     clv_rows = [b for b in settled if b.get("clv_pct") is not None]
     clv_vals = [float(b["clv_pct"]) for b in clv_rows]
+    # SE of the mean CLV in pp (sample sd / sqrt(n)) — CLV converges far faster than ROI
+    # (bet-level sd ~5-8pp vs ~100pp for profit), which is why it is the edge signal.
+    clv_se = None
+    if len(clv_vals) >= 2:
+        _mu = sum(clv_vals) / len(clv_vals)
+        _sd = (sum((v - _mu) ** 2 for v in clv_vals) / (len(clv_vals) - 1)) ** 0.5
+        clv_se = round(_sd / len(clv_vals) ** 0.5, 2)
     clv = {
         "n": len(clv_vals),
         "avg_pct": round(sum(clv_vals) / len(clv_vals), 2) if clv_vals else None,
+        "se_pp": clv_se,
         "positive_rate": round(sum(1 for v in clv_vals if v > 0) / len(clv_vals) * 100, 2) if clv_vals else None,
         "by_market": {},
     }

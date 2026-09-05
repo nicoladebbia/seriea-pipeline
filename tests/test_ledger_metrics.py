@@ -171,6 +171,10 @@ def test_clv_from_per_bet_values_only(no_external_alerts):
     rows = [_bet(1, "won", odds=2.0, clv=4.0), _bet(2, "lost", clv=-2.0), _bet(3, "lost")]
     m = L.get_metrics(journal=_journal(rows), now=NOW)
     assert m["clv"]["n"] == 2 and m["clv"]["avg_pct"] == 1.0 and m["clv"]["positive_rate"] == 50.0
+    # +4 / -2: sample sd 4.243, SE = sd / sqrt(2) = 3.0pp — the width the card must show
+    assert m["clv"]["se_pp"] == 3.0
+    m1 = L.get_metrics(journal=_journal([_bet(1, "won", odds=2.0, clv=4.0)]), now=NOW)
+    assert m1["clv"]["se_pp"] is None  # one value has no spread
 
 
 def test_fill_tier_recomputes_at_filled_odds(no_external_alerts):
