@@ -436,28 +436,24 @@ Organised by *symptom-first* so you can grep for what you're seeing:
     nothing: the football-data.org backup needs `FOOTBALLDATA_KEY` (unset) and logs nothing
     when it is missing, so `Lineup NOT confirmed` is the only trace. Player rows are priced off
     the PREDICTED XI in that state and the /picks card marks them `XI prob.`.
+    **Same shape hit the live monitor mid-match (all three of `/incidents`, `/statistics`,
+    `/lineups`), from a HOME IP.** Cookies from a prior www page visit, Referer/Origin headers
+    and every impersonation profile still 403; rapid retries add `curl (7)` refusals. No
+    request-level trick found. **Live stats/events therefore come from ESPN**
+    (`scripts/data/live_espn.py`, unauthenticated `site.api.espn.com` scoreboard + summary,
+    specimen-verified on the live match: possession, shots, SoT, blocked, corners, fouls,
+    saves, tackles, clearances, cards + goals/cards/subs; NO per-player stats).
+    `live_sofascore.fetch_live_data_for_matches` trips a 10-min breaker after a cycle where
+    every Sofascore endpoint 403'd (one blocked cycle burns ~2 min of backoff, longer than
+    the poll interval) and goes straight to ESPN; a match no source answered is OMITTED
+    (last good data kept) and stamped `live_fetch_error`; `live_source` names the feed and
+    the /live card shows it.
 - **Throttling ≠ ban.** Rapid successive requests return `CurlError (7) Failed to connect
   ... port 443` — a *connection* error, not a 403. Back off ~20s; it recovers. Don't read it
   as the ban returning.
 - **What you'll see** (a real ban): `api.sofascore.com/api/v1/...` returns 403 across all curl-cffi profiles, all domain variants, all timing.
 - **Why**: Cloudflare IP-fingerprint ban, often after heavy scraping. Lasts hours to days.
 - **Fix**: `www.sofascore.com/tournament/...` HTML pages return 200. Parse the embedded `<script id="__NEXT_DATA__">...</script>` JSON blob. Standings + match incidents + venue + referee + stoppage time + attendance live directly under `props.pageProps` (since ~2026-06; previously nested in `props.pageProps.initialProps` — the web/app.py parsers support both paths).
-- **THIRD 403 variant — API-tier "challenge" (measured 2026-09-05, mid-match, home IP)**:
-  `api.sofascore.com` AND the same-origin `www.sofascore.com/api/v1/...` answer
-  `403 {"error": {"code": 403, "reason": "challenge"}}` with `server: Varnish` on EVERY
-  endpoint, while `www` HTML pages and `/robots.txt` are 200 — so it is neither the blanket
-  IP deny (robots 403) nor the Cloudflare fingerprint ban (server: cloudflare). Session
-  cookies from a prior www page visit, Referer/Origin headers and every impersonation
-  profile all still 403; rapid retries add `curl (7)` connection refusals on top. No
-  request-level trick found. **Live stats/events therefore come from ESPN**
-  (`scripts/data/live_espn.py`, unauthenticated `site.api.espn.com` scoreboard + summary,
-  specimen-verified on the live match: possession, shots, SoT, blocked, corners, fouls,
-  saves, tackles, clearances, cards + goals/cards/subs as `keyEvents`; NO per-player
-  stats). `live_sofascore.fetch_live_data_for_matches` trips a 10-min breaker after a
-  cycle where every Sofascore endpoint 403'd (one blocked cycle burns ~2 min of backoff,
-  longer than the poll interval) and goes straight to ESPN until it expires; a match that
-  no source answered is OMITTED from the result (last good data kept) and stamped
-  `live_fetch_error`; the served source is stamped `live_source` and shown on the card.
 - **Match pages DO now carry incidents (re-measured 2026-09-05)**: `__NEXT_DATA__` on
   `/football/match/<slug>/<customId>` holds an `incidents` array (goals/cards/subs/periods
   with `homeScore`/`awayScore`) — the 2026-06-11 "i18n strings only" finding is stale for
