@@ -181,3 +181,16 @@ def test_fresh_sofascore_player_stats_are_not_replaced_by_the_fast_roster(monkey
     data["fetched"]["player_stats"] = True
     lm._apply_live_data("m", entry, data, fast=True)
     assert entry["live_player_stats"] == {"home": [{"name": "X"}]} and entry["live_player_source"] == "sofascore"
+
+
+def test_snapshot_takes_the_espn_clock_and_score_while_fresh():
+    now = datetime.now(timezone.utc)
+    e = {"live_fast_at": now.isoformat(), "live_clock": "63'", "live_score": [1, 2]}
+    assert lm.fast_state_for_snapshot(e, now) == {"minute": 63, "added_time": 0, "clock": "63'", "score": [1, 2]}
+    e["live_clock"] = "90'+4'"
+    assert lm.fast_state_for_snapshot(e, now)["minute"] == 90 and lm.fast_state_for_snapshot(e, now)["added_time"] == 4
+    e["live_clock"] = "HT"
+    assert lm.fast_state_for_snapshot(e, now)["minute"] == 45
+    stale = {**e, "live_fast_at": (now - timedelta(seconds=lm.FAST_STATE_FRESH_S + 1)).isoformat()}
+    assert lm.fast_state_for_snapshot(stale, now) is None
+    assert lm.fast_state_for_snapshot({"live_clock": "63'"}, now) is None

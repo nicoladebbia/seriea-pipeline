@@ -993,6 +993,42 @@ def backfill_completed_players(matchday: Dict) -> int:
     return filled
 
 
+_CLOCK_RE = re.compile(r"(\d+)'(?:\+(\d+)')?")
+FAST_STATE_FRESH_S = 90
+
+
+def fast_state_for_snapshot(entry: Dict, now: datetime | None = None) -> Optional[Dict]:
+    """The ESPN clock + score for a snapshot, when the fast tick read them
+    within FAST_STATE_FRESH_S. The Odds API path estimates the minute from
+    wall-clock time since the listed kickoff (fixed 15-min interval, no
+    delays, no stoppage) and its score lags the pitch by minutes; a fair
+    price computed on that state is a fair price for the wrong state — the
+    in-play backtest's after-85' bucket is the bill. None when not fresh."""
+    stamp = entry.get("live_fast_at")
+    clock = entry.get("live_clock")
+    if not stamp or not clock:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        age = (now - datetime.fromisoformat(stamp)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    if age > FAST_STATE_FRESH_S:
+        return None
+    if clock == "HT":
+        minute, added = 45, 0
+    else:
+        m = _CLOCK_RE.search(str(clock))
+        if not m:
+            return None
+        minute, added = int(m.group(1)), int(m.group(2) or 0)
+    out = {"minute": min(minute, 90), "added_time": added, "clock": clock}
+    score = entry.get("live_score")
+    if isinstance(score, list) and len(score) == 2:
+        out["score"] = [int(score[0]), int(score[1])]
+    return out
+
+
 def _status_after_poll(prev_status: str, polled_status: str) -> str:
     """The Odds API cannot un-finish a match the live feed already finished."""
     if prev_status == "completed" and polled_status != "completed":
@@ -1285,6 +1321,16 @@ def poll_once() -> Dict:
             status = classify_match_status(commence, completed, raw_scores)
             minute = estimate_match_minute(commence)
 
+        # The fast ESPN tick owns the clock and the score while it is fresh.
+        fast_state = None
+        if status in LIVE_STATUSES:
+            fast_state = fast_state_for_snapshot(matchday["matches"].get(mk) or {}, now)
+        if fast_state:
+            minute = fast_state["minute"]
+            if fast_state.get("score"):
+                home_score, away_score = fast_state["score"]
+            score_source = "espn_fast"
+
         # Cross-check: if both sources have data, log discrepancies
         if score_source == "odds_api" and fd_scores:
             fd_match = fd_scores.get(mk)
@@ -1314,6 +1360,7 @@ def poll_once() -> Dict:
             "score": [home_score, away_score],
             "status": status,
             "score_source": score_source,
+            **({"clock": fast_state["clock"], "added_time": fast_state["added_time"]} if fast_state else {}),
             "avg_odds": match_odds.get("avg", {}),
             "sharp": match_odds.get("sharp", {}),
             "bookmaker_count": match_odds.get("bookmaker_count", 0),

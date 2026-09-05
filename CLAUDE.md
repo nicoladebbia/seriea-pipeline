@@ -156,6 +156,18 @@ snapshot — the price a human could actually have taken.
   the same engine on our archived pre-kickoff xG instead of the market split — and on the
   first run it was WORSE than the market baseline on every number; the market baseline
   stays primary until that flips.
+- **The gate number carries a confidence interval — read it before arguing with the point
+  estimate.** `skill_ci95_by_match_bootstrap` (matches are the clusters; snapshots of one
+  match are not independent) spanned roughly −0.05..+0.07 on the first 64 matches: the
+  sample cannot tell the simulator from the market in either direction. More matchdays,
+  not more modelling, is what narrows it. `skill_pickable_window_le85` is the same number
+  on the minutes the engine can act in (the after-85' bucket is where the old wall-clock
+  minute was most wrong); the gate stays on the full window.
+- **Snapshots carry the ESPN clock and score while the fast tick is fresh** (`score_source:
+  espn_fast`, `clock`, `added_time`; `live_monitor.fast_state_for_snapshot`). Before this the
+  minute was wall-clock time since the listed kickoff with a fixed 15-min interval, and the
+  score lagged the pitch by minutes — a fair price for the wrong state. Stored snapshots
+  from before 2026-09-05 still have the estimated minute; the backtest inherits that noise.
 - **Red cards ARE modelled, from a measurement, not a guess.** `goal_process
   --measure-red` writes `red_mult` into `profile.json`: goals after the FIRST red of a match
   over what the league's per-side per-bin rate expected in the remaining bins (Serie A

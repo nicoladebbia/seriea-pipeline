@@ -5874,7 +5874,9 @@ These dirs contain many files (often one per match, day, or experiment). Summari
   so no goal ping re-fires), `pre_match_odds` (odds_full row by NORMALISED key, else the
   last `data/odds_snapshots/odds_*.json` line before kickoff, `source: closing_snapshot`
   — the raw-key lookup never matched before 2026-09-05, so this was {} on every match),
-  `inplay_baseline` (simulator inputs implied by the pre-match market), `inplay_picks`
+  snapshot `score_source: espn_fast` + `clock` + `added_time` when the fast tick was fresh at
+  poll time (else the wall-clock estimate, `odds_api`), `inplay_baseline` (simulator inputs
+  implied by the pre-match market), `inplay_picks`
   (paper picks after a score change, status + closing price), and on every priced live
   snapshot `fair` / `fair_totals` / `best_edge` (written by `scripts/betting/inplay.py`;
   paper journal `data/betting/inplay_journal.json`, verdict `data/models/inplay/backtest.json`

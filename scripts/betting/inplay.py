@@ -206,7 +206,8 @@ def fair_for_snapshot(base: dict, snap: dict, prof: dict | None = None, n: int =
     """Fair probabilities for the state the snapshot describes (score, minute, red cards)."""
     minute = int(snap.get("min") or 0)
     score = tuple(int(x) for x in (snap.get("score") or [0, 0]))
-    paths = gp.simulate_from_state(base["xg_h"], base["xg_a"], minute, score, prof, k=base["k"], n=n, seed=seed, red=red)
+    paths = gp.simulate_from_state(base["xg_h"], base["xg_a"], minute, score, prof, k=base["k"], n=n, seed=seed, red=red,
+                                   added_time=int(snap.get("added_time") or 0))
     pr = gp.market_probs(paths)
     total = paths["home_final"] + paths["away_final"]
     totals = {}
@@ -450,6 +451,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
     prof = gp.load_profile()
     files = files or sorted(glob.glob(str(DATA_DIR / "live" / "*.json")))
     brier: dict = {"fair": [], "market": []}
+    by_match: dict = {}      # match -> (sum fair brier, sum market brier) for the cluster bootstrap
     by_min: dict = {}
     picks: dict = {"state_change": [], "any_snapshot": []}
     n_matches = n_snaps = n_no_baseline = 0
@@ -491,6 +493,9 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                     bm = sum((mkt[k] - (1.0 if k == outcome else 0.0)) ** 2 for k in mkt)
                     brier["fair"].append(bf)
                     brier["market"].append(bm)
+                    agg = by_match.setdefault(f"{path}:{mk}", [0.0, 0.0])
+                    agg[0] += bf
+                    agg[1] += bm
                     b = by_min.setdefault(_bucket(minute), {"fair": [], "market": []})
                     b["fair"].append(bf)
                     b["market"].append(bm)
@@ -509,10 +514,25 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                                         "over_cap": pick["over_cap"], "status": _grade(pick, final)})
                 prev = snap
 
+    # Cluster bootstrap by match: snapshots of one match are not independent.
+    ci = None
+    if len(by_match) >= 10:
+        rng = np.random.default_rng(0)
+        pairs = np.array(list(by_match.values()))
+        draws = []
+        for _ in range(2000):
+            idx = rng.integers(0, len(pairs), len(pairs))
+            f, m = pairs[idx, 0].sum(), pairs[idx, 1].sum()
+            draws.append(1 - f / m if m > 0 else 0.0)
+        ci = [round(float(np.percentile(draws, 2.5)), 4), round(float(np.percentile(draws, 97.5)), 4)]
+    pick_f = [x for k, v in by_min.items() if k != "86+" for x in v["fair"]]
+    pick_m = [x for k, v in by_min.items() if k != "86+" for x in v["market"]]
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "files": len(files), "matches": n_matches, "matches_without_baseline": n_no_baseline, "priced_snapshots": n_snaps,
         "skill_vs_inplay_market_1x2": _skill(brier["fair"], brier["market"]),
+        "skill_ci95_by_match_bootstrap": ci,
+        "skill_pickable_window_le85": _skill(pick_f, pick_m),
         "brier": {"fair": round(float(np.mean(brier["fair"])), 4) if brier["fair"] else None,
                   "market": round(float(np.mean(brier["market"])), 4) if brier["market"] else None},
         "skill_by_minute": {k: _skill(v["fair"], v["market"]) for k, v in sorted(by_min.items())},
