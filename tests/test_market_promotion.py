@@ -1,0 +1,182 @@
+"""Market promotion gate: a paper market earns real stakes by its settled record.
+
+Every test redirects BOTH journals and the state file to tmp_path: the
+2026-07-13 ledger drift was a test writing its fixture into the real
+bankroll, and this gate writes into the real journal on purpose.
+"""
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from scripts.betting import bet_journal as BJ
+from scripts.betting import market_promotion as MP
+from scripts.betting import picks as P
+
+
+@pytest.fixture(autouse=True)
+def _isolated_journals(tmp_path, monkeypatch):
+    monkeypatch.setattr(BJ, "JOURNAL_PATH", tmp_path / "bet_journal.json")
+    monkeypatch.setattr(BJ, "_JOURNAL_LOCK_PATH", tmp_path / ".journal.lock")
+    monkeypatch.setattr(P, "PICKS_JOURNAL_PATH", tmp_path / "picks_journal.json")
+    monkeypatch.setattr(MP, "STATE_PATH", tmp_path / "market_promotion.json")
+    monkeypatch.setattr(P, "GOAL_TIMELINE", tmp_path / "missing.parquet")
+    monkeypatch.setattr(P, "PMS_PATH", tmp_path / "missing_pms.parquet")
+    monkeypatch.setattr(P, "closing_price_for", lambda bet: None)
+
+
+def _settled(market, n_won, n_lost, odds=2.0, stake=10.0, placed="2026-09-06T17:00:00+00:00", clv=None, status_extra=None):
+    out = []
+    for i in range(n_won + n_lost):
+        won = i < n_won
+        out.append({"market": market, "status": "won" if won else "lost", "stake": stake, "odds": odds,
+                    "profit": round(stake * (odds - 1), 2) if won else -stake, "placed_at": placed,
+                    "clv_pct": clv})
+    for st in (status_extra or []):
+        out.append({"market": market, "status": st, "stake": stake, "odds": odds, "profit": 0.0, "placed_at": placed})
+    return out
+
+
+# ---- records and the bar ------------------------------------------------------
+def test_market_record_excludes_voids_and_measures_z():
+    bets = _settled("player_shots", 35, 25, odds=2.0, status_extra=["voided", "void"])
+    rec = MP.market_record(bets)["player_shots"]
+    assert rec["n"] == 60 and rec["won"] == 35
+    assert rec["roi_pct"] == pytest.approx((35 * 10 - 25 * 10) / 600 * 100, abs=0.1)   # +16.7%
+    assert rec["z"] > 1.0
+    assert rec["mean_clv_pct"] is None and rec["n_clv"] == 0
+    # a demoted market's fresh record starts at record_from
+    assert "player_shots" not in MP.market_record(bets, since="2026-09-07T00:00:00+00:00")
+
+
+def test_bar_names_the_first_unmet_condition():
+    ok, why = MP.passes_bar(MP.market_record(_settled("m", 20, 10))["m"])
+    assert not ok and why == "30/50 settled"
+    ok, why = MP.passes_bar(MP.market_record(_settled("m", 25, 25))["m"])          # ROI 0 at evens
+    assert not ok and why.startswith("ROI +0.0%")
+    ok, why = MP.passes_bar(MP.market_record(_settled("m", 26, 24))["m"])          # +4% on 50, z ~0.3
+    assert not ok and why.startswith("z ")
+    ok, why = MP.passes_bar(MP.market_record(_settled("m", 35, 25))["m"])
+    assert ok and why == "bar cleared"
+    # CLV is required only once 20 real closing prices exist, and then must be > 0
+    rec = MP.market_record(_settled("m", 35, 25, clv=-1.0))["m"]
+    ok, why = MP.passes_bar(rec)
+    assert not ok and why.startswith("CLV -1.00% on 60")
+    rec = MP.market_record(_settled("m", 35, 25, clv=+0.8))["m"]
+    assert MP.passes_bar(rec)[0]
+
+
+def test_evaluate_promotes_then_demotes_on_the_real_record_and_restarts_the_paper_count(tmp_path):
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+    paper = _settled("player_shots_on_target", 35, 25) + _settled("btts_h1", 10, 10)
+    st = MP.evaluate_promotions(paper, [], now=now)
+    assert st["markets"]["player_shots_on_target"]["status"] == "promoted"
+    assert st["markets"]["player_shots_on_target"]["snapshot"]["n"] == 60
+    assert st["markets"]["btts_h1"]["status"] == "paper"
+    assert st["markets"]["btts_h1"]["distance"] == "20/50 settled"
+    assert MP.is_promoted("player_shots_on_target") and not MP.is_promoted("btts_h1")
+    assert (tmp_path / "market_promotion.json").exists()
+    # 30 real bets at -33% -> back to paper, and the paper count restarts from now
+    real = [dict(b, pipeline_status=MP.PIPELINE_STATUS) for b in _settled("player_shots_on_target", 10, 20, stake=15.0)]
+    later = now + timedelta(days=30)
+    st = MP.evaluate_promotions(paper, real, now=later)
+    row = st["markets"]["player_shots_on_target"]
+    assert row["status"] == "paper" and row["reason"].startswith("demoted: real ROI -33.3%")
+    assert row["record_from"] == later.isoformat()
+    assert row["paper"]["n"] == 0 and row["distance"] == "0/50 settled"   # the old 60 no longer count
+    assert not MP.is_promoted("player_shots_on_target")
+    # idempotent: a re-run with nothing new changes nothing
+    again = MP.evaluate_promotions(paper, real, now=later + timedelta(hours=1))
+    assert again["markets"]["player_shots_on_target"]["status"] == "paper"
+    assert again["markets"]["player_shots_on_target"]["record_from"] == later.isoformat()
+
+
+# ---- real stake ---------------------------------------------------------------
+def test_promoted_stake_is_half_the_ou_kelly_and_capped():
+    # p 0.60 @ 2.02: full Kelly 20.8%; x0.15 x0.5 = 1.56% -> capped at 1.5% of 1000
+    assert MP.promoted_stake(0.60, 2.02, 1000.0, kelly_fraction=0.15) == 15.0
+    # p 0.55 @ 1.90: full Kelly 5%; x0.075 = 0.375% -> EUR 3.75
+    assert MP.promoted_stake(0.55, 1.90, 1000.0, kelly_fraction=0.15) == 3.75
+    # below the 0.2% floor -> nothing
+    assert MP.promoted_stake(0.51, 1.95, 1000.0, kelly_fraction=0.15) == 0.0
+    assert MP.promoted_stake(0.60, 2.02, 0.0, kelly_fraction=0.15) == 0.0
+
+
+def test_promoted_pick_is_mirrored_into_the_real_journal_and_settled_with_it(monkeypatch):
+    monkeypatch.setattr("scripts.betting.bankroll_loader.get_effective_bankroll", lambda: 1000.0)
+    now = datetime(2026, 10, 25, 17, 0, tzinfo=UTC)
+    lean = {"market_key": "player_shots_on_target", "bet_type": "Tiri in porta", "selection": "Over 1.5",
+            "player": "Nico Gonzalez", "team": "Juventus", "probability_pct": 60.0, "implied_pct": 49.5,
+            "edge_pct": 8.0, "odds": 2.02, "book": "1xBet", "tier": "A", "source": "player_floors"}
+    # (the journal refuses edge_pct > 12: a real LEAN above the cap is flagged and sinks anyway)
+    pid = P.journal_lean("Juventus vs Milan", "2026-10-25", lean, "serie_a", placed_at=now)
+    # not promoted -> no mirror
+    assert P._mirror_if_promoted(pid, {"markets": {}}) is None
+    assert BJ.get_pending_bets() == []
+    state = {"markets": {"player_shots_on_target": {"status": "promoted"}}}
+    rid = P._mirror_if_promoted(pid, state)
+    (real,) = BJ.get_pending_bets()
+    assert real["bet_id"] == rid and real["stake"] == 15.0 and real["pipeline_status"] == MP.PIPELINE_STATUS
+    assert real["extra"]["picks_ref"] == pid and real["extra"]["player"] == "Nico Gonzalez"
+    assert real["selection"] == "Nico Gonzalez Over 1.5" and real["odds"] == 2.02
+    # a second mirror of the same pick is refused by the journal's own dedup
+    assert P._mirror_if_promoted(pid, state) in (None, rid)
+    assert len(BJ.get_pending_bets()) == 1
+    # the pick settles won -> the real entry settles won on ITS stake
+    assert MP.settle_linked(pid, "won", result_score="2-1", closing_odds=1.95) == 1
+    (settled,) = BJ.get_settled_bets()
+    assert settled["status"] == "won" and settled["profit"] == round(15.0 * 1.02, 2)
+    assert settled["closing_odds"] == 1.95 and settled["clv_pct"] == round((1 / 1.95 - 1 / 2.02) * 100, 2)
+    # the paper CLV is no longer a fake 0.0: no closing price -> no claim
+    from scripts.betting.bet_journal import _load_journal
+    paper = _load_journal(P.PICKS_JOURNAL_PATH)["bets"][pid]
+    assert paper["sharp_implied_prob"] is None
+
+
+def test_settle_picks_settles_the_linked_real_bet_and_re_evaluates(monkeypatch):
+    monkeypatch.setattr("scripts.betting.bankroll_loader.get_effective_bankroll", lambda: 1000.0)
+    now = datetime(2026, 10, 25, 17, 0, tzinfo=UTC)
+    lean = {"market_key": "h2h", "bet_type": "1x2 finale", "selection": "1", "probability_pct": 60.0,
+            "implied_pct": 50.0, "edge_pct": 9.0, "odds": 2.0, "book": "best of market", "tier": "A"}
+    pid = P.journal_lean("Juventus vs Milan", "2026-10-25", lean, "serie_a", placed_at=now)
+    assert P._mirror_if_promoted(pid, {"markets": {"h2h": {"status": "promoted"}}})
+    calls = []
+    monkeypatch.setattr(MP, "evaluate_promotions", lambda *a, **k: calls.append(1))
+    summary = P.settle_picks({"Juventus vs Milan": {"home_score": 0, "away_score": 1, "status": "finished",
+                                                    "commence_time": "2026-10-25T18:45:00Z"}})
+    assert summary["settled"] == 1 and summary["real_settled"] == 1 and calls == [1]
+    (real,) = BJ.get_settled_bets()
+    assert real["status"] == "lost" and real["profit"] == -real["stake"]
+
+
+def test_full_time_settler_never_grades_a_promoted_pick(monkeypatch):
+    """results_fetcher defaults an unknown market to 'lost': a promoted prop
+    in the real journal must be invisible to it."""
+    from scripts.data import results_fetcher as RF
+    prop = {"bet_id": "x", "match": "Juventus vs Milan", "date": "2026-10-25", "market": "player_shots_on_target",
+            "selection": "Nico Gonzalez Over 1.5", "odds": 2.02, "stake": 15.0, "status": "pending",
+            "extra": {"picks_ref": "p1"}}
+    monkeypatch.setattr(BJ, "get_pending_bets", lambda *a, **k: [prop])
+    settled = []
+    monkeypatch.setattr(BJ, "settle_bet", lambda *a, **k: settled.append(a) or True)
+    out = RF._settle_bets_locked({"Juventus vs Milan": {"home_score": 2, "away_score": 1, "status": "finished"}})
+    assert settled == [] and out.get("settled", 0) == 0
+
+
+# ---- card ----------------------------------------------------------------------
+def test_record_card_reads_in_italian_promoted_first():
+    assert "Nessuna scelta ancora liquidata" in MP.record_card({"markets": {}})
+    st = {"markets": {
+        "btts_h1": {"status": "paper", "paper": {"n": 12, "roi_pct": 4.0, "mean_clv_pct": None}, "distance": "12/50 settled"},
+        "player_shots_on_target": {"status": "promoted", "paper": {"n": 60, "roi_pct": 16.7, "mean_clv_pct": 1.2},
+                                   "real": {"n": 4, "roi_pct": 25.0}},
+    }}
+    card = MP.record_card(st, html=False)
+    lines = card.split("\n")
+    assert lines[1].startswith("💰 Tiri in porta giocatore carta n=60 ROI +17% · CLV +1.2% · vera n=4 ROI +25%")
+    assert lines[2] == "📝 Goal 1° tempo n=12 ROI +4% · 12/50 settled"
+    assert "<b>" not in card and "<b>" in MP.record_card(st, html=True)
+
+
+def test_bot_record_command_renders(monkeypatch):
+    import scripts.pipeline.telegram_bot as tb
+    assert "Record mercati" in tb._handle_record()

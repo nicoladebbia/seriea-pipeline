@@ -483,6 +483,7 @@ _MENU_COMMANDS = [
     {"command": "xi", "description": "⚽ Formazione fantacalcio consigliata"},
     {"command": "sfide", "description": "🆚 Pronostico H2H prossimi avversari"},
     {"command": "picks", "description": "🎯 Miglior angolo per ogni partita"},
+    {"command": "record", "description": "📊 Record mercati: chi ha guadagnato la puntata vera"},
     {"command": "today", "description": "📅 Partite di oggi + previsioni"},
     {"command": "bets", "description": "🎫 Value bet nello slip"},
     {"command": "live", "description": "🔴 Risultati live"},
@@ -2187,6 +2188,17 @@ def _handle_picks(max_matches: int = 20) -> str:
     except Exception:  # noqa: BLE001 - the record is a footer, never a failure
         pass
     return "\n".join(out) + _fanta_age_note(doc.get("generated_at"))
+
+
+def _handle_record() -> str:
+    """/record — per market: paper record, distance to the promotion bar, and
+    the real record once promoted (scripts/betting/market_promotion.py). The
+    state file is rewritten after every settle; here it is only rendered."""
+    try:
+        from scripts.betting.market_promotion import load_state, record_card
+        return record_card(load_state(), html=True)
+    except Exception as e:  # noqa: BLE001
+        return f"Record non disponibile: {e}"
 
 
 def _handle_worldcup() -> str:
@@ -4623,6 +4635,8 @@ def run_bot():
                 elif cmd in ("/picks", "/angoli"):
                     _tg_send_typing(token, chat_id)
                     response_text = _handle_picks()
+                elif cmd in ("/record", "/storico"):
+                    response_text = _handle_record()
                 elif cmd in ("/formazioni", "/avversario"):
                     response_text = _handle_formazioni()
                 elif cmd in ("/wc", "/worldcup"):

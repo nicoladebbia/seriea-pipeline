@@ -277,6 +277,22 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   Serie A match finished > 14h ago has no player stats on disk (the Sofascore API was
   challenged on 2026-09-05 afternoon after working at 08:00; the evening ingest fails
   silently in that state).
+- **Promotion gate (2026-09-05, `scripts/betting/market_promotion.py`) — a paper market earns
+  real stakes by its settled record, never by hand.** Nicola wanted the props (shots, SoT,
+  goalscorer, first-half angles) bet for real; the measured record said props −54% at real money
+  and zero settled paper picks. So the gate decides: ≥ 50 settled paper bets, ROI > 0, z ≥ 1.0,
+  CLV > 0 once ≥ 20 closing prices exist (`PROMOTION_BAR`). A promoted market's LEAN is mirrored
+  into the REAL journal at Kelly × 0.5, cap 1.5% (`journal_promoted`, `pipeline_status:
+  pick:promoted`, `extra.picks_ref`) and settled by `settle_picks` with the paper entry
+  (`settle_linked`) — `results_fetcher.settle_bets` SKIPS `picks_ref` entries because its
+  full-time grader defaults an unknown market to "lost". Demotion: ≥ 30 real bets at ROI < −10%
+  or z < −1 → paper, and the paper count restarts (`record_from`). State:
+  `data/betting/market_promotion.json`, rewritten after every settle; `/record` on Telegram and
+  the Monday 09:00 digest render it. Paper CLV: `journal_lean` no longer writes 1/odds as the
+  sharp prob (every paper CLV was a fake 0.0); the grader passes the feed's last price as
+  `closing_odds` (`closing_price_for`), so CLV exists only where a closing price does.
+  **Do not lower the bar to hit an income target and do not promote a market by editing the
+  state file** — the gate is the product.
 - The pre-kickoff monitor is a long-lived process: **a change to `picks.py` /
   `betting_unified.py` reaches the T-30 run only after `launchctl kickstart -k`**. The first
   T-30 of 2026-09-05 journaled nothing for exactly this reason, not a code defect.

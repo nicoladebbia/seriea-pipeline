@@ -1264,6 +1264,11 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** Imports: config/settings.py; Imported by: auto_settle, benchmark_tracker, betting_unified, clv_capture, clv_tracker, ledger, live_bet_context, parlay_generator, health_check, run_full_pipeline, scheduler, telegram_bot, tests/test_bet_journal, web/{advisor, app}
 - **Quality signals:** 1341 LOC; no external imports needed (self-contained); comprehensive atomic I/O with fcntl locking; model versioning via git SHA snapshots; settlement validation to prevent stale commence_time bug (documented in code); used by 15+ importers; production-grade locking
 
+#### 🟢 `scripts/betting/market_promotion.py` — grade A · keep (added 2026-09-05)
+- **What:** the gate by which a PAPER market (player props, first-half angles, exact score…) earns REAL stakes: `evaluate_promotions()` rewrites `data/betting/market_promotion.json` after every `settle_picks` (bar: ≥50 settled, ROI>0, z≥1, CLV>0 when ≥20 closing prices; demotion at 30 real bets < −10%); `journal_promoted()` mirrors a promoted LEAN into the real `bet_journal` (Kelly×0.5, cap 1.5%, `pipeline_status: pick:promoted`, `extra.picks_ref`); `settle_linked()` settles it with the paper entry; `record_card()` renders `/record` and the Monday digest section.
+- **Talks to:** Imports: bet_journal.py, betting_unified.py (Kelly), bankroll_loader.py, picks.py (journal path); Imported by: picks.py (`_mirror_if_promoted`, `settle_picks`), telegram_bot.py (`/record`), notify.py (digest). `results_fetcher.settle_bets` skips `picks_ref` entries so its full-time grader never sees a prop.
+- **To change the bar:** `PROMOTION_BAR` / `DEMOTION_BAR` here, nowhere else. Never hand-edit the state file.
+
 #### 🟢 `scripts/betting/betting_unified.py` — grade A · keep
 - **Does:** Main unified betting engine: generates bets by blending multiple prediction sources (models, market wisdom), sizes stakes via Kelly fraction, applies bankroll/risk controls, and outputs bet slips.
 - **Talks to:** Imports: config/{leagues, settings}, scripts/betting/{bankroll_loader, bet_journal, clv_tracker, entry_timer, risk_controls}, scripts/pipeline/notify; Imported by: backtest_multimarket, odds_edge_monitor, parlay_generator, run_full_pipeline, tests/test_integration

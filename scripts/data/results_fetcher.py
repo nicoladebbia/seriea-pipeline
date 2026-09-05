@@ -368,6 +368,11 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
         # Map journal bets to the format expected by settlement logic
         bets = []
         for jb in journal_bets:
+            if (jb.get("extra") or {}).get("picks_ref"):
+                # a promoted pick (player prop / first-half market): graded by
+                # picks.settle_picks with the linked paper entry. This grader
+                # defaults an unknown market to "lost" — never let it see one.
+                continue
             bets.append({
                 "match": jb.get("match", ""),
                 "date": jb.get("date", ""),

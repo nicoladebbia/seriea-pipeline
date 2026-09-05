@@ -514,6 +514,11 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
     slip = _read(UPCOMING / "unified_bet_slip.json", {}) or {}
     candidates = _read(UPCOMING / "betting_candidates.json", {}) or {}
     today = now.strftime("%Y-%m-%d")
+    try:
+        from scripts.betting.market_promotion import load_state
+        promo_state = load_state()   # which paper markets have earned real stakes
+    except Exception:  # noqa: BLE001
+        promo_state = {"markets": {}}
 
     picks, n_journaled = [], 0
     for pred in preds:
@@ -548,15 +553,23 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
             # the headline LEAN and the best exotic angle both build a record;
             # add_bet dedups when they are the same bet
             ids = []
+            real_ids = []
             for cand in (lean, (line.get("exotic") or [None])[0]):
                 if cand:
                     bet_id = journal_lean(match_key, pred.get("date") or today, cand, league, placed_at=now)
                     if bet_id and bet_id not in ids:
                         ids.append(bet_id)
+                        # a market that cleared the promotion bar is ALSO a real
+                        # bet, Kelly-sized, linked to this paper entry
+                        real_id = _mirror_if_promoted(bet_id, promo_state)
+                        if real_id:
+                            real_ids.append(real_id)
             if ids:
                 n_journaled += len(ids)
                 line["journaled_bet_id"] = ids[0]
                 line["journaled_bet_ids"] = ids
+            if real_ids:
+                line["real_bet_ids"] = real_ids
         picks.append(line)
 
     order = {LABEL_VALUE: 0, LABEL_LEAN: 1, LABEL_NO_EDGE: 2}
@@ -573,6 +586,23 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
     return out
 
 
+def _mirror_if_promoted(picks_bet_id: str, state: dict | None) -> str | None:
+    """Real-journal mirror of a paper pick whose market is promoted
+    (scripts/betting/market_promotion.py). Reads the paper entry back so the
+    real one carries exactly what was journaled. Never raises: a failure here
+    must not stop the paper record."""
+    try:
+        from scripts.betting.bet_journal import _load_journal
+        from scripts.betting.market_promotion import is_promoted, journal_promoted
+        entry = (_load_journal(PICKS_JOURNAL_PATH).get("bets") or {}).get(picks_bet_id)
+        if not entry or entry.get("status") != "pending" or not is_promoted(entry.get("market") or "", state):
+            return None
+        return journal_promoted(entry, picks_bet_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("promoted mirror failed for %s: %s", picks_bet_id, e)
+        return None
+
+
 def journal_lean(match_key: str, date: str, lean: dict, league: str, *, placed_at: datetime) -> str:
     """Flat-stake paper entry in PICKS_JOURNAL_PATH. Selection embeds the
     player so two players' 'Over 0.5' never collide on the journal's
@@ -585,7 +615,10 @@ def journal_lean(match_key: str, date: str, lean: dict, league: str, *, placed_a
         "market": lean["market_key"], "selection": _sel_text(lean),
         "bet_type": lean.get("bet_type"), "player": lean.get("player"), "team": lean.get("team"),
         "model_prob": round((lean.get("probability_pct") or 0) / 100.0, 4),
-        "sharp_implied_prob": round((lean.get("implied_pct") or 0) / 100.0, 4),
+        # implied_pct is 1/odds of the PLACED price: written as sharp_implied_prob
+        # it made every paper CLV exactly 0.0 (a fake measurement). CLV for a
+        # pick comes from the closing price the grader passes at settle time.
+        "sharp_implied_prob": None,
         "edge_pct": lean.get("edge_pct"), "odds": lean.get("odds"), "bookmaker": lean.get("book"),
         "stake": PAPER_STAKE, "confidence": lean.get("tier"), "placed_at": placed_at.isoformat(),
         "pipeline_status": "pick:lean",
@@ -730,19 +763,63 @@ def settle_picks(results: dict[str, dict] | None = None) -> dict:
         odds = float(bet.get("odds") or 0)
         profit = {"won": round(stake * (odds - 1), 2), "lost": -stake}.get(outcome, 0.0)
         score = None if res is None or res.get("home_score") is None else f"{int(res['home_score'])}-{int(res['away_score'])}"
+        kickoff = (res or {}).get("commence_time") or None
+        closing = closing_price_for(bet)
         if settle_bet(bet.get("bet_id", ""), outcome, result_score=score, profit=profit,
-                      match_kickoff_at=(res or {}).get("commence_time") or None,
-                      journal_path=PICKS_JOURNAL_PATH):
+                      match_kickoff_at=kickoff, journal_path=PICKS_JOURNAL_PATH, closing_odds=closing):
             summary["settled"] += 1
             summary["pending"] -= 1
             if outcome in ("won", "push"):
                 summary[outcome] += 1
             elif outcome == "void":
                 summary["voided"] += 1
+            try:
+                from scripts.betting.market_promotion import settle_linked
+                summary["real_settled"] = summary.get("real_settled", 0) + settle_linked(
+                    bet.get("bet_id", ""), outcome, result_score=score, match_kickoff_at=kickoff, closing_odds=closing)
+            except Exception as e:  # noqa: BLE001 - the paper record must settle even if the mirror fails
+                log.warning("linked real settle failed for %s: %s", bet.get("bet_id"), e)
     if summary["settled"] or summary["ungradable"]:
         log.info("Picks settle: %(settled)d settled (%(won)d W, %(push)d P, %(voided)d V), "
                  "%(pending)d pending, %(ungradable)d not gradable yet", summary)
+    if summary["settled"]:
+        try:
+            from scripts.betting.market_promotion import evaluate_promotions
+            evaluate_promotions()
+        except Exception as e:  # noqa: BLE001
+            log.warning("promotion evaluation failed: %s", e)
     return summary
+
+
+def closing_price_for(bet: dict) -> float | None:
+    """The last price the feed held for a journaled pick: best across books in
+    pick_markets_raw.json (refreshed every 45 min per event down to kickoff),
+    or the O/U / h2h artifact for the match markets. None when the feed no
+    longer holds the event or the key is not priced — then no CLV is claimed."""
+    try:
+        ex = bet.get("extra") or {}
+        mk = bet.get("market") or ""
+        sel_row = {"bet_type": ex.get("bet_type"), "selection": (bet.get("selection") or "").replace(f"{ex.get('player')} ", "", 1)
+                   if ex.get("player") else bet.get("selection"), "player": ex.get("player")}
+        key = price_key_for_row(sel_row)
+        if key is None:
+            return None
+        match_key = bet.get("match") or ""
+        ev = _pick_event_for(_read(PICK_MARKETS_RAW, {}), match_key)
+        odds_all = (_read(UPCOMING / "odds_full.json", {}) or {}).get("matches", {})
+        extra_all = (_read(UPCOMING / "odds_extra_markets.json", {}) or {}).get("matches", {})
+        book = build_price_book(odds_all.get(match_key), extra_all.get(match_key), ev)
+        if key[3]:  # player key: the feed's own spelling
+            feed = _feed_players(book).get(mk) or []
+            name = _match_player(key[3], feed)
+            if name is None:
+                return None
+            key = (key[0], key[1], key[2], name)
+        e = book.get(key)
+        return float(e["odds"]) if e else None
+    except Exception as e:  # noqa: BLE001
+        log.debug("closing price lookup failed: %s", e)
+        return None
 
 
 def picks_record(league: str | None = None) -> dict:

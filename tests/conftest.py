@@ -140,3 +140,12 @@ def sample_odds():
             ],
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def _promotion_state_isolated(tmp_path, monkeypatch):
+    """market_promotion.json is rewritten after every settle; a test that
+    settles picks must never write the real one (2026-07-13 ledger drift was
+    exactly this class of leak, on bankroll.json)."""
+    from scripts.betting import market_promotion as _mp
+    monkeypatch.setattr(_mp, "STATE_PATH", tmp_path / "market_promotion.json")

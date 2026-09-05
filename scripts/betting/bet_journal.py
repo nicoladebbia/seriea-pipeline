@@ -607,7 +607,8 @@ def get_paper_track_stats(league: str = None) -> Dict:
 def settle_bet(bet_id: str, status: str, result_score: str = None,
                profit: float = None,
                match_kickoff_at: str | None = None,
-               journal_path: Optional[Path] = None) -> bool:
+               journal_path: Optional[Path] = None,
+               closing_odds: float | None = None) -> bool:
     """Mark a bet as won/lost/push/void.
 
     Args:
@@ -660,6 +661,8 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
     bet["settled_at"] = datetime.now().isoformat()
     if match_kickoff_at:
         bet["match_kickoff_at"] = match_kickoff_at
+    if closing_odds and float(closing_odds) > 1.0 and not bet.get("closing_odds"):
+        bet["closing_odds"] = float(closing_odds)   # the grader knows the last price; the journal did not
 
     # Compute CLV (Closing Line Value) from stored data
     # CLV = placed_implied_prob - sharp_implied_prob (positive = we got better odds than sharp market)

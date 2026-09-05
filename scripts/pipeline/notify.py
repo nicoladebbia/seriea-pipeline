@@ -2366,6 +2366,18 @@ def notify_daily_digest() -> dict:
     except Exception as e:
         log.debug("Digest systems section failed: %s", e)
 
+    # Monday: the per-market record and who has earned real stakes
+    # (scripts/betting/market_promotion.py). Weekly because a market moves
+    # by tens of settled bets, not by one evening.
+    try:
+        if datetime.now().weekday() == 0:
+            from scripts.betting.market_promotion import load_state, record_card
+            tg.blank()
+            for _ln in record_card(load_state(), html=True).split("\n"):
+                tg.raw(_ln)
+    except Exception as e:
+        log.debug("Digest record section failed: %s", e)
+
     return notify(
         message=mac_msg,
         title="Daily Digest",
