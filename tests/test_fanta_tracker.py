@@ -2974,3 +2974,101 @@ def test_selection_reasons_annotated():
     adv2 = advise(squad + [ghost], FIX, ELO, {})
     g = next(x for x in adv2["unavailable"] if x["nome"] == "Ghost")
     assert g["why"] == "no fixture this round"
+
+
+# ---- one formation per giornata (the pin) ----------------------------------
+# Nicola 2026-09-04: "give me just one, and that one remains for the whole 3
+# or 4 days". A pinned XI is re-priced, never re-optimized; only a starter
+# who can no longer play (p_play < PIN_FORCE_OUT_P, out, no fixture) is
+# replaced, and the swap is named.
+
+
+def _pin_of(adv):
+    return {"xi": [x["id"] for x in adv["xi"]],
+            "bench": [x["id"] for x in adv["bench"]],
+            "risky": adv.get("risky") or [], "module": adv["module"]}
+
+
+def test_pinned_xi_holds_against_a_better_alternative():
+    squad = _full_squad()
+    free = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)])
+    pin = _pin_of(free)
+    # deliberately worse pin: the worst defender (D7) in for the 4th-best (D3)
+    d_best = [x["id"] for x in free["xi"] if x["R"] == "D"]
+    assert 17 not in d_best
+    pin["xi"] = [i if i != d_best[-1] else 17 for i in pin["xi"]]
+    held = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)], pinned=pin)
+    ids = {x["id"] for x in held["xi"]}
+    assert 17 in ids and d_best[-1] not in ids
+    assert held["exp_total"] < free["exp_total"]          # re-priced honestly
+    assert held["risky"] == []
+
+
+def test_pinned_starter_below_force_out_threshold_is_replaced():
+    from scripts.fantacalcio.xi_advisor import PIN_FORCE_OUT_P, _pin_swaps
+    squad = _full_squad()
+    free = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)])
+    pin = _pin_of(free)
+    d_ids = [x["id"] for x in free["xi"] if x["R"] == "D"]
+    victim = d_ids[0]
+    # a probabili "panchina" listing (0.15) is below the threshold: forced out
+    for p in squad:
+        if p["id"] == victim:
+            p["p_play"] = PIN_FORCE_OUT_P - 0.05
+            p["p_play_src"] = "probabili"
+    held = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)], pinned=pin)
+    ids = [x["id"] for x in held["xi"]]
+    assert victim not in ids
+    # the other three pinned defenders stayed; the fill is the best spare D
+    assert all(i in ids for i in d_ids[1:])
+    spare = next(x for x in held["xi"] if x["R"] == "D" and x["id"] not in d_ids)
+    assert spare["id"] == 14                                # D4, next by exp
+    swaps = _pin_swaps({**pin, "xi_names": {}}, held)
+    assert swaps == [{"out": "D0", "in": "D4", "why": "p gioco 15% (probabili)"}]
+    assert spare["why"].startswith("dentro al posto di D0")
+    # a ballottaggio at 0.5 is NOT a forced change — that is the churn the pin exists to stop
+    for p in squad:
+        if p["id"] == victim:
+            p["p_play"] = 0.5
+    again = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)], pinned=pin)
+    assert victim in [x["id"] for x in again["xi"]]
+
+
+def test_pinned_bench_keeps_membership_and_order_and_refills_only_gaps():
+    squad = _full_squad()
+    free = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)])
+    pin = _pin_of(free)
+    # reverse the pinned defender chain: order must be honoured, not re-sorted
+    d_chain = [i for i in pin["bench"] if 10 <= i < 20]
+    pin["bench"] = [i for i in pin["bench"] if i not in d_chain] + d_chain[::-1]
+    held = advise(squad, FIX, ELO, {}, modules=[(4, 3, 3)], pinned=pin)
+    assert [x["id"] for x in held["bench"] if x["R"] == "D"] == d_chain[::-1]
+    # an injured bench man vacates his slot; only that slot is refilled
+    out = {d_chain[0]: "knee"}
+    held2 = advise(squad, FIX, ELO, out, modules=[(4, 3, 3)], pinned=pin)
+    d2 = [x["id"] for x in held2["bench"] if x["R"] == "D"]
+    assert d_chain[0] not in d2 and len(d2) == 3
+    assert d2[:2] == [i for i in d_chain[::-1] if i != d_chain[0]]
+
+
+def test_pin_phase_lifecycle():
+    from scripts.fantacalcio.xi_advisor import PIN_WINDOW_H, _pin_phase
+    kick = 1_800_000_000.0
+    far, near = kick - (PIN_WINDOW_H + 1) * 3600, kick - (PIN_WINDOW_H - 1) * 3600
+    assert _pin_phase(None, 4, kick, far) == "provisional"
+    assert _pin_phase(None, 4, kick, near) == "pin"
+    held = {"round": 4, "xi": [1, 2], "module": "4-3-3"}
+    assert _pin_phase(held, 4, kick, near) == "held"
+    assert _pin_phase(held, 4, kick, far) == "held"       # a pin never un-pins
+    assert _pin_phase(held, 5, kick, near) == "pin"       # new round, new pin
+    assert _pin_phase(held, 5, kick, far) == "provisional"
+    assert _pin_phase(held, 4, kick, far, repin=True) == "pin"
+    assert _pin_phase(None, None, None, near) == "provisional"
+
+
+def test_pinned_module_that_cannot_be_filled_returns_none():
+    from scripts.fantacalcio.xi_advisor import _pinned_advice
+    squad = _sq()                                          # 4D only
+    pin = {"module": "5-3-2", "xi": [], "bench": []}
+    assert _pinned_advice(pin, squad, FIX, ELO, {}) is None
+    assert _pinned_advice({"module": "junk"}, squad, FIX, ELO, {}) is None

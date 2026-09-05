@@ -323,9 +323,32 @@ def _bench_split(cand: list, xi: list) -> tuple[list, list]:
     return bench, rest
 
 
+def _pinned_bench(cand: list, xi: list, pin_ids: list[int]) -> tuple[list, list]:
+    """(bench, tribuna) holding the PINNED bench: membership and order are
+    kept for every pinned man still available; only a vacated slot (injury,
+    no fixture, promoted into the XI) is refilled, by _best_bench_for_role
+    over the remaining role pool, appended after the kept chain."""
+    rest = [c for c in cand if c not in xi and c["exp_slot"] is not None]
+    by_id = {c["id"]: c for c in rest}
+    bench = []
+    for role, n in BENCH_SLOTS:
+        kept = [by_id[i] for i in pin_ids
+                if i in by_id and by_id[i]["R"] == role][:n]
+        pool = [c for c in rest if c["R"] == role
+                and not any(c is k for k in kept)]
+        fill = (_best_bench_for_role(pool, n - len(kept),
+                                     [x for x in xi if x["R"] == role])
+                if n > len(kept) and pool else [])
+        chain = kept + fill
+        bench.extend(chain)
+        rest = [c for c in rest if not any(c is b for b in chain)]
+    return bench, rest
+
+
 def advise(roster: list, fixtures: dict, elo: dict, out: dict,
            risk_lambda: float = 0.0,
-           modules: list[tuple[int, int, int]] | None = None) -> dict:
+           modules: list[tuple[int, int, int]] | None = None,
+           pinned: dict | None = None) -> dict:
     """Pure core: pick module + XI by p_play * expected fantavoto. Testable without disk.
 
     Roster rows without a p_play field count as certain starters (p=1.0) so the
@@ -336,6 +359,13 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
     variance can carry a weaker XI past a stronger opponent — negative prefers
     steady ones. Bench SELECTION stays pure exp_slot; entry ORDER within a
     role is by exp -- see _bench_split.
+
+    `pinned` ({"xi": [pid...], "bench": [pid...], "risky": [name...]}) HOLDS a
+    previously published selection: every pinned starter still able to play
+    (has a fixture, not out, p_play >= PIN_FORCE_OUT_P) keeps his slot, the
+    numbers are re-evaluated under the CURRENT inputs, and only a vacated
+    slot is refilled by the best remaining man of that role. No hill climb.
+    Callers pass the pinned module as the single entry of `modules`.
     """
     cand = []
     for p in roster:
@@ -389,8 +419,31 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
             return (sum(key(x) for x in xi) + mod + bench_ev,
                     mod, bench, tribuna, bench_ev)
 
-        xi = [x for r, n in need.items() for x in by_role[r][:n]]
-        obj, mod, bench, tribuna, bench_ev = evaluate(xi)
+        risky: set = set()
+        if pinned is not None:
+            keep_order = [int(i) for i in pinned.get("xi") or []]
+            keep_ids = set(keep_order)
+            xi = []
+            for r, n in need.items():
+                # pinned order too: the pitch must not reshuffle between builds
+                kept = sorted([c for c in by_role[r] if c["id"] in keep_ids
+                               and c["p_play"] >= PIN_FORCE_OUT_P][:n],
+                              key=lambda c: keep_order.index(c["id"]))
+                fill = [c for c in by_role[r]
+                        if not any(c is k for k in kept)]
+                xi += kept + fill[:n - len(kept)]
+            obj, mod, bench, tribuna, bench_ev = evaluate(xi)
+            bench, tribuna = _pinned_bench(cand, xi,
+                                           [int(i) for i in pinned.get("bench") or []])
+            bench_ev = _bench_recovery_ev(xi, bench)
+            obj = sum(key(x) for x in xi) + mod + bench_ev
+            risky = {x["nome"] for x in xi
+                     if x["nome"] in set(pinned.get("risky") or [])}
+            improved = False
+        else:
+            xi = [x for r, n in need.items() for x in by_role[r][:n]]
+            obj, mod, bench, tribuna, bench_ev = evaluate(xi)
+            improved = True
         # Start-risky-cover-safe: the greedy exp_slot ranking starts the
         # SAFEST eleven, but a lower-p_play higher-ceiling spare can be worth
         # more STARTED, with the safe man covering from the bench (Douvikas
@@ -399,8 +452,6 @@ def advise(roster: list, fixtures: dict, elo: dict, out: dict,
         # recovery -- only the greedy search never visited the swap. One-swap
         # hill climb over same-role spares, margin-gated so feed jitter
         # cannot flip a coin-toss pick between rebuilds.
-        risky: set = set()
-        improved = True
         while improved:
             improved = False
             for i, x in enumerate(xi):
@@ -592,6 +643,104 @@ HUB_PREDICTIONS = ROOT / "data" / "upcoming" / "predictions.json"
 # flipped to 3-4-3 over a 0.15-point bench-recovery edge. HEURISTIC margin;
 # the ledger's per-round module record is the refit path.
 STICKY_MODULE_MARGIN = 1.0
+# ONE recommended formation per giornata (Nicola 2026-09-04: "give me just
+# one, and that one remains for the whole 3 or 4 days"). The first advice
+# built inside PIN_WINDOW_H of the round's first kickoff is PINNED to
+# xi_pin.json: every later rebuild re-prices the same eleven and bench under
+# the current inputs instead of re-optimizing, so a titolarita nudge or a
+# scorer-odds refresh can no longer swap names on the dashboard or in the
+# Telegram push. The only change a pinned XI accepts is a FORCED one — a
+# pinned starter whose p_play falls below PIN_FORCE_OUT_P (injured 0.05,
+# suspended 0.02, official bench/out 0.15/0.03, probabili "panchina" 0.15)
+# or who has no fixture — and each swap is named in adv["pin"]["swaps"].
+# Before the window the advice is a labelled draft ("provvisoria") that
+# still moves freely. `repin` re-pins from a fresh solve on request (CLI
+# --repin, API ?repin=1) — the escape hatch for a trade or a bad pin.
+PIN_WINDOW_H = 96.0
+PIN_FORCE_OUT_P = 0.20
+PIN = ROOT / "data" / "fantacalcio" / "xi_pin.json"
+
+
+def _pin_phase(pin: dict | None, rnd: int | None, kick: float | None,
+               now: float, repin: bool = False) -> str:
+    """'held' (this round's pin exists — serve it), 'pin' (pin the advice
+    built now), or 'provisional' (draft; the window has not opened). Pure."""
+    if repin:
+        return "pin"
+    if pin and pin.get("round") == rnd and pin.get("xi"):
+        return "held"
+    if rnd is None or kick is None:
+        return "provisional"
+    return "pin" if kick - now <= PIN_WINDOW_H * 3600 else "provisional"
+
+
+def _load_pin() -> dict | None:
+    try:
+        pin = json.loads(PIN.read_text())
+    except (OSError, ValueError):
+        return None
+    return pin if isinstance(pin, dict) else None
+
+
+def _write_pin(rnd: int | None, kick: float | None, adv: dict) -> dict:
+    pin = {"round": rnd, "pinned_at": datetime.now(UTC).isoformat(),
+           "first_kickoff": kick, "module": adv.get("module"),
+           "xi": [int(x["id"]) for x in adv.get("xi") or []],
+           "xi_names": {str(int(x["id"])): x["nome"] for x in adv.get("xi") or []},
+           "bench": [int(x["id"]) for x in adv.get("bench") or []],
+           "risky": list(adv.get("risky") or [])}
+    tmp = PIN.with_suffix(".tmp")
+    tmp.write_text(json.dumps(pin, indent=1, ensure_ascii=False))
+    tmp.replace(PIN)
+    return pin
+
+
+def _pin_swaps(pin: dict, adv: dict) -> list[dict]:
+    """Forced substitutions between the pinned eleven and the served one,
+    paired by role; annotates both rows' `why` so the dashboard/Telegram
+    show the mechanism, not just a different name."""
+    rows = {int(r["id"]): r for slot in ("xi", "bench", "tribuna", "unavailable")
+            for r in adv.get(slot) or []}
+    xi_ids = {int(x["id"]) for x in adv.get("xi") or []}
+    pinned_ids = [int(i) for i in pin.get("xi") or []]
+    ins = [x for x in adv.get("xi") or [] if int(x["id"]) not in pinned_ids]
+    swaps = []
+    for pid in pinned_ids:
+        if pid in xi_ids:
+            continue
+        r = rows.get(pid)
+        name = r["nome"] if r else (pin.get("xi_names") or {}).get(str(pid), str(pid))
+        if r is None:
+            why = "non più in rosa"
+        elif r.get("exp_slot") is None:
+            why = r.get("inj") or r.get("why") or "indisponibile"
+        else:
+            why = f"p gioco {float(r['p_play']):.0%} ({r.get('p_play_src') or 'model'})"
+            r["why"] = f"fuori dalla formazione fissata: {why}"
+        inc = next((x for x in ins if r is None or x["R"] == r["R"]), None)
+        if inc is not None:
+            ins.remove(inc)
+            inc["why"] = f"dentro al posto di {name}: {why}"
+        swaps.append({"out": name, "in": inc["nome"] if inc else None, "why": why})
+    return swaps
+
+
+def _pinned_advice(pin: dict, roster: list, fixtures: dict, elo: dict,
+                   out: dict) -> dict | None:
+    """The pinned selection re-priced under current inputs, or None when the
+    pinned module can no longer be filled (the caller re-pins freely)."""
+    try:
+        shape = tuple(int(x) for x in str(pin.get("module") or "").split("-"))
+    except ValueError:
+        return None
+    if len(shape) != 3:
+        return None
+    adv = advise(roster, fixtures, elo, out, modules=[shape], pinned=pin)
+    if not adv.get("xi"):
+        return None
+    adv["pin"] = {"status": "pinned", "pinned_at": pin.get("pinned_at"),
+                  "swaps": _pin_swaps(pin, adv)}
+    return adv
 
 
 def _sticky_module(adv: dict, roster: list, fixtures: dict, elo: dict,
@@ -643,6 +792,7 @@ def _frozen_advice(ent: dict, rnd: int) -> dict:
         slots.get(row.get("slot") or "tribuna", slots["tribuna"]).append(row)
     return {"generated_at": datetime.now(UTC).isoformat(),
             "round": rnd, "source": "frozen", "locked": True,
+            "pin": {"status": "locked"},
             "first_kickoff": ent.get("first_kickoff"),
             "feed_ages": {},
             "module": ent.get("module"),
@@ -728,7 +878,8 @@ def build_round_context() -> dict | None:
 
 
 def build_advice(fresh: bool = False,
-                 official: dict[int, dict] | None = None) -> dict:
+                 official: dict[int, dict] | None = None,
+                 repin: bool = False) -> dict:
     fixtures, rnd = _next_fixtures()
     # Round already locked and in play: serve the frozen forecast, never
     # re-optimize on partial fixtures. Also restores the ORIGINAL
@@ -767,12 +918,29 @@ def build_advice(fresh: bool = False,
     if official:
         _apply_official(roster_src, official)
 
-    adv = _sticky_module(advise(roster_src, fixtures, elo, out),
-                         roster_src, fixtures, elo, out, rnd)
     kicks = [fixtures[t_]["ts"] for t_ in fixtures if fixtures[t_].get("ts")]
+    kick = min(kicks) if kicks else None
+    now = datetime.now(UTC).timestamp()
+    pin = _load_pin()
+    phase = _pin_phase(pin, rnd, kick, now, repin)
+    adv = None
+    if phase == "held":
+        adv = _pinned_advice(pin, roster_src, fixtures, elo, out)
+        if adv is None:          # pinned module no longer fillable
+            phase = "pin"
+    if adv is None:
+        adv = _sticky_module(advise(roster_src, fixtures, elo, out),
+                             roster_src, fixtures, elo, out, rnd)
+        if phase == "pin" and adv.get("xi"):
+            pin = _write_pin(rnd, kick, adv)
+            adv["pin"] = {"status": "pinned", "pinned_at": pin["pinned_at"],
+                          "swaps": []}
+        else:
+            adv["pin"] = {"status": "provisional",
+                          "pins_at": (kick - PIN_WINDOW_H * 3600) if kick else None}
     return {"generated_at": datetime.now(UTC).isoformat(),
             "round": rnd, "source": source,
-            "first_kickoff": min(kicks) if kicks else None,
+            "first_kickoff": kick,
             "feed_ages": {"probabili_h": feed_age_h(prob_data),
                           "indisponibili_h": feed_age_h(avail),
                           "sosfanta_h": feed_age_h(sf),
@@ -2201,9 +2369,12 @@ def main() -> None:
             record_fielded(team, mod, rnd)
             print(f"registrato: {team} {mod} (giornata {rnd})")
         return
-    out = build_advice()
-    print(json.dumps({k: out[k] for k in ("round", "module", "total", "modifier")},
-                     indent=1))
+    out = build_advice(repin="--repin" in sys.argv)
+    if "--repin" in sys.argv:
+        ADVICE.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    print(json.dumps({k: out.get(k) for k in ("round", "module", "total",
+                                             "modifier", "pin")},
+                     indent=1, ensure_ascii=False))
     for x in out["xi"]:
         print(f"  {x['R']} {x['nome']:16s} exp={x['exp']:5.2f} st={x['p_play']:.0%} "
               f"slot={x['exp_slot']:5.2f} "

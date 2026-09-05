@@ -1387,11 +1387,14 @@ def api_fantacalcio_xi_advisor():
              or (team.exists() and team.stat().st_mtime > out.stat().st_mtime)
              or (trk.exists() and trk.stat().st_mtime > out.stat().st_mtime)
              or age_h > 6.0
-             or flask_request.args.get("refresh") == "1")
+             or flask_request.args.get("refresh") == "1"
+             or flask_request.args.get("repin") == "1")
     if stale:
         try:
             from scripts.fantacalcio.xi_advisor import build_advice
-            data = build_advice()
+            # ?repin=1 re-pins the giornata's ONE formation from a fresh
+            # solve (trade, bad pin) — see xi_advisor.PIN_WINDOW_H.
+            data = build_advice(repin=flask_request.args.get("repin") == "1")
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=1)
             return jsonify(_with_round_context(data))

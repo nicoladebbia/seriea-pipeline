@@ -358,6 +358,25 @@ def _push_phase(state: dict, rnd: int | None, kick: float | None,
     return "final"
 
 
+def _pin_line(adv: dict) -> str:
+    """One line on the formation's pin state (xi_advisor.PIN_WINDOW_H):
+    pinned = this is THE giornata's formation and will not move unless a
+    starter is forced out; provisional = draft, pins at the stated time."""
+    pin = adv.get("pin") or {}
+    st = pin.get("status")
+    if st == "pinned":
+        swaps = [f"{s['out']} → {s['in']}" for s in pin.get("swaps") or []
+                 if s.get("in")]
+        return ("📌 formazione fissata per la giornata"
+                + (f" — cambi forzati: {', '.join(swaps)}" if swaps else ""))
+    if st == "provisional":
+        at = pin.get("pins_at")
+        when = (datetime.fromtimestamp(float(at)).strftime("%a %H:%M")
+                if at else "a 4 giorni dal calcio d'inizio")
+        return f"✏️ bozza — si fissa {when}"
+    return ""
+
+
 def _advice_diff(prev: dict, cur: dict) -> str | None:
     """Human-readable delta between the pushed advice and the current one.
     None when nothing a manager acts on has changed."""
@@ -773,6 +792,9 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
               for x in adv["xi"] + adv["bench"] + adv.get("tribuna", [])
               if x.get("avail_note")]
     lock_line = f"🔒 {adv['note']}\n" if adv.get("locked") else ""
+    pin_line = _pin_line(adv)
+    if pin_line:
+        lock_line += pin_line + "\n"
     msg = ((f"{vs_txt}\n\n" if vs_txt else "")
            + f"Giornata {rnd} — modulo {adv['module']} "
            f"(exp {adv['total']}, mod +{adv['modifier']})\n"
@@ -790,6 +812,7 @@ def render_xi(adv: dict, riv: dict | None = None) -> tuple[str, str]:
           + f"<b>⚽ Formazione giornata {rnd}</b> — <b>{adv['module']}</b> "
           f"(exp {adv['total']}, mod +{adv['modifier']})\n"
           + (f"<i>🔒 {adv['note']}</i>\n" if adv.get("locked") else "")
+          + (f"<i>{pin_line}</i>\n" if pin_line else "")
           + "\n".join(lines)
           + "\n\n<b>Panchina</b> (ordine sub): " + ", ".join(bench)
           + (("\n<b>Out:</b> " + "; ".join(inj)) if inj else "")
