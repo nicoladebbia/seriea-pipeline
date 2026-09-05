@@ -422,6 +422,20 @@ def check_fantacalcio_health() -> Dict:
     return _fanta_health(hb, hb_age, prob_age, indisp_age, days_to_kick)
 
 
+def check_lineup_sources_summary() -> Dict:
+    """Named row for the lineup chain (probe + delivery), so the OK state is
+    visible in health_status.json and not only its CRITICAL. The verdict itself
+    lives in health_check.check_lineup_sources (also propagated via run_health_check)."""
+    from scripts.pipeline.health_check import check_lineup_sources
+    r = check_lineup_sources()
+    if not r.get("matchday_near"):
+        return {"status": "OK", "detail": "no Serie A kickoff inside 30h — not probed"}
+    if r["status"] == "CRITICAL":
+        return {"status": "CRITICAL", "detail": r.get("reason") or "lineup chain failing"}
+    return {"status": "OK", "detail": f"ESPN {r.get('espn')}, no sheet due yet"
+            if not r.get("missing_sheets") else "ESPN ok, sheets present"}
+
+
 def check_state_backup() -> Dict:
     """Off-disk state backup freshness (bet journal, fantacalcio state). The
     backup job is daily; >50h means two misses."""
@@ -570,7 +584,8 @@ def run_monitor() -> Dict:
     # 8. Fantacalcio ops (tracker liveness + feed staleness) + state backup
     log.info("Checking fantacalcio ops + state backup...")
     for name, chk in (("fantacalcio", check_fantacalcio_health),
-                      ("state_backup", check_state_backup)):
+                      ("state_backup", check_state_backup),
+                      ("lineup_sources", check_lineup_sources_summary)):
         try:
             res = chk()
         except Exception as e:
