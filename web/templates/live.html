@@ -179,11 +179,21 @@
     </div>
     <div class="live-controls__right">
       <button id="lp-poll-btn" onclick="lpTriggerPoll()" class="btn btn--sm" style="background:rgba(74,222,128,0.1);color:var(--green);border:1px solid rgba(74,222,128,0.2);">Poll Now</button>
+      <label class="text-small text-tertiary" for="lp-interval" title="Odds API poll — costs credits (5 per cycle per league)">Odds</label>
       <select id="lp-interval" onchange="lpSetInterval(this.value)" class="select" style="width:auto;">
         <option value="30">30s</option>
         <option value="60" selected>1 min</option>
         <option value="120">2 min</option>
         <option value="300">5 min</option>
+      </select>
+      <label class="text-small text-tertiary" for="lp-fast-interval" title="Score, clock, stats and events from ESPN — free, no credits">Live</label>
+      <select id="lp-fast-interval" onchange="lpSetFastInterval(this.value)" class="select" style="width:auto;">
+        <option value="3">3s</option>
+        <option value="5" selected>5s</option>
+        <option value="10">10s</option>
+        <option value="15">15s</option>
+        <option value="30">30s</option>
+        <option value="60">1 min</option>
       </select>
       <button id="lp-auto-btn" onclick="lpToggleAuto()" class="btn btn--sm btn--secondary">Auto: OFF</button>
       <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:40px;"></span>
@@ -506,6 +516,7 @@ async function lpLoad() {
     _lpAutoActive = data.auto_poll_active || false;
     _lpInterval = data.auto_poll_interval || 60;
     lpReflectInterval(_lpInterval);
+    if (data.live_fast_interval) lpReflectInterval(data.live_fast_interval, 'lp-fast-interval');
     _lpNextAt = data.auto_poll_next_at || 0;
     lpUpdateAutoBtn();
 
@@ -588,8 +599,8 @@ async function lpToggleAuto() {
 
 // The select must show the interval the SERVER is running, not its HTML
 // default: after a restart it said "1 min" while the poll ran every 5.
-function lpReflectInterval(secs) {
-  const sel = document.getElementById('lp-interval');
+function lpReflectInterval(secs, id = 'lp-interval') {
+  const sel = document.getElementById(id);
   if (!sel || document.activeElement === sel) return;
   const val = String(secs);
   if (![...sel.options].some(o => o.value === val)) {
@@ -598,6 +609,15 @@ function lpReflectInterval(secs) {
     sel.appendChild(o);
   }
   sel.value = val;
+}
+
+async function lpSetFastInterval(secs) {
+  secs = parseInt(secs);
+  try {
+    const res = await fetch('/api/live/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({fast_interval: secs})});
+    const data = await res.json();
+    if (data.fast_interval) lpReflectInterval(data.fast_interval, 'lp-fast-interval');
+  } catch(e) { console.error(e); }
 }
 
 async function lpSetInterval(secs) {
