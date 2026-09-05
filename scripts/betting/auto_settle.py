@@ -509,6 +509,17 @@ def run(
                             settle_picks(completed)
                         except Exception as e:
                             log.warning("Picks settle failed: %s", e)
+                        # In-play paper engine: the walk-forward backtest
+                        # (gate, shrink weight the live hook reads) refreshes
+                        # from the newly settled matchdays.
+                        try:
+                            from scripts.betting.inplay import backtest as inplay_backtest
+                            rep = inplay_backtest(write=True)
+                            log.info("In-play backtest refreshed: skill=%s gate=%s w=%s",
+                                     rep.get("skill_vs_inplay_market_1x2"), rep.get("passes_gate"),
+                                     (rep.get("shrink") or {}).get("w_latest"))
+                        except Exception as e:
+                            log.warning("In-play backtest refresh failed: %s", e)
                 else:
                     settlement_summary = {"settled": 0, "pending": 0, "message": "No completed matches"}
             else:

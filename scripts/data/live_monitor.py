@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config.leagues import infer_league
 from config.settings import DATA_DIR
 from config.team_names import normalize_team
 
@@ -1380,6 +1381,7 @@ def poll_once() -> Dict:
                 "commence_time": commence,
                 "home_team": home,
                 "away_team": away,
+                "league": event.get("_league") or infer_league(home, away),
                 "status": status,
                 "final_score": None,
                 "pre_match_odds": pre,
@@ -1387,6 +1389,8 @@ def poll_once() -> Dict:
             }
 
         match_entry = matchday["matches"][mk]
+        if not match_entry.get("league"):
+            match_entry["league"] = event.get("_league") or infer_league(home, away)
         if not match_entry.get("pre_match_odds"):
             # Self-heal: the row may have been absent (or the key mismatched)
             # when the entry was created; the closing snapshot is on disk.

@@ -5875,10 +5875,13 @@ These dirs contain many files (often one per match, day, or experiment). Summari
   last `data/odds_snapshots/odds_*.json` line before kickoff, `source: closing_snapshot`
   — the raw-key lookup never matched before 2026-09-05, so this was {} on every match),
   snapshot `score_source: espn_fast` + `clock` + `added_time` when the fast tick was fresh at
-  poll time (else the wall-clock estimate, `odds_api`), `inplay_baseline` (simulator inputs
-  implied by the pre-match market), `inplay_picks`
+  poll time (else the wall-clock estimate, `odds_api`), `league` (stamped at entry creation
+  from the Odds API sport key, else `infer_league`; absent on entries before 2026-09-05 —
+  readers fall back to the team names), `inplay_baseline` (simulator inputs
+  implied by the pre-match market), `inplay_note` (why a live match is not priced, e.g. no
+  profile for the league), `inplay_picks`
   (paper picks after a score change, status + closing price), and on every priced live
-  snapshot `fair` / `fair_totals` / `best_edge` (written by `scripts/betting/inplay.py`;
+  snapshot `fair` (shrunk by `shrink_w`) / `fair_raw` / `fair_totals` / `best_edge` (written by `scripts/betting/inplay.py`;
   paper journal `data/betting/inplay_journal.json`, verdict `data/models/inplay/backtest.json`
   — read it, never quote it), and `live_fetch_error` (present only when NO source answered; the
   previous cycle's events/stats are kept, never blanked). Writer:

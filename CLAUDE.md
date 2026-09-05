@@ -141,10 +141,29 @@ match from the score + minute on the board (baseline = the pre-match MARKET via
 `market_profile`, deliberately not model xG, so the question is whether the conditioning
 beats the books' repricing given the same information), `live_monitor.poll_once` prices
 every live snapshot (`snapshot.fair` / `fair_totals` / `best_edge`), takes one paper pick per
-selection per match after a score change (1X2 only; `EDGE_MIN` 5%, `FAIR_MIN` 10%,
-`MAX_MINUTE` 85; edges above the journal's 12% cap are counted, never journaled) into
-`data/betting/inplay_journal.json`, and settles at the whistle with CLV against the NEXT
-snapshot — the price a human could actually have taken.
+selection per match after a score change (1X2 only; edges above the journal's 12% cap are
+counted, never journaled) into `data/betting/inplay_journal.json`, and settles at the whistle
+with CLV against the NEXT snapshot — the price a human could actually have taken.
+
+- **No hand-set thresholds (2026-09-05).** A pick must clear the snapshot's OWN overround
+  (`sum(1/odds) − 1`, the price of betting into that book at that moment; measured median
+  6.9%, p10–p90 4.8–8.0% on 1,536 in-play snapshots) plus 1.96 × the Monte Carlo standard
+  error of the fair probability (`sqrt(p(1−p)/n_sims)`). That replaces `EDGE_MIN` / `FAIR_MIN`
+  / `MAX_MINUTE`: a late state needs no minute cut-off because the fair price goes to 0/1
+  and the edge vanishes; a rare outcome needs no probability floor because its interval is
+  what it is. `pick.floor` / `pick.margin` on every pick say what it had to beat. The fair
+  price is first shrunk toward the market by `shrink.w_latest` in the backtest file — a
+  weight fitted WALK-FORWARD (Brier on earlier matchdays only, never the one it is applied
+  to, None below 200 rows); `skill_blend_vs_market_walk_forward` next to
+  `skill_raw_vs_market_same_rows` says whether shrinking helped (first run: w stayed 1.0
+  through the season, the two numbers are equal). The backtest re-runs after every
+  settlement (`auto_settle`, next to `settle_picks`), so the live hook always reads the
+  latest weight and gate.
+- **Only Serie A is priced (`PROFILE_LEAGUE`).** EPL has no fitted goal-process profile; until
+  2026-09-05 live entries carried no `league` and 33 EPL matches were scored with the Serie A
+  hazard, red-card multipliers and calibration (skill 0.008 mixed → 0.018 Serie A-only on 44
+  matches). The monitor now stamps `league` on every entry (Odds API sport key, else
+  `infer_league`); an EPL snapshot gets `inplay_note` and no fair price.
 
 - **Read the verdict from `data/models/inplay/backtest.json`, never from a doc.** The gate is
   skill vs the in-play market's own 1X2 probabilities (≥ 0.02 on ≥ 200 snapshots) AND paper

@@ -17,13 +17,16 @@ What the engine does
   Model xG is deliberately not used here: the backtest asks whether the
   CONDITIONING beats the books' repricing, not whether our xG does.
 - ``fair_for_snapshot``: 1X2 + every totals line the snapshot quotes, from
-  ``goal_process.simulate_from_state``. Red cards are not modelled (no
-  measured multiplier); the row says so.
+  ``goal_process.simulate_from_state``, red cards through the measured
+  ``red_mult`` in the profile.
 - ``edges``: fair − de-vigged average market, per selection.
 - ``best_pick`` after a state change: the first priced snapshot after the
-  score changed, best positive edge ≥ EDGE_MIN with fair ≥ FAIR_MIN, minute
-  ≤ MAX_MINUTE, one pick per selection per match; an edge above the journal
-  cap is counted but never journaled (the same 12% cap the pick engine uses).
+  score changed, best 1X2 edge that clears the snapshot's own overround plus
+  the simulator's 95% Monte Carlo interval (no hand-set edge / probability /
+  minute thresholds), one pick per selection per match; an edge above the
+  journal cap is counted but never journaled (the same 12% cap the pick
+  engine uses). The fair price is first shrunk toward the market by the
+  walk-forward weight the backtest fitted (``shrink.w_latest``), if any.
 - Journal: ``data/betting/inplay_journal.json`` through ``bet_journal.add_bet``
   (flat PAPER_STAKE); settled at full time from the final score; CLV against
   the NEXT priced snapshot (the price a human could actually have taken,
@@ -59,10 +62,15 @@ PING_MODES = ("on", "off")
 # Over 0.5 @ 2.32 in the 84th minute at 1-0 (fair 1.00). Totals fair prices
 # are still computed for the card, never picked.
 PICK_MARKETS = ("inplay_1x2",)
-EDGE_MIN = 0.05        # fair − market, probability points; the in-play margin is ~7%
-FAIR_MIN = 0.10        # a "+6%" on a 4% event is inside the simulator's own noise
-MAX_MINUTE = 85        # later than this the market is a coin-flip on stoppage time
+# No hand-set thresholds (2026-09-05). A pick must clear two things the data
+# itself provides: the book's margin on THAT snapshot (its overround, the
+# price of betting into it) and the simulator's own Monte Carlo uncertainty
+# on the fair probability (a 95% interval from the number of paths). Late
+# states need no minute cut-off: as the fair price goes to 0/1 the edge
+# vanishes and the interval does the rest. The 12% journal cap is the
+# system-wide rule shared with every other paper market.
 MAX_EDGE_JOURNAL = 12.0  # bet_journal.MAX_EDGE_PCT — above it the pick is counted, not journaled
+MC_Z = 1.96              # 95% Monte Carlo interval on a simulated probability
 N_SIMS_LIVE = 6000
 N_SIMS_BACKTEST = 3000
 BASELINE_MAX_MINUTE = 10  # a 0-0 snapshot this early stands in for the pre-match line
@@ -113,6 +121,22 @@ def _teams(entry: dict, mk: str = "") -> tuple[str, str]:
     home = entry.get("home_team") or (mk.split(" vs ")[0] if mk else "")
     away = entry.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
     return home, away
+
+
+PROFILE_LEAGUE = "serie_a"  # the only league with a fitted goal-process profile (EPL has none)
+
+
+def entry_league(entry: dict, mk: str = "") -> str:
+    """The live entry's league: the stamp the monitor wrote, else inferred
+    from the team names. Until 2026-09-05 entries carried no league and EPL
+    matches were priced with the Serie A hazard, red-card multipliers and
+    calibration — 45 of the 156 stored matches."""
+    lg = entry.get("league")
+    if lg:
+        return str(lg)
+    from config.leagues import infer_league
+    home, away = _teams(entry, mk)
+    return infer_league(home, away)
 
 
 def reds_at(entry: dict, minute: int) -> tuple[int, int]:
@@ -219,15 +243,42 @@ def fair_for_snapshot(base: dict, snap: dict, prof: dict | None = None, n: int =
             "totals": totals, "red_cards_modelled": bool(paths.get("red_cards_modelled"))}
 
 
-def edges(snap: dict, fair: dict) -> list[dict]:
-    """fair − de-vigged market, one row per selection, best first."""
+def shrink_weight(fair_probs: np.ndarray, market_probs: np.ndarray, outcomes: np.ndarray) -> float | None:
+    """The weight w in w·fair + (1−w)·market that minimises the 1X2 Brier on
+    the rows given (fair, market: n×3 probabilities; outcomes: n×3 one-hot).
+    Fitted walk-forward in the backtest — never on the matchday it is applied
+    to — and stored for the live engine. None below the sample floor."""
+    if len(outcomes) < gp.N_GATE:
+        return None
+    best_w, best_b = 1.0, None
+    for w in np.arange(0.0, 1.0001, 0.02):
+        blend = w * fair_probs + (1 - w) * market_probs
+        b = float(((blend - outcomes) ** 2).sum(axis=1).mean())
+        if best_b is None or b < best_b:
+            best_w, best_b = float(w), b
+    return round(best_w, 2)
+
+
+def live_shrink_weight() -> float | None:
+    """The latest walk-forward weight the backtest wrote; None until it exists."""
+    try:
+        with open(BACKTEST_PATH) as f:
+            return (json.load(f).get("shrink") or {}).get("w_latest")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+
+def edges(snap: dict, fair: dict, w: float | None = None) -> list[dict]:
+    """fair − de-vigged market, one row per selection, best first. With w the
+    fair price is shrunk toward the market first (w=1 is the raw simulator)."""
     rows: list[dict] = []
     mkt = devig(snap.get("avg_odds") or {})
     for sel in ("home", "draw", "away"):
         if sel in mkt:
+            f = fair["1x2"][sel] if w is None else w * fair["1x2"][sel] + (1 - w) * mkt[sel]
             rows.append({"market": "inplay_1x2", "selection": SEL_1X2[sel], "key": sel,
-                         "fair": fair["1x2"][sel], "market_prob": round(mkt[sel], 4),
-                         "odds": float(snap["avg_odds"][sel]), "edge": round(fair["1x2"][sel] - mkt[sel], 4)})
+                         "fair": round(f, 4), "fair_raw": fair["1x2"][sel], "market_prob": round(mkt[sel], 4),
+                         "odds": float(snap["avg_odds"][sel]), "edge": round(f - mkt[sel], 4), "shrink_w": w})
     for line, pair in _totals_book(snap).items():
         fl = fair["totals"].get(str(line))
         if not fl:
@@ -243,14 +294,33 @@ def edges(snap: dict, fair: dict) -> list[dict]:
     return rows
 
 
-def best_pick(rows: list[dict], minute: int) -> dict | None:
-    if minute > MAX_MINUTE:
+def overround(snap: dict) -> float | None:
+    """The book's margin on this snapshot's 1X2: sum of implied − 1."""
+    a = snap.get("avg_odds") or {}
+    try:
+        return sum(1.0 / float(a[k]) for k in ("home", "draw", "away")) - 1.0
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def mc_se(p: float, n: int) -> float:
+    """Standard error of a simulated probability from n paths."""
+    return float(np.sqrt(max(p * (1.0 - p), 0.0) / max(int(n), 1)))
+
+
+def best_pick(rows: list[dict], snap: dict, n_sims: int) -> dict | None:
+    """Best 1X2 row whose edge clears the snapshot's own margin plus the
+    simulator's 95% Monte Carlo interval. Nothing here is a tuned number."""
+    margin = overround(snap)
+    if margin is None:
         return None
     for r in rows:
         if r["market"] not in PICK_MARKETS:
             continue
-        if r["edge"] >= EDGE_MIN and r["fair"] >= FAIR_MIN:
-            return {**r, "edge_pct": round(r["edge"] * 100, 2), "over_cap": r["edge"] * 100 > MAX_EDGE_JOURNAL}
+        floor = margin + MC_Z * mc_se(r["fair"], n_sims)
+        if r["edge"] >= floor:
+            return {**r, "edge_pct": round(r["edge"] * 100, 2), "floor": round(floor, 4), "margin": round(margin, 4),
+                    "over_cap": r["edge"] * 100 > MAX_EDGE_JOURNAL}
     return None
 
 
@@ -303,16 +373,23 @@ def on_snapshot(mk: str, entry: dict, snap: dict, *, prof: dict | None = None,
     snapshot (the card reads them). Returns the pick record or None."""
     if not (snap.get("avg_odds") or {}).get("home"):
         return None
+    league = entry_league(entry, mk)
+    if league != PROFILE_LEAGUE:
+        entry.setdefault("inplay_note", f"no goal-process profile for {league}")
+        return None
     base = baseline_for_entry(entry, prof, n=n, mk=mk)
     if not base:
         entry.setdefault("inplay_note", "no pre-match baseline")
         return None
     red = reds_at(entry, int(snap.get("min") or 0))
     fair = fair_for_snapshot(base, snap, prof, n=n, red=red)
-    rows = edges(snap, fair)
-    snap["fair"] = fair["1x2"]
+    w = live_shrink_weight()
+    rows = edges(snap, fair, w)
+    snap["fair"] = {r["key"]: r["fair"] for r in rows if r["market"] == "inplay_1x2"} or fair["1x2"]
+    snap["fair_raw"] = fair["1x2"]
     snap["fair_totals"] = fair["totals"]
     snap["fair_red"] = list(red)
+    snap["shrink_w"] = w
     snap["best_edge"] = rows[0] if rows else None
     prev = None
     for s in reversed(_priced(entry.get("snapshots") or [])):
@@ -321,13 +398,14 @@ def on_snapshot(mk: str, entry: dict, snap: dict, *, prof: dict | None = None,
             break
     if not state_changed(prev, snap):
         return None
-    pick = best_pick(rows, int(snap.get("min") or 0))
+    pick = best_pick(rows, snap, n)
     if not pick:
         return None
     taken = entry.setdefault("inplay_picks", [])
     if any(p.get("selection") == pick["selection"] for p in taken):
         return None
     rec = {"selection": pick["selection"], "market": pick["market"], "odds": pick["odds"], "fair": pick["fair"],
+           "fair_raw": pick.get("fair_raw"), "shrink_w": w, "floor": pick.get("floor"), "margin": pick.get("margin"),
            "market_prob": pick["market_prob"], "edge_pct": pick["edge_pct"], "minute": snap.get("min"),
            "score": snap.get("score"), "ts": snap.get("ts"), "over_cap": pick["over_cap"], "status": "pending",
            "side": pick.get("side"), "line": pick.get("line")}
@@ -449,13 +527,25 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
     snapshot's price (the feed lag), plus 1X2 skill vs the in-play market on
     every priced snapshot."""
     prof = gp.load_profile()
-    files = files or sorted(glob.glob(str(DATA_DIR / "live" / "*.json")))
+    files = files or sorted(glob.glob(str(DATA_DIR / "live" / "20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].json")))
     brier: dict = {"fair": [], "market": []}
     by_match: dict = {}      # match -> (sum fair brier, sum market brier) for the cluster bootstrap
     by_min: dict = {}
     picks: dict = {"state_change": [], "any_snapshot": []}
-    n_matches = n_snaps = n_no_baseline = 0
-    for path in files:
+    n_matches = n_snaps = n_no_baseline = n_other_league = 0
+    raw_brier_with_w: list = []  # raw fair Brier on the rows the blend was scored on
+    # walk-forward shrinkage: rows seen on EARLIER matchdays fit the weight for this one
+    hist_f: list = []
+    hist_m: list = []
+    hist_o: list = []
+    w_trail: list = []
+    blend_brier: list = []
+    for path in sorted(files):
+        w = shrink_weight(np.array(hist_f), np.array(hist_m), np.array(hist_o)) if hist_o else None
+        w_trail.append({"file": path[-15:-5], "w": w, "rows_before": len(hist_o)})
+        day_f: list = []
+        day_m: list = []
+        day_o: list = []
         try:
             with open(path) as f:
                 day = json.load(f)
@@ -469,6 +559,9 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
             if not final and entry.get("status") == "completed" and entry.get("snapshots"):
                 final = entry["snapshots"][-1].get("score")
             if not snaps or not final:
+                continue
+            if entry_league(entry, mk) != PROFILE_LEAGUE:
+                n_other_league += 1
                 continue
             base = baseline_for_entry(entry, prof, n=n, mk=mk, baseline=baseline)
             if not base:
@@ -485,12 +578,20 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                     prev = snap
                     continue  # the whistle: nothing left to price
                 fair = fair_for_snapshot(base, snap, prof, n=n, seed=i, red=reds_at(entry, minute))
-                rows = edges(snap, fair)
+                rows = edges(snap, fair, w)
                 mkt = devig(snap["avg_odds"])
                 if len(mkt) == 3:
                     n_snaps += 1
                     bf = sum((fair["1x2"][k] - (1.0 if k == outcome else 0.0)) ** 2 for k in mkt)
                     bm = sum((mkt[k] - (1.0 if k == outcome else 0.0)) ** 2 for k in mkt)
+                    onehot = [1.0 if k == outcome else 0.0 for k in ("home", "draw", "away")]
+                    day_f.append([fair["1x2"][k] for k in ("home", "draw", "away")])
+                    day_m.append([mkt[k] for k in ("home", "draw", "away")])
+                    day_o.append(onehot)
+                    if w is not None:
+                        blend = [w * fair["1x2"][k] + (1 - w) * mkt[k] for k in ("home", "draw", "away")]
+                        blend_brier.append((sum((b - o) ** 2 for b, o in zip(blend, onehot)), bm))
+                        raw_brier_with_w.append(bf)
                     brier["fair"].append(bf)
                     brier["market"].append(bm)
                     agg = by_match.setdefault(f"{path}:{mk}", [0.0, 0.0])
@@ -503,16 +604,20 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                 for rule in ("state_change", "any_snapshot"):
                     if rule == "state_change" and not state_changed(prev, snap):
                         continue
-                    pick = best_pick(rows, minute)
+                    pick = best_pick(rows, snap, n)
                     if not pick or pick["selection"] in seen[rule]:
                         continue
                     seen[rule].add(pick["selection"])
                     picks[rule].append({"match": mk, "date": path[-15:-5], "minute": minute, "score": snap.get("score"),
                                         "selection": pick["selection"], "market": pick["market"], "odds": pick["odds"],
                                         "next_odds": _price_in(nxt, pick) if nxt else None,
-                                        "fair": pick["fair"], "market_prob": pick["market_prob"], "edge": pick["edge"],
+                                        "fair": pick["fair"], "fair_raw": pick.get("fair_raw"), "shrink_w": w,
+                                        "market_prob": pick["market_prob"], "edge": pick["edge"], "floor": pick.get("floor"),
                                         "over_cap": pick["over_cap"], "status": _grade(pick, final)})
                 prev = snap
+        hist_f += day_f
+        hist_m += day_m
+        hist_o += day_o
 
     # Cluster bootstrap by match: snapshots of one match are not independent.
     ci = None
@@ -529,18 +634,26 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
     pick_m = [x for k, v in by_min.items() if k != "86+" for x in v["market"]]
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "files": len(files), "matches": n_matches, "matches_without_baseline": n_no_baseline, "priced_snapshots": n_snaps,
+        "files": len(files), "matches": n_matches, "matches_without_baseline": n_no_baseline,
+        "matches_other_league_skipped": n_other_league, "league": PROFILE_LEAGUE, "priced_snapshots": n_snaps,
         "skill_vs_inplay_market_1x2": _skill(brier["fair"], brier["market"]),
         "skill_ci95_by_match_bootstrap": ci,
         "skill_pickable_window_le85": _skill(pick_f, pick_m),
+        "shrink": {"w_latest": (shrink_weight(np.array(hist_f), np.array(hist_m), np.array(hist_o)) if hist_o else None),
+                   "trail": w_trail[-6:],
+                   "skill_blend_vs_market_walk_forward": (_skill([b for b, _ in blend_brier], [m for _, m in blend_brier])
+                                                          if blend_brier else None),
+                   "skill_raw_vs_market_same_rows": (_skill(raw_brier_with_w, [m for _, m in blend_brier])
+                                                     if blend_brier else None),
+                   "rows_scored_with_a_weight": len(blend_brier)},
         "brier": {"fair": round(float(np.mean(brier["fair"])), 4) if brier["fair"] else None,
                   "market": round(float(np.mean(brier["market"])), 4) if brier["market"] else None},
         "skill_by_minute": {k: _skill(v["fair"], v["market"]) for k, v in sorted(by_min.items())},
         "snapshots_by_minute": {k: len(v["fair"]) for k, v in sorted(by_min.items())},
         "picks": {rule: _summarise(rows) for rule, rows in picks.items()},
         "picks_over_cap": {rule: sum(r["over_cap"] for r in rows) for rule, rows in picks.items()},
-        "rule": {"edge_min": EDGE_MIN, "fair_min": FAIR_MIN, "max_minute": MAX_MINUTE,
-                 "baseline": baseline, "red_cards_modelled": bool((prof.get("red_mult") or {}).get("short")),
+        "rule": {"edge_floor": "snapshot overround + 1.96 x Monte Carlo SE of the fair probability (no hand-set numbers)",
+                 "minute_cutoff": None, "baseline": baseline, "red_cards_modelled": bool((prof.get("red_mult") or {}).get("short")),
                  "red_mult": prof.get("red_mult"),
                  "pick_markets": list(PICK_MARKETS), "totals_feed": "pre-match lines carried in-play — never picked"},
         "gate": {"skill_min": gp.SKILL_GATE, "n_min": gp.N_GATE},

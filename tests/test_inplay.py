@@ -1,6 +1,7 @@
 """In-play paper engine: conditioned simulator, market baseline, picks, journal, settle, backtest."""
 import json
 
+import numpy as np
 import pytest
 
 from scripts.betting import inplay
@@ -64,27 +65,67 @@ def test_picks_are_1x2_only_and_stale_totals_lines_never_qualify(prof):
     fair = inplay.fair_for_snapshot(base, snap, prof, n=2000)
     rows = inplay.edges(snap, fair)
     assert rows[0]["market"] == "inplay_ou" and rows[0]["fair"] == 1.0  # it IS the biggest edge...
-    pick = inplay.best_pick(rows, 84)
+    pick = inplay.best_pick(rows, snap, 2000)
     assert pick is None or pick["market"] == "inplay_1x2"  # ...and it is never picked
 
 
-def test_best_pick_thresholds_cap_and_minute():
+def test_best_pick_floor_is_the_snapshot_margin_plus_monte_carlo_noise():
+    snap = _snap(60, (0, 0), 2.0, 3.4, 4.0)  # overround 0.044
+    assert round(inplay.overround(snap), 3) == 0.044
     rows = [{"market": "inplay_1x2", "selection": "Draw", "fair": 0.30, "market_prob": 0.15, "odds": 6.0, "edge": 0.15},
             {"market": "inplay_1x2", "selection": "Away", "fair": 0.09, "market_prob": 0.02, "odds": 40.0, "edge": 0.07},
             {"market": "inplay_1x2", "selection": "Home", "fair": 0.61, "market_prob": 0.83, "odds": 1.2, "edge": -0.22}]
-    p = inplay.best_pick(rows, 60)
+    p = inplay.best_pick(rows, snap, 3000)
     assert p["selection"] == "Draw" and p["over_cap"] is True and p["edge_pct"] == 15.0
-    assert inplay.best_pick(rows, 86) is None
-    rows[0]["edge"] = 0.06
-    assert inplay.best_pick(rows, 60)["over_cap"] is False
-    rows[0]["edge"] = 0.04
-    assert inplay.best_pick(rows, 60) is None  # Away has +7% but fair 9% is inside the noise
+    assert abs(p["floor"] - (0.044 + 1.96 * inplay.mc_se(0.30, 3000))) < 1e-3
+    # a fatter book margin raises the floor, no minute cut-off does
+    wide = _snap(88, (0, 0), 1.8, 3.0, 3.6)  # overround 0.167
+    rows[0]["edge"] = 0.10
+    assert inplay.best_pick(rows, wide, 3000) is None
+    assert inplay.best_pick(rows, snap, 3000)["over_cap"] is False
+    # fewer paths → wider interval → the same edge no longer clears
+    rows[0]["edge"] = 0.062
+    assert inplay.best_pick(rows, snap, 6000) is not None
+    assert inplay.best_pick(rows, snap, 50) is None
+    assert inplay.best_pick(rows, {"avg_odds": {"home": 2.0}}, 3000) is None  # no full 1X2 → no margin → no pick
+
+
+def test_shrink_weight_is_fitted_not_set():
+    rng = np.random.default_rng(0)
+    n = gp.N_GATE + 50
+    truth = rng.dirichlet([2, 1.5, 2], size=n)
+    out = np.array([np.eye(3)[rng.choice(3, p=t)] for t in truth])
+    noisy = np.clip(truth + rng.normal(0, 0.25, truth.shape), 0.01, 0.99)
+    noisy /= noisy.sum(axis=1, keepdims=True)
+    assert inplay.shrink_weight(noisy, truth, out) < 0.5     # a noisy "fair" is shrunk hard toward the sharp market
+    assert inplay.shrink_weight(truth, noisy, out) > 0.5     # and the sharp "fair" is kept
+    assert inplay.shrink_weight(truth[:10], noisy[:10], out[:10]) is None  # below the sample floor: no weight
+    snap = _snap(30, (0, 0), 2.0, 3.4, 4.0)
+    fair = {"1x2": {"home": 0.6, "draw": 0.25, "away": 0.15}, "totals": {}}
+    raw = inplay.edges(snap, fair)
+    half = inplay.edges(snap, fair, 0.5)
+    assert raw[0]["shrink_w"] is None and half[0]["shrink_w"] == 0.5
+    assert all(abs(h["edge"] - r["edge"] / 2) < 1e-3 for h, r in zip(half, raw))
+
+
+# ------------------------------------------------------------- league scope
+
+def test_only_the_league_with_a_profile_is_priced(journal, prof):
+    epl = {"home_team": "Arsenal", "away_team": "Chelsea", "pre_match_odds": {"home": 2.0, "draw": 3.4, "away": 3.8},
+           "snapshots": [_snap(5, (0, 0), 2.0, 3.4, 3.8, ts="t0")]}
+    assert inplay.entry_league(epl) == "premier_league"
+    assert inplay.entry_league({"league": "serie_a", "home_team": "Arsenal"}) == "serie_a"  # the stamp wins
+    assert inplay.entry_league({}, "AS Roma vs Atalanta BC") == "serie_a"
+    s1 = _snap(60, (0, 1), 6.0, 5.0, 1.5, ts="t1")
+    assert inplay.on_snapshot("Arsenal vs Chelsea", epl, s1, prof=prof, journal_path=journal, n=2000) is None
+    assert "fair" not in s1 and epl["inplay_note"] == "no goal-process profile for premier_league"
 
 
 # ------------------------------------------------------------- live hook
 
 @pytest.fixture
-def journal(tmp_path):
+def journal(tmp_path, monkeypatch):
+    monkeypatch.setattr(inplay, "BACKTEST_PATH", tmp_path / "backtest.json")  # no live shrink weight leaks in
     return tmp_path / "inplay_journal.json"
 
 
@@ -103,7 +144,7 @@ def test_on_snapshot_fires_once_per_selection_only_after_a_score_change(journal,
     assert "fair" in s0 and "best_edge" in s0  # priced even when nothing fires
     # Atalanta score at 81': the books have Roma at 10.0 — the simulator says ~3%, no pick on Roma;
     # force a state where the draw IS mispriced to see the pick path end to end
-    s1 = _snap(60, (0, 1), 6.0, 4.5, 1.5, ts="t1")
+    s1 = _snap(60, (0, 1), 6.0, 5.0, 1.5, ts="t1")
     e["snapshots"].append(s1)
     rec = inplay.on_snapshot("AS Roma vs Atalanta BC", e, s1, prof=prof, journal_path=journal, notify_fn=lambda *a: pings.append(a), n=2000)
     assert rec is not None and rec["market"] == "inplay_1x2" and rec["bet_id"] and len(pings) == 1
@@ -123,7 +164,7 @@ def test_ping_is_off_by_default_and_a_broken_journal_never_raises(journal, monke
     pings = []
     e = _entry()
     e["snapshots"].append(_snap(5, (0, 0), 1.7, 3.8, 5.0, ts="t0"))
-    s1 = _snap(60, (0, 1), 6.0, 4.5, 1.5, ts="t1")
+    s1 = _snap(60, (0, 1), 6.0, 5.0, 1.5, ts="t1")
     e["snapshots"].append(s1)
     rec = inplay.on_snapshot("m", e, s1, prof=prof, journal_path=journal, notify_fn=lambda *a: pings.append(a), n=2000)
     assert rec is not None and rec["bet_id"] is None and pings == []
@@ -134,7 +175,7 @@ def test_ping_is_off_by_default_and_a_broken_journal_never_raises(journal, monke
 def test_settle_grades_1x2_and_takes_clv_from_the_next_snapshot(journal, monkeypatch, prof):
     monkeypatch.setattr(inplay, "ping_mode", lambda: "off")
     e = _entry()
-    e["snapshots"] += [_snap(5, (0, 0), 1.7, 3.8, 5.0, ts="t0"), _snap(60, (0, 1), 6.0, 4.5, 1.5, ts="t1")]
+    e["snapshots"] += [_snap(5, (0, 0), 1.7, 3.8, 5.0, ts="t0"), _snap(60, (0, 1), 6.0, 5.0, 1.5, ts="t1")]
     rec = inplay.on_snapshot("AS Roma vs Atalanta BC", e, e["snapshots"][-1], prof=prof, journal_path=journal, n=2000)
     assert rec
     e["snapshots"].append(_snap(61, (0, 1), 5.0, 8.0, 1.2, ts="t2"))
