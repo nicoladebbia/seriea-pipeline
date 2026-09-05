@@ -979,6 +979,17 @@ def estimate_odds(probability: float) -> float:
 # =============================================================================
 # 5. UNIFIED BETTING ENGINE CLASS
 # =============================================================================
+_VETO_FACTORS = {"cold_home", "away_fav_ref"}
+_VETO_MARKET_PREFIXES = ("1X2", "DC", "DNB")
+
+
+def _veto_applies(market_cat: str) -> bool:
+    """The cold_home / away_fav_ref veto is 1X2-era evidence (who wins, n=8,
+    -33% ROI). It applies to the result markets only; a totals bet is judged
+    on its edge alone (Nicola, 2026-09-05: "bet more")."""
+    return str(market_cat or "").startswith(_VETO_MARKET_PREFIXES)
+
+
 class UnifiedBettingEngine:
     """Unified betting engine consolidating all market scanners, portfolio
     optimization, accumulator generation, intelligence filters, and output.
@@ -1256,12 +1267,13 @@ class UnifiedBettingEngine:
                 )
 
         # Veto factors that are statistically losing — on 1X2/DC/DNB (journal:
-        # n=8, -33% ROI). Applied to every market via this shared builder; the
-        # O/U evidence is n=2. Resolved AFTER the edge calc below so the slip
-        # records it (2026-09-04: 14/19 SA matches vanished here silently).
-        _VETO_FACTORS = {"cold_home", "away_fav_ref"}
+        # n=8, -33% ROI). Scoped to those result markets since 2026-09-05
+        # (_veto_applies): on O/U the evidence was n=2 (+23%) and neither
+        # factor has a mechanism on total goals, yet the shared builder killed
+        # 14/19 SA O/U candidates a matchweek. Resolved AFTER the edge calc so
+        # the slip records it where it still applies.
         _veto_hits: set = set()
-        if pred:
+        if pred and _veto_applies(market_cat):
             _all_factors = set(
                 (pred.get("neutral_factors") or []) +
                 (pred.get("home_factors") or []) +

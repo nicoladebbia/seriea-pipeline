@@ -79,30 +79,32 @@ def _vetoed_pred(*factors):
             "away_factors": [], "neutral_factors": []}
 
 
-def test_factor_veto_is_recorded_not_silent():
+def test_factor_veto_no_longer_touches_totals():
     """2026-09-04: 14 of 19 Serie A matches died on the cold_home / away_fav_ref
-    veto BEFORE the edge calc — no near-miss, no log line, and an in-band
-    Atalanta–Cagliari Over 2.5 vanished without a trace. The veto stays (its
-    1X2 evidence is real); it must just say so."""
+    veto BEFORE the edge calc — silently. 2026-09-05 (Nicola: "bet more"): the
+    veto is 1X2-era evidence (n=8, -33% on 1X2/DC/DNB; n=2, +23% on O/U) and is
+    scoped to the result markets. An in-band Over 2.5 with both factors is a bet."""
     eng = UnifiedBettingEngine()
-    # edge 6.8 in band, golden-zone odds: would be a bet without the veto
-    assert _bet(eng, 0.648, 0.58, pred=_vetoed_pred("away_fav_ref")) is None
-    (m,) = eng.near_misses
-    assert m["reason"] == "veto_factor:away_fav_ref"
-    assert m["edge_pct"] == 6.8 and m["gap_pp"] == 0.0
+    bet = _bet(eng, 0.648, 0.58, pred=_vetoed_pred("cold_home", "away_fav_ref"))
+    assert bet is not None, eng.near_misses
+    assert eng.near_misses == []
 
 
-def test_veto_lists_every_hit_factor_sorted():
+def test_veto_scope_is_the_result_markets():
+    from scripts.betting.betting_unified import _veto_applies
+    assert _veto_applies("1X2") and _veto_applies("1X2_Away") and _veto_applies("DC") and _veto_applies("DNB")
+    assert not _veto_applies("O/U_Over") and not _veto_applies("O/U_Under") and not _veto_applies("Alt_OU")
+    assert not _veto_applies("")
+
+
+def test_vetoed_result_market_is_recorded_not_silent():
+    """Where the veto still applies it must say so in the slip. 1X2/DC/DNB are
+    disabled in market_rules, so exercise the gate with 1X2 force-enabled."""
     eng = UnifiedBettingEngine()
-    assert _bet(eng, 0.648, 0.58, pred=_vetoed_pred("cold_home", "away_fav_ref")) is None
-    assert eng.near_misses[0]["reason"] == "veto_factor:away_fav_ref,cold_home"
-
-
-def test_vetoed_rejections_sort_after_real_near_misses():
-    """A vetoed in-band candidate has gap 0 and would otherwise crowd the real
-    near misses (gap 0.3) out of the slip's top-N."""
-    eng = UnifiedBettingEngine()
-    _bet(eng, 0.648, 0.58, pred=_vetoed_pred("cold_home"))     # veto, gap 0
-    _bet(eng, 0.50, 0.44, min_edge_override=7.0)                # edge 6 -> gap 1.0
-    top = eng.top_near_misses(1)
-    assert top[0]["reason"] == "below_min_edge"
+    eng.cfg.market_rules["1X2"] = dict(eng.cfg.market_rules["1X2"], enabled=True)
+    assert eng._make_bet(
+        match="Inter vs Napoli", date="2026-09-01", market="1X2", selection="Home",
+        model_p=0.62, sharp_p=0.55, best_o=1.90, best_bk="bet365", avg_o=1.85, pin_o=1.85,
+        count=12, pred=_vetoed_pred("cold_home")) is None
+    reasons = [m["reason"] for m in eng.near_misses]
+    assert "veto_factor:cold_home" in reasons, reasons
