@@ -379,7 +379,12 @@ function lpRenderMatch(mk, md, bets) {
   if (stats.clearances) statsHtml += lpRenderStat('Clearances', stats.clearances.home, stats.clearances.away);
   if (stats.fouls) statsHtml += lpRenderStat('Fouls', stats.fouls.home, stats.fouls.away);
 
-  let eventsHtml = events.length ? events.map(lpRenderEvent).join('') : '<div class="text-small text-tertiary" style="padding:var(--space-3)">No events yet</div>';
+  // Why a panel is empty matters: "no events yet" at 0-0 is fine, "the feed
+  // is blocked" is not — say which. The monitor stamps live_fetch_error when no
+  // source answered, and live_source when the fallback (ESPN) did.
+  const feedErr = md.live_fetch_error ? `<div class="text-small text-amber" style="padding:var(--space-3)">Live feed unavailable — ${md.live_fetch_error}. Showing last data received.</div>` : '';
+  const viaLabel = md.live_source === 'espn' ? ' <span class="text-tertiary" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0">via ESPN</span>' : '';
+  let eventsHtml = events.length ? events.map(lpRenderEvent).join('') : (feedErr || '<div class="text-small text-tertiary" style="padding:var(--space-3)">No events yet</div>');
 
   let betsHtml = '';
   if (matchBets.length) {
@@ -423,11 +428,11 @@ function lpRenderMatch(mk, md, bets) {
     <div id="${id}" class="live-match__detail ${isOpen ? 'open' : ''}">
       <div class="live-detail-grid">
         <div>
-          <div class="text-label mb-3">Match Stats</div>
-          ${statsHtml || '<div class="text-small text-tertiary">No stats available</div>'}
+          <div class="text-label mb-3">Match Stats${viaLabel}</div>
+          ${statsHtml || feedErr || '<div class="text-small text-tertiary">No stats available</div>'}
         </div>
         <div>
-          <div class="text-label mb-3">Events</div>
+          <div class="text-label mb-3">Events${viaLabel}</div>
           <div class="live-events">${eventsHtml}</div>
         </div>
       </div>

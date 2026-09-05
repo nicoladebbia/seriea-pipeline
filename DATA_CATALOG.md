@@ -5826,6 +5826,16 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 - **Extensions:** {'.json': 18}  
 - **Newest file:** `data/live/2026-04-14.json` (3.2KB, 2026-04-13)  
 - **Schema:** dict with 5 keys: `['date', 'polls', 'api_calls', 'matches', 'bet_tracking']`
+- **Per-match live enrichment keys (2026-09-05):** `live_events` (newest first), `live_stats`
+  (`{key: {home, away}}`), `live_player_stats`, `sofascore_id`, `sofascore_fetched_at`, plus
+  `live_source` (`sofascore` | `espn` — which feed answered the last cycle; ESPN never fills
+  `live_player_stats`) and `live_fetch_error` (present only when NO source answered; the
+  previous cycle's events/stats are kept, never blanked). Writer:
+  `scripts/data/live_monitor.poll_once` via `live_sofascore.fetch_live_data_for_matches`
+  (Sofascore first, `live_espn` fallback, 10-min 403 breaker). A field is overwritten only
+  when its source answered that cycle (`fetched` flags), so a 403 on `/statistics` cannot
+  blank good stats. Reader: `/api/live` (pass-through), `/live` card, `prop_tracker`,
+  `substitution_tracker`, `live_reconciliation`.
 
 ---
 

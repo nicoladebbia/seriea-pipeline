@@ -58,6 +58,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 
 ### `scripts/data/` — PARTIAL (seeded 2026-08-01, not a full sweep)
 
+#### 🟢 `scripts/data/live_espn.py` — grade A · keep
+- **Does:** Second source for LIVE match events + team stats from ESPN's unauthenticated `site.api.espn.com` (scoreboard per league, cached 60s, then `summary?event=`). Output is byte-shaped like `live_sofascore` (`events` newest-first, `statistics` `{key: {home, away}}`, `fetched` flags, `source: "espn"`) so nothing downstream branches. Never produces `player_stats`. Exists because on 2026-09-05 every Sofascore API endpoint answered `403 challenge` mid-match while the /live card sat empty.
+- **Talks to:** imports `config.team_names.normalize_team` (name join across the Odds API / pipeline / ESPN name spaces), `curl_cffi`. imported_by: `scripts/data/live_sofascore.py` (`_espn_fallback`, per match, after Sofascore answered nothing or while its 10-min 403 breaker is tripped).
+- **To change which stats the /live card can show from the fallback, the file is this one (`_STAT_KEYS`).** To change WHEN the fallback is used, it is `live_sofascore.fetch_live_data_for_matches`.
+- **Quality signals:** parsers tested against saved real specimens in `tests/fixtures/espn/` (13 tests, `tests/test_live_espn.py`); network isolated behind `_get_json` / `_scoreboard`.
+- ⚠️ **Own-goal side and red-card slugs are unverified** (no specimen yet) — see the module docstring.
+
 #### 🟢 `scripts/data/rumor_history.py` — grade A · keep
 - **Does:** Append-only transfer-rumor lifecycle store. Folds each daily `scrape_rumors` result into `rumor_history.parquet` (one row per rumor ever, with `first_seen`/`last_seen`/`times_seen`) plus `rumor_scrape_log.parquet` (per-run, per-club coverage). Exists because `rumors_<season>.parquet` is overwritten daily and is therefore survivorship-biased — unusable for any retrospective study.
 - **Talks to:** imported_by: `scripts/data/refresh_transfers.py` (step 3, right after `scrape_rumors`); imports: pandas, pathlib. Reads/writes `data/external/transfermarkt/rumor_history.parquet` + `rumor_scrape_log.parquet`.

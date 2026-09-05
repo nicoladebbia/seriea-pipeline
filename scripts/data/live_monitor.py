@@ -1212,22 +1212,37 @@ def poll_once() -> Dict:
     # ── Sofascore: Fetch rich live data (events, stats) for live matches ──
     if live_match_keys:
         try:
-            from scripts.data.live_sofascore import fetch_live_data_for_matches
+            from scripts.data.live_sofascore import LAST_ERRORS, fetch_live_data_for_matches
             ss_data = fetch_live_data_for_matches(live_match_keys)
             for mk, live_data in ss_data.items():
                 if mk in matchday["matches"]:
-                    old_events = matchday["matches"][mk].get("live_events", [])
-                    new_events = live_data.get("events", [])
-                    matchday["matches"][mk]["live_events"] = new_events
-                    matchday["matches"][mk]["live_stats"] = live_data.get("statistics", {})
-                    matchday["matches"][mk]["live_player_stats"] = live_data.get("player_stats", {})
-                    matchday["matches"][mk]["sofascore_id"] = live_data.get("sofascore_id")
-                    matchday["matches"][mk]["sofascore_fetched_at"] = live_data.get("fetched_at", "")
+                    entry = matchday["matches"][mk]
+                    # A field is overwritten only when its source ANSWERED this
+                    # cycle (legacy payloads without flags count as answered):
+                    # a 403 on one endpoint must not blank last good data.
+                    flags = live_data.get("fetched") or {"events": True, "statistics": True, "player_stats": True}
+                    old_events = entry.get("live_events", [])
+                    new_events = live_data.get("events", []) if flags.get("events") else old_events
+                    if flags.get("events"):
+                        entry["live_events"] = new_events
+                    if flags.get("statistics"):
+                        entry["live_stats"] = live_data.get("statistics", {})
+                    if flags.get("player_stats"):
+                        entry["live_player_stats"] = live_data.get("player_stats", {})
+                    if live_data.get("sofascore_id"):
+                        entry["sofascore_id"] = live_data["sofascore_id"]
+                    entry["sofascore_fetched_at"] = live_data.get("fetched_at", "")
+                    entry["live_source"] = live_data.get("source", "sofascore")
+                    entry.pop("live_fetch_error", None)
 
                     # ── Live event notifications (goals, red cards) ──
-                    _send_live_event_notifications(mk, matchday["matches"][mk], old_events, new_events)
+                    _send_live_event_notifications(mk, entry, old_events, new_events)
+            for mk, why in LAST_ERRORS.items():
+                if mk in matchday["matches"]:
+                    matchday["matches"][mk]["live_fetch_error"] = why
             if ss_data:
-                log.info("Sofascore: fetched live data for %d match(es)", len(ss_data))
+                sources = sorted({d.get("source", "sofascore") for d in ss_data.values()})
+                log.info("Live data for %d/%d match(es) via %s", len(ss_data), len(live_match_keys), "+".join(sources))
         except Exception as e:
             log.warning("Sofascore live data fetch failed: %s", e)
 

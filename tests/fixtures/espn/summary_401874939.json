@@ -1,0 +1,1574 @@
+{
+ "header": {
+  "competitions": [
+   {
+    "competitors": [
+     {
+      "homeAway": "home",
+      "team": {
+       "id": "109",
+       "displayName": "Fiorentina"
+      },
+      "score": "1"
+     },
+     {
+      "homeAway": "away",
+      "team": {
+       "id": "239",
+       "displayName": "Torino"
+      },
+      "score": "2"
+     }
+    ],
+    "status": {
+     "type": {
+      "id": "28",
+      "name": "STATUS_FULL_TIME",
+      "state": "post",
+      "completed": true,
+      "description": "Full Time",
+      "detail": "FT",
+      "shortDetail": "FT"
+     }
+    }
+   }
+  ]
+ },
+ "keyEvents": [
+  {
+   "id": "51881603",
+   "type": {
+    "id": "80",
+    "text": "Kickoff",
+    "type": "kickoff"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 0.0,
+    "displayValue": ""
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:01:50Z",
+   "shootout": false
+  },
+  {
+   "id": "51884492",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match because of an injury Christ Inao Oula\u00ef (Fiorentina).",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1354.0,
+    "displayValue": "23'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:24:24Z",
+   "shootout": false
+  },
+  {
+   "id": "51884387",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1354.0,
+    "displayValue": "23'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:24:24Z",
+   "shootout": false
+  },
+  {
+   "id": "51884544",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Fiorentina. Cher Ndour replaces Christ Inao Oula\u00ef because of an injury.",
+   "shortText": "Cher Ndour Substitution",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1419.0,
+    "displayValue": "24'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "360061",
+      "displayName": "Cher Ndour"
+     }
+    },
+    {
+     "athlete": {
+      "id": "386989",
+      "displayName": "Christ Inao Oula\u00ef"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:25:29Z",
+   "shootout": false
+  },
+  {
+   "id": "51884494",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1434.0,
+    "displayValue": "24'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:25:44Z",
+   "shootout": false
+  },
+  {
+   "id": "51884645",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1434.0,
+    "displayValue": "24'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:25:45Z",
+   "shootout": false
+  },
+  {
+   "id": "51885048",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match for a drinks break.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1811.0,
+    "displayValue": "31'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:32:01Z",
+   "shootout": false
+  },
+  {
+   "id": "51885050",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1811.0,
+    "displayValue": "31'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:32:01Z",
+   "shootout": false
+  },
+  {
+   "id": "51885143",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1905.0,
+    "displayValue": "32'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:33:34Z",
+   "shootout": false
+  },
+  {
+   "id": "51885142",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1905.0,
+    "displayValue": "32'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:33:35Z",
+   "shootout": false
+  },
+  {
+   "id": "51885481",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match (Torino).",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2095.0,
+    "displayValue": "35'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:36:45Z",
+   "shootout": false
+  },
+  {
+   "id": "51885482",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2095.0,
+    "displayValue": "35'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:36:45Z",
+   "shootout": false
+  },
+  {
+   "id": "51885483",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2097.0,
+    "displayValue": "35'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:36:46Z",
+   "shootout": false
+  },
+  {
+   "id": "51885484",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2097.0,
+    "displayValue": "35'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:36:47Z",
+   "shootout": false
+  },
+  {
+   "id": "51885827",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match because of an injury Sa\u00fal Coco (Torino).",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2287.0,
+    "displayValue": "39'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:39:57Z",
+   "shootout": false
+  },
+  {
+   "id": "51885859",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2287.0,
+    "displayValue": "39'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:39:57Z",
+   "shootout": false
+  },
+  {
+   "id": "51885861",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Torino. Ardian Ismajli replaces Sa\u00fal Coco because of an injury.",
+   "shortText": "Adrian Ismajli Substitution",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2370.0,
+    "displayValue": "40'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "239120",
+      "displayName": "Adrian Ismajli"
+     }
+    },
+    {
+     "athlete": {
+      "id": "274258",
+      "displayName": "Sa\u00fal Coco"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:41:19Z",
+   "shootout": false
+  },
+  {
+   "id": "51886092",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2371.0,
+    "displayValue": "40'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:41:21Z",
+   "shootout": false
+  },
+  {
+   "id": "51885860",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2371.0,
+    "displayValue": "40'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:41:21Z",
+   "shootout": false
+  },
+  {
+   "id": "51887206",
+   "type": {
+    "id": "81",
+    "text": "Halftime",
+    "type": "halftime"
+   },
+   "text": "First Half ends, Fiorentina 0, Torino 0.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'+5'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T13:51:25Z",
+   "shootout": false
+  },
+  {
+   "id": "51890076",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Fiorentina. Wilfried Gnonto replaces Franco Mastantuono.",
+   "shortText": "Wilfried Gnonto Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "297784",
+      "displayName": "Wilfried Gnonto"
+     }
+    },
+    {
+     "athlete": {
+      "id": "376473",
+      "displayName": "Franco Mastantuono"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:09:02Z",
+   "shootout": false
+  },
+  {
+   "id": "51890077",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Fiorentina. Arthur Atta replaces Marco Brescianini.",
+   "shortText": "Arthur Atta Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "356213",
+      "displayName": "Arthur Atta"
+     }
+    },
+    {
+     "athlete": {
+      "id": "276237",
+      "displayName": "Marco Brescianini"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:09:02Z",
+   "shootout": false
+  },
+  {
+   "id": "51890078",
+   "type": {
+    "id": "82",
+    "text": "Start 2nd Half",
+    "type": "start-2nd-half"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:09:19Z",
+   "shootout": false
+  },
+  {
+   "id": "51890801",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Fiorentina 1, Torino 0. Mateo Pellegrino (Fiorentina) left footed shot from outside the box to the bottom left corner. Assisted by Radu Dragusin following a fast break.",
+   "shortText": "Mateo Pellegrino Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2819.0,
+    "displayValue": "47'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "312757",
+      "displayName": "Mateo Pellegrino"
+     }
+    },
+    {
+     "athlete": {
+      "id": "310216",
+      "displayName": "Radu Dragusin"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:11:18Z",
+   "shootout": false,
+   "goalPositionY": 52.6,
+   "fieldPositionX": 75.4,
+   "fieldPositionY": 56.3,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 52.6
+  },
+  {
+   "id": "51892016",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3072.0,
+    "displayValue": "52'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:15:31Z",
+   "shootout": false
+  },
+  {
+   "id": "51892021",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3077.0,
+    "displayValue": "52'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:15:36Z",
+   "shootout": false
+  },
+  {
+   "id": "51892936",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Torino. Nathan Patterson replaces Niccol\u00f2 Fortini.",
+   "shortText": "Nathan Patterson Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3348.0,
+    "displayValue": "56'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "271191",
+      "displayName": "Nathan Patterson"
+     }
+    },
+    {
+     "athlete": {
+      "id": "384300",
+      "displayName": "Niccol\u00f2 Fortini"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:20:06Z",
+   "shootout": false
+  },
+  {
+   "id": "51893165",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Torino. Rafik Belghali replaces Alessio Cacciamani.",
+   "shortText": "Rafik Belghali Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3357.0,
+    "displayValue": "56'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "364590",
+      "displayName": "Rafik Belghali"
+     }
+    },
+    {
+     "athlete": {
+      "id": "403148",
+      "displayName": "Alessio Cacciamani"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:20:16Z",
+   "shootout": false
+  },
+  {
+   "id": "51895923",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Torino. Giovanni Simeone replaces Gvidas Gineitis.",
+   "shortText": "Giovanni Simeone Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4160.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "189974",
+      "displayName": "Giovanni Simeone"
+     }
+    },
+    {
+     "athlete": {
+      "id": "338266",
+      "displayName": "Gvidas Gineitis"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:33:38Z",
+   "shootout": false
+  },
+  {
+   "id": "51895689",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Torino. Daniel Bragan\u00e7a replaces Pietro Comuzzo.",
+   "shortText": "Daniel Bragan\u00e7a Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4165.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "290592",
+      "displayName": "Daniel Bragan\u00e7a"
+     }
+    },
+    {
+     "athlete": {
+      "id": "367168",
+      "displayName": "Pietro Comuzzo"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:33:44Z",
+   "shootout": false
+  },
+  {
+   "id": "51895905",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match for a drinks break.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4167.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:33:45Z",
+   "shootout": false
+  },
+  {
+   "id": "51895671",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4167.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:33:46Z",
+   "shootout": false
+  },
+  {
+   "id": "51896205",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4254.0,
+    "displayValue": "71'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:35:13Z",
+   "shootout": false
+  },
+  {
+   "id": "51896207",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4254.0,
+    "displayValue": "71'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:35:14Z",
+   "shootout": false
+  },
+  {
+   "id": "51896676",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Fiorentina 1, Torino 1. Rolando Mandragora (Torino) left footed shot from outside the box to the top right corner. Assisted by Eray C\u00f6mert.",
+   "shortText": "Rolando Mandragora Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4389.0,
+    "displayValue": "74'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "210392",
+      "displayName": "Rolando Mandragora"
+     }
+    },
+    {
+     "athlete": {
+      "id": "231697",
+      "displayName": "Eray C\u00f6mert"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:37:27Z",
+   "shootout": false,
+   "goalPositionY": 46.1,
+   "fieldPositionX": 76.1,
+   "fieldPositionY": 38.9,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 46.1
+  },
+  {
+   "id": "51898142",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Fiorentina. Beto replaces Mateo Pellegrino.",
+   "shortText": "Beto Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4547.0,
+    "displayValue": "76'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "289511",
+      "displayName": "Beto"
+     }
+    },
+    {
+     "athlete": {
+      "id": "312757",
+      "displayName": "Mateo Pellegrino"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:40:06Z",
+   "shootout": false
+  },
+  {
+   "id": "51898956",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Fiorentina. Pote replaces Alieu Njie.",
+   "shortText": "Pedro Gon\u00e7alves Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4720.0,
+    "displayValue": "79'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "109",
+    "displayName": "Fiorentina"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "262591",
+      "displayName": "Pedro Gon\u00e7alves"
+     }
+    },
+    {
+     "athlete": {
+      "id": "367743",
+      "displayName": "Alieu Njie"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:42:58Z",
+   "shootout": false
+  },
+  {
+   "id": "51899704",
+   "type": {
+    "id": "173",
+    "text": "Goal - Volley",
+    "type": "goal---volley"
+   },
+   "text": "Goal! Fiorentina 1, Torino 2. Ch\u00e9 Adams (Torino) right footed shot from very close range to the top left corner. Assisted by Rafik Belghali.",
+   "shortText": "Ch\u00e9 Adams Goal - Volley",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4896.0,
+    "displayValue": "82'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "239",
+    "displayName": "Torino"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "213725",
+      "displayName": "Ch\u00e9 Adams"
+     }
+    },
+    {
+     "athlete": {
+      "id": "364590",
+      "displayName": "Rafik Belghali"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:45:55Z",
+   "shootout": false,
+   "goalPositionY": 53.4,
+   "fieldPositionX": 95.1,
+   "fieldPositionY": 51.6,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 53.4
+  },
+  {
+   "id": "51901578",
+   "type": {
+    "id": "83",
+    "text": "End Regular Time",
+    "type": "end-regular-time"
+   },
+   "text": "Second Half ends, Fiorentina 1, Torino 2.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 5400.0,
+    "displayValue": "90'+5'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T14:58:27Z",
+   "shootout": false
+  }
+ ],
+ "boxscore": {
+  "teams": [
+   {
+    "homeAway": "home",
+    "team": {
+     "id": "109",
+     "displayName": "Fiorentina"
+    },
+    "statistics": [
+     {
+      "name": "foulsCommitted",
+      "displayValue": "13",
+      "label": "Fouls"
+     },
+     {
+      "name": "yellowCards",
+      "displayValue": "0",
+      "label": "Yellow Cards"
+     },
+     {
+      "name": "redCards",
+      "displayValue": "0",
+      "label": "Red Cards"
+     },
+     {
+      "name": "offsides",
+      "displayValue": "1",
+      "label": "Offsides"
+     },
+     {
+      "name": "wonCorners",
+      "displayValue": "3",
+      "label": "Corner Kicks"
+     },
+     {
+      "name": "saves",
+      "displayValue": "2",
+      "label": "Saves"
+     },
+     {
+      "name": "possessionPct",
+      "displayValue": "39.4",
+      "label": "Possession"
+     },
+     {
+      "name": "totalShots",
+      "displayValue": "14",
+      "label": "SHOTS"
+     },
+     {
+      "name": "shotsOnTarget",
+      "displayValue": "6",
+      "label": "ON GOAL"
+     },
+     {
+      "name": "shotPct",
+      "displayValue": "0.4",
+      "label": "On Target %"
+     },
+     {
+      "name": "penaltyKickGoals",
+      "displayValue": "0",
+      "label": "Penalty Goals"
+     },
+     {
+      "name": "penaltyKickShots",
+      "displayValue": "0",
+      "label": "Penalty Kicks Taken"
+     },
+     {
+      "name": "accuratePasses",
+      "displayValue": "290",
+      "label": "Accurate Passes"
+     },
+     {
+      "name": "totalPasses",
+      "displayValue": "350",
+      "label": "Passes"
+     },
+     {
+      "name": "passPct",
+      "displayValue": "0.8",
+      "label": "Pass Completion %"
+     },
+     {
+      "name": "accurateCrosses",
+      "displayValue": "5",
+      "label": "Accurate Crosses"
+     },
+     {
+      "name": "totalCrosses",
+      "displayValue": "19",
+      "label": "Crosses"
+     },
+     {
+      "name": "crossPct",
+      "displayValue": "0.3",
+      "label": "Cross %"
+     },
+     {
+      "name": "totalLongBalls",
+      "displayValue": "46",
+      "label": "Long Balls"
+     },
+     {
+      "name": "accurateLongBalls",
+      "displayValue": "23",
+      "label": "Accurate Long Balls"
+     },
+     {
+      "name": "longballPct",
+      "displayValue": "0.5",
+      "label": "Long Balls %"
+     },
+     {
+      "name": "blockedShots",
+      "displayValue": "2",
+      "label": "Blocked Shots"
+     },
+     {
+      "name": "effectiveTackles",
+      "displayValue": "10",
+      "label": "Effective Tackles"
+     },
+     {
+      "name": "totalTackles",
+      "displayValue": "19",
+      "label": "Tackles"
+     },
+     {
+      "name": "tacklePct",
+      "displayValue": "0.5",
+      "label": "Tackle %"
+     },
+     {
+      "name": "interceptions",
+      "displayValue": "13",
+      "label": "Interceptions"
+     },
+     {
+      "name": "effectiveClearance",
+      "displayValue": "24",
+      "label": "Effective Clearances"
+     },
+     {
+      "name": "totalClearance",
+      "displayValue": "24",
+      "label": "Clearances"
+     }
+    ]
+   },
+   {
+    "homeAway": "away",
+    "team": {
+     "id": "239",
+     "displayName": "Torino"
+    },
+    "statistics": [
+     {
+      "name": "foulsCommitted",
+      "displayValue": "9",
+      "label": "Fouls"
+     },
+     {
+      "name": "yellowCards",
+      "displayValue": "0",
+      "label": "Yellow Cards"
+     },
+     {
+      "name": "redCards",
+      "displayValue": "0",
+      "label": "Red Cards"
+     },
+     {
+      "name": "offsides",
+      "displayValue": "0",
+      "label": "Offsides"
+     },
+     {
+      "name": "wonCorners",
+      "displayValue": "5",
+      "label": "Corner Kicks"
+     },
+     {
+      "name": "saves",
+      "displayValue": "4",
+      "label": "Saves"
+     },
+     {
+      "name": "possessionPct",
+      "displayValue": "60.6",
+      "label": "Possession"
+     },
+     {
+      "name": "totalShots",
+      "displayValue": "7",
+      "label": "SHOTS"
+     },
+     {
+      "name": "shotsOnTarget",
+      "displayValue": "4",
+      "label": "ON GOAL"
+     },
+     {
+      "name": "shotPct",
+      "displayValue": "0.6",
+      "label": "On Target %"
+     },
+     {
+      "name": "penaltyKickGoals",
+      "displayValue": "0",
+      "label": "Penalty Goals"
+     },
+     {
+      "name": "penaltyKickShots",
+      "displayValue": "0",
+      "label": "Penalty Kicks Taken"
+     },
+     {
+      "name": "accuratePasses",
+      "displayValue": "489",
+      "label": "Accurate Passes"
+     },
+     {
+      "name": "totalPasses",
+      "displayValue": "551",
+      "label": "Passes"
+     },
+     {
+      "name": "passPct",
+      "displayValue": "0.9",
+      "label": "Pass Completion %"
+     },
+     {
+      "name": "accurateCrosses",
+      "displayValue": "2",
+      "label": "Accurate Crosses"
+     },
+     {
+      "name": "totalCrosses",
+      "displayValue": "18",
+      "label": "Crosses"
+     },
+     {
+      "name": "crossPct",
+      "displayValue": "0.1",
+      "label": "Cross %"
+     },
+     {
+      "name": "totalLongBalls",
+      "displayValue": "49",
+      "label": "Long Balls"
+     },
+     {
+      "name": "accurateLongBalls",
+      "displayValue": "18",
+      "label": "Accurate Long Balls"
+     },
+     {
+      "name": "longballPct",
+      "displayValue": "0.4",
+      "label": "Long Balls %"
+     },
+     {
+      "name": "blockedShots",
+      "displayValue": "2",
+      "label": "Blocked Shots"
+     },
+     {
+      "name": "effectiveTackles",
+      "displayValue": "7",
+      "label": "Effective Tackles"
+     },
+     {
+      "name": "totalTackles",
+      "displayValue": "13",
+      "label": "Tackles"
+     },
+     {
+      "name": "tacklePct",
+      "displayValue": "0.5",
+      "label": "Tackle %"
+     },
+     {
+      "name": "interceptions",
+      "displayValue": "5",
+      "label": "Interceptions"
+     },
+     {
+      "name": "effectiveClearance",
+      "displayValue": "28",
+      "label": "Effective Clearances"
+     },
+     {
+      "name": "totalClearance",
+      "displayValue": "28",
+      "label": "Clearances"
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -272,5 +272,81 @@ def test_one_bad_match_does_not_sink_the_cycle(monkeypatch):
         return {"sofascore_id": 2, "events": [], "statistics": {}, "player_stats": {}, "fetched_at": "x"}
 
     monkeypatch.setattr("scripts.data.live_sofascore.fetch_live_data_for_match", flaky)
+    monkeypatch.setattr("scripts.data.live_sofascore._espn_fallback", lambda mk: None)
     out = fetch_live_data_for_matches(["Milan vs Como", "Roma vs Lazio"])
     assert list(out) == ["Roma vs Lazio"]
+
+
+# ---------------------------------------------------------------------------
+# Sofascore answers nothing -> ESPN fallback, or omission (never a blank)
+# ---------------------------------------------------------------------------
+
+def _all_403(sofascore_id):
+    return {"sofascore_id": sofascore_id, "events": [], "statistics": {}, "player_stats": {},
+            "fetched": {"events": False, "statistics": False, "player_stats": False},
+            "source": "sofascore", "fetched_at": "x"}
+
+
+def _espn_payload(mk):
+    return {"espn_id": "1", "events": [{"type": "goal"}], "statistics": {"shots": {"home": 3, "away": 1}},
+            "player_stats": {}, "fetched": {"events": True, "statistics": True, "player_stats": False},
+            "source": "espn", "fetched_at": "y"}
+
+
+def test_sofascore_403_on_every_endpoint_falls_back_to_espn(monkeypatch):
+    import scripts.data.live_sofascore as mod
+    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
+    monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 16285005})
+    monkeypatch.setattr(mod, "fetch_live_data_for_match", _all_403)
+    monkeypatch.setattr(mod._ss, "_LAST_FAILURE_STATUS", 403, raising=False)
+    monkeypatch.setattr(mod, "_espn_fallback", _espn_payload)
+    out = fetch_live_data_for_matches(["AS Roma vs Atalanta BC"])
+    assert out["AS Roma vs Atalanta BC"]["source"] == "espn"
+    assert out["AS Roma vs Atalanta BC"]["sofascore_id"] == 16285005  # id survives the swap
+    assert mod._sofascore_blocked_until > 0  # breaker tripped
+    assert mod.LAST_ERRORS == {}
+
+
+def test_breaker_skips_sofascore_and_goes_straight_to_espn(monkeypatch):
+    import time as _t
+    import scripts.data.live_sofascore as mod
+    monkeypatch.setattr(mod, "_sofascore_blocked_until", _t.monotonic() + 600)
+
+    def boom(*a, **k):  # pragma: no cover - must not run while cooling down
+        raise AssertionError("Sofascore was called during the 403 cooldown")
+
+    monkeypatch.setattr(mod, "get_sofascore_match_ids", boom)
+    monkeypatch.setattr(mod, "fetch_live_data_for_match", boom)
+    monkeypatch.setattr(mod, "_espn_fallback", _espn_payload)
+    out = fetch_live_data_for_matches(["AS Roma vs Atalanta BC"])
+    assert out["AS Roma vs Atalanta BC"]["source"] == "espn"
+
+
+def test_nothing_answers_means_omitted_with_a_reason(monkeypatch):
+    import scripts.data.live_sofascore as mod
+    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
+    monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 1})
+    monkeypatch.setattr(mod, "fetch_live_data_for_match", _all_403)
+    monkeypatch.setattr(mod._ss, "_LAST_FAILURE_STATUS", 403, raising=False)
+    monkeypatch.setattr(mod, "_espn_fallback", lambda mk: None)
+    out = fetch_live_data_for_matches(["AS Roma vs Atalanta BC"])
+    assert out == {}
+    assert "403" in mod.LAST_ERRORS["AS Roma vs Atalanta BC"]
+    assert "ESPN" in mod.LAST_ERRORS["AS Roma vs Atalanta BC"]
+
+
+def test_partial_sofascore_answer_is_kept_not_replaced(monkeypatch):
+    """/incidents answered, /statistics 403'd: keep the Sofascore payload (its
+    flags tell live_monitor to leave live_stats alone), do not swap to ESPN."""
+    import scripts.data.live_sofascore as mod
+    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
+    monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 1})
+
+    def partial(sid):
+        d = _all_403(sid); d["fetched"]["events"] = True; return d
+
+    monkeypatch.setattr(mod, "fetch_live_data_for_match", partial)
+    monkeypatch.setattr(mod, "_espn_fallback", lambda mk: (_ for _ in ()).throw(AssertionError("ESPN called")))
+    out = fetch_live_data_for_matches(["AS Roma vs Atalanta BC"])
+    assert out["AS Roma vs Atalanta BC"]["source"] == "sofascore"
+    assert out["AS Roma vs Atalanta BC"]["fetched"] == {"events": True, "statistics": False, "player_stats": False}

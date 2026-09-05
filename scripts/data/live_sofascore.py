@@ -37,13 +37,24 @@ finished matches, which serve the same payloads.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from typing import Any
 
+from scraper import sofascore_events as _ss
 from scraper.sofascore_events import _BASE_URL, _get_json, _jitter_delay
 from scraper.sofascore_lineups import get_sofascore_match_ids
+from scripts.data import live_espn
 
 log = logging.getLogger(__name__)
+
+# Sofascore 403 breaker. One blocked cycle costs ~2 min of backoff (4 attempts
+# x 3 endpoints), longer than the poll interval; while it is tripped the cycle
+# goes straight to the ESPN fallback and Sofascore is retried after the cooldown.
+_BLOCK_COOLDOWN_S = 600
+_sofascore_blocked_until = 0.0
+# match key -> why this cycle produced nothing (read by live_monitor for the card)
+LAST_ERRORS: dict[str, str] = {}
 
 # Sofascore incidentType -> our event type. Anything absent is dropped:
 # `period` and `inGamePenalty` both appear in real responses and neither has a
@@ -215,48 +226,106 @@ def fetch_live_data_for_match(sofascore_id: int) -> dict[str, Any]:
         "events": [],
         "statistics": {},
         "player_stats": {},
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        # per-field: did the endpoint ANSWER? live_monitor overwrites a field
+        # only when it did, so a 403 on /statistics cannot blank good stats.
+        "fetched": {"events": False, "statistics": False, "player_stats": False},
+        "source": "sofascore",
+        "fetched_at": datetime.now(UTC).isoformat(),
     }
 
     incidents = _get_json(f"{_BASE_URL}/event/{sofascore_id}/incidents")
-    if incidents:
+    if incidents is not None:
         data["events"] = parse_incidents(incidents)
+        data["fetched"]["events"] = True
 
     _jitter_delay()
     stats = _get_json(f"{_BASE_URL}/event/{sofascore_id}/statistics")
-    if stats:
+    if stats is not None:
         data["statistics"] = parse_statistics(stats)
+        data["fetched"]["statistics"] = True
 
     _jitter_delay()
     lineups = _get_json(f"{_BASE_URL}/event/{sofascore_id}/lineups")
-    if lineups:
+    if lineups is not None:
         data["player_stats"] = parse_lineups(lineups)
+        data["fetched"]["player_stats"] = True
 
     return data
 
 
-def fetch_live_data_for_matches(match_keys: list[str]) -> dict[str, dict[str, Any]]:
-    """Live data keyed by match key, for the matches that resolve to a Sofascore id.
+def _answered(data: dict[str, Any] | None) -> bool:
+    if not data:
+        return False
+    flags = data.get("fetched")
+    return any(flags.values()) if flags else True
 
-    Contract at live_monitor.py:1141. Matches that cannot be resolved are
-    omitted rather than returned empty — the caller only overwrites
-    ``live_events`` for keys present here, so an omission preserves the last
-    good data instead of blanking it.
+
+def _espn_fallback(match_key: str) -> dict[str, Any] | None:
+    parts = match_key.split(" vs ", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return live_espn.fetch_live_data_for_match(parts[0].strip(), parts[1].strip())
+    except Exception as exc:  # noqa: BLE001 - a fallback must not sink the cycle
+        log.warning("ESPN fallback failed for %s: %s", match_key, exc)
+        return None
+
+
+def fetch_live_data_for_matches(match_keys: list[str]) -> dict[str, dict[str, Any]]:
+    """Live data keyed by match key: Sofascore first, ESPN when Sofascore answers nothing.
+
+    Contract at live_monitor.py (Sofascore block): a match is present in the
+    result only when SOME source answered this cycle; an omission preserves the
+    match's last good data instead of blanking it, and ``LAST_ERRORS`` says why.
     """
+    global _sofascore_blocked_until
+    LAST_ERRORS.clear()
     if not match_keys:
         return {}
 
-    # get_sofascore_match_ids takes {match_key: {...}} and falls back to
-    # splitting "Home vs Away" when the record carries no team fields.
-    id_map = get_sofascore_match_ids({k: {} for k in match_keys})
-    if not id_map:
-        log.warning("Sofascore: resolved 0 of %d live match(es)", len(match_keys))
-        return {}
+    now = time.monotonic()
+    blocked = now < _sofascore_blocked_until
+    id_map: dict[str, int] = {}
+    if not blocked:
+        # get_sofascore_match_ids takes {match_key: {...}} and falls back to
+        # splitting "Home vs Away" when the record carries no team fields.
+        id_map = get_sofascore_match_ids({k: {} for k in match_keys}) or {}
+        if not id_map:
+            log.warning("Sofascore: resolved 0 of %d live match(es)", len(match_keys))
+    else:
+        log.info("Sofascore: 403 cooldown for %ds more, using ESPN",
+                 int(_sofascore_blocked_until - now))
 
     out: dict[str, dict[str, Any]] = {}
-    for match_key, sofascore_id in id_map.items():
-        try:
-            out[match_key] = fetch_live_data_for_match(sofascore_id)
-        except Exception as exc:  # noqa: BLE001 - one bad match must not sink the cycle
-            log.warning("Sofascore fetch failed for %s (%s): %s", match_key, sofascore_id, exc)
+    for match_key in match_keys:
+        data: dict[str, Any] | None = None
+        why = "Sofascore skipped (403 cooldown)" if blocked else "Sofascore: no id"
+        sofascore_id = id_map.get(match_key)
+        if sofascore_id is not None:
+            try:
+                data = fetch_live_data_for_match(sofascore_id)
+            except Exception as exc:  # noqa: BLE001 - one bad match must not sink the cycle
+                log.warning("Sofascore fetch failed for %s (%s): %s", match_key, sofascore_id, exc)
+                why = f"Sofascore error: {str(exc)[:60]}"
+            if data is not None and not _answered(data):
+                status = getattr(_ss, "_LAST_FAILURE_STATUS", None)
+                why = f"Sofascore blocked (HTTP {status})" if status else "Sofascore unreachable"
+                if status == 403 and not blocked:
+                    _sofascore_blocked_until = time.monotonic() + _BLOCK_COOLDOWN_S
+                    log.warning("Sofascore API 403 on every endpoint — cooling down %ds, "
+                                "serving live stats/events from ESPN", _BLOCK_COOLDOWN_S)
+                data = None
+        if data is None:
+            espn = _espn_fallback(match_key)
+            if espn:
+                if sofascore_id is not None:
+                    espn["sofascore_id"] = sofascore_id
+                data = espn
+            else:
+                why += ", ESPN: no match"
+        if data is None:
+            LAST_ERRORS[match_key] = why
+            log.warning("No live data for %s this cycle (%s) — keeping last good", match_key, why)
+            continue
+        out[match_key] = data
     return out

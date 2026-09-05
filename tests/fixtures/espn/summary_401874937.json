@@ -1,0 +1,1507 @@
+{
+ "header": {
+  "competitions": [
+   {
+    "competitors": [
+     {
+      "homeAway": "home",
+      "team": {
+       "id": "110",
+       "displayName": "Internazionale"
+      },
+      "score": "3"
+     },
+     {
+      "homeAway": "away",
+      "team": {
+       "id": "114",
+       "displayName": "Napoli"
+      },
+      "score": "2"
+     }
+    ],
+    "status": {
+     "type": {
+      "id": "28",
+      "name": "STATUS_FULL_TIME",
+      "state": "post",
+      "completed": true,
+      "description": "Full Time",
+      "detail": "FT",
+      "shortDetail": "FT"
+     }
+    }
+   }
+  ]
+ },
+ "keyEvents": [
+  {
+   "id": "51915005",
+   "type": {
+    "id": "80",
+    "text": "Kickoff",
+    "type": "kickoff"
+   },
+   "text": "First Half begins.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 0.0,
+    "displayValue": ""
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:01:05Z",
+   "shootout": false
+  },
+  {
+   "id": "51916739",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match for a drinks break.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1467.0,
+    "displayValue": "25'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:25:33Z",
+   "shootout": false
+  },
+  {
+   "id": "51916740",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1467.0,
+    "displayValue": "25'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:25:33Z",
+   "shootout": false
+  },
+  {
+   "id": "51916871",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1492.0,
+    "displayValue": "25'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:25:58Z",
+   "shootout": false
+  },
+  {
+   "id": "51916741",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 1492.0,
+    "displayValue": "25'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:25:58Z",
+   "shootout": false
+  },
+  {
+   "id": "51917387",
+   "type": {
+    "id": "94",
+    "text": "Yellow Card",
+    "type": "yellow-card"
+   },
+   "text": "Antonio Vergara (Napoli) is shown the yellow card for a bad foul.",
+   "shortText": "Antonio Vergara Yellow Card",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2048.0,
+    "displayValue": "35'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "332411",
+      "displayName": "Antonio Vergara"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:35:14Z",
+   "shootout": false
+  },
+  {
+   "id": "51917948",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match because of an injury Alessandro Bastoni (Inter Milan).",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2433.0,
+    "displayValue": "41'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:41:38Z",
+   "shootout": false
+  },
+  {
+   "id": "51918190",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2433.0,
+    "displayValue": "41'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:41:39Z",
+   "shootout": false
+  },
+  {
+   "id": "51918135",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2522.0,
+    "displayValue": "43'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:43:08Z",
+   "shootout": false
+  },
+  {
+   "id": "51918191",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2522.0,
+    "displayValue": "43'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:43:08Z",
+   "shootout": false
+  },
+  {
+   "id": "51918845",
+   "type": {
+    "id": "81",
+    "text": "Halftime",
+    "type": "halftime"
+   },
+   "text": "First Half ends, Inter Milan 0, Napoli 0.",
+   "period": {
+    "number": 1
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'+5'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T16:50:11Z",
+   "shootout": false
+  },
+  {
+   "id": "51920417",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Inter Milan. Marcus Thuram replaces Francesco Pio Esposito.",
+   "shortText": "Marcus Thuram Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "217331",
+      "displayName": "Marcus Thuram"
+     }
+    },
+    {
+     "athlete": {
+      "id": "362674",
+      "displayName": "Pio Esposito"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:06:05Z",
+   "shootout": false
+  },
+  {
+   "id": "51920457",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Inter Milan. Curtis Jones replaces Petar Sucic.",
+   "shortText": "Curtis Jones Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "190257",
+      "displayName": "Curtis Jones"
+     }
+    },
+    {
+     "athlete": {
+      "id": "341494",
+      "displayName": "Petar Sucic"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:06:06Z",
+   "shootout": false
+  },
+  {
+   "id": "51920456",
+   "type": {
+    "id": "82",
+    "text": "Start 2nd Half",
+    "type": "start-2nd-half"
+   },
+   "text": "Second Half begins Inter Milan 0, Napoli 0.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2700.0,
+    "displayValue": "45'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:06:57Z",
+   "shootout": false
+  },
+  {
+   "id": "51921093",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Inter Milan 0, Napoli 1. Matteo Politano (Napoli) right footed shot from the centre of the box to the bottom left corner.",
+   "shortText": "Matteo Politano Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 2976.0,
+    "displayValue": "50'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "188306",
+      "displayName": "Matteo Politano"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:11:33Z",
+   "shootout": false,
+   "goalPositionY": 52.9,
+   "fieldPositionX": 85.5,
+   "fieldPositionY": 47.0,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 52.9
+  },
+  {
+   "id": "51921448",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Inter Milan 0, Napoli 2. Rasmus H\u00f8jlund (Napoli) left footed shot from outside the box to the bottom left corner. Assisted by Giovanni Di Lorenzo.",
+   "shortText": "Rasmus H\u00f8jlund Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3141.0,
+    "displayValue": "53'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "309273",
+      "displayName": "Rasmus H\u00f8jlund"
+     }
+    },
+    {
+     "athlete": {
+      "id": "155904",
+      "displayName": "Giovanni Di Lorenzo"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:14:18Z",
+   "shootout": false,
+   "goalPositionY": 54.0,
+   "fieldPositionX": 83.0,
+   "fieldPositionY": 28.4,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 54.0
+  },
+  {
+   "id": "51921859",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Inter Milan 1, Napoli 2. Lautaro Mart\u00ednez (Inter Milan) right footed shot from very close range to the high centre of the goal. Assisted by Federico Dimarco.",
+   "shortText": "Lautaro Mart\u00ednez Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3356.0,
+    "displayValue": "56'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "219713",
+      "displayName": "Lautaro Mart\u00ednez"
+     }
+    },
+    {
+     "athlete": {
+      "id": "194748",
+      "displayName": "Federico Dimarco"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:17:53Z",
+   "shootout": false,
+   "goalPositionY": 49.7,
+   "fieldPositionX": 97.6,
+   "fieldPositionY": 48.0,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 49.7
+  },
+  {
+   "id": "51922310",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Napoli. Kevin De Bruyne replaces Antonio Vergara.",
+   "shortText": "Kevin De Bruyne Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3664.0,
+    "displayValue": "62'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "134947",
+      "displayName": "Kevin De Bruyne"
+     }
+    },
+    {
+     "athlete": {
+      "id": "332411",
+      "displayName": "Antonio Vergara"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:23:01Z",
+   "shootout": false
+  },
+  {
+   "id": "51922311",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Napoli. David Neres replaces Matteo Politano.",
+   "shortText": "David Neres Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3674.0,
+    "displayValue": "62'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "245637",
+      "displayName": "David Neres"
+     }
+    },
+    {
+     "athlete": {
+      "id": "188306",
+      "displayName": "Matteo Politano"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:23:11Z",
+   "shootout": false
+  },
+  {
+   "id": "51922385",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Inter Milan. Carlos Augusto replaces Federico Dimarco.",
+   "shortText": "Carlos Augusto Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 3687.0,
+    "displayValue": "62'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "271769",
+      "displayName": "Carlos Augusto"
+     }
+    },
+    {
+     "athlete": {
+      "id": "194748",
+      "displayName": "Federico Dimarco"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:23:24Z",
+   "shootout": false
+  },
+  {
+   "id": "51922773",
+   "type": {
+    "id": "94",
+    "text": "Yellow Card",
+    "type": "yellow-card"
+   },
+   "text": "Lautaro Mart\u00ednez (Inter Milan) is shown the yellow card.",
+   "shortText": "Lautaro Mart\u00ednez Yellow Card",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4079.0,
+    "displayValue": "68'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "219713",
+      "displayName": "Lautaro Mart\u00ednez"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:29:57Z",
+   "shootout": false
+  },
+  {
+   "id": "51922902",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "text": "Delay in match for a drinks break.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4174.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:31:32Z",
+   "shootout": false
+  },
+  {
+   "id": "51922903",
+   "type": {
+    "id": "129",
+    "text": "Start Delay",
+    "type": "start-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4174.0,
+    "displayValue": "70'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:31:32Z",
+   "shootout": false
+  },
+  {
+   "id": "51922904",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "text": "Delay over. They are ready to continue.",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4239.0,
+    "displayValue": "71'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:32:37Z",
+   "shootout": false
+  },
+  {
+   "id": "51923050",
+   "type": {
+    "id": "130",
+    "text": "End Delay",
+    "type": "end-delay"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4239.0,
+    "displayValue": "71'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:32:37Z",
+   "shootout": false
+  },
+  {
+   "id": "51923068",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Inter Milan. Hakan \u00c7alhanoglu replaces Piotr Zielinski.",
+   "shortText": "Hakan \u00c7alhanoglu Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4264.0,
+    "displayValue": "72'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "170785",
+      "displayName": "Hakan \u00c7alhanoglu"
+     }
+    },
+    {
+     "athlete": {
+      "id": "177782",
+      "displayName": "Piotr Zieli\u0144ski"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:33:02Z",
+   "shootout": false
+  },
+  {
+   "id": "51923069",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Napoli. Lorenzo Lucca replaces Rasmus H\u00f8jlund.",
+   "shortText": "Lorenzo Lucca Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4289.0,
+    "displayValue": "72'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "282564",
+      "displayName": "Lorenzo Lucca"
+     }
+    },
+    {
+     "athlete": {
+      "id": "309273",
+      "displayName": "Rasmus H\u00f8jlund"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:33:26Z",
+   "shootout": false
+  },
+  {
+   "id": "51923658",
+   "type": {
+    "id": "94",
+    "text": "Yellow Card",
+    "type": "yellow-card"
+   },
+   "text": "Rafa Mar\u00edn (Napoli) is shown the yellow card for a bad foul.",
+   "shortText": "Rafa Mar\u00edn Yellow Card",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4599.0,
+    "displayValue": "77'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "297360",
+      "displayName": "Rafa Mar\u00edn"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:38:36Z",
+   "shootout": false
+  },
+  {
+   "id": "51923782",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Inter Milan. Ange-Yoan Bonny replaces Alessandro Bastoni.",
+   "shortText": "Ange-Yoan Bonny Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4707.0,
+    "displayValue": "79'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "309185",
+      "displayName": "Ange-Yoan Bonny"
+     }
+    },
+    {
+     "athlete": {
+      "id": "249280",
+      "displayName": "Alessandro Bastoni"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:40:24Z",
+   "shootout": false
+  },
+  {
+   "id": "51923876",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Napoli. Billy Gilmour replaces Stanislav Lobotka.",
+   "shortText": "Billy Gilmour Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4738.0,
+    "displayValue": "79'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "274217",
+      "displayName": "Billy Gilmour"
+     }
+    },
+    {
+     "athlete": {
+      "id": "188412",
+      "displayName": "Stanislav Lobotka"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:40:56Z",
+   "shootout": false
+  },
+  {
+   "id": "51923877",
+   "type": {
+    "id": "76",
+    "text": "Substitution",
+    "type": "substitution"
+   },
+   "text": "Substitution, Napoli. Beno\u00eet Badiashile replaces Alisson Santos.",
+   "shortText": "Beno\u00eet Badiashile Substitution",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4758.0,
+    "displayValue": "80'"
+   },
+   "scoringPlay": false,
+   "team": {
+    "id": "114",
+    "displayName": "Napoli"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "282585",
+      "displayName": "Beno\u00eet Badiashile"
+     }
+    },
+    {
+     "athlete": {
+      "id": "319697",
+      "displayName": "Alisson Santos"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:41:15Z",
+   "shootout": false
+  },
+  {
+   "id": "51924050",
+   "type": {
+    "id": "137",
+    "text": "Goal - Header",
+    "type": "goal---header"
+   },
+   "text": "Goal! Inter Milan 2, Napoli 2. Marcus Thuram (Inter Milan) header from the centre of the box to the bottom left corner. Assisted by Carlos Augusto with a cross.",
+   "shortText": "Marcus Thuram Goal - Header",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 4868.0,
+    "displayValue": "82'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "217331",
+      "displayName": "Marcus Thuram"
+     }
+    },
+    {
+     "athlete": {
+      "id": "271769",
+      "displayName": "Carlos Augusto"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:43:05Z",
+   "shootout": false,
+   "goalPositionY": 53.7,
+   "fieldPositionX": 89.7,
+   "fieldPositionY": 50.8,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 53.7
+  },
+  {
+   "id": "51925208",
+   "type": {
+    "id": "70",
+    "text": "Goal",
+    "type": "goal"
+   },
+   "text": "Goal! Inter Milan 3, Napoli 2. Lautaro Mart\u00ednez (Inter Milan) left footed shot from very close range to the bottom left corner. Assisted by Manuel Akanji following a corner.",
+   "shortText": "Lautaro Mart\u00ednez Goal",
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 5400.0,
+    "displayValue": "90'+1'"
+   },
+   "scoringPlay": true,
+   "team": {
+    "id": "110",
+    "displayName": "Internazionale"
+   },
+   "participants": [
+    {
+     "athlete": {
+      "id": "219713",
+      "displayName": "Lautaro Mart\u00ednez"
+     }
+    },
+    {
+     "athlete": {
+      "id": "214562",
+      "displayName": "Manuel Akanji"
+     }
+    }
+   ],
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:52:02Z",
+   "shootout": false,
+   "goalPositionY": 53.4,
+   "fieldPositionX": 98.0,
+   "fieldPositionY": 54.7,
+   "fieldPosition2X": 100.0,
+   "fieldPosition2Y": 53.4
+  },
+  {
+   "id": "51925942",
+   "type": {
+    "id": "83",
+    "text": "End Regular Time",
+    "type": "end-regular-time"
+   },
+   "period": {
+    "number": 2
+   },
+   "clock": {
+    "value": 5400.0,
+    "displayValue": "90'+7'"
+   },
+   "scoringPlay": false,
+   "source": {
+    "id": "38",
+    "description": "SA.ENVOY"
+   },
+   "wallclock": "2026-09-05T17:58:32Z",
+   "shootout": false
+  }
+ ],
+ "boxscore": {
+  "teams": [
+   {
+    "homeAway": "home",
+    "team": {
+     "id": "110",
+     "displayName": "Internazionale"
+    },
+    "statistics": [
+     {
+      "name": "foulsCommitted",
+      "displayValue": "7",
+      "label": "Fouls"
+     },
+     {
+      "name": "yellowCards",
+      "displayValue": "1",
+      "label": "Yellow Cards"
+     },
+     {
+      "name": "redCards",
+      "displayValue": "0",
+      "label": "Red Cards"
+     },
+     {
+      "name": "offsides",
+      "displayValue": "1",
+      "label": "Offsides"
+     },
+     {
+      "name": "wonCorners",
+      "displayValue": "10",
+      "label": "Corner Kicks"
+     },
+     {
+      "name": "saves",
+      "displayValue": "6",
+      "label": "Saves"
+     },
+     {
+      "name": "possessionPct",
+      "displayValue": "62.7",
+      "label": "Possession"
+     },
+     {
+      "name": "totalShots",
+      "displayValue": "29",
+      "label": "SHOTS"
+     },
+     {
+      "name": "shotsOnTarget",
+      "displayValue": "8",
+      "label": "ON GOAL"
+     },
+     {
+      "name": "shotPct",
+      "displayValue": "0.3",
+      "label": "On Target %"
+     },
+     {
+      "name": "penaltyKickGoals",
+      "displayValue": "0",
+      "label": "Penalty Goals"
+     },
+     {
+      "name": "penaltyKickShots",
+      "displayValue": "0",
+      "label": "Penalty Kicks Taken"
+     },
+     {
+      "name": "accuratePasses",
+      "displayValue": "485",
+      "label": "Accurate Passes"
+     },
+     {
+      "name": "totalPasses",
+      "displayValue": "542",
+      "label": "Passes"
+     },
+     {
+      "name": "passPct",
+      "displayValue": "0.9",
+      "label": "Pass Completion %"
+     },
+     {
+      "name": "accurateCrosses",
+      "displayValue": "13",
+      "label": "Accurate Crosses"
+     },
+     {
+      "name": "totalCrosses",
+      "displayValue": "38",
+      "label": "Crosses"
+     },
+     {
+      "name": "crossPct",
+      "displayValue": "0.3",
+      "label": "Cross %"
+     },
+     {
+      "name": "totalLongBalls",
+      "displayValue": "40",
+      "label": "Long Balls"
+     },
+     {
+      "name": "accurateLongBalls",
+      "displayValue": "21",
+      "label": "Accurate Long Balls"
+     },
+     {
+      "name": "longballPct",
+      "displayValue": "0.5",
+      "label": "Long Balls %"
+     },
+     {
+      "name": "blockedShots",
+      "displayValue": "7",
+      "label": "Blocked Shots"
+     },
+     {
+      "name": "effectiveTackles",
+      "displayValue": "15",
+      "label": "Effective Tackles"
+     },
+     {
+      "name": "totalTackles",
+      "displayValue": "27",
+      "label": "Tackles"
+     },
+     {
+      "name": "tacklePct",
+      "displayValue": "0.6",
+      "label": "Tackle %"
+     },
+     {
+      "name": "interceptions",
+      "displayValue": "5",
+      "label": "Interceptions"
+     },
+     {
+      "name": "effectiveClearance",
+      "displayValue": "26",
+      "label": "Effective Clearances"
+     },
+     {
+      "name": "totalClearance",
+      "displayValue": "26",
+      "label": "Clearances"
+     }
+    ]
+   },
+   {
+    "homeAway": "away",
+    "team": {
+     "id": "114",
+     "displayName": "Napoli"
+    },
+    "statistics": [
+     {
+      "name": "foulsCommitted",
+      "displayValue": "7",
+      "label": "Fouls"
+     },
+     {
+      "name": "yellowCards",
+      "displayValue": "2",
+      "label": "Yellow Cards"
+     },
+     {
+      "name": "redCards",
+      "displayValue": "0",
+      "label": "Red Cards"
+     },
+     {
+      "name": "offsides",
+      "displayValue": "2",
+      "label": "Offsides"
+     },
+     {
+      "name": "wonCorners",
+      "displayValue": "5",
+      "label": "Corner Kicks"
+     },
+     {
+      "name": "saves",
+      "displayValue": "5",
+      "label": "Saves"
+     },
+     {
+      "name": "possessionPct",
+      "displayValue": "37.3",
+      "label": "Possession"
+     },
+     {
+      "name": "totalShots",
+      "displayValue": "16",
+      "label": "SHOTS"
+     },
+     {
+      "name": "shotsOnTarget",
+      "displayValue": "7",
+      "label": "ON GOAL"
+     },
+     {
+      "name": "shotPct",
+      "displayValue": "0.4",
+      "label": "On Target %"
+     },
+     {
+      "name": "penaltyKickGoals",
+      "displayValue": "0",
+      "label": "Penalty Goals"
+     },
+     {
+      "name": "penaltyKickShots",
+      "displayValue": "0",
+      "label": "Penalty Kicks Taken"
+     },
+     {
+      "name": "accuratePasses",
+      "displayValue": "264",
+      "label": "Accurate Passes"
+     },
+     {
+      "name": "totalPasses",
+      "displayValue": "341",
+      "label": "Passes"
+     },
+     {
+      "name": "passPct",
+      "displayValue": "0.8",
+      "label": "Pass Completion %"
+     },
+     {
+      "name": "accurateCrosses",
+      "displayValue": "2",
+      "label": "Accurate Crosses"
+     },
+     {
+      "name": "totalCrosses",
+      "displayValue": "8",
+      "label": "Crosses"
+     },
+     {
+      "name": "crossPct",
+      "displayValue": "0.3",
+      "label": "Cross %"
+     },
+     {
+      "name": "totalLongBalls",
+      "displayValue": "52",
+      "label": "Long Balls"
+     },
+     {
+      "name": "accurateLongBalls",
+      "displayValue": "18",
+      "label": "Accurate Long Balls"
+     },
+     {
+      "name": "longballPct",
+      "displayValue": "0.3",
+      "label": "Long Balls %"
+     },
+     {
+      "name": "blockedShots",
+      "displayValue": "5",
+      "label": "Blocked Shots"
+     },
+     {
+      "name": "effectiveTackles",
+      "displayValue": "9",
+      "label": "Effective Tackles"
+     },
+     {
+      "name": "totalTackles",
+      "displayValue": "14",
+      "label": "Tackles"
+     },
+     {
+      "name": "tacklePct",
+      "displayValue": "0.6",
+      "label": "Tackle %"
+     },
+     {
+      "name": "interceptions",
+      "displayValue": "6",
+      "label": "Interceptions"
+     },
+     {
+      "name": "effectiveClearance",
+      "displayValue": "39",
+      "label": "Effective Clearances"
+     },
+     {
+      "name": "totalClearance",
+      "displayValue": "39",
+      "label": "Clearances"
+     }
+    ]
+   }
+  ]
+ }
+}

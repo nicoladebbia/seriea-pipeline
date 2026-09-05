@@ -1,0 +1,133 @@
+{
+ "events": [
+  {
+   "id": "401874939",
+   "name": "Torino at Fiorentina",
+   "date": "2026-09-05T13:00Z",
+   "competitions": [
+    {
+     "competitors": [
+      {
+       "homeAway": "home",
+       "team": {
+        "id": "109",
+        "displayName": "Fiorentina",
+        "shortDisplayName": "Fiorentina"
+       },
+       "score": "1"
+      },
+      {
+       "homeAway": "away",
+       "team": {
+        "id": "239",
+        "displayName": "Torino",
+        "shortDisplayName": "Torino"
+       },
+       "score": "2"
+      }
+     ],
+     "status": {
+      "clock": 5400.0,
+      "displayClock": "90'+4'",
+      "period": 2,
+      "type": {
+       "id": "28",
+       "name": "STATUS_FULL_TIME",
+       "state": "post",
+       "completed": true,
+       "description": "Full Time",
+       "detail": "FT",
+       "shortDetail": "FT"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "401874937",
+   "name": "Napoli at Internazionale",
+   "date": "2026-09-05T16:00Z",
+   "competitions": [
+    {
+     "competitors": [
+      {
+       "homeAway": "home",
+       "team": {
+        "id": "110",
+        "displayName": "Internazionale",
+        "shortDisplayName": "Inter Milan"
+       },
+       "score": "3"
+      },
+      {
+       "homeAway": "away",
+       "team": {
+        "id": "114",
+        "displayName": "Napoli",
+        "shortDisplayName": "Napoli"
+       },
+       "score": "2"
+      }
+     ],
+     "status": {
+      "clock": 5400.0,
+      "displayClock": "90'+7'",
+      "period": 2,
+      "type": {
+       "id": "28",
+       "name": "STATUS_FULL_TIME",
+       "state": "post",
+       "completed": true,
+       "description": "Full Time",
+       "detail": "FT",
+       "shortDetail": "FT"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "401874781",
+   "name": "Atalanta at AS Roma",
+   "date": "2026-09-05T18:45Z",
+   "competitions": [
+    {
+     "competitors": [
+      {
+       "homeAway": "home",
+       "team": {
+        "id": "104",
+        "displayName": "AS Roma",
+        "shortDisplayName": "AS Roma"
+       },
+       "score": "0"
+      },
+      {
+       "homeAway": "away",
+       "team": {
+        "id": "105",
+        "displayName": "Atalanta",
+        "shortDisplayName": "Atalanta"
+       },
+       "score": "0"
+      }
+     ],
+     "status": {
+      "clock": 2520.0,
+      "displayClock": "42'",
+      "period": 1,
+      "type": {
+       "id": "25",
+       "name": "STATUS_FIRST_HALF",
+       "state": "in",
+       "completed": false,
+       "description": "First Half",
+       "detail": "42'",
+       "shortDetail": "42'"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}
