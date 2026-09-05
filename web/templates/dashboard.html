@@ -89,6 +89,11 @@
   .bet-pill--near_miss { background:rgba(251,191,36,0.12); color:var(--amber); }
   .bet-pill--none, .bet-pill--no_odds, .bet-pill--no_model { color:var(--text-tertiary); }
   .bet-pill--gated { color:var(--text-tertiary); border:1px dashed var(--border-default); }
+  /* Verdict older than the odds it was priced against: the age rides ON the pill */
+  .bet-pill--aged { border:1px solid rgba(251,191,36,0.55); }
+  .bet-pill__age { color:var(--amber); font-weight:600; font-family:var(--font-mono); }
+  /* Odds too old for THIS row's kickoff (inside 2h, odds >30m): the model/market pair is suspect */
+  .ou-cell--stale .ou-cell__model, .ou-cell--stale .ou-cell__mkt { color:var(--amber); text-decoration:underline dotted; }
 
   #matches-container[data-stale="1"] .dash-summary-strip {
     opacity: 0.5;
@@ -235,18 +240,46 @@ const LEAGUE_BADGE_MAP = {
 
 function _pct(p) { return p == null ? '--' : Math.round(p * 100) + '%'; }
 
-function renderOUCell(ou) {
+// Freshness context for row-level staleness. Set by loadDashboard before rows render.
+window._dashFresh = { odds: null, slip: null, cand: null };
+const _minsAgo = ts => ts ? Math.round((Date.now() - new Date(ts).getTime()) / 60000) : null;
+const _fmtAgeShort = mins => mins == null ? '' : mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h`;
+const ODDS_STALE_FOR_ROW_MIN = 30;   // odds older than this...
+const ROW_KICKOFF_WINDOW_MIN = 120;  // ...matter only when kickoff is inside this window (T-30 commits at 30)
+const VERDICT_AGED_MIN = 30;         // verdict predates the odds fetch by more than this → age on the pill
+
+function _rowOddsStale(m) {
+  const oddsAge = _minsAgo(window._dashFresh.odds);
+  if (oddsAge == null || !m.commence_time) return false;
+  const toKo = Math.round((new Date(m.commence_time).getTime() - Date.now()) / 60000);
+  return toKo > -5 && toKo <= ROW_KICKOFF_WINDOW_MIN && oddsAge > ODDS_STALE_FOR_ROW_MIN;
+}
+
+function renderOUCell(ou, m) {
   if (!ou || ou.line == null) return '<td class="ou-cell text-tertiary">--</td>';
+  const stale = m ? _rowOddsStale(m) : false;
+  const staleNote = stale ? ` ⚠ Odds are ${_fmtAgeShort(_minsAgo(window._dashFresh.odds))} old and kickoff is inside 2h — this pair may be behind the market.` : '';
   const raw = ou.raw_edge_pct;
   const rawCls = raw == null ? 'text-tertiary' : raw >= 5 ? 'text-green' : raw <= -5 ? 'text-red' : 'text-tertiary';
   const rawTxt = raw == null ? '' : `<span class="ou-cell__raw ${rawCls}">${raw > 0 ? '+' : ''}${Math.round(raw)}</span>`;
   const title = `Over ${ou.line}: model ${_pct(ou.model_over)} vs market ${_pct(ou.market_over)} (Pinnacle de-vigged, else consensus). Raw gap, before shrinkage/situational gates.` + (ou.expected_total_goals ? ` xTotal ${ou.expected_total_goals.toFixed(2)}` : '');
-  return `<td class="ou-cell" title="${title}"><span class="ou-cell__line">O${ou.line}</span><span class="ou-cell__model text-primary">${_pct(ou.model_over)}</span><span class="ou-cell__vs">vs</span><span class="ou-cell__mkt">${_pct(ou.market_over)}</span>${rawTxt}</td>`;
+  return `<td class="ou-cell${stale ? ' ou-cell--stale' : ''}" title="${title}${staleNote}"><span class="ou-cell__line">O${ou.line}</span><span class="ou-cell__model text-primary">${_pct(ou.model_over)}</span><span class="ou-cell__vs">vs</span><span class="ou-cell__mkt">${_pct(ou.market_over)}</span>${rawTxt}</td>`;
 }
 
-function renderBetCell(ou) {
+function renderBetCell(ou, m) {
   const b = (ou && ou.bet) || { status: 'none' };
   const st = b.status || 'none';
+  // Verdict age vs the odds it was priced against. Candidates come from the
+  // morning/evening dry-run file; selected/near-miss from the slip.
+  let aged = false, ageTxt = '', ageNote = '';
+  if (st === 'selected' || st === 'candidate' || st === 'near_miss') {
+    const scanTs = st === 'candidate' ? window._dashFresh.cand : window._dashFresh.slip;
+    const scanAge = _minsAgo(scanTs), oddsAge = _minsAgo(window._dashFresh.odds);
+    if (scanAge != null && oddsAge != null && scanAge - oddsAge > VERDICT_AGED_MIN) {
+      aged = true; ageTxt = _fmtAgeShort(scanAge);
+      ageNote = ` ⚠ Priced ${ageTxt} ago against odds that have since refreshed (odds ${_fmtAgeShort(oddsAge)} old). The T-30 scan re-prices before any commit.`;
+    }
+  }
   const edge = b.edge_pct != null ? `${b.edge_pct > 0 ? '+' : ''}${Number(b.edge_pct).toFixed(1)}%` : '';
   const sel = b.selection ? b.selection.replace('Over ', 'O') : '';
   let label = '', sub = '', title = '';
@@ -265,7 +298,7 @@ function renderBetCell(ou) {
     case 'no_model':label = 'NO MODEL'; title = 'No O/U prediction for this match'; break;
     default:        label = '—';    title = 'No signal in the latest scan; the T-30 scan may still price it';
   }
-  return `<td class="bet-cell"><span class="bet-pill bet-pill--${st}" title="${title}">${label}${sub ? `<span class="bet-pill__sub">${sub}</span>` : ''}</span></td>`;
+  return `<td class="bet-cell"><span class="bet-pill bet-pill--${st}${aged ? ' bet-pill--aged' : ''}" title="${title}${ageNote}">${label}${sub ? `<span class="bet-pill__sub">${sub}</span>` : ''}${aged ? `<span class="bet-pill__age">· ${ageTxt}</span>` : ''}</span></td>`;
 }
 
 // Triage order: what the gate said, then kickoff. 0-2 = a verdict worth reading,
@@ -316,8 +349,8 @@ function renderMatchRow(m, idx) {
         ${leagueBadge}
       </div>
     </td>
-    ${renderOUCell(m.ou)}
-    ${renderBetCell(m.ou)}
+    ${renderOUCell(m.ou, m)}
+    ${renderBetCell(m.ou, m)}
     <td class="dash-row__badges">${rowBadges}</td>
   </tr>`;
 }
@@ -398,7 +431,7 @@ async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _
 // ═══════════════════════════════════════════════════════════════════════
 // DATA FRESHNESS
 // ═══════════════════════════════════════════════════════════════════════
-async function loadFreshness(){try{const data=await apiFetch('/api/system');const f=data.data_freshness||{};const bar=document.getElementById('freshness-bar'),text=document.getElementById('freshness-text');if(!bar||!f)return;const stale=[];const freshParts=[];for(const[src,info]of Object.entries(f)){if(!info)continue;const ts=info.updated_at||info.timestamp||info;if(typeof ts==='string'&&ts){const age=(Date.now()-new Date(ts).getTime())/3600000;if(age>12)stale.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);freshParts.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);}}if(stale.length>0){text.textContent=stale.join(' \u00B7 ');bar.classList.remove('hidden');}else bar.classList.add('hidden');const qf=document.getElementById('quick-freshness');if(qf){if(stale.length>0){qf.innerHTML='<span style="color:var(--amber)">Data stale</span> &middot; '+stale.slice(0,2).join(' &middot; ');}else{qf.innerHTML='<span style="color:var(--green)">\u2713</span> Data fresh';}}}catch{}}
+async function loadFreshness(){try{const data=await apiFetch('/api/system');const f=data.data_freshness||{};const bar=document.getElementById('freshness-bar'),text=document.getElementById('freshness-text');if(!bar||!f)return;const stale=[];const freshParts=[];for(const[src,info]of Object.entries(f)){if(!info)continue;const ts=info.updated_at||info.timestamp||info;if(typeof ts==='string'&&ts){const age=(Date.now()-new Date(ts).getTime())/3600000;if(age>12)stale.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);freshParts.push(`${src.replace(/_/g,' ')}: ${relativeTime(ts)}`);}}if(stale.length>0){text.textContent=stale.join(' \u00B7 ');bar.classList.remove('hidden');}else bar.classList.add('hidden');}catch{}}
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -426,8 +459,12 @@ function _betSummary(matches, data) {
   if (near) parts.push(`${near} near miss${near !== 1 ? 'es' : ''}`);
   if (gated) parts.push(`${gated} gated`);
   const age = ts => { if (!ts) return 'never'; const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000); return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`; };
-  const scanTs = data.candidates_generated_at || data.slip_generated_at;
-  parts.push(`scan ${age(scanTs)}`);
+  // Two verdict clocks: the slip (selected + near-miss, written at T-30 / manual run)
+  // and the candidates file (morning/evening dry-run). Name both when they differ,
+  // so a pill saying "8h" never sits under a footer saying "scan 3h".
+  const slipM = _minsAgo(data.slip_generated_at), candM = _minsAgo(data.candidates_generated_at);
+  if (slipM != null && candM != null && Math.abs(slipM - candM) > 30) parts.push(`slip ${_fmtAgeShort(slipM)} · candidates ${_fmtAgeShort(candM)}`);
+  else parts.push(`scan ${age(data.candidates_generated_at || data.slip_generated_at)}`);
   return parts.join(' \u00B7 ');
 }
 
@@ -439,6 +476,17 @@ function formatDayHeader(dateStr) {
 async function loadDashboard() {
   try {
     const data = await apiFetch('/api/dashboard' + _leagueQueryParam());
+    window._dashFresh = { odds: data.odds_fetched_at || null, slip: data.slip_generated_at || null, cand: data.candidates_generated_at || null };
+    // Quick strip reads the SAME ages/thresholds as the header dots (was a third clock with a 12h bar)
+    (() => {
+      const qf = document.getElementById('quick-freshness'); if (!qf) return;
+      const ages = [['odds', _minsAgo(data.odds_fetched_at)], ['preds', _minsAgo(data.predictions_generated_at)], ['market', _minsAgo(data.market_intelligence_at)]].filter(a => a[1] != null);
+      if (!ages.length) { qf.innerHTML = '<span style="color:var(--text-tertiary)">freshness unknown</span>'; return; }
+      const worst = ages.reduce((w, a) => a[1] > w[1] ? a : w);
+      const col = worst[1] < 60 ? 'var(--green)' : worst[1] < 360 ? 'var(--amber)' : 'var(--red)';
+      const word = worst[1] < 60 ? '\u2713 Fresh' : worst[1] < 360 ? 'Ageing' : 'Stale';
+      qf.innerHTML = `<span style="color:${col};font-weight:600">${word}</span> &middot; ${ages.map(a => `${a[0]} ${_fmtAgeShort(a[1])}`).join(' &middot; ')}`;
+    })();
     document.getElementById('loading').classList.add('hidden');
     if (!data.matches || !data.matches.length) { document.getElementById('empty').classList.remove('hidden'); return; }
 

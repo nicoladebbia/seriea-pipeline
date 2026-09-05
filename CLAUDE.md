@@ -106,6 +106,14 @@ Nothing on the row drove a bet.
   rows on a Saturday, all saying GATED). The O/U cell is fixed-width right-aligned
   sub-columns so the eye can run down the column. Never re-sort by kickoff alone: the
   row that matters would be buried under seven that don't.
+- **Staleness is per row and per artifact, not one global age.** Header dots stay small:
+  the loud states are (a) the age ON the Bet pill when the verdict predates the current
+  odds fetch by >30 min ("NEAR O2.5 +6.6% · 8h", amber border), (b) the O/U cell going
+  amber when kickoff is inside 2h and odds are >30 min old, (c) the 24h DO-NOT-BET banner
+  that mutes the numbers. The quick strip reads the SAME ages/thresholds as the header
+  dots (60m / 6h) — it used to be a third clock with a 12h bar that said "Data fresh"
+  under an amber dot. The footer names BOTH verdict clocks (slip vs candidates) when they
+  differ by >30 min, so a pill saying 8h never sits under a footer saying "scan 3h".
 - **Any new column needs a rank in the table above and a reason it beats #5.** If it
   cannot flip a decision, it belongs on the detail page.
 - Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin
