@@ -132,7 +132,10 @@ def test_endpoint_serves_fixtures_and_survives_a_dead_player_engine(monkeypatch)
         return real(path, default=default)
 
     monkeypatch.setattr(appmod, "_load_json", fake)
-    monkeypatch.setattr(appmod, "_player_engine", lambda: (None, None))
+    # the floor helpers live in the engine module since 2026-09-05; the route
+    # reaches them through it, so a dead engine is patched there
+    import scripts.betting.player_predictions as ppmod
+    monkeypatch.setattr(ppmod, "player_engine", lambda: (None, None))
     r = appmod.app.test_client().get("/api/match-markets/fiorentina-vs-torino")
     assert r.status_code == 200, r.data
     d = r.get_json()

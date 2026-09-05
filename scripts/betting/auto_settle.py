@@ -502,6 +502,13 @@ def run(
                             settle_paper_bets(completed)
                         except Exception as e:
                             log.warning("Paper settle failed: %s", e)
+                        # Pick journal: full-time markets now, first-half and
+                        # player props once the timeline / player stats land.
+                        try:
+                            from scripts.betting.picks import settle_picks
+                            settle_picks(completed)
+                        except Exception as e:
+                            log.warning("Picks settle failed: %s", e)
                 else:
                     settlement_summary = {"settled": 0, "pending": 0, "message": "No completed matches"}
             else:

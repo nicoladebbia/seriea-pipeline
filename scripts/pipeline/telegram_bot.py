@@ -1976,36 +1976,55 @@ def _handle_formazioni() -> str:
 
 
 def _handle_picks() -> str:
-    """/picks — the best-priced angle for EVERY upcoming match, edge-ranked.
+    """/picks — one line for EVERY upcoming match (scripts/betting/picks.py).
 
-    Serves best_picks from the unified bet slip (written by the betting
-    engine each run). Advisory: real-money bets remain the edge-gated slip
-    ('/bets'); this shows the top credible angle per game even when nothing
-    clears the betting bar."""
+    💰 VALUE = the engine's own real-money selection (read from the slip);
+    📝 LEAN = best positive-edge angle across every priced market, paper-
+    journaled at T-30 so the market builds a record; ➖ NO EDGE = the most
+    probable outcome and why the market already prices it."""
     try:
-        slip = json.loads((PROJECT_ROOT / "data" / "upcoming"
-                           / "unified_bet_slip.json").read_text())
+        doc = json.loads((PROJECT_ROOT / "data" / "upcoming" / "picks.json").read_text())
     except (OSError, ValueError):
-        return "Nessuno slip su disco — il motore scommesse non ha ancora girato."
-    picks = slip.get("best_picks") or []
+        return ("Nessun picks.json su disco — il motore delle scelte gira col "
+                "giro scommesse (mattina/sera e T-30).")
+    picks = doc.get("picks") or []
     if not picks:
-        return ("Lo slip attuale non ha ancora la sezione best-pick "
-                "(arriva col prossimo giro del motore).")
-    n_bets = len(slip.get("selected_bets") or [])
-    lines = [f"<b>🎯 Miglior angolo per partita</b> "
-             f"(bet reali in slip: {n_bets})"]
-    for pk in picks[:15]:
-        b = pk.get("best") or {}
-        flag = "✅" if b.get("in_band") else "⚠️"
-        lines.append(
-            f"{flag} {pk.get('date', '?')[5:]} <b>{pk.get('match')}</b>\n"
-            f"     {b.get('market')} {b.get('selection')} @ {b.get('odds')} "
-            f"— edge {b.get('edge_pct', 0):+.1f}%, p={b.get('model_prob', 0):.0%} "
-            f"<i>[{b.get('tier')}]</i>")
-    if any(not (pk.get("best") or {}).get("in_band") for pk in picks[:15]):
-        lines.append("<i>⚠️ = edge fuori banda 2-12%: storicamente "
-                     "overconfidence del modello, non value.</i>")
-    return "\n".join(lines) + _fanta_age_note(slip.get("generated_at"))
+        return "Nessuna partita in programma nel file picks."
+    c = doc.get("counts") or {}
+    lines = [f"<b>🎯 Una scelta per partita</b> "
+             f"({c.get('VALUE', 0)} value · {c.get('LEAN', 0)} lean · "
+             f"{c.get('NO_EDGE', 0)} no edge)"]
+    icon = {"VALUE": "💰", "LEAN": "📝", "NO_EDGE": "➖"}
+    for p in picks[:20]:
+        pk = p.get("pick") or p.get("most_probable") or {}
+        who = f"{pk.get('player')} " if pk.get("player") else ""
+        odds = pk.get("odds")
+        edge = pk.get("edge_pct")
+        what = (f"{pk.get('bet_type') or '?'}: {who}{pk.get('selection') or ''}"
+                f"{' @ ' + str(odds) if odds else ''}"
+                f"{f' — edge {edge:+.1f}%' if isinstance(edge, (int, float)) else ''}"
+                f"{' [' + str(pk.get('tier')) + ']' if pk.get('tier') else ''}")
+        tag = p.get("label", "?")
+        if tag == "VALUE" and p.get("stage") == "candidate":
+            tag = "VALUE (T-30)"
+        lines.append(f"{icon.get(p.get('label'), '•')} {(p.get('date') or '?')[5:]} "
+                     f"<b>{p.get('match')}</b> · {tag}\n     {what}\n"
+                     f"     <i>{p.get('reason', '')}</i>")
+    lines.append("<i>💰 soldi veri (slip del motore) · 📝 solo carta, "
+                 "registrato a T-30 per costruire lo storico del mercato · "
+                 "➖ il mercato prezza già l'esito più probabile.</i>")
+    try:
+        from scripts.betting.picks import picks_record
+        rec = picks_record("serie_a")
+        if rec.get("n_settled"):
+            top = sorted(rec["by_market"].items(), key=lambda kv: -kv[1]["n"])[:4]
+            lines.append("<b>Storico carta</b>: " + " · ".join(
+                f"{m} n={v['n']} ROI {v['roi_pct']:+.0f}%"
+                + (f" CLV {v['mean_clv_pct']:+.1f}%" if v.get("mean_clv_pct") is not None else "")
+                for m, v in top))
+    except Exception:  # noqa: BLE001 - the record is a footer, never a failure
+        pass
+    return "\n".join(lines) + _fanta_age_note(doc.get("generated_at"))
 
 
 def _handle_worldcup() -> str:

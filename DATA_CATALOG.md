@@ -6048,3 +6048,11 @@ The modificatore di difesa is scored on the **raw voto** of the keeper plus the 
 fielded defenders, using the same table and voto d'ufficio the auction board priced with. A
 three-defender module forfeits it entirely, so the module search compares four- and
 three-defender shapes on total points *including* the modifier.
+
+### Pick engine artifacts (2026-09-05)
+
+| File | Writer | Shape | Notes |
+|---|---|---|---|
+| `data/upcoming/picks.json` | `scripts/betting/picks.build_picks` (via `save_bet_slip`, morning dry + T-30) | `{generated_at, league, band, counts{VALUE,LEAN,NO_EDGE}, n_journaled, picks[{match, date, kickoff_utc, label, stage?, pick, lean?, alternatives[3], most_probable?, reason, n_rows, n_priced, n_positive, n_overconfident, n_longshot_edges, journaled_bet_id?, prices_fetched_at}]}` | Read by Telegram `/picks`, `/api/dashboard` (`pick`), `/api/match-markets` (`pick`). VALUE copied from the slip, never recomputed. |
+| `data/upcoming/pick_markets_raw.json` | `odds_fetcher.fetch_pick_markets` (T-6h/T-3h stages + pre-kickoff, 45-min gate/event) | `{fetched_at, league, events{<odds_api_event_id>: {home, away, home_raw, away_raw, commence, fetched_at, bookmakers[{title, markets[{key, outcomes[{name, description, point, price}]}]}]}}}` | RAW outcome naming kept verbatim (team names in `h2h_h1`, `Juventus/Draw` in HT/FT, `Juventus:1\|AC Milan:0` in correct score, full player names in `description`). 16 markets, 16 credits/event. |
+| `data/betting/picks_journal.json` | `picks.journal_lean` (T-30 only, kickoff ≤ 3h) | bet_journal schema + `extra{bet_type, player, team, source, tier, side, line}`; `market` = Odds API key, `selection` embeds the player | Flat €10 paper. Settled by `picks.settle_picks` from auto_settle; `picks.picks_record()` = per-market ROI/CLV bar. Never touches bankroll/history. |

@@ -191,6 +191,57 @@ REPLACES the independent-Poisson artifact row for the same bet).
   flat 50/50 timing share, is stamped `timing: "flat"` and served as tier C. Never
   promote a flat split to A/B without a minute-stamped source.
 
+## Pick engine (settled 2026-09-05) — every match gets a line, money only on VALUE
+
+Nicola's decision, after the journal said "most probable" is not "mispriced" (1X2 −79 on 23
+bets, BTTS −28 on 5, O/U 1.5 +47 on 47): **"Pick every match, real money only on VALUE."**
+`scripts/betting/picks.py` writes `data/upcoming/picks.json` with one line per upcoming
+Serie A match; `/picks` on Telegram, the `pick` field of `/api/dashboard` (a dashed LEAN
+pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
+`/prediction/<slug>` all read it.
+
+- **VALUE** is the engine's own verdict (slip `selected_bets`, or a morning candidate
+  that commits at T-30), copied from the slip. **Never recompute it here.**
+- **LEAN** is the best positive-edge angle across every row `build_match_markets` serves
+  (ensemble 1x2, O/U blend, Poisson artifact, goal-process simulator, player floors incl.
+  goalscorer/assists) against a REAL price. Ranking is `in band > tier A/B/C > multi-book
+  > edge`; rows with model probability < 20% (a "+9%" on a 3% event is inside the model's
+  own error) and edges above the 12% cap (>10% ran 38% WR live) are flagged and sink.
+  With 40+ priced rows per match the biggest edge is a max over noise: the headline is
+  the most MEASURED angle, not the largest number. Paper-journaled at a flat €10 in
+  `data/betting/picks_journal.json` ONLY on the T-30 path (`save_bet_slip` non-dry) and
+  only for kickoffs inside 3h. When the LEAN is a bet the real engine priced and
+  rejected, the line carries the engine's reason (`engine_note`): its edge (shrunk,
+  Pinnacle de-vigged, per-line band) is the one that counts for money.
+- **NO EDGE** shows the most probable priced outcome with its price and why it is not a
+  bet. A match with no per-event prices yet says so.
+- **Prices**: `odds_full.json` (h2h, totals) + `odds_extra_markets.json` (btts, DC, DNB,
+  alt totals) + `data/upcoming/pick_markets_raw.json` from
+  `odds_fetcher.fetch_pick_markets` (per-event `h2h_h1`, `totals_h1`, `btts_h1`,
+  `halftime_fulltime`, `double_chance_h1`, corners/cards totals, `correct_score` and the
+  eight `player_*` props; specimen-verified 2026-09-05 on Juventus vs AC Milan, region eu;
+  `alternate_team_totals` / `h2h_h2` / `totals_h2` are NOT served and are deliberately
+  absent — a 422 on the whole request still costs credits). 16 credits per event, gated by
+  `check_budget_pacing(PRIORITY_EXTRAS)`, 45-min refresh per event; called at the T-6h /
+  T-3h odds stages and at every pre-kickoff cycle (only the first of each window pays).
+  Player names are joined per market with an accent-folded token match that returns None
+  on ambiguity (`_match_player`): a wrong player is worse than no price. Card props are
+  fetched but never priced or journaled — `player_match_stats.parquet` has no card column,
+  so they could not be graded.
+- **Grading** (`settle_picks`, called by auto_settle after the paper track): full-time
+  markets from the results dict, first-half markets from `goal_timeline.parquet` (canonical
+  `{date}_{Home}_{Away}` id, a match present with no 1H goal is 0-0), player props from
+  `player_match_stats.parquet` (date + team + accent-folded name). Anything else stays
+  pending and is COUNTED once per run, never warned per bet. `picks_record()` is the
+  per-market bar: a market earns real stakes the way O/U 1.5 and the EPL gate do — a
+  settled paper record with CLV, not a good week.
+- Journal entries carry an `extra` dict (bet_type, player, team, source, tier, side,
+  line) — `bet_journal.add_bet` stores it; real bets have `extra: null`.
+- Tests: `tests/test_picks.py` (specimen naming, row→price map, name join incl.
+  ambiguity, ranking, VALUE-from-slip, engine note, journal dedup across players, every
+  grading family, ungradable stays pending, fetch refresh window — the last one caught a
+  real bug: the shared due-selector still read the scorer constant).
+
 ## Cleanup discipline — CRITICAL
 
 This project accumulates abandoned experiments (`*_v2.py`, `*_hotfix.py`, `_phase3a_*`, scratch JSONs, stale baselines). The rule:

@@ -1921,7 +1921,15 @@ def _wc_fun_combos(preds: list) -> dict:
 
 
 _COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
-_PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
+# Player floor engine helpers live with the engine (scripts/betting/
+# player_predictions.py) since 2026-09-05 so the pick engine can price XIs
+# without importing web.app; the underscore names are kept for the routes.
+from scripts.betting.player_predictions import (  # noqa: E402
+    lineup_entries as _lineup_entries,
+    match_player_floors as _match_player_floors,
+    player_engine as _player_engine,
+    recent_xi as _recent_xi,
+)
 
 # Markets shown on the page, in display order. Goalscorer last (weakest, +6.9%).
 _FLOOR_DISPLAY_MARKETS = [
@@ -1941,91 +1949,6 @@ _FLOOR_HEADLINE_MARKETS = [
     "duels_o45", "intercepts_o15",
 ]
 
-
-def _player_engine():
-    """Cached (pms-with-priors, base_rates) for the player floor engine.
-
-    Rebuilds only when the underlying parquet changes. Building priors over
-    100k rows is ~1s, so we never want to do it per request.
-    """
-    path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None, None
-    if _PLAYER_ENGINE_CACHE["pms"] is None or _PLAYER_ENGINE_CACHE["mtime"] != mtime:
-        from scripts.betting.player_predictions import (
-            load_player_data, build_player_features, compute_position_base_rates,
-        )
-        pms = build_player_features(load_player_data("serie_a"))
-        _PLAYER_ENGINE_CACHE["pms"] = pms
-        _PLAYER_ENGINE_CACHE["base_rates"] = compute_position_base_rates(pms)
-        _PLAYER_ENGINE_CACHE["mtime"] = mtime
-    return _PLAYER_ENGINE_CACHE["pms"], _PLAYER_ENGINE_CACHE["base_rates"]
-
-
-def _lineup_entries(side_lineup: dict) -> list:
-    """Flatten a lineup_predictions side into [{player_name, player_id, position,
-    proj_minutes, is_starter}], using start_pct * avg_minutes for projected mins.
-    """
-    out = []
-    for grp, starter in (("predicted_xi", True), ("bench", False)):
-        for p in side_lineup.get(grp, []) or []:
-            avg_min = float(p.get("avg_minutes") or (82.0 if starter else 20.0))
-            start_pct = float(p.get("start_pct") or (100.0 if starter else 0.0))
-            proj_min = avg_min if starter else avg_min * (start_pct / 100.0)
-            out.append({
-                "player_name": p.get("name") or p.get("player_name", ""),
-                "player_id": p.get("player_id"),
-                "position": p.get("position", "M"),
-                "proj_minutes": proj_min,
-                "is_starter": starter,
-            })
-    return out
-
-
-def _recent_xi(pms, team: str) -> list:
-    """Fallback likely-XI: the team's most-recent match starters from pms.
-
-    Used when lineup_predictions has no matching entry (off-season / stale
-    lineup file). Names + ids come straight from sofascore so they resolve.
-    """
-    tdf = pms[pms["team"] == team]
-    if not len(tdf):
-        return []
-    last_date = tdf["date"].max()
-    last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
-    return [{
-        "player_name": r["player_name"], "player_id": r["player_id"],
-        "position": r["position"], "is_starter": True,
-        "proj_minutes": None,  # engine uses the player's leak-free min_prior
-    } for _, r in last.iterrows()]
-
-
-def _match_player_floors(match_key: str, home: str, away: str, league: str = "serie_a"):
-    """Player floor markets for one fixture, or None when there is no engine
-    (parquet missing) or no XI to price. Predicted XI from lineup_predictions,
-    else the most recent starters."""
-    if league != "serie_a":
-        # _player_engine() builds priors from the Serie A parquet only; an EPL
-        # XI would be priced off Serie A position base rates and look real.
-        return None
-    pms, base_rates = _player_engine()
-    if pms is None:
-        return None
-    from scripts.betting.player_predictions import predict_match_players
-    lineups = _load_json(UPCOMING_DIR / "lineup_predictions.json", {})
-    lp = (lineups.get("matches", {}) if isinstance(lineups, dict) else {}).get(match_key)
-    if lp:
-        home_xi = _lineup_entries(lp.get("home_lineup", {}))
-        away_xi = _lineup_entries(lp.get("away_lineup", {}))
-    else:
-        home_xi = _recent_xi(pms, home)
-        away_xi = _recent_xi(pms, away)
-    if not home_xi and not away_xi:
-        return None
-    return predict_match_players(home, away, home_xi, away_xi, pms=pms,
-                                 base_rates=base_rates, league=league)
 
 
 def _attach_player_floors(proj_by_match: dict) -> None:
@@ -3326,7 +3249,7 @@ def api_match_markets(match_slug):
     """Every market the system can price for ONE match, each with the engine
     that wrote it and its honesty tier (web/match_markets.py). Nothing is
     computed here; the page renders this list and never derives a number."""
-    from web.match_markets import build_match_markets
+    from web.match_markets import assemble_market_inputs, build_match_markets
 
     preds = _rows_of(_load_json(UPCOMING_DIR / "predictions.json", default=[])) + \
         _rows_of(_load_json(UPCOMING_DIR / "predictions_premier_league.json", default=[]))
@@ -3336,13 +3259,8 @@ def api_match_markets(match_slug):
     match_key = pred.get("match", "")
     league = pred.get("league", "serie_a")
 
-    goal = next((g for g in _rows_of(_load_json(UPCOMING_DIR / "goal_predictions.json", default=[]))
-                 if g.get("match") == match_key), None)
-    btts = next((b for b in _rows_of(_load_json(UPCOMING_DIR / "btts_predictions.json", default=[]))
-                 if b.get("match") == match_key), None)
-    ext_raw = _load_json(UPCOMING_DIR / "extended_markets.json", default={})
-    ext = (ext_raw.get("matches", {}) if isinstance(ext_raw, dict) else {}).get(match_key)
-
+    inputs = assemble_market_inputs(match_key, pred=pred, load_json=_load_json, league=league)
+    goal = inputs["goal_pred"]
     odds_file = "odds_full.json" if league == "serie_a" else f"odds_full_{league}.json"
     odds_raw = _load_json(UPCOMING_DIR / odds_file, default={})
     odds = ((odds_raw.get("matches", {}) if isinstance(odds_raw, dict) else {}).get(match_key)) or {}
@@ -3365,27 +3283,13 @@ def api_match_markets(match_slug):
         enabled = league == "serie_a"
     engine_bet = _ou_signal(match_key, league, goal, odds.get("totals", []), sel, near, enabled,
                             candidate=cand)["bet"]
-
+    payload = build_match_markets(match_key, engine_bet=engine_bet, **inputs)
     try:
-        players = _match_player_floors(match_key, pred.get("home_team", ""), pred.get("away_team", ""), league)
-    except Exception as exc:  # the floor engine must never take the page down
-        log.warning("match-markets: player floors failed for %s: %s", match_key, exc)
-        players = None
-
-    sim_rows = None
-    if goal:
-        try:
-            from scripts.models.goal_process import rare_event_rows, served_rows
-            sim_rows = (served_rows(goal.get("expected_home_goals"), goal.get("expected_away_goals"),
-                                    goal.get("over_2_5"), league=league or "serie_a")
-                        + rare_event_rows(league or "serie_a")) or None
-        except Exception as e:  # noqa: BLE001 - a simulator failure must not 404 the page
-            log.warning("goal_process rows unavailable for %s: %s", match_key, e)
-    halves_gate = (_load_json(DATA_DIR / "models" / "player_floors" / "halves_backtest.json", default={}) or {}).get("gate") or {}
-    return jsonify(build_match_markets(
-        match_key, pred=pred, goal_pred=goal, ext=ext, btts=btts, engine_bet=engine_bet, sim=sim_rows,
-        halves_gate=halves_gate,
-        players=players, kickoff_utc=odds.get("commence_time"), league=league))
+        from scripts.betting.picks import attach_prices
+        attach_prices(match_key, payload, league)
+    except Exception as exc:  # noqa: BLE001 - prices are an overlay, never a 500
+        log.warning("match-markets: pricing failed for %s: %s", match_key, exc)
+    return jsonify(payload)
 
 
 def _compute_epl_h2h() -> dict:
@@ -3755,6 +3659,12 @@ def api_dashboard():
     cand_raw = _load_json(UPCOMING_DIR / "betting_candidates.json", default={})
     cand_raw = cand_raw if isinstance(cand_raw, dict) else {}
     candidate_by_match = {c.get("match", ""): c for c in (cand_raw.get("candidates") or []) if isinstance(c, dict)}
+    # Pick engine line per match (scripts/betting/picks.py). Separate from
+    # `ou.bet`, which stays the gate's own output; the page renders a muted
+    # LEAN pill only where the gate had nothing to say.
+    picks_raw = _load_json(UPCOMING_DIR / "picks.json", default={})
+    pick_by_match = {q.get("match", ""): q for q in ((picks_raw.get("picks") if isinstance(picks_raw, dict) else None) or [])
+                     if isinstance(q, dict)}
     candidates_generated_at = cand_raw.get("generated_at", "") or _mtime_iso(UPCOMING_DIR / "betting_candidates.json")
     try:
         from scripts.betting.betting_unified import _league_betting_enabled
@@ -3949,6 +3859,9 @@ def api_dashboard():
                 slip_near_by_match.get(match_key), _betting_enabled.get(pred.get("league", "serie_a"), False),
                 candidate=candidate_by_match.get(match_key),
             ),
+            "pick": (lambda q: None if q is None else {
+                k: q.get(k) for k in ("label", "stage", "pick", "lean", "reason", "n_priced", "journaled_bet_id")
+            })(pick_by_match.get(match_key)),
 
             # Actual result (if settled)
             "actual_result": result_entry.get("result", "") if result_entry else "",

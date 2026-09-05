@@ -1460,6 +1460,25 @@ function _splitChip(r) {
   const share = r.contribution_pct != null ? ` · ${Number(r.contribution_pct).toFixed(0)}% of side` : '';
   return ` <span class="text-tertiary" style="font-size:10px" title="1° tempo / 2° tempo${both}; timing ${sp.timing}; tier ${sp.tier}">1T ${Number(sp['1h_pct']).toFixed(0)}% · 2T ${Number(sp['2h_pct']).toFixed(0)}%${share}${_tierBadge(sp.tier)}</span>`;
 }
+function _priceChip(r) {
+  if (r.odds == null || r.edge_pct == null) return '';
+  const e = Number(r.edge_pct);
+  const col = e > 0 ? 'var(--green)' : 'var(--text-tertiary)';
+  const books = r.n_books != null ? `${r.n_books} book${r.n_books === 1 ? '' : 's'}` : '';
+  return `<span class="text-tertiary" style="font-size:10px;margin-right:6px" title="${sanitizeHTML(r.book || '')} ${books}: market ${r.implied_pct}% vs model ${r.probability_pct}%">@${Number(r.odds).toFixed(2)} <span style="color:${col}">${e > 0 ? '+' : ''}${e.toFixed(1)}%</span></span>`;
+}
+function _pickBanner(pk, nPriced) {
+  if (!pk) return `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">Pick engine: no line for this match yet (runs with the betting engine; ${nPriced || 0} rows priced live).</div>`;
+  const p = pk.pick || pk.most_probable || {};
+  const colr = { VALUE: 'var(--green)', LEAN: 'var(--text-secondary)', NO_EDGE: 'var(--text-tertiary)' }[pk.label] || 'var(--text-secondary)';
+  const lab = pk.label === 'VALUE' ? (pk.stage === 'candidate' ? 'VALUE (commits at T-30)' : 'VALUE · real stake')
+            : pk.label === 'LEAN' ? 'LEAN · paper only' : 'NO EDGE';
+  const what = p.bet_type ? `${sanitizeHTML(p.bet_type)}: ${p.player ? sanitizeHTML(p.player) + ' ' : ''}${sanitizeHTML(p.selection || '')}${p.odds ? ' @ ' + Number(p.odds).toFixed(2) : ''}${p.edge_pct != null ? ` (${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%)` : ''}${p.tier ? ' <span class="text-tertiary">[' + sanitizeHTML(String(p.tier)) + ']</span>' : ''}` : '';
+  const lean = pk.label === 'VALUE' && pk.lean ? `<div class="text-small text-tertiary">Paper lean alongside: ${sanitizeHTML(pk.lean.bet_type || '')} ${pk.lean.player ? sanitizeHTML(pk.lean.player) + ' ' : ''}${sanitizeHTML(pk.lean.selection || '')} @ ${pk.lean.odds} (${pk.lean.edge_pct > 0 ? '+' : ''}${pk.lean.edge_pct}%)</div>` : '';
+  return `<div style="border:1px solid var(--border-subtle);border-left:3px solid ${colr};border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3)">
+    <div style="font-size:12px"><b style="color:${colr}">${lab}</b> · ${what}</div>
+    <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edges ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}</div>`;
+}
 function renderMarkets(d) {
   if (!d || d.error) return `<div class="text-small text-tertiary">Markets unavailable: ${sanitizeHTML((d && d.error) || '')}</div>`;
   const groups = {};
@@ -1469,6 +1488,7 @@ function renderMarkets(d) {
   if (reasons.length) {
     html += `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">${reasons.map(sanitizeHTML).join(' · ')}</div>`;
   }
+  html += _pickBanner(d.pick, d.n_priced);
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3)">';
   for (const [g, rows] of Object.entries(groups)) {
     const tierC = rows.every(r => r.tier === 'C');
@@ -1483,7 +1503,7 @@ function renderMarkets(d) {
       const rowBadge = r.tier !== rows[0].tier ? _tierBadge(r.tier) : '';
       html += `<div style="display:flex;justify-content:space-between;font-size:12px;line-height:1.6${r.bet_line ? ';font-weight:600' : ''}">
         <span>${sanitizeHTML(r.selection)}${r.bet_line ? ' <span class="text-tertiary" style="font-size:10px">(bet line)</span>' : ''}${rowBadge}</span>
-        <span class="text-mono">${Number(r.probability_pct).toFixed(1)}%</span></div>`;
+        <span class="text-mono">${_priceChip(r)}${Number(r.probability_pct).toFixed(1)}%</span></div>`;
     }
     html += '</div>';
   }
@@ -1498,14 +1518,15 @@ function renderMarkets(d) {
     }
     const list = Object.values(byPlayer).map(pl => {
       pl.rows.sort((a, b) => b.probability_pct - a.probability_pct);
-      pl.top = pl.rows.filter(r => r.tier === 'A').slice(0, 3);
+      // tier A floors, plus any tier C row (marcatore, assist) that has a real price
+      pl.top = pl.rows.filter(r => r.tier === 'A' || r.odds != null).slice(0, 4);
       return pl;
     }).filter(pl => pl.top.length).sort((a, b) => (a.team > b.team ? 1 : a.team < b.team ? -1 : b.top[0].probability_pct - a.top[0].probability_pct));
-    html += `<div class="text-label" style="margin-top:var(--space-4);margin-bottom:4px">Giocatori${_tierBadge('A')} <span class="text-tertiary" style="font-weight:400;font-size:10px">floor lines from the player engine; Giocatore marcatore is tier C and hidden</span></div>`;
+    html += `<div class="text-label" style="margin-top:var(--space-4);margin-bottom:4px">Giocatori${_tierBadge('A')} <span class="text-tertiary" style="font-weight:400;font-size:10px">floor lines from the player engine; marcatore / assist are tier C and shown only with a price; @ odds (edge) from the per-event feed</span></div>`;
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:2px 16px;font-size:12px">';
     for (const pl of list) {
       html += `<div style="display:flex;gap:8px;line-height:1.6"><span style="min-width:150px"><b>${sanitizeHTML(pl.player)}</b> <span class="text-tertiary" style="font-size:10px">${sanitizeHTML(pl.position || '')} · ${sanitizeHTML(pl.team || '')} · ${pl.mins != null ? Math.round(pl.mins) + "'" : ''}</span></span>
-        <span class="text-secondary">${pl.top.map(r => `${sanitizeHTML(r.bet_type)} ${sanitizeHTML(r.selection)} <span class="text-mono">${Number(r.probability_pct).toFixed(0)}%</span>${_splitChip(r)}`).join(' · ')}</span></div>`;
+        <span class="text-secondary">${pl.top.map(r => `${sanitizeHTML(r.bet_type)} ${sanitizeHTML(r.selection)} <span class="text-mono">${_priceChip(r)}${Number(r.probability_pct).toFixed(0)}%</span>${r.tier === 'C' ? _tierBadge('C') : ''}${_splitChip(r)}`).join(' · ')}</span></div>`;
     }
     html += '</div>';
   }

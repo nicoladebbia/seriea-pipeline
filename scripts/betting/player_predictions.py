@@ -111,6 +111,7 @@ MAX_P90 = {
     "fouls": 6.0,
     "was_fouled": 6.0,
     "goals": 1.5,
+    "assists": 1.0,
     "accurate_passes": 95.0,   # p99 = 89
     "tackles": 7.0,            # p99 = 6
     "duels_won": 14.0,         # p99 = 13
@@ -122,6 +123,9 @@ MAX_P90 = {
 # k = line + 1 is the threshold for the Poisson tail P(count >= k).
 TARGETS = {
     "goalscorer":  {"col": "goals",           "line": 0, "label": "Anytime Goalscorer"},
+    # 2026-09-05: same rate engine as goalscorer, same tier C (declared, not
+    # measured); priced against player_assists on the per-event feed.
+    "assists":     {"col": "assists",         "line": 0, "label": "Anytime Assist"},
     "shots_o05":   {"col": "total_shots",     "line": 0, "label": "Shots Over 0.5"},
     "shots_o15":   {"col": "total_shots",     "line": 1, "label": "Shots Over 1.5"},
     "shots_o25":   {"col": "total_shots",     "line": 2, "label": "Shots Over 2.5"},
@@ -818,6 +822,89 @@ def validate(league: str = "serie_a") -> dict[str, dict]:
                  cfg["label"], b_base, b_model, lift, verdict)
     return results
 
+
+
+# =============================================================================
+# FIXTURE PRICING HELPERS (moved from web/app.py 2026-09-05)
+# =============================================================================
+_PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
+_PMS_PATH = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+_LINEUP_PREDICTIONS = DATA_DIR / "upcoming" / "lineup_predictions.json"
+
+
+def player_engine():
+    """Cached (pms-with-priors, base_rates). Rebuilds only when the parquet
+    changes: building priors over 100k rows is ~1s, never per request."""
+    try:
+        mtime = _PMS_PATH.stat().st_mtime
+    except OSError:
+        return None, None
+    if _PLAYER_ENGINE_CACHE["pms"] is None or _PLAYER_ENGINE_CACHE["mtime"] != mtime:
+        pms = build_player_features(load_player_data("serie_a"))
+        _PLAYER_ENGINE_CACHE["pms"] = pms
+        _PLAYER_ENGINE_CACHE["base_rates"] = compute_position_base_rates(pms)
+        _PLAYER_ENGINE_CACHE["mtime"] = mtime
+    return _PLAYER_ENGINE_CACHE["pms"], _PLAYER_ENGINE_CACHE["base_rates"]
+
+
+def lineup_entries(side_lineup: dict) -> list:
+    """Flatten a lineup_predictions side into [{player_name, player_id, position,
+    proj_minutes, is_starter}], using start_pct * avg_minutes for projected mins."""
+    out = []
+    for grp, starter in (("predicted_xi", True), ("bench", False)):
+        for p in side_lineup.get(grp, []) or []:
+            avg_min = float(p.get("avg_minutes") or (82.0 if starter else 20.0))
+            start_pct = float(p.get("start_pct") or (100.0 if starter else 0.0))
+            proj_min = avg_min if starter else avg_min * (start_pct / 100.0)
+            out.append({
+                "player_name": p.get("name") or p.get("player_name", ""),
+                "player_id": p.get("player_id"),
+                "position": p.get("position", "M"),
+                "proj_minutes": proj_min,
+                "is_starter": starter,
+            })
+    return out
+
+
+def recent_xi(pms, team: str) -> list:
+    """Fallback likely-XI: the team's most-recent match starters from pms
+    (names + ids straight from sofascore so they resolve)."""
+    tdf = pms[pms["team"] == team]
+    if not len(tdf):
+        return []
+    last_date = tdf["date"].max()
+    last = tdf[(tdf["date"] == last_date) & (tdf["minutes"] >= 60)]
+    return [{
+        "player_name": r["player_name"], "player_id": r["player_id"],
+        "position": r["position"], "is_starter": True,
+        "proj_minutes": None,  # engine uses the player's leak-free min_prior
+    } for _, r in last.iterrows()]
+
+
+def match_player_floors(match_key: str, home: str, away: str, league: str = "serie_a"):
+    """Player floor markets for one fixture, or None when there is no engine
+    (parquet missing) or no XI to price. Predicted XI from lineup_predictions,
+    else the most recent starters. Serie A only: the priors are Serie A."""
+    if league != "serie_a":
+        return None
+    pms, base_rates = player_engine()
+    if pms is None:
+        return None
+    try:
+        lineups = json.loads(_LINEUP_PREDICTIONS.read_text())
+    except (OSError, ValueError):
+        lineups = {}
+    lp = (lineups.get("matches", {}) if isinstance(lineups, dict) else {}).get(match_key)
+    if lp:
+        home_xi = lineup_entries(lp.get("home_lineup", {}))
+        away_xi = lineup_entries(lp.get("away_lineup", {}))
+    else:
+        home_xi = recent_xi(pms, home)
+        away_xi = recent_xi(pms, away)
+    if not home_xi and not away_xi:
+        return None
+    return predict_match_players(home, away, home_xi, away_xi, pms=pms,
+                                 base_rates=base_rates, league=league)
 
 if __name__ == "__main__":
     import sys

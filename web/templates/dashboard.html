@@ -96,6 +96,10 @@
   .bet-pill--near_miss { background:rgba(251,191,36,0.12); color:var(--amber); }
   .bet-pill--vetoed    { color:var(--text-secondary); border:1px dashed rgba(251,191,36,0.45); }
   .bet-pill--none, .bet-pill--no_odds, .bet-pill--no_model { color:var(--text-tertiary); }
+  /* pick engine LEAN: paper only, dashed so it never reads as a bet */
+  .bet-pill--lean { background:rgba(148,163,184,0.10); color:var(--text-secondary); border:1px dashed rgba(148,163,184,0.5); }
+  .dash-row--lean { opacity:0.8; }
+  .dash-row--lean:hover { opacity:1; }
   .bet-pill--gated { color:var(--text-tertiary); border:1px dashed var(--border-default); }
   /* Verdict older than the odds it was priced against: the age rides ON the pill */
   .bet-pill--aged { border:1px solid rgba(251,191,36,0.55); }
@@ -277,6 +281,8 @@ function renderOUCell(ou, m) {
 function renderBetCell(ou, m) {
   const b = (ou && ou.bet) || { status: 'none' };
   const st = b.status || 'none';
+  const pk = m && m.pick;
+  if ((st === 'none' || st === 'no_odds') && pk && pk.label === 'LEAN' && pk.pick) return _renderLeanCell(pk);
   // Verdict age vs the odds it was priced against. Candidates come from the
   // morning/evening dry-run file; selected/near-miss from the slip.
   let aged = false, ageTxt = '', ageNote = '';
@@ -312,10 +318,20 @@ function renderBetCell(ou, m) {
   return `<td class="bet-cell"><span class="bet-pill bet-pill--${st}${aged ? ' bet-pill--aged' : ''}" title="${title}${ageNote}">${label}${sub ? `<span class="bet-pill__sub">${sub}</span>` : ''}${aged ? `<span class="bet-pill__age">· ${ageTxt}</span>` : ''}</span></td>`;
 }
 
+function _renderLeanCell(pk) {
+  const p = pk.pick;
+  const edge = p.edge_pct != null ? `${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%` : '';
+  const who = p.player ? `${p.player.split(' ').slice(-1)[0]} ` : '';
+  const sel = `${who}${(p.selection || '').replace('Over ', 'O')}`;
+  const title = `Paper pick (no money): ${p.bet_type || ''} ${p.player ? p.player + ' ' : ''}${p.selection || ''} @ ${p.odds || '?'} (${p.book || ''}, ${p.n_books || '?'} book${p.n_books === 1 ? '' : 's'}), tier ${p.tier || '?'}. ${pk.reason || ''}${pk.journaled_bet_id ? ' · journaled' : ''}`;
+  return `<td class="bet-cell"><span class="bet-pill bet-pill--lean" title="${title.replace(/"/g, '&quot;')}">LEAN ${sel}<span class="bet-pill__sub">${edge} · ${p.tier || '?'}</span></span></td>`;
+}
+
 // Triage order: what the gate said, then kickoff. 0-2 = a verdict worth reading,
 // 3-4 = nothing to act on, 5 = league gated (collapsed by default).
 const _BET_TIER = { selected: 0, candidate: 1, near_miss: 2, vetoed: 2.5, none: 3, no_odds: 4, no_model: 4, gated: 5 };
-function _betTier(m) { return _BET_TIER[m.ou?.bet?.status] ?? 3; }
+function _isLean(m) { const st = m.ou?.bet?.status; return (st === 'none' || st === 'no_odds') && m.pick?.label === 'LEAN' && !!m.pick?.pick; }
+function _betTier(m) { return _isLean(m) ? 2.8 : (_BET_TIER[m.ou?.bet?.status] ?? 3); }
 function _triageSort(a, b) {
   const t = _betTier(a) - _betTier(b);
   return t !== 0 ? t : (a.commence_time || '').localeCompare(b.commence_time || '');
@@ -349,7 +365,7 @@ function renderMatchRow(m, idx) {
   const matchSlug = matchRaw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
   const tier = _betTier(m);
-  const rowCls = tier <= 2 ? 'dash-row--signal' : tier === 5 ? 'dash-row--gated' : 'dash-row--quiet';
+  const rowCls = tier <= 2 ? 'dash-row--signal' : tier === 5 ? 'dash-row--gated' : tier === 2.8 ? 'dash-row--lean' : 'dash-row--quiet';
   return `<tr class="${rowCls}" data-match-key="${matchRaw}" onclick="window.location='/prediction/${matchSlug}'">
     <td class="dash-row__time text-mono text-tertiary" style="font-size:11px">${formatKickoffTime(m.commence_time) || '--:--'}</td>
     <td class="dash-row__match">
@@ -477,6 +493,8 @@ function _betSummary(matches, data) {
   if (near) parts.push(`${near} near miss${near !== 1 ? 'es' : ''}`);
   if (vetoed) parts.push(`${vetoed} vetoed`);
   if (gated) parts.push(`${gated} gated`);
+  const lean = matches.filter(_isLean).length;
+  if (lean) parts.push(`${lean} lean (paper)`);
   const age = ts => { if (!ts) return 'never'; const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000); return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`; };
   // Two verdict clocks: the slip (selected + near-miss, written at T-30 / manual run)
   // and the candidates file (morning/evening dry-run). Name both when they differ,

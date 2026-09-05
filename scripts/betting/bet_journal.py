@@ -440,6 +440,9 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None) -> str:
             "placed_at": bet_data.get("placed_at", datetime.now().isoformat()),
             "settled_at": None,
             "pipeline_status": bet_data.get("pipeline_status"),
+            # free-form context the grader needs (picks: player, side, line);
+            # absent on real bets
+            "extra": bet_data.get("extra"),
         }
         # Auto-tag model version so post-retrain audits can filter by model.
         _stamp_model_version(entry)

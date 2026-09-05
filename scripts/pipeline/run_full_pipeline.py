@@ -1039,6 +1039,14 @@ def run_pre_kickoff(bankroll: float = 1000.0):
         print(f"  Loaded odds for {len(odds)} matches")
     except Exception as e:
         print(f"  Odds warning: {e}")
+    # Per-event pick markets (first half, HT/FT, player props) for events inside
+    # 6.5h; 45-min refresh gate inside, so repeated T-30 cycles cost nothing.
+    try:
+        from scripts.data.odds_fetcher import fetch_pick_markets
+        pk = fetch_pick_markets(hours_ahead=6.5)
+        print(f"  Pick markets on disk for {len(pk.get('events', {}))} events")
+    except Exception as e:
+        print(f"  Pick markets warning: {e}")
 
     # Step 2: Classify match windows
     step(2, total, "Classifying Match Windows")

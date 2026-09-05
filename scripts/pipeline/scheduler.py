@@ -554,6 +554,14 @@ def _dispatch_odds_stage(stage: Dict, matches: List[Dict]) -> bool:
             log.warning("odds stage %s: fetch failed for %s — %s",
                         stage["name"], league, e)
             ok_all = False
+    if stage.get("include_extra_markets") and "serie_a" in leagues_to_fetch:
+        # Pick markets ride the T-6h / T-3h extra-market stages (same pacing
+        # priority); the fetcher's own 45-min gate dedups repeats.
+        try:
+            from scripts.data.odds_fetcher import fetch_pick_markets
+            fetch_pick_markets(hours_ahead=stage["minutes_before"] / 60 + 1.0)
+        except Exception as e:
+            log.warning("odds stage %s: pick markets fetch failed — %s", stage["name"], e)
     return ok_all
 
 

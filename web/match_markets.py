@@ -44,7 +44,10 @@ _PLAYER_MARKET_IT = {
     "intercepts_o05": ("Intercetti giocatore", "Over 0.5"),
     "intercepts_o15": ("Intercetti giocatore", "Over 1.5"),
     "goalscorer": ("Giocatore marcatore", "Sì"),
+    "assists": ("Assist giocatore", "Sì"),
 }
+# Rate-engine rows that never passed a floor backtest: declared, not measured.
+_PLAYER_TIER_C = {"goalscorer", "assists"}
 
 NOT_BUILT = [
     {"group": "Principali", "bet_type": "Estro finale", "engine": "goal-process simulator",
@@ -249,7 +252,7 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
                 it = _PLAYER_MARKET_IT.get(key)
                 if not it or m.get("prob") is None:
                     continue
-                tier = TIER_C if key == "goalscorer" else TIER_A
+                tier = TIER_C if key in _PLAYER_TIER_C else TIER_A
                 player_rows.append({
                     "group": "Giocatori", "bet_type": it[0], "selection": it[1],
                     "player": pl.get("player_name"), "team": pl.get("team") or (pred.get(f"{side}_team") or side),
@@ -293,3 +296,51 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
         "not_built": NOT_BUILT,
         "missing": missing,
     }
+
+
+def assemble_market_inputs(match_key: str, *, pred: dict, load_json, league: str | None = None) -> dict[str, Any]:
+    """Load every artifact build_match_markets needs for ONE match (all but
+    `engine_bet`, which only the dashboard route derives). `load_json(path,
+    default)` is the caller's reader (the app's cached one, or a plain read),
+    so the prediction page and the pick engine assemble the same inputs."""
+    from pathlib import Path
+
+    from config.settings import DATA_DIR, UPCOMING_DIR
+
+    def _rows(raw) -> list:
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, dict)]
+        if isinstance(raw, dict):
+            return [r for r in (raw.get("predictions") or []) if isinstance(r, dict)]
+        return []
+
+    league = league or pred.get("league", "serie_a")
+    goal = next((g for g in _rows(load_json(UPCOMING_DIR / "goal_predictions.json", []))
+                 if g.get("match") == match_key), None)
+    btts = next((b for b in _rows(load_json(UPCOMING_DIR / "btts_predictions.json", []))
+                 if b.get("match") == match_key), None)
+    ext_raw = load_json(UPCOMING_DIR / "extended_markets.json", {})
+    ext = (ext_raw.get("matches", {}) if isinstance(ext_raw, dict) else {}).get(match_key)
+    odds_file = "odds_full.json" if league == "serie_a" else f"odds_full_{league}.json"
+    odds_raw = load_json(UPCOMING_DIR / odds_file, {})
+    odds = ((odds_raw.get("matches", {}) if isinstance(odds_raw, dict) else {}).get(match_key)) or {}
+    try:
+        from scripts.betting.player_predictions import match_player_floors
+        players = match_player_floors(match_key, pred.get("home_team", ""), pred.get("away_team", ""), league)
+    except Exception as exc:  # noqa: BLE001 - the floor engine must never take the page down
+        import logging
+        logging.getLogger(__name__).warning("match-markets: player floors failed for %s: %s", match_key, exc)
+        players = None
+    sim_rows = None
+    if goal:
+        try:
+            from scripts.models.goal_process import rare_event_rows, served_rows
+            sim_rows = (served_rows(goal.get("expected_home_goals"), goal.get("expected_away_goals"),
+                                    goal.get("over_2_5"), league=league or "serie_a")
+                        + rare_event_rows(league or "serie_a")) or None
+        except Exception as e:  # noqa: BLE001 - a simulator failure must not 404 the page
+            import logging
+            logging.getLogger(__name__).warning("goal_process rows unavailable for %s: %s", match_key, e)
+    halves_gate = (load_json(Path(DATA_DIR) / "models" / "player_floors" / "halves_backtest.json", {}) or {}).get("gate") or {}
+    return {"pred": pred, "goal_pred": goal, "ext": ext, "btts": btts, "players": players, "sim": sim_rows,
+            "halves_gate": halves_gate, "kickoff_utc": odds.get("commence_time"), "league": league}

@@ -956,9 +956,11 @@ def fetch_anytime_scorer_odds(hours_ahead: float = 1.25,
     return store
 
 
-def _scorer_events_due(events: list, store: dict, now, hours_ahead: float) -> list:
+def _scorer_events_due(events: list, store: dict, now, hours_ahead: float,
+                       refresh_min: float = SCORER_REFRESH_MIN) -> list:
     """Pure selection: events kicking off within the window whose last fetch
-    (if any) is older than SCORER_REFRESH_MIN and predates kickoff."""
+    (if any) is older than `refresh_min` (default SCORER_REFRESH_MIN) and
+    predates kickoff. Shared by the scorer fetch and fetch_pick_markets."""
     due = []
     for ev in events:
         try:
@@ -974,12 +976,121 @@ def _scorer_events_due(events: list, store: dict, now, hours_ahead: float) -> li
             try:
                 age_min = (now - datetime.fromisoformat(
                     prev["fetched_at"])).total_seconds() / 60
-                if age_min < SCORER_REFRESH_MIN:
+                if age_min < refresh_min:
                     continue
             except (KeyError, ValueError):
                 pass
         due.append(ev)
     return due
+
+
+# ---- Pick markets: every per-event market the pick engine can price ----------
+# Specimen-verified 2026-09-05 on Juventus vs AC Milan (region eu): every key
+# below returned prices; alternate_team_totals / h2h_h2 / totals_h2 did NOT and
+# are deliberately absent (a 422 on the whole request still costs credits).
+# Billed 1 credit per market per event: len(PICK_EVENT_MARKETS) per event.
+PICK_EVENT_MARKETS = (
+    "h2h_h1", "totals_h1", "btts_h1", "halftime_fulltime", "double_chance_h1",
+    "alternate_totals_corners", "alternate_totals_cards", "correct_score",
+    "player_goal_scorer_anytime", "player_first_goal_scorer", "player_last_goal_scorer",
+    "player_to_receive_card", "player_to_receive_red_card",
+    "player_shots_on_target", "player_shots", "player_assists",
+)
+PICK_MARKETS_FILE = DATA_DIR / "upcoming" / "pick_markets_raw.json"
+PICK_REFRESH_MIN = 45.0
+
+
+def fetch_pick_markets(hours_ahead: float = 6.5, league: str = "serie_a",
+                       refresh_min: float = PICK_REFRESH_MIN) -> dict:
+    """Per-event odds for the pick engine (scripts/betting/picks.py): every
+    market in PICK_EVENT_MARKETS for events kicking off within `hours_ahead`,
+    RAW (bookmaker -> market -> outcomes, names verbatim) so the parser is
+    testable against the saved specimen. Merge-writes PICK_MARKETS_FILE keyed
+    by event id; an event fetched < `refresh_min` ago is skipped, so the T-6h,
+    T-3h and every T-30 pre-kickoff cycle can call this and only the first of
+    each window pays. Budget: len(PICK_EVENT_MARKETS) credits per event,
+    gated by check_budget_pacing(PRIORITY_EXTRAS) — never critical."""
+    sport_key = _resolve_sport_key(league)
+    if not check_api_key() or not HAS_REQUESTS:
+        return {}
+    store: dict = {"events": {}}
+    try:
+        store = json.loads(PICK_MARKETS_FILE.read_text())
+        store.setdefault("events", {})
+    except (OSError, ValueError):
+        pass
+    ok, msg = check_budget_pacing(PRIORITY_EXTRAS)
+    if not ok:
+        log.warning(f"Pick markets: budget pacing blocked the fetch: {msg}")
+        return store
+    try:
+        resp = requests.get(f"{API_BASE_URL}/sports/{sport_key}/events",
+                            params={"apiKey": API_KEY}, timeout=30)
+        resp.raise_for_status()
+        events = resp.json()
+        remaining_hdr = resp.headers.get("x-requests-remaining")
+        track_api_call(credits_remaining=int(remaining_hdr) if remaining_hdr
+                       else None, estimated_cost=0,
+                       endpoint=f"events_list_{sport_key}")
+    except Exception as e:
+        log.error(f"Pick markets: events list failed: {e}")
+        return store
+    now = datetime.now(timezone.utc)  # noqa: UP017 — module style
+    due = _scorer_events_due(events, store, now, hours_ahead, refresh_min)
+    markets_csv = ",".join(PICK_EVENT_MARKETS)
+    for ev in due:
+        eid = ev["id"]
+        ok, msg = check_rate_limit()
+        if not ok:
+            log.warning(f"Pick markets: rate limit after {eid}: {msg}")
+            break
+        try:
+            r = requests.get(
+                f"{API_BASE_URL}/sports/{sport_key}/events/{eid}/odds",
+                params={"apiKey": API_KEY, "regions": REGIONS,
+                        "markets": markets_csv, "oddsFormat": ODDS_FORMAT},
+                timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            remaining_hdr = r.headers.get("x-requests-remaining")
+            track_api_call(credits_remaining=int(remaining_hdr)
+                           if remaining_hdr else None,
+                           estimated_cost=len(PICK_EVENT_MARKETS)
+                           * len(REGIONS.split(",")),
+                           endpoint=f"pick_markets_{sport_key}")
+        except Exception as e:
+            log.warning(f"Pick markets fetch failed for {eid}: {e}")
+            continue
+        store["events"][eid] = {
+            "home": normalize_team(ev.get("home_team", "")),
+            "away": normalize_team(ev.get("away_team", "")),
+            "home_raw": ev.get("home_team", ""),
+            "away_raw": ev.get("away_team", ""),
+            "commence": ev.get("commence_time"),
+            "fetched_at": now.isoformat(),
+            "bookmakers": [
+                {"title": bm.get("title", "Unknown"),
+                 "markets": [{"key": m.get("key"),
+                              "outcomes": [{"name": o.get("name"),
+                                            "description": o.get("description"),
+                                            "point": o.get("point"),
+                                            "price": o.get("price")}
+                                           for o in m.get("outcomes", [])]}
+                             for m in bm.get("markets", [])]}
+                for bm in data.get("bookmakers", [])],
+        }
+        n_mk = len({m["key"] for bm in store["events"][eid]["bookmakers"]
+                    for m in bm["markets"]})
+        log.info(f"Pick markets: {ev.get('home_team')} vs {ev.get('away_team')}: "
+                 f"{n_mk} markets priced")
+        time.sleep(0.3)
+    if due:
+        store["fetched_at"] = now.isoformat()
+        store["league"] = league
+        PICK_MARKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PICK_MARKETS_FILE.write_text(
+            json.dumps(store, indent=1, ensure_ascii=False))
+    return store
 
 
 def process_extra_markets(raw_extra: Dict[str, Dict]) -> Dict[str, Dict]:

@@ -3579,6 +3579,13 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
     if dry_run:
         log.info("DRY RUN: would save bet slip to %s",
                  UPCOMING / "unified_bet_slip.json")
+        # Pick engine: refresh the per-match line (VALUE / LEAN / NO EDGE) from
+        # the candidates file; nothing is journaled on the morning path.
+        try:
+            from scripts.betting.picks import build_picks
+            build_picks("serie_a", journal=False)
+        except Exception as e:
+            log.warning("Pick engine (dry) failed: %s", e)
         return None
 
     from config.settings import atomic_write_json
@@ -3628,6 +3635,15 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
             log.info("Paper track: %d bet(s) journaled", n_paper)
     except Exception as e:
         log.warning("Paper track failed: %s", e)
+
+    # Pick engine: one line per match across every priced market; the LEAN of
+    # each match inside the T-30 window is paper-journaled here, on the same
+    # timing as the real bets (scripts/betting/picks.py).
+    try:
+        from scripts.betting.picks import build_picks
+        build_picks("serie_a", journal=True)
+    except Exception as e:
+        log.warning("Pick engine failed: %s", e)
 
     return path
 

@@ -85,31 +85,39 @@ def test_every_match_on_the_slate_gets_a_row():
 # ── bot surface: /picks handler + AI budget gate ─────────────────────────
 
 
-def test_handle_picks_renders_flags_and_tolerates_missing(tmp_path, monkeypatch):
+def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkeypatch):
+    """/picks reads data/upcoming/picks.json (scripts/betting/picks.py) since
+    2026-09-05: one line per match, VALUE / LEAN / NO EDGE."""
     import json
 
     import scripts.pipeline.telegram_bot as tb
 
     monkeypatch.setattr(tb, "PROJECT_ROOT", tmp_path)
-    assert "slip" in tb._handle_picks() or "motore" in tb._handle_picks()
+    assert "picks.json" in tb._handle_picks()
     up = tmp_path / "data" / "upcoming"
     up.mkdir(parents=True)
-    slip = {"generated_at": "2026-09-03T12:00:00+00:00", "selected_bets": [],
-            "best_picks": [
-                {"match": "A vs B", "date": "2026-09-05",
-                 "best": {"market": "1X2", "selection": "Draw", "odds": 3.4,
-                          "edge_pct": 5.0, "model_prob": 0.31,
-                          "tier": "validated", "in_band": True}},
-                {"match": "C vs D", "date": "2026-09-06",
-                 "best": {"market": "1X2", "selection": "Away", "odds": 9.0,
-                          "edge_pct": 80.0, "model_prob": 0.2,
-                          "tier": "validated", "in_band": False}},
-            ]}
-    (up / "unified_bet_slip.json").write_text(json.dumps(slip))
+    doc = {"generated_at": "2026-09-05T12:00:00+00:00",
+           "counts": {"VALUE": 1, "LEAN": 1, "NO_EDGE": 1},
+           "picks": [
+               {"match": "A vs B", "date": "2026-09-05", "label": "VALUE", "stage": "selected",
+                "pick": {"bet_type": "O/U 1.5", "selection": "Over 1.5", "odds": 1.41, "edge_pct": 6.5,
+                         "tier": "engine"},
+                "reason": "the betting engine's own selection: real stake, committed at T-30"},
+               {"match": "C vs D", "date": "2026-09-06", "label": "LEAN",
+                "pick": {"bet_type": "Assist giocatore", "player": "Federico Dimarco", "selection": "Sì",
+                         "odds": 4.5, "edge_pct": 3.2, "tier": "C"},
+                "reason": "model 23.0% vs market 22.2% (William Hill, 1 book); edge inside the credible band, paper stake"},
+               {"match": "E vs F", "date": "2026-09-06", "label": "NO_EDGE", "pick": None,
+                "most_probable": {"bet_type": "1x2 finale", "selection": "1", "odds": 1.5, "edge_pct": -4.0,
+                                  "tier": "A"},
+                "reason": "most probable is 1 at 64.0%, but the market prices it at 66.7% (1.5): no edge"},
+           ]}
+    (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
-    assert "A vs B" in out and "✅" in out
-    assert "C vs D" in out and "⚠️" in out
-    assert "fuori banda" in out  # the out-of-band legend appears
+    assert "A vs B" in out and "💰" in out and "VALUE" in out
+    assert "Federico Dimarco Sì @ 4.5" in out and "📝" in out and "LEAN" in out
+    assert "E vs F" in out and "➖" in out and "no edge" in out
+    assert "solo carta" in out  # the legend says LEAN is paper
 
 
 def test_ai_budget_gate_caps_and_rolls_over(tmp_path, monkeypatch):
