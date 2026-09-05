@@ -285,25 +285,30 @@ def _minutes_played(player: dict[str, Any], events: list[dict[str, Any]], clock_
 
     ESPN carries no minutes per player. A starter has played the clock; a
     player subbed off played until his substitution; a sub has played since
-    his. Stoppage time is ignored; None when the clock is unknown or the
-    substitution event cannot be found.
+    his; a red card stops the clock at the card. Stoppage time is ignored;
+    None when the clock is unknown or the substitution event cannot be found.
     """
     if clock_minute is None:
         return None
     me = _fold(player["name"])
+    # A sent-off player's clock stops at the card.
+    end = clock_minute
+    for e in events:
+        if e.get("type") == "card" and e.get("card_type") == "red" and _fold(e.get("player", "")) == me:
+            end = min(end, int(e.get("minute") or clock_minute))
     if player["subbed_in"]:
         for e in events:
             if e.get("type") == "substitution" and _fold(e.get("player_in", "")) == me:
-                return max(0, clock_minute - int(e.get("minute") or 0))
+                return max(0, end - int(e.get("minute") or 0))
         return None
     if player["substitute"]:
         return 0
     if player["subbed_out"]:
         for e in events:
             if e.get("type") == "substitution" and _fold(e.get("player_out", "")) == me:
-                return int(e.get("minute") or 0)
+                return min(end, int(e.get("minute") or 0))
         return None
-    return clock_minute
+    return end
 
 
 def parse_rosters(rosters: list[dict[str, Any]], events: list[dict[str, Any]] | None = None,

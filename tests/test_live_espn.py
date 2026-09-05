@@ -236,3 +236,38 @@ def test_fetch_carries_player_stats_and_flags_them(monkeypatch, board, roma):
     monkeypatch.setattr(live_espn, "_get_json", lambda url: roma if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
     assert out["fetched"]["player_stats"] is True and len(out["player_stats"]["away"]) == 23
+
+
+def test_running_clock_minutes_on_a_real_in_progress_specimen():
+    # Sporting CP vs Nacional captured live at 84' (2026-09-05): 9 substitutions in.
+    s = _load("summary_401885449_live84.json")
+    comp = s["header"]["competitions"][0]
+    home_id = next(c["team"]["id"] for c in comp["competitors"] if c["homeAway"] == "home")
+    events = parse_key_events(s["keyEvents"], home_id)
+    ps = live_espn.parse_rosters(s["rosters"], events, 84)
+    by = {live_espn._fold(p["name"]): p for side in ps.values() for p in side}
+    assert by["maxi araujo"]["minutes_played"] == 78 and by["maxi araujo"]["subbed_out"]
+    assert by["georgios vagiannidis"]["minutes_played"] == 84 - 78 and by["georgios vagiannidis"]["subbed_in"]
+    assert by["leo santos"]["minutes_played"] == 45
+    starters = [p for p in ps["home"] if not p["substitute"] and not p["subbed_out"]]
+    assert starters and all(p["minutes_played"] == 84 for p in starters)
+    unused = [p for p in ps["away"] if p["substitute"] and not p["subbed_in"]]
+    assert unused and all(p["minutes_played"] == 0 for p in unused)
+
+
+def test_a_sent_off_player_stops_at_the_card(roma):
+    # Gaetano's red came at 90'+7' — stoppage is ignored, so the fixture caps at 90 ...
+    home_id = next(c["team"]["id"] for c in roma["header"]["competitions"][0]["competitors"] if c["homeAway"] == "home")
+    events = parse_key_events(roma["keyEvents"], home_id)
+    red = next(e for e in events if e["type"] == "card" and e["card_type"] == "red")
+    ps = live_espn.parse_rosters(roma["rosters"], events, 90)
+    by = {live_espn._fold(p["name"]): p for side in ps.values() for p in side}
+    assert red["minute"] == 90 and by[live_espn._fold(red["player"])]["minutes_played"] == 90
+    # ... and a mid-match red stops the clock for a starter and for a sub alike.
+    starter = {"name": "Gianluca Gaetano", "substitute": False, "subbed_in": False, "subbed_out": False}
+    early = [{"type": "card", "card_type": "red", "minute": 61, "player": "Gianluca Gaetano"}]
+    assert live_espn._minutes_played(starter, early, 88) == 61
+    sub = {"name": "Santiago Castro", "substitute": True, "subbed_in": True, "subbed_out": False}
+    sub_events = [{"type": "substitution", "minute": 63, "player_in": "Santiago Castro", "player_out": "X"},
+                  {"type": "card", "card_type": "red", "minute": 75, "player": "Santiago Castro"}]
+    assert live_espn._minutes_played(sub, sub_events, 88) == 12
