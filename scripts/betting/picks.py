@@ -55,6 +55,7 @@ LABEL_VALUE, LABEL_LEAN, LABEL_NO_EDGE = "VALUE", "LEAN", "NO_EDGE"
 MIN_ODDS = 1.10            # below this the price carries no information
 OVERCONFIDENCE_CAP = 12.0  # = bet_journal.MAX_EDGE_PCT; >10% edge ran 38% WR live
 PICK_JOURNAL_WINDOW_H = 3.0  # journal a LEAN only inside the T-30 timing window
+MIN_STAT_ROWS_FOR_DNP = 22   # a match's player stats are "in" when both XIs (≥22 rows) are on disk
 MIN_PROB_PCT = 20.0        # a "+9% edge" on a 3% event is inside the model's own error
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
 # "Insolite": every priced family outside the mainstream match markets. Shown
@@ -523,6 +524,10 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
             # kicked off: the /picks card listed Roma–Atalanta 40 minutes into
             # the match (2026-09-05) because the date filter is day-resolution
             continue
+        xi_states = {r.get("lineup") for r in (payload.get("players") or []) if r.get("lineup")}
+        line["lineup_state"] = ("confirmed" if xi_states == {"confirmed"} else
+                                "predicted" if "predicted" in xi_states else
+                                "recent" if xi_states else None)
         line.update({"date": pred.get("date"), "kickoff_utc": ko.isoformat() if ko else None,
                      "league": league, "home_team": pred.get("home_team"), "away_team": pred.get("away_team"),
                      "prices_fetched_at": (ev or {}).get("fetched_at")})
@@ -574,7 +579,10 @@ def journal_lean(match_key: str, date: str, lean: dict, league: str, *, placed_a
         "pipeline_status": "pick:lean",
         "extra": {"bet_type": lean.get("bet_type"), "player": lean.get("player"), "team": lean.get("team"),
                   "source": lean.get("source"), "tier": lean.get("tier"),
-                  "side": (ou[0] if ou else None), "line": (ou[1] if ou else None)},
+                  "side": (ou[0] if ou else None), "line": (ou[1] if ou else None),
+                  # the XI basis at journal time, so the paper record can be split
+                  # confirmed vs predicted before any market earns real stakes
+                  "lineup": lean.get("lineup"), "start_pct": lean.get("start_pct")},
     }, journal_path=PICKS_JOURNAL_PATH)
 
 
@@ -624,6 +632,10 @@ def _grade(bet: dict, res: dict | None, h1: tuple[int, int] | None,
                "player_goal_scorer_anytime": "goals", "player_assists": "assists"}.get(mk)
         if col is None:
             return None
+        if player_row.get("_did_not_play"):
+            # the match's stats are in and the player has no row (or 0 minutes):
+            # he never entered — books void a player prop, so does the paper record
+            return "void"
         count = int(player_row.get(col) or 0)
         if mk == "player_goal_scorer_anytime":
             return "won" if count >= 1 else "lost"
@@ -684,6 +696,12 @@ def settle_picks(results: dict[str, dict] | None = None) -> dict:
             hit = sub[sub["player_name"].map(_deaccent) == _deaccent(player)]
             if len(hit) == 1:
                 player_row = hit.iloc[0].to_dict()
+                if not float(player_row.get("minutes") or 0):
+                    player_row["_did_not_play"] = True
+            elif len(hit) == 0 and len(sub) >= MIN_STAT_ROWS_FOR_DNP:
+                # both squads' stats are on disk and he is not among them:
+                # benched and never used (Pašalić, 2026-09-05) -> void, not pending
+                player_row = {"_did_not_play": True}
         status = (res or {}).get("status", "").lower() if res else ""
         if status in ("postponed", "cancelled", "suspended", "walkover"):
             outcome = "void"

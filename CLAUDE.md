@@ -244,7 +244,19 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   per-market bar: a market earns real stakes the way O/U 1.5 and the EPL gate do — a
   settled paper record with CLV, not a good week.
 - Journal entries carry an `extra` dict (bet_type, player, team, source, tier, side,
-  line) — `bet_journal.add_bet` stores it; real bets have `extra: null`.
+  line, **lineup, start_pct** — the XI basis at journal time, so the paper record can be
+  split confirmed vs predicted before any market earns real stakes) — `bet_journal.add_bet`
+  stores it; real bets have `extra: null`.
+- **A player who never entered is VOID, not pending** (books void the prop): once both
+  squads' stats are on disk (≥ 22 rows for that date, `MIN_STAT_ROWS_FOR_DNP`) a journaled
+  player with no row, or a row with 0 minutes, settles `voided`. Until the stats land the
+  pick stays pending — and `health_check.check_player_stats_coverage` goes CRITICAL when a
+  Serie A match finished > 14h ago has no player stats on disk (the Sofascore API was
+  challenged on 2026-09-05 afternoon after working at 08:00; the evening ingest fails
+  silently in that state).
+- The pre-kickoff monitor is a long-lived process: **a change to `picks.py` /
+  `betting_unified.py` reaches the T-30 run only after `launchctl kickstart -k`**. The first
+  T-30 of 2026-09-05 journaled nothing for exactly this reason, not a code defect.
 - Tests: `tests/test_picks.py` (specimen naming, row→price map, name join incl.
   ambiguity, ranking, VALUE-from-slip, engine note, journal dedup across players, every
   grading family, ungradable stays pending, fetch refresh window — the last one caught a

@@ -436,6 +436,12 @@ def check_lineup_sources_summary() -> Dict:
             if not r.get("missing_sheets") else "ESPN ok, sheets present"}
 
 
+def check_player_stats_coverage_row() -> Dict:
+    from scripts.pipeline.health_check import check_player_stats_coverage
+    r = check_player_stats_coverage()
+    return {"status": r["status"], "detail": r.get("detail", "")}
+
+
 def check_state_backup() -> Dict:
     """Off-disk state backup freshness (bet journal, fantacalcio state). The
     backup job is daily; >50h means two misses."""
@@ -585,7 +591,8 @@ def run_monitor() -> Dict:
     log.info("Checking fantacalcio ops + state backup...")
     for name, chk in (("fantacalcio", check_fantacalcio_health),
                       ("state_backup", check_state_backup),
-                      ("lineup_sources", check_lineup_sources_summary)):
+                      ("lineup_sources", check_lineup_sources_summary),
+                      ("player_stats_coverage", check_player_stats_coverage_row)):
         try:
             res = chk()
         except Exception as e:

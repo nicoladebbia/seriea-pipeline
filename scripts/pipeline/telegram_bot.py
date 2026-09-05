@@ -2119,7 +2119,8 @@ def _handle_picks(max_matches: int = 20) -> str:
             ko = f"{_IT_DAYS[dt.weekday()]} {dt.strftime('%d/%m %H:%M')}"
         except (ValueError, TypeError):
             ko = (p.get("date") or "?")[5:]
-        block = [f"\n<b>{home.upper()} – {away.upper()}</b> · {ko}"]
+        xi = " · XI ufficiali ✓" if p.get("lineup_state") == "confirmed" else ""
+        block = [f"\n<b>{home.upper()} – {away.upper()}</b> · {ko}{xi}"]
         label = p.get("label")
         headline = p.get("pick")
         key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731

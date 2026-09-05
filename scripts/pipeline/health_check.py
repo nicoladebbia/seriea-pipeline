@@ -1118,6 +1118,51 @@ def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
     return out
 
 
+STATS_GRACE_HOURS = 14.0   # the evening (20:00) and morning (08:00) runs both get a chance
+
+
+def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
+    """Did the Sofascore player stats land for every Serie A match that finished
+    more than STATS_GRACE_HOURS ago? Player-prop paper picks grade from
+    player_match_stats.parquet; when the Sofascore API is challenged (2026-09-05)
+    the ingestion fails silently and the record that gates real stakes never
+    accrues. Fixture kickoffs come from the cached fixture file (known weeks
+    ahead), so this check does not itself depend on Sofascore being up."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        from scripts.utils.match_timing import _sofascore_fixture_files
+        fx_path = next(p for p, lg in _sofascore_fixture_files() if lg == "serie_a")
+        raw = json.loads(fx_path.read_text())
+        fixtures = raw if isinstance(raw, list) else next(v for v in raw.values() if isinstance(v, list))
+    except (OSError, ValueError, StopIteration) as e:
+        return {"status": "WARNING", "detail": f"fixture file unreadable: {e}"}
+    played = []
+    for f in fixtures:
+        ts = f.get("startTimestamp")
+        if not ts:
+            continue
+        ko = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        if (f.get("status") or {}).get("type") in ("canceled", "postponed"):
+            continue
+        if STATS_GRACE_HOURS * 3600 <= (now - ko).total_seconds() <= 7 * 86400:
+            played.append((ko.strftime("%Y-%m-%d"), (f.get("homeTeam") or {}).get("name"), (f.get("awayTeam") or {}).get("name")))
+    if not played:
+        return {"status": "OK", "detail": "no Serie A match finished in the last 7 days past the grace window"}
+    pms = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
+    try:
+        import pandas as pd
+        have = set(pd.read_parquet(pms, columns=["date"])["date"].astype(str).str[:10])
+    except Exception as e:  # noqa: BLE001
+        return {"status": "CRITICAL", "detail": f"player_match_stats unreadable: {e}"}
+    missing = sorted({d for d, _, _ in played} - have)
+    if missing:
+        n = sum(1 for d, _, _ in played if d in missing)
+        return {"status": "CRITICAL", "missing_dates": missing,
+                "detail": f"{n} finished Serie A match(es) with no player stats on disk (dates {', '.join(missing)}) — "
+                          "player-prop picks cannot be graded; Sofascore ingestion is failing"}
+    return {"status": "OK", "detail": f"player stats cover every Serie A match finished >{STATS_GRACE_HOURS:.0f}h ago"}
+
+
 def check_disk_space() -> Dict:
     """Check available disk space on the project partition."""
     import shutil
@@ -1347,6 +1392,7 @@ def run_health_check() -> Dict:
         "silent_failures": check_silent_failures(),
         "disk_space": check_disk_space(),
         "lineup_sources": check_lineup_sources(),
+        "player_stats_coverage": check_player_stats_coverage(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
@@ -1434,6 +1480,9 @@ def run_health_check() -> Dict:
     lu = result.get("lineup_sources", {})
     if lu.get("status") == "CRITICAL":
         issues.append(("CRITICAL", f"Lineup chain: {lu.get('reason')}"))
+    ps = result.get("player_stats_coverage", {})
+    if ps.get("status") in ("CRITICAL", "WARNING"):
+        issues.append((ps["status"], f"Player stats: {ps.get('detail')}"))
 
     disk = result.get("disk_space", {})
     if disk.get("status") == "CRITICAL":

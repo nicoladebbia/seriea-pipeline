@@ -204,3 +204,39 @@ def test_every_espn_serie_a_name_maps_to_a_canonical_team():
             "Lecce": "Lecce", "Monza": "Monza", "Napoli": "Napoli", "Parma": "Parma", "Sassuolo": "Sassuolo",
             "Torino": "Torino", "Udinese": "Udinese", "Venezia": "Venezia"}
     assert {k: normalize_team(k) for k in espn} == espn
+
+
+def test_player_stats_coverage_flags_a_finished_match_with_no_stats(tmp_path, monkeypatch):
+    """Sofascore challenged -> the evening ingest silently writes nothing ->
+    player-prop paper picks never grade. Fixture kickoffs (cached, known ahead)
+    vs the dates present in player_match_stats.parquet."""
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    import scripts.pipeline.health_check as hc
+    import scripts.utils.match_timing as mt
+    fx = tmp_path / "fixtures.json"
+    monkeypatch.setattr(mt, "_sofascore_fixture_files", lambda: [(fx, "serie_a"), (tmp_path / "x.json", "premier_league")])
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    ko = lambda s: int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())  # noqa: E731
+    fx.write_text(json.dumps([
+        {"startTimestamp": ko("2026-09-04T18:45:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Como"}, "awayTeam": {"name": "Genoa"}},
+        {"startTimestamp": ko("2026-09-05T18:45:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Roma"}, "awayTeam": {"name": "Atalanta"}},
+        {"startTimestamp": ko("2026-09-05T13:00:00"), "status": {"type": "postponed"},
+         "homeTeam": {"name": "X"}, "awayTeam": {"name": "Y"}},
+        {"startTimestamp": ko("2026-09-13T18:45:00"), "status": {"type": "notstarted"},
+         "homeTeam": {"name": "Lazio"}, "awayTeam": {"name": "Milan"}},
+    ]))
+    pms = tmp_path / "external" / "sofascore" / "player_match_stats.parquet"
+    pms.parent.mkdir(parents=True)
+    pd.DataFrame({"date": ["2026-09-04"]}).to_parquet(pms)
+    # 6h after the Roma match: inside the grace window, only Friday is due -> OK
+    assert hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 0, 45, tzinfo=UTC))["status"] == "OK"
+    # next morning: Saturday's stats are due and missing -> CRITICAL, postponed fixture ignored
+    out = hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))
+    assert out["status"] == "CRITICAL" and out["missing_dates"] == ["2026-09-05"] and "1 finished" in out["detail"]
+    pd.DataFrame({"date": ["2026-09-04", "2026-09-05"]}).to_parquet(pms)
+    assert hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))["status"] == "OK"

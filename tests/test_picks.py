@@ -222,7 +222,7 @@ def test_journal_lean_keeps_two_players_apart_and_carries_extra(tmp_path, monkey
     assert b["market"] == "player_shots" and b["selection"] == "Gonçalo Ramos Over 0.5"
     assert b["stake"] == 10.0 and b["pipeline_status"] == "pick:lean"
     assert b["extra"] == {"bet_type": "Tiri totali del giocatore", "player": "Gonçalo Ramos", "team": "Milan",
-                          "source": "player_floors", "tier": "A", "side": "over", "line": 0.5}
+                          "source": "player_floors", "tier": "A", "side": "over", "line": 0.5, "lineup": None, "start_pct": None}
 
 
 # ---- grading -------------------------------------------------------------------
@@ -487,3 +487,50 @@ def test_uncertain_starter_is_priced_as_a_start_sub_mixture(monkeypatch):
     assert by["Éderson"]["markets"]["shots_o15"]["prob"] == 0.6 and by["Nicolò Zaniolo"]["markets"]["shots_o15"]["prob"] == 0.2
     # exactly one extra (sub-branch) call, for the uncertain starter only
     assert [c for c in calls if c[1] is False and c[2] == pp.SUB_FALLBACK_MINUTES] == [("Mario Pašalić", False, 20.0)]
+
+
+def test_player_who_never_entered_is_void_not_pending(tmp_path, monkeypatch):
+    """Pašalić 2026-09-05: benched, never used. Books void the prop; the paper
+    record must too — once BOTH squads' stats are on disk. Before that (stats
+    not ingested) the pick stays pending; a row with 0 minutes is a void too;
+    a player who came off the bench is graded on his numbers."""
+    import pandas as pd
+    monkeypatch.setattr(P, "PICKS_JOURNAL_PATH", tmp_path / "picks_journal.json")
+    monkeypatch.setattr(P, "GOAL_TIMELINE", tmp_path / "missing.parquet")
+    pms_path = tmp_path / "pms.parquet"
+    monkeypatch.setattr(P, "PMS_PATH", pms_path)
+    now = datetime(2026, 9, 5, 18, 10, tzinfo=UTC)
+
+    def lean(player, mk="player_shots"):
+        return {"market_key": mk, "bet_type": "Tiri totali del giocatore", "selection": "Over 0.5", "player": player,
+                "team": "Atalanta", "probability_pct": 60.0, "implied_pct": 50.0, "edge_pct": 10.0, "odds": 2.0,
+                "book": "1xBet", "tier": "A", "lineup": "predicted", "start_pct": 71.7}
+    P.journal_lean("Roma vs Atalanta", "2026-09-05", lean("Mario Pašalić"), "serie_a", placed_at=now)
+    P.journal_lean("Roma vs Atalanta", "2026-09-05", lean("Nikola Krstović"), "serie_a", placed_at=now)
+    P.journal_lean("Roma vs Atalanta", "2026-09-05", lean("Gianluca Scamacca"), "serie_a", placed_at=now)
+    from scripts.betting.bet_journal import get_pending_bets, get_settled_bets
+    assert all((b["extra"] or {}).get("lineup") == "predicted" for b in get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH))
+    res = {"Roma vs Atalanta": {"home_score": 1, "away_score": 1, "status": "finished"}}
+
+    # stats not on disk: nothing is voided, everything pending
+    assert P.settle_picks(res)["settled"] == 0
+
+    # only a handful of rows (partial ingest): still pending
+    rows = [{"date": "2026-09-05", "team": "Atalanta", "player_name": "Gianluca Scamacca", "goals": 0, "assists": 0,
+             "total_shots": 3, "shots_on_target": 1, "minutes": 90}]
+    pd.DataFrame(rows).to_parquet(pms_path)
+    s = P.settle_picks(res)
+    assert s["settled"] == 1 and s["won"] == 1 and s["voided"] == 0   # Scamacca graded, the other two wait
+
+    # both squads in (22+ rows): Pašalić absent -> void; Krstović 0 minutes -> void
+    filler = [{"date": "2026-09-05", "team": t, "player_name": f"{t} {i}", "goals": 0, "assists": 0,
+               "total_shots": 0, "shots_on_target": 0, "minutes": 90} for t in ("Roma", "Atalanta") for i in range(11)]
+    rows.append({"date": "2026-09-05", "team": "Atalanta", "player_name": "Nikola Krstović", "goals": 0, "assists": 0,
+                 "total_shots": 0, "shots_on_target": 0, "minutes": 0})
+    pd.DataFrame(rows + filler).to_parquet(pms_path)
+    s = P.settle_picks(res)
+    assert s["voided"] == 2 and s["settled"] == 2
+    by = {b["selection"]: b for b in get_settled_bets(journal_path=P.PICKS_JOURNAL_PATH)}
+    assert by["Mario Pašalić Over 0.5"]["status"] == "voided" and by["Mario Pašalić Over 0.5"]["profit"] == 0.0
+    assert by["Nikola Krstović Over 0.5"]["status"] == "voided"
+    assert by["Gianluca Scamacca Over 0.5"]["status"] == "won"
