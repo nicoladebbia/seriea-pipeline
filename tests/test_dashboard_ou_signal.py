@@ -98,3 +98,25 @@ def test_candidate_outranks_near_miss_but_not_a_journaled_bet():
     s = _ou_signal("Lazio vs Milan", "serie_a", GP, TOTALS, sel, nm, True, candidate=cand)
     assert s["bet"]["status"] == "selected"
     assert s["line"] == 2.5
+
+
+def test_endpoint_survives_null_lists_in_slip_and_candidates(monkeypatch):
+    """A slip written with explicit nulls must not 500 the dashboard (review finding)."""
+    import web.app as appmod
+    real = appmod._load_json
+
+    def fake(path, default=None):
+        name = getattr(path, "name", str(path))
+        if name == "unified_bet_slip.json":
+            return {"generated_at": "2026-09-04T14:26:00", "selected_bets": None, "near_misses": None}
+        if name == "betting_candidates.json":
+            return {"generated_at": "2026-09-04T20:05:00", "candidates": None}
+        return real(path, default=default)
+
+    monkeypatch.setattr(appmod, "_load_json", fake)
+    r = appmod.app.test_client().get("/api/dashboard")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["slip_generated_at"] == "2026-09-04T14:26:00"
+    assert all("ou" in m and m["ou"]["bet"]["status"] in
+               ("none", "gated", "no_odds", "no_model") for m in d["matches"])
