@@ -34,15 +34,6 @@
   .dash-table td:nth-child(2) { width:34%; }
   .dash-table tbody tr { transition:background 0.15s; cursor:pointer; }
   .dash-table tbody tr:hover { background:rgba(129,140,248,0.06); }
-  .dash-table .edge-cell {
-    font-family:var(--font-mono); font-size:11px; font-weight:500;
-  }
-  .dash-table .prob-mini {
-    display:flex; height:6px; border-radius:3px; overflow:hidden; width:80px;
-  }
-  .dash-table .outcome-label {
-    font-weight:700; font-size:11px; letter-spacing:0.5px;
-  }
   .dash-table a { color:inherit; text-decoration:none; }
   .dash-table a:hover { color:var(--accent); }
 
@@ -84,14 +75,6 @@
   .bet-pill--none, .bet-pill--no_odds, .bet-pill--no_model { color:var(--text-tertiary); }
   .bet-pill--gated { color:var(--text-tertiary); border:1px dashed var(--border-default); }
 
-  /* Expandable 1X2 detail row */
-  .dash-expand { background:none; border:none; color:var(--text-tertiary); cursor:pointer; padding:2px 8px; font-size:14px; line-height:1; }
-  .dash-expand:hover { color:var(--accent); }
-  .dash-detail-row { display:none; cursor:default; }
-  .dash-detail-row.is-open { display:table-row; }
-  .dash-detail-row td { background:var(--bg-tertiary); padding:8px 14px 10px 44px; }
-  .dash-detail { display:flex; align-items:center; gap:22px; flex-wrap:wrap; font-size:11px; }
-  .dash-detail__k { font-size:9px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-tertiary); margin-right:6px; }
   #matches-container[data-stale="1"] .dash-summary-strip {
     opacity: 0.5;
   }
@@ -273,30 +256,14 @@ function renderBetCell(ou) {
   return `<td class="bet-cell"><span class="bet-pill bet-pill--${st}" title="${title}">${label}${sub ? `<span class="bet-pill__sub">${sub}</span>` : ''}</span></td>`;
 }
 
-function toggleDashDetail(ev, id) {
-  ev.stopPropagation();
-  const row = document.getElementById(id);
-  if (!row) return;
-  row.classList.toggle('is-open');
-  ev.currentTarget.textContent = row.classList.contains('is-open') ? '▴' : '▾';
-}
-
 function renderMatchRow(m, idx) {
   // Ensure commence_time is populated from date+time if missing
   if (!m.commence_time && m.date && m.time) {
     m.commence_time = m.date + 'T' + m.time + ':00Z';
   }
-  const probs = m.probabilities || {};
-  const outcomeColor = OUTCOME_COLORS[m.predicted_outcome] || 'var(--text-tertiary)';
-  const edgeVal = (m.market_edge || 0) * 100;  // 1X2 edge, decimal → pct — display-only market
   const mi = m.market_intelligence || {};
   const om = m.odds_movement || {};
   const hasSteam = mi.steam_detected || om.is_steam_move;
-
-  // 1X2 probability mini bar (detail row)
-  const pH = Math.round((probs.home || 0) * 100);
-  const pD = Math.round((probs.draw || 0) * 100);
-  const pA = Math.round((probs.away || 0) * 100);
 
   // Badges — only the ones that carry betting information stay on the main row
   const leagueBadge = LEAGUE_BADGE_MAP[m.league || 'serie_a'] || '';
@@ -307,7 +274,6 @@ function renderMatchRow(m, idx) {
 
   const matchRaw = m.match || `${m.home_team} vs ${m.away_team}`;
   const matchSlug = matchRaw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const detailId = `dash-detail-${matchSlug}`;
 
   return `<tr data-match-key="${matchRaw}" onclick="window.location='/prediction/${matchSlug}'">
     <td class="dash-row__time text-mono text-tertiary" style="font-size:11px">${formatKickoffTime(m.commence_time) || '--:--'}</td>
@@ -321,26 +287,7 @@ function renderMatchRow(m, idx) {
     </td>
     ${renderOUCell(m.ou)}
     ${renderBetCell(m.ou)}
-    <td class="text-mono" style="font-size:11px">
-      <span class="text-green">${xgFmt(m.home_xg)}</span>
-      <span class="text-tertiary">-</span>
-      <span class="text-red">${xgFmt(m.away_xg)}</span>
-    </td>
     <td class="dash-row__badges">${rowBadges}</td>
-    <td style="text-align:right"><button class="dash-expand" onclick="toggleDashDetail(event, '${detailId}')" title="1X2 ensemble (display-only market)">▾</button></td>
-  </tr>
-  <tr id="${detailId}" class="dash-detail-row" onclick="event.stopPropagation()">
-    <td colspan="7">
-      <div class="dash-detail">
-        <span><span class="dash-detail__k">1X2 pick</span><span class="outcome-label" style="color:${outcomeColor}">${m.predicted_outcome || '?'}</span></span>
-        <span style="display:inline-flex;align-items:center;gap:8px"><span class="dash-detail__k">H-D-A</span>
-          <span class="prob-mini"><span style="width:${pH}%;background:var(--green)"></span><span style="width:${pD}%;background:var(--amber)"></span><span style="width:${pA}%;background:var(--red)"></span></span>
-          <span class="text-mono text-tertiary" style="font-size:10px">${pH}-${pD}-${pA}</span></span>
-        <span><span class="dash-detail__k">1X2 edge</span><span class="edge-cell ${edgeVal > 3 ? 'text-green' : edgeVal < -3 ? 'text-red' : 'text-tertiary'}">${edgeVal ? (edgeVal > 0 ? '+' : '') + edgeVal.toFixed(1) + '%' : '-'}</span><span class="text-tertiary" style="font-size:9px;margin-left:4px">not bet since Apr</span></span>
-        ${m.ou && m.ou.expected_total_goals ? `<span><span class="dash-detail__k">xTotal</span><span class="text-mono">${m.ou.expected_total_goals.toFixed(2)}</span></span>` : ''}
-        <a href="/prediction/${matchSlug}" style="margin-left:auto;color:var(--accent);text-decoration:none">Full analysis &rarr;</a>
-      </div>
-    </td>
   </tr>`;
 }
 
@@ -609,8 +556,6 @@ async function loadDashboard() {
               <th>Match</th>
               <th title="Model vs market Over probability at the bettable line (1.5 / 2.5)">O/U Over</th>
               <th title="The betting gate's verdict — journaled, candidate (commits at T-30), or near miss">Bet</th>
-              <th>xG</th>
-              <th></th>
               <th></th>
             </tr></thead>
             <tbody>${matches.map(m => renderMatchRow(m)).join('')}</tbody>
