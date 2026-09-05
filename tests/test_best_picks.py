@@ -123,13 +123,14 @@ def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkey
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
     assert "<b>LAZIO – MILAN</b> · sab 12/09 18:00" in out
-    assert "💰 Over 1.5 gol @1.41 · +6.5% <i>puntata vera</i>" in out
+    assert "💰 <b>Over 1.5 gol @1.41 · +6.5%</b> <i>puntata vera</i>" in out
     assert "📝 Milan o pareggio @1.40 · +9.6%" in out
-    assert "📝 Genoa vince @2.90 · +4.4% ✓" in out and "motore: veto fattori" in out
+    assert "📝 <b>Genoa vince @2.90 · +4.4% ✓</b>" in out and "motore: veto fattori" in out
     assert "▫️ Over 2.5 gol @1.90 · +2.0%" in out
     assert "🎲 Dimarco assist @4.50 · +3.5% ~ (1 book)" in out
     assert "➖ Como vince @1.50 · -4.0% ✓ <i>il più probabile" in out
     assert "carta €10" in out and "tasso base" in out          # the legend
+    assert out.count("<b>Over") == 1 and out.count("<b>Genoa") == 1  # only the best bet is bold
 
 
 def test_ai_budget_gate_caps_and_rolls_over(tmp_path, monkeypatch):
@@ -206,3 +207,50 @@ def test_handle_picks_never_lists_the_value_bet_or_the_lean_twice(tmp_path, monk
     assert out.count("@1.41") == 1 and out.count("@1.40") == 1
     assert not [ln for ln in out.splitlines() if ln.startswith("▫️")]
 
+
+
+def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkeypatch):
+    """Nicola, 2026-09-05: 3-4 bets per match, never two lines of the same
+    stat for one player (Laurienté over 0.5 AND over 1.5 SoT), never two
+    totals on the same side (Under 3.5 AND Under 4.5), never both winners
+    (Udinese vince AND Lazio vince); shots say total or on target; no
+    negative-edge filler line."""
+    import json
+
+    import scripts.pipeline.telegram_bot as tb
+
+    monkeypatch.setattr(tb, "PROJECT_ROOT", tmp_path)
+    up = tmp_path / "data" / "upcoming"
+    up.mkdir(parents=True)
+
+    def row(bt, sel, odds, edge, player=None, tier="B"):
+        return {"bet_type": bt, "selection": sel, "odds": odds, "edge_pct": edge, "player": player, "tier": tier}
+
+    doc = {"generated_at": "2026-09-05T12:00:00+00:00", "counts": {"VALUE": 0, "LEAN": 2, "NO_EDGE": 0},
+           "picks": [
+               {"match": "Bologna vs Sassuolo", "home_team": "Bologna", "away_team": "Sassuolo",
+                "date": "2026-09-06", "label": "LEAN",
+                "pick": row("Tiri in porta", "Over 1.5", 5.0, 10.5, "Armand Laurienté", "A"),
+                "alternatives": [row("Under/over", "Under 3.5", 1.49, 4.9), row("Under/over", "Under 4.5", 1.15, 3.2),
+                                 row("1x2 finale", "1", 2.9, 4.4, None, "A"), row("Doppia chance", "X2", 1.5, 2.0),
+                                 row("Goal", "No", 2.24, 6.8)],
+                "exotic": [row("Tiri in porta", "Over 0.5", 1.83, 7.2, "Armand Laurienté", "A"),
+                           row("Tiri totali del giocatore", "Over 0.5", 2.8, 3.0, "Nikola Drobnic", "A")],
+                "exotic_fallback": row("Tiri totali del giocatore", "Over 0.5", 1.11, -4.7, "Antonio Raimondo", "A"),
+                "reason": "r"},
+           ]}
+    (up / "picks.json").write_text(json.dumps(doc))
+    out = tb._handle_picks()
+    card = [ln for ln in out.splitlines() if ln[:1] in "💰📝▫️🎲➖" and "@" in ln]
+    assert card == [
+        "📝 <b>Laurienté over 1.5 tiri in porta @5.00 · +10.5% ✓</b>",
+        "▫️ Under 3.5 gol @1.49 · +4.9%",
+        "▫️ Bologna vince @2.90 · +4.4% ✓",
+        "▫️ Gol entrambe: no @2.24 · +6.8%",
+    ]
+    assert "Raimondo" not in out and "Drobnic" not in out  # no filler, cap at 4 lines
+    doc["picks"][0]["alternatives"] = []
+    (up / "picks.json").write_text(json.dumps(doc))
+    out = tb._handle_picks()
+    assert "🎲 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓" in out
+    assert out.count("Laurienté") == 1

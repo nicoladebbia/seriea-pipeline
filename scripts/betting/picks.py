@@ -390,7 +390,7 @@ def build_match_pick(match_key: str, rows: list[dict], book: dict[tuple, dict], 
     out: dict[str, Any] = {"match": match_key, "n_rows": len(rows), "n_priced": len(priced),
                            "n_positive": len(positive), "n_overconfident": len(over),
                            "n_longshot_edges": len(longshots),
-                           "alternatives": [_pick_view(c) for c in positive[:3]],
+                           "alternatives": [_pick_view(c) for c in positive[:6]],
                            # positive-edge angles outside 1x2 / totals / DC (player props,
                            # first half, HT/FT, first team to score, exact score ...)
                            "exotic": [_pick_view(c) for c in exotic[:3]],

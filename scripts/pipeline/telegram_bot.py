@@ -2034,7 +2034,7 @@ def _human_bet(pk: dict, home: str, away: str) -> str:
     if bt == "Vince o quasi":
         return f"Vince o quasi {sel}"
     if bt == "Tiri totali del giocatore":
-        return f"{surname} {low} tiri"
+        return f"{surname} {low} tiri totali"
     if bt == "Tiri in porta":
         return f"{surname} {low} tiri in porta"
     if bt == "Giocatore marcatore":
@@ -2056,6 +2056,28 @@ def _bet_line(icon: str, pk: dict, home: str, away: str, note: str = "") -> str:
     return f"{icon} {_human_bet(pk, home, away)}{q}{e}{mark}{one}{note}"
 
 
+def _bet_family(pk: dict) -> tuple:
+    """Two bets of one family on one card are redundant (Under 3.5 AND Under 4.5,
+    Laurienté over 0.5 AND over 1.5 SoT, Udinese vince AND Lazio vince): the card
+    keeps the higher-ranked one. Nicola's rule, 2026-09-05."""
+    bt, sel = pk.get("bet_type") or "", str(pk.get("selection") or "").lower()
+    if pk.get("player"):
+        return ("player", pk.get("player"), bt)
+    side = "under" if sel.startswith("under") else "over"
+    if bt.startswith("O/U") or bt == "Under/over":
+        return ("ou", side)
+    if bt in ("1x2 finale", "Doppia chance", "Vince o quasi"):
+        return ("result",)
+    if bt == "1° tempo under/over":
+        return ("1h_ou", side)
+    if bt == "2° tempo under/over":
+        return ("2h_ou", side)
+    return (bt,)
+
+
+MAX_CARD_LINES = 4
+
+
 def _engine_note_it(note: str | None) -> str:
     if not note:
         return ""
@@ -2066,10 +2088,11 @@ def _engine_note_it(note: str | None) -> str:
 
 def _handle_picks(max_matches: int = 20) -> str:
     """/picks — one clean card per upcoming match (scripts/betting/picks.py):
-    💰 the engine's real bet, 📝 the paper lean, ▫️ alternatives, 🎲 the
-    exotic angles (player props, first half, HT/FT), ➖ nothing beats its price.
-    Bets are written in plain Italian with the team names; the only numbers
-    are the price and the edge."""
+    the best bet in bold (💰 the engine's real bet, else 📝 the paper lean),
+    then up to three more from the ranked pool (▫️ alternatives, 🎲 exotic:
+    player props, first half, HT/FT), one per family, never a negative edge.
+    ➖ = nothing beats its price. Bets are written in plain Italian with the
+    team names; the only numbers are the price and the edge."""
     try:
         doc = json.loads((PROJECT_ROOT / "data" / "upcoming" / "picks.json").read_text())
     except (OSError, ValueError):
@@ -2095,35 +2118,46 @@ def _handle_picks(max_matches: int = 20) -> str:
         headline = p.get("pick")
         key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731
         seen: set = set()
+        fams: set = set()
+
+        def take(a: dict) -> bool:
+            k, f = key(a), _bet_family(a)
+            if k in seen or f in fams:
+                return False
+            seen.add(k)
+            fams.add(f)
+            return True
+
+        def best(icon: str, a: dict, tag: str = "") -> str:
+            return f"{icon} <b>{_bet_line('', a, home, away).strip()}</b>{tag}"
+
         if label == "VALUE" and headline:
             tag = " <i>puntata vera</i>" if p.get("stage") != "candidate" else " <i>si conferma a T-30</i>"
-            block.append(_bet_line("💰", headline, home, away, tag))
-            seen |= {key(headline), ("Under/over", headline.get("selection"), None)}
-            if p.get("lean"):
+            block.append(best("💰", headline, tag))
+            take(headline)
+            seen.add(("Under/over", headline.get("selection"), None))
+            if p.get("lean") and take(p["lean"]):
                 block.append(_bet_line("📝", p["lean"], home, away, _engine_note_it(p["lean"].get("engine_note"))))
-                seen.add(key(p["lean"]))
         elif label == "LEAN" and headline:
-            block.append(_bet_line("📝", headline, home, away, _engine_note_it(headline.get("engine_note"))))
-            seen.add(key(headline))
+            block.append(best("📝", headline, _engine_note_it(headline.get("engine_note"))))
+            take(headline)
         elif p.get("most_probable"):
             block.append(_bet_line("➖", p["most_probable"], home, away, " <i>il più probabile, ma la quota lo paga già</i>"))
-            seen.add(key(p["most_probable"]))
+            take(p["most_probable"])
         else:
             block.append("➖ <i>nessuna quota ancora</i>")
-        ex = [a for a in (p.get("exotic") or []) if key(a) not in seen][:2]
-        seen |= {key(a) for a in ex}
-        for a in [a for a in (p.get("alternatives") or []) if key(a) not in seen][:2]:
-            block.append(_bet_line("▫️", a, home, away))
-            seen.add(key(a))
-        for a in ex:
-            block.append(_bet_line("🎲", a, home, away))
-        if not ex and p.get("exotic_fallback") and key(p["exotic_fallback"]) not in seen:
-            block.append(_bet_line("🎲", p["exotic_fallback"], home, away, " <i>la quota lo paga già</i>"))
+        pool = [("▫️", a) for a in (p.get("alternatives") or [])] + [("🎲", a) for a in (p.get("exotic") or [])]
+        for icon, a in pool:
+            if len(block) - 1 >= MAX_CARD_LINES:
+                break
+            if take(a):
+                block.append(_bet_line(icon, a, home, away))
         out.append("\n".join(block))
     if len(picks) > max_matches:
         out.append(f"\n<i>… e altre {len(picks) - max_matches} partite.</i>")
-    out.append("\n<i>💰 vera (slip del motore, T-30) · 📝 carta €10 · ▫️ alternative · 🎲 insolite · "
-               "➖ niente da giocare\n✓ backtest superato · ~ solo tasso base · % = edge sulla quota</i>")
+    out.append("\n<i>grassetto = scelta migliore · 💰 vera (slip del motore, T-30) · 📝 carta €10 · "
+               "▫️ alternative · 🎲 insolite · ➖ niente da giocare\n"
+               "✓ backtest superato · ~ solo tasso base · % = edge sulla quota</i>")
     try:
         from scripts.betting.picks import picks_record
         rec = picks_record("serie_a")
