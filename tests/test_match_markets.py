@@ -173,3 +173,14 @@ def test_no_simulator_rows_is_named_not_silent():
                               engine_bet=None, players=None, league="serie_a", sim=None)
     assert any("simulator" in m for m in out["missing"])
     assert any(e["selection"] == "Over/Under 5.5" for e in out["excluded"])
+
+
+def test_player_rows_carry_split_and_contribution_with_the_halves_gate():
+    from web.match_markets import _split_row
+    gate = {"shots_o05": {"passed": True, "skill": 0.03}}
+    measured = {"1h": 0.4, "2h": 0.45, "both": 0.18, "timing": "measured"}
+    r = _split_row(measured, gate, "shots_o05")
+    assert r["tier"] == "A" and r["1h_pct"] == 40.0 and r["both_pct"] == 18.0
+    assert _split_row(measured, gate, "sot_o05")["tier"] == "B"                 # not in the gate
+    assert _split_row({**measured, "timing": "flat", "both": None}, gate, "shots_o05")["tier"] == "C"
+    assert _split_row(None, gate, "shots_o05") is None

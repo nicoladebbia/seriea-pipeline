@@ -55,6 +55,7 @@ SHOTS_PATH = DATA_DIR / "external" / "sofascore" / "all_shots_with_xg.parquet"
 N_BINS = 92
 BIN_1H_STOPPAGE = 45
 BIN_2H_STOPPAGE = 91
+K_BOUNDS = (0.25, 4.0)   # calibration scalar range; outside it the total is not believable
 SKILL_GATE = 0.02      # 1 − Brier/Brier_base, same floor as every other model here
 N_GATE = 200
 
@@ -291,22 +292,42 @@ def simulate(xg_h: float, xg_a: float, prof: dict | None = None, n: int = 20000,
     each evaluation) so P(total ≥ 3) matches the served O/U number."""
     prof = prof or load_profile()
     k = 1.0
+    saturated = False
+    achieved = None
     if p_over_2_5 is not None and (xg_h + xg_a) > 0:
-        lo, hi = 0.4, 2.5
-        for _ in range(18):
-            mid = (lo + hi) / 2
-            pp = _simulate_k(xg_h, xg_a, prof, n, seed, mid)
-            over = float(((pp["goals_h"].sum(axis=1) + pp["goals_a"].sum(axis=1)) >= 3).mean())
-            if abs(over - p_over_2_5) < 0.003:
-                lo = hi = mid
-                break
-            if over < p_over_2_5:
-                lo = mid
-            else:
-                hi = mid
-        k = (lo + hi) / 2
+        def _over(kk: float) -> float:
+            pp = _simulate_k(xg_h, xg_a, prof, n, seed, kk)
+            return float(((pp["goals_h"].sum(axis=1) + pp["goals_a"].sum(axis=1)) >= 3).mean())
+        lo, hi = K_BOUNDS
+        over_lo, over_hi = _over(lo), _over(hi)
+        if p_over_2_5 <= over_lo or p_over_2_5 >= over_hi:
+            # Outside the physically sensible range (k in K_BOUNDS spans roughly
+            # P(over 2.5) 0.08..0.93 at a 2.7-goal total). Pin to the bound and
+            # SAY so: a silent pin would serve every lead market off a total
+            # the O/U model never asked for.
+            k = lo if p_over_2_5 <= over_lo else hi
+            achieved = over_lo if k == lo else over_hi
+            saturated = True
+            log.warning("goal_process calibration saturated: target P(over 2.5)=%.3f outside [%.3f, %.3f] at k in %s",
+                        p_over_2_5, over_lo, over_hi, K_BOUNDS)
+        else:
+            for _ in range(18):
+                mid = (lo + hi) / 2
+                over = _over(mid)
+                if abs(over - p_over_2_5) < 0.003:
+                    lo = hi = mid
+                    achieved = over
+                    break
+                if over < p_over_2_5:
+                    lo = mid
+                else:
+                    hi = mid
+            k = (lo + hi) / 2
     p = _simulate_k(xg_h, xg_a, prof, n, seed, k)
     p["calibration_k"] = float(k)
+    p["calibration_saturated"] = saturated
+    p["calibration_target"] = p_over_2_5
+    p["calibration_achieved"] = achieved
     return _finish_paths(p)
 
 
@@ -399,10 +420,12 @@ def served_rows(xg_h: float, xg_a: float, p_over_2_5: float | None, n: int = 100
         g = gate.get(mk) or {}
         tier = "A" if g.get("passed") else "B"
         base = {"group": group, "bet_type": bet_type, "tier": tier, "source": "goal_process",
-                "skill": g.get("skill"), "calibration_k": round(sim["calibration_k"], 3)}
-        rows.append({**base, "selection": sel, "probability_pct": round(probs[mk] * 100, 1)})
+                "skill": g.get("skill"), "calibration_k": round(sim["calibration_k"], 3),
+                "calibration_saturated": bool(sim["calibration_saturated"])}
+        rows.append({**base, "key": mk, "selection": sel, "probability_pct": round(probs[mk] * 100, 1)})
         if comp:
-            rows.append({**base, "selection": comp, "probability_pct": round((1 - probs[mk]) * 100, 1)})
+            rows.append({**base, "key": mk + "__not", "selection": comp,
+                         "probability_pct": round((1 - probs[mk]) * 100, 1)})
     if len(_SERVED_CACHE) > 256:
         _SERVED_CACHE.clear()
     _SERVED_CACHE[key] = rows
@@ -429,11 +452,18 @@ RARE_LABELS = {
     "own_goal": ("Speciali match", "Autogol", "Sì"),
     "penalty_awarded": ("Speciali match", "Rigore", "Sì"),
     "red_card": ("Speciali match", "Espulsione", "Sì"),
+    # VAR (2026-09-05): Sofascore `varDecision` rows, kept by the incidents parser
+    # since the same day and backfilled with --var-backfill. incident_class is the
+    # ON-FIELD decision under review and confirmed=False means it was OVERTURNED
+    # (verified on 100 matches: goalAwarded+False → 0/18 have the goal in the goal
+    # list; penaltyNotAwarded+False → 10/12 are followed by a penalty goal).
+    "var_any": ("Speciali match", "Intervento VAR", "Sì"),
+    "var_goal_cancelled": ("Speciali match", "Gol annullato dal VAR", "Sì"),
+    "var_goal_given": ("Speciali match", "Gol convalidato dal VAR", "Sì"),
+    "var_penalty": ("Speciali match", "Rigore VAR", "Sì"),
+    "var_penalty_cancelled": ("Speciali match", "Rigore annullato dal VAR", "Sì"),
+    "var_red_card": ("Speciali match", "Espulsione VAR", "Sì"),
 }
-RARE_NOT_AVAILABLE = [
-    {"group": "Speciali match", "bet_type": "Rigore VAR / Espulsione VAR", "engine": "rare-event base-rate table",
-     "note": "match_incidents.parquet carries no VAR incident type (goal, card, substitution only)"},
-]
 
 
 def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.DataFrame | None,
@@ -456,11 +486,27 @@ def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.D
         columns={"player_in_id": "player_id", "minute": "sub_minute"})
     bench = goals.merge(subs, on=["match_id", "player_id"], how="inner")
     bench = bench[bench["minute"] >= bench["sub_minute"]]
+    var = inc[inc["incident_type"] == "varDecision"]
+    if "confirmed" not in var.columns:
+        var = var.assign(confirmed=None)
+    overturned = var[var["confirmed"] == False]  # noqa: E712 - nullable object column
     hits = {
         "goal_minute_1": goals[goals["minute"] == 1]["match_id"],
         "goal_from_bench": bench["match_id"],
         "own_goal": goals[goals["goal_type"] == "ownGoal"]["match_id"],
         "red_card": inc[inc["card_type"].isin(["red", "yellowRed"])]["match_id"],
+    }
+    # VAR markets only over the matches the backfill has CHECKED (a VAR row or the
+    # var_checked marker); unchecked matches would read as "no VAR" and deflate the rate
+    checked = inc[inc["incident_type"].isin(["varDecision", "var_checked"])]["match_id"].unique()
+    n_var = int(len(checked))
+    var_hits = {
+        "var_any": var["match_id"],
+        "var_goal_cancelled": overturned[overturned["incident_class"] == "goalAwarded"]["match_id"],
+        "var_goal_given": overturned[overturned["incident_class"] == "goalNotAwarded"]["match_id"],
+        "var_penalty": overturned[overturned["incident_class"] == "penaltyNotAwarded"]["match_id"],
+        "var_penalty_cancelled": overturned[overturned["incident_class"] == "penaltyAwarded"]["match_id"],
+        "var_red_card": var[var["incident_class"] == "redCardGiven"]["match_id"],
     }
     if shots is not None and len(shots):
         # all_shots_with_xg is keyed on the Sofascore id (as a string), not the canonical id
@@ -483,6 +529,10 @@ def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.D
     for k, ids in hits.items():
         m = int(ids.nunique())
         out[k] = {"rate": round(m / n, 4), "n_matches": n, "n_events": m}
+    if n_var:
+        for k, ids in var_hits.items():
+            m = int(ids.nunique())
+            out[k] = {"rate": round(m / n_var, 4), "n_matches": n_var, "n_events": m}
     return out
 
 

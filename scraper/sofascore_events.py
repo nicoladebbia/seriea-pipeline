@@ -13,7 +13,6 @@ Rate-limited to 1 request per 3 seconds to avoid blocks.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
@@ -24,7 +23,6 @@ try:
     from curl_cffi import requests as cffi_requests
     _HAS_CFFI = True
 except ImportError:
-    import requests as _fallback_requests
     _HAS_CFFI = False
 
 log = logging.getLogger(__name__)
@@ -55,7 +53,7 @@ _current_impersonate_idx = 0
 _session = None  # persistent session for connection reuse
 
 
-def _get_session() -> "cffi_requests.Session":
+def _get_session() -> cffi_requests.Session:
     """Get or create a persistent curl_cffi Session.
 
     Using a session with connection reuse is critical — Cloudflare/Sofascore
@@ -180,8 +178,14 @@ def _parse_incidents(data: dict, match_id: int) -> list[dict]:
     for inc in incidents:
         inc_type = inc.get("incidentType", "")
 
-        # Skip non-event types (period markers, var decisions, etc.)
-        if inc_type not in ("card", "goal", "substitution"):
+        # Keep the event types; period / injuryTime markers are dropped.
+        # varDecision (incidentClass goalAwarded / penaltyAwarded / cardUpgrade /
+        # redCardGiven ..., `confirmed` = whether the reviewed decision stood;
+        # verified 2026-09-05: goalAwarded + confirmed=False on a minute with no
+        # goal in the goal list = goal cancelled) and inGamePenalty (missed
+        # penalties) were skipped until 2026-09-05, which is why the VAR
+        # markets could not be priced from this parquet. Backfill: --var-backfill.
+        if inc_type not in ("card", "goal", "substitution", "varDecision", "inGamePenalty"):
             continue
 
         minute = inc.get("time", 0) or 0
@@ -208,6 +212,8 @@ def _parse_incidents(data: dict, match_id: int) -> list[dict]:
             "is_home": is_home,
         }
 
+        if inc_type == "varDecision":
+            row["confirmed"] = inc.get("confirmed")
         if inc_type == "card":
             row["card_type"] = inc_class  # yellow, red, yellowRed
         elif inc_type == "goal":
@@ -375,6 +381,42 @@ def scrape_incidents(
                  final["match_id"].nunique(), len(final))
         return final
     return pd.DataFrame(all_rows)
+
+
+_VAR_TYPES = ("varDecision", "inGamePenalty")
+
+
+def backfill_var_incidents(match_ids: list[int], save_every: int = 25) -> int:
+    """Re-fetch incidents for matches already in the parquet and append ONLY
+    the varDecision / inGamePenalty rows the old parser dropped. Resumable:
+    a match is skipped once it has any VAR-type row OR a `var_checked` marker
+    row (matches with no VAR incident get the marker so they are not re-fetched
+    forever). Returns the number of matches fetched."""
+    have = set()
+    if _INCIDENTS_PATH.exists():
+        ex = pd.read_parquet(_INCIDENTS_PATH, columns=["match_id", "incident_type"])
+        have = set(ex[ex["incident_type"].isin(_VAR_TYPES + ("var_checked",))]["match_id"].unique())
+    todo = [m for m in match_ids if m not in have]
+    log.info("VAR backfill: %d matches to fetch (%d already checked)", len(todo), len(have))
+    rows: list[dict] = []
+    fetched = 0
+    for i, mid in enumerate(todo, 1):
+        data = _get_json(f"{_BASE_URL}/event/{mid}/incidents")
+        if data is None:
+            log.warning("VAR backfill: no data for %s (stopping to respect the ban/backoff)", mid)
+            break
+        fetched += 1
+        var_rows = [r for r in _parse_incidents(data, mid) if r["incident_type"] in _VAR_TYPES]
+        rows.extend(var_rows or [{"match_id": mid, "incident_type": "var_checked", "incident_class": "",
+                                  "minute": 0, "added_time": 0, "player_name": "", "player_id": "",
+                                  "is_home": None}])
+        if i % save_every == 0:
+            _save_incidents(rows, set())
+            rows = []
+        _jitter_delay()
+    if rows:
+        _save_incidents(rows, set())
+    return fetched
 
 
 def _save_incidents(new_rows: list[dict], existing_ids: set) -> pd.DataFrame | None:
@@ -554,13 +596,22 @@ if __name__ == "__main__":
     parser.add_argument("--captains", action="store_true", help="Scrape captains only")
     parser.add_argument("--limit", type=int, default=None, help="Max matches to scrape")
     parser.add_argument("--force", action="store_true", help="Re-scrape matches even if already in parquet (used for backfill after schema fix)")
+    parser.add_argument("--var-backfill", type=int, default=None, metavar="N_SEASONS",
+                        help="Append VAR/inGamePenalty rows for Serie A matches of the last N seasons (resumable)")
     args = parser.parse_args()
 
     ids = get_match_ids()
     print(f"Total match IDs available: {len(ids)}")
 
+    if args.var_backfill:
+        mp = pd.read_parquet(_SOFASCORE_DIR.parent.parent / "parsed" / "match_id_mapping.parquet")
+        sa = mp[mp["league"] == "serie_a"].dropna(subset=["sofascore_id"])
+        seasons = sorted(sa["season"].unique())[-args.var_backfill:]
+        ids = sa[sa["season"].isin(seasons)]["sofascore_id"].astype("int64").tolist()
+        print(f"VAR backfill over {seasons}: fetched {backfill_var_incidents(ids)} matches")
+        raise SystemExit(0)
     if args.test:
-        print(f"\nTesting with 5 matches...")
+        print("\nTesting with 5 matches...")
         incidents = scrape_incidents(match_ids=ids[-5:], force=True)
         print(f"Incidents scraped: {len(incidents)}")
         if not incidents.empty:

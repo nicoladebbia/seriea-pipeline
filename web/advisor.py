@@ -774,7 +774,8 @@ def _tool_get_player_stats(args: dict) -> str:
                     if inc_path.exists():
                         try:
                             inc = pd.read_parquet(inc_path)
-                            match_events = inc[inc["match_id"] == latest_match_id].sort_values("minute")
+                            match_events = inc[(inc["match_id"] == latest_match_id)
+                                               & (inc["incident_type"] != "var_checked")].sort_values("minute")  # backfill marker rows are not events
                             events = []
                             for _, ev in match_events.iterrows():
                                 evt = {
@@ -1575,7 +1576,8 @@ def _tool_get_match_players(args: dict) -> str:
         if inc_path.exists():
             try:
                 inc = pd.read_parquet(inc_path)
-                match_events = inc[inc["match_id"] == match_id].sort_values("minute")
+                match_events = inc[(inc["match_id"] == match_id)
+                                   & (inc["incident_type"] != "var_checked")].sort_values("minute")  # backfill marker rows are not events
                 events = []
                 for _, ev in match_events.iterrows():
                     evt = {"minute": int(ev.get("minute", 0)), "type": ev.get("incident_type", "")}

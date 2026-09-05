@@ -129,7 +129,7 @@ function rows(items, topHighlight = true) {
   const sorted = [...items].sort((a, b) => b.prob - a.prob);
   return sorted.map((r, i) => `
     <div class="pj-row ${topHighlight && i === 0 ? 'pj-top' : ''}" style="flex-wrap:wrap;">
-      <span class="pj-row__label">${r.label}</span>
+      <span class="pj-row__label">${r.label}${r.tier && items.some(x => x.tier !== r.tier) ? tierChip(r.tier, r.skill) : ''}</span>
       <span style="display:flex;gap:8px;align-items:center;">
         <span class="pj-row__prob">${pct(r.prob)}</span>
         <span class="pj-row__odds">${fmtOdds(r.fair_odds)}</span>
@@ -140,7 +140,31 @@ function rows(items, topHighlight = true) {
 
 // trust badge: 'signal' = validated (beats base / permutation), 'unvalidated' =
 // honest model probability with no proven edge (goal-quantity props are noise).
+// Measured tiers (goal-process simulator, walk-forward backtest.json):
+// A = skill ≥ 0.02 above base rate on held-out seasons, B = priceable but about
+// base rate, C = base rate only. Unlike 'signal'/'display' these are read from
+// the backtest at request time, not assigned by hand.
+const TIER_TITLE = { A: 'measured: beats base rate on held-out seasons (walk-forward, skill ≥ 0.02)',
+                     B: 'measured: about base rate on held-out seasons', C: 'base rate only' };
+function tierChip(t, skill) {
+  const cls = t === 'A' ? 'pj-trust--ok' : 'pj-trust--no';
+  const sk = (skill != null) ? ` · skill ${skill >= 0 ? '+' : ''}${Number(skill).toFixed(3)}` : '';
+  return ` <span class="pj-trust ${cls}" title="${TIER_TITLE[t] || ''}${sk}">tier ${t}</span>`;
+}
+// Adapter: goal-process rows for the given keys → [{label, prob, tier, skill}].
+// Returns [] when the simulator did not price this match (EPL, no goal row).
+function fromGP(m, keys, labelMap) {
+  const gp = m.goal_process || {};
+  return keys.filter(k => gp[k]).map(k => ({ label: (labelMap && labelMap[k]) || gp[k].selection,
+                                            prob: gp[k].prob, tier: gp[k].tier, skill: gp[k].skill }));
+}
+// simulator rows when the match has them, else the artifact's own rows
+function gpOr(m, keys, labelMap, fallback) {
+  const items = fromGP(m, keys, labelMap);
+  return items.length ? items : fallback;
+}
 function trustBadge(trust) {
+  if (trust === 'A' || trust === 'B' || trust === 'C') return tierChip(trust);
   if (trust === 'signal')
     return ' <span class="pj-trust pj-trust--ok" title="validated: beats base rate / permutation-tested">signal</span>';
   if (trust === 'unvalidated')
@@ -151,7 +175,8 @@ function trustBadge(trust) {
 // Returns {html, trust} so the caller can group signal vs noise. Empty -> null.
 function card(title, items, topHighlight = true, trust = '') {
   if (!items || !items.length) return null;
-  const cls = trust === 'unvalidated' ? ' pj-card--dim' : '';
+  if (items.some(x => x.tier)) trust = items.some(x => x.tier === 'A') ? 'A' : items.some(x => x.tier === 'B') ? 'B' : 'C';
+  const cls = (trust === 'unvalidated' || trust === 'B' || trust === 'C') ? ' pj-card--dim' : '';
   const html = `<div class="pj-card${cls}"><div class="pj-card__title">${title}${trustBadge(trust)}</div>${rows(items, topHighlight)}</div>`;
   return { html, trust };
 }
@@ -197,24 +222,31 @@ function renderMatch(m) {
     card('Both teams to score', fromDict(m.btts, { yes: 'Yes (both score)', no: 'No' }), true, U),
     card('Most likely scores', fromList(m.exact_score, 'score'), true, U),
     card('Multigol · total goals (independent ranges)', fromList(m.multi_goal, 'range'), false, U),
-    card('Half-time / Full-time', htft, true, U),
+    card('Half-time / Full-time', gpOr(m, ['htft_HH','htft_HD','htft_HA','htft_DH','htft_DD','htft_DA','htft_AH','htft_AD','htft_AA'],
+      Object.fromEntries(['H','D','A'].flatMap(a => ['H','D','A'].map(b => [`htft_${a}${b}`, `${sideWord[a]} / ${sideWord[b]}`]))), htft), true, U),
+    card('Vince o quasi', fromGP(m, ['vince_o_quasi_home_1','vince_o_quasi_home_2','vince_o_quasi_away_1','vince_o_quasi_away_2'],
+      { vince_o_quasi_home_1: `${H} 1x sì`, vince_o_quasi_home_2: `${H} 2x sì`, vince_o_quasi_away_1: `${A} 1x sì`, vince_o_quasi_away_2: `${A} 2x sì` }), true, ''),
+    card('Minuti', fromGP(m, ['goal_0_15','goal_76_90','goal_2h_stoppage','lead_15_home','lead_15_level','lead_15_away'],
+      { goal_0_15: "Gol nei primi 15'", goal_76_90: "Gol dal 76' al 90'", goal_2h_stoppage: 'Gol nel recupero 2° tempo',
+        lead_15_home: `${H} avanti al 15'`, lead_15_level: "Pari al 15'", lead_15_away: `${A} avanti al 15'` }), false, ''),
     card('Winning margin', fromDict(m.winning_margin, marginLabel), true, U),
     card('Team totals', [...homeTot, ...awayTot], false, U),
-    card('Goal in both halves', fromDict(m.goal_both_halves, {
+    card('Goal in both halves', gpOr(m, ['goal_both_halves','goal_both_halves__not'], { goal_both_halves: 'Yes', goal_both_halves__not: 'No' }, fromDict(m.goal_both_halves, {
       goal_both_halves_yes: 'Yes', goal_both_halves_no: 'No',
       home_scores_both_halves: `${H} both halves`, away_scores_both_halves: `${A} both halves`,
-    }), true, U),
-    card('Team to score first', fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' }), true, U),
+    })), true, U),
+    card('Team to score first', gpOr(m, ['first_goal_home','first_goal_away','no_goal'], { first_goal_home: H, first_goal_away: A, no_goal: 'No goal' }, fromDict(m.team_to_score_first, { home: H, away: A, no_goal: 'No goal' })), true, U),
     card('Win to nil', fromDict(m.win_to_nil, {
       home_win_to_nil: `${H} win to nil`, away_win_to_nil: `${A} win to nil`,
       home_clean_sheet: `${H} clean sheet`, away_clean_sheet: `${A} clean sheet`,
     }), true, U),
-    card('1st-half result', fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A }), true, U),
+    card('1st-half result', gpOr(m, ['ht_home','ht_draw','ht_away'], { ht_home: H, ht_draw: 'Draw', ht_away: A }, fromDict((m.first_half || {}).result_1x2, { home: H, draw: 'Draw', away: A })), true, U),
     card('2nd-half result', fromDict(m.second_half, { home: H, draw: 'Draw', away: A }), true, U),
     card('Odd / Even total goals', fromDict(m.odd_even, { odd: 'Odd', even: 'Even' }), true, U),
     card('Vince a 0 (win to nil)', fromDict(m.team_win_to_nil, { home_win_to_nil: `${H} a 0`, away_win_to_nil: `${A} a 0` }), true, U),
-    card('U/O 1° tempo', fromDict((m.half_goals||{}).first?.over_under, null), false, U),
-    card('U/O 2° tempo', fromDict((m.half_goals||{}).second?.over_under, null), false, U),
+    card('U/O 1° tempo', gpOr(m, ['1h_over_0_5','1h_over_0_5__not','1h_over_1_5','1h_over_1_5__not'], null, fromDict((m.half_goals||{}).first?.over_under, null)), false, U),
+    card('U/O 2° tempo', gpOr(m, ['2h_over_0_5','2h_over_0_5__not','2h_over_1_5','2h_over_1_5__not'], null, fromDict((m.half_goals||{}).second?.over_under, null)), false, U),
+    card('U/O 5.5 / 6.5', fromGP(m, ['over_5_5','over_5_5__not','over_6_5','over_6_5__not'], null), false, ''),
     card('Somma Goal (total)', fromList(m.somma_goal, 'total'), false, U),
     card('Ribaltone (comeback)', fromDict(m.ribaltone, { yes: 'Yes', no: 'No' }), true, U),
     card(`${H} odd/even`, fromDict((m.team_odd_even||{}).home, { odd: 'Odd', even: 'Even' }), true, U),
@@ -468,14 +500,15 @@ function renderMatch(m) {
       // SIGNAL on top (always visible): validated team markets + shots + ref
       // cards/fouls + comparative + players. NOISE collapsed (goal-quantity props
       // + combos) — present for completeness, one click away, never buried-but-equal.
-      const signalHtml = cards.filter(c => c.trust === 'signal').map(c => c.html).join('')
+      const isSignal = c => c.trust === 'signal' || c.trust === 'A';   // hand-assigned OR measured tier A
+      const signalHtml = cards.filter(isSignal).map(c => c.html).join('')
         + shotsCard + totalCardsCard + totalFoulsCard + ehCard + compCards + playerFloorsCard;
-      const noiseCards = cards.filter(c => c.trust !== 'signal');
+      const noiseCards = cards.filter(c => !isSignal(c));
       const noiseHtml = noiseCards.map(c => c.html).join('');
       const comboHtml = comboCards.map(c => c.html).join('');
       const nNoise = noiseCards.length + comboCards.length;
       return `<div class="pj-grid">${signalHtml}</div>`
-        + (nNoise ? `<details class="pj-noise"><summary>▾ ${nNoise} model-probability markets (goal-quantity + combos · display only, not validated)</summary>
+        + (nNoise ? `<details class="pj-noise"><summary>▾ ${nNoise} model-probability markets (goal-quantity + combos · display only; tier B = measured about base rate)</summary>
             <div class="pj-grid" style="padding-top:8px;">${noiseHtml}${comboHtml}</div></details>` : '');
     })()}</div>
   </div>`;

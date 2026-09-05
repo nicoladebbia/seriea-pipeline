@@ -161,6 +161,27 @@ REPLACES the independent-Poisson artifact row for the same bet).
   the O/U model owns 2.5.
 - The timeline holds BOTH leagues; `load_universe("serie_a")` scopes the fit. The first
   fitted profile was on the mix (caught the same session). EPL has no served profile.
+- **`calibration_k` saturation is loud, not silent** (`K_BOUNDS = (0.25, 4.0)`): a served
+  P(over 2.5) outside the reachable range pins k to the bound, logs a warning and stamps
+  `calibration_saturated: true` on every row and on `/api/projections` `goal_process_meta`.
+- **VAR markets are priced from Sofascore `varDecision` rows** (Speciali match, tier C).
+  The incidents parser dropped them until 2026-09-05; `python3 -m scraper.sofascore_events
+  --var-backfill 4` re-fetches the last four Serie A seasons (resumable: a match gets a
+  `var_checked` marker row when it has no VAR incident, so VAR rates divide by CHECKED
+  matches only). Semantics, verified on disk: `incident_class` is the ON-FIELD decision
+  under review and `confirmed=False` means it was OVERTURNED (goalAwarded+False → 0/18
+  had the goal in the goal list; penaltyNotAwarded+False → 10/12 followed by a penalty
+  goal). So "Gol annullato" = goalAwarded+False, "Rigore VAR" = penaltyNotAwarded+False.
+- **Player per-half split (E3, `scripts/betting/player_predictions.py`)**: expected events
+  in a half = per-90 rate × minutes on the pitch in that half (starter 45/rest, sub
+  late) × the league's timing share. Measured before building: a player's OWN 1st-half
+  shot share has std 0.058 across 322 players with ≥80 shots vs 0.056 binomial noise —
+  no per-player timing term, it would be fitted noise. Shots / SoT halves are backtested
+  (`validate-halves` → `data/models/player_floors/halves_backtest.json`, walk-forward
+  2023-26, n=20,964 starter-matches; the served tier reads it). Fouls, tackles, duels,
+  passes, interceptions have NO minute stamp in any catalog file: their split uses a
+  flat 50/50 timing share, is stamped `timing: "flat"` and served as tier C. Never
+  promote a flat split to A/B without a minute-stamped source.
 
 ## Cleanup discipline — CRITICAL
 

@@ -147,6 +147,70 @@ _RATE_COLS = sorted({t["col"] for t in TARGETS.values()})
 # Columns whose targets declare an over-dispersed (negative binomial) tail.
 _NBINOM_COLS = sorted({t["col"] for t in TARGETS.values() if t.get("dist") == "nbinom"})
 
+# ---- per-interval split (E3, 2026-09-05) --------------------------------------
+# A player's expected events in a half = per-90 rate × minutes ON THE PITCH in
+# that half × the league's within-match timing share for that stat.
+# Measured before building (Serie A 2017-27):
+#   • starters average 44.8' in the 1st half and 37.3' in the 2nd (35% are subbed
+#     off); subs average 21.4' and enter in the 1st half 2.9% of the time — so the
+#     on-pitch split follows from starter/sub status + projected minutes alone.
+#   • shots: 46.1% fall in the 1st half. Across 322 players with ≥80 shots the
+#     std of a player's own 1st-half share is 0.058 vs 0.056 binomial noise at
+#     that n — a player's shot-minute profile carries NO information beyond the
+#     league share, so no per-player timing term is fitted (it would be noise).
+#   • fouls, tackles, duels, passes, interceptions have no minute stamp in any
+#     catalog file → a flat 50/50 timing share, declared on the row
+#     (`timing: "flat"`), never validated; only shots / SoT halves are backtested.
+_SHOTS_PATH = SS_DIR / "all_shots_with_xg.parquet"
+_HALF_SHARE_CACHE: dict = {}
+
+
+def _get_half_shares() -> dict[str, float]:
+    """{col: share of events in the 1st half}. Measured from the shot events for
+    total_shots / shots_on_target; every other column is 0.5 (flat, declared)."""
+    if _HALF_SHARE_CACHE:
+        return _HALF_SHARE_CACHE
+    shares = {c: 0.5 for c in _RATE_COLS}
+    try:
+        sh = pd.read_parquet(_SHOTS_PATH, columns=["time", "shot_type"])
+        shares["total_shots"] = float((sh["time"] <= 45).mean())
+        on = sh[sh["shot_type"].isin(["goal", "save"])]
+        shares["shots_on_target"] = float((on["time"] <= 45).mean())
+    except (OSError, KeyError, ValueError):
+        pass
+    _HALF_SHARE_CACHE.update(shares)
+    return _HALF_SHARE_CACHE
+
+
+def _half_minutes(proj_minutes: float, is_starter: bool) -> tuple[float, float]:
+    """Expected minutes on the pitch in (1st half, 2nd half)."""
+    m = float(max(0.0, min(98.0, proj_minutes)))
+    if is_starter:
+        h1 = min(m, 45.0)
+        return h1, m - h1
+    h2 = min(m, 45.0)
+    return m - h2, h2
+
+
+def _interval_split(lam90: float, k: int, dist: str, r: float | None,
+                    proj_minutes: float, is_starter: bool, share_1h: float) -> dict:
+    """P(≥k) in each half and P(≥1 in BOTH halves) from a 90-minute expected
+    count `lam90` (already scaled to proj_minutes). Halves are independent
+    Poisson thinnings of the match process, so 'nei due tempi' is a product."""
+    m1, m2 = _half_minutes(proj_minutes, is_starter)
+    total = max(m1 + m2, 1e-9)
+    # timing weight: a share of 0.461 over 45' means the 1st-half hazard is
+    # 0.922× flat and the 2nd-half hazard 1.078× flat
+    lam1 = lam90 * (m1 / total) * (2.0 * share_1h)
+    lam2 = lam90 * (m2 / total) * (2.0 * (1.0 - share_1h))
+    return {
+        "1h": round(_count_tail(lam1, k, dist, r), 4),
+        "2h": round(_count_tail(lam2, k, dist, r), 4),
+        "both": round(_count_tail(lam1, 1, dist, r) * _count_tail(lam2, 1, dist, r), 4) if k == 1 else None,
+        "exp_1h": round(lam1, 3), "exp_2h": round(lam2, 3),
+        "timing": "measured" if abs(share_1h - 0.5) > 1e-9 else "flat",
+    }
+
 
 # =============================================================================
 # DATA LOADING
@@ -434,6 +498,7 @@ def _player_market_probs(
     base_rates: dict[str, dict[str, float]],
     calib: dict | None = None,
     disp: dict[str, float] | None = None,
+    is_starter: bool = True,
 ) -> dict[str, dict]:
     """Compute every market's prob for one player from their priors.
 
@@ -450,6 +515,8 @@ def _player_market_probs(
         k = line + 1
         rate = p90_priors.get(col)
         calibrated = False
+        split = None
+        lam = None
         if prior_n >= MIN_PRIOR_MATCHES and rate is not None and not math.isnan(rate):
             lam = rate * proj_minutes / 90.0
             prob = _count_tail(lam, k, dist, (disp or {}).get(col))
@@ -457,6 +524,8 @@ def _player_market_probs(
             if calib and key in calib:
                 prob = float(calib[key].predict([prob])[0])
                 calibrated = True
+            split = _interval_split(lam, k, dist, (disp or {}).get(col), proj_minutes, is_starter,
+                                    _get_half_shares().get(col, 0.5))
         else:
             # Fallback: position base rate (scaled toward proj minutes for subs)
             pos_rate = base_rates.get(key, {}).get(str(position))
@@ -472,6 +541,8 @@ def _player_market_probs(
             "odds_implied": round(1.0 / max(prob, 0.01), 2),
             "source": src,
             "calibrated": calibrated,
+            "expected": round(lam, 3) if lam is not None else None,   # 90' expected count, feeds contribution %
+            "split": split,                                             # None on the position-base fallback
         }
     return markets
 
@@ -533,7 +604,8 @@ def predict_player_markets(
     if poss_factor and priors.get("accurate_passes"):
         priors["accurate_passes"] = priors["accurate_passes"] * float(poss_factor)
 
-    markets = _player_market_probs(priors, proj_minutes, position, prior_n, base_rates, calib, disp)
+    markets = _player_market_probs(priors, proj_minutes, position, prior_n, base_rates, calib, disp,
+                                   is_starter=is_starter)
     return {
         "player_name": player_name,
         "player_id": player_id,
@@ -599,6 +671,17 @@ def predict_match_players(
             )
             if pred and pred.get("markets"):
                 out.append(pred)
+        # contribution %: this player's expected 90' count over the side's total,
+        # per stat column (shots, fouls, …). Only players with a rate count;
+        # a position-base fallback has no expected count and gets None.
+        for col in _RATE_COLS:
+            keys = [k for k, t in TARGETS.items() if t["col"] == col]
+            tot = sum((pl["markets"][keys[0]].get("expected") or 0.0) for pl in out) if keys else 0.0
+            for pl in out:
+                e = pl["markets"][keys[0]].get("expected") if keys else None
+                share = round(100.0 * e / tot, 1) if (e is not None and tot > 0) else None
+                for k in keys:
+                    pl["markets"][k]["contribution_pct"] = share
         return out
 
     return {
@@ -607,6 +690,81 @@ def predict_match_players(
         "home_players": _side(home_lineup, home_team, away_team, True),
         "away_players": _side(away_lineup, away_team, home_team, False),
     }
+
+
+# =============================================================================
+# VALIDATION of the per-half split (E3) — shots / SoT only, the two stats with
+# a minute stamp. `python -m scripts.betting.player_predictions validate-halves`
+# =============================================================================
+
+_HALVES_BACKTEST_PATH = DATA_DIR / "models" / "player_floors" / "halves_backtest.json"
+_HALVES_MARKETS = ("shots_o05", "shots_o15", "sot_o05")
+_HALVES_SKILL_GATE = 0.02
+_HALVES_N_GATE = 200
+
+
+def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-2025", "2025-2026")) -> dict:
+    """Walk-forward Brier of P(≥k in the 1st half) / P(≥k in the 2nd half) /
+    P(≥1 in both) against the base rate of the seasons before the test season.
+    Inputs are leak-free: the player's per-90 prior and `min_prior` as the
+    projected minutes (what the page would have served), starters only.
+    Ground truth: shots per half from all_shots_with_xg (Sofascore match id)."""
+    pms = build_player_features(load_player_data(league))
+    sh = pd.read_parquet(_SHOTS_PATH, columns=["match_id", "player_id", "time", "shot_type"])
+    sh["match_id"] = pd.to_numeric(sh["match_id"], errors="coerce").astype("Int64")
+    sh["on"] = sh["shot_type"].isin(["goal", "save"])
+    per = sh.groupby(["match_id", "player_id"]).agg(
+        s1=("time", lambda t: int((t <= 45).sum())), s2=("time", lambda t: int((t > 45).sum())),
+        o1=("on", lambda o: int((o & (sh.loc[o.index, "time"] <= 45)).sum())),
+        o2=("on", lambda o: int((o & (sh.loc[o.index, "time"] > 45)).sum()))).reset_index()
+    rows = pms[(pms["is_starter"] == True) & (pms["prior_n"] >= MIN_PRIOR_MATCHES)].copy()  # noqa: E712
+    rows = rows.merge(per, on=["match_id", "player_id"], how="left").fillna({"s1": 0, "s2": 0, "o1": 0, "o2": 0})
+    shares = _get_half_shares()
+    out: dict = {}
+    for mk in _HALVES_MARKETS:
+        col, k = TARGETS[mk]["col"], TARGETS[mk]["line"] + 1
+        a1, a2 = ("s1", "s2") if col == "total_shots" else ("o1", "o2")
+        acc = {h: {"y": [], "p": [], "pb": []} for h in ("1h", "2h", "both")}
+        for ts in test_seasons:
+            train = rows[rows["season"] < ts]
+            test = rows[rows["season"] == ts]
+            if len(test) < 50 or not len(train):
+                continue
+            base = {"1h": float((train[a1] >= k).mean()), "2h": float((train[a2] >= k).mean()),
+                    "both": float(((train[a1] >= 1) & (train[a2] >= 1)).mean())}
+            for _, r in test.iterrows():
+                rate = r.get(f"{col}_p90_prior")
+                if rate is None or pd.isna(rate):
+                    continue
+                mins = float(r["min_prior"]) if pd.notna(r.get("min_prior")) else 82.0
+                sp = _interval_split(rate * mins / 90.0, k, "poisson", None, mins, True, shares.get(col, 0.5))
+                truth = {"1h": float(r[a1] >= k), "2h": float(r[a2] >= k), "both": float((r[a1] >= 1) and (r[a2] >= 1))}
+                for h in acc:
+                    if sp[h] is None:
+                        continue
+                    acc[h]["y"].append(truth[h])
+                    acc[h]["p"].append(sp[h])
+                    acc[h]["pb"].append(base[h])
+        for h, a in acc.items():
+            if not a["y"]:
+                continue
+            y, ph, pb = np.asarray(a["y"]), np.asarray(a["p"]), np.asarray(a["pb"])
+            brier, bb = float(np.mean((ph - y) ** 2)), float(np.mean((pb - y) ** 2))
+            skill = float(1 - brier / bb) if bb > 0 else 0.0
+            n_ev = int(y.sum())
+            out[f"{mk}:{h}"] = {"n": int(len(y)), "n_events": n_ev, "base_rate": float(y.mean()),
+                                "brier": round(brier, 5), "brier_base": round(bb, 5), "skill": round(skill, 4),
+                                "passed": bool(skill >= _HALVES_SKILL_GATE and min(n_ev, len(y) - n_ev) >= _HALVES_N_GATE)}
+    # market-level gate (what the page reads): every served half passes
+    gate = {mk: {"passed": all(out.get(f"{mk}:{h}", {}).get("passed") for h in ("1h", "2h")),
+                 "skill": min(out.get(f"{mk}:{h}", {}).get("skill", 0.0) for h in ("1h", "2h"))}
+            for mk in _HALVES_MARKETS if f"{mk}:1h" in out}
+    result = {"generated_at": pd.Timestamp.utcnow().isoformat(), "league": league, "test_seasons": list(test_seasons),
+              "half_shares": {c: round(v, 4) for c, v in shares.items() if c in ("total_shots", "shots_on_target")},
+              "per_half": out, "gate": gate}
+    _HALVES_BACKTEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _HALVES_BACKTEST_PATH.write_text(json.dumps(result, indent=2))
+    return result
 
 
 # =============================================================================
@@ -664,6 +822,11 @@ if __name__ == "__main__":
     if mode == "validate":
         res = validate(league)
         print(json.dumps(res, indent=2))
+    elif mode == "validate-halves":
+        res = validate_halves(league)
+        print(json.dumps({"half_shares": res["half_shares"], "gate": res["gate"]}, indent=1))
+        for k, v in res["per_half"].items():
+            print(f"{k:16s} n={v['n']:6d} base={v['base_rate']:.3f} brier={v['brier']:.4f} base_brier={v['brier_base']:.4f} skill={v['skill']:+.4f} {'PASS' if v['passed'] else '-'}")
     elif mode == "predict":
         pms = build_player_features(load_player_data(league))
         latest = pms[pms["minutes"] >= 60].sort_values("date").iloc[-1]

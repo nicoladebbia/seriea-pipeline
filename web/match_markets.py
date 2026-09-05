@@ -55,8 +55,6 @@ NOT_BUILT = [
      "note": "[PLACEHOLDER: corner minutes are not in the catalog]"},
     {"group": "Giocatori", "bet_type": "Primo marcatore / Doppietta più / Assist", "engine": "player event engine",
      "note": "scorer share × goal paths; scorer markets measured no-skill, served as tier C when built"},
-    {"group": "Speciali match", "bet_type": "Rigore VAR / Espulsione VAR", "engine": "rare-event base-rate table",
-     "note": "match_incidents.parquet carries no VAR incident type (goal, card, substitution only)"},
     {"group": "O tutte", "bet_type": "O tutte", "engine": "-", "note": "[FILL: undefined in the brief]"},
 ]
 
@@ -109,10 +107,24 @@ def _reasoning(pred: dict, goal_pred: dict) -> list[str]:
     return out
 
 
+def _split_row(split: dict | None, halves_gate: dict, key: str) -> dict | None:
+    """Per-half probabilities with their own tier: A only where the per-half
+    backtest (data/models/player_floors/halves_backtest.json) passed for this
+    market; a flat timing share is tier C by construction (declared, not measured)."""
+    if not split:
+        return None
+    g = (halves_gate or {}).get(key) or {}
+    tier = "C" if split.get("timing") == "flat" else ("A" if g.get("passed") else "B")
+    return {"1h_pct": _pct(split["1h"]), "2h_pct": _pct(split["2h"]),
+            "both_pct": _pct(split["both"]) if split.get("both") is not None else None,
+            "timing": split.get("timing"), "tier": tier, "skill": g.get("skill")}
+
+
 def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | None,
                         ext: dict | None, btts: dict | None, engine_bet: dict | None,
                         players: dict | None, kickoff_utc: str | None = None,
-                        league: str | None = None, sim: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                        league: str | None = None, sim: list[dict[str, Any]] | None = None,
+                        halves_gate: dict | None = None) -> dict[str, Any]:
     """Assemble the per-match market list. Every input is an already-loaded dict
     (or None when the artifact has no row for this match). `sim` is the
     goal-process simulator's row list (scripts/models/goal_process.served_rows):
@@ -244,7 +256,10 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
                     "position": pl.get("position"), "proj_minutes": pl.get("proj_minutes"),
                     "probability_pct": _pct(m["prob"]), "tier": tier, "source": "player_floors",
                     "interval": "90'",
-                    "contribution_pct": None,  # [PLACEHOLDER: per-interval split, design step 3]
+                    # E3 (2026-09-05): share of the side's expected count for this stat,
+                    # and the per-half split (None on the position-base fallback)
+                    "contribution_pct": m.get("contribution_pct"),
+                    "split": _split_row(m.get("split"), halves_gate, key),
                 })
     if players is None:
         missing.append("player floors (no lineup or engine)" if (league or pred.get("league", "serie_a")) == "serie_a"

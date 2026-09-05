@@ -169,3 +169,35 @@ def test_rare_event_rates_accept_shots_keyed_on_sofascore_id():
     mp = pd.DataFrame({"match_id": ["2024-01-01_A_B"], "sofascore_id": [1], "season": ["2023-2024"], "league": ["serie_a"]})
     shots = pd.DataFrame({"match_id": ["1"], "shot_x": [30.0], "shot_y": [50.0], "is_goal": [True], "is_penalty": [False]})
     assert gp.rare_event_rates(inc, mp, shots, "serie_a")["goal_outside_box"]["n_events"] == 1
+
+
+def test_calibration_outside_reachable_range_is_flagged_not_silent():
+    prof = gp.default_profile()
+    s = gp.simulate(1.2, 1.0, prof, n=4000, seed=1, p_over_2_5=0.001)
+    assert s["calibration_saturated"] is True and s["calibration_k"] == gp.K_BOUNDS[0]
+    assert s["calibration_achieved"] > 0.001            # what was actually served, on the record
+    ok = gp.simulate(1.2, 1.0, prof, n=4000, seed=1, p_over_2_5=0.45)
+    assert ok["calibration_saturated"] is False and abs(ok["calibration_achieved"] - 0.45) < 0.02
+    gp._SERVED_CACHE.clear()
+    rows = gp.served_rows(1.2, 1.0, 0.001, n=2000)
+    assert rows and all(r["calibration_saturated"] for r in rows) and all("key" in r for r in rows)
+
+
+def test_var_rates_count_only_checked_matches_and_read_the_overturn_semantics():
+    """incident_class = the on-field decision, confirmed=False = overturned by VAR
+    (verified on disk 2026-09-05). Unchecked matches are not 'no VAR'."""
+    inc = pd.DataFrame({
+        "match_id": [1, 1, 2, 3],
+        "incident_type": ["varDecision", "goal", "var_checked", "goal"],
+        "incident_class": ["goalAwarded", "regular", "", "regular"],
+        "minute": [23, 51, 0, 10], "added_time": [0] * 4,
+        "player_id": ["9", "8", "", "7"], "player_in_id": [""] * 4, "is_home": [True] * 4,
+        "card_type": [None] * 4, "goal_type": [None, "regular", None, "regular"],
+        "confirmed": [False, None, None, None],
+    })
+    mp = pd.DataFrame({"match_id": ["m1", "m2", "m3"], "sofascore_id": [1, 2, 3],
+                       "season": ["2025-2026"] * 3, "league": ["serie_a"] * 3})
+    r = gp.rare_event_rates(inc, mp, None, "serie_a")
+    assert r["var_any"] == {"rate": 0.5, "n_matches": 2, "n_events": 1}        # match 3 unchecked → excluded
+    assert r["var_goal_cancelled"]["n_events"] == 1 and r["var_penalty"]["n_events"] == 0
+    assert r["own_goal"]["n_matches"] == 3                                    # non-VAR rates keep the full universe

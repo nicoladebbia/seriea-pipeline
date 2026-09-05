@@ -2501,6 +2501,29 @@ def api_projections():
     except Exception as e:
         log.warning("comparative markets skipped: %s", e)
 
+    # Goal-process simulator rows (Vince o quasi, Tempi, Minuti, 5.5/6.5) with
+    # tiers read from data/models/goal_process/backtest.json. Where the simulator
+    # prices a bet a card below also prices, the page shows the simulator's
+    # number (one number per bet across pages, same rule as /api/match-markets).
+    try:
+        from scripts.models.goal_process import served_rows as _gp_rows
+        _goal_rows = _rows_of(_load_json(UPCOMING_DIR / "goal_predictions.json", default=[]))
+        _goal_by_match = {g.get("match"): g for g in _goal_rows}
+        for proj in projections:
+            g = _goal_by_match.get(proj.get("match"))
+            if not g:
+                continue
+            rows = _gp_rows(g.get("expected_home_goals"), g.get("expected_away_goals"), g.get("over_2_5"),
+                            league=proj.get("league") or "serie_a")
+            if rows:
+                proj["goal_process"] = {r["key"]: {"prob": round(r["probability_pct"] / 100.0, 4), "tier": r["tier"],
+                                                   "skill": r.get("skill"), "selection": r["selection"],
+                                                   "bet_type": r["bet_type"]} for r in rows}
+                proj["goal_process_meta"] = {"calibration_k": rows[0].get("calibration_k"),
+                                             "calibration_saturated": rows[0].get("calibration_saturated")}
+    except Exception as e:  # noqa: BLE001 - the page must render without the simulator
+        log.warning("goal-process rows skipped on /api/projections: %s", e)
+
     # Player floor markets (shots / SoT / fouls O-U per likely starter).
     # Validated leak-free engine (see .plans/player-props-deep-plan.md): every
     # market beats base rate on walk-forward Brier. DISPLAY only — betting gated.
@@ -3358,8 +3381,10 @@ def api_match_markets(match_slug):
                         + rare_event_rows(league or "serie_a")) or None
         except Exception as e:  # noqa: BLE001 - a simulator failure must not 404 the page
             log.warning("goal_process rows unavailable for %s: %s", match_key, e)
+    halves_gate = (_load_json(DATA_DIR / "models" / "player_floors" / "halves_backtest.json", default={}) or {}).get("gate") or {}
     return jsonify(build_match_markets(
         match_key, pred=pred, goal_pred=goal, ext=ext, btts=btts, engine_bet=engine_bet, sim=sim_rows,
+        halves_gate=halves_gate,
         players=players, kickoff_utc=odds.get("commence_time"), league=league))
 
 
