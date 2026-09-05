@@ -899,7 +899,7 @@ class Step19cPlayerDepth(FeaturePlugin):
 class Step19c2LineupXg(FeaturePlugin):
     """Step 19c2: Historical lineup xG reconstruction (Sofascore + Understat)."""
     name = "lineup_xg"
-    version = "1.1"  # 2026-04-24: league-aware Sofascore file routing (Phase 2.1)
+    version = "1.2"  # 2026-09-05: Understat proxy joins the PREVIOUS complete season
     dependencies = ["player_depth"]
     data_inputs = [
         "data/external/sofascore/player_match_stats.parquet",

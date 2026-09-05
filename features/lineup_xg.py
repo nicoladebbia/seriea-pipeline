@@ -182,6 +182,22 @@ def _compute_understat_lineup_proxy(
 
     us_df = pd.DataFrame(team_season_xg)
 
+    # The proxy describes the LAST COMPLETE season, so each (team, season)
+    # aggregate is applied to the FOLLOWING season's rows. Joining the same
+    # season was wrong on both ends (found 2026-09-05): training rows read
+    # the full season's totals at matchweek 2 (within-season lookahead, the
+    # P1b family), and serving read season-cumulative stats that barely
+    # exist yet — us_squad_depth counts players with >270 minutes, so every
+    # 2026-27 row served 0.0 against a training band of [17, 31] while
+    # ranking in the ML leg's top-5 SHAP drivers. A team without a prior
+    # Serie A season (promoted, or back after a gap) gets NaN — honest, and
+    # filled with training medians downstream.
+    def _next_season(s: str) -> str:
+        a, b = s.split("-")
+        return f"{int(a) + 1}-{int(b) + 1}"
+
+    us_df["season"] = us_df["season"].map(_next_season)
+
     # Normalize Understat team names to pipeline canonical form
     us_df["team_norm"] = us_df["team"].apply(normalize_team)
 
