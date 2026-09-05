@@ -88,13 +88,20 @@ def _get_env(name: str) -> str:
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+# Set by _tg_request: "ok" | "http:<code>" | "network" | "api" — so a sender can
+# retry a network blip WITH formatting instead of falling back to raw text
+# (2026-09-05: a connection reset on chunk 2 of /picks resent it without
+# parse_mode and the reader saw literal <b> tags).
+_LAST_TG_STATUS = "ok"
 
 
 def _tg_request(token: str, method: str, params: dict | None = None,
                 timeout: int = 35) -> dict | None:
     """Make a Telegram Bot API request. Returns parsed JSON or None on error."""
+    global _LAST_TG_STATUS
     url = TELEGRAM_API.format(token=token, method=method)
     payload = json.dumps(params or {}).encode("utf-8")
+    _LAST_TG_STATUS = "ok"
 
     try:
         req = urllib.request.Request(
@@ -108,6 +115,7 @@ def _tg_request(token: str, method: str, params: dict | None = None,
             if data.get("ok"):
                 return data.get("result")
             log.warning("Telegram API error: %s", data.get("description"))
+            _LAST_TG_STATUS = "api"
             return None
     except urllib.error.HTTPError as e:
         body = ""
@@ -116,12 +124,15 @@ def _tg_request(token: str, method: str, params: dict | None = None,
         except Exception:
             pass
         log.warning("Telegram HTTP %d: %s", e.code, body)
+        _LAST_TG_STATUS = f"http:{e.code}"
         return None
     except urllib.error.URLError as e:
         log.warning("Telegram connection error: %s", e.reason)
+        _LAST_TG_STATUS = "network"
         return None
     except Exception as e:
         log.warning("Telegram request failed: %s", e)
+        _LAST_TG_STATUS = "network"
         return None
 
 
@@ -145,8 +156,15 @@ def _tg_send_message(token: str, chat_id: str, text: str,
         if reply_markup and i == len(chunks) - 1:
             params["reply_markup"] = reply_markup
         result = _tg_request(token, "sendMessage", params)
+        if result is None and _LAST_TG_STATUS == "network":
+            # a connection blip is not a formatting error: same params once more
+            time.sleep(1.5)
+            result = _tg_request(token, "sendMessage", params)
         if result is None:
-            # Retry without parse_mode (formatting can fail on special chars)
+            # Retry without parse_mode only when Telegram rejected the markup
+            # (HTTP 400); a chunk resent raw shows literal <b> tags
+            if not _LAST_TG_STATUS.startswith("http:4"):
+                return False
             params.pop("parse_mode", None)
             result = _tg_request(token, "sendMessage", params)
             if result is None:
@@ -2056,6 +2074,12 @@ def _handle_picks(max_matches: int = 12) -> str:
             block.append("📝 <i>Carta a fianco</i>\n" + _pick_line(p["lean"]))
         key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731
         seen = {key(headline)} if headline else set()
+        if headline and label == "VALUE":
+            # the engine names its market "O/U 1.5"; the same bet is an
+            # "Under/over" row on the pick side — never list it twice
+            seen |= {("Under/over", headline.get("selection"), None), ("O/U", headline.get("selection"), None)}
+        if p.get("lean"):
+            seen.add(key(p["lean"]))
         ex = [a for a in (p.get("exotic") or []) if key(a) not in seen][:2]
         seen |= {key(a) for a in ex}
         alts = [a for a in (p.get("alternatives") or []) if key(a) not in seen][:2]

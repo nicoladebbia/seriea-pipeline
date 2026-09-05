@@ -143,3 +143,60 @@ def test_ai_budget_gate_caps_and_rolls_over(tmp_path, monkeypatch):
     # yesterday's counter resets
     f.write_text(json.dumps({"date": "2020-01-01", "calls": 99}))
     assert tb._ai_budget_ok()
+
+
+def test_send_message_keeps_formatting_on_a_network_blip(monkeypatch):
+    """2026-09-05: a connection reset on chunk 2 of /picks resent it without
+    parse_mode and the phone showed literal <b> tags. A network error retries
+    with the same params; only an HTTP 400 strips the markup."""
+    import scripts.pipeline.telegram_bot as tb
+
+    calls = []
+    outcomes = iter(["network", "ok"])
+
+    def fake_request(token, method, params=None, timeout=35):
+        st = next(outcomes)
+        tb._LAST_TG_STATUS = st
+        calls.append(dict(params))
+        return {"message_id": 1} if st == "ok" else None
+
+    monkeypatch.setattr(tb, "_tg_request", fake_request)
+    monkeypatch.setattr(tb.time, "sleep", lambda s: None)
+    assert tb._tg_send_message("t", "c", "<b>x</b>") is True
+    assert [c.get("parse_mode") for c in calls] == ["HTML", "HTML"]
+
+    calls.clear()
+    outcomes = iter(["http:400", "ok"])
+    assert tb._tg_send_message("t", "c", "<b>x</b>") is True
+    assert [c.get("parse_mode") for c in calls] == ["HTML", None]
+
+    calls.clear()
+    outcomes = iter(["network", "network"])
+    assert tb._tg_send_message("t", "c", "<b>x</b>") is False
+    assert len(calls) == 2 and all(c.get("parse_mode") == "HTML" for c in calls)
+
+
+def test_handle_picks_never_lists_the_value_bet_or_the_lean_twice(tmp_path, monkeypatch):
+    import json
+
+    import scripts.pipeline.telegram_bot as tb
+
+    monkeypatch.setattr(tb, "PROJECT_ROOT", tmp_path)
+    up = tmp_path / "data" / "upcoming"
+    up.mkdir(parents=True)
+    x2 = {"bet_type": "Doppia chance", "selection": "X2", "odds": 1.4, "edge_pct": 9.6, "tier": "B",
+          "probability_pct": 78.0, "implied_pct": 71.4, "n_books": 3}
+    doc = {"generated_at": "2026-09-05T12:00:00+00:00", "counts": {"VALUE": 1, "LEAN": 0, "NO_EDGE": 0},
+           "picks": [{"match": "Lazio vs Milan", "date": "2026-09-12", "label": "VALUE", "stage": "selected",
+                      "pick": {"bet_type": "O/U 1.5", "selection": "Over 1.5", "odds": 1.41, "edge_pct": 6.5,
+                               "tier": "engine", "probability_pct": 78.0},
+                      "lean": x2,
+                      "alternatives": [{"bet_type": "Under/over", "selection": "Over 1.5", "odds": 1.41,
+                                        "edge_pct": 10.0, "tier": "B", "probability_pct": 78.0,
+                                        "implied_pct": 70.9, "n_books": 3}, x2],
+                      "reason": "r"}]}
+    (up / "picks.json").write_text(json.dumps(doc))
+    out = tb._handle_picks()
+    assert out.count("Over 1.5 @ 1.41") == 1 and out.count("X2 @ 1.40") == 1
+    assert "Alternative" not in out
+
