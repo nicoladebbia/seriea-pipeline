@@ -623,6 +623,37 @@ def predict_player_markets(
     }
 
 
+SUB_FALLBACK_MINUTES = 20.0  # the engine's own "sub" default (see predict_player_markets)
+
+
+def _mix_start_sub(start: dict, sub: dict, s: float) -> dict:
+    """s × start-branch + (1 − s) × sub-branch on every probability and expected
+    count, incl. the per-half split; labels/source/calibration stay from the
+    start branch. Stamps `start_mix` so a consumer can tell."""
+    def mix(a, b):
+        return round(s * float(a) + (1.0 - s) * float(b), 4) if (a is not None and b is not None) else a
+    out = dict(start)
+    out["proj_minutes"] = round(s * float(start.get("proj_minutes") or 0.0)
+                                + (1.0 - s) * float(sub.get("proj_minutes") or 0.0), 1)
+    out["start_mix"] = round(s, 3)
+    markets = {}
+    for key, m in (start.get("markets") or {}).items():
+        n = (sub.get("markets") or {}).get(key)
+        mm = dict(m)
+        if n:
+            mm["prob"] = mix(m.get("prob"), n.get("prob"))
+            mm["odds_implied"] = round(1.0 / max(mm["prob"] or 0.0, 0.01), 2)
+            mm["expected"] = mix(m.get("expected"), n.get("expected"))
+            if isinstance(m.get("split"), dict) and isinstance(n.get("split"), dict):
+                sp = dict(m["split"])
+                for k in ("1h", "2h", "both", "exp_1h", "exp_2h"):
+                    sp[k] = mix(m["split"].get(k), n["split"].get(k))
+                mm["split"] = sp
+        markets[key] = mm
+    out["markets"] = markets
+    return out
+
+
 def predict_match_players(
     home_team: str,
     away_team: str,
@@ -658,21 +689,26 @@ def predict_match_players(
                 if ctx and ctx > 0:
                     ratio = float(np.clip(exp_poss / ctx, *_POSS_RATIO_CLIP))
                     poss_factor = ratio ** _POSS_BETA
-            pred = predict_player_markets(
+            common = dict(
                 player_name=pl.get("player_name") or pl.get("name", ""),
                 player_id=int(pl["player_id"]) if pl.get("player_id") is not None else -1,
-                team=team,
-                opponent=opponent,
-                position=pl.get("position", "M"),
-                is_home=is_home,
-                is_starter=pl.get("is_starter", True),
-                proj_minutes=pl.get("proj_minutes"),
-                pms=pms,
-                base_rates=base_rates,
-                calib=calib,
-                disp=disp,
-                poss_factor=poss_factor,
+                team=team, opponent=opponent, position=pl.get("position", "M"), is_home=is_home,
+                pms=pms, base_rates=base_rates, calib=calib, disp=disp, poss_factor=poss_factor,
             )
+            pred = predict_player_markets(is_starter=pl.get("is_starter", True),
+                                          proj_minutes=pl.get("proj_minutes"), **common)
+            s_start = pl.get("start_pct")
+            if (pred and pred.get("markets") and pl.get("lineup") == "predicted" and pl.get("is_starter", True)
+                    and isinstance(s_start, int | float) and 0.0 < s_start < 100.0):
+                # An UNCERTAIN starter (predicted XI, start% < 100) is priced as the
+                # mixture start% × P(market | starts) + (1 − start%) × P(market | comes
+                # off the bench for SUB_FALLBACK_MINUTES). Until 2026-09-05 a 72%
+                # 'likely' starter was priced at his full minutes. Law of total
+                # probability over the predictor's own start%; the one assumption
+                # is that start% is calibrated (declared, not measured).
+                sub = predict_player_markets(is_starter=False, proj_minutes=SUB_FALLBACK_MINUTES, **common)
+                if sub and sub.get("markets"):
+                    pred = _mix_start_sub(pred, sub, s_start / 100.0)
             if pred and pred.get("markets"):
                 pred["lineup"] = pl.get("lineup")
                 pred["xi_status"] = pl.get("xi_status")
@@ -876,18 +912,27 @@ def lineup_entries(side_lineup: dict) -> list:
     return out
 
 
+def _fold_name(name: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(name)) if not unicodedata.combining(c)).lower().strip()
+
+
 def confirmed_entries(names: list, bench: list, pms) -> list:
     """Entries from an OFFICIAL team sheet (confirmed_lineups.json): starters and
     bench by name, id/position resolved from pms when the name is known there.
     A player not on the sheet gets no row at all — Pašalić was priced from a
     predicted XI while not in the squad (2026-09-05)."""
     latest = pms.sort_values("date").groupby("player_name").tail(1).set_index("player_name") if pms is not None else None
+    by_fold = {_fold_name(n): n for n in latest.index} if latest is not None else {}
     out = []
     for grp, starter in ((names, True), (bench, False)):
         for name in grp or []:
-            row = latest.loc[name] if (latest is not None and name in latest.index) else None
+            # ESPN/football-data spell without diacritics (Pasalic, Kolasinac,
+            # Samardzic); pms carries the Sofascore spelling. Fold both.
+            known = by_fold.get(_fold_name(name))
+            row = latest.loc[known] if known is not None else None
             out.append({
-                "player_name": name,
+                "player_name": known or name,
                 "player_id": int(row["player_id"]) if row is not None else None,
                 "position": str(row["position"]) if row is not None else "M",
                 "proj_minutes": None,

@@ -999,7 +999,14 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
             # discarded the lineups that WERE confirmed. The fetcher now
             # self-bounds at 150s (deadline + blocked-endpoint breaker) and
             # saves partial results, so 180s here is a guaranteed fit.
-            subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=180)
+            _lf = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=180)
+            # The fetcher's own log lines live in the child's stderr; dropping
+            # them hid a fully dead source chain for a whole matchday (2026-09-05)
+            _tail = [ln for ln in (_lf.stderr or "").splitlines() if "WARNING" in ln or "ERROR" in ln][-6:]
+            for ln in _tail:
+                log.warning("lineup fetcher: %s", ln[-300:])
+            if _lf.returncode:
+                log.warning("lineup fetcher exited %s", _lf.returncode)
 
             # Check which matches actually got confirmed lineups
             try:
@@ -1064,6 +1071,22 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                     if mk not in confirmed_matches:
                         stage_data["needs_retry"] = True
                         log.info("Lineup NOT confirmed for %s — will retry next cycle", mk)
+                        # Once per match: say WHY, from the fetcher's chain report,
+                        # so "XI prob." on /picks is a known state, not a mystery
+                        if not stage_data.get("unavailable_notified"):
+                            try:
+                                import json as _jj
+
+                                from config.settings import DATA_DIR as _dd
+                                from scripts.pipeline.notify import notify
+                                _rep = _jj.loads((_dd / "upcoming" / "lineup_chain_status.json").read_text())
+                                _why = _rep.get("reason") or "nessuna fonte ha risposto"
+                                notify(f"Formazioni ufficiali non disponibili per {mk}: {_why}. "
+                                       "I props giocatore in /picks restano su XI probabile.",
+                                       title="Formazioni", level="warning", category="alert")
+                                stage_data["unavailable_notified"] = True
+                            except Exception as _e:  # noqa: BLE001 - never block the clock
+                                log.debug("lineup-unavailable notice skipped: %s", _e)
                     else:
                         stage_data.pop("needs_retry", None)
                         log.info("Lineup CONFIRMED for %s", mk)

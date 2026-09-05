@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 API_BASE = "https://api.football-data.org/v4"
 SERIE_A_CODE = "SA"  # football-data.org competition code for Serie A
+NO_LINEUP_FIELD_SEEN = False  # set when a detail payload has no `lineup` key (free tier)
 
 # football-data.org team names → our canonical names
 _FD_NAME_MAP = {
@@ -188,6 +189,15 @@ def fetch_lineups_footballdata(odds_data: Optional[Dict] = None,
 
         home_lineup = home_team_data.get("lineup", [])
         away_lineup = away_team_data.get("lineup", [])
+        if "lineup" not in home_team_data and "lineup" not in away_team_data:
+            # The FREE tier serves match details with no `lineup` key at all
+            # (measured 2026-09-05 on a FINISHED match) — this source cannot
+            # deliver on this plan, say so once instead of "no lineups yet"
+            global NO_LINEUP_FIELD_SEEN
+            if not NO_LINEUP_FIELD_SEEN:
+                log.warning("football-data.org: match detail carries no lineup field — "
+                            "the current plan has no lineup data, this source is dead")
+            NO_LINEUP_FIELD_SEEN = True
 
         # Only proceed if lineups are populated
         if not home_lineup or not away_lineup:

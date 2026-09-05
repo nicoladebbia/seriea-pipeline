@@ -425,12 +425,13 @@ def test_player_rows_come_from_the_official_sheet_when_it_exists(monkeypatch, tm
     assert [(e["player_name"], e["lineup"], e["xi_status"], e["start_pct"]) for e in captured["away"]] == [
         ("Mario Pašalić", "predicted", "likely", 71.7)]
 
-    xi = ["Éderson"] + [f"Atalanta {i}" for i in range(10)]
+    xi = ["Ederson"] + [f"Atalanta {i}" for i in range(10)]        # ESPN spelling, no diacritics
     conf.write_text(json.dumps({"matches": {"Roma vs Atalanta": {
         "home_lineup": ["Paulo Dybala"] + [f"Roma {i}" for i in range(10)], "home_bench": [],
-        "away_lineup": xi, "away_bench": ["Mario Pašalić"]}}}))
+        "away_lineup": xi, "away_bench": ["Mario Pasalic"]}}}))
     pp.match_player_floors("Roma vs Atalanta", "Roma", "Atalanta")
     away = {e["player_name"]: e for e in captured["away"]}
+    # names come back in the pms spelling, resolved by accent-folded match
     assert away["Éderson"]["lineup"] == "confirmed" and away["Éderson"]["is_starter"] and away["Éderson"]["player_id"] == 2
     assert away["Mario Pašalić"]["is_starter"] is False and away["Mario Pašalić"]["start_pct"] == 0.0
     assert away["Atalanta 3"]["player_id"] is None and away["Atalanta 3"]["position"] == "M"
@@ -439,3 +440,50 @@ def test_player_rows_come_from_the_official_sheet_when_it_exists(monkeypatch, tm
     conf.write_text(json.dumps({"matches": {"Roma vs Atalanta": {"home_lineup": ["Paulo Dybala"], "away_lineup": ["Éderson"]}}}))
     pp.match_player_floors("Roma vs Atalanta", "Roma", "Atalanta")
     assert captured["away"][0]["lineup"] == "predicted"
+
+
+def test_uncertain_starter_is_priced_as_a_start_sub_mixture(monkeypatch):
+    """A predicted-XI starter at 72% is priced 0.72 × P(starts) + 0.28 × P(sub,
+    20'), not at full minutes; a certain starter, a confirmed starter and a
+    bench entry are untouched."""
+    import pandas as pd
+
+    import scripts.betting.player_predictions as pp
+    calls = []
+
+    def fake_predict(*, player_name, is_starter=True, proj_minutes=None, **kw):
+        calls.append((player_name, is_starter, proj_minutes))
+        p = 0.6 if is_starter else 0.2
+        one = {"label": "x", "prob": p, "odds_implied": round(1 / p, 2), "source": "player",
+               "calibrated": False, "expected": 2.0 if is_starter else 0.5,
+               "split": {"1h": p / 2, "2h": p / 2, "both": None, "exp_1h": 1.0, "exp_2h": 1.0, "timing": "measured"}}
+        return {"player_name": player_name, "proj_minutes": 80.0 if is_starter else proj_minutes,
+                "markets": {k: dict(one, split=dict(one["split"])) for k in pp.TARGETS}}
+    monkeypatch.setattr(pp, "predict_player_markets", fake_predict)
+    monkeypatch.setattr(pp, "_get_floor_calibration", lambda pms: None)
+    monkeypatch.setattr(pp, "_get_dispersion", lambda pms: None)
+    monkeypatch.setattr(pp, "_get_possession", lambda pms, league: (None, None))
+    pms = pd.DataFrame({"player_name": [], "player_id": [], "position": [], "date": []})
+    away = [
+        {"player_name": "Mario Pašalić", "player_id": 1, "position": "M", "is_starter": True, "proj_minutes": 75.0,
+         "lineup": "predicted", "xi_status": "likely", "start_pct": 72.0},
+        {"player_name": "Éderson", "player_id": 2, "position": "M", "is_starter": True, "proj_minutes": 80.0,
+         "lineup": "predicted", "xi_status": "certain", "start_pct": 100.0},
+        {"player_name": "Ademola Lookman", "player_id": 3, "position": "F", "is_starter": True, "proj_minutes": None,
+         "lineup": "confirmed", "xi_status": "confirmed", "start_pct": 100.0},
+        {"player_name": "Nicolò Zaniolo", "player_id": 4, "position": "F", "is_starter": False, "proj_minutes": 12.0,
+         "lineup": "predicted", "xi_status": None, "start_pct": 30.0},
+    ]
+    out = pp.predict_match_players("Roma", "Atalanta", [], away, pms=pms, base_rates={})
+    by = {p["player_name"]: p for p in out["away_players"]}
+    m = by["Mario Pašalić"]["markets"]["shots_o15"]
+    assert m["prob"] == round(0.72 * 0.6 + 0.28 * 0.2, 4) == 0.488
+    assert m["expected"] == round(0.72 * 2.0 + 0.28 * 0.5, 4)
+    assert m["split"]["1h"] == round(0.72 * 0.3 + 0.28 * 0.1, 4) and m["split"]["timing"] == "measured"
+    assert by["Mario Pašalić"]["start_mix"] == 0.72 and by["Mario Pašalić"]["proj_minutes"] == round(0.72 * 80 + 0.28 * 20, 1)
+    assert by["Mario Pašalić"]["lineup"] == "predicted" and by["Mario Pašalić"]["start_pct"] == 72.0
+    for name in ("Éderson", "Ademola Lookman", "Nicolò Zaniolo"):
+        assert "start_mix" not in by[name]
+    assert by["Éderson"]["markets"]["shots_o15"]["prob"] == 0.6 and by["Nicolò Zaniolo"]["markets"]["shots_o15"]["prob"] == 0.2
+    # exactly one extra (sub-branch) call, for the uncertain starter only
+    assert [c for c in calls if c[1] is False and c[2] == pp.SUB_FALLBACK_MINUTES] == [("Mario Pašalić", False, 20.0)]

@@ -432,10 +432,19 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   - **Third shape, measured 2026-09-05 (Roma–Atalanta, T-39 lineup fetch):** `robots.txt`
     **200** (so not the blanket deny) while BOTH `api.sofascore.com/api/v1/event/<id>/lineups`
     and `www.sofascore.com/api/v1/...` answer `403 {"error":{"code":403,"reason":"challenge"}}`,
-    `server: Varnish`. A JS challenge on the API tier only. The lineup chain then produced
-    nothing: the football-data.org backup needs `FOOTBALLDATA_KEY` (unset) and logs nothing
-    when it is missing, so `Lineup NOT confirmed` is the only trace. Player rows are priced off
-    the PREDICTED XI in that state and the /picks card marks them `XI prob.`.
+    `server: Varnish`. A JS challenge on the API tier only; every impersonation profile gets it.
+    The lineup chain then produced nothing — and the first diagnosis of why was WRONG
+    (`FOOTBALLDATA_KEY` IS set; the check had grepped other names). The real state: the
+    football-data.org **free tier carries no `lineup` field at all**, API-Football's free plan
+    refuses the 2026 season, and the scheduler ran the fetcher in a subprocess with
+    `capture_output=True`, so none of it was ever logged. Fixed the same day: **ESPN is the
+    second link** (`scraper/espn_lineups.py`, key-free, full XI + bench ~T-60, verified live on
+    Roma–Atalanta with Pašalić on the bench), `lineup_chain_status.json` names each source's
+    outcome every run, the scheduler logs the child's WARNING lines and pushes the reason to
+    Telegram once per match. Player rows carry `lineup: confirmed|predicted|recent`; the /picks
+    card marks non-confirmed players `XI prob. NN%` and an uncertain predicted starter is priced
+    as the start%/bench mixture (`_mix_start_sub`). ESPN quirk: the DEFAULT python-requests
+    agent gets 200, a browser UA gets 403.
     **Same shape hit the live monitor mid-match (all three of `/incidents`, `/statistics`,
     `/lineups`), from a HOME IP.** Cookies from a prior www page visit, Referer/Origin headers
     and every impersonation profile still 403; rapid retries add `curl (7)` refusals. No

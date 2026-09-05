@@ -27,6 +27,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import DATA_DIR
 from config.team_names import normalize_team as _canonical_normalize
 
+LINEUP_CHAIN_FILE = DATA_DIR / "upcoming" / "lineup_chain_status.json"
+
+
+def lineup_chain_reason(chain: Dict[str, dict]) -> str:
+    """One line, in Italian, on why no source delivered a team sheet — shown on
+    Telegram next to 'formazioni non disponibili', so the reader knows whether
+    to wait (a transient) or act (a missing key, a dead plan)."""
+    parts = []
+    ss = chain.get("sofascore") or {}
+    st = ss.get("last_failure_status")
+    if ss.get("error"):
+        parts.append(f"Sofascore: errore ({ss['error'][:60]})")
+    elif st:
+        parts.append(f"Sofascore: HTTP {st}" + (" (challenge/ban)" if st == 403 else ""))
+    elif not ss.get("n"):
+        parts.append("Sofascore: nessuna formazione pubblicata")
+    es = chain.get("espn") or {}
+    if es.get("error"):
+        parts.append(f"ESPN: errore ({es['error'][:60]})")
+    elif not es.get("n"):
+        parts.append("ESPN: XI non ancora pubblicata")
+    fd = chain.get("football_data") or {}
+    if fd.get("no_lineup_field"):
+        parts.append("football-data.org: piano free senza formazioni")
+    elif not fd.get("key_set"):
+        parts.append("football-data.org: FOOTBALLDATA_KEY non impostata")
+    elif fd.get("error"):
+        parts.append(f"football-data.org: errore ({fd['error'][:60]})")
+    elif not fd.get("n"):
+        parts.append("football-data.org: nessuna formazione")
+    af = chain.get("api_football") or {}
+    if not af.get("key_set"):
+        parts.append("API-Football: APIFOOTBALL_KEY non impostata")
+    elif af.get("error"):
+        parts.append(f"API-Football: {af['error'][:80]}")
+    elif af.get("skipped"):
+        parts.append(f"API-Football: saltata ({af['skipped']})")
+    elif not af.get("n"):
+        parts.append("API-Football: nessuna formazione")
+    return " · ".join(parts) or "nessuna fonte ha risposto"
+
 try:
     import requests
     HAS_REQUESTS = True
@@ -91,6 +132,7 @@ class LineupFetcher:
         self.headers = {"x-apisports-key": self.api_key}
         self._fixture_cache: Dict[str, int] = {}  # "date:home:away" → fixture_id
         self._requests_today = 0
+        self.last_error: Optional[dict] = None
 
     @property
     def available(self) -> bool:
@@ -119,6 +161,7 @@ class LineupFetcher:
             errors = data.get("errors", {})
             if errors:
                 log.warning(f"API-Football error: {errors}")
+                self.last_error = errors  # e.g. the free plan refusing the season
                 return None
 
             return data
@@ -353,8 +396,9 @@ def fetch_and_save_lineups(odds_data: Dict = None,
 
     Cascade order:
       1. Sofascore (primary — free, no key, uses curl_cffi infra)
-      2. football-data.org (backup — needs FOOTBALLDATA_KEY)
-      3. API-Football (legacy — needs APIFOOTBALL_KEY, only 2022-2024)
+      2. ESPN (free, no key — the backup that actually carries XIs; 2026-09-05)
+      3. football-data.org (needs FOOTBALLDATA_KEY; the FREE tier has NO lineup field)
+      4. API-Football (legacy — needs APIFOOTBALL_KEY, free plan only 2022-2024)
 
     Args:
         odds_data: Odds data dict (matches with commence_time).
@@ -393,6 +437,12 @@ def fetch_and_save_lineups(odds_data: Dict = None,
     confirmed = {}
     import time as _time
     _t0 = _time.monotonic()
+    # Why each source did or did not deliver — written to LINEUP_CHAIN_FILE every
+    # run so the scheduler (which runs this in a subprocess and captures its
+    # output) can say WHY a match has no team sheet. On 2026-09-05 all three
+    # sources were dead (Sofascore 403 challenge, no FOOTBALLDATA_KEY, API-Football
+    # free plan without the season) and the only trace was "Lineup NOT confirmed".
+    chain: Dict[str, dict] = {"sofascore": {}, "espn": {}, "football_data": {}, "api_football": {}}
 
     def _remaining() -> float:
         return max(0.0, deadline_sec - (_time.monotonic() - _t0)) if deadline_sec else 0.0
@@ -406,15 +456,40 @@ def fetch_and_save_lineups(odds_data: Dict = None,
         if ss_result:
             confirmed.update(ss_result)
             log.info("Sofascore: %d confirmed lineups", len(ss_result))
+        try:
+            from scraper import sofascore_events as _ss_events
+            chain["sofascore"] = {"n": len(ss_result or {}),
+                                  "last_failure_status": getattr(_ss_events, "_LAST_FAILURE_STATUS", None)}
+        except Exception:  # noqa: BLE001 - diagnostics only
+            chain["sofascore"] = {"n": len(ss_result or {})}
     except Exception as e:
         log.warning("Sofascore lineup fetch failed: %s", e)
+        chain["sofascore"] = {"n": 0, "error": str(e)[:200]}
 
-    # ── Source 2: football-data.org (backup for missed matches) ───────
+    # ── Source 2: ESPN (key-free, the only backup that actually carries XIs) ──
+    try:
+        from scraper.espn_lineups import fetch_lineups_espn
+        remaining_for_espn = {k: v for k, v in odds_data.items() if k not in confirmed}
+        es_result = fetch_lineups_espn(remaining_for_espn, deadline_sec=_remaining()) if remaining_for_espn else {}
+        chain["espn"] = {"n": len(es_result or {})}
+        if es_result:
+            confirmed.update(es_result)
+            log.info("ESPN: added %d lineups", len(es_result))
+    except Exception as e:
+        log.warning("ESPN lineup fetch failed: %s", e)
+        chain["espn"] = {"n": 0, "error": str(e)[:200]}
+
+    # ── Source 3: football-data.org (backup for missed matches) ───────
     try:
         if deadline_sec and _remaining() < 10:
             raise TimeoutError(f"budget spent ({deadline_sec:.0f}s) — skipping backup source")
         from scraper.footballdata_lineups import fetch_lineups_footballdata as fd_fetch
+        chain["football_data"] = {"key_set": bool(os.environ.get("FOOTBALLDATA_KEY"))}
         fd_result = fd_fetch(odds_data, deadline_sec=_remaining())
+        chain["football_data"]["n"] = len(fd_result or {})
+        from scraper import footballdata_lineups as _fd_mod
+        if getattr(_fd_mod, "NO_LINEUP_FIELD_SEEN", False):
+            chain["football_data"]["no_lineup_field"] = True
         if fd_result:
             # Only add matches not already confirmed by Sofascore
             added = 0
@@ -426,13 +501,16 @@ def fetch_and_save_lineups(odds_data: Dict = None,
                 log.info("football-data.org: added %d lineups (backup)", added)
     except Exception as e:
         log.warning("football-data.org lineup fetch failed: %s", e)
+        chain["football_data"]["error"] = str(e)[:200]
 
-    # ── Source 3: API-Football (legacy fallback) ──────────────────────
+    # ── Source 4: API-Football (legacy fallback) ──────────────────────
     # Only try if we still have missing matches, budget remains and the key exists
     fetcher = LineupFetcher()
+    chain["api_football"] = {"key_set": fetcher.available}
     if deadline_sec and _remaining() < 10:
         log.warning("Lineup budget spent (%.0fs) — skipping API-Football legacy source",
                     deadline_sec)
+        chain["api_football"]["skipped"] = "budget spent"
     elif fetcher.available:
         # Find matches not yet confirmed
         remaining = {k: v for k, v in odds_data.items() if k not in confirmed}
@@ -455,8 +533,25 @@ def fetch_and_save_lineups(odds_data: Dict = None,
                         if match_key not in confirmed:
                             confirmed[match_key] = lineup
                     log.info("API-Football: added %d lineups (legacy)", len(af_result))
+                chain["api_football"]["n"] = len(af_result or {})
+                if fetcher.last_error:
+                    chain["api_football"]["error"] = str(fetcher.last_error)[:200]
             except Exception as e:
                 log.warning("API-Football lineup fetch failed: %s", e)
+                chain["api_football"]["error"] = str(e)[:200]
+
+    # ── Chain status: every run, so a silent chain is impossible ─────
+    report = {"checked_at": datetime.now(timezone.utc).isoformat(), "n_matches": len(odds_data),
+              "confirmed": sorted(confirmed), "sources": chain,
+              "reason": None if confirmed else lineup_chain_reason(chain)}
+    try:
+        LINEUP_CHAIN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LINEUP_CHAIN_FILE.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    except OSError as e:
+        log.warning("Could not write %s: %s", LINEUP_CHAIN_FILE, e)
+    if not confirmed:
+        log.warning("No lineup source produced a team sheet for %d match(es) — %s",
+                    len(odds_data), report["reason"])
 
     # ── Save merged results ───────────────────────────────────────────
     if confirmed:

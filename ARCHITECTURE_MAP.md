@@ -183,8 +183,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: cli.py, scraper/upcoming.py; imports: config/settings.py (FBREF_BASE_URL, SERIE_A_COMP_ID), config/team_names.py (normalize_team), parser/html_utils.py (_uncomment_tables), scraper/client.py (FBrefClient), storage/paths.py (fixtures_csv_path)
 - **Quality signals:** 100+ LOC (partial read), well-documented, handles multiple leagues (FBREF_COMP_IDS mapping), type hints, helper parsers (_safe_int, _safe_float, _parse_date), proper error logging.
 
+#### 🟢 `scraper/espn_lineups.py` — grade A · keep
+- **Does:** Confirmed XIs + bench + formation from ESPN's key-free JSON (`scoreboard?dates=` → `summary?event=`, `rosters[*].roster[*].starter`) for imminent/approaching matches; second link of the lineup chain since 2026-09-05, the only backup that actually carries XIs. Default python-requests agent (a browser UA gets 403 from this network).
+- **Talks to:** imported_by: scraper/lineup_fetcher.py; imports: config/team_names.py (normalize_team), scripts/utils/match_timing.py (classify_match_window), requests
+- **Quality signals:** ~120 LOC, specimen-verified on Roma–Atalanta 2026-09-05 (event 401874781), parser unit test + chain test in tests/test_lineup_chain.py, deadline-bounded, never raises.
+
 #### 🟢 `scraper/footballdata_lineups.py` — grade B · keep
-- **Does:** Fetch confirmed lineups from football-data.org API (backup source after Sofascore), with per-team name mapping and rate limiting.
+- **Does:** Fetch confirmed lineups from football-data.org API (THIRD source after Sofascore and ESPN). **The free tier serves match details with no `lineup` field at all** (measured 2026-09-05 on a finished match) — sets `NO_LINEUP_FIELD_SEEN` so the chain report says "piano free senza formazioni" instead of "no lineups yet".
 - **Talks to:** imported_by: scraper/lineup_fetcher.py; imports: config/settings.py (DATA_DIR, UPCOMING_DIR), config/team_names.py (normalize_team), requests (optional)
 - **Quality signals:** 100+ LOC (partial read), API client with key-based auth, _api_get() helper with rate limiting (429 backoff 60s), team name map (_FD_NAME_MAP), proper error handling (403 check).
 

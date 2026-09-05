@@ -5138,6 +5138,29 @@ _Detailed per-match ML breakdown by component._
 
 ## 8. PREDICTIONS — predicted lineups
 
+### `data/upcoming/confirmed_lineups.json` and `lineup_chain_status.json`
+
+**Writer:** `scraper/lineup_fetcher.py::fetch_and_save_lineups` (the scheduler's `lineup_fetch`
+stage at T-60/T-55, run as a subprocess). Chain order since 2026-09-05: **Sofascore → ESPN →
+football-data.org → API-Football**. `confirmed_lineups.json` is written only when at least one
+match has both XIs (`{fetched_at, sources, matches: {"Home vs Away": {home_lineup, home_bench,
+home_formation, away_*, lineup_source, source_api}}}`); `source_api` is `sofascore` or `espn`.
+`lineup_chain_status.json` is written **every run**: `{checked_at, n_matches, confirmed: [...],
+sources: {sofascore: {n, last_failure_status}, espn: {n}, football_data: {key_set, n,
+no_lineup_field}, api_football: {key_set, n, error}}, reason}` — `reason` is the one-line Italian
+explanation the scheduler pushes to Telegram (once per match) when a match has no team sheet.
+
+**Readers:** `scripts/betting/player_predictions.py::match_player_floors` (the official sheet wins
+over the predicted XI; names accent-folded to the pms spelling — ESPN writes `Pasalic`),
+`scripts/fantacalcio/lineup_check.py`, `scripts/pipeline/scheduler.py` (confirmation + notice).
+
+**Measured state of the sources (2026-09-05, university network):** Sofascore answers 403
+`challenge` on EVERY api endpoint (robots.txt 200, so not the blanket deny); ESPN 200 with full
+XIs at half-time and at ~T-60 (WC verification 2026-07-13); football-data.org free tier: no
+`lineup` field even on finished matches; API-Football free plan: `Free plans do not have access
+to this season, try from 2022 to 2024`. Before ESPN was wired, the chain failed silently and
+player props were priced off a predicted XI containing a benched player.
+
 ### `data/upcoming/lineup_predictions.json`
 
 _Predicted starting XI per match._
