@@ -114,6 +114,17 @@ Nothing on the row drove a bet.
   dots (60m / 6h) — it used to be a third clock with a 12h bar that said "Data fresh"
   under an amber dot. The footer names BOTH verdict clocks (slip vs candidates) when they
   differ by >30 min, so a pill saying 8h never sits under a footer saying "scan 3h".
+- **The page is live, not a screenshot.** Until 2026-09-04 the table rendered once and
+  every "Xm ago" was a string frozen at load — a tab left open an hour still said
+  "Odds: 7m ago" and the stale banner never fired. Now `renderDashboard(data)` is
+  idempotent and re-runs every 30s from the cached payload (ages, pill ages, per-row
+  odds check, banner all re-derive); `pollDashboard()` + `loadQuickStats()` re-fetch
+  every 60s while visible and on tab focus (local JSON reads — `record_predictions` on
+  the endpoint dedups by match+date, so polling is safe); changed cells and stat values
+  flash amber 2s; a verdict tier change toasts; a change that would re-sort rows is HELD
+  while the cursor is in the table (amber chip in the header, applied on mouse-leave or
+  click). Keep it that way: any new number on the page must be re-derived on the tick
+  or diffed on the poll — a static string with a timestamp in it is a lie in 30 minutes.
 - **Any new column needs a rank in the table above and a reason it beats #5.** If it
   cannot flip a decision, it belongs on the detail page.
 - Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin

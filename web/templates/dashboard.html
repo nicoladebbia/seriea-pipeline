@@ -9,6 +9,8 @@
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
     <div id="dash-live-clock" style="font-family:monospace;font-size:13px;color:#e5e7eb;"></div>
     <div id="dash-freshness" style="display:flex;align-items:center;gap:10px;font-size:11px;"></div>
+    <span id="dash-updated" style="font-size:11px;color:var(--text-tertiary);"></span>
+    <button id="dash-pending" onclick="applyPendingDashboard()" class="btn btn--sm" style="display:none;font-size:11px;background:rgba(251,191,36,0.12);color:var(--amber);border:1px solid rgba(251,191,36,0.35);"></button>
     <button id="btn-smart-refresh" onclick="smartRefresh()" class="btn btn--accent btn--sm">
       <svg id="refresh-icon" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
       <span id="refresh-label">Refresh</span>
@@ -77,6 +79,11 @@
   .matchday-group.show-gated .dash-row--gated { display:table-row; }
   .dash-gated-toggle td { padding:5px 10px; font-size:10px; color:var(--text-tertiary); cursor:pointer; background:var(--bg-tertiary); }
   .dash-gated-toggle td:hover { color:var(--accent); }
+
+  /* A value that changed on the last refresh fades from amber over 2s */
+  @keyframes dash-flash { from { background:rgba(251,191,36,0.38); } to { background:transparent; } }
+  .dash-cell--changed { animation:dash-flash 2.2s ease-out; }
+  .stat-card__value.dash-cell--changed { animation:dash-flash 2.2s ease-out; border-radius:4px; }
 
   /* Bet column — the gate's verdict, never a recomputed edge */
   .bet-pill {
@@ -412,8 +419,13 @@ function startLiveBarRefresh() {
 // ═══════════════════════════════════════════════════════════════════════
 // QUICK STATS (compact summary — details on dedicated pages)
 // ═══════════════════════════════════════════════════════════════════════
+function _flashIfChanged(id, before) {
+  const e = document.getElementById(id); if (!e) return;
+  if (before != null && before !== '' && before !== '--' && before !== e.textContent) { e.classList.remove('dash-cell--changed'); void e.offsetWidth; e.classList.add('dash-cell--changed'); }
+}
 async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _leagueQueryParam());const bets=data.bets||[];const b=data.bankroll||{};
   const el=id=>document.getElementById(id);
+  const _before={}; for(const id of ['stat-bankroll','stat-winrate','stat-roi','quick-vb-count']){const e=el(id); _before[id]=e?e.textContent:null;}
   // Value bets count
   const vbCount = bets.length;
   if(el('quick-vb-count')) el('quick-vb-count').textContent = vbCount + ' qualifying bet' + (vbCount !== 1 ? 's' : '');
@@ -425,6 +437,8 @@ async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _
   // Quick stats panel
   if(el('quick-bankroll')) el('quick-bankroll').textContent = eurFmt(bal);
   if(el('quick-roi')){const roi=Math.round(b.roi??0);el('quick-roi').textContent = (roi>0?'+':'')+roi+'% ROI';el('quick-roi').style.color = 'var(--text-tertiary)';}
+  if(window._qsLoadedOnce) for(const id of Object.keys(_before)) _flashIfChanged(id, _before[id]);  // never flash the placeholder→value transition
+  window._qsLoadedOnce=true;
 }catch{}}
 
 
@@ -473,10 +487,110 @@ function formatDayHeader(dateStr) {
   catch { return dateStr; }
 }
 
+// ── Live page ───────────────────────────────────────────────────────────
+// The table was a screenshot: rendered once, ages frozen at load, nothing re-fetched.
+// Now: ages tick every 30s from stored timestamps; the dashboard + betting payloads
+// re-fetch every 60s while the tab is visible and on tab focus; changed cells flash;
+// a verdict tier change toasts; and a change that would re-sort rows under the cursor
+// is HELD (chip in the header) until the mouse leaves the table or the chip is clicked.
+const DASH_TICK_MS = 30000, DASH_POLL_MS = 60000;
+window._dashData = null;        // last payload rendered
+window._dashPending = null;     // payload fetched but held (mouse inside the table)
+window._dashHover = false;
+window._dashLastChange = null;  // {at: Date, n: rows changed}
+
+function _rowFp(m) {
+  const o = m.ou || {}, b = o.bet || {};
+  return { ou: `${o.line}|${o.model_over}|${o.market_over}|${o.raw_edge_pct}`,
+           bet: `${b.status}|${b.selection}|${b.edge_pct}|${b.stake_amount}`, status: b.status || 'none',
+           match: m.match || `${m.home_team} vs ${m.away_team}` };
+}
+function _fpMap(data) { const m = {}; for (const r of (data.matches || [])) { const f = _rowFp(r); m[f.match] = f; } return m; }
+
+// Diff two payloads → {n, cells:[[match, 'ou'|'bet']], tierChanges:[{match, from, to}]}
+function _diffDashboard(prev, next) {
+  const a = _fpMap(prev), b = _fpMap(next);
+  const cells = [], tierChanges = []; const rows = new Set();
+  for (const k of Object.keys(b)) {
+    if (!a[k]) { rows.add(k); continue; }
+    if (a[k].ou !== b[k].ou) { cells.push([k, 'ou']); rows.add(k); }
+    if (a[k].bet !== b[k].bet) { cells.push([k, 'bet']); rows.add(k); }
+    if (a[k].status !== b[k].status) tierChanges.push({ match: k, from: a[k].status, to: b[k].status });
+  }
+  const oddsMoved = (prev.odds_fetched_at || '') !== (next.odds_fetched_at || '');
+  const slipMoved = (prev.slip_generated_at || '') !== (next.slip_generated_at || '') || (prev.candidates_generated_at || '') !== (next.candidates_generated_at || '');
+  return { n: rows.size, cells, tierChanges, oddsMoved, slipMoved, any: rows.size > 0 || oddsMoved || slipMoved };
+}
+
+function _flashCells(cells) {
+  for (const [match, which] of cells) {
+    const row = document.querySelector(`tr[data-match-key="${CSS.escape(match)}"]`);
+    const cell = row && row.querySelector(which === 'ou' ? '.ou-cell' : '.bet-cell');
+    if (cell) { cell.classList.remove('dash-cell--changed'); void cell.offsetWidth; cell.classList.add('dash-cell--changed'); }
+  }
+}
+
+function _renderUpdatedLine() {
+  const el = document.getElementById('dash-updated'); if (!el) return;
+  const c = window._dashLastChange;
+  if (!c) { el.textContent = ''; return; }
+  const secs = Math.round((Date.now() - c.at) / 1000);
+  const ago = secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`;
+  el.textContent = `updated ${ago} · ${c.n} row${c.n !== 1 ? 's' : ''} changed`;
+}
+
+const _TIER_LABEL = { selected: 'BET', candidate: 'CANDIDATE', near_miss: 'NEAR MISS', none: 'no signal', gated: 'gated', no_odds: 'no odds', no_model: 'no model' };
+function _applyDashboard(next, diff) {
+  window._dashData = next; window._dashPending = null;
+  const chip = document.getElementById('dash-pending'); if (chip) chip.style.display = 'none';
+  renderDashboard(next);
+  if (diff && diff.any) {
+    window._dashLastChange = { at: Date.now(), n: diff.n };
+    _renderUpdatedLine();
+    _flashCells(diff.cells);
+    if (diff.tierChanges.length) {
+      showToast('Verdict changed', diff.tierChanges.slice(0, 4).map(t => `${t.match}: ${_TIER_LABEL[t.from] || t.from} → ${_TIER_LABEL[t.to] || t.to}`), 'green');
+    }
+  }
+}
+function applyPendingDashboard() { if (window._dashPending) _applyDashboard(window._dashPending.data, window._dashPending.diff); }
+
+async function pollDashboard() {
+  if (document.hidden) return;
+  try {
+    const next = await apiFetch('/api/dashboard' + _leagueQueryParam());
+    const prev = window._dashData;
+    if (!prev) { _applyDashboard(next, null); return; }
+    const diff = _diffDashboard(prev, next);
+    if (!diff.any) return;
+    // Would any row move? Only a tier change re-sorts. Hold it while the cursor is in the table.
+    if (window._dashHover && diff.tierChanges.length) {
+      window._dashPending = { data: next, diff };
+      const chip = document.getElementById('dash-pending');
+      if (chip) { chip.textContent = `${diff.n} change${diff.n !== 1 ? 's' : ''} waiting · order would move · apply`; chip.style.display = 'inline-flex'; }
+      return;
+    }
+    _applyDashboard(next, diff);
+  } catch {}
+}
+
 async function loadDashboard() {
   try {
     const data = await apiFetch('/api/dashboard' + _leagueQueryParam());
+    window._dashData = data; window._dashPending = null;
+    renderDashboard(data);
+  } catch (err) { document.getElementById('loading').innerHTML = `<span class="text-red">Failed to load data: ${err.message}</span>`; }
+}
+
+// Idempotent: called on first load, on every 30s tick (ages re-derive), and on each applied refresh.
+function renderDashboard(data) {
+  {
     window._dashFresh = { odds: data.odds_fetched_at || null, slip: data.slip_generated_at || null, cand: data.candidates_generated_at || null };
+    // Remove the previous render but remember which day groups had gated rows expanded
+    const _container = document.getElementById('matches-container');
+    const _openGated = [];
+    if (_container) _container.querySelectorAll('.matchday-group').forEach((el, i) => { if (el.classList.contains('show-gated')) _openGated.push(i); el.remove(); });
+    window._dashOpenGated = _openGated;
     // Quick strip reads the SAME ages/thresholds as the header dots (was a third clock with a 12h bar)
     (() => {
       const qf = document.getElementById('quick-freshness'); if (!qf) return;
@@ -489,6 +603,7 @@ async function loadDashboard() {
     })();
     document.getElementById('loading').classList.add('hidden');
     if (!data.matches || !data.matches.length) { document.getElementById('empty').classList.remove('hidden'); return; }
+    document.getElementById('empty').classList.add('hidden');
 
     // Freshness bar in header
     const freshEl = document.getElementById('dash-freshness');
@@ -658,6 +773,10 @@ async function loadDashboard() {
       groupIdx++;
     }
     container.insertAdjacentHTML('beforeend', html);
+    if (window._dashOpenGated && window._dashOpenGated.length) {
+      const groups = container.querySelectorAll('.matchday-group');
+      for (const i of window._dashOpenGated) { const g = groups[i]; if (!g) continue; g.classList.add('show-gated'); const t = g.querySelector('.dash-gated-toggle'); if (t) t.querySelector('td').textContent = `hide ${t.dataset.n} gated`; }
+    }
 
     // Start live countdown updates
     if (!window._dashCountdownTimer) {
@@ -670,7 +789,7 @@ async function loadDashboard() {
         if (trend && window._nextMatchCT) trend.textContent = timeUntil(window._nextMatchCT);
       }, 30000);
     }
-  } catch (err) { document.getElementById('loading').innerHTML = `<span class="text-red">Failed to load data: ${err.message}</span>`; }
+  }
 }
 
 
@@ -739,6 +858,23 @@ loadQuickStats();
 loadFreshness();
 loadLineupAssessment();
 startLiveBarRefresh();
+
+// Ages tick (no request): re-render the last payload so every "Xm ago", pill age,
+// per-row odds check and the stale banner re-derive from their stored timestamps.
+setInterval(() => {
+  if (document.hidden || !window._dashData) return;
+  renderDashboard(window._dashData);
+  _renderUpdatedLine();
+}, DASH_TICK_MS);
+// Re-fetch (local JSON reads, no external calls) while visible, and immediately on tab focus.
+setInterval(() => { pollDashboard(); loadQuickStats(); }, DASH_POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollDashboard(); loadQuickStats(); } });
+// Hold row re-ordering while the cursor is in the table; apply what was held on leave.
+(() => {
+  const c = document.getElementById('matches-container'); if (!c) return;
+  c.addEventListener('mouseenter', () => { window._dashHover = true; });
+  c.addEventListener('mouseleave', () => { window._dashHover = false; if (window._dashPending) applyPendingDashboard(); });
+})();
 
 // Live clock
 (function() {
