@@ -271,3 +271,36 @@ def test_a_sent_off_player_stops_at_the_card(roma):
     sub_events = [{"type": "substitution", "minute": 63, "player_in": "Santiago Castro", "player_out": "X"},
                   {"type": "card", "card_type": "red", "minute": 75, "player": "Santiago Castro"}]
     assert live_espn._minutes_played(sub, sub_events, 88) == 12
+
+
+# ─── referee from the summary ────────────────────────────────────────────────
+
+def test_referee_from_summary_names_the_referee_only_after_the_match():
+    """Specimen 2026-09-05: gameInfo.officials carries the Referee once the match
+    is post; pre-kickoff it is empty; other officials (VAR, assistants) are not
+    the referee."""
+    post = {"gameInfo": {"officials": [
+        {"fullName": "Marco Guida", "position": {"name": "Assistant Referee"}},
+        {"fullName": "Davide Massa", "displayName": "Davide Massa", "position": {"name": "Referee"}}]}}
+    assert live_espn.referee_from_summary(post) == "Davide Massa"
+    assert live_espn.referee_from_summary({"gameInfo": {"officials": []}}) is None
+    assert live_espn.referee_from_summary({}) is None
+    assert live_espn.referee_from_summary(None) is None
+    assert live_espn.referee_from_summary({"gameInfo": {"officials": [{"fullName": "  ", "position": {"name": "Referee"}}]}}) is None
+
+
+def test_match_referee_walks_scoreboard_event_summary(monkeypatch, board):
+    calls = []
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug, date=None: calls.append(("board", slug, date)) or board)
+    monkeypatch.setattr(live_espn, "_get_json", lambda url: calls.append(("json", url)) or {
+        "gameInfo": {"officials": [{"fullName": "Simone Sozza", "position": {"name": "Referee"}}]}})
+    ev = board["events"][0]
+    comp = ev["competitions"][0]
+    home = next(c for c in comp["competitors"] if c["homeAway"] == "home")["team"]["displayName"]
+    away = next(c for c in comp["competitors"] if c["homeAway"] == "away")["team"]["displayName"]
+    assert live_espn.match_referee("serie_a", "2026-09-05", home, away) == "Simone Sozza"
+    assert calls[0] == ("board", "ita.1", "20260905") and f"event={ev['id']}" in calls[1][1]
+    # unknown league, unknown fixture, no date: None without a request
+    assert live_espn.match_referee("ligue_1", "2026-09-05", home, away) is None
+    assert live_espn.match_referee("serie_a", "2026-09-05", "Nowhere", "Nobody") is None
+    assert live_espn.match_referee("serie_a", "", home, away) is None

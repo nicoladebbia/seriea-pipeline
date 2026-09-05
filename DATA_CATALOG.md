@@ -601,11 +601,21 @@ So a relegated club having **no** pre-season signal is correct — it is not in 
 - **Source:** whoscored.com scraper (`scraper/referee.py::scrape_all_referee_assignments`)
 - **3,368 rows** — 9 seasons
 - **Columns:** match_date, home_team, away_team, referee, matchweek, ref_yellows, ref_second_yellows, ref_reds, season
-- **Refresh:** Weekly (cache file deleted before rescrape)
+- **Refresh:** Weekly. Per-league caches `referee_assignments_{league}.parquet` are rebuilt
+  by `refresh_weekly_data` (backup-and-restore on a failed scrape); since 2026-09-05 the
+  scraper never writes an EMPTY cache (on 2026-08-31 worldfootball had not published 2026-27
+  and both caches were saved with 0 rows, then served as "cached" — the master file was
+  untouched). Fills `matches.parquet.referee` only where NaN (`merge_referee_with_matches`).
 - **Failure modes:**
-  - Plan A: whoscored (sometimes rate-limited)
-  - Plan B: **MISSING** — football-data.org has ref data but not integrated
-  - Plan C: FBref match report scorebox (already feeds `matches.parquet.referee`)
+  - Plan A: worldfootball/whoscored (publishes a season weeks late; rate-limited)
+  - Plan B (live since 2026-09-05): **ESPN** `summary.gameInfo.officials` (position "Referee",
+    full names, POST-match only) via `live_espn.match_referee` → `matchday_updater`
+    (`_referee_from_espn` on every new row, `backfill_referees` / `--backfill-referees` on
+    every matchday run). The Sofascore fixture list carries no referee (0 of 21 in 2026-27);
+    the old writer stored `""`, normalised to null on 2026-09-05 (196 rows).
+  - Plan C: FBref match report scorebox (FBref is headless-blocked)
+  - Coverage: `health_check.check_referee_coverage` (WARNING) — played Serie A matches
+    with no referee in `matches.parquet` past the 14h grace.
 
 ### `data/external/transfermarkt/market_values_*.parquet`
 - **Per-season player market values (EUR)** from Transfermarkt scrape

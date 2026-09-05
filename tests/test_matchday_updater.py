@@ -151,3 +151,43 @@ def test_a_missing_file_is_always_rebuilt(tmp_path):
 
 def test_a_fetch_forces_a_refresh_even_when_the_file_is_fresh(tmp_path):
     assert mu._player_meta_needs_refresh(_age(tmp_path, 0.1), 5) is True
+
+
+def test_referee_comes_from_espn_when_the_fixture_has_none_and_is_null_not_blank(isolated, monkeypatch):
+    """Sofascore's 2026-27 fixture list names no referee (0 of 21 finished); the
+    row used to carry "" and pass every coverage check as filled."""
+    seen = []
+    monkeypatch.setattr(mu, "_referee_from_espn",
+                        lambda league, date, home, away: seen.append((league, date, home, away)) or "Davide Massa")
+    pairs = [({}, _fixture(1, "Fiorentina", "Torino", KICKOFF)),
+             ({}, dict(_fixture(2, "Roma", "Atalanta", KICKOFF), referee={"name": "Simone Sozza"}))]
+    mu.update_matches_parquet(pairs, season="2025-2026", league="serie_a")
+    df = pd.read_parquet(isolated).set_index("home_team")
+    assert df.loc["Fiorentina", "referee"] == "Davide Massa"
+    assert df.loc["Roma", "referee"] == "Simone Sozza"          # the fixture's own name wins, no ESPN call
+    assert seen == [("serie_a", "2026-02-27", "Fiorentina", "Torino")]
+    monkeypatch.setattr(mu, "_referee_from_espn", lambda *a: None)
+    mu.update_matches_parquet([({}, _fixture(3, "Lecce", "Genoa", KICKOFF))], season="2025-2026", league="serie_a")
+    df = pd.read_parquet(isolated).set_index("home_team")
+    assert df.loc["Lecce", "referee"] is None or pd.isna(df.loc["Lecce", "referee"])
+
+
+def test_backfill_referees_fills_played_rows_and_normalises_blanks(isolated, monkeypatch):
+    pd.DataFrame({
+        "league": ["serie_a"] * 4 + ["premier_league"],
+        "season": ["2026-2027"] * 5,
+        "match_date": pd.to_datetime(["2026-08-23", "2026-08-30", "2026-09-05", "2099-01-01", "2026-08-23"]),
+        "home_team": ["Inter", "Roma", "Milan", "Lazio", "Arsenal"],
+        "away_team": ["Torino", "Bologna", "Lecce", "Napoli", "Chelsea"],
+        "home_score": [2, 1, 0, None, 1],
+        "referee": ["", None, "Luca Zufferli", "", ""],
+    }).to_parquet(isolated)
+    names = {("Inter", "Torino"): "Davide Massa", ("Roma", "Bologna"): None}
+    monkeypatch.setattr(mu, "_referee_from_espn", lambda league, date, home, away: names.get((home, away)))
+    out = mu.backfill_referees(season="2026-2027", league="serie_a")
+    assert out == {"league": "serie_a", "season": "2026-2027", "candidates": 2, "filled": 1, "blanked": 3}
+    df = pd.read_parquet(isolated).set_index("home_team")["referee"]
+    assert df["Inter"] == "Davide Massa" and df["Milan"] == "Luca Zufferli"
+    assert all(pd.isna(df[t]) for t in ("Roma", "Lazio", "Arsenal"))   # unnamed, unplayed, other league
+    # idempotent: the second pass has one candidate left (Roma) and nothing to blank
+    assert mu.backfill_referees(season="2026-2027", league="serie_a")["blanked"] == 0

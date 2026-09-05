@@ -965,6 +965,33 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   rounds) must include the date. The real-journal count since go-live is the check:
   `python3 -c "import json;d=json.load(open('data/betting/bet_journal.json'))['bets'];print(sum(1 for b in d.values() if (b.get('placed_at') or '')>='2026-08-27'))"`.
 
+### Symptom: "every `ref_*` feature is NaN for the current season" / "referee_assignments_<league>.parquet has 0 rows" (FIXED 2026-09-05)
+
+- **What you'll see**: `features_serie_a.parquet` current-season rows with `referee` "filled" but
+  every `ref_*` column NaN; `matches.parquet` current-season `referee` = `""` (an empty string
+  passes every `notna()` coverage check); the weekly refresh log `Saved 0 referee assignments
+  to referee_assignments_serie_a.parquet` and a `✗ referees` step; the 1X2 ensemble (three
+  `ref_*` inputs) silently loses the referee. The O/U money models do NOT use `ref_*`.
+- **Why, three stacked**: (1) the Sofascore fixture list carries no `referee` (0 of 21
+  finished 2026-27 fixtures), and `matchday_updater` wrote `referee_info.get("name", "")` —
+  `""`, not None; (2) worldfootball publishes a season weeks late, and on 2026-08-31 the
+  scraper wrote the EMPTY frame as the per-league cache, which the `exists()` short-circuit
+  then served forever (the master `referee_assignments.parquet`, 3,368 rows, was untouched);
+  (3) nothing checked referee coverage.
+- **Fix**: ESPN names the referee once a match is `post` (`summary.gameInfo.officials`,
+  position "Referee", full names in the same space as nine seasons of history — specimen
+  Fiorentina–Torino 2026-09-05 → "Davide Massa"; EMPTY pre-kickoff, so this fills ground
+  truth, never the upcoming row). `live_espn.match_referee` → `matchday_updater
+  _referee_from_espn` on every new row, `backfill_referees` (`--backfill-referees`) on every
+  matchday run for played rows still unnamed, `""` normalised to None (196 rows).
+  `scraper/referee.py` never writes an empty cache; both 0-row caches deleted.
+  `health_check.check_referee_coverage` (WARNING) reads matches.parquet against the fixture
+  calendar. Tests: `test_live_espn.py`, `test_matchday_updater.py`, `test_referee_cache_guard.py`.
+- **Prevention rules**: **`""` is not a value — write None for a missing field, or every
+  coverage number lies.** **A cache written from a failed fetch is a poisoned cache — guard
+  the WRITE (`if df.empty: return`), not only the read.** And when a source publishes late
+  (worldfootball, FBref), name the second source in the code, not a comment.
+
 ### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
 
 - **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is

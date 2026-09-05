@@ -282,3 +282,35 @@ def test_picks_journal_activity_warns_when_a_kickoff_passed_with_nothing_journal
     # Sunday's Bologna kickoff is inside 24h next morning (still WARNING); two days on nothing is due
     assert hc.check_picks_journal_activity(now=datetime(2026, 9, 7, 9, 0, tzinfo=UTC))["dates"] == ["2026-09-06"]
     assert hc.check_picks_journal_activity(now=datetime(2026, 9, 8, 12, 0, tzinfo=UTC))["status"] == "OK"
+
+
+def test_referee_coverage_flags_a_finished_match_with_no_referee(tmp_path, monkeypatch):
+    """Every 2026-27 row carried "" for two weeks and nothing looked. Fixture
+    kickoffs (Sofascore names) vs matches.parquet (normalised names) referee."""
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    import scripts.pipeline.health_check as hc
+    import scripts.utils.match_timing as mt
+    fx = tmp_path / "fixtures.json"
+    monkeypatch.setattr(mt, "_sofascore_fixture_files", lambda: [(fx, "serie_a")])
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    ko = lambda s: int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())  # noqa: E731
+    fx.write_text(json.dumps([
+        {"startTimestamp": ko("2026-09-04T18:45:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Genoa"}, "awayTeam": {"name": "Como"}},
+        {"startTimestamp": ko("2026-09-05T18:45:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "AS Roma"}, "awayTeam": {"name": "Atalanta"}},
+    ]))
+    gt = tmp_path / "parsed" / "matches.parquet"
+    gt.parent.mkdir(parents=True)
+    pd.DataFrame({"match_date": pd.to_datetime(["2026-09-04", "2026-09-05"]), "home_team": ["Genoa", "Roma"],
+                  "away_team": ["Como", "Atalanta"], "referee": ["Marco Guida", ""], "league": ["serie_a"] * 2}).to_parquet(gt)
+    # Saturday still inside the grace window: only Friday is due and it is named
+    assert hc.check_referee_coverage(now=datetime(2026, 9, 6, 0, 45, tzinfo=UTC))["status"] == "OK"
+    out = hc.check_referee_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))
+    assert out["status"] == "WARNING" and out["missing"] == ["AS Roma vs Atalanta (2026-09-05)"] and "backfill-referees" in out["detail"]
+    pd.DataFrame({"match_date": pd.to_datetime(["2026-09-04", "2026-09-05"]), "home_team": ["Genoa", "Roma"],
+                  "away_team": ["Como", "Atalanta"], "referee": ["Marco Guida", "Davide Massa"], "league": ["serie_a"] * 2}).to_parquet(gt)
+    assert hc.check_referee_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))["status"] == "OK"

@@ -612,7 +612,10 @@ def update_matches_parquet(
 
         # Referee and venue
         referee_info = fixture.get("referee", {}) or {}
-        referee = referee_info.get("name", "")
+        referee = referee_info.get("name", "") or _referee_from_espn(league, match_date, home_team, away_team)
+        # None, never "": 31 of 45 rows of 2026-27 carried "" and read as
+        # "filled" in every coverage check while add_referee_features got nothing
+        referee = referee or None
         venue_info = fixture.get("venue", {}) or {}
         venue = venue_info.get("stadium", {}).get("name", "") if isinstance(venue_info.get("stadium"), dict) else ""
 
@@ -747,6 +750,56 @@ def update_matches_parquet(
 # ---------------------------------------------------------------------------
 # 5b-pre. Backfill: ground-truth rows for matches whose stats already exist
 # ---------------------------------------------------------------------------
+
+def _referee_from_espn(league: str, match_date: str, home: str, away: str) -> str | None:
+    """Sofascore's fixture list names no referee this season (0 of 21 finished
+    2026-27 fixtures) and worldfootball publishes a season late; ESPN's summary
+    names the referee once the match is played (live_espn.match_referee).
+    Never raises: a missing referee is a NaN feature, not a failed ingest."""
+    if not match_date:
+        return None
+    try:
+        from scripts.data.live_espn import match_referee
+        return match_referee(league, match_date, home, away)
+    except Exception as e:  # noqa: BLE001 - network / parse trouble
+        log.debug("ESPN referee lookup failed for %s vs %s (%s): %s", home, away, match_date, e)
+        return None
+
+
+def backfill_referees(season: str | None = None, league: str = "serie_a",
+                      dry_run: bool = False) -> dict:
+    """Fill the referee of played rows that have none (NaN or "") from ESPN,
+    and normalise "" to None everywhere. Idempotent; a row ESPN cannot name
+    stays None and is retried on the next call."""
+    if season is None:
+        season = get_current_season()
+    summary = {"league": league, "season": season, "candidates": 0, "filled": 0, "blanked": 0}
+    if not MATCHES_PARQUET.exists():
+        return summary
+    gt = pd.read_parquet(MATCHES_PARQUET)
+    if "referee" not in gt.columns:
+        return summary
+    empty = gt["referee"].astype(object).map(lambda v: isinstance(v, str) and not v.strip())
+    summary["blanked"] = int(empty.sum())
+    gt.loc[empty, "referee"] = None
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    dates = gt["match_date"].astype(str).str[:10]
+    mask = ((gt["league"] == league) & (gt["season"] == season) & gt["referee"].isna()
+            & (dates <= today) & gt["home_score"].notna())
+    summary["candidates"] = int(mask.sum())
+    for idx in gt.index[mask]:
+        row = gt.loc[idx]
+        name = _referee_from_espn(league, dates[idx], row["home_team"], row["away_team"])
+        if name:
+            gt.at[idx, "referee"] = name
+            summary["filled"] += 1
+    log.info("[%s] referee backfill %s: %d candidates, %d filled, %d blanks normalised%s",
+             league, season, summary["candidates"], summary["filled"], summary["blanked"],
+             " (dry run)" if dry_run else "")
+    if not dry_run and (summary["filled"] or summary["blanked"]):
+        gt.to_parquet(MATCHES_PARQUET, index=False)
+    return summary
+
 
 def backfill_matches_parquet(
     season: str | None = None,
@@ -1072,6 +1125,15 @@ def run_matchday_update(
             elif not new_fixtures:
                 log.info("[%s] Nothing to update — all matches already in parquets", league)
 
+        # Referees land AFTER the match on ESPN and never in the Sofascore
+        # fixture list: fill the played rows that still have none, every run.
+        if not dry_run:
+            try:
+                ref_fill = backfill_referees(season=season, league=league)
+                summary["referees_filled"] = summary.get("referees_filled", 0) + ref_fill["filled"]
+            except Exception as e:  # noqa: BLE001 - a NaN feature, not a failed ingest
+                log.warning("[%s] referee backfill failed: %s", league, e)
+
     if dry_run:
         total_detected = summary["new_matches_detected"]
         log.info("DRY RUN — would fetch %d matches across %s. Exiting.", total_detected, ", ".join(leagues))
@@ -1195,6 +1257,11 @@ Examples:
                              "JSONs already on disk. No network. Honors --season, --league, "
                              "--dry-run. Idempotent.")
 
+    parser.add_argument("--backfill-referees", action="store_true",
+                        help="Fill the referee of played rows that have none from ESPN "
+                             "(summary officials) and normalise '' to null. Honors "
+                             "--season, --league, --dry-run. Idempotent.")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1210,6 +1277,14 @@ Examples:
     leagues = None
     if args.league:
         leagues = [l.strip() for l in args.league.split(",") if l.strip()]
+
+    if args.backfill_referees:
+        results = [
+            backfill_referees(season=args.season, league=lg, dry_run=args.dry_run)
+            for lg in (leagues or ["serie_a", "premier_league"])
+        ]
+        print(json.dumps(results, indent=2, default=str))
+        return
 
     if args.backfill:
         results = [

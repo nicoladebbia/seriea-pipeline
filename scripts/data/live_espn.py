@@ -186,6 +186,41 @@ def find_event(home: str, away: str, scoreboard: dict[str, Any]) -> dict[str, An
     return None
 
 
+def referee_from_summary(summary: dict[str, Any] | None) -> str | None:
+    """The match referee's full name from a summary payload, else None.
+
+    Specimen 2026-09-05 (Fiorentina–Torino, Inter–Napoli): the scoreboard
+    event carries no officials; ``summary.gameInfo.officials`` lists
+    ``{"fullName": "Davide Massa", "position": {"name": "Referee"}}`` once the
+    match is ``post`` and is EMPTY pre-kickoff. Full names, the same space as
+    nine seasons of ``matches.parquet`` ("Davide Massa", not "D Massa").
+    """
+    for official in ((summary or {}).get("gameInfo") or {}).get("officials") or []:
+        role = ((official.get("position") or {}).get("name") or "").strip().lower()
+        if role == "referee":
+            name = (official.get("fullName") or official.get("displayName") or "").strip()
+            return name or None
+    return None
+
+
+def match_referee(league: str, date: str, home: str, away: str) -> str | None:
+    """Referee of a PLAYED match from ESPN (scoreboard for the day -> event
+    -> summary). None when the league has no slug, the day/event is not on
+    ESPN, or the match has not been played yet. Fills ground truth: the
+    Sofascore fixture list names no referee (0 of 21 finished 2026-27
+    fixtures) and worldfootball publishes the season late."""
+    slug = LEAGUE_SLUGS.get(league)
+    if not slug or not date:
+        return None
+    board = _scoreboard(slug, str(date)[:10].replace("-", ""))
+    if not board:
+        return None
+    event = find_event(home, away, board)
+    if not event:
+        return None
+    return referee_from_summary(_get_json(f"{_BASE}/{slug}/summary?event={event.get('id')}"))
+
+
 def _minute(clock: dict[str, Any] | None) -> tuple[int, int]:
     """("45'+5'") -> (45, 5); ("47'") -> (47, 0); falls back to clock.value."""
     clock = clock or {}

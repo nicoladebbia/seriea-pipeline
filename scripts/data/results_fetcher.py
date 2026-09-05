@@ -367,7 +367,16 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
     if use_journal:
         # Map journal bets to the format expected by settlement logic
         bets = []
+        # A superseded bet is a pipeline artifact (replaced by a later slip, no
+        # stake). The scores API reaches 3 days back, so one older than that can
+        # never resolve here: 12 of them from Feb–Apr re-warned "No result found"
+        # every 15-min cycle for five months.
+        reach_cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        n_unreachable = 0
         for jb in journal_bets:
+            if jb.get("status") == "superseded" and (jb.get("date") or "9999") < reach_cutoff:
+                n_unreachable += 1
+                continue
             if (jb.get("extra") or {}).get("picks_ref"):
                 # a promoted pick (player prop / first-half market): graded by
                 # picks.settle_picks with the linked paper entry. This grader
@@ -384,6 +393,9 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
                 "value_pct": jb.get("edge_pct", 0),
                 "_bet_id": jb.get("bet_id"),  # carry through for journal update
             })
+        if n_unreachable:
+            log.debug("Skipping %d superseded bets older than %s (no stake, out of the API's reach)",
+                      n_unreachable, reach_cutoff)
     else:
         # The journal is the ONLY settlement source (CLAUDE.md ledger rules).
         # The old fallback settled bets out of data/betting/unified_report.json,
@@ -750,7 +762,7 @@ def fetch_and_settle() -> Dict:
     # Warn about orphaned bets that the API can't reach (daysFrom max is 3)
     try:
         from scripts.betting.bet_journal import get_pending_bets
-        pending = get_pending_bets(include_superseded=True)
+        pending = get_pending_bets(include_superseded=False)
         cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
         orphaned = [b for b in pending
                     if b.get("date", "9999") < cutoff]

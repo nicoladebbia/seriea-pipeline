@@ -1179,6 +1179,40 @@ def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
             "detail": f"{n} paper pick(s) journaled for {len(due)} Serie A match(es) on {', '.join(dates)}"}
 
 
+def check_referee_coverage(now: Optional[datetime] = None) -> Dict:
+    """Does every Serie A match finished more than STATS_GRACE_HOURS ago carry a
+    referee in matches.parquet? The 1X2 ensemble reads three ref_* features;
+    from 2026-08-23 to 2026-09-05 every row of the season had "" (the Sofascore
+    fixture list names no referee, worldfootball had not published the season)
+    and no check looked. ESPN fills it after the match (matchday_updater
+    backfill_referees). WARNING: a display-model input, not a money input."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        played = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400)
+    except (OSError, ValueError, StopIteration) as e:
+        return {"status": "WARNING", "detail": f"fixture file unreadable: {e}"}
+    if not played:
+        return {"status": "OK", "detail": "no Serie A match finished in the last 7 days past the grace window"}
+    try:
+        import pandas as pd
+        from config.team_names import normalize_team
+        gt = pd.read_parquet(DATA_DIR / "parsed" / "matches.parquet",
+                             columns=["match_date", "home_team", "away_team", "referee", "league"])
+    except Exception as e:  # noqa: BLE001
+        return {"status": "WARNING", "detail": f"matches.parquet unreadable: {e}"}
+    gt = gt[gt["league"] == "serie_a"]
+    named = {(str(d)[:10], h, a) for d, h, a, r in zip(gt["match_date"], gt["home_team"], gt["away_team"], gt["referee"])
+             if isinstance(r, str) and r.strip()}
+    missing = [f"{h} vs {a} ({d})" for d, h, a in played
+               if (d, normalize_team(h or ""), normalize_team(a or "")) not in named]
+    if missing:
+        return {"status": "WARNING", "missing": missing,
+                "detail": f"{len(missing)} of {len(played)} finished Serie A match(es) have no referee in "
+                          f"matches.parquet: {', '.join(missing[:4])} — ref_* features are NaN for them; "
+                          "run matchday_updater --backfill-referees (ESPN)"}
+    return {"status": "OK", "detail": f"referee known for all {len(played)} Serie A match(es) finished >{STATS_GRACE_HOURS:.0f}h ago"}
+
+
 def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
     """Did the Sofascore player stats land for every Serie A match that finished
     more than STATS_GRACE_HOURS ago? Player-prop paper picks grade from
@@ -1439,6 +1473,7 @@ def run_health_check() -> Dict:
         "lineup_sources": check_lineup_sources(),
         "player_stats_coverage": check_player_stats_coverage(),
         "picks_journal_activity": check_picks_journal_activity(),
+        "referee_coverage": check_referee_coverage(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
@@ -1532,6 +1567,9 @@ def run_health_check() -> Dict:
     pj = result.get("picks_journal_activity", {})
     if pj.get("status") == "WARNING":
         issues.append(("WARNING", f"Picks journal: {pj.get('detail')}"))
+    rc = result.get("referee_coverage", {})
+    if rc.get("status") == "WARNING":
+        issues.append(("WARNING", f"Referees: {rc.get('detail')}"))
 
     disk = result.get("disk_space", {})
     if disk.get("status") == "CRITICAL":

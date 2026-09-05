@@ -471,6 +471,12 @@ def scrape_all_referee_assignments(
             keep="first",
         )
 
+    if df.empty:
+        # Never persist an empty cache: on 2026-08-31 worldfootball had not
+        # published 2026-27, this wrote 0-row files for both leagues, and the
+        # exists() short-circuit above then served 0 rows on every later call.
+        log.warning("No referee assignments scraped for %s — not writing %s", league, cache_path)
+        return df
     REFEREE_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(cache_path, index=False)
     log.info("Saved %d referee assignments to %s", len(df), cache_path)
