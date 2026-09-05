@@ -498,7 +498,10 @@ def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.D
     }
     # VAR markets only over the matches the backfill has CHECKED (a VAR row or the
     # var_checked marker); unchecked matches would read as "no VAR" and deflate the rate
-    checked = inc[inc["incident_type"].isin(["varDecision", "var_checked"])]["match_id"].unique()
+    # a fetched match is one with ANY row the backfill can write: a VAR decision,
+    # a missed penalty, or the marker. Counting only varDecision + marker left 31
+    # fetched VAR-free matches (inGamePenalty only) out of the denominator.
+    checked = inc[inc["incident_type"].isin(["varDecision", "inGamePenalty", "var_checked"])]["match_id"].unique()
     n_var = int(len(checked))
     var_hits = {
         "var_any": var["match_id"],

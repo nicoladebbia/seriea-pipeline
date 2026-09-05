@@ -187,20 +187,21 @@ def test_var_rates_count_only_checked_matches_and_read_the_overturn_semantics():
     """incident_class = the on-field decision, confirmed=False = overturned by VAR
     (verified on disk 2026-09-05). Unchecked matches are not 'no VAR'."""
     inc = pd.DataFrame({
-        "match_id": [1, 1, 2, 3],
-        "incident_type": ["varDecision", "goal", "var_checked", "goal"],
-        "incident_class": ["goalAwarded", "regular", "", "regular"],
-        "minute": [23, 51, 0, 10], "added_time": [0] * 4,
-        "player_id": ["9", "8", "", "7"], "player_in_id": [""] * 4, "is_home": [True] * 4,
-        "card_type": [None] * 4, "goal_type": [None, "regular", None, "regular"],
-        "confirmed": [False, None, None, None],
+        "match_id": [1, 1, 2, 3, 4],
+        "incident_type": ["varDecision", "goal", "var_checked", "goal", "inGamePenalty"],
+        "incident_class": ["goalAwarded", "regular", "", "regular", "missed"],
+        "minute": [23, 51, 0, 10, 70], "added_time": [0] * 5,
+        "player_id": ["9", "8", "", "7", "6"], "player_in_id": [""] * 5, "is_home": [True] * 5,
+        "card_type": [None] * 5, "goal_type": [None, "regular", None, "regular", None],
+        "confirmed": [False, None, None, None, None],
     })
-    mp = pd.DataFrame({"match_id": ["m1", "m2", "m3"], "sofascore_id": [1, 2, 3],
-                       "season": ["2025-2026"] * 3, "league": ["serie_a"] * 3})
+    mp = pd.DataFrame({"match_id": ["m1", "m2", "m3", "m4"], "sofascore_id": [1, 2, 3, 4],
+                       "season": ["2025-2026"] * 4, "league": ["serie_a"] * 4})
     r = gp.rare_event_rates(inc, mp, None, "serie_a")
-    assert r["var_any"] == {"rate": 0.5, "n_matches": 2, "n_events": 1}        # match 3 unchecked → excluded
+    # match 3 unchecked → excluded; match 4 fetched (missed penalty, no VAR) → counted as checked
+    assert r["var_any"] == {"rate": round(1 / 3, 4), "n_matches": 3, "n_events": 1}
     assert r["var_goal_cancelled"]["n_events"] == 1 and r["var_penalty"]["n_events"] == 0
-    assert r["own_goal"]["n_matches"] == 3                                    # non-VAR rates keep the full universe
+    assert r["own_goal"]["n_matches"] == 4                                    # non-VAR rates keep the full universe
 
 
 def test_calibration_saturates_at_the_upper_bound_too_and_warns(caplog):
