@@ -674,6 +674,9 @@ def predict_match_players(
                 poss_factor=poss_factor,
             )
             if pred and pred.get("markets"):
+                pred["lineup"] = pl.get("lineup")
+                pred["xi_status"] = pl.get("xi_status")
+                pred["start_pct"] = pl.get("start_pct")
                 out.append(pred)
         # contribution %: this player's expected 90' count over the side's total,
         # per stat column (shots, fouls, …). Only players with a rate count;
@@ -830,6 +833,8 @@ def validate(league: str = "serie_a") -> dict[str, dict]:
 _PLAYER_ENGINE_CACHE: dict = {"pms": None, "base_rates": None, "mtime": 0.0}
 _PMS_PATH = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
 _LINEUP_PREDICTIONS = DATA_DIR / "upcoming" / "lineup_predictions.json"
+_CONFIRMED_LINEUPS = DATA_DIR / "upcoming" / "confirmed_lineups.json"
+MIN_CONFIRMED_XI = 7  # a confirmed side with fewer names is a partial parse, not an XI
 
 
 def player_engine():
@@ -862,6 +867,34 @@ def lineup_entries(side_lineup: dict) -> list:
                 "position": p.get("position", "M"),
                 "proj_minutes": proj_min,
                 "is_starter": starter,
+                # the basis of the row: a PREDICTED XI, with the predictor's own
+                # status/start% so a consumer can say "expected, not official"
+                "lineup": "predicted",
+                "xi_status": p.get("status"),
+                "start_pct": start_pct,
+            })
+    return out
+
+
+def confirmed_entries(names: list, bench: list, pms) -> list:
+    """Entries from an OFFICIAL team sheet (confirmed_lineups.json): starters and
+    bench by name, id/position resolved from pms when the name is known there.
+    A player not on the sheet gets no row at all — Pašalić was priced from a
+    predicted XI while not in the squad (2026-09-05)."""
+    latest = pms.sort_values("date").groupby("player_name").tail(1).set_index("player_name") if pms is not None else None
+    out = []
+    for grp, starter in ((names, True), (bench, False)):
+        for name in grp or []:
+            row = latest.loc[name] if (latest is not None and name in latest.index) else None
+            out.append({
+                "player_name": name,
+                "player_id": int(row["player_id"]) if row is not None else None,
+                "position": str(row["position"]) if row is not None else "M",
+                "proj_minutes": None,
+                "is_starter": starter,
+                "lineup": "confirmed",
+                "xi_status": "confirmed",
+                "start_pct": 100.0 if starter else 0.0,
             })
     return out
 
@@ -878,24 +911,35 @@ def recent_xi(pms, team: str) -> list:
         "player_name": r["player_name"], "player_id": r["player_id"],
         "position": r["position"], "is_starter": True,
         "proj_minutes": None,  # engine uses the player's leak-free min_prior
+        "lineup": "recent", "xi_status": None, "start_pct": None,
     } for _, r in last.iterrows()]
 
 
 def match_player_floors(match_key: str, home: str, away: str, league: str = "serie_a"):
     """Player floor markets for one fixture, or None when there is no engine
-    (parquet missing) or no XI to price. Predicted XI from lineup_predictions,
-    else the most recent starters. Serie A only: the priors are Serie A."""
+    (parquet missing) or no XI to price. The OFFICIAL sheet from
+    confirmed_lineups.json when it holds this match, else the predicted XI from
+    lineup_predictions, else the most recent starters. Every row says which
+    (`lineup`). Serie A only: the priors are Serie A."""
     if league != "serie_a":
         return None
     pms, base_rates = player_engine()
     if pms is None:
         return None
     try:
+        confirmed = (json.loads(_CONFIRMED_LINEUPS.read_text()).get("matches") or {}).get(match_key)
+    except (OSError, ValueError, AttributeError):
+        confirmed = None
+    try:
         lineups = json.loads(_LINEUP_PREDICTIONS.read_text())
     except (OSError, ValueError):
         lineups = {}
     lp = (lineups.get("matches", {}) if isinstance(lineups, dict) else {}).get(match_key)
-    if lp:
+    if confirmed and len(confirmed.get("home_lineup") or []) >= MIN_CONFIRMED_XI \
+            and len(confirmed.get("away_lineup") or []) >= MIN_CONFIRMED_XI:
+        home_xi = confirmed_entries(confirmed.get("home_lineup"), confirmed.get("home_bench"), pms)
+        away_xi = confirmed_entries(confirmed.get("away_lineup"), confirmed.get("away_bench"), pms)
+    elif lp:
         home_xi = lineup_entries(lp.get("home_lineup", {}))
         away_xi = lineup_entries(lp.get("away_lineup", {}))
     else:

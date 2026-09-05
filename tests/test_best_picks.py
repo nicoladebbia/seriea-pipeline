@@ -223,14 +223,15 @@ def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkey
     up = tmp_path / "data" / "upcoming"
     up.mkdir(parents=True)
 
-    def row(bt, sel, odds, edge, player=None, tier="B"):
-        return {"bet_type": bt, "selection": sel, "odds": odds, "edge_pct": edge, "player": player, "tier": tier}
+    def row(bt, sel, odds, edge, player=None, tier="B", lineup="predicted", start_pct=71.7):
+        return {"bet_type": bt, "selection": sel, "odds": odds, "edge_pct": edge, "player": player, "tier": tier,
+                "lineup": lineup if player else None, "start_pct": start_pct if player else None}
 
     doc = {"generated_at": "2026-09-05T12:00:00+00:00", "counts": {"VALUE": 0, "LEAN": 2, "NO_EDGE": 0},
            "picks": [
                {"match": "Bologna vs Sassuolo", "home_team": "Bologna", "away_team": "Sassuolo",
                 "date": "2026-09-06", "label": "LEAN",
-                "pick": row("Tiri in porta", "Over 1.5", 5.0, 10.5, "Armand Laurienté", "A"),
+                "pick": row("Tiri in porta", "Over 1.5", 5.0, 10.5, "Armand Laurienté", "A", lineup="confirmed"),
                 "alternatives": [row("Under/over", "Under 3.5", 1.49, 4.9), row("Under/over", "Under 4.5", 1.15, 3.2),
                                  row("1x2 finale", "1", 2.9, 4.4, None, "A"), row("Doppia chance", "X2", 1.5, 2.0),
                                  row("Goal", "No", 2.24, 6.8)],
@@ -243,7 +244,7 @@ def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkey
     out = tb._handle_picks()
     card = [ln for ln in out.splitlines() if ln[:1] in "💰📝▫️🎲➖" and "@" in ln]
     assert card == [
-        "📝 <b>Laurienté over 1.5 tiri in porta @5.00 · +10.5% ✓</b>",
+        "📝 <b>Laurienté over 1.5 tiri in porta @5.00 · +10.5% ✓</b>",   # official sheet: no XI marker
         "▫️ Under 3.5 gol @1.49 · +4.9%",
         "▫️ Bologna vince @2.90 · +4.4% ✓",
         "▫️ Gol entrambe: no @2.24 · +6.8%",
@@ -252,5 +253,7 @@ def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkey
     doc["picks"][0]["alternatives"] = []
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
-    assert "🎲 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓" in out
-    assert out.count("Laurienté") == 1
+    # predicted XI: the card says so, with the predictor's start% (Pašalić was
+    # listed off a predicted XI while not in the squad, 2026-09-05)
+    assert "🎲 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓ · XI prob. 72%" in out
+    assert out.count("Laurienté") == 1 and "XI prob. = giocatore atteso" in out

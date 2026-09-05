@@ -369,3 +369,73 @@ def test_slate_prices_player_rows_too(monkeypatch, tmp_path):
     (line,) = out["picks"]
     assert line["label"] == "LEAN" and line["pick"]["player"] == "Federico Dimarco" and line["pick"]["edge_pct"] == 3.5
 
+
+
+def test_slate_drops_a_match_that_has_kicked_off(monkeypatch, tmp_path):
+    """The /picks card listed Roma–Atalanta 40 minutes into the match
+    (2026-09-05): the slate filtered by DATE, not kickoff."""
+    from datetime import UTC, datetime
+
+    import web.match_markets as mm
+    now = datetime(2026, 9, 5, 19, 30, tzinfo=UTC)
+    monkeypatch.setattr(P, "PICKS_FILE", tmp_path / "picks.json")
+    monkeypatch.setattr(P, "_read", lambda path, default: {
+        "predictions.json": {"predictions": [
+            {"match": "Roma vs Atalanta", "date": "2026-09-05", "league": "serie_a", "home_team": "Roma", "away_team": "Atalanta"},
+            {"match": "Bologna vs Sassuolo", "date": "2026-09-06", "league": "serie_a", "home_team": "Bologna", "away_team": "Sassuolo"}]},
+        "odds_full.json": {"matches": {"Roma vs Atalanta": {"commence_time": "2026-09-05T18:45:00Z"},
+                                       "Bologna vs Sassuolo": {"commence_time": "2026-09-06T16:00:00Z"}}},
+    }.get(getattr(path, "name", ""), default))
+    monkeypatch.setattr(mm, "assemble_market_inputs", lambda *a, **k: {"pred": {}, "goal_pred": None, "ext": None,
+                                                                        "btts": None, "players": None, "sim": None,
+                                                                        "halves_gate": None, "kickoff_utc": None,
+                                                                        "league": "serie_a"})
+    monkeypatch.setattr(mm, "build_match_markets", lambda *a, **k: {"markets": [], "players": []})
+    monkeypatch.setattr(P, "build_price_book", lambda *a: {})
+    out = P.build_picks("serie_a", journal=False, now=now)
+    assert [p["match"] for p in out["picks"]] == ["Bologna vs Sassuolo"]
+
+
+def test_player_rows_come_from_the_official_sheet_when_it_exists(monkeypatch, tmp_path):
+    """confirmed_lineups.json wins over the predicted XI; a player missing from
+    the team sheet gets no row; every entry says which basis it has."""
+    import json
+
+    import pandas as pd
+
+    import scripts.betting.player_predictions as pp
+    pms = pd.DataFrame({"player_name": ["Mario Pašalić", "Éderson", "Paulo Dybala"], "player_id": [1, 2, 3],
+                        "position": ["M", "M", "F"], "date": pd.to_datetime(["2026-08-31"] * 3)})
+    monkeypatch.setattr(pp, "player_engine", lambda: (pms, {}))
+    conf = tmp_path / "confirmed.json"
+    pred = tmp_path / "predicted.json"
+    monkeypatch.setattr(pp, "_CONFIRMED_LINEUPS", conf)
+    monkeypatch.setattr(pp, "_LINEUP_PREDICTIONS", pred)
+    pred.write_text(json.dumps({"matches": {"Roma vs Atalanta": {
+        "home_lineup": {"predicted_xi": [{"name": "Paulo Dybala", "position": "F", "status": "certain", "start_pct": 91.1}]},
+        "away_lineup": {"predicted_xi": [{"name": "Mario Pašalić", "position": "M", "status": "likely", "start_pct": 71.7}]}}}}))
+    captured = {}
+
+    def fake_predict(home, away, home_xi, away_xi, **kw):
+        captured["home"], captured["away"] = home_xi, away_xi
+        return {"home_players": [], "away_players": []}
+    monkeypatch.setattr(pp, "predict_match_players", fake_predict)
+
+    pp.match_player_floors("Roma vs Atalanta", "Roma", "Atalanta")
+    assert [(e["player_name"], e["lineup"], e["xi_status"], e["start_pct"]) for e in captured["away"]] == [
+        ("Mario Pašalić", "predicted", "likely", 71.7)]
+
+    xi = ["Éderson"] + [f"Atalanta {i}" for i in range(10)]
+    conf.write_text(json.dumps({"matches": {"Roma vs Atalanta": {
+        "home_lineup": ["Paulo Dybala"] + [f"Roma {i}" for i in range(10)], "home_bench": [],
+        "away_lineup": xi, "away_bench": ["Mario Pašalić"]}}}))
+    pp.match_player_floors("Roma vs Atalanta", "Roma", "Atalanta")
+    away = {e["player_name"]: e for e in captured["away"]}
+    assert away["Éderson"]["lineup"] == "confirmed" and away["Éderson"]["is_starter"] and away["Éderson"]["player_id"] == 2
+    assert away["Mario Pašalić"]["is_starter"] is False and away["Mario Pašalić"]["start_pct"] == 0.0
+    assert away["Atalanta 3"]["player_id"] is None and away["Atalanta 3"]["position"] == "M"
+
+    # a partial sheet (fewer than MIN_CONFIRMED_XI names) is not an XI: fall back
+    conf.write_text(json.dumps({"matches": {"Roma vs Atalanta": {"home_lineup": ["Paulo Dybala"], "away_lineup": ["Éderson"]}}}))
+    pp.match_player_floors("Roma vs Atalanta", "Roma", "Atalanta")
+    assert captured["away"][0]["lineup"] == "predicted"

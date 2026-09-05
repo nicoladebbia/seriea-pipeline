@@ -257,6 +257,8 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
                     "group": "Giocatori", "bet_type": it[0], "selection": it[1],
                     "player": pl.get("player_name"), "team": pl.get("team") or (pred.get(f"{side}_team") or side),
                     "position": pl.get("position"), "proj_minutes": pl.get("proj_minutes"),
+                    # confirmed | predicted | recent — the basis of the XI this row assumes
+                    "lineup": pl.get("lineup"), "xi_status": pl.get("xi_status"), "start_pct": pl.get("start_pct"),
                     "probability_pct": _pct(m["prob"]), "tier": tier, "source": "player_floors",
                     "interval": "90'",
                     # E3 (2026-09-05): share of the side's expected count for this stat,

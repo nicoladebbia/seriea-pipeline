@@ -2053,7 +2053,13 @@ def _bet_line(icon: str, pk: dict, home: str, away: str, note: str = "") -> str:
     e = f" · {edge:+.1f}%" if isinstance(edge, int | float) else ""
     mark = _TIER_MARK.get(str(pk.get("tier")), "")
     one = " (1 book)" if pk.get("n_books") == 1 else ""
-    return f"{icon} {_human_bet(pk, home, away)}{q}{e}{mark}{one}{note}"
+    xi = ""
+    if pk.get("player") and pk.get("lineup") != "confirmed":
+        # a player row priced off a PREDICTED (or last-match) XI, not the team
+        # sheet: say so, with the predictor's start% when it has one
+        sp = pk.get("start_pct")
+        xi = f" · XI prob. {sp:.0f}%" if isinstance(sp, int | float) and pk.get("lineup") == "predicted" else " · XI prob."
+    return f"{icon} {_human_bet(pk, home, away)}{q}{e}{mark}{one}{xi}{note}"
 
 
 def _bet_family(pk: dict) -> tuple:
@@ -2157,7 +2163,8 @@ def _handle_picks(max_matches: int = 20) -> str:
         out.append(f"\n<i>… e altre {len(picks) - max_matches} partite.</i>")
     out.append("\n<i>grassetto = scelta migliore · 💰 vera (slip del motore, T-30) · 📝 carta €10 · "
                "▫️ alternative · 🎲 insolite · ➖ niente da giocare\n"
-               "✓ backtest superato · ~ solo tasso base · % = edge sulla quota</i>")
+               "✓ backtest superato · ~ solo tasso base · % = edge sulla quota · "
+               "XI prob. = giocatore atteso, formazione non ufficiale</i>")
     try:
         from scripts.betting.picks import picks_record
         rec = picks_record("serie_a")

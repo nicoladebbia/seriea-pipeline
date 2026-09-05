@@ -375,7 +375,8 @@ def _engine_note(match_key: str, c: dict, slip: dict) -> str | None:
 def _pick_view(c: dict) -> dict:
     return {k: c.get(k) for k in ("group", "bet_type", "selection", "player", "team", "tier", "source",
                                   "probability_pct", "odds", "book", "n_books", "implied_pct", "edge_pct",
-                                  "in_band", "thin", "market_key", "engine_note")}
+                                  "in_band", "thin", "market_key", "engine_note",
+                                  "lineup", "xi_status", "start_pct")}
 
 
 def build_match_pick(match_key: str, rows: list[dict], book: dict[tuple, dict], *,
@@ -518,6 +519,10 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
         book = build_price_book(om, extra.get(match_key), ev)
         line = build_match_pick(match_key, rows, book, slip=slip, candidates=candidates, band=band)
         ko = _kickoff(om.get("commence_time") or (ev or {}).get("commence"))
+        if ko and ko < now:
+            # kicked off: the /picks card listed Roma–Atalanta 40 minutes into
+            # the match (2026-09-05) because the date filter is day-resolution
+            continue
         line.update({"date": pred.get("date"), "kickoff_utc": ko.isoformat() if ko else None,
                      "league": league, "home_team": pred.get("home_team"), "away_team": pred.get("away_team"),
                      "prices_fetched_at": (ev or {}).get("fetched_at")})
