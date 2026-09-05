@@ -1042,6 +1042,82 @@ def check_calibration_drift() -> Dict:
     return {"calibration_1x2": out}
 
 
+LINEUP_PROBE_HOURS = 30.0      # a matchday is "near" when a Serie A kickoff is inside this
+LINEUP_DUE_MIN = 45.0          # a sheet is DUE when kickoff is this close (sources publish ~T-60)
+
+
+def _upcoming_serie_a_kickoffs(now: datetime) -> List[Tuple[str, datetime]]:
+    """[(match_key, kickoff_utc)] from odds_full.json, sorted."""
+    out = []
+    try:
+        matches = json.loads((DATA_DIR / "upcoming" / "odds_full.json").read_text()).get("matches", {})
+    except (OSError, ValueError):
+        return out
+    for mk, info in matches.items():
+        ct = (info or {}).get("commence_time")
+        if not ct:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        out.append((mk, dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)))
+    return sorted(out, key=lambda x: x[1])
+
+
+def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
+    """Is the lineup chain alive BEFORE it is needed, and did it deliver when it was?
+
+    2026-09-05: every source was dead for a whole matchday and the only trace was a
+    log line. Two questions, both answered here every health cycle:
+      (a) reachability — one free GET to ESPN's scoreboard (the key-free backup) when a
+          Serie A kickoff is inside LINEUP_PROBE_HOURS; a failure is CRITICAL on a
+          matchday because the chain's other links are known-dead on this network;
+      (b) delivery — data/upcoming/lineup_chain_status.json (written by every fetch
+          run): a match inside LINEUP_DUE_MIN of kickoff, or kicked off in the last
+          3h, with no team sheet is CRITICAL and carries the chain's own reason.
+    `probe` is injectable for tests; default is the real ESPN request."""
+    now = now or datetime.now(timezone.utc)
+    kicks = _upcoming_serie_a_kickoffs(now)
+    near = [(mk, dt) for mk, dt in kicks if -3 * 3600 <= (dt - now).total_seconds() <= LINEUP_PROBE_HOURS * 3600]
+    out: Dict = {"status": "OK", "matchday_near": bool(near), "espn": None, "missing_sheets": [], "reason": None}
+    if not near:
+        return out
+    # (a) reachability
+    if probe is None:
+        def probe():
+            import requests
+            r = requests.get("https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard",
+                             params={"dates": now.strftime("%Y%m%d")}, timeout=15)
+            return r.status_code
+    try:
+        code = probe()
+    except Exception as e:  # noqa: BLE001 - a probe failure IS the finding
+        code = f"error: {str(e)[:80]}"
+    out["espn"] = code
+    if code != 200:
+        out["status"] = "CRITICAL"
+        out["reason"] = f"ESPN scoreboard -> {code} with a Serie A kickoff inside {LINEUP_PROBE_HOURS:.0f}h"
+    # (b) delivery
+    try:
+        rep = json.loads((DATA_DIR / "upcoming" / "lineup_chain_status.json").read_text())
+    except (OSError, ValueError):
+        rep = {}
+    try:
+        sheets = set(json.loads((DATA_DIR / "upcoming" / "confirmed_lineups.json").read_text()).get("matches", {}))
+    except (OSError, ValueError):
+        sheets = set()
+    sheets |= set(rep.get("confirmed") or [])
+    due = [mk for mk, dt in near if (dt - now).total_seconds() <= LINEUP_DUE_MIN * 60 and mk not in sheets]
+    if due:
+        out["missing_sheets"] = due
+        out["status"] = "CRITICAL"
+        why = rep.get("reason") or "nessun run del fetcher registrato"
+        out["reason"] = (out["reason"] + " · " if out["reason"] else "") + \
+            f"no team sheet for {', '.join(due)} ({why})"
+    return out
+
+
 def check_disk_space() -> Dict:
     """Check available disk space on the project partition."""
     import shutil
@@ -1270,6 +1346,7 @@ def run_health_check() -> Dict:
         "data_quality": check_data_quality(),
         "silent_failures": check_silent_failures(),
         "disk_space": check_disk_space(),
+        "lineup_sources": check_lineup_sources(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
@@ -1354,6 +1431,10 @@ def run_health_check() -> Dict:
         issues.append(("CRITICAL", "Missing critical Python packages"))
 
     # Disk space issues
+    lu = result.get("lineup_sources", {})
+    if lu.get("status") == "CRITICAL":
+        issues.append(("CRITICAL", f"Lineup chain: {lu.get('reason')}"))
+
     disk = result.get("disk_space", {})
     if disk.get("status") == "CRITICAL":
         issues.append(("CRITICAL", f"Disk space critically low: {disk.get('free_pct', 0):.1f}% free ({disk.get('free_gb', 0)} GB)"))

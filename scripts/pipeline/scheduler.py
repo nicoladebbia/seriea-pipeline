@@ -433,6 +433,15 @@ def _load_pre_kickoff_state() -> Dict:
     return {"processed": {}}
 
 
+def _sheet_landed_after_prediction(match_state: dict) -> bool:
+    """True when prediction_update already fired for this match and the lineup
+    stage was still on retry, i.e. the T-30 pricing used a predicted XI."""
+    stages = (match_state or {}).get("stages") or {}
+    pred = stages.get("prediction_update")
+    lf = stages.get("lineup_fetch") or {}
+    return bool(pred) and bool(lf.get("needs_retry"))
+
+
 def _save_pre_kickoff_state(state: Dict):
     """Save pre-kickoff state (atomic write)."""
     from config.settings import atomic_write_json
@@ -475,7 +484,8 @@ MATCH_CLOCK_STAGES = [
     {
         "name": "lineup_fetch",
         "minutes_before": 55,   # T-55: lineups drop at T-60, give 5 min buffer
-        "window": (20, 58),     # Only try 20-58 min before (never before T-60)
+        "window": (5, 58),      # retry every cycle down to T-5 (was 20: a sheet
+                                # published at T-25 was never picked up, 2026-09-05)
         "description": "Fetch confirmed lineups",
         "retry_if_empty": True, # Re-trigger if lineups weren't found
     },
@@ -1090,6 +1100,13 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                     else:
                         stage_data.pop("needs_retry", None)
                         log.info("Lineup CONFIRMED for %s", mk)
+                        if _sheet_landed_after_prediction(match_state):
+                            # the T-30 run already priced this match off the
+                            # PREDICTED XI: run it again on the team sheet
+                            match_state["stages"].pop("prediction_update", None)
+                            if mk not in actions_needed["prediction_update"]:
+                                actions_needed["prediction_update"].append(mk)
+                            log.info("Sheet landed after the T-30 run for %s — re-predicting on the XI", mk)
                     match_state.setdefault("stages", {})["lineup_fetch"] = stage_data
                     processed[mk] = match_state
 

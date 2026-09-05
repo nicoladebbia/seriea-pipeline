@@ -51,6 +51,15 @@ def _get(url: str, params: dict, timeout: float = 15.0) -> dict | None:
             return r.json()
         if status != 403:
             break
+    # third rung: a browser TLS fingerprint (the repo's Sofascore transport)
+    try:
+        from curl_cffi import requests as cffi
+        r = cffi.get(url, params=params, impersonate="chrome124", timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        status = r.status_code
+    except Exception as e:  # noqa: BLE001
+        log.debug("ESPN curl_cffi rung failed: %s", e)
     log.warning("ESPN %s -> HTTP %s", url.rsplit("/", 1)[-1], status)
     return None
 

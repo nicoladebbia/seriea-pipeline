@@ -444,7 +444,13 @@ Organised by *symptom-first* so you can grep for what you're seeing:
     Telegram once per match. Player rows carry `lineup: confirmed|predicted|recent`; the /picks
     card marks non-confirmed players `XI prob. NN%` and an uncertain predicted starter is priced
     as the start%/bench mixture (`_mix_start_sub`). ESPN quirk: the DEFAULT python-requests
-    agent gets 200, a browser UA gets 403.
+    agent gets 200, a browser UA gets 403 (curl_cffi is the third rung). **Self-checking, not
+    "always works":** `health_check.check_lineup_sources` probes ESPN every cycle when a Serie A
+    kickoff is inside 30h and goes CRITICAL when a match inside T-45 (or kicked off <3h ago) has
+    no sheet, carrying the chain's own reason; the lineup stage retries every cycle down to T-5
+    and a sheet that lands AFTER the T-30 run re-fires `prediction_update` so the pricing is
+    redone on the XI. If a player line still says `XI prob.` at kickoff, the health JSON and
+    `lineup_chain_status.json` say why — read those, don't re-diagnose the sources.
     **Same shape hit the live monitor mid-match (all three of `/incidents`, `/statistics`,
     `/lineups`), from a HOME IP.** Cookies from a prior www page visit, Referer/Origin headers
     and every impersonation profile still 403; rapid retries add `curl (7)` refusals. No

@@ -128,3 +128,79 @@ def test_espn_parser_on_the_roma_atalanta_specimen(monkeypatch):
     assert sheet["source_api"] == "espn" and sheet["away_lineup"][1] == "Éderson" and len(sheet["away_bench"]) == 2
     assert calls == [("scoreboard", {"dates": "20260905"}), ("summary", {"event": "401874781"})]
     assert es.fetch_lineups_espn(odds, league="ligue_1") == {}   # no ESPN code mapped: nothing, no error
+
+
+def _health_env(tmp_path, monkeypatch, kickoff_iso, chain=None, sheets=()):
+    import scripts.pipeline.health_check as hc
+    up = tmp_path / "upcoming"
+    up.mkdir(parents=True, exist_ok=True)
+    (up / "odds_full.json").write_text(json.dumps({"matches": {"Bologna vs Sassuolo": {"commence_time": kickoff_iso}}}))
+    if chain is not None:
+        (up / "lineup_chain_status.json").write_text(json.dumps(chain))
+    if sheets:
+        (up / "confirmed_lineups.json").write_text(json.dumps({"matches": {k: {} for k in sheets}}))
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    return hc
+
+
+def test_health_is_quiet_when_no_matchday_is_near(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+    hc = _health_env(tmp_path, monkeypatch, "2026-09-13T16:00:00Z")
+    out = hc.check_lineup_sources(now=datetime(2026, 9, 6, 8, 0, tzinfo=UTC),
+                                  probe=lambda: (_ for _ in ()).throw(AssertionError("no probe off-matchday")))
+    assert out["status"] == "OK" and out["matchday_near"] is False
+
+
+def test_health_probes_espn_before_the_sheet_is_due(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+    hc = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z")
+    now = datetime(2026, 9, 6, 8, 0, tzinfo=UTC)          # 8h out: probe, nothing due yet
+    assert hc.check_lineup_sources(now=now, probe=lambda: 200)["status"] == "OK"
+    bad = hc.check_lineup_sources(now=now, probe=lambda: 403)
+    assert bad["status"] == "CRITICAL" and "ESPN scoreboard -> 403" in bad["reason"]
+    err = hc.check_lineup_sources(now=now, probe=lambda: (_ for _ in ()).throw(OSError("dns")))
+    assert err["status"] == "CRITICAL" and "error: dns" in err["reason"]
+
+
+def test_health_flags_a_due_match_without_a_sheet_with_the_chain_reason(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+    chain = {"confirmed": [], "reason": "Sofascore: HTTP 403 (challenge/ban) · ESPN: XI non ancora pubblicata"}
+    hc = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z", chain=chain)
+    now = datetime(2026, 9, 6, 15, 20, tzinfo=UTC)         # T-40: due
+    out = hc.check_lineup_sources(now=now, probe=lambda: 200)
+    assert out["status"] == "CRITICAL" and out["missing_sheets"] == ["Bologna vs Sassuolo"]
+    assert "ESPN: XI non ancora pubblicata" in out["reason"]
+    # still flagged 2h after kickoff (the sheet never came), quiet after 3h
+    assert hc.check_lineup_sources(now=datetime(2026, 9, 6, 18, 0, tzinfo=UTC), probe=lambda: 200)["status"] == "CRITICAL"
+    assert hc.check_lineup_sources(now=datetime(2026, 9, 6, 19, 30, tzinfo=UTC), probe=lambda: 200)["status"] == "OK"
+    # a sheet on disk (either file) clears it
+    hc2 = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z", chain=chain, sheets=("Bologna vs Sassuolo",))
+    assert hc2.check_lineup_sources(now=now, probe=lambda: 200)["status"] == "OK"
+
+
+def test_health_names_a_fetcher_that_never_ran(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+    hc = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z")   # no chain file at all
+    out = hc.check_lineup_sources(now=datetime(2026, 9, 6, 15, 30, tzinfo=UTC), probe=lambda: 200)
+    assert out["status"] == "CRITICAL" and "nessun run del fetcher" in out["reason"]
+
+
+def test_late_sheet_retriggers_the_prediction_update():
+    from scripts.pipeline.scheduler import _sheet_landed_after_prediction as f
+    assert f({"stages": {"prediction_update": {"triggered_at": "x"}, "lineup_fetch": {"needs_retry": True}}})
+    assert not f({"stages": {"lineup_fetch": {"needs_retry": True}}})            # T-30 not run yet: nothing to redo
+    assert not f({"stages": {"prediction_update": {"triggered_at": "x"}, "lineup_fetch": {}}})  # sheet was already in
+    assert not f({})
+
+
+def test_every_espn_serie_a_name_maps_to_a_canonical_team():
+    """Pinned from ESPN's /ita.1/teams on 2026-09-05 (20 clubs). A rename on
+    ESPN's side or a promoted club missing from config/team_names must fail here,
+    not silently drop a match from the lineup chain."""
+    from config.team_names import normalize_team
+    espn = {"AC Milan": "Milan", "AS Roma": "Roma", "Atalanta": "Atalanta", "Bologna": "Bologna",
+            "Cagliari": "Cagliari", "Como": "Como", "Fiorentina": "Fiorentina", "Frosinone": "Frosinone",
+            "Genoa": "Genoa", "Internazionale": "Inter", "Juventus": "Juventus", "Lazio": "Lazio",
+            "Lecce": "Lecce", "Monza": "Monza", "Napoli": "Napoli", "Parma": "Parma", "Sassuolo": "Sassuolo",
+            "Torino": "Torino", "Udinese": "Udinese", "Venezia": "Venezia"}
+    assert {k: normalize_team(k) for k in espn} == espn
