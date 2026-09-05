@@ -78,7 +78,8 @@ def test_rare_events_are_tier_c_and_unbuilt_engines_are_listed_not_priced():
     out = _build()
     assert all(x["tier"] == "C" for x in _rows(out, "Espulsione"))
     assert out["not_built"] is NOT_BUILT
-    assert any(n["bet_type"] == "Vince o quasi" for n in out["not_built"])
+    assert not any(n["bet_type"] == "Vince o quasi" for n in out["not_built"])  # built 2026-09-05 (goal_process)
+    assert any(n["bet_type"] == "Estro finale" for n in out["not_built"])
     assert not any("Vince" in r["bet_type"] for r in out["markets"])
 
 
@@ -140,3 +141,35 @@ def test_endpoint_serves_fixtures_and_survives_a_dead_player_engine(monkeypatch)
     assert [x["probability_pct"] for x in d["markets"] if x["bet_type"] == "1x2 finale"] == [34.9, 34.8, 30.3]
     assert d["players"] == [] and "player floors (no lineup or engine)" in d["missing"]
     assert appmod.app.test_client().get("/api/match-markets/nope-vs-nobody").status_code == 404
+
+
+def test_simulator_rows_replace_their_poisson_twins_and_add_new_markets():
+    """A goal-process row for the same (bet_type, selection) supersedes the
+    independent-Poisson artifact row; markets only the simulator prices are
+    appended; the 5.5/6.5 exclusion disappears."""
+    from web.match_markets import build_match_markets
+    ext = {"first_half": {"result_1x2": {"home": {"prob": 0.286}, "draw": {"prob": 0.498}, "away": {"prob": 0.217}}}}
+    sim = [
+        {"group": "Tempi", "bet_type": "1° tempo 1x2", "selection": "1", "probability_pct": 31.1, "tier": "A", "source": "goal_process"},
+        {"group": "Principali", "bet_type": "Vince o quasi", "selection": "Casa 1x sì", "probability_pct": 55.6, "tier": "A", "source": "goal_process"},
+        {"group": "Under/over", "bet_type": "Under/over", "selection": "Over 5.5", "probability_pct": 2.6, "tier": "B", "source": "goal_process"},
+    ]
+    out = build_match_markets("A vs B", pred={"probabilities": {"home": .4, "draw": .3, "away": .3}},
+                              goal_pred={"over_2_5": 0.5}, ext=ext, btts=None, engine_bet=None,
+                              players=None, league="serie_a", sim=sim)
+    ht1 = [r for r in out["markets"] if r["bet_type"] == "1° tempo 1x2" and r["selection"] == "1"]
+    assert len(ht1) == 1 and ht1[0]["source"] == "goal_process" and ht1[0]["tier"] == "A"
+    # the untouched Poisson X / 2 rows stay
+    assert {r["selection"] for r in out["markets"] if r["bet_type"] == "1° tempo 1x2"} == {"1", "X", "2"}
+    assert any(r["bet_type"] == "Vince o quasi" for r in out["markets"])
+    assert not any(e["bet_type"] == "Under/over" for e in out["excluded"])
+    assert not any(n["bet_type"] == "Vince o quasi" for n in out["not_built"])
+    assert not any("simulator" in m for m in out["missing"])
+
+
+def test_no_simulator_rows_is_named_not_silent():
+    from web.match_markets import build_match_markets
+    out = build_match_markets("A vs B", pred=None, goal_pred={"over_2_5": 0.5}, ext=None, btts=None,
+                              engine_bet=None, players=None, league="serie_a", sim=None)
+    assert any("simulator" in m for m in out["missing"])
+    assert any(e["selection"] == "Over/Under 5.5" for e in out["excluded"])

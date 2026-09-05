@@ -178,7 +178,8 @@
 | 10 | `data/external/sofascore/match_team_stats.parquet` | 8,790 | 330/330 | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 11 | `data/external/sofascore/shotmap_stats.parquet` | 6,684 | **378/380** (2 rows/match — per-**team aggregate**, not shot-level) | ✅ | `scrape_sofascore.py` weekly | 6h ago |
 | 12 | `data/external/sofascore/all_shots_with_xg.parquet` | 86,628 | **380/380** | ✅ shot-level (per-shot xg/xgot/coords) | `write_shot_level_xg.py` (weekly Step 4b) | 2026-07-17 |
-| 13 | `data/external/sofascore/match_incidents.parquet` | 44,184 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
+| 13 | `data/external/sofascore/match_incidents.parquet` | 90,041 (6,770 matches, both leagues) | — | ✅ | `scrape_sofascore.py` weekly | 2026-09-05 |
+| 13b | `data/parsed/goal_timeline.parquet` (+ `goal_timeline_universe.parquet`) | 18,809 goals / 6,767 matches (SA 3,388 · EPL 3,379) | — | ✅ derived | `scripts/models/goal_process.py --build-timeline` (source-mtime watermark; rebuilt on demand by `build_goal_timeline()`) | 2026-09-05 |
 | 14 | `data/external/sofascore/captains.parquet` | 6,650 | — | ✅ | `scrape_sofascore.py` weekly | 23h ago |
 | 15 | `data/external/understat/matches_xg.parquet` | 3,370 | 330/330 | ✅ | `scrape_understat_xg()` + `parse_all_understat` | 5h ago |
 | 16 | `data/external/weather.parquet` | 11,433 | 330/330 | ✅ | `scraper/weather.py` weekly (Open-Meteo) | 4h ago |
@@ -449,7 +450,10 @@ All refreshed weekly via `scripts/data/scrape_sofascore.py`. Raw JSON dumps cach
 > a global max erases whichever league lags. This is failure mode #1 of the
 > "EPL data missing where SA has it" catalogue in `CLAUDE.md` — check any new loader
 > against it.
-| `match_incidents.parquet` | 44,184 | 13 | Full event timeline (goal, card, sub, VAR) |
+| `match_incidents.parquet` | 90,041 | 13 | Full event timeline (goal, card, sub, VAR). `is_home` on a goal row is the SIDE CREDITED (own goals included on the beneficiary): agrees with final scores on 99.8% of 6,330 matches (measured 2026-09-05) |
+
+#### Derived: `data/parsed/goal_timeline.parquet` — one row per goal, canonical keys (goal-process simulator input)
+Columns: `match_id` (canonical `{date}_{home}_{away}`, via `match_id_mapping.parquet`), `sofascore_id`, `season`, `league`, `side` (home/away as credited), `minute`, `added_time`, `bin` (0..91: 0-44 = 1H minutes 1-45, 45 = 1H stoppage, 46-90 = 2H minutes, 91 = 2H stoppage), `half`, `goal_type`, `source_mtime` (watermark = incidents parquet mtime; the builder re-derives when the source moves, never compares against its own mtime). Sibling `goal_timeline_universe.parquet` lists every match that has ANY incident row (goalless matches included, 6,767 = 6,770 minus 3 unmapped) so base rates are computed over the right population. Stoppage mass on Serie A: 2.1% of goals in 1H stoppage, 6.3% in 2H stoppage. Consumers: `scripts/models/goal_process.py` (`fit_profile`, `backtest`); the served profile and gate live in `data/models/goal_process/{profile,backtest}.json` and are read at request time by `web/app.py::api_match_markets`. Never quote a skill number for this engine from a doc: read `backtest.json`. |
 | `captains.parquet` | 6,650 | 5 | Team captain per match |
 
 ### Current season coverage

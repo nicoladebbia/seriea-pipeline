@@ -1471,8 +1471,9 @@ function renderMarkets(d) {
         html += `<div class="text-tertiary" style="font-size:10px;margin-top:4px">${sanitizeHTML(r.bet_type)}</div>`;
         lastType = r.bet_type;
       }
+      const rowBadge = r.tier !== rows[0].tier ? _tierBadge(r.tier) : '';
       html += `<div style="display:flex;justify-content:space-between;font-size:12px;line-height:1.6${r.bet_line ? ';font-weight:600' : ''}">
-        <span>${sanitizeHTML(r.selection)}${r.bet_line ? ' <span class="text-tertiary" style="font-size:10px">(bet line)</span>' : ''}</span>
+        <span>${sanitizeHTML(r.selection)}${r.bet_line ? ' <span class="text-tertiary" style="font-size:10px">(bet line)</span>' : ''}${rowBadge}</span>
         <span class="text-mono">${Number(r.probability_pct).toFixed(1)}%</span></div>`;
     }
     html += '</div>';
@@ -1503,7 +1504,7 @@ function renderMarkets(d) {
   if (ex.length || nb.length || miss.length) {
     html += '<div class="text-small text-tertiary" style="margin-top:var(--space-4)">';
     for (const e of ex) html += `<div>Excluded: <b>${sanitizeHTML(e.bet_type)}</b> (${sanitizeHTML(e.selection)}): ${sanitizeHTML(e.reason)}</div>`;
-    for (const n of nb) html += `<div>Not built: <b>${sanitizeHTML(n.bet_type)}</b> — ${sanitizeHTML(n.engine)}: ${sanitizeHTML(n.note)}</div>`;
+    for (const n of nb) html += `<div>Not built: <b>${sanitizeHTML(n.bet_type)}</b> (${sanitizeHTML(n.engine)}): ${sanitizeHTML(n.note)}</div>`;
     for (const m of miss) html += `<div>Missing: ${sanitizeHTML(m)}</div>`;
     html += '</div>';
   }

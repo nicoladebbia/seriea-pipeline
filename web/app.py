@@ -3349,8 +3349,16 @@ def api_match_markets(match_slug):
         log.warning("match-markets: player floors failed for %s: %s", match_key, exc)
         players = None
 
+    sim_rows = None
+    if goal:
+        try:
+            from scripts.models.goal_process import served_rows
+            sim_rows = served_rows(goal.get("expected_home_goals"), goal.get("expected_away_goals"),
+                                   goal.get("over_2_5"), league=league or "serie_a") or None
+        except Exception as e:  # noqa: BLE001 - a simulator failure must not 404 the page
+            log.warning("goal_process rows unavailable for %s: %s", match_key, e)
     return jsonify(build_match_markets(
-        match_key, pred=pred, goal_pred=goal, ext=ext, btts=btts, engine_bet=engine_bet,
+        match_key, pred=pred, goal_pred=goal, ext=ext, btts=btts, engine_bet=engine_bet, sim=sim_rows,
         players=players, kickoff_utc=odds.get("commence_time"), league=league))
 
 

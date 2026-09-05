@@ -47,12 +47,10 @@ _PLAYER_MARKET_IT = {
 }
 
 NOT_BUILT = [
-    {"group": "Principali", "bet_type": "Vince o quasi", "engine": "goal-process simulator",
-     "note": "needs minute-resolved goal paths (lead at any moment); design step 2"},
     {"group": "Principali", "bet_type": "Estro finale", "engine": "goal-process simulator",
      "note": "[FILL: bookmaker definition]"},
-    {"group": "Minuti", "bet_type": "Minuti 1x2 / Minuti xy", "engine": "goal-process simulator",
-     "note": "interval markets from the same path set"},
+    {"group": "Minuti", "bet_type": "Minuti xy (other intervals)", "engine": "goal-process simulator",
+     "note": "only 0-15', 76-90', 2H stoppage and the 15' lead are served; other intervals are one label away"},
     {"group": "Corner", "bet_type": "Corner per intervallo", "engine": "goal-process simulator",
      "note": "[PLACEHOLDER: corner minutes are not in the catalog]"},
     {"group": "Giocatori", "bet_type": "Primo marcatore / Doppietta più / Assist", "engine": "player event engine",
@@ -114,9 +112,13 @@ def _reasoning(pred: dict, goal_pred: dict) -> list[str]:
 def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | None,
                         ext: dict | None, btts: dict | None, engine_bet: dict | None,
                         players: dict | None, kickoff_utc: str | None = None,
-                        league: str | None = None) -> dict[str, Any]:
+                        league: str | None = None, sim: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Assemble the per-match market list. Every input is an already-loaded dict
-    (or None when the artifact has no row for this match)."""
+    (or None when the artifact has no row for this match). `sim` is the
+    goal-process simulator's row list (scripts/models/goal_process.served_rows):
+    where it prices a bet the independent-Poisson artifact also prices, the
+    simulator row REPLACES the artifact row (its tier comes from a walk-forward
+    backtest; the artifact's tier B is a label, not a measurement)."""
     pred = pred or {}
     goal_pred = goal_pred or {}
     ext = ext or {}
@@ -148,9 +150,10 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
                  bet_line=line in ("1.5", "2.5")))
         add(_row("Under/over", "Under/over", f"Under {line}", 1 - float(p_over), TIER_B, "ou_blend",
                  bet_line=False))
-    for line in ("5.5", "6.5"):
-        excluded.append({"bet_type": "Under/over", "selection": f"Over/Under {line}",
-                         "reason": "no model line [PLACEHOLDER: extend the Poisson tail]"})
+    if not sim:
+        for line in ("5.5", "6.5"):
+            excluded.append({"bet_type": "Under/over", "selection": f"Over/Under {line}",
+                             "reason": "goal-process simulator rows unavailable for this match"})
     if not have_ou:
         missing.append("goal_predictions.json row")
 
@@ -246,6 +249,15 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
     if players is None:
         missing.append("player floors (no lineup or engine)" if (league or pred.get("league", "serie_a")) == "serie_a"
                        else "player floors (engine is Serie A only)")
+
+    # ---- Goal-process simulator: replaces its Poisson twins, adds the rest ----
+    if sim:
+        twins = {(r["bet_type"], r["selection"]) for r in sim}
+        rows = [r for r in rows if (r["bet_type"], r["selection"]) not in twins]
+        rows.extend(sim)
+    else:
+        missing.append("goal-process simulator rows (Vince o quasi, Minuti, 2° tempo under/over)"
+                       + ("" if (league or pred.get("league", "serie_a")) == "serie_a" else " (profile and gate are Serie A only)"))
 
     n_tier = {t: sum(1 for r in rows if r["tier"] == t) for t in (TIER_A, TIER_B, TIER_C)}
     n_tier[TIER_A] += sum(1 for r in player_rows if r["tier"] == TIER_A)

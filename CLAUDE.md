@@ -130,6 +130,38 @@ Nothing on the row drove a bet.
 - Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin
   markets, gating, Pinnacle fallback, null lists in the slip).
 
+## Goal-process simulator (settled 2026-09-05) — what it is and is not
+
+`scripts/models/goal_process.py` samples minute-resolved goal paths (92 bins, league hazard,
+score-state multipliers) and prices every market that depends on WHEN a goal happens or on a
+LEAD existing at any moment: Vince o quasi, 1° tempo, Primo tempo / Finale, Prima squadra a
+segnare, Minuti, 2° tempo under/over, Under/over 5.5 / 6.5. Rows reach the page through
+`/api/match-markets/<slug>` (`served_rows` → `web/match_markets.py`, where a simulator row
+REPLACES the independent-Poisson artifact row for the same bet).
+
+- **The total is NOT the feature-frame xG sum.** Measured on 2023-26 (n=1,135):
+  corr(xg_home+xg_away, goals) = 0.06, corr(xg_home−xg_away, goal diff) = 0.37. The
+  Poisson xG carries the split between the sides and nothing about the total; fed raw it
+  lost to the base rate on every totals market (over 2.5 skill −0.068). The profile
+  therefore takes the SPLIT from xG and the TOTAL from a one-slope regression (≈ base rate),
+  and in serving the O/U blend's P(over 2.5) rescales the total (`calibration_k`). Don't
+  "fix" a totals market here by touching the xG: the O/U CatBoost is the total model.
+- **Tiers come from `data/models/goal_process/backtest.json`, read at request time**
+  (walk-forward: profile fitted on seasons before the test season, 2023-24 → 2025-26,
+  gate skill ≥ 0.02 with ≥ 200 events). Re-run with
+  `python3 -m scripts.models.goal_process --backtest` after a timeline refresh; never quote
+  a skill number from a doc. At the first run, lead-based markets passed (home/away win,
+  all four Vince o quasi, first team to score, 1° tempo 1, H/H) and everything timing-only
+  (goal 0-15', 76-90', stoppage, 1° tempo under/over, both halves) sat within ±0.01 of
+  zero: the hazard is league-level, so a timing market has no per-match information
+  beyond the total. That is a tier B by measurement, not a bug.
+- **1x2 finale and Over 2.5 are never served from the simulator** (`NOT_SERVED`): the
+  ensemble owns 1x2 (the simulator's draw FAILS the gate, skill −0.022, the same
+  independent-Poisson draw deficit the World Cup Dixon-Coles attempt could not fix) and
+  the O/U model owns 2.5.
+- The timeline holds BOTH leagues; `load_universe("serie_a")` scopes the fit. The first
+  fitted profile was on the mix (caught the same session). EPL has no served profile.
+
 ## Cleanup discipline — CRITICAL
 
 This project accumulates abandoned experiments (`*_v2.py`, `*_hotfix.py`, `_phase3a_*`, scratch JSONs, stale baselines). The rule:
