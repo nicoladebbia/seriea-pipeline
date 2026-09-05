@@ -881,6 +881,112 @@ def _index_list_by_match(items: list, home_key="home_team", away_key="away_team"
     return result
 
 
+# ---------------------------------------------------------------------------
+# Dashboard O/U row signal — the market that is actually bet (O/U Over 1.5/2.5)
+# ---------------------------------------------------------------------------
+_OU_DASHBOARD_LINES = (1.5, 2.5)   # the lines the betting layer is allowed to bet
+_OU_MIN_BOOKMAKERS = 3             # same floor as betting_unified.scan_ou_market
+
+
+def _ou_market_over_prob(total: dict) -> float:
+    """De-vigged Over probability for one totals entry: Pinnacle if present, else consensus."""
+    from scripts.betting.betting_unified import get_pinnacle_odds, remove_overround
+    books = total.get("all_bookmakers", []) or []
+    over = get_pinnacle_odds(books, "over")
+    under = get_pinnacle_odds(books, "under")
+    if not over or not under or over <= 1 or under <= 1:
+        over, under = total.get("over", 0) or 0, total.get("under", 0) or 0
+    if over <= 1 or under <= 1:
+        return 0.0
+    return remove_overround([over, under])[0]
+
+
+def _ou_signal(match_key: str, league: str, goal_pred, totals,
+               slip_selected, slip_near, betting_enabled: bool,
+               candidate=None) -> dict:
+    """One row-level O/U block: line, model vs market Over prob, and the gate's verdict.
+
+    Verdict hierarchy — never recomputed here, always the betting layer's own output:
+      selected   journaled bet (unified_bet_slip.json, written at T-30 / manual run)
+      candidate  would-bet from the latest morning/evening dry-run (betting_candidates.json);
+                 commits at T-30 against fresh odds — this IS the live design
+      near_miss  priced by the gate and rejected post-edge (slip near_misses)
+      none       no signal in either file (a T-30 scan may still price it)
+    The model/market comparison is raw (no shrinkage, no situational adjustment):
+    it is the INPUT, the verdict is the DECISION.
+    """
+    goal_pred = goal_pred or {}
+    totals = totals or []
+    bet: dict = {"status": "none"}
+
+    # Per-line model + market probabilities on priceable, bettable lines
+    priced: dict = {}
+    for t in totals:
+        line = t.get("line")
+        if line not in _OU_DASHBOARD_LINES:
+            continue
+        if t.get("bookmakers_count", len(t.get("all_bookmakers", []) or [])) < _OU_MIN_BOOKMAKERS:
+            continue
+        model_over = goal_pred.get(f"over_{str(line).replace('.', '_')}", 0) or 0
+        market_over = _ou_market_over_prob(t)
+        if model_over <= 0 or market_over <= 0:
+            continue
+        priced[line] = (model_over, market_over)
+
+    entry = slip_selected or candidate or slip_near
+    if entry:
+        status = "selected" if slip_selected else "candidate" if candidate else "near_miss"
+        bet = {
+            "status": status,
+            "selection": entry.get("selection", ""),
+            "market": entry.get("market", ""),
+            "edge_pct": entry.get("edge_pct"),
+            "best_odds": entry.get("best_odds"),
+            "best_bookmaker": entry.get("best_bookmaker", ""),
+            "stake_amount": entry.get("stake_amount"),
+            "min_edge": entry.get("min_edge"),
+            "max_edge": entry.get("max_edge"),
+            "gap_pp": entry.get("gap_pp"),
+            "reason": entry.get("reason", ""),
+        }
+        try:
+            slip_line = float(str(entry.get("market", "")).split()[-1])
+        except (ValueError, IndexError):
+            slip_line = None
+    else:
+        slip_line = None
+
+    if not goal_pred or not any(goal_pred.get(f"over_{str(ln).replace('.', '_')}") for ln in _OU_DASHBOARD_LINES):
+        if bet["status"] == "none":
+            bet = {"status": "no_model"}
+        line, model_over, market_over = None, 0.0, 0.0
+    elif not priced:
+        if bet["status"] == "none":
+            bet = {"status": "no_odds"}
+        line = slip_line
+        model_over = goal_pred.get(f"over_{str(line).replace('.', '_')}", 0) if line else 0.0
+        market_over = 0.0
+    else:
+        if slip_line in priced:
+            line = slip_line
+        else:
+            line = max(priced, key=lambda ln: priced[ln][0] - priced[ln][1])
+        model_over, market_over = priced[line]
+
+    if not betting_enabled and bet["status"] in ("none", "no_odds"):
+        bet = {"status": "gated"}
+
+    raw_edge = (model_over - market_over) * 100 if (model_over and market_over) else None
+    return {
+        "line": line,
+        "model_over": round(model_over, 3) if model_over else None,
+        "market_over": round(market_over, 3) if market_over else None,
+        "raw_edge_pct": round(raw_edge, 1) if raw_edge is not None else None,
+        "expected_total_goals": goal_pred.get("expected_total_goals"),
+        "bet": bet,
+    }
+
+
 def _compute_market_edge(pred: dict, odds_data: dict) -> float:
     """Compute market edge from model probabilities vs implied odds probability.
 
@@ -3495,6 +3601,32 @@ def api_dashboard():
     btts_list = btts_raw if isinstance(btts_raw, list) else btts_raw.get("predictions", [])
     btts_by_match = {b.get("match", ""): b for b in btts_list if isinstance(b, dict)}
 
+    # O/U — the market that is actually bet. goal_predictions.json is a merged
+    # both-league file; the slip is the real gate's output (selected + near-miss).
+    goal_raw = _load_json(UPCOMING_DIR / "goal_predictions.json", default=[])
+    goal_list = goal_raw if isinstance(goal_raw, list) else goal_raw.get("predictions", [])
+    goal_by_match = {g.get("match", ""): g for g in goal_list if isinstance(g, dict)}
+    slip_raw = _load_json(UPCOMING_DIR / "unified_bet_slip.json", default={})
+    slip_raw = slip_raw if isinstance(slip_raw, dict) else {}
+    slip_selected_by_match = {b.get("match", ""): b for b in (slip_raw.get("selected_bets") or []) if isinstance(b, dict)}
+    slip_near_by_match: dict = {}
+    for nm in slip_raw.get("near_misses") or []:
+        if not isinstance(nm, dict):
+            continue
+        k = nm.get("match", "")
+        if k not in slip_near_by_match or (nm.get("edge_pct") or 0) > (slip_near_by_match[k].get("edge_pct") or 0):
+            slip_near_by_match[k] = nm
+    slip_generated_at = slip_raw.get("generated_at", "") or _mtime_iso(UPCOMING_DIR / "unified_bet_slip.json")
+    cand_raw = _load_json(UPCOMING_DIR / "betting_candidates.json", default={})
+    cand_raw = cand_raw if isinstance(cand_raw, dict) else {}
+    candidate_by_match = {c.get("match", ""): c for c in (cand_raw.get("candidates") or []) if isinstance(c, dict)}
+    candidates_generated_at = cand_raw.get("generated_at", "") or _mtime_iso(UPCOMING_DIR / "betting_candidates.json")
+    try:
+        from scripts.betting.betting_unified import _league_betting_enabled
+        _betting_enabled = {lg: _league_betting_enabled(lg) for lg in ACTIVE_LEAGUES}
+    except Exception:
+        _betting_enabled = {lg: lg == "serie_a" for lg in ACTIVE_LEAGUES}
+
     # Normalize into match-keyed dicts
     # Merge Serie A predictions (default) with extra league prediction files
     predictions_list = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else predictions_raw
@@ -3675,6 +3807,14 @@ def api_dashboard():
             # BTTS probability
             "btts_probability": btts_by_match.get(match_key, {}).get("btts_yes"),
 
+            # O/U signal — the bet market. Slip verdict + raw model-vs-market at the line.
+            "ou": _ou_signal(
+                match_key, pred.get("league", "serie_a"), goal_by_match.get(match_key),
+                odds_data.get("totals", []), slip_selected_by_match.get(match_key),
+                slip_near_by_match.get(match_key), _betting_enabled.get(pred.get("league", "serie_a"), False),
+                candidate=candidate_by_match.get(match_key),
+            ),
+
             # Actual result (if settled)
             "actual_result": result_entry.get("result", "") if result_entry else "",
             "actual_score": [result_entry.get("home_score", 0), result_entry.get("away_score", 0)] if result_entry.get("completed") else None,
@@ -3759,6 +3899,8 @@ def api_dashboard():
         "alerts": alerts,
         "steam_moves": steam_moves,
         "odds_fetched_at": odds_fetched_at,
+        "slip_generated_at": slip_generated_at,
+        "candidates_generated_at": candidates_generated_at,
         "predictions_generated_at": (predictions_raw.get("generated_at", "") if isinstance(predictions_raw, dict) else "") or _mtime_iso(UPCOMING_DIR / "predictions.json"),
         "extended_markets_at": extended_raw.get("generated_at", "") if isinstance(extended_raw, dict) else "",
         "market_intelligence_at": market_intel_at,
