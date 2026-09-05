@@ -78,6 +78,8 @@ def test_real_path_and_market_outcomes():
     assert out["home_win"].tolist() == [0.0] and out["draw"].tolist() == [1.0]
     assert out["goal_0_15"].tolist() == [1.0] and out["goal_76_90"].tolist() == [0.0]
     assert out["ht_home"].tolist() == [0.0] and out["ht_draw"].tolist() == [1.0]
+    assert out["1h_btts"].tolist() == [1.0]                              # 1-1 at the break
+    assert out["ht_dc_1x"].tolist() == [1.0] and out["ht_dc_x2"].tolist() == [1.0] and out["ht_dc_12"].tolist() == [0.0]
 
 
 def test_simulator_invariants():

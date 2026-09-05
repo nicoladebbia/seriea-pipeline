@@ -257,3 +257,18 @@ def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkey
     # listed off a predicted XI while not in the squad, 2026-09-05)
     assert "🎲 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓ · XI prob. 72%" in out
     assert out.count("Laurienté") == 1 and "XI prob. = giocatore atteso" in out
+
+
+def test_first_half_families_read_in_italian_and_dedup_with_the_ht_result():
+    """2026-09-05: `Goal 1° tempo` and `Doppia chance 1° tempo` (simulator rows
+    priced from the btts_h1 / double_chance_h1 feed) get plain wording, and a
+    HT double chance is the same family as the HT 1x2 — one per card."""
+    import scripts.pipeline.telegram_bot as tb
+
+    assert tb._human_bet({"bet_type": "Goal 1° tempo", "selection": "No"}, "Roma", "Atalanta") == "1° tempo gol entrambe: no"
+    assert tb._human_bet({"bet_type": "Doppia chance 1° tempo", "selection": "X2"}, "Roma", "Atalanta") == "1° tempo Atalanta o pari"
+    assert tb._human_bet({"bet_type": "Doppia chance 1° tempo", "selection": "12"}, "Roma", "Atalanta") == "1° tempo non pari"
+    assert tb._bet_family({"bet_type": "Doppia chance 1° tempo", "selection": "X2"}) == \
+        tb._bet_family({"bet_type": "1° tempo 1x2", "selection": "2"})
+    assert tb._bet_family({"bet_type": "Goal 1° tempo", "selection": "No"}) != \
+        tb._bet_family({"bet_type": "Goal", "selection": "No"})

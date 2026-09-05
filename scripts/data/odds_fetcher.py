@@ -989,12 +989,15 @@ def _scorer_events_due(events: list, store: dict, now, hours_ahead: float,
 # below returned prices; alternate_team_totals / h2h_h2 / totals_h2 did NOT and
 # are deliberately absent (a 422 on the whole request still costs credits).
 # Billed 1 credit per market per event: len(PICK_EVENT_MARKETS) per event.
+# Every key here has a consumer in picks.price_key_for_row. Dropped 2026-09-05
+# (6 credits/event bought and never read): alternate_totals_corners / _cards
+# (no served model), player_first/last_goal_scorer (no first-scorer model),
+# player_to_receive_card / _red_card (no card column to grade against).
+# team_totals / alternate_team_totals: probed eu+uk the same day, ZERO books.
 PICK_EVENT_MARKETS = (
     "h2h_h1", "totals_h1", "btts_h1", "halftime_fulltime", "double_chance_h1",
-    "alternate_totals_corners", "alternate_totals_cards", "correct_score",
-    "player_goal_scorer_anytime", "player_first_goal_scorer", "player_last_goal_scorer",
-    "player_to_receive_card", "player_to_receive_red_card",
-    "player_shots_on_target", "player_shots", "player_assists",
+    "correct_score",
+    "player_goal_scorer_anytime", "player_shots_on_target", "player_shots", "player_assists",
 )
 PICK_MARKETS_FILE = DATA_DIR / "upcoming" / "pick_markets_raw.json"
 PICK_REFRESH_MIN = 45.0

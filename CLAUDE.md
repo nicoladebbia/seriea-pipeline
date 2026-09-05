@@ -155,6 +155,12 @@ REPLACES the independent-Poisson artifact row for the same bet).
   (goal 0-15', 76-90', stoppage, 1° tempo under/over, both halves) sat within ±0.01 of
   zero: the hazard is league-level, so a timing market has no per-match information
   beyond the total. That is a tier B by measurement, not a bug.
+- **First-half Goal and first-half double chance (added 2026-09-05)** are simulator rows
+  (`1h_btts`, `ht_dc_1x/x2/12`) priced by the pick engine against the `btts_h1` /
+  `double_chance_h1` feed that was fetched and unread until then. Measured on the same
+  walk-forward (n=1,140): `ht_dc_x2` passes (skill +0.035, it is the complement of
+  `ht_home`), `ht_dc_1x` / `ht_dc_12` sit at +0.009 / +0.001 (tier B), `1h_btts` at
+  −0.0003, the timing-only pattern again. Paper only, like every LEAN.
 - **1x2 finale and Over 2.5 are never served from the simulator** (`NOT_SERVED`): the
   ensemble owns 1x2 (the simulator's draw FAILS the gate, skill −0.022, the same
   independent-Poisson draw deficit the World Cup Dixon-Coles attempt could not fix) and
@@ -242,9 +248,13 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `halftime_fulltime`, `double_chance_h1`, corners/cards totals, `correct_score` and the
   eight `player_*` props; specimen-verified 2026-09-05 on Juventus vs AC Milan, region eu;
   `alternate_team_totals` / `h2h_h2` / `totals_h2` are NOT served and are deliberately
-  absent — a 422 on the whole request still costs credits). 16 credits per event, gated by
+  absent — a 422 on the whole request still costs credits). 10 credits per event (was 16; six unread markets dropped 2026-09-05), gated by
   `check_budget_pacing(PRIORITY_EXTRAS)`, 45-min refresh per event; called at the T-6h /
   T-3h odds stages and at every pre-kickoff cycle (only the first of each window pays).
+  `team_totals` / `alternate_team_totals` were probed eu+uk on 2026-09-05: zero books, so
+  the 96 "Gol Casa / Gol Ospite" rows stay unpriced. Every key in `PICK_EVENT_MARKETS`
+  must have a consumer in `price_key_for_row` (test enforces the set): a market fetched
+  for a row nothing maps to is a credit burnt per event per cycle.
   Player names are joined per market with an accent-folded token match that returns None
   on ambiguity (`_match_player`): a wrong player is worse than no price. Card props are
   fetched but never priced or journaled — `player_match_stats.parquet` has no card column,

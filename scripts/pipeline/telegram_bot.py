@@ -2021,6 +2021,11 @@ def _human_bet(pk: dict, home: str, away: str) -> str:
         return "1° tempo pari" if sel == "X" else f"1° tempo {side.get(sel, sel)} avanti"
     if bt == "1° tempo under/over":
         return f"1° tempo {low} gol"
+    if bt == "Goal 1° tempo":
+        return "1° tempo gol entrambe: sì" if sel == "Sì" else "1° tempo gol entrambe: no"
+    if bt == "Doppia chance 1° tempo":
+        return {"1X": f"1° tempo {home} o pari", "X2": f"1° tempo {away} o pari",
+                "12": "1° tempo non pari"}.get(sel, sel)
     if bt == "2° tempo under/over":
         return f"2° tempo {low} gol"
     if bt == "Primo tempo / Finale":
@@ -2078,6 +2083,8 @@ def _bet_family(pk: dict) -> tuple:
         return ("result",)
     if bt == "1° tempo under/over":
         return ("1h_ou", side)
+    if bt in ("1° tempo 1x2", "Doppia chance 1° tempo"):
+        return ("1h_result",)
     if bt == "2° tempo under/over":
         return ("2h_ou", side)
     return (bt,)

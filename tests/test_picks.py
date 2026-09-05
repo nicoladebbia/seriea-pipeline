@@ -27,8 +27,13 @@ EVENT = {
                                                      {"name": "Draw/Draw", "price": 5.26}]},
             {"key": "correct_score", "outcomes": [{"name": "Juventus:1|AC Milan:0", "price": 7.68},
                                                   {"name": "Juventus:0|AC Milan:2", "price": 19.01}]},
+            {"key": "btts_h1", "outcomes": [{"name": "Yes", "price": 4.57}, {"name": "No", "price": 1.22}]},
+            {"key": "double_chance_h1", "outcomes": [{"name": "Juventus or Draw", "price": 1.19},
+                                                     {"name": "AC Milan or Draw", "price": 1.67},
+                                                     {"name": "Juventus or AC Milan", "price": 1.57}]},
         ]},
         {"title": "GTbets", "markets": [
+            {"key": "btts_h1", "outcomes": [{"name": "Yes", "price": 4.1}, {"name": "No", "price": 1.2}]},
             {"key": "h2h_h1", "outcomes": [{"name": "AC Milan", "price": 4.25}, {"name": "Juventus", "price": 2.79},
                                            {"name": "Draw", "price": 2.17}]},
             {"key": "totals_h1", "outcomes": [{"name": "Over", "point": 0.5, "price": 1.46},
@@ -84,6 +89,12 @@ def test_price_book_maps_every_specimen_naming_convention():
         {"odds": 3.5, "book": "William Hill", "avg": 3.4, "n_books": 2}
     assert book[("player_shots", "over", 1.5, "francisco conceicao")]["odds"] == 1.36
     assert book[("player_assists", "over", 0.5, "francisco conceicao")]["odds"] == 3.75
+    # first-half BTTS / double chance: 'Yes'/'No' and '<Home> or Draw' naming, best across books
+    assert book[("btts_h1", "yes", None, None)] == {"odds": 4.57, "book": "Pinnacle", "avg": 4.335, "n_books": 2}
+    assert book[("btts_h1", "no", None, None)]["odds"] == 1.22
+    assert book[("double_chance_h1", "1X", None, None)]["odds"] == 1.19
+    assert book[("double_chance_h1", "X2", None, None)]["odds"] == 1.67
+    assert book[("double_chance_h1", "12", None, None)]["odds"] == 1.57
 
 
 def test_price_book_without_any_artifact_is_empty():
@@ -98,6 +109,9 @@ def test_price_book_without_any_artifact_is_empty():
     (_row("1° tempo under/over", "Over 0.5", 70), ("totals_h1", "over", 0.5, None)),
     (_row("Doppia chance", "X2", 60), ("double_chance", "X2", None, None)),
     (_row("Goal", "Sì", 55), ("btts", "yes", None, None)),
+    (_row("Goal 1° tempo", "No", 75), ("btts_h1", "no", None, None)),
+    (_row("Doppia chance 1° tempo", "1X", 80), ("double_chance_h1", "1X", None, None)),
+    (_row("Doppia chance 1° tempo", "1X2", 80), None),
     (_row("Risultato esatto", "2-1", 9), ("correct_score", "2-1", None, None)),
     (_row("Primo tempo / Finale", "D/H", 12), ("halftime_fulltime", "D/H", None, None)),
     (_row("Giocatore marcatore", "Sì", 20, player="Gonçalo Ramos"), ("player_goal_scorer_anytime", "yes", None, "gonçalo ramos".replace("ç", "c"))),
@@ -243,6 +257,11 @@ def test_grade_every_market_family():
     assert P._grade(_bet("h2h_h1", "X"), ft, None, None) is None            # first half unknown yet
     assert P._grade(_bet("totals_h1", "Under 0.5", side="under", line=0.5), ft, (0, 0), None) == "won"
     assert P._grade(_bet("halftime_fulltime", "D/H"), ft, (0, 0), None) == "won"
+    assert P._grade(_bet("btts_h1", "Sì"), ft, (1, 1), None) == "won"
+    assert P._grade(_bet("btts_h1", "Sì"), ft, (2, 0), None) == "lost"
+    assert P._grade(_bet("btts_h1", "No"), ft, None, None) is None                # 2-1 FT says nothing about HT
+    assert P._grade(_bet("double_chance_h1", "X2"), ft, (0, 0), None) == "won"
+    assert P._grade(_bet("double_chance_h1", "12"), ft, (0, 0), None) == "lost"
     assert P._grade(_bet("halftime_fulltime", "D/H"), None, (0, 0), None) is None
     row = {"total_shots": 2, "shots_on_target": 0, "goals": 1, "assists": 0}
     assert P._grade(_bet("player_shots", "X Over 1.5", side="over", line=1.5, player="X"), None, None, row) == "won"
@@ -276,6 +295,10 @@ def test_settle_picks_settles_gradable_and_leaves_the_rest_pending(tmp_path, mon
 def test_pick_markets_due_selection_honours_its_own_refresh_window():
     from scripts.data.odds_fetcher import PICK_EVENT_MARKETS, _scorer_events_due
     assert "alternate_team_totals" not in PICK_EVENT_MARKETS and "player_assists" in PICK_EVENT_MARKETS
+    # every fetched market has a consumer: a credit spent on a key no row maps to is waste
+    consumed = {"h2h_h1", "totals_h1", "btts_h1", "halftime_fulltime", "double_chance_h1", "correct_score",
+                "player_goal_scorer_anytime", "player_shots_on_target", "player_shots", "player_assists"}
+    assert set(PICK_EVENT_MARKETS) == consumed
     now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
     evs = [{"id": "a", "commence_time": "2026-09-06T18:45:00Z"},   # 3.75h out: in a 6.5h window
            {"id": "b", "commence_time": "2026-09-07T16:30:00Z"},   # tomorrow: out

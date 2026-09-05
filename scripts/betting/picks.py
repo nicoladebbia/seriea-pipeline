@@ -112,6 +112,10 @@ def price_key_for_row(row: dict) -> tuple | None:
         return ("double_chance", sel, None, None)
     if bt == "Goal" and sel in ("Sì", "No"):
         return ("btts", "yes" if sel == "Sì" else "no", None, None)
+    if bt == "Goal 1° tempo" and sel in ("Sì", "No"):
+        return ("btts_h1", "yes" if sel == "Sì" else "no", None, None)
+    if bt == "Doppia chance 1° tempo" and sel in ("1X", "X2", "12"):
+        return ("double_chance_h1", sel, None, None)
     if bt == "Risultato esatto":
         return ("correct_score", sel, None, None)
     if bt == "Primo tempo / Finale":
@@ -209,6 +213,10 @@ def build_price_book(odds_match: dict | None, extra_match: dict | None,
         home_raw, away_raw = pick_event.get("home_raw", ""), pick_event.get("away_raw", "")
         side_of = {home_raw: "home", away_raw: "away", "Draw": "draw"}
         letter_of = {home_raw: "H", away_raw: "A", "Draw": "D"}
+        # specimen 2026-09-05 (Roma vs Atalanta): 'AS Roma or Draw', 'Atalanta BC
+        # or Draw', 'AS Roma or Atalanta BC' — the bookmaker's own team strings
+        dc_of = {f"{home_raw} or Draw": "1X", f"{away_raw} or Draw": "X2",
+                 f"{home_raw} or {away_raw}": "12", f"{away_raw} or {home_raw}": "12"}
         raw: dict[tuple, list[tuple[float, str]]] = {}
         for bm in pick_event.get("bookmakers") or []:
             title = bm.get("title", "?")
@@ -221,6 +229,10 @@ def build_price_book(odds_match: dict | None, extra_match: dict | None,
                         key = (mk, side_of[name], None, None)
                     elif mk == "totals_h1" and name in ("Over", "Under") and point is not None:
                         key = (mk, name.lower(), float(point), None)
+                    elif mk == "btts_h1" and name in ("Yes", "No"):
+                        key = (mk, name.lower(), None, None)
+                    elif mk == "double_chance_h1" and name in dc_of:
+                        key = (mk, dc_of[name], None, None)
                     elif mk == "halftime_fulltime" and name and "/" in name:
                         a, b = name.split("/", 1)
                         if a in letter_of and b in letter_of:
@@ -625,6 +637,10 @@ def _grade(bet: dict, res: dict | None, h1: tuple[int, int] | None,
         return "won" if _wdl(h1) == sym.get(sel) else "lost"
     if mk == "totals_h1" and h1:
         return _ou(h1[0] + h1[1])
+    if mk == "btts_h1" and h1:
+        return "won" if (h1[0] > 0 and h1[1] > 0) == (sel == "Sì") else "lost"
+    if mk == "double_chance_h1" and h1:
+        return "won" if _wdl(h1) in {"1X": "HD", "X2": "DA", "12": "HA"}.get(sel, "") else "lost"
     if mk == "halftime_fulltime" and h1 and ft:
         return "won" if sel == f"{_wdl(h1)}/{_wdl(ft)}" else "lost"
     if mk.startswith("player_") and player_row is not None:
