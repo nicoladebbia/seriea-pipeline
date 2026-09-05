@@ -35,7 +35,7 @@ mypy .                        # Type check
 ```
 
 ## Key Facts
-- **Model performance:** see `MODEL_STATUS.md` — read live from `data/models/universal/catboost_no_odds_metadata.json`. NEVER quote a hard-coded accuracy here or anywhere else.
+- **Model performance:** see `MODEL_STATUS.md` — read live from `data/models/universal/over_under/ou_*_catboost_metadata.json` (the models that place bets) and `catboost_no_odds_metadata.json` (1X2, display only). NEVER quote a hard-coded accuracy here or anywhere else.
 - Per-league model separation (not one model for all leagues)
 - Time-decay weighting, 2017+ training window
 - Betting leaks patched (odds NOT used as input features)
@@ -44,12 +44,21 @@ mypy .                        # Type check
 
 ## Model performance — ALWAYS read metadata, never quote markdown
 
-When asked "how is the model performing right now?":
+**Which model is "the model" (settled 2026-09-04):** the betting layer bets ONLY O/U Over
+(lines 1.5 / 2.5) + Alt O/U — see the market config in `scripts/betting/betting_unified.py`.
+The 1X2 ensemble feeds the dashboard, Telegram and the fantacalcio fixture card, not a
+single enabled bet (1X2 betting off since 2026-04 at −20% ROI, DC dead since 2026-06).
+So "how is the model performing right now?" is answered in this order:
 
-1. Run `python3 scripts/diagnostics/print_model_status.py` — it reads `catboost_no_odds_metadata.json` and prints the honest numbers.
-2. Cite `cv_summary.last3_accuracy` as the primary metric (walk-forward 1X2 accuracy on last 3 eval seasons).
-3. Realistic ceiling for 1X2 is 53–55% (Pinnacle close / academic SOTA). Anything above ~56% is leakage or fiction.
-4. If you see a markdown file claiming a higher number, the doc is wrong — fix or delete it. Do not propagate.
+1. Run `python3 scripts/diagnostics/print_model_status.py` — it reads the O/U metadata
+   (`over_under/ou_{1_5,2_5}_catboost_metadata.json`) AND `catboost_no_odds_metadata.json`.
+2. **PRIMARY — the O/U section**: holdout log-loss vs naive, calibration gap, the last
+   promotion decision (`promotion.promoted` / `reason`), and realised CLV + ROI on settled
+   O/U bets from the journal. An O/U model that fails its gate is the headline, not a footnote.
+3. **SECONDARY — 1X2**: `cv_summary.last3_accuracy` (walk-forward, last 3 eval seasons).
+   Ceiling 53–55%; anything above ~56% is leakage or fiction. It is proven at ceiling
+   (2026-06-04) — do not re-run accuracy hunts.
+4. If you see a markdown file claiming a number, the doc is wrong — fix or delete it.
 
 ## Cleanup discipline — CRITICAL
 

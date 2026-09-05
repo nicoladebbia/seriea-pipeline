@@ -92,8 +92,11 @@ def _run_auto(monkeypatch, dry_run, promoted):
         lambda dry_run=False: {"mode": "quick", "promoted": promoted,
                                **({"dry_run": True} if dry_run else {})},
     )
-    for aux in ("retrain_no_odds", "retrain_xg_models", "retrain_draw_detector"):
+    for aux in ("retrain_no_odds", "retrain_xg_models", "retrain_draw_detector",
+                "_retrain_ou_classifiers"):
         monkeypatch.setattr(wr, aux, lambda dry_run=False: {"promoted": False})
+    monkeypatch.setattr(wr, "_refresh_predictions", lambda: None)
+    monkeypatch.setattr(wr, "_refresh_goal_predictions", lambda: None)
     wr.auto_retrain(dry_run=dry_run)
     return saved
 
@@ -162,6 +165,169 @@ def test_atomic_write_leaves_no_tmp_file_behind(tmp_path):
     _atomic_to_parquet(pd.DataFrame({"a": [1]}), out)
     assert out.exists()
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+# --- the O/U classifiers retrain whether or not the ensemble is promoted ------
+#
+# Until 2026-09-05 _retrain_ou_classifiers() and _refresh_predictions() lived
+# inside the `if promote:` branch of quick_retrain / full_retrain. The O/U
+# models are the ones behind the ONLY enabled betting markets and carry their
+# own promotion gate, so an ensemble held "within tolerance" froze the money
+# model for nothing — and when the ensemble WAS promoted the refresh ran before
+# catboost_no_odds and the O/U classifiers had even been retrained.
+
+
+def _run_auto_with_spies(monkeypatch, *, dry_run=False, ensemble_promoted=False,
+                         ou_promoted=False, no_odds_promoted=False, refresh_ok=True):
+    """auto_retrain with every trainer stubbed; returns (result, call log)."""
+    from scripts.pipeline import weekly_retrain as wr
+
+    calls = []
+    monkeypatch.setattr(wr, "get_matchweek_status", lambda *a, **k: _fake_status())
+    monkeypatch.setattr(wr, "_load_retrain_state", lambda: {})
+    monkeypatch.setattr(wr, "_save_retrain_state", lambda st: None)
+    monkeypatch.setattr(wr, "_archive_current_models", lambda *a, **k: None)
+    monkeypatch.setattr(wr, "_notify", lambda *a, **k: None)
+    monkeypatch.setattr(wr, "_is_last_week_of_month", lambda: False)
+    monkeypatch.setattr(
+        wr, "quick_retrain",
+        lambda dry_run=False: (calls.append(("quick", dry_run)) or
+                               {"mode": "quick", "promoted": ensemble_promoted,
+                                **({"dry_run": True} if dry_run else {})}),
+    )
+
+    def _aux(name, promoted):
+        def run(dry_run=False):
+            calls.append((name, dry_run))
+            return {"model": name, "promoted": promoted}
+        return run
+
+    monkeypatch.setattr(wr, "retrain_no_odds", _aux("no_odds", no_odds_promoted))
+    monkeypatch.setattr(wr, "retrain_xg_models", _aux("xg", False))
+    monkeypatch.setattr(wr, "retrain_draw_detector", _aux("draw_detector", False))
+    monkeypatch.setattr(wr, "_retrain_ou_classifiers", _aux("over_under", ou_promoted))
+    monkeypatch.setattr(wr, "_refresh_predictions",
+                        lambda: (calls.append(("refresh", None)), refresh_ok)[1])
+    monkeypatch.setattr(wr, "_refresh_goal_predictions",
+                        lambda: calls.append(("goal_refresh", None)))
+    result = wr.auto_retrain(dry_run=dry_run)
+    return result, calls
+
+
+def test_ou_classifiers_retrain_when_the_ensemble_is_held(monkeypatch):
+    """The bug: a held ensemble skipped the money model's retrain entirely."""
+    _, calls = _run_auto_with_spies(monkeypatch, ensemble_promoted=False)
+    assert ("over_under", False) in calls
+
+
+def test_an_ou_promotion_under_a_held_ensemble_refreshes_predictions(monkeypatch):
+    """A newly promoted O/U model must reach goal_predictions.json today, not
+    whenever the next morning pipeline happens to run."""
+    result, calls = _run_auto_with_spies(monkeypatch, ensemble_promoted=False,
+                                         ou_promoted=True)
+    assert calls.count(("refresh", None)) == 1
+    assert result["predictions_refreshed_for"] == ["over_under"]
+
+
+def test_predictions_refresh_once_and_only_after_every_retrain_step(monkeypatch):
+    """Ensemble AND O/U promoted: one refresh, after the last trainer ran."""
+    result, calls = _run_auto_with_spies(monkeypatch, ensemble_promoted=True,
+                                         ou_promoted=True, no_odds_promoted=True)
+    assert calls.count(("refresh", None)) == 1
+    names = [c[0] for c in calls]
+    assert names.index("refresh") > max(names.index("over_under"),
+                                        names.index("no_odds"),
+                                        names.index("quick"))
+    assert result["predictions_refreshed_for"] == ["ensemble", "no_odds", "over_under"]
+
+
+def test_goal_predictions_are_regenerated_right_after_the_engine_refresh(monkeypatch):
+    """predictions.json is the engine's file; scan_ou_market prices
+    goal_predictions.json, which only pipeline Step 19 wrote. Both must move."""
+    _, calls = _run_auto_with_spies(monkeypatch, ou_promoted=True)
+    names = [c[0] for c in calls]
+    assert names.count("goal_refresh") == 1
+    assert names.index("goal_refresh") == names.index("refresh") + 1
+
+
+def test_a_failed_engine_refresh_does_not_regenerate_goal_predictions_from_stale_input(monkeypatch):
+    result, calls = _run_auto_with_spies(monkeypatch, ou_promoted=True, refresh_ok=False)
+    assert ("goal_refresh", None) not in calls
+    assert result.get("predictions_refresh_failed") is True
+    assert "predictions_refreshed_for" not in result
+
+
+def test_nothing_promoted_means_no_refresh(monkeypatch):
+    result, calls = _run_auto_with_spies(monkeypatch)
+    assert ("refresh", None) not in calls
+    assert "predictions_refreshed_for" not in result
+
+
+def test_a_dry_run_reaches_the_ou_trainer_as_a_dry_run_and_refreshes_nothing(monkeypatch):
+    """--dry-run must preview the O/U gate too — and never write the slate."""
+    _, calls = _run_auto_with_spies(monkeypatch, dry_run=True, ensemble_promoted=True,
+                                    ou_promoted=True)
+    assert ("over_under", True) in calls
+    assert ("refresh", None) not in calls
+
+
+def test_the_ensemble_promote_branches_no_longer_own_the_ou_retrain():
+    """Pin the decoupling in the source so it cannot quietly move back."""
+    import inspect
+
+    from scripts.pipeline import weekly_retrain as wr
+
+    for fn in (wr.quick_retrain, wr.full_retrain):
+        src = inspect.getsource(fn)
+        assert "_retrain_ou_classifiers()" not in src, fn.__name__
+        assert "_refresh_predictions()" not in src, fn.__name__
+
+
+def test_retrain_ou_classifiers_reports_the_trainer_verdict_per_line(monkeypatch):
+    """Maps the trainer report onto the auxiliary-model contract, real and dry."""
+    import scripts.models.train_over_under as tou
+    from scripts.pipeline import weekly_retrain as wr
+
+    history = []
+    monkeypatch.setattr(wr, "_append_metrics_history", history.append)
+    seen = {}
+
+    def fake_train(lines, top_k, n_tune_trials, dry_run=False):
+        seen["dry_run"] = dry_run
+        return {"timestamp": "t", "lines": {
+            "1.5": {"promoted": not dry_run, "would_promote": True, "dry_run": dry_run,
+                    "promotion_reason": "better", "holdout": {}, "cv_metrics": {}},
+            "2.5": {"promoted": False, "would_promote": False, "dry_run": dry_run,
+                    "promotion_reason": "worse", "holdout": {}, "cv_metrics": {}},
+        }}
+
+    monkeypatch.setattr(tou, "train_over_under", fake_train)
+
+    real = wr._retrain_ou_classifiers()
+    assert seen["dry_run"] is False
+    assert real == {"model": "over_under", "promoted": True,
+                    "lines": {"1.5": "promoted", "2.5": "held"}}
+    assert [h["promoted"] for h in history] == [True, False]
+    assert not any("dry_run" in h for h in history)
+
+    history.clear()
+    dry = wr._retrain_ou_classifiers(dry_run=True)
+    assert seen["dry_run"] is True
+    assert dry == {"model": "over_under", "promoted": False,
+                   "lines": {"1.5": "would_promote", "2.5": "would_hold"}}
+    assert all(h.get("dry_run") is True for h in history)
+
+
+def test_retrain_ou_classifiers_failure_is_an_error_not_a_crash(monkeypatch):
+    import scripts.models.train_over_under as tou
+    from scripts.pipeline import weekly_retrain as wr
+
+    def boom(**kw):
+        raise RuntimeError("no features")
+
+    monkeypatch.setattr(tou, "train_over_under", boom)
+    out = wr._retrain_ou_classifiers()
+    assert out["promoted"] is False and "no features" in out["error"]
 
 
 if __name__ == "__main__":

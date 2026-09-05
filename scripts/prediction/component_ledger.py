@@ -18,6 +18,14 @@ the loop, the same shape as the fantacalcio pred_ledger:
   data/models/ensemble_weights.json ONLY on a pass. The engine reads that
   override at init (fail-soft) — no silent weight changes, full provenance.
 
+The O/U leg — the model that actually places bets (O/U Over / Alt O/U are the
+only enabled markets) — rides the same rows: snapshot() attaches the ML, Poisson
+and served (blended) P(over) per bet line from goal_predictions.json, settle()
+grades each leg against the real goal total, and refit_ou_blend() fits the
+per-line ML share of the blend (default 0.65 since March) through the same
+shrink + time-ordered holdout gate, writing data/models/ou_blend_weights.json
+ONLY on a pass. over_under_model reads that override at predict time.
+
 Every hook into live paths is fail-soft: a ledger failure must never block
 predictions or bet commit.
 """
@@ -33,8 +41,14 @@ LEDGER = ROOT / "data" / "predictions" / "component_ledger.json"
 PREDICTIONS = ROOT / "data" / "upcoming" / "predictions.json"
 MATCHES = ROOT / "data" / "parsed" / "matches.parquet"
 WEIGHTS_OVERRIDE = ROOT / "data" / "models" / "ensemble_weights.json"
+GOAL_PREDICTIONS = ROOT / "data" / "upcoming" / "goal_predictions.json"
+OU_WEIGHTS_OVERRIDE = ROOT / "data" / "models" / "ou_blend_weights.json"
 
 CORE = ("ml", "market", "xg", "player_xg", "factor")   # 1X2 components
+OU_LINES = ("1.5", "2.5")          # the bet lines (the only enabled markets)
+OU_LEGS = ("ml", "poisson", "served")
+OU_DEFAULT_ML_WEIGHT = 0.65        # over_under_model.DEFAULT_ML_BLEND_WEIGHT
+OU_REFIT_N = 60                    # settled O/U rows per line before a 1-parameter refit
 ROLL_RECENT = 20      # rot alarm window
 ROLL_BASE = 100       # trailing baseline window
 ROT_BRIER_DELTA = 0.04
@@ -82,6 +96,39 @@ def _kickoff_by_pair() -> dict:
     return out
 
 
+def _ou_by_pair() -> dict:
+    """(home, away) -> {line: {ml, poisson, served, w}} from goal_predictions.json.
+
+    Only lines where the ML leg was present (the blend actually fired) are
+    kept — a pure-Poisson row has nothing to grade the blend against.
+    """
+    try:
+        raw = json.loads(GOAL_PREDICTIONS.read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for r in raw.get("predictions", []):
+        m = str(r.get("match") or "")
+        if " vs " not in m:
+            continue
+        h, a = (_nt(x.strip()) for x in m.split(" vs ", 1))
+        ml = r.get("ou_ml") or {}
+        po = r.get("ou_poisson") or {}
+        wt = r.get("ou_blend_weight") or {}
+        lines = {}
+        for line in OU_LINES:
+            served = r.get(f"over_{line.replace('.', '_')}")
+            if ml.get(line) is None or po.get(line) is None or served is None:
+                continue
+            lines[line] = {"ml": round(float(ml[line]), 4),
+                           "poisson": round(float(po[line]), 4),
+                           "served": round(float(served), 4),
+                           "w": wt.get(line)}
+        if lines:
+            out[(h, a)] = lines
+    return out
+
+
 def snapshot(now_ts: float | None = None) -> dict:
     """Upsert pre-kickoff component forecasts from predictions.json.
 
@@ -95,6 +142,7 @@ def snapshot(now_ts: float | None = None) -> dict:
     except (OSError, ValueError):
         return {"stored": 0, "frozen": 0, "skipped": 0}
     kicks = _kickoff_by_pair()
+    ou_map = _ou_by_pair()
     led = _load()
     stored = frozen = skipped = 0
     for r in pj.get("predictions", []):
@@ -143,6 +191,10 @@ def snapshot(now_ts: float | None = None) -> dict:
             "settled_at": (entry or {}).get("settled_at"),
             "outcome": (entry or {}).get("outcome"),
             "grades": (entry or {}).get("grades"),
+            # O/U legs: refresh with the row, carry forward if this run lacks them
+            "ou": ou_map.get((home, away)) or (entry or {}).get("ou"),
+            "total_goals": (entry or {}).get("total_goals"),
+            "ou_grades": (entry or {}).get("ou_grades"),
         }
         stored += 1
     if stored or frozen:
@@ -164,6 +216,14 @@ def _grade(probs: dict, outcome: str) -> dict:
             "correct": int(pick == outcome)}
 
 
+def _grade_binary(p: float, y: int) -> dict:
+    """Brier + log-loss + pick correctness for one P(over) against over/not."""
+    p = min(max(float(p), 1e-6), 1 - 1e-6)
+    return {"brier": round((p - y) ** 2, 4),
+            "log_loss": round(-math.log(p if y else 1 - p), 4),
+            "correct": int((p >= 0.5) == bool(y))}
+
+
 def settle() -> int:
     """Grade every frozen-or-past-kickoff row whose result is available."""
     import pandas as pd
@@ -171,17 +231,19 @@ def settle() -> int:
     todo = {k: e for k, e in led["matches"].items() if not e.get("settled_at")}
     if not todo:
         return 0
-    m = pd.read_parquet(MATCHES,
-                        columns=["match_date", "home_team", "away_team",
-                                 "result", "league"])
+    m = pd.read_parquet(MATCHES)
     m = m[(m.league == "serie_a") & m.result.notna()]
-    res = {}
+    has_scores = {"home_score", "away_score"} <= set(m.columns)
+    res, totals = {}, {}
     for r in m.itertuples():
-        res[(str(r.match_date)[:10], _nt(r.home_team), _nt(r.away_team))] = \
-            str(r.result).upper()[:1]
+        k = (str(r.match_date)[:10], _nt(r.home_team), _nt(r.away_team))
+        res[k] = str(r.result).upper()[:1]
+        if has_scores and pd.notna(r.home_score) and pd.notna(r.away_score):
+            totals[k] = int(r.home_score) + int(r.away_score)
     done = 0
     for key, e in todo.items():
-        out = res.get((e["date"], e["home"], e["away"]))
+        k = (e["date"], e["home"], e["away"])
+        out = res.get(k)
         if out not in ("H", "D", "A"):
             continue
         e["outcome"] = out
@@ -192,6 +254,14 @@ def settle() -> int:
             e["grades"]["ensemble"] = _grade(
                 {"prob_H": ens.get("home"), "prob_D": ens.get("draw"),
                  "prob_A": ens.get("away")}, out)
+        tot = totals.get(k)
+        if tot is not None and e.get("ou"):
+            e["total_goals"] = tot
+            e["ou_grades"] = {
+                line: {leg: _grade_binary(v[leg], int(tot > float(line)))
+                       for leg in OU_LEGS if v.get(leg) is not None}
+                for line, v in e["ou"].items()
+            }
         e["settled_at"] = datetime.now(UTC).isoformat()
         done += 1
     if done:
@@ -205,25 +275,37 @@ def _settled_rows(led: dict) -> list[dict]:
     return rows
 
 
+def _roll(seq: list[dict]) -> dict:
+    recent = seq[-ROLL_RECENT:]
+    base = seq[-ROLL_BASE:]
+    return {
+        "n": len(seq),
+        "brier_recent": round(sum(g["brier"] for g in recent) / len(recent), 4),
+        "brier_base": round(sum(g["brier"] for g in base) / len(base), 4),
+        "log_loss_base": round(sum(g["log_loss"] for g in base) / len(base), 4),
+        "accuracy_base": round(sum(g["correct"] for g in base) / len(base), 4),
+    }
+
+
 def summary() -> dict:
-    """Rolling per-component health: recent vs trailing Brier, LL, accuracy."""
+    """Rolling per-component health: recent vs trailing Brier, LL, accuracy.
+
+    `components` are the 1X2 legs; `ou` is {line: {ml|poisson|served: ...}} —
+    the legs of the probability the bets are actually priced on."""
     led = _load()
     rows = _settled_rows(led)
     names = sorted({n for e in rows for n in (e.get("grades") or {})})
-    out = {"n_settled": len(rows), "components": {}}
+    out = {"n_settled": len(rows), "components": {}, "ou": {}}
     for name in names:
         seq = [e["grades"][name] for e in rows if name in (e.get("grades") or {})]
-        if not seq:
-            continue
-        recent = seq[-ROLL_RECENT:]
-        base = seq[-ROLL_BASE:]
-        out["components"][name] = {
-            "n": len(seq),
-            "brier_recent": round(sum(g["brier"] for g in recent) / len(recent), 4),
-            "brier_base": round(sum(g["brier"] for g in base) / len(base), 4),
-            "log_loss_base": round(sum(g["log_loss"] for g in base) / len(base), 4),
-            "accuracy_base": round(sum(g["correct"] for g in base) / len(base), 4),
-        }
+        if seq:
+            out["components"][name] = _roll(seq)
+    for line in OU_LINES:
+        for leg in OU_LEGS:
+            seq = [e["ou_grades"][line][leg] for e in rows
+                   if leg in ((e.get("ou_grades") or {}).get(line) or {})]
+            if seq:
+                out["ou"].setdefault(line, {})[leg] = _roll(seq)
     return out
 
 
@@ -356,6 +438,81 @@ def refit_weights(current: dict | None = None) -> dict:
     return report
 
 
+def _blend_ll(rows: list[dict], line: str, w: float) -> float:
+    tot = 0.0
+    for e in rows:
+        v = e["ou"][line]
+        y = int(e["total_goals"] > float(line))
+        p = w * float(v["ml"]) + (1 - w) * float(v["poisson"])
+        p = min(max(p, 1e-6), 1 - 1e-6)
+        tot += -math.log(p if y else 1 - p)
+    return tot / len(rows)
+
+
+def _ou_rows(led: dict, line: str) -> list[dict]:
+    return [e for e in _settled_rows(led)
+            if e.get("total_goals") is not None
+            and (e.get("ou") or {}).get(line)
+            and e["ou"][line].get("ml") is not None
+            and e["ou"][line].get("poisson") is not None]
+
+
+def refit_ou_blend(current: dict | None = None) -> dict:
+    """Per-line ML share of the served O/U probability, deployment-gated.
+
+    Same discipline as refit_weights: grid over w in [0, 1] on the older
+    rows, shrink halfway toward the current weight, judge on the newest
+    REFIT_HOLDOUT slice, write data/models/ou_blend_weights.json ONLY for
+    lines whose new weight beats the current one there. Below OU_REFIT_N
+    rows a line is report-only. Lines not refit keep their deployed value.
+    """
+    led = _load()
+    deployed: dict = {}
+    try:
+        raw = json.loads(OU_WEIGHTS_OVERRIDE.read_text()).get("weights") or {}
+        deployed = {str(k): float(v) for k, v in raw.items()
+                    if isinstance(v, int | float) and 0.0 <= float(v) <= 1.0}
+    except (OSError, ValueError, AttributeError):
+        deployed = {}
+    report: dict = {"status": "below-floor", "lines": {}}
+    new_weights = dict(deployed)
+    changed = False
+    for line in OU_LINES:
+        cur = float((current or {}).get(line, deployed.get(line, OU_DEFAULT_ML_WEIGHT)))
+        rows = _ou_rows(led, line)
+        if len(rows) < OU_REFIT_N:
+            report["lines"][line] = {"status": "below-floor", "n": len(rows),
+                                     "floor": OU_REFIT_N, "current": cur}
+            continue
+        cut = int(len(rows) * (1 - REFIT_HOLDOUT))
+        train, hold = rows[:cut], rows[cut:]
+        grid = [i / 20 for i in range(21)]
+        best = min(grid, key=lambda w: _blend_ll(train, line, w))
+        w = round(cur + REFIT_SHRINK * (best - cur), 4)
+        ll_new, ll_cur = _blend_ll(hold, line, w), _blend_ll(hold, line, cur)
+        r = {"status": "gated-fail", "n": len(rows), "fitted_raw": best,
+             "fitted": w, "current": cur,
+             "holdout_ll_new": round(ll_new, 4), "holdout_ll_current": round(ll_cur, 4)}
+        if abs(w - cur) > 1e-6 and ll_new < ll_cur:
+            new_weights[line] = w
+            r["status"] = "deployed"
+            changed = True
+        report["lines"][line] = r
+    statuses = {r["status"] for r in report["lines"].values()}
+    if changed:
+        OU_WEIGHTS_OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
+        OU_WEIGHTS_OVERRIDE.write_text(json.dumps({
+            "weights": new_weights,
+            "fitted_at": datetime.now(UTC).isoformat(),
+            "lines": report["lines"],
+            "provenance": "component_ledger.refit_ou_blend",
+        }, indent=1))
+        report["status"] = "deployed"
+    elif "gated-fail" in statuses:
+        report["status"] = "gated-fail"
+    return report
+
+
 def run(now_ts: float | None = None) -> str:
     """snapshot + settle + rot alarm + (floor-gated) refit — one line out."""
     snap = snapshot(now_ts)
@@ -387,8 +544,19 @@ def run(now_ts: float | None = None) -> str:
                    category="alert")
         except Exception:
             pass
+    ou_refit = refit_ou_blend()
+    if ou_refit.get("status") == "deployed":
+        try:
+            from scripts.pipeline.notify import notify
+            moved = {ln: r["fitted"] for ln, r in ou_refit["lines"].items()
+                     if r.get("status") == "deployed"}
+            notify(f"O/U blend weight refit deployed (ML share): {moved}",
+                   title="O/U — blend refit", level="alert", category="alert")
+        except Exception:
+            pass
     return (f"component ledger: stored={snap['stored']} frozen={snap['frozen']} "
-            f"settled={n} refit={refit.get('status')}")
+            f"settled={n} refit={refit.get('status')} "
+            f"ou_blend={ou_refit.get('status')}")
 
 
 if __name__ == "__main__":

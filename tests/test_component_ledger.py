@@ -5,7 +5,6 @@ import json
 import math
 
 import pandas as pd
-import pytest
 
 import scripts.prediction.component_ledger as cl
 
@@ -174,6 +173,7 @@ def _toy_classifier(tmp_path):
     """MLClassifier wrapping a tiny CatBoost where feature 'driver' decides."""
     import numpy as np
     from catboost import CatBoostClassifier
+
     import scripts.prediction.ensemble_prediction_engine as eng
     rng = np.random.default_rng(7)
     X = pd.DataFrame({"driver": rng.normal(0, 1, 300),
@@ -210,3 +210,124 @@ def test_check_drift_counts_out_of_band_features(tmp_path):
     skewed = pd.DataFrame([{"driver": 9.9, "noise_a": -8.0, "noise_b": 0.0}])
     d = clf._check_drift(skewed)
     assert d["n_out"] == 2 and set(d["out"]) == {"driver", "noise_a"}
+
+
+# ---------------------------------------------------------------------------
+# O/U leg — the probability the bets are actually priced on
+# ---------------------------------------------------------------------------
+
+def _patch_ou(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    monkeypatch.setattr(cl, "GOAL_PREDICTIONS", tmp_path / "goal_preds.json")
+    monkeypatch.setattr(cl, "OU_WEIGHTS_OVERRIDE", tmp_path / "ou_weights.json")
+
+
+def _goal_row(home="Genoa", away="Como", ml25=0.6, po25=0.5, w=0.65):
+    served = round(w * ml25 + (1 - w) * po25, 3)
+    return {"match": f"{home} vs {away}", "date": "2026-09-10",
+            "over_1_5": 0.77, "over_2_5": served,
+            "ou_ml": {"2.5": ml25}, "ou_poisson": {"2.5": po25},
+            "ou_blend_weight": {"2.5": w}}
+
+
+def test_snapshot_attaches_ou_legs_and_settle_grades_them_against_total_goals(
+        monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    kick = 2_000_000.0
+    monkeypatch.setattr(cl, "_kickoff_by_pair", lambda: {("Genoa", "Como"): kick})
+    cl.PREDICTIONS.write_text(json.dumps({"predictions": [_pred_row()]}))
+    cl.GOAL_PREDICTIONS.write_text(json.dumps({"predictions": [_goal_row()]}))
+    assert cl.snapshot(now_ts=kick - 600)["stored"] == 1
+    row = json.loads(cl.LEDGER.read_text())["matches"]["2026-09-10_Genoa_Como"]
+    assert row["ou"] == {"2.5": {"ml": 0.6, "poisson": 0.5, "served": 0.565, "w": 0.65}}
+    assert "1.5" not in row["ou"]                       # no ML leg for 1.5 → not graded
+
+    pd.DataFrame([{"match_date": "2026-09-10", "home_team": "Genoa", "away_team": "Como",
+                   "result": "H", "league": "serie_a", "home_score": 2, "away_score": 1}]
+                 ).to_parquet(cl.MATCHES)
+    assert cl.settle() == 1
+    row = json.loads(cl.LEDGER.read_text())["matches"]["2026-09-10_Genoa_Como"]
+    assert row["total_goals"] == 3                      # 3 > 2.5 → over
+    g = row["ou_grades"]["2.5"]
+    assert g["ml"] == {"brier": round(0.4 ** 2, 4), "log_loss": round(-math.log(0.6), 4),
+                       "correct": 1}
+    assert g["poisson"]["correct"] == 1 and g["served"]["brier"] == round((1 - 0.565) ** 2, 4)
+    assert "ou" in cl.summary() and cl.summary()["ou"]["2.5"]["ml"]["n"] == 1
+
+
+def test_settle_without_score_columns_grades_1x2_and_leaves_ou_ungraded(monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    kick = 2_000_000.0
+    monkeypatch.setattr(cl, "_kickoff_by_pair", lambda: {("Genoa", "Como"): kick})
+    cl.PREDICTIONS.write_text(json.dumps({"predictions": [_pred_row()]}))
+    cl.GOAL_PREDICTIONS.write_text(json.dumps({"predictions": [_goal_row()]}))
+    cl.snapshot(now_ts=kick - 600)
+    pd.DataFrame([{"match_date": "2026-09-10", "home_team": "Genoa", "away_team": "Como",
+                   "result": "H", "league": "serie_a"}]).to_parquet(cl.MATCHES)
+    assert cl.settle() == 1
+    row = json.loads(cl.LEDGER.read_text())["matches"]["2026-09-10_Genoa_Como"]
+    assert row["grades"]["ml"]["correct"] == 1 and row.get("ou_grades") is None
+
+
+def _seed_ou_ledger(path, n, ml_good_until=None, seed=0):
+    """n settled rows; the ML leg is informative up to ml_good_until (default
+    all rows), Poisson is noise. Returns the ledger dict written."""
+    import random
+    from datetime import date, timedelta
+    rng = random.Random(seed)  # noqa: S311 — test fixture, not crypto
+    matches = {}
+    for i in range(n):
+        d = (date(2026, 1, 1) + timedelta(days=i)).isoformat()
+        over = rng.random() < 0.5
+        good = ml_good_until is None or i < ml_good_until
+        ml = (0.8 if over else 0.2) if good else (0.2 if over else 0.8)
+        po = 0.5 + rng.uniform(-0.05, 0.05)
+        matches[f"{d}_A{i}_B{i}"] = {
+            "date": d, "home": f"A{i}", "away": f"B{i}", "settled_at": "x",
+            "outcome": "H", "components": {}, "grades": {},
+            "ou": {"2.5": {"ml": ml, "poisson": round(po, 3), "served": 0.5, "w": 0.65}},
+            "total_goals": 3 if over else 2,
+        }
+    led = {"matches": matches, "alarm_state": {}}
+    path.write_text(json.dumps(led))
+    return led
+
+
+def test_refit_ou_blend_below_floor_is_report_only(monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    _seed_ou_ledger(cl.LEDGER, cl.OU_REFIT_N - 1)
+    rep = cl.refit_ou_blend()
+    assert rep["status"] == "below-floor" and rep["lines"]["2.5"]["n"] == cl.OU_REFIT_N - 1
+    assert not cl.OU_WEIGHTS_OVERRIDE.exists()
+
+
+def test_refit_ou_blend_deploys_toward_the_informative_leg(monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    _seed_ou_ledger(cl.LEDGER, 100)                     # ML informative throughout
+    rep = cl.refit_ou_blend()
+    r = rep["lines"]["2.5"]
+    assert rep["status"] == "deployed" and r["fitted_raw"] > 0.65
+    assert 0.65 < r["fitted"] <= 0.65 + 0.5 * (1.0 - 0.65) + 1e-9   # shrunk halfway
+    assert r["holdout_ll_new"] < r["holdout_ll_current"]
+    w = json.loads(cl.OU_WEIGHTS_OVERRIDE.read_text())["weights"]
+    assert w["2.5"] == r["fitted"] and "1.5" not in w   # 1.5 had no rows → untouched
+
+
+def test_refit_ou_blend_refuses_when_the_holdout_disagrees(monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    # ML informative on the older 80 rows, anti-informative on the newest 20
+    # (the holdout): the train fit WANTS to move toward ML, the gate must refuse.
+    _seed_ou_ledger(cl.LEDGER, 100, ml_good_until=80)
+    rep = cl.refit_ou_blend()
+    r = rep["lines"]["2.5"]
+    assert r["fitted"] != r["current"]                  # true positive: it would have moved
+    assert rep["status"] == "gated-fail" and r["status"] == "gated-fail"
+    assert r["holdout_ll_new"] >= r["holdout_ll_current"]
+    assert not cl.OU_WEIGHTS_OVERRIDE.exists()
+
+
+def test_run_reports_ou_blend_status(monkeypatch, tmp_path):
+    _patch_ou(monkeypatch, tmp_path)
+    monkeypatch.setattr(cl, "_kickoff_by_pair", lambda: {})
+    cl.PREDICTIONS.write_text(json.dumps({"predictions": []}))
+    assert "ou_blend=below-floor" in cl.run(now_ts=1.0)

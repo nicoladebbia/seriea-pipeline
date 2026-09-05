@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -277,11 +278,152 @@ def _calibration_gap(y_true: np.ndarray, y_pred: np.ndarray, n_bins: int = 10) -
     return float(np.mean(gaps)) if gaps else 0.0
 
 
+# =============================================================================
+# PROMOTION GATE
+# =============================================================================
+# A candidate is judged against the model production actually runs, on the
+# same time-ordered holdout tail — never against a fixed bar the incumbent
+# itself fails (a fixed bar froze the 1X2 model for 130 days, 5b1e111).
+# Before this gate the trainer logged its quality checks and saved regardless:
+# both live O/U models shipped 2026-09-01 failing their calibration gate.
+
+PROMOTION_LL_TOLERANCE = 0.005    # candidate may be this much worse on holdout log-loss
+PROMOTION_CAL_TOLERANCE = 0.01    # ... and this much worse on holdout calibration gap
+PROMOTION_BETTER_MARGIN = 0.002   # gains below this read "within tolerance", not "better"
+
+
+def holdout_metrics(y_true, proba) -> Dict[str, float]:
+    """Binary log-loss / Brier / calibration gap of one model on one holdout."""
+    y = np.asarray(y_true, dtype=float)
+    p = np.clip(np.asarray(proba, dtype=float), 1e-6, 1 - 1e-6)
+    return {
+        "log_loss": round(float(log_loss(y, p, labels=[0, 1])), 4),
+        "brier": round(float(brier_score_loss(y, p)), 4),
+        "calibration_gap": round(_calibration_gap(y, p), 4),
+        "n": int(len(y)),
+    }
+
+
+def score_incumbent(
+    out_dir: Path, line_str: str, X_val: pd.DataFrame, y_val,
+) -> Optional[Dict[str, float]]:
+    """Score the LIVE model on the candidate's holdout with its own feature list.
+
+    None when there is no live model, or it needs a feature the current frame
+    does not carry (then it cannot be compared fairly and the candidate wins
+    by default — logged, never silent).
+    """
+    out_dir = Path(out_dir)
+    model_path = out_dir / f"ou_{line_str}_catboost_latest.cbm"
+    meta_path = out_dir / f"ou_{line_str}_catboost_metadata.json"
+    if not model_path.exists() or not meta_path.exists():
+        return None
+    try:
+        from catboost import CatBoostClassifier
+        feats = json.loads(meta_path.read_text()).get("feature_names") or []
+        missing = [f for f in feats if f not in X_val.columns]
+        if not feats or missing:
+            log.warning(
+                "Incumbent O/U %s unscorable: %d of %d features missing from the "
+                "current frame (%s)", line_str, len(missing), len(feats), missing[:5],
+            )
+            return None
+        model = CatBoostClassifier()
+        model.load_model(str(model_path))
+        proba = model.predict_proba(X_val[feats])[:, 1]
+        return holdout_metrics(y_val, proba)
+    except Exception as e:  # noqa: BLE001 — any failure means "cannot compare"
+        log.warning("Incumbent O/U %s unscorable: %s", line_str, e)
+        return None
+
+
+def decide_promotion(
+    candidate: Dict[str, float],
+    incumbent: Optional[Dict[str, float]],
+    naive_ll: float,
+    ll_tol: float = PROMOTION_LL_TOLERANCE,
+    cal_tol: float = PROMOTION_CAL_TOLERANCE,
+) -> Tuple[bool, str]:
+    """(promote?, reason). Both metric dicts come from holdout_metrics() on the
+    SAME holdout; naive_ll is the log-loss of predicting the training base rate."""
+    c_ll = float(candidate["log_loss"])
+    if c_ll >= naive_ll:
+        return False, (f"candidate holdout log-loss {c_ll:.4f} does not beat "
+                       f"naive {naive_ll:.4f}")
+    if incumbent is None:
+        return True, (f"no scorable incumbent; candidate beats naive "
+                      f"({c_ll:.4f} < {naive_ll:.4f})")
+    d_ll = c_ll - float(incumbent["log_loss"])
+    d_cal = float(candidate["calibration_gap"]) - float(incumbent["calibration_gap"])
+    if d_ll > ll_tol:
+        return False, (f"worse than incumbent by {d_ll:+.4f} log-loss "
+                       f"(tolerance {ll_tol})")
+    if d_cal > cal_tol:
+        return False, (f"calibration gap worse than incumbent by {d_cal:+.4f} "
+                       f"(tolerance {cal_tol})")
+    if d_ll < -PROMOTION_BETTER_MARGIN:
+        return True, (f"better than incumbent by {abs(d_ll):.4f} log-loss "
+                      f"(cal gap {d_cal:+.4f})")
+    return True, (f"within tolerance of incumbent (log-loss {d_ll:+.4f}, "
+                  f"cal gap {d_cal:+.4f})")
+
+
+def persist_model(
+    out_dir: Path, line_str: str, model, meta: Dict, promoted: bool,
+) -> Dict[str, str]:
+    """Promoted: archive the incumbent to prev/ (retain 1) and overwrite _latest.
+    Refused: write to candidate/ and leave _latest untouched.
+
+    Only the top-level ou_*_catboost_metadata.json files are live — the engine
+    globs that directory non-recursively — so prev/ and candidate/ are inert.
+    """
+    out_dir = Path(out_dir)
+    if promoted:
+        latest = out_dir / f"ou_{line_str}_catboost_latest.cbm"
+        latest_meta = out_dir / f"ou_{line_str}_catboost_metadata.json"
+        prev_dir = out_dir / "prev"
+        prev_dir.mkdir(parents=True, exist_ok=True)
+        if latest.exists():
+            shutil.copy2(latest, prev_dir / f"ou_{line_str}_catboost_prev.cbm")
+        if latest_meta.exists():
+            shutil.copy2(latest_meta, prev_dir / f"ou_{line_str}_catboost_prev_metadata.json")
+        _write_pair(model, meta, latest, latest_meta)
+        return {"model": str(latest), "metadata": str(latest_meta)}
+    cand_dir = out_dir / "candidate"
+    cand_dir.mkdir(parents=True, exist_ok=True)
+    cand = cand_dir / f"ou_{line_str}_catboost_candidate.cbm"
+    cand_meta = cand_dir / f"ou_{line_str}_catboost_candidate_metadata.json"
+    _write_pair(model, meta, cand, cand_meta)
+    return {"model": str(cand), "metadata": str(cand_meta)}
+
+
+def _write_pair(model, meta: Dict, model_path: Path, meta_path: Path) -> None:
+    """Model + metadata via tmp files, then two renames — the engine pairs
+    _latest.cbm with its metadata's feature list, so a crash between the two
+    writes must never leave a new model next to stale metadata."""
+    tmp_model = model_path.with_suffix(".cbm.tmp")
+    tmp_meta = meta_path.with_suffix(".json.tmp")
+    model.save_model(str(tmp_model))
+    tmp_meta.write_text(json.dumps(meta, indent=2, default=str))
+    tmp_model.replace(model_path)
+    tmp_meta.replace(meta_path)
+
+
+def dry_run_decision(promoted: bool, reason: str) -> Tuple[bool, str]:
+    """A dry run never promotes: the candidate goes to candidate/, _latest is untouched.
+
+    The reason keeps the decision the gate WOULD have made, so a preview run reads
+    the same as a real one in the log and in retrain_history.
+    """
+    return False, f"DRY RUN — would {'PROMOTE' if promoted else 'HOLD'}: {reason}"
+
+
 def train_over_under(
     lines: List[float] = None,
     top_k: int = 60,
     corr_threshold: float = 0.70,
     n_tune_trials: int = 0,
+    dry_run: bool = False,
 ) -> Dict:
     """Train O/U binary classifiers and return report.
 
@@ -292,10 +434,14 @@ def train_over_under(
     4. Prune correlated features
     4b. (Optional) Optuna hyperparameter tuning
     5. Walk-forward CV with CatBoost binary classifier
-    6. Train final model on all data, save to disk
+    6. Train final model (time-ordered 85/15, early-stop on the newest 15%)
+    7. Promotion gate: candidate vs incumbent on that same holdout tail;
+       refused candidates go to candidate/, _latest is never overwritten
 
     Args:
         n_tune_trials: Number of Optuna trials. 0 = skip tuning, use defaults.
+        dry_run: Train and run the gate, but write only to candidate/ — _latest
+            is never touched. The report says what the gate WOULD have done.
     """
     if lines is None:
         lines = DEFAULT_LINES
@@ -416,17 +562,57 @@ def train_over_under(
         val_pool = Pool(X_final_val, label=y_final_val)
         final_model.fit(train_pool, eval_set=val_pool)
 
-        # Sanity check on eval set
+        # Candidate on the holdout tail (rows are date-ordered, so this is the
+        # newest 15% — the same slice the incumbent is scored on below)
         eval_proba = final_model.predict_proba(X_final_val)[:, 1]
-        eval_ll = log_loss(y_final_val, eval_proba)
-        eval_brier = brier_score_loss(y_final_val, eval_proba)
-        log.info("Final model eval: ll=%.4f brier=%.4f (n=%d)", eval_ll, eval_brier, len(y_final_val))
+        cand_holdout = holdout_metrics(y_final_val, eval_proba)
+        eval_ll, eval_brier = cand_holdout["log_loss"], cand_holdout["brier"]
+        train_base = float(y_final_train.mean())
+        naive_holdout_ll = float(log_loss(
+            y_final_val, np.full(len(y_final_val), train_base), labels=[0, 1],
+        ))
+        X_holdout_full = X_no_odds.iloc[n_train:]
+        holdout_dates = None
+        if "_match_date" in X_holdout_full.columns:
+            d = pd.to_datetime(X_holdout_full["_match_date"], errors="coerce")
+            holdout_dates = [str(d.min())[:10], str(d.max())[:10]]
+        log.info(
+            "Final model holdout (n=%d, %s): ll=%.4f brier=%.4f cal_gap=%.4f | naive ll=%.4f",
+            cand_holdout["n"], "→".join(holdout_dates) if holdout_dates else "?",
+            eval_ll, eval_brier, cand_holdout["calibration_gap"], naive_holdout_ll,
+        )
 
-        # Save model
+        # --- Step 7: Promotion gate vs the incumbent on the same holdout ---
         line_str = str(line).replace(".", "_")
-        model_path = OUTPUT_DIR / f"ou_{line_str}_catboost_latest.cbm"
-        final_model.save_model(str(model_path))
-        log.info("Saved model to %s", model_path)
+        incumbent = score_incumbent(OUTPUT_DIR, line_str, X_holdout_full, y_final_val)
+        if incumbent:
+            log.info(
+                "Incumbent holdout: ll=%.4f brier=%.4f cal_gap=%.4f",
+                incumbent["log_loss"], incumbent["brier"], incumbent["calibration_gap"],
+            )
+        promoted, reason = decide_promotion(cand_holdout, incumbent, naive_holdout_ll)
+        would_promote = promoted
+        if dry_run:
+            promoted, reason = dry_run_decision(promoted, reason)
+        log.info(
+            "PROMOTION O/U %.1f: %s — %s",
+            line, "PROMOTED" if promoted else "REFUSED (latest untouched)", reason,
+        )
+        promotion = {
+            "promoted": promoted,
+            "reason": reason,
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "holdout": {
+                "n": cand_holdout["n"],
+                "dates": holdout_dates,
+                "candidate": cand_holdout,
+                "incumbent": incumbent,
+                "naive_log_loss": round(naive_holdout_ll, 4),
+            },
+        }
+        if dry_run:
+            promotion["dry_run"] = True
+            promotion["would_promote"] = would_promote
 
         # Save metadata
         meta = {
@@ -438,12 +624,14 @@ def train_over_under(
             "eval_metrics": {
                 "log_loss": round(eval_ll, 4),
                 "brier": round(eval_brier, 4),
+                "calibration_gap": cand_holdout["calibration_gap"],
             },
             "quality_gates": {
-                "log_loss_pass": ll_pass,
-                "brier_pass": brier_pass,
-                "calibration_pass": cal_pass,
+                "log_loss_pass": bool(ll_pass),
+                "brier_pass": bool(brier_pass),
+                "calibration_pass": bool(cal_pass),
             },
+            "promotion": promotion,
             "tuned_params": {k: round(v, 4) if isinstance(v, float) else v
                             for k, v in (best_params or {}).items()
                             if k not in ("verbose", "random_seed", "loss_function")},
@@ -452,18 +640,22 @@ def train_over_under(
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "n_training_rows": n_total,
         }
-        meta_path = OUTPUT_DIR / f"ou_{line_str}_catboost_metadata.json"
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2, default=str)
-        log.info("Saved metadata to %s", meta_path)
+        paths = persist_model(OUTPUT_DIR, line_str, final_model, meta, promoted)
+        log.info("Saved model to %s (metadata %s)", paths["model"], paths["metadata"])
 
         report["lines"][str(line)] = {
             "n_features_selected": len(selected),
             "selected_features": selected,
             "base_rate": round(base_rate, 4),
             "cv_metrics": cv_results,
-            "quality_gates_passed": ll_pass and brier_pass and cal_pass,
+            "quality_gates_passed": bool(ll_pass and brier_pass and cal_pass),
             "tuned": n_tune_trials > 0,
+            "promoted": promoted,
+            "would_promote": would_promote,
+            "dry_run": dry_run,
+            "promotion_reason": reason,
+            "holdout": promotion["holdout"],
+            "paths": paths,
         }
 
     # --- Print summary ---
@@ -481,6 +673,8 @@ def train_over_under(
         print(f"    Accuracy:    {cv['overall_accuracy']:.4f}")
         print(f"    Cal gap:     {cv['overall_calibration_gap']:.4f}")
         print(f"  Quality gates: {'ALL PASS' if info['quality_gates_passed'] else 'SOME FAILED'}")
+        print(f"  Promotion:     {'PROMOTED' if info['promoted'] else 'REFUSED — latest untouched'}")
+        print(f"                 {info['promotion_reason']}")
 
         print(f"\n  Top 10 features:")
         for feat, score in sorted(importance.items(), key=lambda x: -x[1])[:10]:
@@ -507,6 +701,10 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=60, help="Number of features to select")
     parser.add_argument("--corr-threshold", type=float, default=0.70, help="Correlation pruning threshold")
     parser.add_argument("--n-tune-trials", type=int, default=0, help="Optuna tuning trials (0=skip)")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Train and gate, but write only to candidate/ — never touch _latest",
+    )
     args = parser.parse_args()
 
     report = train_over_under(
@@ -514,4 +712,5 @@ if __name__ == "__main__":
         top_k=args.top_k,
         corr_threshold=args.corr_threshold,
         n_tune_trials=args.n_tune_trials,
+        dry_run=args.dry_run,
     )

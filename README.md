@@ -9,7 +9,7 @@ The hard part of this domain is not training a classifier. It is **not lying to 
 > ```bash
 > python3 scripts/diagnostics/print_model_status.py
 > ```
-> That command prints walk-forward accuracy, log-loss, ECE and the selected-feature count straight from the trainer's metadata — see [`MODEL_STATUS.md`](MODEL_STATUS.md) for how to read it. The honest ceiling on 1X2 is ~53–55%; anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
+> That command prints two sections straight from the trainers' metadata — see [`MODEL_STATUS.md`](MODEL_STATUS.md) for how to read them. **First the O/U classifiers** (holdout log-loss vs naive, calibration gap, the last promotion decision against the incumbent, realised CLV on settled bets): they price the only enabled betting markets, so they are the headline. **Then the 1X2 ensemble** (walk-forward accuracy, log-loss, ECE): it feeds the dashboard, Telegram and the fantacalcio hub, not a bet. The honest ceiling on 1X2 is ~53–55%; anything claiming >56% is leakage or fiction, and the repo treats it as a bug.
 
 ![Match Intelligence dashboard](docs/screenshots/match-intel.png)
 

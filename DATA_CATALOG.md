@@ -4983,6 +4983,23 @@ Fields (12):
 | 10 | `over_2_5` | float | 100.0% | 0.682 |
 | 11 | `over_3_5` | float | 100.0% | 0.33 |
 | 12 | `over_4_5` | float | 100.0% | 0.221 |
+| 13 | `ou_ml` | dict | SA rows only | `{"2.5": 0.6721, "1.5": 0.8178, "3.5": 0.3382}` — the O/U CatBoost leg per line |
+| 14 | `ou_poisson` | dict | SA rows only | `{"2.5": 0.537, ...}` — the Poisson leg per line (pre-blend) |
+| 15 | `ou_blend_weight` | dict | SA rows only | `{"2.5": 0.65, ...}` — the ML share that produced `over_X_Y` |
+
+**Writers (2026-09-05):** pipeline Step 19 (`run_full_pipeline`) on every run, AND
+`weekly_retrain._refresh_goal_predictions` right after a retrain promotes anything — both go
+through `over_under_model.refresh_from_predictions` / `ml_probs_from_predictions`, one code
+path. Before this the engine's post-retrain refresh rewrote only `predictions.json`, so a newly
+promoted O/U classifier reached the file the scanner prices only at the next morning pipeline.
+
+**How `over_1_5` / `over_2_5` / `over_3_5` are made (2026-09-04 audit trail):** when the ensemble
+engine's `component_predictions.over_under_ml` is present for the match, `over_under_model`
+blends `w_ml × ML + (1 − w_ml) × Poisson` and writes the blend INTO `over_X_Y` — these are the
+probabilities `betting_unified.scan_ou_market` prices (the only enabled markets). Fields 13–15
+record the legs so `component_ledger` can grade each one; `w_ml` defaults to 0.65
+(`DEFAULT_ML_BLEND_WEIGHT`) unless `data/models/ou_blend_weights.json` (gated refit) overrides
+the line. Rows without an ML leg (EPL, ML unavailable) are pure Poisson and carry empty dicts.
 
 ---
 
@@ -5575,6 +5592,14 @@ _Jsonl history of all retraining attempts._
 - **Modified:** 2026-04-18 10:31  
 - **Lines:** 12  
 - **Keys in first entry:** `['mode', 'timestamp', 'promoted', 'current_metrics', 'error']`
+- **O/U entries (since 2026-09-04):** one line per O/U classifier per retrain, `mode: ou_1.5` / `ou_2.5`,
+  with `promoted`, `reason`/`comparison` (the gate's verdict vs the incumbent), `holdout`
+  (n, dates, candidate + incumbent metrics, naive log-loss), `cv_log_loss`, `cv_calibration_gap`,
+  and `dry_run: true` on a preview run (the verdict is then in the reason as "DRY RUN — would
+  PROMOTE/HOLD"). Written by `weekly_retrain._retrain_ou_classifiers`, which runs as an
+  **auxiliary model on every retrain, whether or not the 1X2 ensemble was promoted** — until
+  2026-09-05 it only ran inside the ensemble's promote branch, so a held ensemble froze the
+  money model too. Read with `cli.py retrain_history` or `weekly_retrain --history`.
 
 ---
 
@@ -5782,8 +5807,9 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 
 | File | Writer | What it is |
 |---|---|---|
-| `component_ledger.json` | `scripts/prediction/component_ledger.py` (3 fail-soft scheduler hooks: pre-kickoff snapshot, settle sweep, post-pipeline sweep) | **The ensemble's calibration flywheel** (2026-09-04). Per SA match: each core component's 1X2 probs (`ml/market/xg/player_xg/factor`) + the ensemble's betting probs + `weights_applied` + `ml_reasons` (SHAP top-5) + `ml_drift`, upserted freely until THAT match's kickoff then frozen — ex-ante by construction, post-hoc rows refused. `settle()` grades vs `matches.parquet` (multiclass Brier / log-loss / pick-correct per component). `rot_alarm()` (recent-20 vs trailing-100 Brier, Δ>0.04) and `drift_alarm()` (≥15 serving features outside training bands) are change-gated notifies. `refit_weights()` needs ≥100 all-core settled rows, shrinks 0.5 toward production, deploys `data/models/ensemble_weights.json` ONLY on a time-ordered holdout log-loss win — which the engine loads at init (precedence: ledger > legacy `data/feedback/optimized_weights.json` > hardcoded). NOTE: the legacy feedback loop (`feedback_analyzer` → `weight_optimizer`) is starved at n_settled≈2 because its `results.json` side holds ~1 match; the ledger settles against matches.parquet instead. |
+| `component_ledger.json` | `scripts/prediction/component_ledger.py` (3 fail-soft scheduler hooks: pre-kickoff snapshot, settle sweep, post-pipeline sweep) | **The ensemble's calibration flywheel** (2026-09-04). Per SA match: each core component's 1X2 probs (`ml/market/xg/player_xg/factor`) + the ensemble's betting probs + `weights_applied` + `ml_reasons` (SHAP top-5) + `ml_drift`, upserted freely until THAT match's kickoff then frozen — ex-ante by construction, post-hoc rows refused. `settle()` grades vs `matches.parquet` (multiclass Brier / log-loss / pick-correct per component). `rot_alarm()` (recent-20 vs trailing-100 Brier, Δ>0.04) and `drift_alarm()` (≥15 serving features outside training bands) are change-gated notifies. `refit_weights()` needs ≥100 all-core settled rows, shrinks 0.5 toward production, deploys `data/models/ensemble_weights.json` ONLY on a time-ordered holdout log-loss win — which the engine loads at init (precedence: ledger > legacy `data/feedback/optimized_weights.json` > hardcoded). NOTE: the legacy feedback loop (`feedback_analyzer` → `weight_optimizer`) is starved at n_settled≈2 because its `results.json` side holds ~1 match; the ledger settles against matches.parquet instead. **O/U leg (2026-09-04, the model that places bets):** each row also carries `ou: {"1.5"|"2.5": {ml, poisson, served, w}}` from `goal_predictions.json` (only lines where the ML leg fired), `total_goals` after settlement, and `ou_grades: {line: {ml|poisson|served: {brier, log_loss, correct}}}` — binary grades vs the real goal total. `summary()["ou"]` rolls them up; `refit_ou_blend()` (≥60 rows per line, 1-D grid, shrink 0.5, same holdout gate) deploys `data/models/ou_blend_weights.json`. |
 | `data/models/ensemble_weights.json` | `component_ledger.refit_weights` (gate-pass only) | Deployed ensemble weight override with provenance (`n_settled`, holdout LLs, `fitted_at`). Engine validates keys/sum/range and fail-softs to constants. Does not exist until the first gate pass. |
+| `data/models/ou_blend_weights.json` | `component_ledger.refit_ou_blend` (gate-pass only) | `{"weights": {"2.5": w_ml, "1.5": w_ml}, "fitted_at", "lines": {per-line fit report}, "provenance"}` — the ML share of the served O/U probability per bet line. `over_under_model.load_blend_weights` validates [0, 1] per line and fail-softs to `DEFAULT_ML_BLEND_WEIGHT` = 0.65. Lines not refit keep their deployed value. Does not exist until the first gate pass. |
 | `data/models/universal/feature_quantiles.json` | `MLClassifier._get_train_quantiles` | Per-feature training [q0.005, q0.995] bands for the serving-drift tripwire; keyed on `features.parquet` `source_mtime` (rebuilds when the source moves, never trusts its own mtime). |
 
 ---

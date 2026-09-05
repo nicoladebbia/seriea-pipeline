@@ -19,7 +19,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -45,6 +45,41 @@ ODDS_SANITY = {
 # Serie A average goals per game (2022-2026 calibrated: actual 2.549 over 1460 matches)
 # Trend: 3.05 (2020-21) → 2.56 (2022-24) → 2.44 (2025-26). League getting more defensive.
 SERIE_A_AVG_GOALS = 2.50
+
+# Share of the ML O/U classifier in the served probability (rest = Poisson).
+# The default is the March-2026 constant; component_ledger.refit_ou_blend can
+# deploy a per-line override (holdout-gated) to OU_BLEND_WEIGHTS.
+DEFAULT_ML_BLEND_WEIGHT = 0.65
+OU_BLEND_WEIGHTS = DATA_DIR / "models" / "ou_blend_weights.json"
+
+
+def load_blend_weights(path: Optional[Path] = None) -> Dict[str, float]:
+    """{line_str: ml_weight} deployed by the component ledger, else {}.
+
+    Fail-soft: a missing/unreadable file or an out-of-range value never blocks
+    prediction — the default weight applies and the reason is logged.
+    """
+    path = Path(path) if path else OU_BLEND_WEIGHTS
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    out: Dict[str, float] = {}
+    for key, val in (data.get("weights") or {}).items():
+        try:
+            w = float(val)
+        except (TypeError, ValueError):
+            log.warning("O/U blend weight for line %s not numeric (%r) — ignored", key, val)
+            continue
+        if 0.0 <= w <= 1.0:
+            out[str(key)] = w
+        else:
+            log.warning("O/U blend weight for line %s out of [0, 1] (%s) — ignored", key, w)
+    if out:
+        log.info("Loaded ledger-refit O/U blend weights (fitted %s): %s",
+                 data.get("fitted_at"), out)
+    return out
+
 
 # Historical over/under rates (2022-2026, 4 recent seasons)
 HISTORICAL_OVER_RATES = {
@@ -86,9 +121,24 @@ GOAL_FACTORS = {
     "derby": {"expected_goals_mod": -0.20, "description": "Derby match (defensive)"},
 }
 
-# Team attacking/defensive strength adjustments
-# Data-driven from 2024-2026 seasons (goals scored/conceded vs league average)
+# Team attacking/defensive strength adjustments.
+#
+# LIVE SOURCE (2026-09-04): derived from matches.parquet at first use — see
+# derive_team_strengths(): per league, the current season + the 2 completed
+# ones; attack_mod = goals-for per match ÷ league per-team average − 1;
+# defense_mod = 1 − goals-against per match ÷ that average. These are exactly
+# the semantics the April-2026 table below was typed with (measured: mean |Δ|
+# 0.03 attack / 0.02 defense vs it; served over_2_5 moved ≤ 0.004 on the live
+# slate). Teams with < STRENGTH_MIN_MATCHES shrink linearly toward 0.
+#
+# The dict below is the FALLBACK ONLY (parquet unreadable). It is a season
+# literal — by 2026-27 it lacked Frosinone and still listed four relegated
+# sides — which is why it no longer drives predictions.
 # attack_mod: positive = scores more than average, defense_mod: positive = concedes fewer
+STRENGTH_SEASONS = 3          # current + 2 completed seasons, per league
+STRENGTH_MIN_MATCHES = 10     # below this a team's mods shrink linearly toward 0
+_TEAM_STRENGTHS_LIVE: Optional[Dict[str, Dict[str, float]]] = None
+
 TEAM_STRENGTHS = {
     # Top tier
     "Inter": {"attack_mod": 0.75, "defense_mod": 0.27},
@@ -160,6 +210,14 @@ class GoalPrediction:
     home_defense_strength: float
     away_defense_strength: float
 
+    # Audit trail of the served O/U probability per line ("1.5", "2.5", ...):
+    # the ML leg, the Poisson leg and the ML weight that blended them. Empty
+    # when the ML leg was absent (then over_* is pure Poisson). The component
+    # ledger grades each leg from these — never re-derive them.
+    ou_ml: Dict[str, float] = field(default_factory=dict)
+    ou_poisson: Dict[str, float] = field(default_factory=dict)
+    ou_blend_weight: Dict[str, float] = field(default_factory=dict)
+
 
 @dataclass
 class OverUnderBet:
@@ -198,10 +256,79 @@ def calculate_exact_score_matrix(lambda_home: float, lambda_away: float, max_goa
 # STRENGTH CALCULATION
 # =============================================================================
 
+def derive_team_strengths(
+    matches,
+    n_seasons: int = STRENGTH_SEASONS,
+    min_matches: int = STRENGTH_MIN_MATCHES,
+) -> Dict[str, Dict[str, float]]:
+    """{team: {attack_mod, defense_mod, n}} from a matches frame.
+
+    Columns needed: home_team, away_team, home_score, away_score, season
+    (and league, optional — averages are per league so an EPL row is judged
+    against EPL scoring, not Serie A's). Same formula as the hand-typed table:
+    attack = GF/match ÷ league per-team avg − 1, defense = 1 − GA/match ÷ avg,
+    both × min(1, n / min_matches) so a two-match promoted side sits near 0.
+    """
+    m = matches.dropna(subset=["home_score", "away_score"])
+    groups = m.groupby("league") if "league" in m.columns else [("all", m)]
+    out: Dict[str, Dict[str, float]] = {}
+    for _league, g in groups:
+        seasons = sorted(g["season"].unique())[-n_seasons:]
+        w = g[g["season"].isin(seasons)]
+        if w.empty:
+            continue
+        avg = (w["home_score"].sum() + w["away_score"].sum()) / (2 * len(w))
+        if avg <= 0:
+            continue
+        for t in set(w["home_team"]) | set(w["away_team"]):
+            h, a = w[w["home_team"] == t], w[w["away_team"] == t]
+            n = len(h) + len(a)
+            gf = h["home_score"].sum() + a["away_score"].sum()
+            ga = h["away_score"].sum() + a["home_score"].sum()
+            shrink = min(1.0, n / max(min_matches, 1))
+            out[str(t)] = {
+                "attack_mod": round(float(gf / n / avg - 1) * shrink, 3),
+                "defense_mod": round(float(1 - ga / n / avg) * shrink, 3),
+                "n": int(n),
+            }
+    return out
+
+
+def _team_strengths() -> Dict[str, Dict[str, float]]:
+    """Live table, derived once per process; hand-typed fallback if unreadable."""
+    global _TEAM_STRENGTHS_LIVE
+    if _TEAM_STRENGTHS_LIVE is None:
+        try:
+            import pandas as pd
+            m = pd.read_parquet(
+                DATA_DIR / "parsed" / "matches.parquet",
+                columns=["home_team", "away_team", "home_score", "away_score",
+                         "season", "league"],
+            )
+            derived = derive_team_strengths(m)
+            if not derived:
+                raise ValueError("no rows with scores")
+            _TEAM_STRENGTHS_LIVE = derived
+            log.info("Team strengths derived from matches.parquet: %d teams", len(derived))
+        except Exception as e:  # noqa: BLE001 — fail-soft to the typed table, loudly
+            log.warning("Team strengths: matches.parquet unusable (%s) — "
+                        "using the hand-typed fallback table", e)
+            _TEAM_STRENGTHS_LIVE = dict(TEAM_STRENGTHS)
+    return _TEAM_STRENGTHS_LIVE
+
+
 def get_team_strength(team: str) -> Dict[str, float]:
     """Get attacking and defensive strength modifiers for a team."""
-    if team in TEAM_STRENGTHS:
-        return TEAM_STRENGTHS[team]
+    strengths = _team_strengths()
+    if team in strengths:
+        return strengths[team]
+    try:
+        from config.team_names import normalize_team
+        canon = normalize_team(team or "")
+        if canon in strengths:
+            return strengths[canon]
+    except Exception as e:  # noqa: BLE001 — a normaliser hiccup must not break a prediction
+        log.debug("team-name normalisation skipped for %r: %s", team, e)
     # Default for unknown teams
     return {"attack_mod": 0.0, "defense_mod": 0.0}
 
@@ -539,7 +666,7 @@ def generate_over_under_predictions(
     Args:
         ml_ou_probs: Optional dict of {match_key: {line: P(over)}} from the
             dedicated O/U CatBoost classifier. When provided, blends ML + Poisson
-            at 65/35 weight for calibrated O/U probabilities.
+            at the deployed per-line ML weight (default 65/35).
     """
 
     log.info("=" * 60)
@@ -557,6 +684,7 @@ def generate_over_under_predictions(
 
     log.info(f"Loaded {len(predictions)} match predictions")
     log.info(f"Loaded totals odds for {len(totals_odds)} matches")
+    blend_weights = load_blend_weights()
 
     goal_predictions = []
     all_bets = []
@@ -619,7 +747,8 @@ def generate_over_under_predictions(
             ensemble_away_xg=blended_away_xg,
         )
 
-        # Blend ML O/U classifier with Poisson probabilities (65% ML, 35% Poisson).
+        # Blend ML O/U classifier with Poisson probabilities (default 65% ML,
+        # 35% Poisson; per-line override from the component ledger's gated refit).
         # The ML model captures non-linear feature interactions that Poisson misses,
         # while Poisson regularizes with structural goal-scoring properties.
         if ml_ou_probs and match_key in ml_ou_probs:
@@ -630,11 +759,16 @@ def generate_over_under_predictions(
                 ml_p = match_ml.get(line_val)
                 if ml_p is not None:
                     poisson_p = getattr(goal_pred, attr_name)
-                    blended_p = round(0.65 * ml_p + 0.35 * poisson_p, 3)
+                    line_key = str(line_val)
+                    w_ml = blend_weights.get(line_key, DEFAULT_ML_BLEND_WEIGHT)
+                    blended_p = round(w_ml * ml_p + (1 - w_ml) * poisson_p, 3)
                     setattr(goal_pred, attr_name, blended_p)
+                    goal_pred.ou_ml[line_key] = round(float(ml_p), 4)
+                    goal_pred.ou_poisson[line_key] = round(float(poisson_p), 4)
+                    goal_pred.ou_blend_weight[line_key] = w_ml
                     log.info(
-                        "  %s O/U %.1f: ML=%.3f Poisson=%.3f -> blend=%.3f",
-                        match_key, line_val, ml_p, poisson_p, blended_p,
+                        "  %s O/U %.1f: ML=%.3f Poisson=%.3f w_ml=%.2f -> blend=%.3f",
+                        match_key, line_val, ml_p, poisson_p, w_ml, blended_p,
                     )
 
         goal_predictions.append(goal_pred)
@@ -652,6 +786,39 @@ def generate_over_under_predictions(
     log.info(f"Found {len(all_bets)} potential over/under bets")
 
     return goal_predictions, all_bets
+
+
+def ml_probs_from_predictions(rows) -> Dict[str, Dict[float, float]]:
+    """{match: {line: P(over)}} from prediction rows' ``component_predictions.
+    over_under_ml`` — the ML leg the blend consumes. One implementation shared by
+    pipeline Step 19 and the post-retrain refresh, so the two cannot drift."""
+    out: Dict[str, Dict[float, float]] = {}
+    for p in rows or []:
+        ou_ml = (p.get("component_predictions") or {}).get("over_under_ml") or {}
+        if ou_ml and p.get("match"):
+            out[p["match"]] = {float(k): float(v) for k, v in ou_ml.items()}
+    return out
+
+
+def refresh_from_predictions(predictions_path: Optional[Path] = None) -> int:
+    """Regenerate goal_predictions.json from the current predictions.json.
+
+    Pipeline Step 19 without the pipeline: the engine's prediction refresh
+    rewrites predictions.json (which carries the O/U classifier's probabilities)
+    but NOT goal_predictions.json — the file scan_ou_market prices — so a newly
+    promoted O/U model would otherwise serve only after the next pipeline run.
+    Returns the number of goal predictions written.
+    """
+    path = predictions_path or DATA_DIR / "upcoming" / "predictions.json"
+    payload = json.loads(Path(path).read_text())
+    rows = payload.get("predictions", []) if isinstance(payload, dict) else payload
+    ml_ou_probs = ml_probs_from_predictions(rows)
+    preds, bets = generate_over_under_predictions(ml_ou_probs=ml_ou_probs)
+    if preds:
+        save_over_under_predictions(preds, bets)
+    log.info("goal_predictions refreshed: %d matches, %d with an ML O/U leg",
+             len(preds), len(ml_ou_probs))
+    return len(preds)
 
 
 def save_over_under_predictions(
@@ -679,7 +846,10 @@ def save_over_under_predictions(
                 "over_3_5": p.over_3_5,
                 "over_4_5": p.over_4_5,
                 "confidence": p.confidence,
-                "factors": p.factors
+                "factors": p.factors,
+                "ou_ml": p.ou_ml,
+                "ou_poisson": p.ou_poisson,
+                "ou_blend_weight": p.ou_blend_weight,
             }
             for p in predictions
         ]

@@ -1846,9 +1846,14 @@ def run_model_retrain() -> bool:
             try:
                 from scripts.models.train_over_under import train_over_under
                 log.info("Retraining O/U classifiers...")
-                train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
-                log.info("O/U classifiers retrained")
-                details["O/U classifiers"] = "promoted"
+                ou_report = train_over_under(lines=[1.5, 2.5], top_k=60, n_tune_trials=0)
+                # The trainer gates promotion vs the incumbent; say what happened.
+                ou_summary = ", ".join(
+                    f"{ln} {'promoted' if info.get('promoted') else 'held'}"
+                    for ln, info in ou_report.get("lines", {}).items()
+                ) or "no lines trained"
+                log.info("O/U classifiers: %s", ou_summary)
+                details["O/U classifiers"] = ou_summary
             except Exception as ou_e:
                 log.error("O/U retrain failed (non-fatal): %s", ou_e)
                 details["O/U classifiers"] = f"failed: {ou_e}"
