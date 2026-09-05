@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FEEDBACK ANALYZER - Post-Settlement Analysis
 
-Reads predictions_archive.json + results.json, computes per-method Brier scores,
+Reads predictions_archive.json + matches.parquet, computes per-method Brier scores,
 factor effectiveness, intelligence adjustment effectiveness, and xG accuracy.
 
 Outputs: data/feedback/analysis.json
@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 ARCHIVE_PATH = DATA_DIR / "upcoming" / "predictions_archive.json"
-RESULTS_PATH = DATA_DIR / "upcoming" / "results.json"
+MATCHES_PATH = DATA_DIR / "parsed" / "matches.parquet"
 FEEDBACK_DIR = DATA_DIR / "feedback"
 ANALYSIS_PATH = FEEDBACK_DIR / "analysis.json"
 
@@ -43,37 +43,71 @@ class _NumpySafeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def match_predictions_to_results():
-    """Join archive entries with settled results by match name.
+def match_predictions_to_results(league: str | None = "serie_a"):
+    """Join archive entries with settled results from matches.parquet.
 
-    Returns list of dicts with prediction + actual outcome.
+    History: this joined against data/upcoming/results.json, which is a FETCH
+    SNAPSHOT (last ~1 completed match, overwritten every fetch) — so the
+    analyzer graded 2 matches ever and every downstream gate sat in
+    cold_start forever. matches.parquet holds every settled result.
+
+    Archive entries are first-write-wins pre-kickoff snapshots (verified
+    2026-09-05: 0 of 216 archived after their match date), so grades are
+    ex-ante — of the EARLIEST forecast vintage, not the T-30 refresh.
+
+    Join key: (date, normalized home, normalized away), with a ±1-day
+    fallback for timezone drift. Each row is tagged with its league;
+    `league` filters (default serie_a, the production earner) — pass None
+    for all leagues.
     """
     archive = load_json_safe(ARCHIVE_PATH)
-    results_raw = load_json_safe(RESULTS_PATH)
-
-    if not archive or not results_raw:
+    if not archive or not isinstance(archive, dict):
         return []
-
-    # Build results lookup (results.json is dict keyed by match name)
-    results = results_raw.get("results", results_raw)
-    if not isinstance(results, dict):
+    try:
+        import pandas as pd
+        from datetime import timedelta
+        from config.team_names import normalize_team
+        m = pd.read_parquet(MATCHES_PATH,
+                            columns=["match_date", "home_team", "away_team",
+                                     "home_score", "away_score", "result",
+                                     "league"])
+    except Exception as e:
+        log.warning("Could not read matches.parquet for settlement: %s", e)
         return []
+    m = m[m["result"].notna() & m["home_score"].notna()]
+
+    def _nt(name):
+        return normalize_team(name or "") or (name or "")
 
     results_map = {}
-    for key, val in results.items():
-        if isinstance(val, dict) and val.get("completed", False):
-            match_name = val.get("match", key)
-            results_map[match_name] = val
+    for r in m.itertuples():
+        results_map[(str(r.match_date)[:10], _nt(r.home_team), _nt(r.away_team))] = r
 
     matched = []
     for _key, pred in archive.items():
-        match_name = pred.get("match", "")
-        result = results_map.get(match_name)
-        if not result:
+        if not isinstance(pred, dict):
+            continue
+        h, a = _nt(pred.get("home_team")), _nt(pred.get("away_team"))
+        d = str(pred.get("date") or "")[:10]
+        if not h or not a or not d:
+            continue
+        row = results_map.get((d, h, a))
+        if row is None:
+            try:
+                day = pd.Timestamp(d)
+                for shift in (-1, 1):
+                    row = results_map.get(
+                        (str(day + timedelta(days=shift))[:10], h, a))
+                    if row is not None:
+                        break
+            except (ValueError, TypeError):
+                row = None
+        if row is None:
+            continue
+        if league is not None and row.league != league:
             continue
 
-        home_score = result.get("home_score", 0)
-        away_score = result.get("away_score", 0)
+        home_score, away_score = int(row.home_score), int(row.away_score)
         if home_score > away_score:
             actual = "HOME"
         elif away_score > home_score:
@@ -82,7 +116,8 @@ def match_predictions_to_results():
             actual = "DRAW"
 
         matched.append({
-            "match": match_name,
+            "match": pred.get("match", f"{h} vs {a}"),
+            "league": row.league,
             "predicted_outcome": pred.get("predicted_outcome", ""),
             "confidence": pred.get("confidence", 0),
             "confidence_level": pred.get("confidence_level", ""),
@@ -90,7 +125,7 @@ def match_predictions_to_results():
             "actual_outcome": actual,
             "home_score": home_score,
             "away_score": away_score,
-            "total_goals": result.get("total_goals", home_score + away_score),
+            "total_goals": home_score + away_score,
             "home_xg": pred.get("home_xg", 0),
             "away_xg": pred.get("away_xg", 0),
             "component_predictions": pred.get("component_predictions", {}),

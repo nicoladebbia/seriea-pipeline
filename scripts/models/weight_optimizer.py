@@ -74,13 +74,19 @@ class _NumpySafeEncoder(json.JSONEncoder):
 
 
 def _determine_status(n_settled: int) -> str:
-    """Determine activation status based on sample size."""
+    """Determine activation status based on sample size.
+
+    "active" retired 2026-09-05: ensemble weight DEPLOYMENT is owned by
+    scripts/prediction/component_ledger.refit_weights (per-match ex-ante
+    freeze, >=100 settled rows, time-ordered holdout gate). This optimizer's
+    inverse-Brier fit is ungated and in-sample, so it stays advisory forever
+    — a cross-check against the ledger's refit, never a deployer. The
+    engine's _load_optimized_weights only accepts status == "active", so
+    nothing here can reach production weights.
+    """
     if n_settled < 20:
         return "cold_start"
-    elif n_settled < 30:
-        return "advisory"
-    else:
-        return "active"
+    return "advisory"
 
 
 def optimize_weights(analysis: dict) -> dict:
@@ -209,6 +215,14 @@ def compute_factor_decay(analysis: dict) -> dict:
     # Load existing multipliers to apply incremental changes
     existing = load_json_safe(FACTOR_ADJ_PATH)
     existing_multipliers = existing.get("multipliers", {})
+    existing_details = existing.get("details", {})
+
+    # Steps are gated on NEW EVIDENCE, not on wall-clock: this function runs
+    # on every pipeline pass (2-3x/day) against the same full-sample analysis,
+    # so an ungated x0.8 per run would compound a factor to the 0.3 floor in
+    # ~2 days with zero new information. A factor may only step again once it
+    # has accumulated MIN_NEW_APPLICATIONS since its last step.
+    MIN_NEW_APPLICATIONS = 10
 
     multipliers = {}
     details = {}
@@ -218,6 +232,8 @@ def compute_factor_decay(analysis: dict) -> dict:
         accuracy = data.get("accuracy", 0)
         base_rate = data.get("base_rate", 0.444)
         current_mult = existing_multipliers.get(factor, 1.0)
+        applied_at_change = existing_details.get(factor, {}).get(
+            "applied_at_change", 0)
 
         if applied < 20:
             # Not enough data, keep current multiplier
@@ -228,6 +244,20 @@ def compute_factor_decay(analysis: dict) -> dict:
                 "base_rate": base_rate,
                 "multiplier": current_mult,
                 "action": "insufficient_data",
+            }
+            continue
+
+        if applied - applied_at_change < MIN_NEW_APPLICATIONS and applied_at_change > 0:
+            # Already stepped on this evidence — hold until enough new
+            # applications settle.
+            multipliers[factor] = current_mult
+            details[factor] = {
+                "applied": applied,
+                "accuracy": accuracy,
+                "base_rate": base_rate,
+                "multiplier": current_mult,
+                "applied_at_change": applied_at_change,
+                "action": "hold_awaiting_new_data",
             }
             continue
 
@@ -252,6 +282,10 @@ def compute_factor_decay(analysis: dict) -> dict:
             "base_rate": base_rate,
             "multiplier": round(new_mult, 3),
             "previous_multiplier": current_mult,
+            # A real step consumes the evidence; "maintain" leaves the
+            # checkpoint so drift can still trigger a step later.
+            "applied_at_change": applied if action in ("decay", "boost")
+            else applied_at_change,
             "action": action,
         }
 
