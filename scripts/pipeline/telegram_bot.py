@@ -1295,7 +1295,7 @@ def _handle_live() -> str:
             return "\u26bd No live matches right now. Check /today for upcoming."
 
         tg = TgMsg()
-        tg.raw(f"\U0001f534 <b>Live Matches</b>")
+        tg.raw("\U0001f534 <b>Live Matches</b>")
         tg.blank()
 
         for m in matches:
@@ -1382,7 +1382,7 @@ def _handle_parlays() -> str:
             return "No top picks selected. Check the dashboard for all parlays."
 
         tg = TgMsg()
-        tg.raw(f"\U0001f3af <b>Top Parlay Picks</b>")
+        tg.raw("\U0001f3af <b>Top Parlay Picks</b>")
         tg.blank()
 
         rank_emojis = ["\U0001f947", "\U0001f948", "\U0001f949"]
@@ -1795,7 +1795,7 @@ def _handle_today(token: str | None = None, chat_id: str | None = None) -> str:
                 next_date = future[0].get("date", "?")
                 next_matches = [p for p in all_preds if p.get("date", "").startswith(next_date)]
                 tg = TgMsg()
-                tg.raw(f"\U0001f4c5 No matches today.")
+                tg.raw("\U0001f4c5 No matches today.")
                 tg.raw(f"Next matchday: <b>{_html_escape(next_date)}</b> ({len(next_matches)} matches)")
                 tg.blank()
                 for m in next_matches[:8]:
@@ -1975,13 +1975,46 @@ def _handle_formazioni() -> str:
               "conta per i cambi automatici.</i>")
 
 
-def _handle_picks() -> str:
-    """/picks — one line for EVERY upcoming match (scripts/betting/picks.py).
+_PICK_TIER_IT = {"A": "misurato", "B": "etichetta", "C": "tasso base", "engine": "motore"}
+_IT_DAYS = ("lun", "mar", "mer", "gio", "ven", "sab", "dom")
 
-    💰 VALUE = the engine's own real-money selection (read from the slip);
-    📝 LEAN = best positive-edge angle across every priced market, paper-
-    journaled at T-30 so the market builds a record; ➖ NO EDGE = the most
-    probable outcome and why the market already prices it."""
+
+def _pick_line(pk: dict, *, bullet: str = "▸") -> str:
+    """One bet on one line: what, price, edge, tier — then the two numbers
+    that made it (model vs market) on the next."""
+    if not pk:
+        return ""
+    who = f"{str(pk.get('player')).strip()} " if pk.get("player") else ""
+    edge = pk.get("edge_pct")
+    edge_s = f"{edge:+.1f}%" if isinstance(edge, int | float) else "n/d"
+    tier = pk.get("tier")
+    tier_s = f" · {_PICK_TIER_IT.get(tier, tier)}" if tier else ""
+    odds = pk.get("odds")
+    head = (f"{bullet} <b>{pk.get('bet_type') or '?'}</b>: {who}{pk.get('selection') or ''}"
+            f"{' @ ' + format(odds, '.2f') if isinstance(odds, int | float) else ''}"
+            f" · edge {edge_s}{tier_s}")
+    p, m = pk.get("probability_pct"), pk.get("implied_pct")
+    nb = pk.get("n_books")
+    detail = ""
+    if p is not None and m is not None:
+        books = " · 1 solo book" if nb == 1 else (f" · {nb} book" if nb else "")
+        detail = f"\n    modello {p:.0f}% vs mercato {m:.0f}%{books}"
+    elif p is not None:
+        detail = f"\n    modello {p:.0f}%"
+    note = pk.get("engine_note")
+    if note:
+        detail += f"\n    ⚙️ {note}"
+    return head + detail
+
+
+def _handle_picks(max_matches: int = 12) -> str:
+    """/picks — every upcoming match, several angles each (scripts/betting/picks.py).
+
+    Per match: the headline (💰 VALUE real money / 📝 LEAN paper / ➖ NO EDGE),
+    up to two alternatives, and the 🎲 Insolite slot — the best positive-edge
+    angle OUTSIDE 1x2 / totals / double chance (player props, first half,
+    HT/FT, first team to score, exact score), or, when none beats its price,
+    the most probable priced player prop with the price that beats it."""
     try:
         doc = json.loads((PROJECT_ROOT / "data" / "upcoming" / "picks.json").read_text())
     except (OSError, ValueError):
@@ -1991,40 +2024,67 @@ def _handle_picks() -> str:
     if not picks:
         return "Nessuna partita in programma nel file picks."
     c = doc.get("counts") or {}
-    lines = [f"<b>🎯 Una scelta per partita</b> "
-             f"({c.get('VALUE', 0)} value · {c.get('LEAN', 0)} lean · "
-             f"{c.get('NO_EDGE', 0)} no edge)"]
+    band = doc.get("band") or [3.0, 7.0]
+    out = [f"<b>🎯 Scelte per partita</b> — {c.get('VALUE', 0)} 💰 value · "
+           f"{c.get('LEAN', 0)} 📝 lean · {c.get('NO_EDGE', 0)} ➖ no edge",
+           "<i>edge = quanto il modello paga sopra il prezzo; banda credibile "
+           f"{band[0]:.0f}–{band[1]:.0f}%; solo 💰 è denaro vero.</i>"]
     icon = {"VALUE": "💰", "LEAN": "📝", "NO_EDGE": "➖"}
-    for p in picks[:20]:
-        pk = p.get("pick") or p.get("most_probable") or {}
-        who = f"{pk.get('player')} " if pk.get("player") else ""
-        odds = pk.get("odds")
-        edge = pk.get("edge_pct")
-        what = (f"{pk.get('bet_type') or '?'}: {who}{pk.get('selection') or ''}"
-                f"{' @ ' + str(odds) if odds else ''}"
-                f"{f' — edge {edge:+.1f}%' if isinstance(edge, (int, float)) else ''}"
-                f"{' [' + str(pk.get('tier')) + ']' if pk.get('tier') else ''}")
-        tag = p.get("label", "?")
-        if tag == "VALUE" and p.get("stage") == "candidate":
-            tag = "VALUE (T-30)"
-        lines.append(f"{icon.get(p.get('label'), '•')} {(p.get('date') or '?')[5:]} "
-                     f"<b>{p.get('match')}</b> · {tag}\n     {what}\n"
-                     f"     <i>{p.get('reason', '')}</i>")
-    lines.append("<i>💰 soldi veri (slip del motore) · 📝 solo carta, "
-                 "registrato a T-30 per costruire lo storico del mercato · "
-                 "➖ il mercato prezza già l'esito più probabile.</i>")
+    for p in picks[:max_matches]:
+        ko = ""
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromisoformat((p.get("kickoff_utc") or "").replace("Z", "+00:00")).astimezone(ZoneInfo("Europe/Rome"))
+            ko = f"{_IT_DAYS[dt.weekday()]} {dt.strftime('%d/%m %H:%M')} ITA"
+        except (ValueError, TypeError):
+            ko = (p.get("date") or "?")[5:]
+        label = p.get("label", "?")
+        tag = {"VALUE": "VALUE · soldi veri", "LEAN": "LEAN · solo carta",
+               "NO_EDGE": "NO EDGE"}.get(label, label)
+        if label == "VALUE" and p.get("stage") == "candidate":
+            tag = "VALUE · si conferma a T-30"
+        block = [f"\n🏟 <b>{p.get('match')}</b> · {ko}", f"{icon.get(label, '•')} <b>{tag}</b>"]
+        headline = p.get("pick")
+        if headline:
+            block.append(_pick_line(headline))
+        elif p.get("most_probable"):
+            block.append(_pick_line(p["most_probable"], bullet="▹") + "\n    il mercato prezza già l'esito più probabile")
+        else:
+            block.append("▹ nessun prezzo per questa partita (quote per-evento non ancora scaricate)")
+        if label == "VALUE" and p.get("lean"):
+            block.append("📝 <i>Carta a fianco</i>\n" + _pick_line(p["lean"]))
+        key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731
+        seen = {key(headline)} if headline else set()
+        ex = [a for a in (p.get("exotic") or []) if key(a) not in seen][:2]
+        seen |= {key(a) for a in ex}
+        alts = [a for a in (p.get("alternatives") or []) if key(a) not in seen][:2]
+        if alts:
+            block.append("<i>Alternative</i>\n" + "\n".join(_pick_line(a) for a in alts))
+        if ex:
+            block.append("🎲 <i>Insolite (edge positivo)</i>\n" + "\n".join(_pick_line(a) for a in ex))
+        elif p.get("exotic_fallback"):
+            block.append("🎲 <i>Insolite</i>: nessuna batte il prezzo; la più probabile\n"
+                         + _pick_line(p["exotic_fallback"], bullet="▹"))
+        out.append("\n".join(block))
+    if len(picks) > max_matches:
+        out.append(f"\n<i>… e altre {len(picks) - max_matches} partite più avanti.</i>")
+    out.append("\n<i>💰 = slip del motore, puntata reale a T-30 · 📝 = registrata a €10 di "
+               "carta a T-30 per costruire lo storico del mercato · ➖ = nessun edge. "
+               "Tier: misurato = backtest superato, etichetta = non misurato, tasso base = "
+               "frequenza storica. 🎲 = props giocatori, primo tempo, HT/FT, risultato esatto.</i>")
     try:
         from scripts.betting.picks import picks_record
         rec = picks_record("serie_a")
         if rec.get("n_settled"):
             top = sorted(rec["by_market"].items(), key=lambda kv: -kv[1]["n"])[:4]
-            lines.append("<b>Storico carta</b>: " + " · ".join(
+            out.append("<b>Storico carta</b>: " + " · ".join(
                 f"{m} n={v['n']} ROI {v['roi_pct']:+.0f}%"
                 + (f" CLV {v['mean_clv_pct']:+.1f}%" if v.get("mean_clv_pct") is not None else "")
                 for m, v in top))
     except Exception:  # noqa: BLE001 - the record is a footer, never a failure
         pass
-    return "\n".join(lines) + _fanta_age_note(doc.get("generated_at"))
+    return "\n".join(out) + _fanta_age_note(doc.get("generated_at"))
 
 
 def _handle_worldcup() -> str:

@@ -1475,9 +1475,12 @@ function _pickBanner(pk, nPriced) {
             : pk.label === 'LEAN' ? 'LEAN · paper only' : 'NO EDGE';
   const what = p.bet_type ? `${sanitizeHTML(p.bet_type)}: ${p.player ? sanitizeHTML(p.player) + ' ' : ''}${sanitizeHTML(p.selection || '')}${p.odds ? ' @ ' + Number(p.odds).toFixed(2) : ''}${p.edge_pct != null ? ` (${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%)` : ''}${p.tier ? ' <span class="text-tertiary">[' + sanitizeHTML(String(p.tier)) + ']</span>' : ''}` : '';
   const lean = pk.label === 'VALUE' && pk.lean ? `<div class="text-small text-tertiary">Paper lean alongside: ${sanitizeHTML(pk.lean.bet_type || '')} ${pk.lean.player ? sanitizeHTML(pk.lean.player) + ' ' : ''}${sanitizeHTML(pk.lean.selection || '')} @ ${pk.lean.odds} (${pk.lean.edge_pct > 0 ? '+' : ''}${pk.lean.edge_pct}%)</div>` : '';
+  const one = a => `${sanitizeHTML(a.bet_type || '')}: ${a.player ? sanitizeHTML(a.player) + ' ' : ''}${sanitizeHTML(a.selection || '')} @ ${Number(a.odds).toFixed(2)} (${a.edge_pct > 0 ? '+' : ''}${Number(a.edge_pct).toFixed(1)}%${a.tier ? ', ' + sanitizeHTML(String(a.tier)) : ''}${a.n_books === 1 ? ', 1 book' : ''})`;
+  const ex = (pk.exotic || []).length ? `<div class="text-small text-secondary">🎲 Insolite (positive edge, paper): ${pk.exotic.slice(0, 3).map(one).join(' · ')}</div>`
+           : pk.exotic_fallback ? `<div class="text-small text-tertiary">🎲 Insolite: none beats its price; most probable ${one(pk.exotic_fallback)}</div>` : '';
   return `<div style="border:1px solid var(--border-subtle);border-left:3px solid ${colr};border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3)">
     <div style="font-size:12px"><b style="color:${colr}">${lab}</b> · ${what}</div>
-    <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edges ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}</div>`;
+    <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edges ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}${ex}</div>`;
 }
 function renderMarkets(d) {
   if (!d || d.error) return `<div class="text-small text-tertiary">Markets unavailable: ${sanitizeHTML((d && d.error) || '')}</div>`;

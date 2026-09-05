@@ -318,3 +318,54 @@ def test_engine_note_without_numeric_edge_does_not_crash():
                               slip=slip, candidates={}, band=(3.0, 7.0))
     assert line["pick"]["engine_note"] == "engine rejected it: x"
 
+
+def test_exotic_slot_lists_positive_edges_outside_main_markets_else_the_most_probable_prop():
+    book = {("h2h", "home", None, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 10},
+            ("player_assists", "over", 0.5, "federico dimarco"): {"odds": 4.5, "book": "William Hill", "avg": 4.5, "n_books": 1},
+            ("player_shots", "over", 0.5, "federico dimarco"): {"odds": 1.2, "book": "1xBet", "avg": 1.2, "n_books": 1},
+            ("h2h_h1", "home", None, None): {"odds": 2.9, "book": "Pinnacle", "avg": 2.8, "n_books": 3}}
+    rows = [_row("1x2 finale", "1", 53.0, "A", group="Principali"),
+            {"group": "Giocatori", "bet_type": "Assist giocatore", "selection": "Sì", "player": "Federico Dimarco",
+             "probability_pct": 23.0, "tier": "C", "source": "player_floors"},
+            {"group": "Giocatori", "bet_type": "Tiri totali del giocatore", "selection": "Over 0.5",
+             "player": "Federico Dimarco", "probability_pct": 80.0, "tier": "A", "source": "player_floors"},
+            _row("1° tempo 1x2", "1", 36.0, "A", group="Tempi")]
+    line = P.build_match_pick("A vs B", rows, book, slip={}, candidates={}, band=(3.0, 7.0))
+    assert line["pick"]["selection"] == "1" and line["pick"]["bet_type"] == "1x2 finale"   # multi-book A wins the headline
+    ex = line["exotic"]
+    assert [(e["bet_type"], e["edge_pct"]) for e in ex] == [("1° tempo 1x2", 4.4), ("Assist giocatore", 3.5)]
+    assert line["n_exotic_positive"] == 2 and "exotic_fallback" not in line
+    # without a positive exotic edge, the most probable priced player prop is shown with its price
+    rows2 = [rows[0], rows[2]]
+    line2 = P.build_match_pick("A vs B", rows2, book, slip={}, candidates={}, band=(3.0, 7.0))
+    assert line2["exotic"] == [] and line2["exotic_fallback"]["player"] == "Federico Dimarco"
+    # BTTS is a mainstream market, never "insolita"
+    goal = [_row("Goal", "No", 53.0, "B", group="Goal")]
+    line3 = P.build_match_pick("A vs B", goal, {("btts", "no", None, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 4}},
+                               slip={}, candidates={}, band=(3.0, 7.0))
+    assert line3["pick"]["bet_type"] == "Goal" and line3["exotic"] == [] and "exotic_fallback" not in line3
+    assert line2["exotic_fallback"]["edge_pct"] == -4.0
+
+
+def test_slate_prices_player_rows_too(monkeypatch, tmp_path):
+    """build_picks must feed player rows to the pick, not just match rows —
+    the first live slate silently priced zero player props."""
+    import web.match_markets as mm
+    monkeypatch.setattr(P, "PICKS_FILE", tmp_path / "picks.json")
+    monkeypatch.setattr(P, "_read", lambda path, default: (
+        {"predictions": [{"match": "A vs B", "date": "2099-01-01", "league": "serie_a",
+                          "home_team": "A", "away_team": "B"}]}
+        if getattr(path, "name", "") == "predictions.json" else default))
+    monkeypatch.setattr(mm, "assemble_market_inputs", lambda *a, **k: {"pred": {}, "goal_pred": None, "ext": None,
+                                                                        "btts": None, "players": None, "sim": None,
+                                                                        "halves_gate": None, "kickoff_utc": None,
+                                                                        "league": "serie_a"})
+    monkeypatch.setattr(mm, "build_match_markets", lambda *a, **k: {
+        "markets": [], "players": [{"group": "Giocatori", "bet_type": "Assist giocatore", "selection": "Sì",
+                                    "player": "Federico Dimarco", "probability_pct": 23.0, "tier": "C", "source": "s"}]})
+    monkeypatch.setattr(P, "build_price_book", lambda *a: {
+        ("player_assists", "over", 0.5, "federico dimarco"): {"odds": 4.5, "book": "WH", "avg": 4.5, "n_books": 1}})
+    out = P.build_picks("serie_a", journal=False)
+    (line,) = out["picks"]
+    assert line["label"] == "LEAN" and line["pick"]["player"] == "Federico Dimarco" and line["pick"]["edge_pct"] == 3.5
+

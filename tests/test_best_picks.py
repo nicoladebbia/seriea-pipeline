@@ -104,9 +104,14 @@ def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkey
                          "tier": "engine"},
                 "reason": "the betting engine's own selection: real stake, committed at T-30"},
                {"match": "C vs D", "date": "2026-09-06", "label": "LEAN",
-                "pick": {"bet_type": "Assist giocatore", "player": "Federico Dimarco", "selection": "Sì",
-                         "odds": 4.5, "edge_pct": 3.2, "tier": "C"},
-                "reason": "model 23.0% vs market 22.2% (William Hill, 1 book); edge inside the credible band, paper stake"},
+                "pick": {"bet_type": "1x2 finale", "selection": "1", "odds": 2.9, "edge_pct": 4.4, "tier": "A",
+                         "probability_pct": 36.0, "implied_pct": 34.5, "n_books": 24},
+                "alternatives": [{"bet_type": "Under/over", "selection": "Over 2.5", "odds": 1.9, "edge_pct": 2.0,
+                                  "tier": "B", "probability_pct": 53.7, "implied_pct": 52.6, "n_books": 9}],
+                "exotic": [{"bet_type": "Assist giocatore", "player": "Federico Dimarco", "selection": "Sì",
+                            "odds": 4.5, "edge_pct": 3.5, "tier": "C", "probability_pct": 23.0,
+                            "implied_pct": 22.2, "n_books": 1}],
+                "reason": "model 36.0% vs market 34.5% (best of market, 24 books); edge inside the credible band, paper stake"},
                {"match": "E vs F", "date": "2026-09-06", "label": "NO_EDGE", "pick": None,
                 "most_probable": {"bet_type": "1x2 finale", "selection": "1", "odds": 1.5, "edge_pct": -4.0,
                                   "tier": "A"},
@@ -115,9 +120,11 @@ def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkey
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
     assert "A vs B" in out and "💰" in out and "VALUE" in out
-    assert "Federico Dimarco Sì @ 4.5" in out and "📝" in out and "LEAN" in out
+    assert "📝" in out and "LEAN · solo carta" in out
+    assert "Federico Dimarco Sì @ 4.50" in out and "Insolite" in out       # the exotic slot
+    assert "Over 2.5 @ 1.90" in out and "Alternative" in out
     assert "E vs F" in out and "➖" in out and "no edge" in out
-    assert "solo carta" in out  # the legend says LEAN is paper
+    assert "solo carta" in out and "tasso base" in out  # legend: LEAN is paper, tiers explained
 
 
 def test_ai_budget_gate_caps_and_rolls_over(tmp_path, monkeypatch):

@@ -57,6 +57,10 @@ OVERCONFIDENCE_CAP = 12.0  # = bet_journal.MAX_EDGE_PCT; >10% edge ran 38% WR li
 PICK_JOURNAL_WINDOW_H = 3.0  # journal a LEAN only inside the T-30 timing window
 MIN_PROB_PCT = 20.0        # a "+9% edge" on a 3% event is inside the model's own error
 _TIER_RANK = {"A": 0, "B": 1, "C": 2}
+# "Insolite": every priced family outside the mainstream match markets. Shown
+# per match in their own slot so a player prop or a first-half angle is visible
+# even when a plain 1x2 / totals row wins the headline.
+_MAIN_BET_TYPES = {"1x2 finale", "Under/over", "Doppia chance", "Goal"}
 
 # ---------------------------------------------------------------------------
 # Model row -> price key. A row with no entry here is shown but never priced
@@ -313,6 +317,7 @@ def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dic
     line = next((p for p in picks.get("picks") or [] if p.get("match") == match_key), None)
     payload["pick"] = None if line is None else {
         k: line.get(k) for k in ("label", "stage", "pick", "lean", "reason", "alternatives", "most_probable",
+                                 "exotic", "exotic_fallback", "n_exotic_positive",
                                  "n_priced", "n_positive", "n_overconfident", "n_longshot_edges",
                                  "journaled_bet_id", "prices_fetched_at")}
     if payload["pick"] is not None:
@@ -381,10 +386,23 @@ def build_match_pick(match_key: str, rows: list[dict], book: dict[tuple, dict], 
     positive = [c for c in priced if c["edge_pct"] > 0 and not c["overconfident"] and not c["longshot"]]
     over = [c for c in priced if c["overconfident"] and not c["longshot"]]
     longshots = [c for c in priced if c["longshot"] and c["edge_pct"] > 0]
+    exotic = [c for c in positive if c.get("bet_type") not in _MAIN_BET_TYPES]
     out: dict[str, Any] = {"match": match_key, "n_rows": len(rows), "n_priced": len(priced),
                            "n_positive": len(positive), "n_overconfident": len(over),
                            "n_longshot_edges": len(longshots),
-                           "alternatives": [_pick_view(c) for c in positive[:3]]}
+                           "alternatives": [_pick_view(c) for c in positive[:3]],
+                           # positive-edge angles outside 1x2 / totals / DC (player props,
+                           # first half, HT/FT, first team to score, exact score ...)
+                           "exotic": [_pick_view(c) for c in exotic[:3]],
+                           "n_exotic_positive": len(exotic)}
+    if not exotic:
+        # nothing outside the main markets beats its price: show the most
+        # probable priced player prop (else any exotic row) with its price, so
+        # the reader sees the market is ahead of the model there
+        pool = [c for c in priced if c.get("bet_type") not in _MAIN_BET_TYPES and not c["overconfident"]]
+        players_first = [c for c in pool if c.get("player")] or pool
+        if players_first:
+            out["exotic_fallback"] = _pick_view(max(players_first, key=lambda c: c.get("probability_pct") or 0))
     for c in positive[:1]:
         note = _engine_note(match_key, c, slip)
         if note:
@@ -491,7 +509,10 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
             continue
         match_key = pred.get("match", "")
         inputs = assemble_market_inputs(match_key, pred=pred, load_json=_read, league=league)
-        rows = build_match_markets(match_key, engine_bet=None, **inputs).get("markets") or []
+        payload = build_match_markets(match_key, engine_bet=None, **inputs)
+        # match rows AND player rows: the first slate priced only "markets" and
+        # never saw a player prop (caught by the exotic fallback, 2026-09-05)
+        rows = (payload.get("markets") or []) + (payload.get("players") or [])
         om = odds.get(match_key) or {}
         ev = _pick_event_for(store, match_key)
         book = build_price_book(om, extra.get(match_key), ev)
@@ -501,11 +522,19 @@ def build_picks(league: str = "serie_a", *, journal: bool = False,
                      "league": league, "home_team": pred.get("home_team"), "away_team": pred.get("away_team"),
                      "prices_fetched_at": (ev or {}).get("fetched_at")})
         lean = line.get("pick") if line["label"] == LABEL_LEAN else line.get("lean")
-        if journal and lean and ko and timedelta(0) <= (ko - now) <= timedelta(hours=PICK_JOURNAL_WINDOW_H):
-            bet_id = journal_lean(match_key, pred.get("date") or today, lean, league, placed_at=now)
-            if bet_id:
-                n_journaled += 1
-                line["journaled_bet_id"] = bet_id
+        if journal and ko and timedelta(0) <= (ko - now) <= timedelta(hours=PICK_JOURNAL_WINDOW_H):
+            # the headline LEAN and the best exotic angle both build a record;
+            # add_bet dedups when they are the same bet
+            ids = []
+            for cand in (lean, (line.get("exotic") or [None])[0]):
+                if cand:
+                    bet_id = journal_lean(match_key, pred.get("date") or today, cand, league, placed_at=now)
+                    if bet_id and bet_id not in ids:
+                        ids.append(bet_id)
+            if ids:
+                n_journaled += len(ids)
+                line["journaled_bet_id"] = ids[0]
+                line["journaled_bet_ids"] = ids
         picks.append(line)
 
     order = {LABEL_VALUE: 0, LABEL_LEAN: 1, LABEL_NO_EDGE: 2}

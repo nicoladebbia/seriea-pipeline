@@ -3860,7 +3860,7 @@ def api_dashboard():
                 candidate=candidate_by_match.get(match_key),
             ),
             "pick": (lambda q: None if q is None else {
-                k: q.get(k) for k in ("label", "stage", "pick", "lean", "reason", "n_priced", "journaled_bet_id")
+                k: q.get(k) for k in ("label", "stage", "pick", "lean", "exotic", "reason", "n_priced", "journaled_bet_id")
             })(pick_by_match.get(match_key)),
 
             # Actual result (if settled)

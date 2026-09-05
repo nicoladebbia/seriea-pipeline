@@ -215,6 +215,14 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   Pinnacle de-vigged, per-line band) is the one that counts for money.
 - **NO EDGE** shows the most probable priced outcome with its price and why it is not a
   bet. A match with no per-event prices yet says so.
+- **Insolite (exotic slot)**: per match, up to three positive-edge angles OUTSIDE the
+  mainstream markets (1x2 finale, Under/over, Doppia chance, Goal): player props, first
+  half, HT/FT, first team to score, exact score. When none beats its price, the most
+  probable priced player prop is shown with the price that beats it (`exotic_fallback`).
+  The headline LEAN and the best exotic are both paper-journaled. The slate feeds match
+  rows AND player rows to the pick: the first live slate priced only `markets` and never
+  saw a player prop — the fallback showing a first-half row instead of a player is what
+  exposed it (2026-09-05).
 - **Prices**: `odds_full.json` (h2h, totals) + `odds_extra_markets.json` (btts, DC, DNB,
   alt totals) + `data/upcoming/pick_markets_raw.json` from
   `odds_fetcher.fetch_pick_markets` (per-event `h2h_h1`, `totals_h1`, `btts_h1`,
