@@ -788,6 +788,96 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
 
 # ─── Core Poll Logic ──────────────────────────────────────────────────────────
 
+LIVE_STATUSES = ("first_half", "half_time", "second_half")
+# How long an ESPN fast-loop write counts as "fresh": while it is, the slow
+# Sofascore cycle leaves events/stats alone (no source flicker every minute)
+# and only contributes what ESPN cannot — per-player stats.
+FAST_FRESH_S = 60
+
+
+def _fast_is_fresh(entry: Dict, now: datetime | None = None) -> bool:
+    stamp = entry.get("live_fast_at")
+    if not stamp:
+        return False
+    try:
+        age = ((now or datetime.now(timezone.utc)) - datetime.fromisoformat(stamp)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age < FAST_FRESH_S
+
+
+def _apply_live_data(mk: str, entry: Dict, live_data: Dict, fast: bool = False) -> None:
+    """Merge one source's payload into a matchday entry and fire event pings.
+
+    A field is overwritten only when its source ANSWERED this cycle (legacy
+    payloads without flags count as answered): a 403 on one endpoint must not
+    blank last good data. On the slow cycle, a Sofascore payload does not
+    overwrite events/stats that the fast ESPN loop refreshed within
+    FAST_FRESH_S — it only adds player stats.
+    """
+    flags = dict(live_data.get("fetched") or {"events": True, "statistics": True, "player_stats": True})
+    source = live_data.get("source", "sofascore")
+    if not fast and source != "espn" and _fast_is_fresh(entry):
+        flags["events"] = False
+        flags["statistics"] = False
+    old_events = entry.get("live_events", [])
+    new_events = live_data.get("events", []) if flags.get("events") else old_events
+    if flags.get("events"):
+        entry["live_events"] = new_events
+    if flags.get("statistics"):
+        entry["live_stats"] = live_data.get("statistics", {})
+    if flags.get("player_stats"):
+        entry["live_player_stats"] = live_data.get("player_stats", {})
+    if live_data.get("sofascore_id"):
+        entry["sofascore_id"] = live_data["sofascore_id"]
+    if fast:
+        entry["live_fast_at"] = live_data.get("fetched_at", "")
+        if live_data.get("score") is not None:
+            entry["live_score"] = live_data["score"]
+        if live_data.get("clock"):
+            entry["live_clock"] = live_data["clock"]
+        entry["live_source"] = source
+    elif flags.get("events") or flags.get("statistics"):
+        entry["sofascore_fetched_at"] = live_data.get("fetched_at", "")
+        entry["live_source"] = source
+    entry.pop("live_fetch_error", None)
+
+    # ── Live event notifications (goals, red cards) ──
+    _send_live_event_notifications(mk, entry, old_events, new_events)
+
+
+def refresh_live_fast() -> Dict:
+    """The fast live tick: ESPN events + stats + score for every match on the pitch.
+
+    Costs no Odds API credits and never touches Sofascore (a 5s loop there is
+    how the June ban was earned). Runs on the auto-poll thread between two
+    Odds API polls, so it never races poll_once on the matchday file.
+    """
+    from scripts.data import live_espn
+
+    now = datetime.now(timezone.utc)
+    matchday = load_matchday(now.strftime("%Y-%m-%d"))
+    live = {mk: e for mk, e in matchday.get("matches", {}).items() if e.get("status") in LIVE_STATUSES}
+    if not live:
+        return {"has_live_matches": False, "refreshed": 0}
+    refreshed = 0
+    for mk, entry in live.items():
+        home = entry.get("home_team") or mk.split(" vs ")[0]
+        away = entry.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+        try:
+            data = live_espn.fetch_live_data_for_match(home, away)
+        except Exception as exc:  # noqa: BLE001 - one match must not sink the tick
+            log.warning("fast live refresh failed for %s: %s", mk, exc)
+            continue
+        if not data:
+            continue
+        _apply_live_data(mk, entry, data, fast=True)
+        refreshed += 1
+    if refreshed:
+        save_matchday(matchday)
+    return {"has_live_matches": True, "refreshed": refreshed, "live": len(live)}
+
+
 def poll_once() -> Dict:
     """Execute one poll cycle: fetch scores + odds + Sofascore events/stats.
 
@@ -1216,27 +1306,7 @@ def poll_once() -> Dict:
             ss_data = fetch_live_data_for_matches(live_match_keys)
             for mk, live_data in ss_data.items():
                 if mk in matchday["matches"]:
-                    entry = matchday["matches"][mk]
-                    # A field is overwritten only when its source ANSWERED this
-                    # cycle (legacy payloads without flags count as answered):
-                    # a 403 on one endpoint must not blank last good data.
-                    flags = live_data.get("fetched") or {"events": True, "statistics": True, "player_stats": True}
-                    old_events = entry.get("live_events", [])
-                    new_events = live_data.get("events", []) if flags.get("events") else old_events
-                    if flags.get("events"):
-                        entry["live_events"] = new_events
-                    if flags.get("statistics"):
-                        entry["live_stats"] = live_data.get("statistics", {})
-                    if flags.get("player_stats"):
-                        entry["live_player_stats"] = live_data.get("player_stats", {})
-                    if live_data.get("sofascore_id"):
-                        entry["sofascore_id"] = live_data["sofascore_id"]
-                    entry["sofascore_fetched_at"] = live_data.get("fetched_at", "")
-                    entry["live_source"] = live_data.get("source", "sofascore")
-                    entry.pop("live_fetch_error", None)
-
-                    # ── Live event notifications (goals, red cards) ──
-                    _send_live_event_notifications(mk, entry, old_events, new_events)
+                    _apply_live_data(mk, matchday["matches"][mk], live_data)
             for mk, why in LAST_ERRORS.items():
                 if mk in matchday["matches"]:
                     matchday["matches"][mk]["live_fetch_error"] = why

@@ -5444,6 +5444,8 @@ def api_live():
     data["auto_poll_active"] = _auto_poll_active
     data["auto_poll_interval"] = _auto_poll_interval
     data["auto_poll_next_at"] = _auto_poll_next_at if _auto_poll_active else 0
+    data["live_fast_interval"] = _live_fast_interval
+    data["live_fast_at"] = _live_fast_last["at"] if _auto_poll_active else 0
     return jsonify(data)
 
 
@@ -5975,10 +5977,30 @@ def _save_live_poll_interval(interval: int) -> None:
         log.warning(f"live poll interval {interval}s not persisted: {e}")
 
 
+_LIVE_FAST_DEFAULT_S = 5
+_LIVE_FAST_BOUNDS = (3, 60)
+_LIVE_FAST_STATE_KEY = "live_fast_interval"
+
+
+def _load_live_fast_interval() -> int:
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        saved = load_state().get(_LIVE_FAST_STATE_KEY)
+    except Exception:  # noqa: BLE001
+        saved = None
+    try:
+        return max(_LIVE_FAST_BOUNDS[0], min(_LIVE_FAST_BOUNDS[1], int(saved)))
+    except (TypeError, ValueError):
+        return _LIVE_FAST_DEFAULT_S
+
+
 _auto_poll_active = False
 _auto_poll_thread = None
 _auto_poll_interval = _load_live_poll_interval()  # seconds; survives restarts
 _auto_poll_next_at = 0.0  # timestamp of next poll
+# Fast live tick (ESPN score/stats/events, free) between two Odds API polls.
+_live_fast_interval = _load_live_fast_interval()
+_live_fast_last = {"at": 0.0, "refreshed": 0}
 
 def _auto_poll_loop():
     """Background thread: poll at configurable interval while live matches exist."""
@@ -5990,6 +6012,7 @@ def _auto_poll_loop():
     log.info(f"Auto-poll thread started (every {_auto_poll_interval}s)")
 
     while _auto_poll_active:
+        result = {}
         try:
             from scripts.data.live_monitor import poll_once
             result = poll_once()
@@ -6023,15 +6046,31 @@ def _auto_poll_loop():
             else:
                 log.error(f"Auto-poll error: {e}")
 
-        # Sleep in 5s chunks for responsive stop and interval changes
+        # Between two Odds API polls: sleep in 1s steps (responsive stop and
+        # interval changes) and run the FREE fast tick — ESPN score / stats /
+        # events for matches on the pitch — every _live_fast_interval seconds.
         _auto_poll_next_at = _time.time() + _auto_poll_interval
-        elapsed = 0
+        elapsed = 0.0
+        has_live = bool(result.get("has_live_matches")) if isinstance(result, dict) else False
+        next_fast = _time.time() + _live_fast_interval
         while elapsed < _auto_poll_interval and _auto_poll_active:
-            _time.sleep(5)
-            elapsed += 5
-            # Re-read interval in case it changed mid-sleep
-            if elapsed < _auto_poll_interval and _auto_poll_interval < elapsed + 5:
-                break  # interval was shortened, break early
+            _time.sleep(1)
+            elapsed += 1
+            if has_live and _time.time() >= next_fast:
+                # cadence counts from the START of the tick: a 3s ESPN round
+                # trip must not stretch a 5s interval into 8s
+                next_fast = _time.time() + _live_fast_interval
+                try:
+                    from scripts.data.live_monitor import refresh_live_fast
+                    fast = refresh_live_fast()
+                    _live_fast_last["at"] = _time.time()
+                    _live_fast_last["refreshed"] = fast.get("refreshed", 0)
+                    has_live = bool(fast.get("has_live_matches"))
+                except Exception as e:  # noqa: BLE001
+                    log.debug(f"fast live tick failed: {e}")
+            # Re-read interval in case it was shortened mid-sleep
+            if _auto_poll_interval <= elapsed:
+                break
 
     _auto_poll_active = False
     _auto_poll_next_at = 0.0
@@ -6059,13 +6098,20 @@ def api_live_auto_poll():
 @app.route("/api/live/config", methods=["POST"])
 def api_live_config():
     """Set live poll interval (seconds). Accepts 30-3600."""
-    global _auto_poll_interval
+    global _auto_poll_interval, _live_fast_interval
     data = flask_request.get_json(silent=True) or {}
     interval = _clamp_poll_interval(data.get("interval", _auto_poll_interval), _auto_poll_interval)
     _auto_poll_interval = interval
     _save_live_poll_interval(interval)
-    log.info(f"Live poll interval set to {interval}s")
-    return jsonify({"ok": True, "interval": interval})
+    if "fast_interval" in data:
+        try:
+            _live_fast_interval = max(_LIVE_FAST_BOUNDS[0], min(_LIVE_FAST_BOUNDS[1], int(data["fast_interval"])))
+            from scripts.pipeline.pipeline_state import load_state, save_state
+            st = load_state(); st[_LIVE_FAST_STATE_KEY] = _live_fast_interval; save_state(st)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"fast interval not applied: {e}")
+    log.info(f"Live poll interval set to {interval}s (fast tick {_live_fast_interval}s)")
+    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval})
 
 
 # ---------------------------------------------------------------------------

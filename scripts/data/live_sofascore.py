@@ -52,7 +52,31 @@ log = logging.getLogger(__name__)
 # x 3 endpoints), longer than the poll interval; while it is tripped the cycle
 # goes straight to the ESPN fallback and Sofascore is retried after the cooldown.
 _BLOCK_COOLDOWN_S = 600
-_sofascore_blocked_until = 0.0
+_BLOCK_STATE_KEY = "sofascore_api_blocked_until"  # epoch seconds, in pipeline_state.json
+
+
+def _load_blocked_until() -> float:
+    """The breaker survives a Flask restart: without this every restart mid-match
+    paid the full ~2.5 min Sofascore backoff again before the first ESPN read."""
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        until = float(load_state().get(_BLOCK_STATE_KEY) or 0.0)
+    except Exception:  # noqa: BLE001 - state trouble must not stop the poll
+        return 0.0
+    return time.monotonic() + (until - time.time()) if until > time.time() else 0.0
+
+
+def _save_blocked_until(monotonic_until: float) -> None:
+    try:
+        from scripts.pipeline.pipeline_state import load_state, save_state
+        st = load_state()
+        st[_BLOCK_STATE_KEY] = time.time() + max(0.0, monotonic_until - time.monotonic())
+        save_state(st)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Sofascore breaker not persisted: %s", exc)
+
+
+_sofascore_blocked_until = _load_blocked_until()
 # match key -> why this cycle produced nothing (read by live_monitor for the card)
 LAST_ERRORS: dict[str, str] = {}
 
@@ -312,6 +336,7 @@ def fetch_live_data_for_matches(match_keys: list[str]) -> dict[str, dict[str, An
                 why = f"Sofascore blocked (HTTP {status})" if status else "Sofascore unreachable"
                 if status == 403 and not blocked:
                     _sofascore_blocked_until = time.monotonic() + _BLOCK_COOLDOWN_S
+                    _save_blocked_until(_sofascore_blocked_until)
                     log.warning("Sofascore API 403 on every endpoint — cooling down %ds, "
                                 "serving live stats/events from ESPN", _BLOCK_COOLDOWN_S)
                 data = None

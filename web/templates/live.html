@@ -206,7 +206,9 @@ let _lpAutoActive = false, _lpInterval = 60, _lpNextAt = 0, _lpTimer = null, _lp
 // events list scrolled back to the top.
 const _lpUserOpen = {};   // card id -> true/false, set only by a user toggle / deep link
 const _lpScroll = {};     // card id -> scrollTop of its events list
-const LP_VIEW_REFRESH_MS = 30000;  // re-read /api/live (local JSON, no API credits)
+const LP_VIEW_REFRESH_MS = 30000;      // re-read /api/live (local JSON, no API credits)
+const LP_VIEW_REFRESH_LIVE_MS = 5000;  // ...and every 5s while a match is on the pitch
+let _lpHasLive = false, _lpViewTimer = null;
 
 function lpToggle(id, force) {
   const detail = document.getElementById(id);
@@ -332,13 +334,20 @@ function lpRenderMatch(mk, md, bets) {
   const isLive = ['first_half','half_time','second_half'].includes(status);
   const isCompleted = status === 'completed';
 
+  // The fast ESPN tick (every few seconds) carries score + clock; the Odds
+  // API snapshot is minutes behind it. Prefer the fast read while it is fresh.
+  const fastAge = md.live_fast_at ? (Date.now() - Date.parse(md.live_fast_at)) / 1000 : Infinity;
+  const fastFresh = isLive && fastAge < 90;
+
   let score = [0, 0];
   if (md.final_score) score = md.final_score;
+  else if (fastFresh && Array.isArray(md.live_score)) score = md.live_score;
   else if (lastSnap && lastSnap.score) score = lastSnap.score;
 
   const minute = lastSnap ? lastSnap.min : null;
   const addedTime = lastSnap ? lastSnap.added_time : null;
-  const displayMinute = minute ? lpFormatMinute(minute, status, addedTime) : null;
+  let displayMinute = minute ? lpFormatMinute(minute, status, addedTime) : null;
+  if (fastFresh && md.live_clock && /\d/.test(md.live_clock)) displayMinute = md.live_clock;
   const statusLabels = {first_half:'1st Half', half_time:'Half Time', second_half:'2nd Half', completed:'Full Time', pre_match:'Pre-Match'};
   const statusLabel = statusLabels[status] || status;
 
@@ -485,7 +494,13 @@ async function lpLoad() {
     }
 
     const now = new Date().toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-    document.getElementById('lp-meta').textContent = `Poll #${data.polls || 0} | ${data.api_calls || 0} API calls | Updated ${now}`;
+    let fastNote = '';
+    if (data.has_live && data.live_fast_at) {
+      const age = Math.max(0, Math.round(Date.now() / 1000 - data.live_fast_at));
+      fastNote = ` | live data ${age}s ago (every ${data.live_fast_interval || 5}s)`;
+    }
+    document.getElementById('lp-meta').textContent = `Odds poll #${data.polls || 0} | ${data.api_calls || 0} API calls | Updated ${now}${fastNote}`;
+    _lpHasLive = !!data.has_live;
 
     // Update auto-poll state
     _lpAutoActive = data.auto_poll_active || false;
@@ -651,7 +666,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // The server poll is what spends API credits; this only reads /api/live.
   // (It used to skip while Auto was ON, which froze the view exactly when the
   // data was moving.)
-  setInterval(() => { if (!document.hidden) lpLoad(); }, LP_VIEW_REFRESH_MS);
+  const tick = async () => {
+    if (!document.hidden) await lpLoad();
+    _lpViewTimer = setTimeout(tick, _lpHasLive ? LP_VIEW_REFRESH_LIVE_MS : LP_VIEW_REFRESH_MS);
+  };
+  _lpViewTimer = setTimeout(tick, _lpHasLive ? LP_VIEW_REFRESH_LIVE_MS : LP_VIEW_REFRESH_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) lpLoad(); });
 });
 </script>

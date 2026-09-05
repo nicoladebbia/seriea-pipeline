@@ -22,7 +22,7 @@ def test_config_endpoint_persists_and_reload_reads_it_back(monkeypatch):
     monkeypatch.setattr(ps, "save_state", save_state)
 
     r = appmod.app.test_client().post("/api/live/config", json={"interval": 60})
-    assert r.get_json() == {"ok": True, "interval": 60}
+    assert r.get_json()["ok"] is True and r.get_json()["interval"] == 60
     assert store["live_poll_interval"] == 60
     # a fresh process reads the choice back
     assert appmod._load_live_poll_interval() == 60

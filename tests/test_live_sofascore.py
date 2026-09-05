@@ -261,6 +261,7 @@ def test_unresolvable_matches_are_omitted_not_blanked(monkeypatch):
 
 
 def test_one_bad_match_does_not_sink_the_cycle(monkeypatch):
+    monkeypatch.setattr("scripts.data.live_sofascore._sofascore_blocked_until", 0.0)  # breaker is persisted state now
     monkeypatch.setattr(
         "scripts.data.live_sofascore.get_sofascore_match_ids",
         lambda t: {"Milan vs Como": 1, "Roma vs Lazio": 2},

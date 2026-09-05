@@ -131,3 +131,25 @@ def test_fetch_returns_monitor_shape_without_network(monkeypatch, board, fio_tor
     assert out["fetched"] == {"events": True, "statistics": True, "player_stats": False}
     assert out["events"][0]["type"] == "period" and out["statistics"]["shots"]["home"] > 0
     assert live_espn.fetch_live_data_for_match("Milan", "Como") is None
+
+
+# ---------------------------------------------------------------- score / clock
+
+def test_summary_carries_score_and_clock(monkeypatch, board, fio_tor):
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_get_json", lambda url: fio_tor if "summary" in url else None)
+    out = live_espn.fetch_live_data_for_match("Fiorentina", "Torino")
+    assert out["score"] == [1, 2] and out["clock"] == "FT" and out["state"] == "post"
+
+
+def test_refusal_pauses_every_espn_call(monkeypatch):
+    class Resp:
+        status_code = 429
+        def json(self): return {}
+    monkeypatch.setattr(live_espn, "_backoff_until", 0.0)
+    monkeypatch.setattr(live_espn.cffi_requests, "get", lambda *a, **k: Resp())
+    assert live_espn._get_json("https://x/1") is None
+    calls = []
+    monkeypatch.setattr(live_espn.cffi_requests, "get", lambda *a, **k: calls.append(1))
+    assert live_espn._get_json("https://x/2") is None
+    assert calls == []  # paused: no request was made

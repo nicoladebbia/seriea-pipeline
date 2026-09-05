@@ -75,20 +75,42 @@ _CLOCK_RE = re.compile(r"(\d+)'(?:\+(\d+)')?")
 
 # scoreboard cache: slug -> (fetched_at_monotonic, payload)
 _scoreboards: dict[str, tuple[float, dict[str, Any]]] = {}
+# The fast live loop calls this every few seconds per match. A refusal (429/403)
+# or a connection error pauses ALL ESPN calls for a minute rather than letting
+# a 5s loop hammer a throttle into a ban — the Sofascore lesson.
+_BACKOFF_S = 60
+_backoff_until = 0.0
 
 
 def _get_json(url: str) -> dict[str, Any] | None:
-    for attempt in range(2):
-        try:
-            resp = cffi_requests.get(url, impersonate="chrome124", timeout=_TIMEOUT)
-            if resp.status_code == 200:
-                return resp.json()
-            log.warning("ESPN HTTP %d for %s", resp.status_code, url)
-            return None
-        except Exception as exc:  # noqa: BLE001 - network; retried once
-            log.warning("ESPN request error (attempt %d/2): %s", attempt + 1, str(exc)[:80])
-            time.sleep(1.5)
+    global _backoff_until
+    if time.monotonic() < _backoff_until:
+        return None
+    try:
+        resp = cffi_requests.get(url, impersonate="chrome124", timeout=_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - network
+        _backoff_until = time.monotonic() + _BACKOFF_S
+        log.warning("ESPN request error, pausing %ds: %s", _BACKOFF_S, str(exc)[:80])
+        return None
+    if resp.status_code == 200:
+        return resp.json()
+    if resp.status_code in (403, 429, 503):
+        _backoff_until = time.monotonic() + _BACKOFF_S
+        log.warning("ESPN HTTP %d, pausing %ds (%s)", resp.status_code, _BACKOFF_S, url)
+    else:
+        log.warning("ESPN HTTP %d for %s", resp.status_code, url)
     return None
+
+
+def _score_and_clock(comp: dict[str, Any]) -> tuple[list[int] | None, str, str]:
+    """([home, away] or None, clock text like "41'" / "HT" / "FT", state pre|in|post)."""
+    home, away = _sides(comp.get("competitors") or [])
+    try:
+        score = [int(home.get("score")), int(away.get("score"))]
+    except (TypeError, ValueError):
+        score = None
+    stype = (comp.get("status") or {}).get("type") or {}
+    return score, stype.get("detail") or stype.get("shortDetail") or "", stype.get("state") or ""
 
 
 def _scoreboard(slug: str) -> dict[str, Any] | None:
@@ -247,12 +269,16 @@ def fetch_live_data_for_match(home: str, away: str) -> dict[str, Any] | None:
         comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]
         home_side, _ = _sides(comp.get("competitors") or [])
         home_id = str((home_side.get("team") or {}).get("id") or "")
+        score, clock, state = _score_and_clock(comp)
         return {
             "espn_id": event.get("id"),
             "events": parse_key_events(summary.get("keyEvents") or [], home_id),
             "statistics": parse_boxscore(summary.get("boxscore") or {}),
             "player_stats": {},
             "fetched": {"events": True, "statistics": True, "player_stats": False},
+            "score": score,
+            "clock": clock,
+            "state": state,
             "source": "espn",
             "fetched_at": datetime.now(UTC).isoformat(),
         }
