@@ -44,13 +44,23 @@ LEDGER_PATH = BETTING_DIR / "prop_ledger.json"
 PERFORMANCE_PATH = BETTING_DIR / "prop_performance.json"
 
 
-def _evaluate_prop_outcome(market: str, pstats: dict) -> dict:
+# Markets whose stat the ESPN roster cannot carry (no tackles, key passes or
+# crosses per player). A missing key reads as 0 below — which is right for
+# Sofascore, whose payload omits zero counts, and a false LOSS for ESPN. So the
+# source decides: an ESPN-graded match voids these instead of settling them.
+_ESPN_UNGRADABLE = ("tackle", "key pass", "cross")
+
+
+def _evaluate_prop_outcome(market: str, pstats: dict, source: str | None = None) -> dict:
     """Evaluate a prop bet outcome given final player stats.
 
     Returns {"status": "hit"|"lost"|"void", "actual": value, "line": line}
     """
     market_lower = market.lower()
     import re
+
+    if source == "espn" and any(k in market_lower for k in _ESPN_UNGRADABLE):
+        return {"status": "void", "actual": None, "line": None, "reason": "stat not in ESPN feed"}
 
     # Anytime Goalscorer
     if "anytime" in market_lower and "goal" in market_lower:
@@ -171,6 +181,7 @@ def settle_props(date_str: str = None) -> Dict:
         completed_matches[mk] = {
             "player_stats": player_stats,
             "final_score": md.get("final_score", [0, 0]),
+            "source": md.get("live_player_source"),
         }
 
     if not completed_matches:
@@ -195,6 +206,7 @@ def settle_props(date_str: str = None) -> Dict:
                         lookup[parts[-1].lower()] = p
                         lookup[strip_accents(parts[-1]).lower()] = p
         # Store lookup with both raw and normalized match keys
+        lookup["__source__"] = md.get("source")
         match_lookups[mk] = lookup
         parts = mk.split(" vs ", 1)
         if len(parts) == 2:
@@ -259,7 +271,7 @@ def settle_props(date_str: str = None) -> Dict:
             continue
 
         # Evaluate outcome
-        result = _evaluate_prop_outcome(market, pstats)
+        result = _evaluate_prop_outcome(market, pstats, source=lookup.get("__source__"))
 
         entry = {
             "date": date_str,
