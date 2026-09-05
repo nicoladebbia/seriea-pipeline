@@ -362,11 +362,10 @@ function renderMatchRow(m, idx) {
   if (hasSteam) rowBadges += '<span class="dash-badge dash-badge--steam">STEAM</span> ';
 
   const matchRaw = m.match || `${m.home_team} vs ${m.away_team}`;
-  const matchSlug = matchRaw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
   const tier = _betTier(m);
   const rowCls = tier <= 2 ? 'dash-row--signal' : tier === 5 ? 'dash-row--gated' : tier === 2.8 ? 'dash-row--lean' : 'dash-row--quiet';
-  return `<tr class="${rowCls}" data-match-key="${matchRaw}" onclick="window.location='/prediction/${matchSlug}'">
+  return `<tr class="${rowCls}" data-match-key="${matchRaw}" onclick="dashOpenRow(this)">
     <td class="dash-row__time text-mono text-tertiary" style="font-size:11px">${formatKickoffTime(m.commence_time) || '--:--'}</td>
     <td class="dash-row__match">
       <div class="flex items-center gap-2">
@@ -382,6 +381,31 @@ function renderMatchRow(m, idx) {
   </tr>`;
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// ROW CLICK — a match that is on the pitch opens the in-app live view
+// (stats + events on /live); everything else opens its prediction page.
+// Decided at CLICK time from the latest match-clock poll, so a row that
+// went live between renders still lands on the right page.
+// ═══════════════════════════════════════════════════════════════════════
+function _matchSlug(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+function dashRowHref(mk) {
+  const info = _clockData[mk];
+  // live_key is only present when the live monitor actually tracks the match;
+  // a clock-estimated "live" with no monitor data has no stats/events card to
+  // land on, so that row keeps going to its prediction page.
+  if (info && info.live_key && (info.status === 'live' || info.status === 'half_time')) {
+    // /live derives its card id from the live monitor's own key (Odds API
+    // names, e.g. "AS Roma vs Atalanta BC"), which the clock hands back.
+    return '/live#match-' + _matchSlug(info.live_key);
+  }
+  return '/prediction/' + _matchSlug(mk);
+}
+function dashOpenRow(row) {
+  window.location = dashRowHref(row.getAttribute('data-match-key'));
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // LIVE STATUS BAR — lightweight check, full experience on /live
@@ -941,6 +965,7 @@ function updateDashRows() {
       // Highlight row
       row.style.borderLeft = '3px solid var(--green)';
       row.style.background = 'rgba(74,222,128,0.04)';
+      row.title = 'Open live stats & events';
 
       // Show clock instead of kickoff time
       const clock = info.clock || '';
@@ -959,6 +984,7 @@ function updateDashRows() {
     } else if (info.status === 'completed') {
       row.style.borderLeft = '';
       row.style.background = '';
+      row.title = '';
       const score = info.score;
       const scoreStr = score ? `${score[0]}-${score[1]}` : '';
       if (timeCell) {

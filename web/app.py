@@ -6129,13 +6129,13 @@ def api_match_clock():
     except ImportError:
         pass
 
-    def _find_live_entry(mk):
-        """Find live data entry by exact key or normalized team names."""
+    def _find_live_key(mk):
+        """Resolve the live monitor's own key (Odds API names) for a pipeline match key."""
         if mk in live_matches:
-            return live_matches[mk]
+            return mk
         if mk in _live_normalized:
-            return live_matches[_live_normalized[mk]]
-        return {}
+            return _live_normalized[mk]
+        return None
 
     matches = {}
     for pred in predictions_list:
@@ -6156,7 +6156,8 @@ def api_match_clock():
         secs_until = (kickoff - now).total_seconds()
 
         # Check live monitor data (with normalized key fallback)
-        live_entry = _find_live_entry(mk)
+        live_key = _find_live_key(mk)
+        live_entry = live_matches[live_key] if live_key else {}
         live_status = live_entry.get("status", "")
         live_snapshots = live_entry.get("snapshots", [])
         last_snap = live_snapshots[-1] if live_snapshots else None
@@ -6176,6 +6177,8 @@ def api_match_clock():
                 "live_odds": last_snap.get("avg_odds") if last_snap else None,
                 "pre_match_odds": live_entry.get("pre_match_odds") or (live_snapshots[0].get("avg_odds") if live_snapshots else None),
                 "bet_tracking": [bt for bt in live_bet_tracking if bt.get("match") == mk],
+                # the /live card id is derived from THIS key, not the pipeline's
+                "live_key": live_key,
             }
         elif live_status in ("first_half", "half_time", "second_half"):
             # Live — use live monitor data
@@ -6201,6 +6204,7 @@ def api_match_clock():
                 "live_odds": last_snap.get("avg_odds") if last_snap else None,
                 "pre_match_odds": live_entry.get("pre_match_odds") or (live_snapshots[0].get("avg_odds") if live_snapshots else None),
                 "bet_tracking": [bt for bt in live_bet_tracking if bt.get("match") == mk],
+                "live_key": live_key,
             }
         elif secs_until <= -7200:
             # More than 2h past kickoff, no live data — probably completed

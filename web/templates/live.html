@@ -36,6 +36,7 @@
     cursor: pointer;
   }
   .live-match__header:hover { background: var(--bg-tertiary); }
+  .live-match__header:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
   .live-match[data-match-id] { scroll-margin-top: 80px; }
 
   .live-match__teams {
@@ -200,6 +201,32 @@
 {% block scripts %}
 <script>
 let _lpAutoActive = false, _lpInterval = 60, _lpNextAt = 0, _lpTimer = null, _lpCountdown = null;
+// The card list is re-rendered on every refresh. Without these, every refresh
+// snapped the page back to "live match open, everything else closed" and the
+// events list scrolled back to the top.
+const _lpUserOpen = {};   // card id -> true/false, set only by a user toggle / deep link
+const _lpScroll = {};     // card id -> scrollTop of its events list
+const LP_VIEW_REFRESH_MS = 30000;  // re-read /api/live (local JSON, no API credits)
+
+function lpToggle(id, force) {
+  const detail = document.getElementById(id);
+  if (!detail) return;
+  const open = force === undefined ? !detail.classList.contains('open') : !!force;
+  detail.classList.toggle('open', open);
+  _lpUserOpen[id] = open;
+  const header = detail.previousElementSibling;
+  if (header) {
+    header.setAttribute('aria-expanded', open ? 'true' : 'false');
+    header.title = (open ? 'Hide' : 'Show') + ' match stats & events';
+  }
+  // Keep the URL pointing at the open card so a reload / share lands on it
+  const hash = '#match-' + id;
+  if (open) history.replaceState(null, '', hash);
+  else if (window.location.hash === hash) history.replaceState(null, '', window.location.pathname);
+}
+function lpHeaderKey(ev, id) {
+  if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); lpToggle(id); }
+}
 
 // -----------------------------------------------------------------------
 // Rendering
@@ -372,8 +399,10 @@ function lpRenderMatch(mk, md, bets) {
       }).join('') + `</div>`;
   }
 
+  const isOpen = (id in _lpUserOpen) ? _lpUserOpen[id] : isLive;
+
   return `<div class="live-match ${isLive ? 'live-match--active' : ''} ${isCompleted ? 'live-match--completed' : ''}" data-match-id="${id}" id="match-${id}">
-    <div class="live-match__header" onclick="document.getElementById('${id}').classList.toggle('open')">
+    <div class="live-match__header" role="button" tabindex="0" aria-expanded="${isOpen}" aria-controls="${id}" title="${isOpen ? 'Hide' : 'Show'} match stats &amp; events" onclick="lpToggle('${id}')" onkeydown="lpHeaderKey(event, '${id}')">
       <div class="live-match__teams">
         <div class="live-match__team live-match__team--home">${md.home_team || mk.split(' vs ')[0]}</div>
         <div class="live-match__score">
@@ -391,7 +420,7 @@ function lpRenderMatch(mk, md, bets) {
         ${lpRenderOddCell('A', avg.away, pre.away)}
       </div>
     </div>
-    <div id="${id}" class="live-match__detail ${isLive ? 'open' : ''}">
+    <div id="${id}" class="live-match__detail ${isOpen ? 'open' : ''}">
       <div class="live-detail-grid">
         <div>
           <div class="text-label mb-3">Match Stats</div>
@@ -471,7 +500,15 @@ async function lpLoad() {
       // Sort: live first, then pre-match, then completed
       const order = {first_half:0, second_half:0, half_time:0, pre_match:1, completed:2};
       const sorted = keys.sort((a,b) => (order[matches[a].status]||1) - (order[matches[b].status]||1));
+      container.querySelectorAll('.live-match__detail.open').forEach(d => {
+        const ev = d.querySelector('.live-events');
+        if (ev) _lpScroll[d.id] = ev.scrollTop;
+      });
       container.innerHTML = sorted.map(k => lpRenderMatch(k, matches[k], bets)).join('');
+      container.querySelectorAll('.live-match__detail.open').forEach(d => {
+        const ev = d.querySelector('.live-events');
+        if (ev && _lpScroll[d.id]) ev.scrollTop = _lpScroll[d.id];
+      });
     }
 
     // Bet summary
@@ -573,21 +610,29 @@ function lpStopCountdown() {
 // -----------------------------------------------------------------------
 // Init
 // -----------------------------------------------------------------------
+// A URL like /live#match-as-roma-vs-atalanta-bc (dashboard row / live bar)
+// scrolls to that card and opens its stats + events.
+function lpRevealHash() {
+  const h = window.location.hash;
+  if (!h || !h.startsWith('#match-')) return;
+  const target = document.getElementById(h.slice(1));
+  if (!target) return;
+  lpToggle(h.slice('#match-'.length), true);
+  target.scrollIntoView({behavior: 'smooth', block: 'start'});
+  target.style.boxShadow = '0 0 0 2px var(--green)';
+  setTimeout(() => { target.style.boxShadow = ''; }, 3000);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   await lpLoad();
-  // If URL has a hash like #match-napoli-vs-roma, scroll to and expand that match
-  if (window.location.hash) {
-    const target = document.querySelector(window.location.hash);
-    if (target) {
-      target.scrollIntoView({behavior: 'smooth', block: 'start'});
-      const detail = target.querySelector('.live-match__detail');
-      if (detail && !detail.classList.contains('open')) detail.classList.add('open');
-      target.style.boxShadow = '0 0 0 2px var(--green)';
-      setTimeout(() => { target.style.boxShadow = ''; }, 3000);
-    }
-  }
-  // Auto-refresh every 60s only when auto-poll is NOT active (avoids double polling)
-  setInterval(() => { if (!_lpAutoActive) lpLoad(); }, 60000);
+  lpRevealHash();
+  window.addEventListener('hashchange', lpRevealHash);
+  // Re-read the local live file on a timer REGARDLESS of the server auto-poll.
+  // The server poll is what spends API credits; this only reads /api/live.
+  // (It used to skip while Auto was ON, which froze the view exactly when the
+  // data was moving.)
+  setInterval(() => { if (!document.hidden) lpLoad(); }, LP_VIEW_REFRESH_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) lpLoad(); });
 });
 </script>
 {% endblock %}
