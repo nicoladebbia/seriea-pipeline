@@ -86,8 +86,8 @@ def test_every_match_on_the_slate_gets_a_row():
 
 
 def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkeypatch):
-    """/picks reads data/upcoming/picks.json (scripts/betting/picks.py) since
-    2026-09-05: one line per match, VALUE / LEAN / NO EDGE."""
+    """/picks reads data/upcoming/picks.json (scripts/betting/picks.py): one
+    clean card per match, bets in plain Italian with the team names."""
     import json
 
     import scripts.pipeline.telegram_bot as tb
@@ -99,32 +99,37 @@ def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkey
     doc = {"generated_at": "2026-09-05T12:00:00+00:00",
            "counts": {"VALUE": 1, "LEAN": 1, "NO_EDGE": 1},
            "picks": [
-               {"match": "A vs B", "date": "2026-09-05", "label": "VALUE", "stage": "selected",
+               {"match": "A vs B", "home_team": "Lazio", "away_team": "Milan", "date": "2026-09-05",
+                "kickoff_utc": "2026-09-12T16:00:00+00:00", "label": "VALUE", "stage": "selected",
                 "pick": {"bet_type": "O/U 1.5", "selection": "Over 1.5", "odds": 1.41, "edge_pct": 6.5,
                          "tier": "engine"},
-                "reason": "the betting engine's own selection: real stake, committed at T-30"},
-               {"match": "C vs D", "date": "2026-09-06", "label": "LEAN",
+                "lean": {"bet_type": "Doppia chance", "selection": "X2", "odds": 1.4, "edge_pct": 9.6, "tier": "B"},
+                "reason": "r"},
+               {"match": "C vs D", "home_team": "Genoa", "away_team": "Frosinone", "date": "2026-09-06",
+                "label": "LEAN",
                 "pick": {"bet_type": "1x2 finale", "selection": "1", "odds": 2.9, "edge_pct": 4.4, "tier": "A",
-                         "probability_pct": 36.0, "implied_pct": 34.5, "n_books": 24},
+                         "engine_note": "engine rejected it: veto_factor:cold_home at +1.8% (band 7.0-10.0%)"},
                 "alternatives": [{"bet_type": "Under/over", "selection": "Over 2.5", "odds": 1.9, "edge_pct": 2.0,
-                                  "tier": "B", "probability_pct": 53.7, "implied_pct": 52.6, "n_books": 9}],
+                                  "tier": "B"}],
                 "exotic": [{"bet_type": "Assist giocatore", "player": "Federico Dimarco", "selection": "Sì",
-                            "odds": 4.5, "edge_pct": 3.5, "tier": "C", "probability_pct": 23.0,
-                            "implied_pct": 22.2, "n_books": 1}],
-                "reason": "model 36.0% vs market 34.5% (best of market, 24 books); edge inside the credible band, paper stake"},
-               {"match": "E vs F", "date": "2026-09-06", "label": "NO_EDGE", "pick": None,
+                            "odds": 4.5, "edge_pct": 3.5, "tier": "C", "n_books": 1}],
+                "reason": "r"},
+               {"match": "E vs F", "home_team": "Como", "away_team": "Parma", "date": "2026-09-06",
+                "label": "NO_EDGE", "pick": None,
                 "most_probable": {"bet_type": "1x2 finale", "selection": "1", "odds": 1.5, "edge_pct": -4.0,
                                   "tier": "A"},
-                "reason": "most probable is 1 at 64.0%, but the market prices it at 66.7% (1.5): no edge"},
+                "reason": "r"},
            ]}
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
-    assert "A vs B" in out and "💰" in out and "VALUE" in out
-    assert "📝" in out and "LEAN · solo carta" in out
-    assert "Federico Dimarco Sì @ 4.50" in out and "Insolite" in out       # the exotic slot
-    assert "Over 2.5 @ 1.90" in out and "Alternative" in out
-    assert "E vs F" in out and "➖" in out and "no edge" in out
-    assert "solo carta" in out and "tasso base" in out  # legend: LEAN is paper, tiers explained
+    assert "<b>LAZIO – MILAN</b> · sab 12/09 18:00" in out
+    assert "💰 Over 1.5 gol @1.41 · +6.5% <i>puntata vera</i>" in out
+    assert "📝 Milan o pareggio @1.40 · +9.6%" in out
+    assert "📝 Genoa vince @2.90 · +4.4% ✓" in out and "motore: veto fattori" in out
+    assert "▫️ Over 2.5 gol @1.90 · +2.0%" in out
+    assert "🎲 Dimarco assist @4.50 · +3.5% ~ (1 book)" in out
+    assert "➖ Como vince @1.50 · -4.0% ✓ <i>il più probabile" in out
+    assert "carta €10" in out and "tasso base" in out          # the legend
 
 
 def test_ai_budget_gate_caps_and_rolls_over(tmp_path, monkeypatch):
@@ -187,7 +192,8 @@ def test_handle_picks_never_lists_the_value_bet_or_the_lean_twice(tmp_path, monk
     x2 = {"bet_type": "Doppia chance", "selection": "X2", "odds": 1.4, "edge_pct": 9.6, "tier": "B",
           "probability_pct": 78.0, "implied_pct": 71.4, "n_books": 3}
     doc = {"generated_at": "2026-09-05T12:00:00+00:00", "counts": {"VALUE": 1, "LEAN": 0, "NO_EDGE": 0},
-           "picks": [{"match": "Lazio vs Milan", "date": "2026-09-12", "label": "VALUE", "stage": "selected",
+           "picks": [{"match": "Lazio vs Milan", "home_team": "Lazio", "away_team": "Milan", "date": "2026-09-12",
+                      "label": "VALUE", "stage": "selected",
                       "pick": {"bet_type": "O/U 1.5", "selection": "Over 1.5", "odds": 1.41, "edge_pct": 6.5,
                                "tier": "engine", "probability_pct": 78.0},
                       "lean": x2,
@@ -197,6 +203,6 @@ def test_handle_picks_never_lists_the_value_bet_or_the_lean_twice(tmp_path, monk
                       "reason": "r"}]}
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
-    assert out.count("Over 1.5 @ 1.41") == 1 and out.count("X2 @ 1.40") == 1
-    assert "Alternative" not in out
+    assert out.count("@1.41") == 1 and out.count("@1.40") == 1
+    assert not [ln for ln in out.splitlines() if ln.startswith("▫️")]
 

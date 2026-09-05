@@ -1995,46 +1995,81 @@ def _handle_formazioni() -> str:
               "conta per i cambi automatici.</i>")
 
 
-_PICK_TIER_IT = {"A": "misurato", "B": "etichetta", "C": "tasso base", "engine": "motore"}
 _IT_DAYS = ("lun", "mar", "mer", "gio", "ven", "sab", "dom")
+_TIER_MARK = {"A": " ✓", "C": " ~"}   # B (label, not measured) gets no mark
+_ENGINE_REASON_IT = {"veto_factor": "veto fattori", "below_min_edge": "edge sotto banda",
+                     "above_max_edge": "edge sopra banda", "odds_dead_zone": "quota in zona morta"}
 
 
-def _pick_line(pk: dict, *, bullet: str = "▸") -> str:
-    """One bet on one line: what, price, edge, tier — then the two numbers
-    that made it (model vs market) on the next."""
-    if not pk:
-        return ""
-    who = f"{str(pk.get('player')).strip()} " if pk.get("player") else ""
-    edge = pk.get("edge_pct")
-    edge_s = f"{edge:+.1f}%" if isinstance(edge, int | float) else "n/d"
-    tier = pk.get("tier")
-    tier_s = f" · {_PICK_TIER_IT.get(tier, tier)}" if tier else ""
+def _human_bet(pk: dict, home: str, away: str) -> str:
+    """A bet in plain Italian with the team names, no market jargon:
+    'Milan o pareggio', 'Over 1.5 gol', 'Pašalić over 1.5 tiri', 'Malen segna'."""
+    bt, sel = pk.get("bet_type") or "", str(pk.get("selection") or "")
+    pl = str(pk.get("player") or "").strip()
+    surname = pl.split(" ")[-1] if pl else ""
+    side = {"1": home, "X": "pareggio", "2": away}
+    low = sel.lower()
+    if bt in ("O/U 1.5", "O/U 2.5", "Under/over", "O/U") or bt.startswith("O/U"):
+        return f"{sel} gol"
+    if bt == "1x2 finale":
+        return "Pareggio" if sel == "X" else f"{side.get(sel, sel)} vince"
+    if bt == "Doppia chance":
+        return {"1X": f"{home} o pareggio", "X2": f"{away} o pareggio", "12": "Niente pareggio"}.get(sel, sel)
+    if bt == "Goal":
+        return "Gol entrambe: sì" if sel == "Sì" else "Gol entrambe: no"
+    if bt == "1° tempo 1x2":
+        return "1° tempo pari" if sel == "X" else f"1° tempo {side.get(sel, sel)} avanti"
+    if bt == "1° tempo under/over":
+        return f"1° tempo {low} gol"
+    if bt == "2° tempo under/over":
+        return f"2° tempo {low} gol"
+    if bt == "Primo tempo / Finale":
+        names = {"H": home, "D": "pari", "A": away}
+        a, _, b = sel.partition("/")
+        return f"HT/FT {names.get(a, a)} / {names.get(b, b)}"
+    if bt == "Risultato esatto":
+        return f"Risultato esatto {sel}"
+    if bt == "Prima squadra a segnare":
+        return {"Casa": f"Segna prima {home}", "Ospite": f"Segna prima {away}", "Nessuno": "Nessun gol"}.get(sel, sel)
+    if bt == "Vince o quasi":
+        return f"Vince o quasi {sel}"
+    if bt == "Tiri totali del giocatore":
+        return f"{surname} {low} tiri"
+    if bt == "Tiri in porta":
+        return f"{surname} {low} tiri in porta"
+    if bt == "Giocatore marcatore":
+        return f"{surname} segna"
+    if bt == "Assist giocatore":
+        return f"{surname} assist"
+    if pl:
+        return f"{surname} {bt.lower()} {sel}"
+    return f"{bt} {sel}".strip()
+
+
+def _bet_line(icon: str, pk: dict, home: str, away: str, note: str = "") -> str:
     odds = pk.get("odds")
-    head = (f"{bullet} <b>{pk.get('bet_type') or '?'}</b>: {who}{pk.get('selection') or ''}"
-            f"{' @ ' + format(odds, '.2f') if isinstance(odds, int | float) else ''}"
-            f" · edge {edge_s}{tier_s}")
-    p, m = pk.get("probability_pct"), pk.get("implied_pct")
-    nb = pk.get("n_books")
-    detail = ""
-    if p is not None and m is not None:
-        books = " · 1 solo book" if nb == 1 else (f" · {nb} book" if nb else "")
-        detail = f"\n    modello {p:.0f}% vs mercato {m:.0f}%{books}"
-    elif p is not None:
-        detail = f"\n    modello {p:.0f}%"
-    note = pk.get("engine_note")
-    if note:
-        detail += f"\n    ⚙️ {note}"
-    return head + detail
+    edge = pk.get("edge_pct")
+    q = f" @{odds:.2f}" if isinstance(odds, int | float) else ""
+    e = f" · {edge:+.1f}%" if isinstance(edge, int | float) else ""
+    mark = _TIER_MARK.get(str(pk.get("tier")), "")
+    one = " (1 book)" if pk.get("n_books") == 1 else ""
+    return f"{icon} {_human_bet(pk, home, away)}{q}{e}{mark}{one}{note}"
 
 
-def _handle_picks(max_matches: int = 12) -> str:
-    """/picks — every upcoming match, several angles each (scripts/betting/picks.py).
+def _engine_note_it(note: str | None) -> str:
+    if not note:
+        return ""
+    reason = note.split("rejected it: ", 1)[-1].split(" at ")[0].split(" (")[0]
+    key = reason.split(":")[0]
+    return f"\n   ⚙️ <i>motore: {_ENGINE_REASON_IT.get(key, reason)}</i>"
 
-    Per match: the headline (💰 VALUE real money / 📝 LEAN paper / ➖ NO EDGE),
-    up to two alternatives, and the 🎲 Insolite slot — the best positive-edge
-    angle OUTSIDE 1x2 / totals / double chance (player props, first half,
-    HT/FT, first team to score, exact score), or, when none beats its price,
-    the most probable priced player prop with the price that beats it."""
+
+def _handle_picks(max_matches: int = 20) -> str:
+    """/picks — one clean card per upcoming match (scripts/betting/picks.py):
+    💰 the engine's real bet, 📝 the paper lean, ▫️ alternatives, 🎲 the
+    exotic angles (player props, first half, HT/FT), ➖ nothing beats its price.
+    Bets are written in plain Italian with the team names; the only numbers
+    are the price and the edge."""
     try:
         doc = json.loads((PROJECT_ROOT / "data" / "upcoming" / "picks.json").read_text())
     except (OSError, ValueError):
@@ -2044,61 +2079,51 @@ def _handle_picks(max_matches: int = 12) -> str:
     if not picks:
         return "Nessuna partita in programma nel file picks."
     c = doc.get("counts") or {}
-    band = doc.get("band") or [3.0, 7.0]
-    out = [f"<b>🎯 Scelte per partita</b> — {c.get('VALUE', 0)} 💰 value · "
-           f"{c.get('LEAN', 0)} 📝 lean · {c.get('NO_EDGE', 0)} ➖ no edge",
-           "<i>edge = quanto il modello paga sopra il prezzo; banda credibile "
-           f"{band[0]:.0f}–{band[1]:.0f}%; solo 💰 è denaro vero.</i>"]
-    icon = {"VALUE": "💰", "LEAN": "📝", "NO_EDGE": "➖"}
+    out = [f"🎯 <b>Scelte</b> · {len(picks)} partite",
+           f"💰 {c.get('VALUE', 0)} vera · 📝 {c.get('LEAN', 0)} carta · ➖ {c.get('NO_EDGE', 0)} niente"]
     for p in picks[:max_matches]:
-        ko = ""
+        home, away = p.get("home_team") or "Casa", p.get("away_team") or "Ospite"
         try:
             from datetime import datetime
             from zoneinfo import ZoneInfo
             dt = datetime.fromisoformat((p.get("kickoff_utc") or "").replace("Z", "+00:00")).astimezone(ZoneInfo("Europe/Rome"))
-            ko = f"{_IT_DAYS[dt.weekday()]} {dt.strftime('%d/%m %H:%M')} ITA"
+            ko = f"{_IT_DAYS[dt.weekday()]} {dt.strftime('%d/%m %H:%M')}"
         except (ValueError, TypeError):
             ko = (p.get("date") or "?")[5:]
-        label = p.get("label", "?")
-        tag = {"VALUE": "VALUE · soldi veri", "LEAN": "LEAN · solo carta",
-               "NO_EDGE": "NO EDGE"}.get(label, label)
-        if label == "VALUE" and p.get("stage") == "candidate":
-            tag = "VALUE · si conferma a T-30"
-        block = [f"\n🏟 <b>{p.get('match')}</b> · {ko}", f"{icon.get(label, '•')} <b>{tag}</b>"]
+        block = [f"\n<b>{home.upper()} – {away.upper()}</b> · {ko}"]
+        label = p.get("label")
         headline = p.get("pick")
-        if headline:
-            block.append(_pick_line(headline))
-        elif p.get("most_probable"):
-            block.append(_pick_line(p["most_probable"], bullet="▹") + "\n    il mercato prezza già l'esito più probabile")
-        else:
-            block.append("▹ nessun prezzo per questa partita (quote per-evento non ancora scaricate)")
-        if label == "VALUE" and p.get("lean"):
-            block.append("📝 <i>Carta a fianco</i>\n" + _pick_line(p["lean"]))
         key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731
-        seen = {key(headline)} if headline else set()
-        if headline and label == "VALUE":
-            # the engine names its market "O/U 1.5"; the same bet is an
-            # "Under/over" row on the pick side — never list it twice
-            seen |= {("Under/over", headline.get("selection"), None), ("O/U", headline.get("selection"), None)}
-        if p.get("lean"):
-            seen.add(key(p["lean"]))
+        seen: set = set()
+        if label == "VALUE" and headline:
+            tag = " <i>puntata vera</i>" if p.get("stage") != "candidate" else " <i>si conferma a T-30</i>"
+            block.append(_bet_line("💰", headline, home, away, tag))
+            seen |= {key(headline), ("Under/over", headline.get("selection"), None)}
+            if p.get("lean"):
+                block.append(_bet_line("📝", p["lean"], home, away, _engine_note_it(p["lean"].get("engine_note"))))
+                seen.add(key(p["lean"]))
+        elif label == "LEAN" and headline:
+            block.append(_bet_line("📝", headline, home, away, _engine_note_it(headline.get("engine_note"))))
+            seen.add(key(headline))
+        elif p.get("most_probable"):
+            block.append(_bet_line("➖", p["most_probable"], home, away, " <i>il più probabile, ma la quota lo paga già</i>"))
+            seen.add(key(p["most_probable"]))
+        else:
+            block.append("➖ <i>nessuna quota ancora</i>")
         ex = [a for a in (p.get("exotic") or []) if key(a) not in seen][:2]
         seen |= {key(a) for a in ex}
-        alts = [a for a in (p.get("alternatives") or []) if key(a) not in seen][:2]
-        if alts:
-            block.append("<i>Alternative</i>\n" + "\n".join(_pick_line(a) for a in alts))
-        if ex:
-            block.append("🎲 <i>Insolite (edge positivo)</i>\n" + "\n".join(_pick_line(a) for a in ex))
-        elif p.get("exotic_fallback"):
-            block.append("🎲 <i>Insolite</i>: nessuna batte il prezzo; la più probabile\n"
-                         + _pick_line(p["exotic_fallback"], bullet="▹"))
+        for a in [a for a in (p.get("alternatives") or []) if key(a) not in seen][:2]:
+            block.append(_bet_line("▫️", a, home, away))
+            seen.add(key(a))
+        for a in ex:
+            block.append(_bet_line("🎲", a, home, away))
+        if not ex and p.get("exotic_fallback") and key(p["exotic_fallback"]) not in seen:
+            block.append(_bet_line("🎲", p["exotic_fallback"], home, away, " <i>la quota lo paga già</i>"))
         out.append("\n".join(block))
     if len(picks) > max_matches:
-        out.append(f"\n<i>… e altre {len(picks) - max_matches} partite più avanti.</i>")
-    out.append("\n<i>💰 = slip del motore, puntata reale a T-30 · 📝 = registrata a €10 di "
-               "carta a T-30 per costruire lo storico del mercato · ➖ = nessun edge. "
-               "Tier: misurato = backtest superato, etichetta = non misurato, tasso base = "
-               "frequenza storica. 🎲 = props giocatori, primo tempo, HT/FT, risultato esatto.</i>")
+        out.append(f"\n<i>… e altre {len(picks) - max_matches} partite.</i>")
+    out.append("\n<i>💰 vera (slip del motore, T-30) · 📝 carta €10 · ▫️ alternative · 🎲 insolite · "
+               "➖ niente da giocare\n✓ backtest superato · ~ solo tasso base · % = edge sulla quota</i>")
     try:
         from scripts.betting.picks import picks_record
         rec = picks_record("serie_a")
