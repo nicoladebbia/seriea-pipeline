@@ -1107,6 +1107,39 @@ def auto_retrain(dry_run: bool = False, force: bool = False) -> dict:
     return result
 
 
+def forced_retrain(mode: str, dry_run: bool = False) -> dict:
+    """A manual `--quick` / `--full` retrain: the whole sequence, not just the ensemble.
+
+    Shared by `weekly_retrain --quick/--full` and `cli.py ml retrain --quick/--full`.
+    The CLI used to call quick_retrain()/full_retrain() directly, which was fine
+    while those ran the O/U retrain and the prediction refresh inside their
+    promote branch; once that moved out to the caller (2026-09-05) a direct call
+    silently skipped both. One entry point, so the two cannot diverge again.
+    """
+    if mode not in ("quick", "full"):
+        raise ValueError(f"mode must be 'quick' or 'full', got {mode!r}")
+    _archive_current_models()
+    result = full_retrain(dry_run=dry_run) if mode == "full" else quick_retrain(dry_run=dry_run)
+    # Auxiliary models (incl. the O/U classifiers) retrain regardless of the
+    # ensemble decision, then one prediction refresh after everything.
+    result["auxiliary_models"] = _retrain_auxiliary_models(dry_run=dry_run)
+    _refresh_after_retrain(result, dry_run=dry_run)
+    # A forced retrain has to close the gate too. auto_retrain stamps the
+    # state, but this path bypasses it entirely — so before the season fix
+    # a manual --quick left needs_retrain true and the scheduled job simply
+    # ran again. That was invisible while the gate was stuck shut.
+    if result.get("promoted") and not dry_run:
+        _status = get_matchweek_status()
+        if "error" not in _status:
+            _state = _load_retrain_state()
+            _state["last_retrained_matchweek"] = _status["current_matchweek"]
+            _state["last_retrained_season"] = _status.get("season")
+            _state["last_retrained_at"] = datetime.now(timezone.utc).isoformat()
+            _state["last_mode"] = result.get("mode", "forced")
+            _save_retrain_state(_state)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Automated model retraining triggered by matchweek completion"
@@ -1179,28 +1212,7 @@ def main():
 
     # For forced quick/full, archive first then run directly
     if args.full or args.quick:
-        _archive_current_models()
-        if args.full:
-            result = full_retrain(dry_run=args.dry_run)
-        else:
-            result = quick_retrain(dry_run=args.dry_run)
-        # Auxiliary models (incl. the O/U classifiers) retrain regardless of the
-        # ensemble decision, then one prediction refresh after everything.
-        result["auxiliary_models"] = _retrain_auxiliary_models(dry_run=args.dry_run)
-        _refresh_after_retrain(result, dry_run=args.dry_run)
-        # A forced retrain has to close the gate too. auto_retrain stamps the
-        # state, but this branch bypasses it entirely — so before the season fix
-        # a manual --quick left needs_retrain true and the scheduled job simply
-        # ran again. That was invisible while the gate was stuck shut.
-        if result.get("promoted"):
-            _status = get_matchweek_status()
-            if "error" not in _status:
-                _state = _load_retrain_state()
-                _state["last_retrained_matchweek"] = _status["current_matchweek"]
-                _state["last_retrained_season"] = _status.get("season")
-                _state["last_retrained_at"] = datetime.now(timezone.utc).isoformat()
-                _state["last_mode"] = result.get("mode", "forced")
-                _save_retrain_state(_state)
+        result = forced_retrain("full" if args.full else "quick", dry_run=args.dry_run)
     else:
         # Auto mode: check matchweek completion, then quick or full based on calendar
         result = auto_retrain(dry_run=args.dry_run, force=args.force)

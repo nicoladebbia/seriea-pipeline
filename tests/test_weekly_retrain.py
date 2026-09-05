@@ -330,6 +330,97 @@ def test_retrain_ou_classifiers_failure_is_an_error_not_a_crash(monkeypatch):
     assert out["promoted"] is False and "no features" in out["error"]
 
 
+# --- a manual --quick/--full is the WHOLE sequence, from every entry point ----
+
+
+def _run_forced(monkeypatch, mode, *, dry_run=False, ensemble_promoted=False,
+                ou_promoted=False):
+    from scripts.pipeline import weekly_retrain as wr
+
+    calls, saved = [], {}
+    monkeypatch.setattr(wr, "get_matchweek_status", lambda *a, **k: _fake_status())
+    monkeypatch.setattr(wr, "_load_retrain_state", lambda: {})
+    monkeypatch.setattr(wr, "_save_retrain_state", lambda st: saved.update(st))
+    monkeypatch.setattr(wr, "_archive_current_models",
+                        lambda *a, **k: calls.append(("archive", None)))
+
+    def _ens(name):
+        def run(dry_run=False):
+            calls.append((name, dry_run))
+            return {"mode": name, "promoted": ensemble_promoted,
+                    **({"dry_run": True} if dry_run else {})}
+        return run
+
+    monkeypatch.setattr(wr, "quick_retrain", _ens("quick"))
+    monkeypatch.setattr(wr, "full_retrain", _ens("full"))
+    for aux in ("retrain_no_odds", "retrain_xg_models", "retrain_draw_detector"):
+        monkeypatch.setattr(wr, aux, lambda dry_run=False: {"promoted": False})
+    monkeypatch.setattr(
+        wr, "_retrain_ou_classifiers",
+        lambda dry_run=False: (calls.append(("over_under", dry_run)) or
+                               {"model": "over_under", "promoted": ou_promoted}),
+    )
+    monkeypatch.setattr(wr, "_refresh_predictions",
+                        lambda: (calls.append(("refresh", None)), True)[1])
+    monkeypatch.setattr(wr, "_refresh_goal_predictions", lambda: None)
+    result = wr.forced_retrain(mode, dry_run=dry_run)
+    return result, calls, saved
+
+
+def test_forced_retrain_runs_the_ou_classifiers_and_refreshes_after_a_held_ensemble(monkeypatch):
+    """cli.py used to call quick_retrain() directly — after the decoupling that
+    silently trained the ensemble only. The manual path must be the whole
+    sequence: archive -> ensemble -> auxiliaries (O/U) -> one refresh."""
+    result, calls, _ = _run_forced(monkeypatch, "quick", ou_promoted=True)
+    names = [c[0] for c in calls]
+    assert names[:2] == ["archive", "quick"]
+    assert ("over_under", False) in calls
+    assert names.index("refresh") > names.index("over_under")
+    assert result["predictions_refreshed_for"] == ["over_under"]
+
+
+def test_forced_full_retrain_uses_the_full_trainer(monkeypatch):
+    _, calls, _ = _run_forced(monkeypatch, "full")
+    assert ("full", False) in calls and ("quick", False) not in calls
+
+
+def test_forced_retrain_stamps_the_gate_only_on_a_real_promotion(monkeypatch):
+    _, _, saved = _run_forced(monkeypatch, "quick", ensemble_promoted=True)
+    assert saved.get("last_retrained_matchweek") == 3
+    _, _, saved = _run_forced(monkeypatch, "quick", ensemble_promoted=False)
+    assert saved == {}
+    _, calls, saved = _run_forced(monkeypatch, "quick", dry_run=True, ensemble_promoted=True)
+    assert saved == {} and ("over_under", True) in calls and ("refresh", None) not in calls
+
+
+def test_forced_retrain_rejects_an_unknown_mode():
+    import pytest
+
+    from scripts.pipeline import weekly_retrain as wr
+
+    with pytest.raises(ValueError):
+        wr.forced_retrain("auto")
+
+
+def test_every_manual_entry_point_goes_through_forced_retrain():
+    """Pin both callers in source: neither may call the ensemble trainers directly."""
+    import inspect
+    import re
+
+    from scripts.pipeline import weekly_retrain as wr
+
+    main_src = inspect.getsource(wr.main)
+    assert "forced_retrain(" in main_src
+    assert "quick_retrain(dry_run" not in main_src and "full_retrain(dry_run" not in main_src
+
+    cli_src = (PROJECT_ROOT / "cli.py").read_text()
+    retrain_cmd = cli_src[cli_src.index("def retrain("):cli_src.index("def rollback(")]
+    assert "forced_retrain(" in retrain_cmd
+    assert not re.search(r"\b(quick|full)_retrain\(", retrain_cmd), (
+        "cli.py must not call the ensemble-only trainers directly"
+    )
+
+
 if __name__ == "__main__":
     import pytest
 
