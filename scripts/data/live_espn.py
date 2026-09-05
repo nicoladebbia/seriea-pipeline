@@ -29,10 +29,20 @@ Specimens (2026-09-05, saved under ``tests/fixtures/espn/``):
 * summary ``boxscore.teams[].statistics``: ``[{"name", "displayValue"}]`` with
   string values (``"63"``, ``"0.3"``).
 
-Unverified (no specimen yet): own goals (``goal_type`` is set to ``ownGoal``
-when the slug contains ``own`` and ``is_home`` follows ESPN's ``team``, which
-may be the beneficiary rather than the scorer — reconciliation would then
-report a discrepancy, nothing worse), red cards, and VAR incidents (dropped).
+Verified on 2026-08/09 specimens (14-day sweep of both leagues):
+
+* ``own-goal``: ESPN's ``team`` is the BENEFICIARY ("Own Goal by Redouane
+  Halhal, Venezia." carries ``team=AC Milan``). Our convention (Sofascore's,
+  relied on by reconciliation and the goal ping) is that ``is_home`` marks the
+  SCORER's side and ``goal_type=ownGoal`` credits the opponent — so an ESPN own
+  goal is stored with ``is_home`` flipped to the scorer's side.
+* ``penalty---scored``: a goal, ``team`` = scoring team. ``penalty---missed``
+  is not a goal and is dropped.
+* ``red-card``: ``card_type=red``. VAR incidents are dropped (no slug seen).
+
+The header score can trail the ``keyEvents`` feed by a tick; ``score`` is
+therefore the per-side max of the header and the score derived from goal
+events, so a goal never shows in the list before it shows on the board.
 """
 
 from __future__ import annotations
@@ -187,6 +197,9 @@ def _parse_key_event(ke: dict[str, Any], home_id: str) -> dict[str, Any] | None:
         base["goal_type"] = (
             "ownGoal" if "own" in slug else "penalty" if "penalty" in slug else "regular"
         )
+        if base["goal_type"] == "ownGoal" and base["is_home"] is not None:
+            # ESPN credits the beneficiary; we store the scorer's side (see docstring)
+            base["is_home"] = not base["is_home"]
         return base
     if "card" in slug:
         base["type"] = "card"
@@ -217,6 +230,20 @@ def parse_key_events(key_events: list[dict[str, Any]], home_id: str) -> list[dic
     parsed = [e for ke in key_events if (e := _parse_key_event(ke, home_id))]
     parsed.reverse()
     return parsed
+
+
+def score_from_events(events: list[dict[str, Any]]) -> list[int]:
+    """[home, away] counted from goal events; an own goal credits the opponent."""
+    home = away = 0
+    for e in events:
+        if e.get("type") != "goal" or e.get("is_home") is None:
+            continue
+        credited_home = bool(e["is_home"]) != (e.get("goal_type") == "ownGoal")
+        if credited_home:
+            home += 1
+        else:
+            away += 1
+    return [home, away]
 
 
 def _num(value: Any) -> Any:
@@ -270,9 +297,19 @@ def fetch_live_data_for_match(home: str, away: str) -> dict[str, Any] | None:
         home_side, _ = _sides(comp.get("competitors") or [])
         home_id = str((home_side.get("team") or {}).get("id") or "")
         score, clock, state = _score_and_clock(comp)
+        events = parse_key_events(summary.get("keyEvents") or [], home_id)
+        derived = score_from_events(events)
+        if score is None:
+            score = derived
+        elif derived != score:
+            merged = [max(score[0], derived[0]), max(score[1], derived[1])]
+            if merged != score:
+                log.info("ESPN header score %s trails goal events %s for %s vs %s — using %s",
+                         score, derived, home, away, merged)
+            score = merged
         return {
             "espn_id": event.get("id"),
-            "events": parse_key_events(summary.get("keyEvents") or [], home_id),
+            "events": events,
             "statistics": parse_boxscore(summary.get("boxscore") or {}),
             "player_stats": {},
             "fetched": {"events": True, "statistics": True, "player_stats": False},

@@ -153,3 +153,41 @@ def test_refusal_pauses_every_espn_call(monkeypatch):
     monkeypatch.setattr(live_espn.cffi_requests, "get", lambda *a, **k: calls.append(1))
     assert live_espn._get_json("https://x/2") is None
     assert calls == []  # paused: no request was made
+
+
+# ---------------------------------------------------------------- own goals, penalties, score
+
+def _ke(slug, team_id, players=(), clock="60'"):
+    return {"type": {"type": slug}, "clock": {"displayValue": clock}, "team": {"id": team_id},
+            "participants": [{"athlete": {"displayName": p}} for p in players]}
+
+
+def test_own_goal_is_stored_on_the_scorers_side_so_the_opponent_is_credited():
+    # Specimen: "Own Goal by Redouane Halhal, Venezia." carries team=AC Milan (home, id 1)
+    ev = parse_key_events([_ke("own-goal", "1", ["Redouane Halhal"])], home_id="1")[0]
+    assert ev["goal_type"] == "ownGoal" and ev["is_home"] is False  # scorer plays for the away side
+    assert live_espn.score_from_events([ev]) == [1, 0]                # ...and the home side is credited
+
+
+def test_penalty_scored_is_a_goal_and_missed_is_not():
+    evs = parse_key_events([_ke("penalty---scored", "1", ["A"]), _ke("penalty---missed", "1", ["B"])], home_id="1")
+    assert [e["type"] for e in evs] == ["goal"] and evs[0]["goal_type"] == "penalty"
+
+
+def test_red_card():
+    ev = parse_key_events([_ke("red-card", "2", ["João Gomes"])], home_id="1")[0]
+    assert ev == {"type": "card", "minute": 60, "added_time": 0, "is_home": False, "player": "João Gomes", "card_type": "red"}
+
+
+def test_score_never_trails_the_goal_events(monkeypatch, board):
+    """Header still says 1-1 while keyEvents already carry the 89' goal → board shows 2-1."""
+    summary = {"header": {"competitions": [{"competitors": [
+                   {"homeAway": "home", "team": {"id": "1"}, "score": "1"},
+                   {"homeAway": "away", "team": {"id": "2"}, "score": "1"}],
+                   "status": {"type": {"detail": "89'", "state": "in"}}}]},
+               "keyEvents": [_ke("goal", "2", ["X"], "47'"), _ke("goal", "1", ["Y"], "60'"), _ke("goal---header", "1", ["Z"], "89'")],
+               "boxscore": {"teams": []}}
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_get_json", lambda url: summary if "summary" in url else None)
+    out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
+    assert out["score"] == [2, 1] and out["state"] == "in"

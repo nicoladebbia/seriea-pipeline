@@ -196,7 +196,7 @@
         <option value="60">1 min</option>
       </select>
       <button id="lp-auto-btn" onclick="lpToggleAuto()" class="btn btn--sm btn--secondary">Auto: OFF</button>
-      <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:40px;"></span>
+      <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:80px;" title="Time to the next Odds API poll — the live tick is the Live select"></span>
     </div>
   </div>
 
@@ -358,6 +358,7 @@ function lpRenderMatch(mk, md, bets) {
   const addedTime = lastSnap ? lastSnap.added_time : null;
   let displayMinute = minute ? lpFormatMinute(minute, status, addedTime) : null;
   if (fastFresh && md.live_clock && /\d/.test(md.live_clock)) displayMinute = md.live_clock;
+  if (fastFresh && md.live_clock === 'HT') displayMinute = null;
   const statusLabels = {first_half:'1st Half', half_time:'Half Time', second_half:'2nd Half', completed:'Full Time', pre_match:'Pre-Match'};
   const statusLabel = statusLabels[status] || status;
 
@@ -652,7 +653,7 @@ function lpStartCountdown() {
     if (!el) return;
     if (!_lpAutoActive || !_lpNextAt) { el.textContent = ''; return; }
     const r = Math.max(0, Math.floor(_lpNextAt - Date.now()/1000));
-    el.textContent = Math.floor(r/60) + ':' + String(r%60).padStart(2,'0');
+    el.textContent = 'odds in ' + Math.floor(r/60) + ':' + String(r%60).padStart(2,'0');
   }, 1000);
 }
 

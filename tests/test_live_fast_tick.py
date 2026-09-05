@@ -87,3 +87,24 @@ def test_espn_failure_keeps_last_good_data(monkeypatch):
     monkeypatch.setattr(live_espn, "fetch_live_data_for_match", lambda h, a: None)
     assert lm.refresh_live_fast()["refreshed"] == 0
     assert day["matches"]["A vs B"]["live_stats"]["shots"]["home"] == 9
+
+
+def test_full_time_from_the_fast_feed_completes_the_match_now(monkeypatch):
+    monkeypatch.setattr(lm, "_send_live_event_notifications", lambda *a, **k: None)
+    entry = {"status": "second_half"}
+    data = _espn(score=(2, 1), clock="FT"); data["state"] = "post"
+    lm._apply_live_data("m", entry, data, fast=True)
+    assert entry["status"] == "completed" and entry["final_score"] == [2, 1] and entry["completed_by"] == "espn"
+
+
+def test_half_time_from_the_fast_feed(monkeypatch):
+    monkeypatch.setattr(lm, "_send_live_event_notifications", lambda *a, **k: None)
+    entry = {"status": "first_half"}
+    lm._apply_live_data("m", entry, _espn(clock="HT"), fast=True)
+    assert entry["status"] == "half_time"
+
+
+def test_odds_poll_cannot_unfinish_a_match():
+    assert lm._status_after_poll("completed", "second_half") == "completed"
+    assert lm._status_after_poll("second_half", "completed") == "completed"
+    assert lm._status_after_poll("first_half", "half_time") == "half_time"

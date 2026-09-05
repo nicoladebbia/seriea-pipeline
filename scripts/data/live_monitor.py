@@ -837,6 +837,16 @@ def _apply_live_data(mk: str, entry: Dict, live_data: Dict, fast: bool = False) 
         if live_data.get("clock"):
             entry["live_clock"] = live_data["clock"]
         entry["live_source"] = source
+        # The whistle comes from the fast feed too: ESPN says post → the match
+        # is completed NOW, not at the next Odds API poll (which only knows the
+        # kickoff time and can sit on "2nd half 90'" for ten minutes).
+        if live_data.get("state") == "post" and entry.get("status") != "completed":
+            entry["status"] = "completed"
+            if live_data.get("score") is not None:
+                entry["final_score"] = live_data["score"]
+            entry["completed_by"] = source
+        elif live_data.get("clock") == "HT" and entry.get("status") in ("first_half", "second_half"):
+            entry["status"] = "half_time"
     elif flags.get("events") or flags.get("statistics"):
         entry["sofascore_fetched_at"] = live_data.get("fetched_at", "")
         entry["live_source"] = source
@@ -844,6 +854,13 @@ def _apply_live_data(mk: str, entry: Dict, live_data: Dict, fast: bool = False) 
 
     # ── Live event notifications (goals, red cards) ──
     _send_live_event_notifications(mk, entry, old_events, new_events)
+
+
+def _status_after_poll(prev_status: str, polled_status: str) -> str:
+    """The Odds API cannot un-finish a match the live feed already finished."""
+    if prev_status == "completed" and polled_status != "completed":
+        return "completed"
+    return polled_status
 
 
 def refresh_live_fast() -> Dict:
@@ -1184,6 +1201,7 @@ def poll_once() -> Dict:
 
         match_entry = matchday["matches"][mk]
         prev_status = match_entry.get("status", "pre_match")
+        status = _status_after_poll(prev_status, status)
         match_entry["status"] = status
         match_entry["snapshots"].append(snapshot)
 
@@ -1250,7 +1268,7 @@ def poll_once() -> Dict:
         if status == "half_time" and prev_status != "half_time" and not match_entry.get("_ht_notified"):
             match_entry["_ht_notified"] = True
 
-        if completed:
+        if completed and not match_entry.get("final_score"):
             match_entry["final_score"] = [home_score, away_score]
 
         # ── Format summary ──
