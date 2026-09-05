@@ -60,6 +60,49 @@ So "how is the model performing right now?" is answered in this order:
    (2026-06-04) — do not re-run accuracy hunts.
 4. If you see a markdown file claiming a number, the doc is wrong — fix or delete it.
 
+## Dashboard match table — column rules (settled 2026-09-04)
+
+The `/` match table (`web/templates/dashboard.html`, fed by `/api/dashboard`) is a
+**betting surface for the market that is actually bet** — O/U Over 1.5 / 2.5. It is NOT a
+1X2 display. Until 2026-09-04 every one of its ten columns (PRED, H-D-A, xG, EDGE, CONF,
+FLAGS) described the display-only 1X2 ensemble, EDGE was 1X2 model-minus-market on the
+pick, and the footer counted "+3% model edge" for a market switched off since April.
+Nothing on the row drove a bet.
+
+**The row is five columns, ranked by how often a value in it flips a decision:**
+
+| # | Column | What it is | Source |
+|---|---|---|---|
+| 1 | **Bet** | The gate's verdict: `selected` > `candidate` > `near_miss` > `none` / `gated` / `no_odds` / `no_model` | `unified_bet_slip.json` (selected_bets, near_misses) + `betting_candidates.json` — **read, never recomputed** |
+| 2 | **KO** | Kickoff. Timing IS the edge (>24h-early bets −5%, <24h +63%). Also disambiguates a blank pill: hours out = not scanned yet, minutes out = rejected | odds `commence_time` |
+| 3 | **O/U Over** | `O2.5 63% vs 47% +15.3` — model Over prob at the bettable line vs de-vigged market (Pinnacle, else consensus, ≥3 books), raw gap | `goal_predictions.json` + totals; `web/app.py::_ou_signal` |
+| 4 | **STEAM / XI badges** | Conditional, zero cost when absent | market intelligence / lineup source |
+| 5 | **Match** | Row key, not a signal. Row click opens `/prediction/<slug>` which has everything else | — |
+
+**Rules:**
+- **Every column must be justified against the market that is bet.** A 1X2 quantity
+  (pick, H-D-A, 1X2 edge, confidence bucket, home/away xG split) never returns to the
+  main row. The prediction detail page owns them. Don't add a hidden/expandable 1X2 row
+  either — it was tried the same day and cut: the row click already goes there.
+- **The Bet column shows the gate's OWN output.** Never recompute an edge in the dashboard
+  and label it a verdict — shrinkage, per-line bands and situational adjustments live in
+  `betting_unified.py`; a recomputation drifts silently. The O/U column's raw gap is the
+  INPUT and is labelled as such; the pill is the DECISION.
+- **A blank pill is not "no edge".** The slip is a T-30 artifact by design (candidate mode
+  does not write it), so a match >30 min out legitimately has no verdict. Label it
+  "no signal in the latest scan", never "rejected". The footer shows scan age for this
+  reason — keep it.
+- **Never merge two orthogonal signals into one badge.** CONF (max 1X2 prob, bucketed)
+  and EDGE (model − market on the pick) looked like the same thing and were not: Man City
+  vs Coventry was VERY HIGH with −10.3% edge. CONF was cut because it restated the H-D-A
+  bar, not because it duplicated EDGE.
+- **Stale-odds muting targets classes, not column positions** (`.ou-cell`, `.bet-cell`,
+  `.dash-row__badges`). `nth-last-child` selectors broke every time a column moved.
+- **Any new column needs a rank in the table above and a reason it beats #5.** If it
+  cannot flip a decision, it belongs on the detail page.
+- Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin
+  markets, gating, Pinnacle fallback, null lists in the slip).
+
 ## Cleanup discipline — CRITICAL
 
 This project accumulates abandoned experiments (`*_v2.py`, `*_hotfix.py`, `_phase3a_*`, scratch JSONs, stale baselines). The rule:
