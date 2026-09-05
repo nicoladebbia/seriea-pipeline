@@ -71,11 +71,11 @@ def test_weight_optimizer_can_never_go_active():
         assert wo._determine_status(n) == "advisory"
 
 
-def _analysis(applied, accuracy, n_settled=200):
+def _analysis(applied, accuracy, n_settled=200, fdr=True):
     return {"n_settled": n_settled,
             "factor_effectiveness": {
                 "away_favorite": {"applied": applied, "accuracy": accuracy,
-                                  "base_rate": 0.45}}}
+                                  "base_rate": 0.45, "fdr_significant": fdr}}}
 
 
 def test_factor_step_consumes_its_evidence_no_compounding(monkeypatch, tmp_path):
@@ -103,3 +103,37 @@ def test_factor_below_20_applications_never_moves(monkeypatch, tmp_path):
     out = wo.compute_factor_decay(_analysis(applied=19, accuracy=0.95))
     assert out["details"]["away_favorite"]["action"] == "insufficient_data"
     assert out["multipliers"]["away_favorite"] == 1.0
+
+
+def test_point_estimate_alone_cannot_step_without_fdr(monkeypatch, tmp_path):
+    monkeypatch.setattr(wo, "FACTOR_ADJ_PATH", tmp_path / "fadj.json")
+    # +25pp over base but the deviation did not survive FDR: no boost.
+    out = wo.compute_factor_decay(_analysis(applied=35, accuracy=0.70, fdr=False))
+    assert out["details"]["away_favorite"]["action"] == "not_significant"
+    assert out["multipliers"]["away_favorite"] == 1.0
+
+
+def test_lost_significance_reverts_immediately_without_oscillating(monkeypatch, tmp_path):
+    monkeypatch.setattr(wo, "FACTOR_ADJ_PATH", tmp_path / "fadj.json")
+    out1 = wo.compute_factor_decay(_analysis(applied=30, accuracy=0.70))
+    assert out1["multipliers"]["away_favorite"] == 1.1
+    (tmp_path / "fadj.json").write_text(json.dumps(out1))
+
+    # significance flaps off: revert to neutral NOW, no waiting for new data
+    out2 = wo.compute_factor_decay(_analysis(applied=30, accuracy=0.70, fdr=False))
+    assert out2["details"]["away_favorite"]["action"] == "revert_not_significant"
+    assert out2["multipliers"]["away_favorite"] == 1.0
+    (tmp_path / "fadj.json").write_text(json.dumps(out2))
+
+    # flaps back on with the SAME data: re-boost is checkpoint-blocked
+    out3 = wo.compute_factor_decay(_analysis(applied=30, accuracy=0.70))
+    assert out3["details"]["away_favorite"]["action"] == "hold_awaiting_new_data"
+    assert out3["multipliers"]["away_favorite"] == 1.0
+
+
+def test_decay_direction_works_with_two_sided_significance(monkeypatch, tmp_path):
+    monkeypatch.setattr(wo, "FACTOR_ADJ_PATH", tmp_path / "fadj.json")
+    # significantly BELOW base - 10pp: the two-sided test supports decay
+    out = wo.compute_factor_decay(_analysis(applied=60, accuracy=0.20))
+    assert out["details"]["away_favorite"]["action"] == "decay"
+    assert out["multipliers"]["away_favorite"] == 0.8

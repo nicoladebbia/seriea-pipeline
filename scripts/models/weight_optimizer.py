@@ -204,11 +204,18 @@ def _build_weights_output(optimized: dict, current: dict, status: str,
 def compute_factor_decay(analysis: dict) -> dict:
     """For each factor with sufficient data, compute decay/boost multiplier.
 
-    Rules:
-    - Factor needs 20+ applications for decay consideration
+    Rules (in order):
+    - Factor needs 20+ applications to be considered at all
+    - No step in EITHER direction unless the factor's accuracy-vs-base-rate
+      deviation is fdr_significant (two-sided binomial, BH-corrected) —
+      tightened 2026-09-05: the ±10pp point-estimate rule alone boosted 4
+      factors whose deviation did not survive FDR (cold_away p=0.17)
+    - A factor whose deviation is no longer significant reverts to 1.0
+      immediately (neutral is the safe state; re-stepping stays gated)
+    - Each step consumes its evidence: >=10 new applications to step again
     - If accuracy < (base_rate - 10%), multiply lift by 0.8 (floor 0.3x)
     - If accuracy > (base_rate + 10%), multiply lift by 1.1 (cap 1.2x)
-    - Otherwise keep at 1.0
+    - Otherwise keep current
     """
     factor_eff = analysis.get("factor_effectiveness", {})
 
@@ -231,6 +238,10 @@ def compute_factor_decay(analysis: dict) -> dict:
         applied = data.get("applied", 0)
         accuracy = data.get("accuracy", 0)
         base_rate = data.get("base_rate", 0.444)
+        # Two-sided binomial vs base rate, Benjamini-Hochberg corrected
+        # (ml/statistical_validation.validate_multiple_claims). Fail closed:
+        # an analysis row without the flag cannot step.
+        fdr_significant = bool(data.get("fdr_significant", False))
         current_mult = existing_multipliers.get(factor, 1.0)
         applied_at_change = existing_details.get(factor, {}).get(
             "applied_at_change", 0)
@@ -245,6 +256,35 @@ def compute_factor_decay(analysis: dict) -> dict:
                 "multiplier": current_mult,
                 "action": "insufficient_data",
             }
+            continue
+
+        if not fdr_significant:
+            # No FDR-surviving deviation from base rate: the only defensible
+            # multiplier is neutral. A step AWAY from 1.0 requires evidence;
+            # returning TO 1.0 is the safe state and happens immediately —
+            # while the checkpoint still gates any re-step, so a flapping
+            # p-value cannot oscillate the multiplier on static data.
+            if current_mult != 1.0:
+                multipliers[factor] = 1.0
+                details[factor] = {
+                    "applied": applied,
+                    "accuracy": accuracy,
+                    "base_rate": base_rate,
+                    "multiplier": 1.0,
+                    "previous_multiplier": current_mult,
+                    "applied_at_change": applied,
+                    "action": "revert_not_significant",
+                }
+            else:
+                multipliers[factor] = 1.0
+                details[factor] = {
+                    "applied": applied,
+                    "accuracy": accuracy,
+                    "base_rate": base_rate,
+                    "multiplier": 1.0,
+                    "applied_at_change": applied_at_change,
+                    "action": "not_significant",
+                }
             continue
 
         if applied - applied_at_change < MIN_NEW_APPLICATIONS and applied_at_change > 0:
