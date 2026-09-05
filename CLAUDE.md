@@ -159,6 +159,14 @@ with CLV against the NEXT snapshot — the price a human could actually have tak
   through the season, the two numbers are equal). The backtest re-runs after every
   settlement (`auto_settle`, next to `settle_picks`), so the live hook always reads the
   latest weight and gate.
+- **The stand-in baseline window is measured too.** A match with no pre-match line (122 of
+  156 stored entries before the same-day fix) takes its first 0-0 snapshot as the line only
+  inside `baseline_fallback.window_min` in the backtest file: `measure_baseline_window`
+  tracks mean |in-play − pre-match| by minute at 0-0 on the matches that have both, and
+  the window ends the minute before the drift first exceeds the simulator's own Monte
+  Carlo noise on a coin-flip (`mc_se(0.5, N_SIMS_LIVE)` = 0.0065). First measurement, 34
+  Serie A matches: drift ≤ 0.005 through 10', 0.007 at 11' → window 10 (the old literal,
+  now re-derived every backtest; `BASELINE_WINDOW_SEED` is only the no-file fallback).
 - **Only Serie A is priced (`PROFILE_LEAGUE`).** EPL has no fitted goal-process profile; until
   2026-09-05 live entries carried no `league` and 33 EPL matches were scored with the Serie A
   hazard, red-card multipliers and calibration (skill 0.008 mixed → 0.018 Serie A-only on 44

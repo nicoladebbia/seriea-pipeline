@@ -56,6 +56,30 @@ def test_baseline_prefers_pre_match_odds_then_an_early_level_snapshot(prof):
     assert inplay.baseline_for_entry({"snapshots": [_snap(4, (1, 0), 1.2, 6.0, 12.0)]}, prof, n=2000) is None
 
 
+def test_baseline_window_ends_where_the_drift_clears_the_simulator_noise(tmp_path, monkeypatch):
+    pre = {"home": 2.0, "draw": 3.4, "away": 4.0}
+    def snap_at(m, home):  # drift the home price from the pre-match 2.0
+        return _snap(m, (0, 0), home, 3.4, 4.0)
+    day = {"matches": {"AS Roma vs Atalanta BC": {"home_team": "AS Roma", "away_team": "Atalanta BC", "pre_match_odds": pre,
+                       "snapshots": [snap_at(1, 2.0), snap_at(2, 2.01), snap_at(3, 2.0), snap_at(4, 2.3), snap_at(5, 2.0)]},
+                       "Arsenal vs Chelsea": {"home_team": "Arsenal", "away_team": "Chelsea", "pre_match_odds": pre,
+                       "snapshots": [snap_at(1, 3.0)]}}}  # EPL: never counted
+    f = tmp_path / "2026-09-05.json"
+    f.write_text(json.dumps(day))
+    rep = inplay.measure_baseline_window([str(f)], n_sims=6000)
+    assert rep["n_matches"] == 1 and rep["tolerance"] == round(inplay.mc_se(0.5, 6000), 4)
+    assert rep["window_min"] == 3  # minute 4 is the first to drift past the tolerance; 5 being fine again does not reopen it
+    assert rep["drift_by_minute"]["1"]["mean_drift"] == 0.0
+    monkeypatch.setattr(inplay, "BACKTEST_PATH", tmp_path / "missing.json")
+    assert inplay.baseline_window_minute() == inplay.BASELINE_WINDOW_SEED
+    (tmp_path / "bt.json").write_text(json.dumps({"baseline_fallback": rep}))
+    monkeypatch.setattr(inplay, "BACKTEST_PATH", tmp_path / "bt.json")
+    assert inplay.baseline_window_minute() == 3
+    prof = gp.load_profile()
+    assert inplay.baseline_for_entry({"snapshots": [_snap(3, (0, 0), 1.7, 3.8, 5.0)]}, prof, n=500) is not None
+    assert inplay.baseline_for_entry({"snapshots": [_snap(4, (0, 0), 1.7, 3.8, 5.0)]}, prof, n=500) is None
+
+
 # ------------------------------------------------------------- picks
 
 def test_picks_are_1x2_only_and_stale_totals_lines_never_qualify(prof):

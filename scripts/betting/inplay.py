@@ -12,7 +12,8 @@ snapshots on disk before any euro moves.
 
 What the engine does
 - ``baseline_for_entry``: simulator inputs implied by the PRE-MATCH market
-  (pre_match_odds, else the first ≤10' 0-0 snapshot) via
+  (pre_match_odds, else the closing snapshot, else the first 0-0 snapshot
+  inside the measured window) via
   ``goal_process.market_profile`` — the same information the books had.
   Model xG is deliberately not used here: the backtest asks whether the
   CONDITIONING beats the books' repricing, not whether our xG does.
@@ -73,7 +74,14 @@ MAX_EDGE_JOURNAL = 12.0  # bet_journal.MAX_EDGE_PCT — above it the pick is cou
 MC_Z = 1.96              # 95% Monte Carlo interval on a simulated probability
 N_SIMS_LIVE = 6000
 N_SIMS_BACKTEST = 3000
-BASELINE_MAX_MINUTE = 10  # a 0-0 snapshot this early stands in for the pre-match line
+# The minute up to which a 0-0 in-play snapshot can stand in for a missing
+# pre-match line is MEASURED, not set: ``measure_baseline_window`` (run inside
+# every backtest) takes the matches that have both, and the window ends the
+# minute before the mean |in-play − pre-match| first exceeds the engine's own
+# Monte Carlo noise on a coin-flip at the live path count. The live engine
+# reads it from the backtest file; this seed is the first measurement
+# (2026-09-05, 34 Serie A matches, drift ≤ 0.005 through 10', 0.007 at 11').
+BASELINE_WINDOW_SEED = 10
 SEL_1X2 = {"home": "Home", "draw": "Draw", "away": "Away"}
 KEY_1X2 = {v: k for k, v in SEL_1X2.items()}
 
@@ -182,13 +190,72 @@ def _archived_xg(entry: dict, mk: str) -> dict | None:
     return None
 
 
+def baseline_tolerance(n_sims: int = N_SIMS_LIVE) -> float:
+    """How far a stand-in baseline may sit from the real line: the simulator's
+    own Monte Carlo SE on a coin-flip at ``n_sims`` paths."""
+    return mc_se(0.5, n_sims)
+
+
+def measure_baseline_window(files: list[str], n_sims: int = N_SIMS_LIVE) -> dict:
+    """Mean |in-play − pre-match| de-vigged 1X2 by minute, at 0-0, over the
+    matches that carry both; the window is the last minute before the drift
+    first clears ``baseline_tolerance``. Nothing here is chosen by hand."""
+    drift: dict = {}
+    n_matches = 0
+    for path in sorted(files):
+        try:
+            with open(path) as f:
+                day = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for mk, entry in (day.get("matches") or {}).items():
+            if entry_league(entry, mk) != PROFILE_LEAGUE:
+                continue
+            pm = entry.get("pre_match_odds") or {}
+            if not all(pm.get(k) for k in ("home", "draw", "away")):
+                continue
+            pre = devig({k: pm[k] for k in ("home", "draw", "away")})
+            if len(pre) != 3:
+                continue
+            n_matches += 1
+            for snap in entry.get("snapshots") or []:
+                if list(snap.get("score") or [0, 0]) != [0, 0]:
+                    continue
+                cur = devig(snap.get("avg_odds") or {})
+                if len(cur) != 3:
+                    continue
+                m = int(snap.get("min") or 0)
+                drift.setdefault(m, []).append(sum(abs(cur[k] - pre[k]) for k in cur) / 3)
+    tol = baseline_tolerance(n_sims)
+    by_minute = {m: {"n": len(v), "mean_drift": round(float(np.mean(v)), 4)} for m, v in sorted(drift.items())}
+    window = None
+    for m in sorted(by_minute):
+        if m < 1:
+            continue
+        if by_minute[m]["mean_drift"] > tol:
+            break
+        window = m
+    return {"window_min": window, "tolerance": round(tol, 4), "n_matches": n_matches,
+            "drift_by_minute": {str(m): v for m, v in by_minute.items() if m <= 20}}
+
+
+def baseline_window_minute() -> int:
+    """The measured window from the latest backtest, else the seed."""
+    try:
+        with open(BACKTEST_PATH) as f:
+            w = (json.load(f).get("baseline_fallback") or {}).get("window_min")
+        return int(w) if w is not None else BASELINE_WINDOW_SEED
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return BASELINE_WINDOW_SEED
+
+
 def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LIVE, mk: str = "",
                        baseline: str = "market") -> dict | None:
     """Simulator inputs for the match; cached on the entry.
 
     baseline="market": xG split + k implied by the pre-match market
     (pre_match_odds, else the closing odds snapshot on disk, else the first
-    ≤10' 0-0 snapshot). baseline="model": our archived pre-kickoff xG with k
+    0-0 snapshot inside the measured window). baseline="model": our archived pre-kickoff xG with k
     solved on the market's P(over 2.5) — the backtest's second variant."""
     cached = entry.get("inplay_baseline")
     if cached and cached.get("xg_h") is not None and cached.get("baseline", "market") == baseline:
@@ -202,7 +269,7 @@ def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LI
             pre = {**pre, **closing}
     if pre.get("home") and pre.get("draw") and pre.get("away"):
         h2h, h2h_source = devig({"home": pre["home"], "draw": pre["draw"], "away": pre["away"]}), pre.get("source") or "pre_match_odds"
-    elif first and int(first.get("min") or 0) <= BASELINE_MAX_MINUTE and list(first.get("score") or [0, 0]) == [0, 0]:
+    elif first and int(first.get("min") or 0) <= baseline_window_minute() and list(first.get("score") or [0, 0]) == [0, 0]:
         h2h, h2h_source = devig(first["avg_odds"]), "first_snapshot"
     else:
         return None
@@ -636,6 +703,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "files": len(files), "matches": n_matches, "matches_without_baseline": n_no_baseline,
         "matches_other_league_skipped": n_other_league, "league": PROFILE_LEAGUE, "priced_snapshots": n_snaps,
+        "baseline_fallback": measure_baseline_window(files),
         "skill_vs_inplay_market_1x2": _skill(brier["fair"], brier["market"]),
         "skill_ci95_by_match_bootstrap": ci,
         "skill_pickable_window_le85": _skill(pick_f, pick_m),
