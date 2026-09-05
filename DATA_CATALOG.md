@@ -5869,6 +5869,11 @@ These dirs contain many files (often one per match, day, or experiment). Summari
   on target, goals, assists, fouls committed/drawn, offsides, cards, saves, goals conceded,
   own goals and a `minutes_played` DERIVED from the substitution events — no passes,
   tackles, duels or rating; a Sofascore read <180s old is not replaced by the fast tick)
+  and `live_players_backfilled_at` / `_players_backfill_tries` (a completed match with
+  no per-player stats gets up to three ESPN roster reads for its kickoff day, players only,
+  so no goal ping re-fires), `pre_match_odds` (odds_full row by NORMALISED key, else the
+  last `data/odds_snapshots/odds_*.json` line before kickoff, `source: closing_snapshot`
+  — the raw-key lookup never matched before 2026-09-05, so this was {} on every match),
   and `live_fetch_error` (present only when NO source answered; the
   previous cycle's events/stats are kept, never blanked). Writer:
   `scripts/data/live_monitor.poll_once` via `live_sofascore.fetch_live_data_for_matches`

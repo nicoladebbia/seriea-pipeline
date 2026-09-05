@@ -124,7 +124,7 @@ def test_boxscore_absent_stats_are_omitted():
 # ---------------------------------------------------------------- fetch shape
 
 def test_fetch_returns_monitor_shape_without_network(monkeypatch, board, fio_tor):
-    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug, date=None: board if slug == "ita.1" else None)
     monkeypatch.setattr(live_espn, "_get_json", lambda url: fio_tor if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("Fiorentina", "Torino")
     assert out["source"] == "espn" and out["espn_id"] == "401874939"
@@ -136,7 +136,7 @@ def test_fetch_returns_monitor_shape_without_network(monkeypatch, board, fio_tor
 # ---------------------------------------------------------------- score / clock
 
 def test_summary_carries_score_and_clock(monkeypatch, board, fio_tor):
-    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug, date=None: board if slug == "ita.1" else None)
     monkeypatch.setattr(live_espn, "_get_json", lambda url: fio_tor if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("Fiorentina", "Torino")
     assert out["score"] == [1, 2] and out["clock"] == "FT" and out["state"] == "post"
@@ -187,7 +187,7 @@ def test_score_never_trails_the_goal_events(monkeypatch, board):
                    "status": {"type": {"detail": "89'", "state": "in"}}}]},
                "keyEvents": [_ke("goal", "2", ["X"], "47'"), _ke("goal", "1", ["Y"], "60'"), _ke("goal---header", "1", ["Z"], "89'")],
                "boxscore": {"teams": []}}
-    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug, date=None: board if slug == "ita.1" else None)
     monkeypatch.setattr(live_espn, "_get_json", lambda url: summary if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
     assert out["score"] == [2, 1] and out["state"] == "in"
@@ -232,7 +232,7 @@ def test_accent_variants_between_roster_and_events_still_join():
 
 
 def test_fetch_carries_player_stats_and_flags_them(monkeypatch, board, roma):
-    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug: board if slug == "ita.1" else None)
+    monkeypatch.setattr(live_espn, "_scoreboard", lambda slug, date=None: board if slug == "ita.1" else None)
     monkeypatch.setattr(live_espn, "_get_json", lambda url: roma if "summary" in url else None)
     out = live_espn.fetch_live_data_for_match("AS Roma", "Atalanta BC")
     assert out["fetched"]["player_stats"] is True and len(out["player_stats"]["away"]) == 23

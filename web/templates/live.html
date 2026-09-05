@@ -120,6 +120,9 @@
   .live-event__icon { font-size: 16px; min-width: 24px; text-align: center; }
   .live-event__text { flex: 1; }
 
+  .live-match__odds { position: relative; }
+  .live-match__odds-note { position: absolute; right: 0; bottom: -14px; font-size: 10px; white-space: nowrap; }
+
   /* Players (fast ESPN roster) */
   .live-players { margin-top: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-4); }
   .live-player { display: flex; justify-content: space-between; gap: var(--space-3); padding: 3px 0; font-size: 12px; border-bottom: 1px solid var(--border-subtle); }
@@ -404,7 +407,16 @@ function lpRenderMatch(mk, md, bets) {
   const statusLabel = statusLabels[status] || status;
 
   const pre = md.pre_match_odds || {};
-  const avg = lastSnap ? (lastSnap.avg_odds || {}) : {};
+  // Books pull the market at the whistle, so the final snapshot is empty:
+  // show the last price that existed and say when it was taken.
+  let oddsSnap = null;
+  for (let i = snaps.length - 1; i >= 0; i--) { if (snaps[i].avg_odds && snaps[i].avg_odds.home) { oddsSnap = snaps[i]; break; } }
+  const avg = oddsSnap ? oddsSnap.avg_odds : {};
+  const oddsStale = oddsSnap && oddsSnap !== lastSnap;
+  const oddsNote = !oddsSnap ? (pre.home ? 'pre-match' : '') : (oddsStale ? `last price ${oddsSnap.min ? oddsSnap.min + "'" : ''}`.trim() : '');
+  // No in-play price at all: the pre-match line is the only number we have.
+  const oddsShown = oddsSnap ? avg : (pre.home ? { home: pre.home, draw: pre.draw, away: pre.away } : {});
+  const preShown = oddsSnap ? pre : {};
 
   const events = md.live_events || [];
   const stats = md.live_stats || {};
@@ -481,9 +493,10 @@ function lpRenderMatch(mk, md, bets) {
         <div class="live-match__team live-match__team--away">${md.away_team || mk.split(' vs ')[1]}</div>
       </div>
       <div class="live-match__odds">
-        ${lpRenderOddCell('H', avg.home, pre.home)}
-        ${lpRenderOddCell('D', avg.draw, pre.draw)}
-        ${lpRenderOddCell('A', avg.away, pre.away)}
+        ${lpRenderOddCell('H', oddsShown.home, preShown.home)}
+        ${lpRenderOddCell('D', oddsShown.draw, preShown.draw)}
+        ${lpRenderOddCell('A', oddsShown.away, preShown.away)}
+        ${oddsNote ? `<div class="live-match__odds-note text-tertiary">${oddsNote}</div>` : ''}
       </div>
     </div>
     <div id="${id}" class="live-match__detail ${isOpen ? 'open' : ''}">

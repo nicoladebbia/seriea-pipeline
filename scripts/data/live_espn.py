@@ -145,14 +145,17 @@ def _score_and_clock(comp: dict[str, Any]) -> tuple[list[int] | None, str, str]:
     return score, stype.get("detail") or stype.get("shortDetail") or "", stype.get("state") or ""
 
 
-def _scoreboard(slug: str) -> dict[str, Any] | None:
+def _scoreboard(slug: str, date: str | None = None) -> dict[str, Any] | None:
+    """Today's scoreboard, or one day's (``date`` = YYYYMMDD) for a backfill."""
     now = time.monotonic()
-    cached = _scoreboards.get(slug)
+    key = f"{slug}:{date or ''}"
+    cached = _scoreboards.get(key)
     if cached and now - cached[0] < _SCOREBOARD_TTL_S:
         return cached[1]
-    payload = _get_json(f"{_BASE}/{slug}/scoreboard")
+    url = f"{_BASE}/{slug}/scoreboard" + (f"?dates={date}" if date else "")
+    payload = _get_json(url)
     if payload is not None:
-        _scoreboards[slug] = (now, payload)
+        _scoreboards[key] = (now, payload)
     return payload
 
 
@@ -375,14 +378,14 @@ def parse_boxscore(boxscore: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def fetch_live_data_for_match(home: str, away: str) -> dict[str, Any] | None:
+def fetch_live_data_for_match(home: str, away: str, date: str | None = None) -> dict[str, Any] | None:
     """Events + team stats for one fixture, or None when ESPN has no such match.
 
     The league is not needed: every configured league's scoreboard (cached 60s)
     is searched by normalised team names.
     """
     for slug in LEAGUE_SLUGS.values():
-        board = _scoreboard(slug)
+        board = _scoreboard(slug, date)
         if not board:
             continue
         event = find_event(home, away, board)

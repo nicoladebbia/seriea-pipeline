@@ -105,9 +105,13 @@ def _simple_odds_from_full() -> dict[str, dict[str, float]]:
     Mirrors what run_full_pipeline passes in explicitly; used for the bare
     `save_snapshot()` call in betting_unified.py.
     """
-    full = _read_json(ODDS_FULL_PATH, {}) or {}
+    # Both leagues: the snapshot store was Serie A-only until 2026-09-05, so
+    # no EPL match ever had a closing line on disk.
+    matches: dict = {}
+    for path in (ODDS_FULL_PATH, ODDS_FULL_PATH.with_name("odds_full_premier_league.json")):
+        matches.update(((_read_json(path, {}) or {}).get("matches") or {}))
     simple: dict[str, dict[str, float]] = {}
-    for key, md in (full.get("matches") or {}).items():
+    for key, md in matches.items():
         h2h = md.get("h2h")
         if not h2h:
             continue

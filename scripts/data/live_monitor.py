@@ -454,19 +454,88 @@ def _load_active_bets() -> List[Dict]:
         return []
 
 
+def _pre_match_key(home: str, away: str) -> str:
+    """odds_full.json and the odds snapshots key matches by NORMALISED names
+    ("Roma vs Atalanta"); the live monitor keys by the raw Odds API names
+    ("AS Roma vs Atalanta BC"). Until 2026-09-05 the lookup used the raw key
+    and never matched, so pre_match_odds was {} on every match ever tracked."""
+    return f"{normalize_team(home)} vs {normalize_team(away)}"
+
+
+def _closing_line_from_snapshots(home: str, away: str, commence: str) -> Dict:
+    """The last h2h price written to data/odds_snapshots/odds_*.json BEFORE
+    kickoff. odds_full.json rolls over to the next fixtures as soon as a match
+    starts, so a match first seen in-play has no pre-match row there; the
+    snapshot store still has its closing line. Snapshot timestamps are naive
+    LOCAL time; commence_time is UTC."""
+    try:
+        kick = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+        if kick.tzinfo is None:
+            kick = kick.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    key = _pre_match_key(home, away)
+    snap_dir = DATA_DIR / "odds_snapshots"
+    if not snap_dir.exists():
+        return {}
+    days = {(kick - timedelta(days=d)).astimezone().strftime("%Y%m%d") for d in (0, 1)}
+    best: Optional[Tuple[datetime, Dict, str]] = None
+    for path in snap_dir.glob("odds_*.json"):
+        if path.stem.split("_")[1] not in days:
+            continue
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            ts = datetime.fromisoformat(data.get("timestamp", "")).astimezone()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if ts >= kick:
+            continue
+        row = (data.get("matches") or {}).get(key)
+        if not row or row.get("home") is None:
+            continue
+        if best is None or ts > best[0]:
+            best = (ts, row, path.name)
+    if best is None:
+        return {}
+    ts, row, name = best
+    return {"home": row.get("home"), "draw": row.get("draw"), "away": row.get("away"),
+            "source": "closing_snapshot", "snapshot": name, "snapshot_at": ts.isoformat()}
+
+
+def _pre_match_odds_for(pre_map: Dict[str, Dict], home: str, away: str, commence: str) -> Dict:
+    """odds_full row (normalised key) else the closing snapshot line, else {}."""
+    entry = pre_map.get(_pre_match_key(home, away)) or pre_map.get(f"{home} vs {away}")
+    if entry and entry.get("home") is not None:
+        return entry
+    closing = _closing_line_from_snapshots(home, away, commence)
+    if closing and entry:
+        return {**entry, **closing}
+    return closing or entry or {}
+
+
 def _load_pre_match_odds() -> Dict[str, Dict]:
     """Load pre-match odds from odds_full.json for baseline comparison.
 
-    Returns dict keyed by match_key with h2h, totals, and spreads baselines.
+    Returns dict keyed by the NORMALISED match_key ("Roma vs Atalanta") with
+    h2h, totals, and spreads baselines. Resolve through _pre_match_odds_for.
     """
-    path = DATA_DIR / "upcoming" / "odds_full.json"
-    if not path.exists():
+    # Both leagues: the EPL file is the same shape under its own name.
+    matches: Dict[str, Dict] = {}
+    for fname in ("odds_full.json", "odds_full_premier_league.json"):
+        path = DATA_DIR / "upcoming" / fname
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                matches.update(json.load(f).get("matches", {}))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("pre-match odds: could not read %s: %s", fname, exc)
+    if not matches:
         return {}
     try:
-        with open(path) as f:
-            data = json.load(f)
         result = {}
-        for mk, md in data.get("matches", {}).items():
+        for mk, md in matches.items():
             entry = {}
             # H2H baseline
             h2h = md.get("h2h", {})
@@ -887,6 +956,43 @@ def _apply_live_data(mk: str, entry: Dict, live_data: Dict, fast: bool = False) 
     _send_live_event_notifications(mk, entry, old_events, new_events)
 
 
+PLAYER_BACKFILL_TRIES = 3
+
+
+def backfill_completed_players(matchday: Dict) -> int:
+    """One ESPN roster read for every completed match that has no per-player
+    stats (a match that finished before the fast tick could read it, or with
+    Sofascore blocked all evening). Writes player stats ONLY — never events,
+    so no goal ping can re-fire for a finished match. Returns entries filled.
+    """
+    from scripts.data import live_espn
+
+    filled = 0
+    for mk, entry in matchday.get("matches", {}).items():
+        if entry.get("status") != "completed" or entry.get("live_player_stats"):
+            continue
+        tries = int(entry.get("_players_backfill_tries") or 0)
+        if tries >= PLAYER_BACKFILL_TRIES:
+            continue
+        entry["_players_backfill_tries"] = tries + 1
+        home = entry.get("home_team") or mk.split(" vs ")[0]
+        away = entry.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+        # A Friday match sits in Saturday's file: ask ESPN for the kickoff day.
+        date = (entry.get("commence_time") or "")[:10].replace("-", "") or None
+        try:
+            data = live_espn.fetch_live_data_for_match(home, away, date=date)
+        except Exception as exc:  # noqa: BLE001 - one match must not sink the pass
+            log.warning("player backfill failed for %s: %s", mk, exc)
+            continue
+        if not data or not (data.get("fetched") or {}).get("player_stats"):
+            continue
+        entry["live_player_stats"] = data.get("player_stats", {})
+        entry["live_player_source"] = data.get("source", "espn")
+        entry["live_players_backfilled_at"] = data.get("fetched_at", "")
+        filled += 1
+    return filled
+
+
 def _status_after_poll(prev_status: str, polled_status: str) -> str:
     """The Odds API cannot un-finish a match the live feed already finished."""
     if prev_status == "completed" and polled_status != "completed":
@@ -907,7 +1013,10 @@ def refresh_live_fast() -> Dict:
     matchday = load_matchday(now.strftime("%Y-%m-%d"))
     live = {mk: e for mk, e in matchday.get("matches", {}).items() if e.get("status") in LIVE_STATUSES}
     if not live:
-        return {"has_live_matches": False, "refreshed": 0}
+        backfilled = backfill_completed_players(matchday)
+        if backfilled:
+            save_matchday(matchday)
+        return {"has_live_matches": False, "refreshed": 0, "players_backfilled": backfilled}
     refreshed = 0
     for mk, entry in live.items():
         home = entry.get("home_team") or mk.split(" vs ")[0]
@@ -1219,7 +1328,7 @@ def poll_once() -> Dict:
 
         # ── Update match in matchday ──
         if mk not in matchday["matches"]:
-            pre = pre_match_odds.get(mk, {})
+            pre = _pre_match_odds_for(pre_match_odds, home, away, commence)
             matchday["matches"][mk] = {
                 "commence_time": commence,
                 "home_team": home,
@@ -1231,6 +1340,10 @@ def poll_once() -> Dict:
             }
 
         match_entry = matchday["matches"][mk]
+        if not match_entry.get("pre_match_odds"):
+            # Self-heal: the row may have been absent (or the key mismatched)
+            # when the entry was created; the closing snapshot is on disk.
+            match_entry["pre_match_odds"] = _pre_match_odds_for(pre_match_odds, home, away, commence)
         prev_status = match_entry.get("status", "pre_match")
         status = _status_after_poll(prev_status, status)
         match_entry["status"] = status

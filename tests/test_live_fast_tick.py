@@ -70,12 +70,14 @@ def test_refresh_live_fast_touches_only_matches_on_the_pitch(monkeypatch):
 
 
 def test_refresh_live_fast_with_nothing_live_makes_no_call_and_no_write(monkeypatch):
-    day = {"date": "2026-09-05", "matches": {"A vs B": {"status": "completed"}}}
+    # A completed match that already has its players is settled; a pre-match one is not live.
+    day = {"date": "2026-09-05", "matches": {"A vs B": {"status": "completed", "live_player_stats": {"home": [{"name": "x"}]}},
+                                             "C vs D": {"status": "pre_match"}}}
     monkeypatch.setattr(lm, "load_matchday", lambda d=None: day)
     monkeypatch.setattr(lm, "save_matchday", lambda m: (_ for _ in ()).throw(AssertionError("wrote")))
     from scripts.data import live_espn
     monkeypatch.setattr(live_espn, "fetch_live_data_for_match", lambda h, a: (_ for _ in ()).throw(AssertionError("called")))
-    assert lm.refresh_live_fast() == {"has_live_matches": False, "refreshed": 0}
+    assert lm.refresh_live_fast() == {"has_live_matches": False, "refreshed": 0, "players_backfilled": 0}
 
 
 def test_espn_failure_keeps_last_good_data(monkeypatch):
