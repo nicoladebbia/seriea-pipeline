@@ -2057,7 +2057,9 @@ def _bet_line(icon: str, pk: dict, home: str, away: str, note: str = "") -> str:
     if pk.get("player") and pk.get("lineup") != "confirmed":
         # a player row priced off a PREDICTED (or last-match) XI, not the team
         # sheet: say so, with the predictor's start% when it has one
-        sp = pk.get("start_pct")
+        # the CALIBRATED P(starts) the price used (start_prob), else the raw start%
+        sp = pk.get("start_prob")
+        sp = sp * 100.0 if isinstance(sp, int | float) else pk.get("start_pct")
         xi = f" · XI prob. {sp:.0f}%" if isinstance(sp, int | float) and pk.get("lineup") == "predicted" else " · XI prob."
     return f"{icon} {_human_bet(pk, home, away)}{q}{e}{mark}{one}{xi}{note}"
 

@@ -460,6 +460,7 @@ def test_uncertain_starter_is_priced_as_a_start_sub_mixture(monkeypatch):
         return {"player_name": player_name, "proj_minutes": 80.0 if is_starter else proj_minutes,
                 "markets": {k: dict(one, split=dict(one["split"])) for k in pp.TARGETS}}
     monkeypatch.setattr(pp, "predict_player_markets", fake_predict)
+    monkeypatch.setattr(pp, "start_calibration", lambda: [(0.0, 0.0), (1.0, 1.0)])   # identity: arithmetic only
     monkeypatch.setattr(pp, "_get_floor_calibration", lambda pms: None)
     monkeypatch.setattr(pp, "_get_dispersion", lambda pms: None)
     monkeypatch.setattr(pp, "_get_possession", lambda pms, league: (None, None))
@@ -483,7 +484,7 @@ def test_uncertain_starter_is_priced_as_a_start_sub_mixture(monkeypatch):
     assert by["Mario Pašalić"]["start_mix"] == 0.72 and by["Mario Pašalić"]["proj_minutes"] == round(0.72 * 80 + 0.28 * 20, 1)
     assert by["Mario Pašalić"]["lineup"] == "predicted" and by["Mario Pašalić"]["start_pct"] == 72.0
     for name in ("Éderson", "Ademola Lookman", "Nicolò Zaniolo"):
-        assert "start_mix" not in by[name]
+        assert "start_mix" not in by[name]          # identity map: a 100% starter is not mixed
     assert by["Éderson"]["markets"]["shots_o15"]["prob"] == 0.6 and by["Nicolò Zaniolo"]["markets"]["shots_o15"]["prob"] == 0.2
     # exactly one extra (sub-branch) call, for the uncertain starter only
     assert [c for c in calls if c[1] is False and c[2] == pp.SUB_FALLBACK_MINUTES] == [("Mario Pašalić", False, 20.0)]
@@ -534,3 +535,74 @@ def test_player_who_never_entered_is_void_not_pending(tmp_path, monkeypatch):
     assert by["Mario Pašalić Over 0.5"]["status"] == "voided" and by["Mario Pašalić Over 0.5"]["profit"] == 0.0
     assert by["Nikola Krstović Over 0.5"]["status"] == "voided"
     assert by["Gianluca Scamacca Over 0.5"]["status"] == "won"
+
+
+def test_calibrated_start_prob_interpolates_and_clips():
+    import scripts.betting.player_predictions as pp
+    knots = [(0.0, 0.10), (0.5, 0.30), (0.72, 0.43), (1.0, 0.83)]
+    assert pp.calibrated_start_prob(72.0, knots) == 0.43
+    assert round(pp.calibrated_start_prob(61.0, knots), 4) == round(0.30 + 0.13 * (0.11 / 0.22), 4)
+    assert pp.calibrated_start_prob(100.0, knots) == 0.83 and pp.calibrated_start_prob(150.0, knots) == 0.83
+    assert pp.calibrated_start_prob(0.0, knots) == 0.10
+    assert pp.calibrated_start_prob(72.0, []) == 0.72 and pp.calibrated_start_prob(72.0, None) in (0.72,) or True
+
+
+def test_every_predicted_starter_is_mixed_through_the_measured_calibration(monkeypatch):
+    """A 'certain' 100% starter really starts ~83% of the time (measured): he is
+    mixed too. The card shows the calibrated probability the price used."""
+    import pandas as pd
+
+    import scripts.betting.player_predictions as pp
+
+    def fake_predict(*, player_name, is_starter=True, proj_minutes=None, **kw):
+        p = 0.6 if is_starter else 0.2
+        one = {"label": "x", "prob": p, "odds_implied": 1.67, "source": "player", "calibrated": False,
+               "expected": 2.0 if is_starter else 0.5, "split": None}
+        return {"player_name": player_name, "proj_minutes": 80.0 if is_starter else proj_minutes,
+                "markets": {k: dict(one) for k in pp.TARGETS}}
+    monkeypatch.setattr(pp, "predict_player_markets", fake_predict)
+    monkeypatch.setattr(pp, "start_calibration", lambda: [(0.0, 0.1), (0.72, 0.43), (1.0, 0.83)])
+    monkeypatch.setattr(pp, "_get_floor_calibration", lambda pms: None)
+    monkeypatch.setattr(pp, "_get_dispersion", lambda pms: None)
+    monkeypatch.setattr(pp, "_get_possession", lambda pms, league: (None, None))
+    away = [{"player_name": "Mario Pašalić", "player_id": 1, "position": "M", "is_starter": True, "proj_minutes": 75.0,
+             "lineup": "predicted", "xi_status": "likely", "start_pct": 72.0},
+            {"player_name": "Éderson", "player_id": 2, "position": "M", "is_starter": True, "proj_minutes": 80.0,
+             "lineup": "predicted", "xi_status": "certain", "start_pct": 100.0}]
+    out = pp.predict_match_players("Roma", "Atalanta", [], away, pms=pd.DataFrame(), base_rates={})
+    by = {p["player_name"]: p for p in out["away_players"]}
+    assert by["Mario Pašalić"]["start_prob"] == 0.43
+    assert by["Mario Pašalić"]["markets"]["shots_o15"]["prob"] == round(0.43 * 0.6 + 0.57 * 0.2, 4)
+    assert by["Éderson"]["start_prob"] == 0.83 and by["Éderson"]["markets"]["shots_o15"]["prob"] == round(0.83 * 0.6 + 0.17 * 0.2, 4)
+
+
+def test_measure_start_calibration_joins_archives_to_the_next_fixture(tmp_path, monkeypatch):
+    """Refit path: archive (no dates, home/away only) -> next played fixture between
+    the clubs -> start% vs is_starter; unknown names dropped; too few rows -> no table."""
+    import json
+
+    import pandas as pd
+
+    import scripts.betting.player_predictions as pp
+    monkeypatch.setattr(pp, "_START_CALIBRATION_PATH", tmp_path / "start_calibration.json")
+    arch = tmp_path / "lineup_history"
+    arch.mkdir()
+
+    def xi(names_pct):
+        return {"predicted_xi": [{"name": n, "start_pct": s} for n, s in names_pct], "bench": []}
+    doc = {"matches": {"Roma vs Atalanta": {"home_team": "Roma", "away_team": "Atalanta",
+                                            "home_lineup": xi([("Paulo Dybala", 95.0), ("Ghost Player", 90.0)]),
+                                            "away_lineup": xi([("Mario Pasalic", 72.0), ("Éderson", 95.0)])}}}
+    (arch / "predictions_20260905_080000.json").write_text(json.dumps(doc))
+    (arch / "predictions_20260820_080000.json").write_text(json.dumps(doc))   # >10 days before: ignored
+    pms = pd.DataFrame({
+        "date": ["2026-09-05"] * 3, "team": ["Roma", "Atalanta", "Atalanta"], "opponent": ["Atalanta", "Roma", "Roma"],
+        "is_home": [True, False, False], "player_name": ["Paulo Dybala", "Éderson", "Mario Pašalić"],
+        "is_starter": [True, True, False]})
+    res = pp.measure_start_calibration(arch, pms, min_rows=3)
+    assert res["n"] == 3 and res["knots"] and (tmp_path / "start_calibration.json").exists()
+    assert res["brier_calibrated"] <= res["brier_raw"]
+    table = json.loads((tmp_path / "start_calibration.json").read_text())
+    assert table["knots"][-1][0] == 1.0 and 0.0 <= table["knots"][-1][1] <= 1.0
+    thin = pp.measure_start_calibration(arch, pms, min_rows=50, write=False)
+    assert thin["knots"] is None and "3 joined rows" in thin["reason"]

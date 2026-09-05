@@ -5138,6 +5138,19 @@ _Detailed per-match ML breakdown by component._
 
 ## 8. PREDICTIONS — predicted lineups
 
+### `data/models/player_floors/start_calibration.json`
+
+**Writer:** `python3 -m scripts.betting.player_predictions calibrate-start`
+(`measure_start_calibration`): joins every `data/lineup_history/predictions_*.json` (the
+lineup predictor's daily archive, no dates inside — matched to the next played fixture between
+the two clubs within 10 days) to `player_match_stats.parquet` `is_starter` (absent = did not
+start; names accent-folded; a name the club never fielded is a join miss, 0.8%). Fits isotonic
+regression start%/100 → P(started). `{n, n_archives, fitted_at, dates, brier_raw,
+brier_calibrated, brier_base, buckets[{lo,hi,n,pred,obs}], knots[[x,y]×41]}`.
+**Reader:** `player_predictions.calibrated_start_prob` (mtime-cached) — every predicted-XI
+starter's price is the start/bench mixture at this probability. First fit 2026-09-05:
+n=3,807, Brier 0.213 → 0.170 (base 0.249); the predictor is overconfident in every bucket.
+
 ### `data/upcoming/confirmed_lineups.json` and `lineup_chain_status.json`
 
 **Writer:** `scraper/lineup_fetcher.py::fetch_and_save_lineups` (the scheduler's `lineup_fetch`

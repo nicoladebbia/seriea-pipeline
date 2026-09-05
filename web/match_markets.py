@@ -259,6 +259,7 @@ def build_match_markets(match_key: str, *, pred: dict | None, goal_pred: dict | 
                     "position": pl.get("position"), "proj_minutes": pl.get("proj_minutes"),
                     # confirmed | predicted | recent — the basis of the XI this row assumes
                     "lineup": pl.get("lineup"), "xi_status": pl.get("xi_status"), "start_pct": pl.get("start_pct"),
+                    "start_prob": pl.get("start_prob"),   # calibrated P(starts) used by the price
                     "probability_pct": _pct(m["prob"]), "tier": tier, "source": "player_floors",
                     "interval": "90'",
                     # E3 (2026-09-05): share of the side's expected count for this stat,

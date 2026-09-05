@@ -377,7 +377,7 @@ def _pick_view(c: dict) -> dict:
     return {k: c.get(k) for k in ("group", "bet_type", "selection", "player", "team", "tier", "source",
                                   "probability_pct", "odds", "book", "n_books", "implied_pct", "edge_pct",
                                   "in_band", "thin", "market_key", "engine_note",
-                                  "lineup", "xi_status", "start_pct")}
+                                  "lineup", "xi_status", "start_pct", "start_prob")}
 
 
 def build_match_pick(match_key: str, rows: list[dict], book: dict[tuple, dict], *,

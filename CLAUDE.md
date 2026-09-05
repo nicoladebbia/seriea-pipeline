@@ -180,6 +180,19 @@ REPLACES the independent-Poisson artifact row for the same bet).
   nothing per-match moves it. The rebuild logs a WARNING the day a conditioning passes the
   gate — that is the signal to build a per-match row, not a hunch. Don't re-run the hunt
   by hand; read `rare_events.json["conditioning"]` after the next backfill instead.
+- **Predicted starters are priced through a MEASURED start calibration (2026-09-05).**
+  `lineup_predictor`'s `start_pct` is overconfident in every bucket: on 3,807 archived
+  predictions (Feb–Sep 2026, `data/lineup_history/predictions_*.json` joined to the next
+  played fixture) a 'certain' 99.7% started 82%, a 'likely' 75% started 51%, the predicted
+  XI as a whole 92% → 74%. `data/models/player_floors/start_calibration.json` holds isotonic
+  knots (Brier 0.213 → 0.170, base 0.249); `calibrated_start_prob` reads them and every
+  predicted-XI starter is priced as P(starts)·P(market|starts) + (1−P)·P(market|20' sub)
+  (`_mix_start_sub`, stamped `start_mix`/`start_prob`; the /picks card shows this number as
+  `XI prob.`). A confirmed sheet bypasses all of it. Refit after a few matchweeks:
+  `python3 -m scripts.betting.player_predictions calibrate-start` (needs ≥500 joined rows;
+  the archive is written by every lineup_predictor run). The same overconfidence applies to
+  every other consumer of `start_pct` / `status: certain` (fantacalcio p_play) — not yet
+  corrected there.
 - **Player per-half split (E3, `scripts/betting/player_predictions.py`)**: expected events
   in a half = per-90 rate × minutes on the pitch in that half (starter 45/rest, sub
   late) × the league's timing share. Measured before building: a player's OWN 1st-half

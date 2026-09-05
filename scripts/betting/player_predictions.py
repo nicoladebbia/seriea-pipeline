@@ -51,6 +51,7 @@ validated, EDGE is not (and can't be backtested from one stale odds snapshot).
 import json
 import logging
 import math
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -624,6 +625,124 @@ def predict_player_markets(
 
 
 SUB_FALLBACK_MINUTES = 20.0  # the engine's own "sub" default (see predict_player_markets)
+_START_CALIBRATION_PATH = DATA_DIR / "models" / "player_floors" / "start_calibration.json"
+_START_CAL_CACHE: dict = {"mtime": None, "knots": None}
+
+
+def start_calibration() -> list[tuple[float, float]] | None:
+    """Isotonic knots [(start_pct/100, P(actually started))] fitted by
+    measure_start_calibration(); None when the table has not been built."""
+    try:
+        mtime = _START_CALIBRATION_PATH.stat().st_mtime
+    except OSError:
+        return None
+    if _START_CAL_CACHE["mtime"] != mtime:
+        try:
+            doc = json.loads(_START_CALIBRATION_PATH.read_text())
+            _START_CAL_CACHE["knots"] = [(float(x), float(y)) for x, y in doc["knots"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            _START_CAL_CACHE["knots"] = None
+        _START_CAL_CACHE["mtime"] = mtime
+    return _START_CAL_CACHE["knots"]
+
+
+def calibrated_start_prob(start_pct: float, knots: list[tuple[float, float]] | None = None) -> float:
+    """P(starts) for the predictor's start% — linear interpolation on the
+    isotonic knots, clipped at the ends; the raw start%/100 when no table exists.
+    Measured 2026-09-05 on 3,802 archived predictions (Feb–Sep 2026): the
+    predictor is overconfident in EVERY bucket (XI mean 0.92 -> started 0.74,
+    'likely' 0.75 -> 0.51, 'certain' 0.997 -> 0.82); isotonic cut Brier
+    0.213 -> 0.170 (base rate 0.249)."""
+    x = max(0.0, min(1.0, float(start_pct) / 100.0))
+    knots = knots if knots is not None else start_calibration()
+    if not knots:
+        return x
+    if x <= knots[0][0]:
+        return knots[0][1]
+    for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+        if x <= x1:
+            return y0 if x1 == x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return knots[-1][1]
+
+
+def measure_start_calibration(archive_dir: Path | None = None, pms=None, *, min_rows: int = 500,
+                              write: bool = True) -> dict:
+    """Refit path for calibrated_start_prob: join every archived lineup prediction
+    (data/lineup_history/predictions_*.json, the daily 08:00 snapshot) to the next
+    played fixture between the same clubs (≤10 days later) and compare start% with
+    whether the player actually started (pms is_starter; absent from the stats =
+    did not start). Names are accent-folded; a name the club never fielded in pms
+    is dropped as a join miss (0.8% live). Fits isotonic regression, writes the
+    knots + diagnostics. Run: python3 -m scripts.betting.player_predictions calibrate-start"""
+    import glob as _glob
+    import unicodedata
+
+    import numpy as np
+    import pandas as pd
+
+    def fold(n):
+        return "".join(c for c in unicodedata.normalize("NFKD", str(n)) if not unicodedata.combining(c)).lower().strip()
+
+    archive_dir = archive_dir or (DATA_DIR / "lineup_history")
+    if pms is None:
+        pms = pd.read_parquet(_PMS_PATH, columns=["date", "team", "opponent", "is_home", "player_name", "is_starter"])
+    pms = pms.copy()
+    pms["date"] = pd.to_datetime(pms["date"]).dt.strftime("%Y-%m-%d")
+    pms["key"] = pms["player_name"].map(fold)
+    fixt = pms[pms["is_home"] == True].groupby(["team", "opponent"])["date"].apply(sorted).to_dict()  # noqa: E712
+    actual = {(r.date, r.team, r.key): bool(r.is_starter) for r in pms.itertuples()}
+    known = pms.groupby("team")["key"].apply(set).to_dict()
+    rows: dict = {}
+    files = sorted(_glob.glob(str(archive_dir / "predictions_*.json")))
+    for f in files:
+        stamp = Path(f).name[len("predictions_"):][:15]
+        gen = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+        try:
+            doc = json.loads(Path(f).read_text())
+        except (OSError, ValueError):
+            continue
+        for m in (doc.get("matches") or {}).values():
+            h, a = m.get("home_team"), m.get("away_team")
+            dates = [x for x in fixt.get((h, a), []) if x >= gen and (pd.Timestamp(x) - pd.Timestamp(gen)).days <= 10]
+            if not dates:
+                continue
+            date = dates[0]
+            for side, team in (("home_lineup", h), ("away_lineup", a)):
+                for grp in ("predicted_xi", "bench"):
+                    for p in (m.get(side) or {}).get(grp) or []:
+                        sp = p.get("start_pct")
+                        key = fold(p.get("name", ""))
+                        if sp is None or key not in known.get(team, set()):
+                            continue
+                        rows[(date, team, key)] = (float(sp) / 100.0, float(actual.get((date, team, key), False)))
+    n = len(rows)
+    out: dict = {"n": n, "n_archives": len(files), "min_rows": min_rows}
+    if n < min_rows:
+        out["knots"] = None
+        out["reason"] = f"only {n} joined rows (< {min_rows})"
+        return out
+    x = np.array([v[0] for v in rows.values()])
+    y = np.array([v[1] for v in rows.values()])
+    from sklearn.isotonic import IsotonicRegression
+    iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(x, y)
+    grid = np.round(np.linspace(0.0, 1.0, 41), 3)
+    knots = [(float(g), round(float(iso.predict([g])[0]), 4)) for g in grid]
+    out.update({
+        "fitted_at": datetime.now(UTC).isoformat(),
+        "dates": [min(k[0] for k in rows), max(k[0] for k in rows)],
+        "brier_raw": round(float(((x - y) ** 2).mean()), 4),
+        "brier_calibrated": round(float(((iso.predict(x) - y) ** 2).mean()), 4),
+        "brier_base": round(float(((y.mean() - y) ** 2).mean()), 4),
+        "buckets": [{"lo": lo, "hi": hi, "n": int(((x > lo) & (x <= hi)).sum()),
+                     "pred": round(float(x[(x > lo) & (x <= hi)].mean()), 3) if ((x > lo) & (x <= hi)).any() else None,
+                     "obs": round(float(y[(x > lo) & (x <= hi)].mean()), 3) if ((x > lo) & (x <= hi)).any() else None}
+                    for lo, hi in ((-0.01, 0.1), (0.1, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 0.95), (0.95, 1.0))],
+        "knots": knots,
+    })
+    if write:
+        _START_CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _START_CALIBRATION_PATH.write_text(json.dumps(out, indent=1))
+    return out
 
 
 def _mix_start_sub(start: dict, sub: dict, s: float) -> dict:
@@ -699,20 +818,24 @@ def predict_match_players(
                                           proj_minutes=pl.get("proj_minutes"), **common)
             s_start = pl.get("start_pct")
             if (pred and pred.get("markets") and pl.get("lineup") == "predicted" and pl.get("is_starter", True)
-                    and isinstance(s_start, int | float) and 0.0 < s_start < 100.0):
-                # An UNCERTAIN starter (predicted XI, start% < 100) is priced as the
-                # mixture start% × P(market | starts) + (1 − start%) × P(market | comes
-                # off the bench for SUB_FALLBACK_MINUTES). Until 2026-09-05 a 72%
-                # 'likely' starter was priced at his full minutes. Law of total
-                # probability over the predictor's own start%; the one assumption
-                # is that start% is calibrated (declared, not measured).
-                sub = predict_player_markets(is_starter=False, proj_minutes=SUB_FALLBACK_MINUTES, **common)
-                if sub and sub.get("markets"):
-                    pred = _mix_start_sub(pred, sub, s_start / 100.0)
+                    and isinstance(s_start, int | float)):
+                # A PREDICTED starter is priced as the mixture
+                #   P(starts) × P(market | starts) + (1 − P(starts)) × P(market | 20' off the bench)
+                # with P(starts) = the predictor's start% passed through the MEASURED
+                # isotonic calibration (a 'certain' 99.7% actually starts 82% of the
+                # time, a 'likely' 72% starts 43%). Until 2026-09-05 a predicted starter
+                # was priced at his full minutes. Law of total probability; the
+                # calibration is measured, not assumed (measure_start_calibration).
+                s_cal = calibrated_start_prob(s_start)
+                if s_cal < 1.0:
+                    sub = predict_player_markets(is_starter=False, proj_minutes=SUB_FALLBACK_MINUTES, **common)
+                    if sub and sub.get("markets"):
+                        pred = _mix_start_sub(pred, sub, s_cal)
             if pred and pred.get("markets"):
                 pred["lineup"] = pl.get("lineup")
                 pred["xi_status"] = pl.get("xi_status")
                 pred["start_pct"] = pl.get("start_pct")
+                pred["start_prob"] = pred.get("start_mix")   # calibrated P(starts) when mixed
                 out.append(pred)
         # contribution %: this player's expected 90' count over the side's total,
         # per stat column (shots, fouls, …). Only players with a rate count;
@@ -1004,6 +1127,11 @@ if __name__ == "__main__":
     if mode == "validate":
         res = validate(league)
         print(json.dumps(res, indent=2))
+    elif mode == "calibrate-start":
+        res = measure_start_calibration()
+        print(json.dumps({k: v for k, v in res.items() if k != "knots"}, indent=1))
+        if res.get("knots"):
+            print("knots:", {x: y for x, y in res["knots"][::5]})
     elif mode == "validate-halves":
         res = validate_halves(league)
         print(json.dumps({"half_shares": res["half_shares"], "gate": res["gate"]}, indent=1))
