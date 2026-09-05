@@ -172,3 +172,37 @@ def test_backtest_runs_on_a_stored_matchday_and_writes_the_verdict(tmp_path, mon
     assert r["skill_vs_inplay_market_1x2"] is not None and r["passes_gate"] is False  # n < 200
     for rule in ("state_change", "any_snapshot"):
         assert all(p["market"] == "inplay_1x2" for p in r["sample_picks"][rule])
+
+
+# ------------------------------------------------------------- red cards, baselines
+
+def test_a_red_card_moves_the_fair_price_against_the_ten_man_side(prof):
+    assert (prof.get("red_mult") or {}).get("short"), "profile.json has no red_mult: run goal_process --measure-red"
+    level = gp.market_probs(gp.simulate_from_state(1.4, 1.1, 60, (1, 1), prof, n=6000, seed=3))
+    home_red = gp.market_probs(gp.simulate_from_state(1.4, 1.1, 60, (1, 1), prof, n=6000, seed=3, red=(1, 0)))
+    assert home_red["home_win"] < level["home_win"] - 0.05 and home_red["away_win"] > level["away_win"] + 0.05
+
+
+def test_reds_at_counts_only_cards_already_shown():
+    e = {"live_events": [{"type": "card", "card_type": "yellow", "minute": 10, "is_home": True},
+                         {"type": "card", "card_type": "red", "minute": 40, "is_home": True},
+                         {"type": "card", "card_type": "yellowRed", "minute": 70, "is_home": False}]}
+    assert inplay.reds_at(e, 39) == (0, 0) and inplay.reds_at(e, 40) == (1, 0) and inplay.reds_at(e, 90) == (1, 1)
+
+
+def test_baseline_falls_back_to_the_closing_snapshot_line(monkeypatch, prof):
+    monkeypatch.setattr(inplay, "_closing_line", lambda e, mk: {"home": 1.67, "draw": 3.88, "away": 5.17, "source": "closing_snapshot"})
+    e = {"commence_time": "2026-09-05T18:45:00Z", "snapshots": [_snap(30, (1, 0), 1.2, 6.0, 12.0)]}
+    b = inplay.baseline_for_entry(e, prof, n=2000, mk="AS Roma vs Atalanta BC")
+    assert b and b["h2h_source"] == "closing_snapshot" and b["xg_h"] > b["xg_a"]
+
+
+def test_model_baseline_uses_archived_xg_and_is_cached_per_variant(monkeypatch, prof):
+    monkeypatch.setattr(inplay, "_archived_xg", lambda e, mk: {"xg_h": 2.2, "xg_a": 0.7})
+    e = {"pre_match_odds": {"home": 1.67, "draw": 3.88, "away": 5.17}, "snapshots": []}
+    m = inplay.baseline_for_entry(e, prof, n=2000, mk="m", baseline="model")
+    assert m["baseline"] == "model" and m["xg_h"] == 2.2
+    k = inplay.baseline_for_entry(e, prof, n=2000, mk="m", baseline="market")
+    assert k["baseline"] == "market" and k["xg_h"] != 2.2
+    monkeypatch.setattr(inplay, "_archived_xg", lambda e, mk: None)
+    assert inplay.baseline_for_entry({"pre_match_odds": e["pre_match_odds"], "snapshots": []}, prof, n=2000, baseline="model") is None

@@ -109,16 +109,75 @@ def _p_over_2_5_from(entry: dict, first: dict | None) -> tuple[float | None, str
     return None, "none"
 
 
-def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LIVE) -> dict | None:
-    """Simulator inputs implied by the pre-match market; cached on the entry."""
+def _teams(entry: dict, mk: str = "") -> tuple[str, str]:
+    home = entry.get("home_team") or (mk.split(" vs ")[0] if mk else "")
+    away = entry.get("away_team") or (mk.split(" vs ")[1] if " vs " in mk else "")
+    return home, away
+
+
+def reds_at(entry: dict, minute: int) -> tuple[int, int]:
+    """Red cards (home, away) shown by ``minute`` in the entry's live events
+    (Sofascore and ESPN both store ``type: card`` + ``card_type``)."""
+    h = a = 0
+    for ev in entry.get("live_events") or []:
+        if ev.get("type") != "card" or ev.get("card_type") not in ("red", "yellowRed"):
+            continue
+        if int(ev.get("minute") or 0) > minute:
+            continue
+        if ev.get("is_home"):
+            h += 1
+        else:
+            a += 1
+    return h, a
+
+
+def _closing_line(entry: dict, mk: str) -> dict:
+    """The last pre-kickoff odds snapshot on disk (live_monitor owns the store)."""
+    try:
+        from scripts.data.live_monitor import _closing_line_from_snapshots
+        home, away = _teams(entry, mk)
+        return _closing_line_from_snapshots(home, away, entry.get("commence_time") or "")
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _archived_xg(entry: dict, mk: str) -> dict | None:
+    """Our own pre-kickoff xG for the match from predictions_archive.json, if archived."""
+    try:
+        from config.team_names import normalize_team
+        with open(DATA_DIR / "upcoming" / "predictions_archive.json") as f:
+            arch = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    home, away = _teams(entry, mk)
+    key = ((entry.get("commence_time") or "")[:10], normalize_team(home), normalize_team(away))
+    for row in (arch.values() if isinstance(arch, dict) else arch):
+        if (row.get("date"), normalize_team(row.get("home_team") or ""), normalize_team(row.get("away_team") or "")) == key:
+            if row.get("home_xg") and row.get("away_xg"):
+                return {"xg_h": float(row["home_xg"]), "xg_a": float(row["away_xg"])}
+    return None
+
+
+def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LIVE, mk: str = "",
+                       baseline: str = "market") -> dict | None:
+    """Simulator inputs for the match; cached on the entry.
+
+    baseline="market": xG split + k implied by the pre-match market
+    (pre_match_odds, else the closing odds snapshot on disk, else the first
+    ≤10' 0-0 snapshot). baseline="model": our archived pre-kickoff xG with k
+    solved on the market's P(over 2.5) — the backtest's second variant."""
     cached = entry.get("inplay_baseline")
-    if cached and cached.get("xg_h") is not None:
+    if cached and cached.get("xg_h") is not None and cached.get("baseline", "market") == baseline:
         return cached
     snaps = _priced(entry.get("snapshots") or [])
     first = snaps[0] if snaps else None
     pre = entry.get("pre_match_odds") or {}
+    if not (pre.get("home") and pre.get("draw") and pre.get("away")):
+        closing = _closing_line(entry, mk)
+        if closing.get("home"):
+            pre = {**pre, **closing}
     if pre.get("home") and pre.get("draw") and pre.get("away"):
-        h2h, h2h_source = devig({"home": pre["home"], "draw": pre["draw"], "away": pre["away"]}), "pre_match_odds"
+        h2h, h2h_source = devig({"home": pre["home"], "draw": pre["draw"], "away": pre["away"]}), pre.get("source") or "pre_match_odds"
     elif first and int(first.get("min") or 0) <= BASELINE_MAX_MINUTE and list(first.get("score") or [0, 0]) == [0, 0]:
         h2h, h2h_source = devig(first["avg_odds"]), "first_snapshot"
     else:
@@ -127,8 +186,15 @@ def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LI
         return None
     p_over, totals_source = _p_over_2_5_from(entry, first)
     prof = prof or gp.load_profile()
-    base = gp.market_profile(h2h, p_over, prof, n=n)
-    base.update({"h2h_source": h2h_source, "totals_source": totals_source,
+    if baseline == "model":
+        xg = _archived_xg(entry, mk)
+        if not xg:
+            return None
+        sim = gp.simulate(xg["xg_h"], xg["xg_a"], prof, n=n, p_over_2_5=p_over)
+        base = {"xg_h": xg["xg_h"], "xg_a": xg["xg_a"], "k": sim["calibration_k"], "saturated": sim["calibration_saturated"]}
+    else:
+        base = gp.market_profile(h2h, p_over, prof, n=n)
+    base.update({"baseline": baseline, "h2h_source": h2h_source, "totals_source": totals_source,
                  "p_over_2_5": (round(p_over, 4) if p_over is not None else None),
                  "h2h": {k: round(v, 4) for k, v in h2h.items()}})
     entry["inplay_baseline"] = base
@@ -136,20 +202,20 @@ def baseline_for_entry(entry: dict, prof: dict | None = None, n: int = N_SIMS_LI
 
 
 def fair_for_snapshot(base: dict, snap: dict, prof: dict | None = None, n: int = N_SIMS_LIVE,
-                      seed: int = 0) -> dict:
-    """Fair probabilities for the state the snapshot describes."""
+                      seed: int = 0, red: tuple[int, int] = (0, 0)) -> dict:
+    """Fair probabilities for the state the snapshot describes (score, minute, red cards)."""
     minute = int(snap.get("min") or 0)
     score = tuple(int(x) for x in (snap.get("score") or [0, 0]))
-    paths = gp.simulate_from_state(base["xg_h"], base["xg_a"], minute, score, prof, k=base["k"], n=n, seed=seed)
+    paths = gp.simulate_from_state(base["xg_h"], base["xg_a"], minute, score, prof, k=base["k"], n=n, seed=seed, red=red)
     pr = gp.market_probs(paths)
     total = paths["home_final"] + paths["away_final"]
     totals = {}
     for line in _totals_book(snap):
         over = float((total > line).mean())
         totals[str(line)] = {"over": round(over, 4), "under": round(1.0 - over, 4)}
-    return {"minute": minute, "score": list(score),
+    return {"minute": minute, "score": list(score), "red": list(red),
             "1x2": {"home": round(pr["home_win"], 4), "draw": round(pr["draw"], 4), "away": round(pr["away_win"], 4)},
-            "totals": totals, "red_cards_modelled": False}
+            "totals": totals, "red_cards_modelled": bool(paths.get("red_cards_modelled"))}
 
 
 def edges(snap: dict, fair: dict) -> list[dict]:
@@ -224,7 +290,8 @@ def journal_pick(mk: str, entry: dict, snap: dict, pick: dict, *, journal_path: 
         "extra": {"minute": snap.get("min"), "score": snap.get("score"), "market_prob": pick["market_prob"],
                   "side": pick.get("side"), "line": pick.get("line"), "snapshot_ts": snap.get("ts"),
                   "baseline": {k: base.get(k) for k in ("xg_h", "xg_a", "k", "h2h_source")},
-                  "red_cards_modelled": False},
+                  "red": list(reds_at(entry, int(snap.get("min") or 0))),
+                  "red_cards_modelled": bool((gp.load_profile().get("red_mult") or {}).get("short"))},
     }, journal_path=journal_path or INPLAY_JOURNAL_PATH)
 
 
@@ -235,14 +302,16 @@ def on_snapshot(mk: str, entry: dict, snap: dict, *, prof: dict | None = None,
     snapshot (the card reads them). Returns the pick record or None."""
     if not (snap.get("avg_odds") or {}).get("home"):
         return None
-    base = baseline_for_entry(entry, prof, n=n)
+    base = baseline_for_entry(entry, prof, n=n, mk=mk)
     if not base:
         entry.setdefault("inplay_note", "no pre-match baseline")
         return None
-    fair = fair_for_snapshot(base, snap, prof, n=n)
+    red = reds_at(entry, int(snap.get("min") or 0))
+    fair = fair_for_snapshot(base, snap, prof, n=n, red=red)
     rows = edges(snap, fair)
     snap["fair"] = fair["1x2"]
     snap["fair_totals"] = fair["totals"]
+    snap["fair_red"] = list(red)
     snap["best_edge"] = rows[0] if rows else None
     prev = None
     for s in reversed(_priced(entry.get("snapshots") or [])):
@@ -372,7 +441,8 @@ def _skill(f: list, m: list) -> float | None:
     return round(1 - float(np.mean(f)) / float(np.mean(m)), 4) if f and m else None
 
 
-def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bool = True) -> dict:
+def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bool = True,
+             baseline: str = "market") -> dict:
     """The engine over every stored matchday. Two pick rules (after a state
     change; any snapshot), each graded at the price we SAW and at the NEXT
     snapshot's price (the feed lag), plus 1X2 skill vs the in-play market on
@@ -398,7 +468,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                 final = entry["snapshots"][-1].get("score")
             if not snaps or not final:
                 continue
-            base = baseline_for_entry(entry, prof, n=n)
+            base = baseline_for_entry(entry, prof, n=n, mk=mk, baseline=baseline)
             if not base:
                 n_no_baseline += 1
                 continue
@@ -412,7 +482,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                 if minute >= 90 and list(snap.get("score") or []) == list(final):
                     prev = snap
                     continue  # the whistle: nothing left to price
-                fair = fair_for_snapshot(base, snap, prof, n=n, seed=i)
+                fair = fair_for_snapshot(base, snap, prof, n=n, seed=i, red=reds_at(entry, minute))
                 rows = edges(snap, fair)
                 mkt = devig(snap["avg_odds"])
                 if len(mkt) == 3:
@@ -450,14 +520,22 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
         "picks": {rule: _summarise(rows) for rule, rows in picks.items()},
         "picks_over_cap": {rule: sum(r["over_cap"] for r in rows) for rule, rows in picks.items()},
         "rule": {"edge_min": EDGE_MIN, "fair_min": FAIR_MIN, "max_minute": MAX_MINUTE,
-                 "baseline": "pre-match market (no model xG)", "red_cards_modelled": False,
+                 "baseline": baseline, "red_cards_modelled": bool((prof.get("red_mult") or {}).get("short")),
+                 "red_mult": prof.get("red_mult"),
                  "pick_markets": list(PICK_MARKETS), "totals_feed": "pre-match lines carried in-play — never picked"},
         "gate": {"skill_min": gp.SKILL_GATE, "n_min": gp.N_GATE},
     }
     result["passes_gate"] = bool(result["skill_vs_inplay_market_1x2"] is not None
                                  and result["skill_vs_inplay_market_1x2"] >= gp.SKILL_GATE and n_snaps >= gp.N_GATE)
     result["sample_picks"] = {rule: rows[:40] for rule, rows in picks.items()}
-    if write:
+    if write and baseline == "market":
+        # the market variant is the gate; the model variant rides along as a sub-report
+        try:
+            model = backtest(files, n=n, write=False, baseline="model")
+            model.pop("sample_picks", None)
+            result["model_variant"] = model
+        except Exception as exc:  # noqa: BLE001
+            result["model_variant"] = {"error": str(exc)}
         BACKTEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(BACKTEST_PATH, "w") as f:
             json.dump(result, f, indent=2, default=str)

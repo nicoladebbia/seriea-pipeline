@@ -189,7 +189,46 @@ def default_profile() -> dict:
     w[BIN_2H_STOPPAGE] = 0.063
     return {"hazard": w.tolist(), "state_mult": {"home": {"trail": 1.0, "level": 1.0, "lead": 1.0},
                                                   "away": {"trail": 1.0, "level": 1.0, "lead": 1.0}},
-            "total": {"mu": 2.65, "beta": 0.0, "xt_mean": 2.68}, "fitted_on": None, "n_matches": 0}
+            "total": {"mu": 2.65, "beta": 0.0, "xt_mean": 2.68}, "fitted_on": None, "n_matches": 0,
+            "red_mult": None}
+
+
+def measure_red_card_effect(league: str = "serie_a") -> dict:
+    """Goal-rate multipliers after the FIRST red card of a match, for the
+    ten-man side and its opponent: observed goals after the card over the
+    goals the league's per-side per-bin rate expected in the remaining bins.
+    Serie A 2017-26 (2026-09-05): n=606, short 0.62, opponent 1.53; split-half
+    0.64/1.71 vs 0.67/1.52. Written into the profile as ``red_mult`` by
+    ``--measure-red``; ``simulate_from_state`` applies it per red card."""
+    from datetime import datetime, timezone
+    inc = pd.read_parquet(DATA_DIR / "external" / "sofascore" / "match_incidents.parquet")
+    tl = pd.read_parquet(TIMELINE_PATH)
+    uni = pd.read_parquet(TIMELINE_PATH.with_name("goal_timeline_universe.parquet"))
+    mp = pd.read_parquet(DATA_DIR / "parsed" / "match_id_mapping.parquet")
+    canon = set(uni[uni.league == league].match_id)
+    n_all = len(canon)
+    ids = set(mp[mp.match_id.isin(canon)].sofascore_id.dropna().astype(int))
+    g = tl[tl.league == league]
+    reds = inc[(inc.incident_type == "card") & (inc.incident_class.isin(["red", "yellowRed"])) & (inc.match_id.isin(ids))].copy()
+    reds["bin"] = [bin_of(m, a) for m, a in zip(reds.minute, reds.added_time.fillna(0))]
+    first = reds.sort_values("bin").groupby("match_id").first()
+    rate = {side: np.array([(g[(g.side == side) & (g.bin == b)].shape[0]) / max(n_all, 1) for b in range(N_BINS)])
+            for side in ("home", "away")}
+    obs = {"short": 0.0, "opp": 0.0}
+    exp = {"short": 0.0, "opp": 0.0}
+    for mid, row in first.iterrows():
+        b = int(row.bin)
+        gm = g[(g.sofascore_id == mid) & (g.bin > b)]
+        short, opp = ("home", "away") if row.is_home else ("away", "home")
+        obs["short"] += int((gm.side == short).sum())
+        obs["opp"] += int((gm.side == opp).sum())
+        exp["short"] += float(rate[short][b + 1:].sum())
+        exp["opp"] += float(rate[opp][b + 1:].sum())
+    if len(first) < 100 or exp["short"] <= 0 or exp["opp"] <= 0:
+        return {"short": 1.0, "opp": 1.0, "n_matches": int(len(first)), "measured_on": None}
+    return {"short": round(obs["short"] / exp["short"], 3), "opp": round(obs["opp"] / exp["opp"], 3),
+            "n_matches": int(len(first)), "goals_after": {"short": int(obs["short"]), "opp": int(obs["opp"])},
+            "measured_on": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "league": league}
 
 
 def fit_profile(tl: pd.DataFrame, universe: list, seasons: list | None = None,
@@ -261,7 +300,7 @@ def load_profile() -> dict:
 
 # =============================================================== simulate ==
 def _simulate_k(xg_h: float, xg_a: float, prof: dict, n: int, seed: int, k: float,
-                start_bin: int = 0, score: tuple[int, int] = (0, 0)) -> dict:
+                start_bin: int = 0, score: tuple[int, int] = (0, 0), red: tuple[int, int] = (0, 0)) -> dict:
     """Sample n paths from ``start_bin`` with ``score`` already on the board
     (the goals already scored sit in bin 0 so every cumulative read — HT,
     lead, final — stays consistent). start_bin=0 / (0, 0) is the pre-match
@@ -282,6 +321,11 @@ def _simulate_k(xg_h: float, xg_a: float, prof: dict, n: int, seed: int, k: floa
         xg_h, xg_a = lam_tot * xg_h / xt, lam_tot * xg_a / xt
     mh_arr = np.array([mh["trail"], mh["level"], mh["lead"]])
     ma_arr = np.array([ma["trail"], ma["level"], ma["lead"]])
+    rm = prof.get("red_mult") or {}
+    if rm.get("short") and (red[0] or red[1]):
+        # measured: the ten-man side scores at `short`× its rate, the opponent at `opp`×
+        xg_h *= rm["short"] ** int(red[0]) * rm["opp"] ** int(red[1])
+        xg_a *= rm["short"] ** int(red[1]) * rm["opp"] ** int(red[0])
     for b in range(max(0, int(start_bin)), N_BINS):
         sh = np.sign(lead) + 1          # 0 trail, 1 level, 2 lead (home view)
         sa = 2 - sh                     # away view is the mirror
@@ -342,18 +386,20 @@ def simulate(xg_h: float, xg_a: float, prof: dict | None = None, n: int = 20000,
 
 def simulate_from_state(xg_h: float, xg_a: float, minute: int, score: tuple[int, int],
                         prof: dict | None = None, k: float = 1.0, added_time: int = 0,
-                        n: int = 6000, seed: int = 0) -> dict:
+                        n: int = 6000, seed: int = 0, red: tuple[int, int] = (0, 0)) -> dict:
     """The match from HERE: paths that start at ``minute`` with ``score`` on the
     board, the same hazard, score-state multipliers and calibration scalar k
-    the pre-match simulation used. Red cards are NOT modelled (no measured
-    multiplier yet) — callers say so on the row."""
+    the pre-match simulation used; ``red`` = red cards (home, away) already
+    shown, applied through the profile's measured ``red_mult`` (a profile
+    without one ignores them and ``red_cards_modelled`` says so)."""
     prof = prof or load_profile()
     b = bin_of(min(max(int(minute), 0), 90), added_time)
     if int(minute) >= 90 and added_time == 0:
         b = 90
-    p = _simulate_k(xg_h, xg_a, prof, n, seed, k, start_bin=b, score=score)
+    p = _simulate_k(xg_h, xg_a, prof, n, seed, k, start_bin=b, score=score, red=red)
     p["calibration_k"] = float(k)
     p["start_bin"] = int(b)
+    p["red_cards_modelled"] = bool((prof.get("red_mult") or {}).get("short"))
     return _finish_paths(p)
 
 
@@ -804,6 +850,7 @@ def main(argv=None):
     ap.add_argument("--fit-profile", action="store_true", help="fit on every season and write profile.json")
     ap.add_argument("--backtest", action="store_true")
     ap.add_argument("--rare-events", action="store_true", help="write rare_events.json (Speciali match base rates)")
+    ap.add_argument("--measure-red", action="store_true", help="measure the red-card goal-rate multipliers and write them into profile.json")
     ap.add_argument("--sims", type=int, default=3000)
     ap.add_argument("--simulate", nargs=2, type=float, metavar=("XG_HOME", "XG_AWAY"))
     ap.add_argument("--over25", type=float, default=None)
@@ -812,11 +859,20 @@ def main(argv=None):
     if a.build_timeline:
         tl, rebuilt = build_goal_timeline(force=True)
         print(f"timeline rows={len(tl)} matches={tl['match_id'].nunique()} universe={len(load_universe())} rebuilt={rebuilt}")
+    if a.measure_red:
+        rm = measure_red_card_effect("serie_a")
+        prof = json.loads(PROFILE_PATH.read_text()) if PROFILE_PATH.exists() else default_profile()
+        prof["red_mult"] = rm
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        PROFILE_PATH.write_text(json.dumps(prof, indent=1))
+        print(json.dumps(rm))
     if a.fit_profile:
         tl, _ = build_goal_timeline()
         fx = pd.read_parquet(DATA_DIR / "features" / "features_serie_a.parquet",
                              columns=["match_id", "poisson_home_xg", "poisson_away_xg"]).dropna()
         prof = fit_profile(tl, load_universe("serie_a"), xg=fx)
+        if PROFILE_PATH.exists():  # the red-card measurement is its own step; a refit keeps it
+            prof["red_mult"] = (json.loads(PROFILE_PATH.read_text()) or {}).get("red_mult")
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         PROFILE_PATH.write_text(json.dumps(prof, indent=1))
         print(json.dumps({"n_matches": prof["n_matches"], "total": prof["total"], "state_mult": prof["state_mult"],
