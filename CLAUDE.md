@@ -436,6 +436,13 @@ Organised by *symptom-first* so you can grep for what you're seeing:
 - **Why**: `is_match_day()` is too lax — returns True for the entire calendar day. Page visit triggered `_ensure_auto_poll()`.
 - **Fix**: only auto-start when a match is **imminent** (within 30 min of kickoff or already live). Bail out after 4 empty polls, not 12.
 - **Prevention rule**: **never auto-poll based on calendar day alone**. Always require a kickoff-time check. Default bail-out for empty polls = 4 (20 min), not 12 (60 min).
+- **Arming (2026-09-05)**: `web/app.py::_live_window_open` is the ONE gate (T-5 to T+150 per
+  fixture, minus fixtures the loop already saw finished via `_live_stopped_at`), read by the
+  `/api/live` visit path, and by `_live_arm_loop`, a boot thread that checks it every 60s.
+  Before that the loop armed only at boot (`is_match_day()`, calendar day: 4 wasted polls at
+  04:00, then nothing) or on a page visit: the Roma–Atalanta pings of 2026-09-05 existed only
+  because a /live tab happened to be open. The ESPN fast tick (`refresh_live_fast`, free) runs
+  inside the same thread, so goal pings depend on this arming.
 
 ### Symptom: "Sofascore API blocks (HTTP 403) but I need fresh data"
 

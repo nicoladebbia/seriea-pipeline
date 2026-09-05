@@ -5385,21 +5385,9 @@ def api_live():
     # If auto-poll isn't running, only start it when a match is IMMINENT
     # (kicks off within next 30 min) or already live. Just being a "match day"
     # is too lax — burns ~24 credits/hour for hours before kickoff.
-    if not _auto_poll_active:
-        try:
-            from scripts.pipeline.scheduler import get_kickoff_times
-            from datetime import datetime as _dt, timezone as _tz
-            kickoffs = get_kickoff_times()
-            now = _dt.now(_tz.utc)
-            imminent = any(
-                -180 <= (k["kickoff_utc"] - now).total_seconds() / 60 <= 30
-                for k in kickoffs
-            )
-            if imminent:
-                _ensure_auto_poll()
-                log.info("Live poll auto-started — match imminent (within 30min) or live")
-        except Exception:
-            pass
+    if not _auto_poll_active and _live_window_open():
+        _ensure_auto_poll()
+        log.info("Live poll auto-started — match imminent (within 30min) or live")
     # Re-read file in case a poll just completed
     if data is None:
         data = _load_json(path, default=None)
@@ -5915,6 +5903,59 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
 
 
 
+LIVE_ARM_BEFORE_MIN = 5      # arm the live loop this long before a kickoff (the scores feed
+                             # reports a match live only after the whistle; earlier polls are empty)
+LIVE_ARM_AFTER_MIN = 150     # outer bound after kickoff (90' + HT + long stoppages); liveness
+                             # itself comes from the poll, the window only bounds the arming
+LIVE_OVER_MIN = 95           # a "no live matches" stop this long after a kickoff means that match is over
+LIVE_ARM_CHECK_SEC = 60
+_live_stopped_at = 0.0       # epoch of the last auto-poll stop for lack of live matches
+
+
+def _live_window_open(now=None, kickoffs=None, stopped_at=None) -> bool:
+    """True while some fixture kicks off within LIVE_ARM_BEFORE_MIN or kicked
+    off less than LIVE_ARM_AFTER_MIN ago AND the loop has not already stopped
+    for lack of live matches after that fixture's LIVE_OVER_MIN mark (a stop at
+    +100' says the match is over; re-arming would poll the tail of the window
+    for nothing, ~5 credits a minute). The one gate for arming the live loop:
+    page visits, the boot check and the arming thread all read it, so a quiet
+    Saturday with no tab open still gets its goal pings and a match day never
+    burns polls hours before the first kickoff."""
+    try:
+        if kickoffs is None:
+            from scripts.pipeline.scheduler import get_kickoff_times
+            kickoffs = get_kickoff_times()
+        now = now or datetime.now(timezone.utc)
+        stopped = _live_stopped_at if stopped_at is None else stopped_at
+        for k in kickoffs:
+            mins = (k["kickoff_utc"] - now).total_seconds() / 60
+            if not (-LIVE_ARM_AFTER_MIN <= mins <= LIVE_ARM_BEFORE_MIN):
+                continue
+            if stopped and stopped > k["kickoff_utc"].timestamp() + LIVE_OVER_MIN * 60:
+                continue  # the loop already saw this match finished
+            return True
+        return False
+    except Exception as e:  # noqa: BLE001 - a broken fixture file must not crash the arming thread
+        log.debug("live window check failed: %s", e)
+        return False
+
+
+def _live_arm_loop():
+    """Arms the auto-poll thread whenever the live window is open and it is not
+    running. Before 2026-09-05 the loop started only at boot (calendar match
+    day, then 4 empty polls and stop) or on a /api/live visit: tonight's pings
+    existed because a tab happened to be open."""
+    import time as _t
+    while True:
+        try:
+            if not _auto_poll_active and _live_window_open():
+                log.info("Live window open — arming the live poll")
+                _ensure_auto_poll()
+        except Exception as e:  # noqa: BLE001
+            log.debug("live arm check failed: %s", e)
+        _t.sleep(LIVE_ARM_CHECK_SEC)
+
+
 def _ensure_auto_poll():
     """Restart auto-poll if it's not running and there are live matches."""
     global _auto_poll_active, _auto_poll_thread
@@ -6032,6 +6073,8 @@ def _auto_poll_loop():
                 # Stop after 4 empty polls (20 min) instead of 12 (60 min) — saves ~16 credits per false start
                 if consecutive_no_live >= 4:
                     log.info("Auto-poll: stopping after 4 polls with no live matches")
+                    global _live_stopped_at
+                    _live_stopped_at = _time.time()
                     break
             else:
                 consecutive_no_live = 0
@@ -7874,24 +7917,16 @@ if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
     start_auto_settle()
     start_intel_maintenance()
 
-    # Auto-start live poll if there are matches today
-    def _maybe_start_live_poll():
-        """Start live polling if matches are happening today."""
+    # Arm the live poll whenever a kickoff is within reach — at boot and every
+    # LIVE_ARM_CHECK_SEC after, no page visit needed. (The old boot check used
+    # is_match_day(): a calendar-day test that started 4 wasted polls at 04:00
+    # and then never re-armed for the 20:45 match.)
+    def _live_arm_after_boot():
         import time as _t
         _t.sleep(10)  # Let app fully initialize
-        try:
-            # Check if there are matches today
-            from scripts.pipeline.scheduler import is_match_day
-            if is_match_day():
-                global _auto_poll_active, _auto_poll_thread
-                if not _auto_poll_active:
-                    log.info("Match day detected — auto-starting live poll")
-                    _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
-                    _auto_poll_thread.start()
-        except Exception as e:
-            log.debug("Auto-start live poll check failed: %s", e)
+        _live_arm_loop()
 
-    threading.Thread(target=_maybe_start_live_poll, daemon=True).start()
+    threading.Thread(target=_live_arm_after_boot, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
