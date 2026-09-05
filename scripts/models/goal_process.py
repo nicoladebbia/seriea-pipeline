@@ -260,12 +260,21 @@ def load_profile() -> dict:
 
 
 # =============================================================== simulate ==
-def _simulate_k(xg_h: float, xg_a: float, prof: dict, n: int, seed: int, k: float) -> dict:
+def _simulate_k(xg_h: float, xg_a: float, prof: dict, n: int, seed: int, k: float,
+                start_bin: int = 0, score: tuple[int, int] = (0, 0)) -> dict:
+    """Sample n paths from ``start_bin`` with ``score`` already on the board
+    (the goals already scored sit in bin 0 so every cumulative read — HT,
+    lead, final — stays consistent). start_bin=0 / (0, 0) is the pre-match
+    simulation."""
     rng = np.random.default_rng(seed)
     w = np.asarray(prof["hazard"], dtype=float)
     mh, ma = prof["state_mult"]["home"], prof["state_mult"]["away"]
     p = _empty_paths(n)
-    lead = np.zeros(n, dtype=np.int32)
+    sh0, sa0 = int(score[0]), int(score[1])
+    if sh0 or sa0:
+        p["goals_h"][:, 0] = sh0
+        p["goals_a"][:, 0] = sa0
+    lead = np.full(n, sh0 - sa0, dtype=np.int32)
     tot = prof.get("total")
     if tot and (xg_h + xg_a) > 0:
         xt = xg_h + xg_a
@@ -273,7 +282,7 @@ def _simulate_k(xg_h: float, xg_a: float, prof: dict, n: int, seed: int, k: floa
         xg_h, xg_a = lam_tot * xg_h / xt, lam_tot * xg_a / xt
     mh_arr = np.array([mh["trail"], mh["level"], mh["lead"]])
     ma_arr = np.array([ma["trail"], ma["level"], ma["lead"]])
-    for b in range(N_BINS):
+    for b in range(max(0, int(start_bin)), N_BINS):
         sh = np.sign(lead) + 1          # 0 trail, 1 level, 2 lead (home view)
         sa = 2 - sh                     # away view is the mirror
         lam_h = k * xg_h * w[b] * mh_arr[sh]
@@ -329,6 +338,72 @@ def simulate(xg_h: float, xg_a: float, prof: dict | None = None, n: int = 20000,
     p["calibration_target"] = p_over_2_5
     p["calibration_achieved"] = achieved
     return _finish_paths(p)
+
+
+def simulate_from_state(xg_h: float, xg_a: float, minute: int, score: tuple[int, int],
+                        prof: dict | None = None, k: float = 1.0, added_time: int = 0,
+                        n: int = 6000, seed: int = 0) -> dict:
+    """The match from HERE: paths that start at ``minute`` with ``score`` on the
+    board, the same hazard, score-state multipliers and calibration scalar k
+    the pre-match simulation used. Red cards are NOT modelled (no measured
+    multiplier yet) — callers say so on the row."""
+    prof = prof or load_profile()
+    b = bin_of(min(max(int(minute), 0), 90), added_time)
+    if int(minute) >= 90 and added_time == 0:
+        b = 90
+    p = _simulate_k(xg_h, xg_a, prof, n, seed, k, start_bin=b, score=score)
+    p["calibration_k"] = float(k)
+    p["start_bin"] = int(b)
+    return _finish_paths(p)
+
+
+def _poisson_1x2(lh: float, la: float, cap: int = 10) -> tuple[float, float, float]:
+    """Independent-Poisson P(home, draw, away) — only used to read a split off the market."""
+    from math import exp, factorial
+    ph = [exp(-lh) * lh ** i / factorial(i) for i in range(cap)]
+    pa = [exp(-la) * la ** j / factorial(j) for j in range(cap)]
+    h = d = a = 0.0
+    for i in range(cap):
+        for j in range(cap):
+            v = ph[i] * pa[j]
+            if i > j:
+                h += v
+            elif i == j:
+                d += v
+            else:
+                a += v
+    return h, d, a
+
+
+def market_profile(h2h_probs: dict, p_over_2_5: float | None, prof: dict | None = None,
+                   n: int = 6000, seed: int = 0) -> dict:
+    """Simulator inputs implied by the PRE-MATCH market: the xG split that
+    reproduces the de-vigged 1X2 under independent Poisson at the total the
+    O/U 2.5 price implies, then k solved so the simulated P(over 2.5) matches
+    that price. Used where no model xG is archived (the in-play backtest on
+    stored snapshots) — the question there is whether the simulator's
+    conditioning on score+minute beats the books' own in-play repricing given
+    the SAME pre-match information."""
+    prof = prof or load_profile()
+    ph, pa = float(h2h_probs["home"]), float(h2h_probs["away"])
+    # total from P(over 2.5) under Poisson: invert P(N >= 3) on a grid
+    from math import exp
+    target = p_over_2_5 if p_over_2_5 is not None else 0.52
+    lam_tot, best = 2.6, 9.0
+    for cand in np.arange(1.2, 4.6, 0.02):
+        pov = 1 - exp(-cand) * (1 + cand + cand ** 2 / 2)
+        if abs(pov - target) < best:
+            best, lam_tot = abs(pov - target), float(cand)
+    share, best = 0.5, 9.0
+    for cand in np.arange(0.15, 0.86, 0.01):
+        h, _, a = _poisson_1x2(lam_tot * cand, lam_tot * (1 - cand))
+        err = abs(h - ph) + abs(a - pa)
+        if err < best:
+            best, share = err, float(cand)
+    xg_h, xg_a = lam_tot * share, lam_tot * (1 - share)
+    sim = simulate(xg_h, xg_a, prof, n=n, seed=seed, p_over_2_5=p_over_2_5)
+    return {"xg_h": round(xg_h, 4), "xg_a": round(xg_a, 4), "k": sim["calibration_k"],
+            "saturated": sim["calibration_saturated"], "lam_tot": round(lam_tot, 3), "split_err": round(float(best), 4)}
 
 
 # ================================================================ markets ==

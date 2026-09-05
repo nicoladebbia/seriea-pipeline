@@ -1348,6 +1348,14 @@ def poll_once() -> Dict:
         status = _status_after_poll(prev_status, status)
         match_entry["status"] = status
         match_entry["snapshots"].append(snapshot)
+        if status in LIVE_STATUSES and snapshot.get("avg_odds"):
+            # In-play paper engine: fair price for this state, paper pick
+            # after a score change. Never money, never sinks the poll.
+            try:
+                from scripts.betting import inplay
+                inplay.on_snapshot(mk, match_entry, snapshot, notify_fn=inplay.send_pick_ping)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("in-play pricing failed for %s: %s", mk, exc)
 
         # ── Score-change goal alert (Odds-API-only fallback) ──
         # When Sofascore is blocked we don't know who scored, but we DO know
@@ -1595,6 +1603,13 @@ def poll_once() -> Dict:
             existing.setdefault("decided_at_ts", now.isoformat())
             existing["score_when_decided"] = [hs, aws]
             bet_updates.append((mk_resolved, selection, new_status))
+
+    # ── In-play paper picks: settle the ones whose match finished ──
+    try:
+        from scripts.betting import inplay
+        inplay.settle_for_matchday(matchday)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("in-play settlement failed: %s", exc)
 
     # ── Save ──
     save_matchday(matchday)

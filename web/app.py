@@ -5439,6 +5439,15 @@ def api_live():
         data["live_goal_pings"] = _goal_ping_mode()
     except Exception:  # noqa: BLE001
         data["live_goal_pings"] = "all"
+    try:
+        from scripts.betting.inplay import BACKTEST_PATH, ping_mode
+        data["inplay_pings"] = ping_mode()
+        bt = _load_json(BACKTEST_PATH, {}) or {}
+        data["inplay_backtest"] = {k: bt.get(k) for k in ("skill_vs_inplay_market_1x2", "passes_gate", "matches",
+                                                          "priced_snapshots", "generated_at")}
+        data["inplay_backtest"]["state_change"] = ((bt.get("picks") or {}).get("state_change") or {})
+    except Exception:  # noqa: BLE001
+        data["inplay_pings"] = "off"
     return jsonify(data)
 
 
@@ -6169,8 +6178,20 @@ def api_live_config():
                 goal_pings = mode
         except Exception as e:  # noqa: BLE001
             log.warning(f"goal ping mode not applied: {e}")
+    inplay_pings = None
+    if "inplay_pings" in data:
+        try:
+            from scripts.betting.inplay import PING_MODES, PING_STATE_KEY
+            from scripts.pipeline.pipeline_state import load_state, save_state
+            mode = str(data["inplay_pings"]).lower()
+            if mode in PING_MODES:
+                st = load_state(); st[PING_STATE_KEY] = mode; save_state(st)
+                inplay_pings = mode
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"in-play ping mode not applied: {e}")
     log.info(f"Live poll interval set to {interval}s (fast tick {_live_fast_interval}s)")
-    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval, "goal_pings": goal_pings})
+    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval, "goal_pings": goal_pings,
+                    "inplay_pings": inplay_pings})
 
 
 # ---------------------------------------------------------------------------

@@ -130,6 +130,39 @@ Nothing on the row drove a bet.
 - Tests: `tests/test_dashboard_ou_signal.py` (every verdict tier, line choice, thin
   markets, gating, Pinnacle fallback, null lists in the slip).
 
+## In-play paper engine (built 2026-09-05) — measured first, money never
+
+Nicola's ask: "Atalanta went up, put €10 on Roma winning." Measured on the Roma–Atalanta
+price path before building: the Odds API in-play feed lags the pitch by minutes (the first
+snapshot after a goal already carries the repriced line), Pinnacle does not reprice in-play
+through it, the in-play overround is ~7% vs 5% pre-match, and there is no execution API. So
+`scripts/betting/inplay.py` is a PAPER engine: `goal_process.simulate_from_state` prices the
+match from the score + minute on the board (baseline = the pre-match MARKET via
+`market_profile`, deliberately not model xG, so the question is whether the conditioning
+beats the books' repricing given the same information), `live_monitor.poll_once` prices
+every live snapshot (`snapshot.fair` / `fair_totals` / `best_edge`), takes one paper pick per
+selection per match after a score change (1X2 only; `EDGE_MIN` 5%, `FAIR_MIN` 10%,
+`MAX_MINUTE` 85; edges above the journal's 12% cap are counted, never journaled) into
+`data/betting/inplay_journal.json`, and settles at the whistle with CLV against the NEXT
+snapshot — the price a human could actually have taken.
+
+- **Read the verdict from `data/models/inplay/backtest.json`, never from a doc.** First run
+  (38 matchdays, 57 matches with a baseline, 1,173 priced snapshots): skill vs the in-play
+  market's own 1X2 probabilities −0.001 overall (+0.018 in 0–30', −0.008 in 61–85', −0.20
+  after 85'), state-change picks n=41 at +2.4% ROI on the price SEEN and −2.4% at the next
+  snapshot's price. **Fails the gate.** Hence `inplay_pings` defaults OFF (the /live "In-play"
+  select turns the Telegram ping on); the paper record keeps growing regardless and the
+  Roma case itself was negative value (fair P(Roma) from 0-1 at 81' = 3.4% vs market 10.0).
+- **The totals lines in a snapshot are NOT live prices** — they are the pre-match lines the
+  feed carries along (the first backtest "found" Over 0.5 @ 2.32 in the 84th minute at 1-0).
+  Totals fair prices are computed for the card and never picked. Red cards are not modelled
+  (no measured multiplier); every row says so.
+- 22 stored matches have no usable baseline (no pre-match line and the first priced snapshot
+  is past 10' or not 0-0). The pre_match_odds fix of the same day removes that going forward.
+- Re-run after more matchdays: `python3 -m scripts.betting.inplay --backtest`. Promotion to
+  real stakes goes through the same bar as every other paper market (`market_promotion.py`),
+  never by hand. Tests: `tests/test_inplay.py`.
+
 ## Goal-process simulator (settled 2026-09-05) — what it is and is not
 
 `scripts/models/goal_process.py` samples minute-resolved goal paths (92 bins, league hazard,

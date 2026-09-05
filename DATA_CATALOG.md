@@ -5874,7 +5874,11 @@ These dirs contain many files (often one per match, day, or experiment). Summari
   so no goal ping re-fires), `pre_match_odds` (odds_full row by NORMALISED key, else the
   last `data/odds_snapshots/odds_*.json` line before kickoff, `source: closing_snapshot`
   — the raw-key lookup never matched before 2026-09-05, so this was {} on every match),
-  and `live_fetch_error` (present only when NO source answered; the
+  `inplay_baseline` (simulator inputs implied by the pre-match market), `inplay_picks`
+  (paper picks after a score change, status + closing price), and on every priced live
+  snapshot `fair` / `fair_totals` / `best_edge` (written by `scripts/betting/inplay.py`;
+  paper journal `data/betting/inplay_journal.json`, verdict `data/models/inplay/backtest.json`
+  — read it, never quote it), and `live_fetch_error` (present only when NO source answered; the
   previous cycle's events/stats are kept, never blanked). Writer:
   `scripts/data/live_monitor.poll_once` via `live_sofascore.fetch_live_data_for_matches`
   (Sofascore first, `live_espn` fallback, 10-min 403 breaker). A field is overwritten only

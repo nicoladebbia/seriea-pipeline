@@ -121,6 +121,7 @@
   .live-event__text { flex: 1; }
 
   .live-match__odds { position: relative; }
+  .live-match__odd-fair { font-size: 10px; margin-top: 2px; }
   .live-match__odds-note { position: absolute; right: 0; bottom: -14px; font-size: 10px; white-space: nowrap; }
 
   /* Players (fast ESPN roster) */
@@ -209,6 +210,11 @@
       <select id="lp-goal-pings" onchange="lpSetGoalPings(this.value)" class="select" style="width:auto;">
         <option value="all" selected>All goals</option>
         <option value="bets">Bet games</option>
+      </select>
+      <label class="text-small text-tertiary" for="lp-inplay-pings" title="Telegram ping when the in-play PAPER engine takes a pick after a goal. Off by default: the backtest on stored matchdays fails the skill gate">In-play</label>
+      <select id="lp-inplay-pings" onchange="lpSetInplayPings(this.value)" class="select" style="width:auto;">
+        <option value="off" selected>Paper, quiet</option>
+        <option value="on">Paper + ping</option>
       </select>
       <button id="lp-auto-btn" onclick="lpToggleAuto()" class="btn btn--sm btn--secondary">Auto: OFF</button>
       <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:80px;" title="Time to the next Odds API poll — the live tick is the Live select"></span>
@@ -339,6 +345,20 @@ function lpRenderEvent(ev) {
 // Per-player live lines: who has done something (goal, assist, shot, card,
 // save) — sorted by involvement, starters and subs alike. Full roster is on
 // the match detail page; the card is for the glance.
+// In-play PAPER picks: what the engine would have backed after each goal.
+// Never money. The backtest verdict sits in the header tooltip.
+function lpRenderInplayPicks(picks, base) {
+  if (!picks || !picks.length) return '';
+  const rows = picks.map(p => {
+    const st = p.status === 'won' ? 'text-green' : p.status === 'lost' ? 'text-red' : 'text-tertiary';
+    const sc = p.score || [0, 0];
+    return `<div class="live-player"><span class="live-player__name">${p.selection} @ ${(p.odds || 0).toFixed(2)} <span class="text-tertiary" style="font-size:10px">${p.minute}' at ${sc[0]}-${sc[1]}</span></span><span class="live-player__bits ${st}">fair ${Math.round((p.fair || 0) * 100)}% vs ${Math.round((p.market_prob || 0) * 100)}% · +${(p.edge_pct || 0).toFixed(1)}%${p.over_cap ? ' · over cap' : ''} · ${p.status || 'pending'}${p.closing_odds ? ` · next ${p.closing_odds.toFixed(2)}` : ''}</span></div>`;
+  }).join('');
+  const bt = _lpInplayBacktest;
+  const verdict = bt && bt.skill_vs_inplay_market_1x2 != null ? `backtest skill vs market ${(bt.skill_vs_inplay_market_1x2 * 100).toFixed(1)}pp on ${bt.priced_snapshots} snapshots · ${bt.passes_gate ? 'passes' : 'FAILS'} gate` : '';
+  return `<div class="live-players"><div class="text-label mb-3">In-play paper picks <span class="text-tertiary" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0" title="${verdict}">paper only · ${verdict || 'no backtest yet'}</span></div>${rows}</div>`;
+}
+
 function lpRenderPlayers(ps, home, away) {
   if (!ps || (!(ps.home || []).length && !(ps.away || []).length)) return '';
   const line = p => {
@@ -365,8 +385,9 @@ function lpRenderPlayers(ps, home, away) {
   return `<div class="live-players"><div class="text-label mb-3">Players <span class="text-tertiary" style="font-size:10px;font-weight:400;text-transform:none;letter-spacing:0">via ESPN · involved only</span></div><div class="live-detail-grid">${h || '<div></div>'}${a || '<div></div>'}</div></div>`;
 }
 
-function lpRenderOddCell(label, cur, pre) {
+function lpRenderOddCell(label, cur, pre, fair) {
   let shift = '';
+  const fairHtml = (fair && cur) ? `<div class="live-match__odd-fair ${(1/fair) < cur ? 'text-green' : 'text-tertiary'}" title="Simulator fair price for this score and minute (paper engine)">fair ${(1/fair).toFixed(2)}</div>` : '';
   if (pre && cur) {
     const diff = (1/cur*100) - (1/pre*100);
     if (Math.abs(diff) > 0.5) {
@@ -378,6 +399,7 @@ function lpRenderOddCell(label, cur, pre) {
     <div class="live-match__odd-val">${cur ? cur.toFixed(2) : '-'}</div>
     ${pre ? `<div class="live-match__odd-prev">was ${pre.toFixed(2)}</div>` : ''}
     ${shift}
+    ${fairHtml}
   </div>`;
 }
 
@@ -417,6 +439,7 @@ function lpRenderMatch(mk, md, bets) {
   // No in-play price at all: the pre-match line is the only number we have.
   const oddsShown = oddsSnap ? avg : (pre.home ? { home: pre.home, draw: pre.draw, away: pre.away } : {});
   const preShown = oddsSnap ? pre : {};
+  const fairShown = (oddsSnap && oddsSnap.fair && (isLive || isCompleted)) ? oddsSnap.fair : {};
 
   const events = md.live_events || [];
   const stats = md.live_stats || {};
@@ -493,9 +516,9 @@ function lpRenderMatch(mk, md, bets) {
         <div class="live-match__team live-match__team--away">${md.away_team || mk.split(' vs ')[1]}</div>
       </div>
       <div class="live-match__odds">
-        ${lpRenderOddCell('H', oddsShown.home, preShown.home)}
-        ${lpRenderOddCell('D', oddsShown.draw, preShown.draw)}
-        ${lpRenderOddCell('A', oddsShown.away, preShown.away)}
+        ${lpRenderOddCell('H', oddsShown.home, preShown.home, fairShown.home)}
+        ${lpRenderOddCell('D', oddsShown.draw, preShown.draw, fairShown.draw)}
+        ${lpRenderOddCell('A', oddsShown.away, preShown.away, fairShown.away)}
         ${oddsNote ? `<div class="live-match__odds-note text-tertiary">${oddsNote}</div>` : ''}
       </div>
     </div>
@@ -510,6 +533,7 @@ function lpRenderMatch(mk, md, bets) {
           <div class="live-events">${eventsHtml}</div>
         </div>
       </div>
+      ${lpRenderInplayPicks(md.inplay_picks, md.inplay_baseline)}
       ${md.live_player_source === 'espn' ? lpRenderPlayers(md.live_player_stats, md.home_team || mk.split(' vs ')[0], md.away_team || mk.split(' vs ')[1]) : ''}
       ${betsHtml}
     </div>
@@ -575,6 +599,9 @@ async function lpLoad() {
     if (data.live_fast_interval) lpReflectInterval(data.live_fast_interval, 'lp-fast-interval');
     const gp = document.getElementById('lp-goal-pings');
     if (gp && data.live_goal_pings && document.activeElement !== gp) gp.value = data.live_goal_pings;
+    const ip = document.getElementById('lp-inplay-pings');
+    if (ip && data.inplay_pings && document.activeElement !== ip) ip.value = data.inplay_pings;
+    _lpInplayBacktest = data.inplay_backtest || null;
     _lpNextAt = data.auto_poll_next_at || 0;
     lpUpdateAutoBtn();
 
@@ -667,6 +694,13 @@ function lpReflectInterval(secs, id = 'lp-interval') {
     sel.appendChild(o);
   }
   sel.value = val;
+}
+
+let _lpInplayBacktest = null;
+async function lpSetInplayPings(mode) {
+  try {
+    await fetch('/api/live/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({inplay_pings: mode})});
+  } catch(e) { console.error(e); }
 }
 
 async function lpSetGoalPings(mode) {
