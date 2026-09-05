@@ -132,6 +132,27 @@ def test_shrink_weight_is_fitted_not_set():
     assert all(abs(h["edge"] - r["edge"] / 2) < 1e-3 for h, r in zip(half, raw))
 
 
+def test_gate_needs_the_pick_record_as_well_as_skill():
+    good_rec = {"picks": {"state_change": {"next_odds": {"n": 60, "roi_pct": 4.0, "z": 1.3}}}}
+    assert inplay.gate_verdict({"skill_vs_inplay_market_1x2": 0.03, "priced_snapshots": 500, **good_rec})["passes"] is True
+    v = inplay.gate_verdict({"skill_vs_inplay_market_1x2": 0.03, "priced_snapshots": 500,
+                             "picks": {"state_change": {"next_odds": {"n": 8, "roi_pct": -42.5, "z": -2.1}}}})
+    assert v["skill_leg"]["passes"] is True and v["record_leg"]["passes"] is False and v["passes"] is False
+    v = inplay.gate_verdict({"skill_vs_inplay_market_1x2": 0.01, "priced_snapshots": 500, **good_rec})
+    assert v["skill_leg"]["passes"] is False and v["passes"] is False
+    assert inplay.gate_verdict({"skill_vs_inplay_market_1x2": None, "priced_snapshots": 0})["passes"] is False
+
+
+def test_devig_loads_the_margin_on_the_longshots_not_the_favourite():
+    p = inplay.devig({"home": 1.01, "draw": 34.0, "away": 101.0})
+    assert abs(sum(p.values()) - 1.0) < 1e-9
+    assert p["home"] > 0.985                      # proportional gave 0.962 and a fake 7.6% edge on a 3-0 lead
+    even = inplay.devig({"home": 2.0, "draw": 3.4, "away": 4.0})
+    assert abs(sum(even.values()) - 1.0) < 1e-9 and 0.45 < even["home"] < 0.50
+    assert inplay.devig({"over": 1.9, "under": 1.9}) == {"over": 0.5, "under": 0.5}
+    assert inplay.devig({"home": 1.0, "draw": None}) == {}
+
+
 # ------------------------------------------------------------- league scope
 
 def test_only_the_league_with_a_profile_is_priced(journal, prof):

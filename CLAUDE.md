@@ -167,6 +167,13 @@ with CLV against the NEXT snapshot — the price a human could actually have tak
   Carlo noise on a coin-flip (`mc_se(0.5, N_SIMS_LIVE)` = 0.0065). First measurement, 34
   Serie A matches: drift ≤ 0.005 through 10', 0.007 at 11' → window 10 (the old literal,
   now re-derived every backtest; `BASELINE_WINDOW_SEED` is only the no-file fallback).
+- **De-vig is the power method, not proportional (2026-09-05).** Proportional de-vig spreads
+  the margin evenly, so a 1.01 favourite read as a 92% market probability and the engine
+  claimed +7.6% on a 3-0 lead (three such picks in the sample, all "won" for nothing, hit
+  rate 0.77 → 0.58 without them; the Monte Carlo floor is zero at p = 0.998 and cannot catch
+  it). `devig` now solves p_i = q_i^k with Σp = 1, which loads the margin on the longshots.
+  On the same 44 matches the skill leg went 0.018 → 0.024 and the state-change picks went
+  17 at +0.4% (next price) → 8 at −42%: the "edge" at extreme prices was the de-vig.
 - **Only Serie A is priced (`PROFILE_LEAGUE`).** EPL has no fitted goal-process profile; until
   2026-09-05 live entries carried no `league` and 33 EPL matches were scored with the Serie A
   hazard, red-card multipliers and calibration (skill 0.008 mixed → 0.018 Serie A-only on 44
@@ -174,8 +181,12 @@ with CLV against the NEXT snapshot — the price a human could actually have tak
   `infer_league`); an EPL snapshot gets `inplay_note` and no fair price.
 
 - **Read the verdict from `data/models/inplay/backtest.json`, never from a doc.** The gate is
-  skill vs the in-play market's own 1X2 probabilities (≥ 0.02 on ≥ 200 snapshots) AND paper
-  ROI at the NEXT snapshot's price. The first two runs of 2026-09-05 FAILED it (skill went
+  skill vs the in-play market's own 1X2 probabilities (≥ 0.02 on ≥ 200 snapshots) AND the
+  state-change paper picks at the NEXT snapshot's price meeting `PROMOTION_BAR` (≥ 50
+  settled, ROI > 0, z ≥ 1) — `gate.skill_leg` / `gate.record_leg` in the file, both required
+  (`gate_verdict`). Until 2026-09-05 evening the code checked skill only, and the day the
+  de-vig was fixed the skill leg crossed 0.02 while the record was 8 picks at −42% — the
+  file would have said "passes". The first two runs of 2026-09-05 FAILED it (skill went
   −0.001 → +0.008 once red cards and the closing-line baseline landed; still short), so
   `inplay_pings` defaults OFF (the /live "In-play" select turns the Telegram ping on) and
   the paper record keeps growing regardless. The Roma case itself was negative value: fair

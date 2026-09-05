@@ -88,10 +88,28 @@ KEY_1X2 = {v: k for k, v in SEL_1X2.items()}
 
 # ------------------------------------------------------------------ helpers
 def devig(prices: dict) -> dict:
-    """Proportional de-vig of a {selection: decimal odds} book."""
+    """Power de-vig of a {selection: decimal odds} book: p_i = q_i^k with the
+    exponent k solved so the p_i sum to 1. Proportional de-vig (q_i / Σq)
+    spreads the margin evenly and so understates a heavy favourite — a 1.01
+    price became a 92% "market probability" and the engine claimed a 7.6%
+    edge on a 3-0 lead (2026-09-05, three such picks in the sample). The
+    power method loads the margin onto the longshots, where books put it."""
     inv = {k: 1.0 / float(v) for k, v in prices.items() if v and float(v) > 1.0}
-    tot = sum(inv.values())
-    return {k: v / tot for k, v in inv.items()} if tot > 0 else {}
+    if not inv:
+        return {}
+    if len(inv) == 1:
+        return {k: 1.0 for k in inv}
+    lo, hi = 0.5, 4.0
+    for _ in range(60):
+        k = (lo + hi) / 2
+        if sum(q ** k for q in inv.values()) > 1.0:
+            lo = k
+        else:
+            hi = k
+    k = (lo + hi) / 2
+    out = {sel: q ** k for sel, q in inv.items()}
+    tot = sum(out.values())
+    return {sel: v / tot for sel, v in out.items()}
 
 
 def _priced(snaps: list) -> list:
@@ -573,14 +591,39 @@ def _summarise(rows: list) -> dict:
         return out
     for basis in ("odds", "next_odds"):
         usable = [r for r in rows if r.get(basis)]
-        pnl = sum((r[basis] - 1) if r["status"] == "won" else (-1 if r["status"] == "lost" else 0) for r in usable)
+        rets = [(r[basis] - 1) if r["status"] == "won" else (-1.0 if r["status"] == "lost" else 0.0) for r in usable]
+        pnl = sum(rets)
+        sd = float(np.std(rets, ddof=1)) if len(rets) > 1 else 0.0
         out[basis] = {"n": len(usable), "roi_pct": round(100 * pnl / len(usable), 1) if usable else None,
-                      "hit_rate": round(sum(r["status"] == "won" for r in usable) / len(usable), 3) if usable else None}
+                      "hit_rate": round(sum(r["status"] == "won" for r in usable) / len(usable), 3) if usable else None,
+                      "z": round(float(np.mean(rets)) / (sd / np.sqrt(len(rets))), 2) if len(rets) > 1 and sd > 0 else None}
     clv = [(1 / r["next_odds"] - 1 / r["odds"]) * 100 for r in rows if r.get("next_odds")]
     out["clv_vs_next_snapshot_pct"] = round(float(np.mean(clv)), 2) if clv else None
     out["avg_edge_pct"] = round(100 * float(np.mean([r["edge"] for r in rows])), 2)
     out["by_market"] = {m: sum(r["market"] == m for r in rows) for m in ("inplay_1x2", "inplay_ou")}
     return out
+
+
+def gate_verdict(result: dict) -> dict:
+    """Two legs, both required. Skill: fair beats the in-play market's own
+    probabilities by ≥ SKILL_GATE on ≥ N_GATE snapshots. Record: the
+    state-change picks, graded at the NEXT snapshot's price (the one a human
+    could take), meet the same PROMOTION_BAR every paper market must meet
+    (≥ 50 settled, ROI > 0, z ≥ 1). The first leg says the model knows
+    something; only the second says it is bettable through this feed."""
+    from scripts.betting.market_promotion import PROMOTION_BAR
+    skill = result.get("skill_vs_inplay_market_1x2")
+    n = result.get("priced_snapshots") or 0
+    skill_ok = skill is not None and skill >= gp.SKILL_GATE and n >= gp.N_GATE
+    rec = ((result.get("picks") or {}).get("state_change") or {}).get("next_odds") or {}
+    rec_n, roi, z = rec.get("n") or 0, rec.get("roi_pct"), rec.get("z")
+    record_ok = (rec_n >= PROMOTION_BAR["min_settled"] and roi is not None and roi > PROMOTION_BAR["min_roi_pct"]
+                 and z is not None and z >= PROMOTION_BAR["min_z"])
+    return {"skill_leg": {"passes": bool(skill_ok), "skill": skill, "n": n},
+            "record_leg": {"passes": bool(record_ok), "n": rec_n, "roi_pct": roi, "z": z,
+                           "bar": {k: PROMOTION_BAR[k] for k in ("min_settled", "min_roi_pct", "min_z")},
+                           "basis": "state_change picks at the next snapshot's price"},
+            "passes": bool(skill_ok and record_ok)}
 
 
 def _skill(f: list, m: list) -> float | None:
@@ -726,8 +769,8 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
                  "pick_markets": list(PICK_MARKETS), "totals_feed": "pre-match lines carried in-play — never picked"},
         "gate": {"skill_min": gp.SKILL_GATE, "n_min": gp.N_GATE},
     }
-    result["passes_gate"] = bool(result["skill_vs_inplay_market_1x2"] is not None
-                                 and result["skill_vs_inplay_market_1x2"] >= gp.SKILL_GATE and n_snaps >= gp.N_GATE)
+    result["gate"].update(gate_verdict(result))
+    result["passes_gate"] = result["gate"]["passes"]
     result["sample_picks"] = {rule: rows[:40] for rule, rows in picks.items()}
     if write and baseline == "market":
         # the market variant is the gate; the model variant rides along as a sub-report
