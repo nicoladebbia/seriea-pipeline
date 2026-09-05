@@ -166,7 +166,9 @@ def test_health_flags_a_due_match_without_a_sheet_with_the_chain_reason(tmp_path
     from datetime import UTC, datetime
     chain = {"confirmed": [], "reason": "Sofascore: HTTP 403 (challenge/ban) · ESPN: XI non ancora pubblicata"}
     hc = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z", chain=chain)
-    now = datetime(2026, 9, 6, 15, 20, tzinfo=UTC)         # T-40: due
+    now = datetime(2026, 9, 6, 15, 40, tzinfo=UTC)         # T-20: due (T-40 is not: sheets drop ~T-60..T-50, retries run)
+    early = hc.check_lineup_sources(now=datetime(2026, 9, 6, 15, 20, tzinfo=UTC), probe=lambda: 200)
+    assert early["status"] == "OK" and early["missing_sheets"] == []
     out = hc.check_lineup_sources(now=now, probe=lambda: 200)
     assert out["status"] == "CRITICAL" and out["missing_sheets"] == ["Bologna vs Sassuolo"]
     assert "ESPN: XI non ancora pubblicata" in out["reason"]
@@ -181,7 +183,7 @@ def test_health_flags_a_due_match_without_a_sheet_with_the_chain_reason(tmp_path
 def test_health_names_a_fetcher_that_never_ran(tmp_path, monkeypatch):
     from datetime import UTC, datetime
     hc = _health_env(tmp_path, monkeypatch, "2026-09-06T16:00:00Z")   # no chain file at all
-    out = hc.check_lineup_sources(now=datetime(2026, 9, 6, 15, 30, tzinfo=UTC), probe=lambda: 200)
+    out = hc.check_lineup_sources(now=datetime(2026, 9, 6, 15, 45, tzinfo=UTC), probe=lambda: 200)
     assert out["status"] == "CRITICAL" and "nessun run del fetcher" in out["reason"]
 
 

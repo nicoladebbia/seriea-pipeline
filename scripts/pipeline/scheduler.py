@@ -455,6 +455,8 @@ def _save_pre_kickoff_state(state: Dict):
 # kind="odds"          → dispatched via _dispatch_odds_stage (odds_fetcher.fetch_tagged_snapshot)
 # kind="player_props"  → dispatched via _dispatch_player_props_stage (requires confirmed lineups)
 # kind missing         → existing in-code dispatch (lineup_fetch / prediction_update / settlement_check)
+LINEUP_ALERT_MIN = 25   # sheets drop ~T-60..T-50; only a match still without one at
+                        # T-25 (after two retries) is worth a Telegram line
 MATCH_CLOCK_STAGES = [
     # --- Odds snapshots: bulk per league, cheap (1 credit per market, eu region) ---
     # `priority` field gates dispatch through `check_budget_pacing` so spend self-balances
@@ -1075,6 +1077,7 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                         "Fanta scorer props failed (betting unaffected): %s", e)
 
                 # Mark matches WITHOUT confirmed lineups for retry
+                _ko_by_key = {m["match"]: m["kickoff_utc"] for m in horizon_matches}
                 for mk in actions_needed["lineup_fetch"]:
                     match_state = processed.get(mk, {})
                     stage_data = match_state.get("stages", {}).get("lineup_fetch", {})
@@ -1083,7 +1086,8 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
                         log.info("Lineup NOT confirmed for %s — will retry next cycle", mk)
                         # Once per match: say WHY, from the fetcher's chain report,
                         # so "XI prob." on /picks is a known state, not a mystery
-                        if not stage_data.get("unavailable_notified"):
+                        _mins = ((_ko_by_key[mk] - now).total_seconds() / 60) if mk in _ko_by_key else 0
+                        if not stage_data.get("unavailable_notified") and _mins <= LINEUP_ALERT_MIN:
                             try:
                                 import json as _jj
 

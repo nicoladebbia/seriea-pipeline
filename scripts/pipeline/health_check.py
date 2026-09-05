@@ -1043,7 +1043,9 @@ def check_calibration_drift() -> Dict:
 
 
 LINEUP_PROBE_HOURS = 30.0      # a matchday is "near" when a Serie A kickoff is inside this
-LINEUP_DUE_MIN = 45.0          # a sheet is DUE when kickoff is this close (sources publish ~T-60)
+LINEUP_DUE_MIN = 25.0          # a sheet is DUE when kickoff is this close: sources publish
+                               # ~T-60..T-50 and the stage retries every 15 min, so T-45 was
+                               # a false alarm on every match
 
 
 def _upcoming_serie_a_kickoffs(now: datetime) -> List[Tuple[str, datetime]]:
