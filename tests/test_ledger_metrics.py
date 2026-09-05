@@ -76,6 +76,22 @@ def test_roi_is_on_stake_and_growth_is_named_separately(no_external_alerts):
     assert "roi" not in {k.lower() for k in m["bankroll"]}  # growth is never called ROI
 
 
+def test_roi_carries_its_standard_error(no_external_alerts):
+    """ROI is an estimate: the payload must say how wide it is (delta-method SE, in pp).
+
+    Two flat-stake bets at 2.0, one won one lost: ROI 0, per-bet residuals +10 / -10
+    on 20 staked -> SE = sqrt(100 + 100) / 20 = 70.7pp. Two identical pushes -> 0.
+    """
+    j = _journal([_bet(1, "won", stake=10, odds=2.0), _bet(2, "lost", stake=10)])
+    m = L.get_metrics(journal=j, now=NOW)
+    assert m["roi"]["all_time_se_pp"] == 70.7
+    j = _journal([_bet(1, "push", stake=10), _bet(2, "push", stake=10)])
+    m = L.get_metrics(journal=j, now=NOW)
+    assert m["roi"]["all_time_se_pp"] == 0.0
+    m = L.get_metrics(journal=_journal([]), now=NOW)
+    assert m["roi"]["all_time_se_pp"] == 0.0
+
+
 def test_equity_curve_peak_lowest_and_both_drawdowns(no_external_alerts):
     # 1000 -> 1100 -> 1000 -> 900 -> 1050 : peak 1100, lowest 900,
     # max drawdown (1100-900)/1100 = 18.18, current (1100-1050)/1100 = 4.55

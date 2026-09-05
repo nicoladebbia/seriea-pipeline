@@ -418,9 +418,10 @@ async function loadSidebarStats() {
     }
     if (roiEl) {
       // Use pre-computed ROI from backend (sourced from history.json)
-      const roi = b.roi != null ? b.roi : 0;
-      roiEl.textContent = signedPct(roi);
-      roiEl.style.color = roi >= 0 ? 'var(--green)' : 'var(--red)';
+      // Integer: ROI is an estimate (±10pp at n≈185), a decimal implies false precision
+      const roi = Math.round(b.roi != null ? b.roi : 0);
+      roiEl.textContent = (roi > 0 ? '+' : '') + roi + '%';
+      roiEl.style.color = 'var(--text-tertiary)';
     }
   } catch {}
 }

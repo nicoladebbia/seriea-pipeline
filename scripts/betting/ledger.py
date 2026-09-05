@@ -472,8 +472,16 @@ def get_metrics(
     window = settled[-rolling_window:] if rolling_window > 0 else settled
     w_staked = sum(float(b.get("stake") or 0) for b in window)
     w_profit = sum(float(b.get("profit") or 0) for b in window)
+    # Delta-method SE of the stake-weighted ROI, in pp: the estimate's width, so no
+    # surface renders +1.05% as if it were a measurement (bootstrap on 185 bets gave
+    # ±10.5pp, 2026-09-04). residual_i = profit_i - roi * stake_i.
+    roi_frac = profit / staked if staked else 0.0
+    resid_sq = sum((float(b.get("profit") or 0) - roi_frac * float(b.get("stake") or 0)) ** 2
+                   for b in settled)
+    roi_se_pp = round(resid_sq ** 0.5 / staked * 100, 1) if staked else 0.0
     roi = {
         "all_time_pct": round(profit / staked * 100, 2) if staked else 0.0,
+        "all_time_se_pp": roi_se_pp,
         "all_time_n": len(settled),
         "all_time_staked": round(staked, 2),
         "all_time_profit": round(profit, 2),

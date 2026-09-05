@@ -224,7 +224,7 @@ function renderOUCell(ou) {
   if (!ou || ou.line == null) return '<td class="ou-cell text-tertiary">--</td>';
   const raw = ou.raw_edge_pct;
   const rawCls = raw == null ? 'text-tertiary' : raw >= 5 ? 'text-green' : raw <= -5 ? 'text-red' : 'text-tertiary';
-  const rawTxt = raw == null ? '' : `<span class="ou-cell__raw ${rawCls}">${raw > 0 ? '+' : ''}${raw.toFixed(1)}</span>`;
+  const rawTxt = raw == null ? '' : `<span class="ou-cell__raw ${rawCls}">${raw > 0 ? '+' : ''}${Math.round(raw)}</span>`;
   const title = `Over ${ou.line}: model ${_pct(ou.model_over)} vs market ${_pct(ou.market_over)} (Pinnacle de-vigged, else consensus). Raw gap, before shrinkage/situational gates.` + (ou.expected_total_goals ? ` xTotal ${ou.expected_total_goals.toFixed(2)}` : '');
   return `<td class="ou-cell" title="${title}">
     <span class="ou-cell__line">O${ou.line}</span><span class="text-primary">${_pct(ou.model_over)}</span>
@@ -355,12 +355,12 @@ async function loadQuickStats(){try{const data=await apiFetch('/api/betting' + _
   if(el('quick-vb-count')) el('quick-vb-count').textContent = vbCount + ' qualifying bet' + (vbCount !== 1 ? 's' : '');
   // Bankroll + ROI in stats bar
   const bal=b.current_balance||1000;
-  if(el('stat-bankroll')){el('stat-bankroll').textContent=eurFmt(bal);const t=el('stat-bankroll-trend');if(t){const d=b.net_profit||0;t.className='stat-card__trend '+(d>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=(d>=0?'+':'')+eurFmt(d);}}
-  if(el('stat-winrate')){el('stat-winrate').textContent=(b.win_rate??0)+'%';const t=el('stat-winrate-trend');if(t){t.textContent=`${b.wins||0}W / ${b.losses||0}L`+(b.pushes?` / ${b.pushes}P`:'');t.className='stat-card__trend stat-card__trend--neutral';}}
-  if(el('stat-roi')){const roi=b.roi??0;el('stat-roi').textContent=signedPct(roi);const t=el('stat-roi-trend');if(t){t.className='stat-card__trend '+(roi>=0?'stat-card__trend--up':'stat-card__trend--down');t.textContent=b.total_stake>0?`on ${eurFmt(b.total_stake)} staked`:`${b.settled_bets||0} settled`;}}
+  if(el('stat-bankroll')){el('stat-bankroll').textContent=eurFmt(bal);const t=el('stat-bankroll-trend');if(t){const d=b.net_profit||0;t.className='stat-card__trend stat-card__trend--neutral';t.textContent=(d>=0?'+':'')+eurFmt(d)+' since start';}}
+  if(el('stat-winrate')){el('stat-winrate').textContent=Math.round(b.win_rate??0)+'%';const t=el('stat-winrate-trend');if(t){t.textContent=`${b.wins||0}W / ${b.losses||0}L`+(b.pushes?` / ${b.pushes}P`:'');t.className='stat-card__trend stat-card__trend--neutral';}}
+  if(el('stat-roi')){const roi=Math.round(b.roi??0);const se=b.roi_se_pp;el('stat-roi').textContent=(roi>0?'+':'')+roi+'%'+(se!=null?` ±${Math.round(se)}`:'');const t=el('stat-roi-trend');if(t){t.className='stat-card__trend stat-card__trend--neutral';t.textContent=`n=${b.settled_bets||0}`+(b.total_stake>0?` · ${eurFmt(b.total_stake)} staked`:'');}}
   // Quick stats panel
   if(el('quick-bankroll')) el('quick-bankroll').textContent = eurFmt(bal);
-  if(el('quick-roi')){const roi=b.roi??0;el('quick-roi').textContent = (roi>=0?'+':'')+roi+'% ROI';el('quick-roi').style.color = roi>=0?'var(--green)':'var(--red)';}
+  if(el('quick-roi')){const roi=Math.round(b.roi??0);el('quick-roi').textContent = (roi>0?'+':'')+roi+'% ROI';el('quick-roi').style.color = 'var(--text-tertiary)';}
 }catch{}}
 
 

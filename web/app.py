@@ -746,6 +746,7 @@ def _get_betting_stats(league_filter: str = None):
         "total_profit": roi["all_time_profit"],
         "win_rate": rec["win_rate_decisive"],
         "roi": roi["all_time_pct"],
+        "roi_se_pp": roi.get("all_time_se_pp", 0.0),
     }
 
 
@@ -4458,6 +4459,7 @@ def api_betting():
         "pushes": stats["pushes"],
         "win_rate": stats["win_rate"],
         "roi": stats["roi"],
+        "roi_se_pp": stats.get("roi_se_pp", 0.0),
         "total_stake": stats["total_stake"],
         "total_profit": stats["total_profit"],
         "pending_bets": _mb.get("pending_n", 0),
@@ -4610,6 +4612,7 @@ def api_analytics():
         "pushes": stats["pushes"],
         "win_rate": stats["win_rate"],
         "roi": stats["roi"],
+        "roi_se_pp": stats.get("roi_se_pp", 0.0),
         "total_stake": stats["total_stake"],
         "total_profit": stats["total_profit"],
         "pending_bets": _mb.get("pending_n", 0),
