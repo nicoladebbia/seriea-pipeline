@@ -331,7 +331,9 @@ def optimize(trials: int | None, top_k: int | None, corr_threshold: float | None
 def retrain(full: bool, quick: bool, check: bool, force: bool, dry_run: bool):
     """Retrain models — auto-triggered when a matchweek completes."""
     from scripts.pipeline.weekly_retrain import (
-        auto_retrain, full_retrain, get_matchweek_status, quick_retrain,
+        auto_retrain,
+        forced_retrain,
+        get_matchweek_status,
     )
 
     if check:
@@ -348,12 +350,16 @@ def retrain(full: bool, quick: bool, check: bool, force: bool, dry_run: bool):
         click.echo(f"Needs retrain: {'YES' if status['needs_retrain'] else 'NO'}")
         return
 
+    # --full / --quick go through forced_retrain, never the ensemble-only trainers
+    # directly. The auxiliary models (catboost_no_odds, xG, draw detector, the O/U
+    # classifiers behind the enabled bets) and the prediction refresh run in the
+    # caller, and the retrain gate must be stamped.
     if full:
         click.echo("Starting FULL retrain (Optuna + feature selection, ~2-3 hours)...")
-        result = full_retrain(dry_run=dry_run)
+        result = forced_retrain("full", dry_run=dry_run)
     elif quick:
         click.echo("Starting QUICK retrain (reuse hyperparams, ~15-20 min)...")
-        result = quick_retrain(dry_run=dry_run)
+        result = forced_retrain("quick", dry_run=dry_run)
     else:
         click.echo("Checking matchweek status...")
         result = auto_retrain(dry_run=dry_run, force=force)
@@ -369,6 +375,12 @@ def retrain(full: bool, quick: bool, check: bool, force: bool, dry_run: bool):
     if result.get("new_metrics"):
         m = result["new_metrics"]
         click.echo(f"New LL: {m.get('ensemble_log_loss', 0):.4f}")
+    ou = (result.get("auxiliary_models") or {}).get("over_under") or {}
+    if ou:
+        ou_lines = ", ".join(f"{k} {v}" for k, v in ou.get("lines", {}).items())
+        click.echo(f"O/U classifiers: {ou_lines or ou.get('error', '?')}")
+    if result.get("predictions_refreshed_for"):
+        click.echo(f"Predictions refreshed for: {', '.join(result['predictions_refreshed_for'])}")
 
 
 @ml.command()
