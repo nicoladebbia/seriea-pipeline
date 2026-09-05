@@ -703,14 +703,19 @@ _HALVES_SKILL_GATE = 0.02
 _HALVES_N_GATE = 200
 
 
-def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-2025", "2025-2026")) -> dict:
+def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-2025", "2025-2026"),
+                    pms: pd.DataFrame | None = None, shots: pd.DataFrame | None = None,
+                    out_path: Path | None = None, shares: dict[str, float] | None = None,
+                    min_test_rows: int = 50) -> dict:
     """Walk-forward Brier of P(≥k in the 1st half) / P(≥k in the 2nd half) /
     P(≥1 in both) against the base rate of the seasons before the test season.
     Inputs are leak-free: the player's per-90 prior and `min_prior` as the
     projected minutes (what the page would have served), starters only.
     Ground truth: shots per half from all_shots_with_xg (Sofascore match id)."""
-    pms = build_player_features(load_player_data(league))
-    sh = pd.read_parquet(_SHOTS_PATH, columns=["match_id", "player_id", "time", "shot_type"])
+    if pms is None:
+        pms = build_player_features(load_player_data(league))
+    sh = shots if shots is not None else pd.read_parquet(_SHOTS_PATH, columns=["match_id", "player_id", "time", "shot_type"])
+    sh = sh.copy()
     sh["match_id"] = pd.to_numeric(sh["match_id"], errors="coerce").astype("Int64")
     sh["on"] = sh["shot_type"].isin(["goal", "save"])
     per = sh.groupby(["match_id", "player_id"]).agg(
@@ -719,7 +724,7 @@ def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-20
         o2=("on", lambda o: int((o & (sh.loc[o.index, "time"] > 45)).sum()))).reset_index()
     rows = pms[(pms["is_starter"] == True) & (pms["prior_n"] >= MIN_PRIOR_MATCHES)].copy()  # noqa: E712
     rows = rows.merge(per, on=["match_id", "player_id"], how="left").fillna({"s1": 0, "s2": 0, "o1": 0, "o2": 0})
-    shares = _get_half_shares()
+    shares = shares if shares is not None else _get_half_shares()
     out: dict = {}
     for mk in _HALVES_MARKETS:
         col, k = TARGETS[mk]["col"], TARGETS[mk]["line"] + 1
@@ -728,7 +733,7 @@ def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-20
         for ts in test_seasons:
             train = rows[rows["season"] < ts]
             test = rows[rows["season"] == ts]
-            if len(test) < 50 or not len(train):
+            if len(test) < min_test_rows or not len(train):
                 continue
             base = {"1h": float((train[a1] >= k).mean()), "2h": float((train[a2] >= k).mean()),
                     "both": float(((train[a1] >= 1) & (train[a2] >= 1)).mean())}
@@ -762,8 +767,9 @@ def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-20
     result = {"generated_at": pd.Timestamp.utcnow().isoformat(), "league": league, "test_seasons": list(test_seasons),
               "half_shares": {c: round(v, 4) for c, v in shares.items() if c in ("total_shots", "shots_on_target")},
               "per_half": out, "gate": gate}
-    _HALVES_BACKTEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _HALVES_BACKTEST_PATH.write_text(json.dumps(result, indent=2))
+    out_path = out_path or _HALVES_BACKTEST_PATH
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, indent=2))
     return result
 
 

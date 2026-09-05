@@ -46,3 +46,31 @@ def test_contribution_pct_sums_to_100_per_side_and_fallback_players_get_none(mon
     assert shares[2] is None and abs(shares[0] + shares[1] - 100.0) < 0.2 and shares[0] == 75.0
     assert res["home_players"][0]["markets"]["shots_o05"]["split"]["1h"] > 0
     assert res["home_players"][2]["markets"]["shots_o05"]["split"] is None
+
+
+def test_validate_halves_grades_each_half_leak_free_and_gates_on_n(tmp_path):
+    """Two starters with fixed priors, one train season and one test season: the
+    per-half truth comes from the shot minutes, the base rate from the train
+    season only, and n below the gate never passes."""
+    import json
+
+    import pandas as pd
+    cols = {f"{c}_p90_prior": 0.0 for c in pp._RATE_COLS}
+    rows = []
+    for season, mids in (("2022-2023", [1, 2]), ("2023-2024", [3, 4])):
+        for mid in mids:
+            for pid, rate in ((10, 3.0), (11, 0.3)):
+                rows.append({**cols, "match_id": mid, "player_id": pid, "season": season, "is_starter": True,
+                             "prior_n": 12, "min_prior": 85.0, "total_shots_p90_prior": rate, "shots_on_target_p90_prior": rate / 3})
+    pms = pd.DataFrame(rows)
+    shots = pd.DataFrame({"match_id": ["3", "3", "4", "1"], "player_id": [10, 10, 10, 10],
+                          "time": [10, 70, 20, 5], "shot_type": ["save", "miss", "goal", "miss"]})
+    out = tmp_path / "halves.json"
+    res = pp.validate_halves("serie_a", test_seasons=("2023-2024",), pms=pms, shots=shots, out_path=out,
+                             shares={"total_shots": 0.461, "shots_on_target": 0.5}, min_test_rows=1)
+    ph = res["per_half"]
+    assert ph["shots_o05:1h"]["n"] == 4 and ph["shots_o05:1h"]["n_events"] == 2      # player 10 shot in 1H in both test matches
+    assert ph["shots_o05:2h"]["n_events"] == 1 and ph["shots_o05:both"]["n_events"] == 1
+    assert ph["shots_o05:1h"]["base_rate"] == 0.5                                   # 2 of 4 test rows; base from train = 1 of 4
+    assert all(not v["passed"] for v in ph.values())                                 # n=4 is below the 200 gate
+    assert json.loads(out.read_text())["gate"]["shots_o05"]["passed"] is False

@@ -201,3 +201,13 @@ def test_var_rates_count_only_checked_matches_and_read_the_overturn_semantics():
     assert r["var_any"] == {"rate": 0.5, "n_matches": 2, "n_events": 1}        # match 3 unchecked → excluded
     assert r["var_goal_cancelled"]["n_events"] == 1 and r["var_penalty"]["n_events"] == 0
     assert r["own_goal"]["n_matches"] == 3                                    # non-VAR rates keep the full universe
+
+
+def test_calibration_saturates_at_the_upper_bound_too_and_warns(caplog):
+    import logging
+    prof = gp.default_profile()
+    with caplog.at_level(logging.WARNING, logger="scripts.models.goal_process"):
+        s = gp.simulate(1.2, 1.0, prof, n=4000, seed=1, p_over_2_5=0.999)
+    assert s["calibration_saturated"] is True and s["calibration_k"] == gp.K_BOUNDS[1]
+    assert s["calibration_achieved"] < 0.999
+    assert any("calibration saturated" in r.message for r in caplog.records)

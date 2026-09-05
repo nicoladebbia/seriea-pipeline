@@ -429,8 +429,12 @@ def _save_incidents(new_rows: list[dict], existing_ids: set) -> pd.DataFrame | N
     if _INCIDENTS_PATH.exists():
         existing = pd.read_parquet(_INCIDENTS_PATH)
         combined = pd.concat([existing, new_df], ignore_index=True)
+        # incident_class is part of the identity: two VAR reviews at the same
+        # minute for the same player (penaltyAwarded + cardUpgrade) are two rows
+        if "incident_class" not in combined.columns:
+            combined["incident_class"] = ""
         combined = combined.drop_duplicates(
-            subset=["match_id", "incident_type", "minute", "player_name"],
+            subset=["match_id", "incident_type", "incident_class", "minute", "player_name"],
             keep="last",
         )
     else:
