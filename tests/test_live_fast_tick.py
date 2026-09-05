@@ -108,3 +108,51 @@ def test_odds_poll_cannot_unfinish_a_match():
     assert lm._status_after_poll("completed", "second_half") == "completed"
     assert lm._status_after_poll("second_half", "completed") == "completed"
     assert lm._status_after_poll("first_half", "half_time") == "half_time"
+
+
+# ---------------------------------------------------------------- goal pings
+
+def _goal(minute=40, player="X"):
+    return {"type": "goal", "minute": minute, "is_home": True, "player": player, "goal_type": "regular"}
+
+
+def _ping_harness(monkeypatch, mode, has_bets):
+    import scripts.pipeline.notify as notify
+    sent = []
+    monkeypatch.setattr(lm, "_goal_ping_mode", lambda: mode)
+    monkeypatch.setattr(lm, "_get_bet_context", lambda *a, **k: {"has_bets": True, "bets": []} if has_bets else None)
+    monkeypatch.setattr(notify, "notify_goal", lambda **k: sent.append(k))
+    monkeypatch.setattr(notify, "notify", lambda *a, **k: sent.append(("notify", a, k)))
+    return sent
+
+
+def test_all_mode_pings_a_goal_on_a_match_with_no_bet(monkeypatch):
+    sent = _ping_harness(monkeypatch, "all", has_bets=False)
+    md = {"home_team": "AS Roma", "away_team": "Atalanta BC"}
+    lm._send_live_event_notifications("AS Roma vs Atalanta BC", md, [], [_goal()])
+    assert len(sent) == 1 and sent[0]["scorer"] == "X" and sent[0]["home_score"] == 1
+
+
+def test_bets_mode_stays_silent_without_a_bet(monkeypatch):
+    sent = _ping_harness(monkeypatch, "bets", has_bets=False)
+    lm._send_live_event_notifications("m", {"home_team": "A", "away_team": "B"}, [], [_goal()])
+    assert sent == []
+
+
+def test_the_same_goal_on_the_next_tick_is_not_pinged_again(monkeypatch):
+    sent = _ping_harness(monkeypatch, "all", has_bets=False)
+    md = {"home_team": "A", "away_team": "B"}
+    lm._send_live_event_notifications("m", md, [_goal()], [_goal()])
+    assert sent == []
+    lm._send_live_event_notifications("m", md, [_goal()], [_goal(), _goal(70, "Y")])
+    assert len(sent) == 1 and sent[0]["scorer"] == "Y" and sent[0]["home_score"] == 2
+
+
+def test_goal_ping_mode_reads_state_and_defaults_to_all(monkeypatch):
+    import scripts.pipeline.pipeline_state as ps
+    monkeypatch.setattr(ps, "load_state", lambda: {"live_goal_pings": "bets"})
+    assert lm._goal_ping_mode() == "bets"
+    monkeypatch.setattr(ps, "load_state", lambda: {"live_goal_pings": "garbage"})
+    assert lm._goal_ping_mode() == "all"
+    monkeypatch.setattr(ps, "load_state", lambda: {})
+    assert lm._goal_ping_mode() == "all"

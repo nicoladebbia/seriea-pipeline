@@ -195,6 +195,11 @@
         <option value="30">30s</option>
         <option value="60">1 min</option>
       </select>
+      <label class="text-small text-tertiary" for="lp-goal-pings" title="Telegram goal / red-card pings: every tracked match, or only matches with a journal bet">Pings</label>
+      <select id="lp-goal-pings" onchange="lpSetGoalPings(this.value)" class="select" style="width:auto;">
+        <option value="all" selected>All goals</option>
+        <option value="bets">Bet games</option>
+      </select>
       <button id="lp-auto-btn" onclick="lpToggleAuto()" class="btn btn--sm btn--secondary">Auto: OFF</button>
       <span id="lp-countdown" class="text-mono text-green" style="font-size:12px;min-width:80px;" title="Time to the next Odds API poll — the live tick is the Live select"></span>
     </div>
@@ -518,6 +523,8 @@ async function lpLoad() {
     _lpInterval = data.auto_poll_interval || 60;
     lpReflectInterval(_lpInterval);
     if (data.live_fast_interval) lpReflectInterval(data.live_fast_interval, 'lp-fast-interval');
+    const gp = document.getElementById('lp-goal-pings');
+    if (gp && data.live_goal_pings && document.activeElement !== gp) gp.value = data.live_goal_pings;
     _lpNextAt = data.auto_poll_next_at || 0;
     lpUpdateAutoBtn();
 
@@ -610,6 +617,12 @@ function lpReflectInterval(secs, id = 'lp-interval') {
     sel.appendChild(o);
   }
   sel.value = val;
+}
+
+async function lpSetGoalPings(mode) {
+  try {
+    await fetch('/api/live/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({goal_pings: mode})});
+  } catch(e) { console.error(e); }
 }
 
 async function lpSetFastInterval(secs) {

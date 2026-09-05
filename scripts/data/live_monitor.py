@@ -651,6 +651,20 @@ def _get_bet_context(match_key: str, home_score: int = 0, away_score: int = 0,
         return None
 
 
+GOAL_PING_MODES = ("all", "bets")
+GOAL_PING_STATE_KEY = "live_goal_pings"
+
+
+def _goal_ping_mode() -> str:
+    """'all' or 'bets', from pipeline_state.json (set on /live or via /api/live/config)."""
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        mode = str(load_state().get(GOAL_PING_STATE_KEY) or "all").lower()
+    except Exception:  # noqa: BLE001 - state trouble must not silence goals
+        return "all"
+    return mode if mode in GOAL_PING_MODES else "all"
+
+
 def _send_live_event_notifications(match_key: str, match_data: Dict,
                                     old_events: List, new_events: List):
     """Compare old vs new Sofascore events and send coaching-style notifications."""
@@ -705,11 +719,12 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
     bet_ctx = _get_bet_context(match_key, h_score, a_score, latest_minute,
                                player_stats=match_data.get("live_player_stats"))
 
-    # Bet-games only (2026-08-31): goal/red-card pings fire ONLY on matches
-    # carrying a journal bet. Everything else is log-only.
-    if not (bet_ctx and bet_ctx.get("has_bets")):
+    # Goal/red-card pings: "all" (every tracked match — Nicola's 2026-09-05
+    # ask, now that the events arrive via ESPN within seconds) or "bets"
+    # (the 2026-08-31 setting: only matches carrying a journal bet).
+    if _goal_ping_mode() == "bets" and not (bet_ctx and bet_ctx.get("has_bets")):
         if new_goal_events or new_other_events:
-            log.info("Live events on %s suppressed — no bets on this match", match_key)
+            log.info("Live events on %s suppressed — no bets on this match (goal pings: bets)", match_key)
         return
 
     # Send goal notifications (batch multiple into one if needed)

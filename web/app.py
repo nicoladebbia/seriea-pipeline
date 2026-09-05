@@ -5446,6 +5446,11 @@ def api_live():
     data["auto_poll_next_at"] = _auto_poll_next_at if _auto_poll_active else 0
     data["live_fast_interval"] = _live_fast_interval
     data["live_fast_at"] = _live_fast_last["at"] if _auto_poll_active else 0
+    try:
+        from scripts.data.live_monitor import _goal_ping_mode
+        data["live_goal_pings"] = _goal_ping_mode()
+    except Exception:  # noqa: BLE001
+        data["live_goal_pings"] = "all"
     return jsonify(data)
 
 
@@ -6110,8 +6115,19 @@ def api_live_config():
             st = load_state(); st[_LIVE_FAST_STATE_KEY] = _live_fast_interval; save_state(st)
         except Exception as e:  # noqa: BLE001
             log.warning(f"fast interval not applied: {e}")
+    goal_pings = None
+    if "goal_pings" in data:
+        try:
+            from scripts.data.live_monitor import GOAL_PING_MODES, GOAL_PING_STATE_KEY
+            from scripts.pipeline.pipeline_state import load_state, save_state
+            mode = str(data["goal_pings"]).lower()
+            if mode in GOAL_PING_MODES:
+                st = load_state(); st[GOAL_PING_STATE_KEY] = mode; save_state(st)
+                goal_pings = mode
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"goal ping mode not applied: {e}")
     log.info(f"Live poll interval set to {interval}s (fast tick {_live_fast_interval}s)")
-    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval})
+    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval, "goal_pings": goal_pings})
 
 
 # ---------------------------------------------------------------------------
