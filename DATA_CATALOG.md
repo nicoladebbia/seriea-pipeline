@@ -5774,11 +5774,17 @@ These dirs contain many files (often one per match, day, or experiment). Summari
 
 ### `data/predictions/`
 
-- **Description:** Legacy prediction dumps  
-- **File count:** 9  
+- **Description:** Legacy prediction dumps + the live component ledger  
+- **File count:** 10  
 - **Total size:** 3.4MB  
-- **Extensions:** {'.json': 8, '.jsonl': 1}  
-- **Newest file:** `data/predictions/prediction_ledger.jsonl` (3.3MB, 2026-04-21)  
+- **Extensions:** {'.json': 9, '.jsonl': 1}  
+- **Newest file:** `data/predictions/component_ledger.json` (live, 2026-09-04+)  
+
+| File | Writer | What it is |
+|---|---|---|
+| `component_ledger.json` | `scripts/prediction/component_ledger.py` (3 fail-soft scheduler hooks: pre-kickoff snapshot, settle sweep, post-pipeline sweep) | **The ensemble's calibration flywheel** (2026-09-04). Per SA match: each core component's 1X2 probs (`ml/market/xg/player_xg/factor`) + the ensemble's betting probs + `weights_applied` + `ml_reasons` (SHAP top-5) + `ml_drift`, upserted freely until THAT match's kickoff then frozen — ex-ante by construction, post-hoc rows refused. `settle()` grades vs `matches.parquet` (multiclass Brier / log-loss / pick-correct per component). `rot_alarm()` (recent-20 vs trailing-100 Brier, Δ>0.04) and `drift_alarm()` (≥15 serving features outside training bands) are change-gated notifies. `refit_weights()` needs ≥100 all-core settled rows, shrinks 0.5 toward production, deploys `data/models/ensemble_weights.json` ONLY on a time-ordered holdout log-loss win — which the engine loads at init (precedence: ledger > legacy `data/feedback/optimized_weights.json` > hardcoded). NOTE: the legacy feedback loop (`feedback_analyzer` → `weight_optimizer`) is starved at n_settled≈2 because its `results.json` side holds ~1 match; the ledger settles against matches.parquet instead. |
+| `data/models/ensemble_weights.json` | `component_ledger.refit_weights` (gate-pass only) | Deployed ensemble weight override with provenance (`n_settled`, holdout LLs, `fitted_at`). Engine validates keys/sum/range and fail-softs to constants. Does not exist until the first gate pass. |
+| `data/models/universal/feature_quantiles.json` | `MLClassifier._get_train_quantiles` | Per-feature training [q0.005, q0.995] bands for the serving-drift tripwire; keyed on `features.parquet` `source_mtime` (rebuilds when the source moves, never trusts its own mtime). |
 
 ---
 
