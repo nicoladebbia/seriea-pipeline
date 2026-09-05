@@ -5936,9 +5936,48 @@ def api_live_trigger():
 # Background auto-poll thread (enhanced with configurable interval)
 # ---------------------------------------------------------------------------
 
+_AUTO_POLL_DEFAULT_S = 300  # 5 min default — 60s burnt ~2880 Odds API calls/day
+_AUTO_POLL_BOUNDS = (30, 3600)
+_LIVE_POLL_STATE_KEY = "live_poll_interval"
+
+
+def _clamp_poll_interval(value, default=_AUTO_POLL_DEFAULT_S) -> int:
+    try:
+        return max(_AUTO_POLL_BOUNDS[0], min(_AUTO_POLL_BOUNDS[1], int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_live_poll_interval(default=_AUTO_POLL_DEFAULT_S) -> int:
+    """The interval chosen on /live, read back from pipeline_state.json.
+
+    The choice used to live only in this process, so every Flask restart
+    (launchd kickstart, deploy) silently went back to 5 min while the page's
+    select still said "1 min". A chosen interval is state, so it lives with
+    the rest of the pipeline state.
+    """
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        saved = load_state().get(_LIVE_POLL_STATE_KEY)
+    except Exception as e:  # noqa: BLE001 - state file trouble must not stop the app
+        log.debug(f"live poll interval: state unreadable ({e}), using default")
+        saved = None
+    return _clamp_poll_interval(saved, default) if saved is not None else default
+
+
+def _save_live_poll_interval(interval: int) -> None:
+    try:
+        from scripts.pipeline.pipeline_state import load_state, save_state
+        state = load_state()
+        state[_LIVE_POLL_STATE_KEY] = int(interval)
+        save_state(state)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"live poll interval {interval}s not persisted: {e}")
+
+
 _auto_poll_active = False
 _auto_poll_thread = None
-_auto_poll_interval = 300  # seconds (5 min default — was 60s which burnt ~2880 Odds API calls/day)
+_auto_poll_interval = _load_live_poll_interval()  # seconds; survives restarts
 _auto_poll_next_at = 0.0  # timestamp of next poll
 
 def _auto_poll_loop():
@@ -6022,9 +6061,9 @@ def api_live_config():
     """Set live poll interval (seconds). Accepts 30-3600."""
     global _auto_poll_interval
     data = flask_request.get_json(silent=True) or {}
-    interval = data.get("interval", _auto_poll_interval)
-    interval = max(30, min(3600, int(interval)))
+    interval = _clamp_poll_interval(data.get("interval", _auto_poll_interval), _auto_poll_interval)
     _auto_poll_interval = interval
+    _save_live_poll_interval(interval)
     log.info(f"Live poll interval set to {interval}s")
     return jsonify({"ok": True, "interval": interval})
 
@@ -6756,7 +6795,9 @@ def _scheduler_loop():
                             if m.get("date") == today_str:
                                 # Match today — start auto poll
                                 global _auto_poll_thread, _auto_poll_interval
-                                _auto_poll_interval = cfg.get("matchday_live_poll_min", 2) * 60
+                                # the interval chosen on /live wins over the scheduler default
+                                _auto_poll_interval = _load_live_poll_interval(
+                                    default=cfg.get("matchday_live_poll_min", 2) * 60)
                                 _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
                                 _auto_poll_thread.start()
                                 _scheduler_add_log("auto_live", f"Started live polling ({cfg.get('matchday_live_poll_min', 2)} min)")

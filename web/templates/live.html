@@ -490,6 +490,7 @@ async function lpLoad() {
     // Update auto-poll state
     _lpAutoActive = data.auto_poll_active || false;
     _lpInterval = data.auto_poll_interval || 60;
+    lpReflectInterval(_lpInterval);
     _lpNextAt = data.auto_poll_next_at || 0;
     lpUpdateAutoBtn();
 
@@ -568,6 +569,20 @@ async function lpToggleAuto() {
     lpUpdateAutoBtn();
     if (_lpAutoActive) await lpTriggerPoll();
   } catch(e) { console.error(e); }
+}
+
+// The select must show the interval the SERVER is running, not its HTML
+// default: after a restart it said "1 min" while the poll ran every 5.
+function lpReflectInterval(secs) {
+  const sel = document.getElementById('lp-interval');
+  if (!sel || document.activeElement === sel) return;
+  const val = String(secs);
+  if (![...sel.options].some(o => o.value === val)) {
+    const o = document.createElement('option');
+    o.value = val; o.textContent = secs >= 60 ? `${Math.round(secs / 60)} min` : `${secs}s`;
+    sel.appendChild(o);
+  }
+  sel.value = val;
 }
 
 async function lpSetInterval(secs) {
