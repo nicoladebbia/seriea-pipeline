@@ -55,8 +55,8 @@ NOT_BUILT = [
      "note": "[PLACEHOLDER: corner minutes are not in the catalog]"},
     {"group": "Giocatori", "bet_type": "Primo marcatore / Doppietta più / Assist", "engine": "player event engine",
      "note": "scorer share × goal paths; scorer markets measured no-skill, served as tier C when built"},
-    {"group": "Speciali match", "bet_type": "Gol nel primo minuto / da fuori area / da oltre metà campo / dalla panchina / Autogol / Rigore d'espulsione VAR",
-     "engine": "rare-event base-rate table", "note": "design step 4"},
+    {"group": "Speciali match", "bet_type": "Rigore VAR / Espulsione VAR", "engine": "rare-event base-rate table",
+     "note": "match_incidents.parquet carries no VAR incident type (goal, card, substitution only)"},
     {"group": "O tutte", "bet_type": "O tutte", "engine": "-", "note": "[FILL: undefined in the brief]"},
 ]
 

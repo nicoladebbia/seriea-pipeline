@@ -49,6 +49,8 @@ TIMELINE_PATH = DATA_DIR / "parsed" / "goal_timeline.parquet"
 MODEL_DIR = DATA_DIR / "models" / "goal_process"
 PROFILE_PATH = MODEL_DIR / "profile.json"
 BACKTEST_PATH = MODEL_DIR / "backtest.json"
+RARE_PATH = MODEL_DIR / "rare_events.json"
+SHOTS_PATH = DATA_DIR / "external" / "sofascore" / "all_shots_with_xg.parquet"
 
 N_BINS = 92
 BIN_1H_STOPPAGE = 45
@@ -410,6 +412,113 @@ def served_rows(xg_h: float, xg_a: float, p_over_2_5: float | None, n: int = 100
 _SERVED_CACHE: dict = {}
 
 
+# ============================================================ rare events ==
+# Speciali match: no per-match model exists or is warranted for these; the
+# honest number is the league base rate over recent seasons, served as tier C
+# with its n. Sources: match_incidents (goals, cards, substitutions) and
+# all_shots_with_xg (coordinates: x = 0..100 along the pitch length with the
+# attacked goal at x = 0, y = 0..100 across; verified 2026-09-05 by
+# reconstructing the parquet's own `distance` column within 1.1 m median).
+_PITCH_X, _PITCH_Y = 1.05, 0.68          # metres per unit
+_BOX_DEPTH, _BOX_HALF_WIDTH = 16.5, 20.16
+RARE_LABELS = {
+    "goal_minute_1": ("Speciali match", "Gol nel primo minuto", "Sì"),
+    "goal_outside_box": ("Speciali match", "Gol da fuori area", "Sì"),
+    "goal_beyond_halfway": ("Speciali match", "Gol da oltre metà campo", "Sì"),
+    "goal_from_bench": ("Speciali match", "Gol dalla panchina", "Sì"),
+    "own_goal": ("Speciali match", "Autogol", "Sì"),
+    "penalty_awarded": ("Speciali match", "Rigore", "Sì"),
+    "red_card": ("Speciali match", "Espulsione", "Sì"),
+}
+RARE_NOT_AVAILABLE = [
+    {"group": "Speciali match", "bet_type": "Rigore VAR / Espulsione VAR", "engine": "rare-event base-rate table",
+     "note": "match_incidents.parquet carries no VAR incident type (goal, card, substitution only)"},
+]
+
+
+def rare_event_rates(incidents: pd.DataFrame, mapping: pd.DataFrame, shots: pd.DataFrame | None,
+                     league: str = "serie_a", seasons: list | None = None) -> dict:
+    """Share of matches with at least one event, per market, over `seasons`
+    (default: every season present). Returns {market: {rate, n_matches, n_events}}."""
+    mp = mapping[["match_id", "sofascore_id", "season", "league"]].dropna(subset=["sofascore_id"]).copy()
+    mp["sofascore_id"] = mp["sofascore_id"].astype("int64")
+    inc = incidents.rename(columns={"match_id": "sofascore_id"}).copy()
+    inc["sofascore_id"] = inc["sofascore_id"].astype("int64")
+    inc = inc.merge(mp, on="sofascore_id", how="inner")
+    inc = inc[inc["league"] == league]
+    if seasons is not None:
+        inc = inc[inc["season"].isin(seasons)]
+    n = int(inc["match_id"].nunique())
+    if n == 0:
+        return {}
+    goals = inc[inc["incident_type"] == "goal"]
+    subs = inc[inc["incident_type"] == "substitution"][["match_id", "player_in_id", "minute"]].rename(
+        columns={"player_in_id": "player_id", "minute": "sub_minute"})
+    bench = goals.merge(subs, on=["match_id", "player_id"], how="inner")
+    bench = bench[bench["minute"] >= bench["sub_minute"]]
+    hits = {
+        "goal_minute_1": goals[goals["minute"] == 1]["match_id"],
+        "goal_from_bench": bench["match_id"],
+        "own_goal": goals[goals["goal_type"] == "ownGoal"]["match_id"],
+        "red_card": inc[inc["card_type"].isin(["red", "yellowRed"])]["match_id"],
+    }
+    if shots is not None and len(shots):
+        # all_shots_with_xg is keyed on the Sofascore id (as a string), not the canonical id
+        sh = shots.copy()
+        sid = pd.to_numeric(sh["match_id"], errors="coerce")
+        if sid.notna().all() and not sid.isin(set(inc["match_id"])).any():
+            canon = dict(zip(inc["sofascore_id"], inc["match_id"]))
+            sh["match_id"] = sid.astype("int64").map(canon)
+        sh = sh[sh["match_id"].isin(set(inc["match_id"]))]
+        depth = sh["shot_x"] * _PITCH_X
+        lateral = (sh["shot_y"] - 50).abs() * _PITCH_Y
+        outside = ~((depth <= _BOX_DEPTH) & (lateral <= _BOX_HALF_WIDTH))
+        is_goal = sh["is_goal"].astype(bool)
+        hits["goal_outside_box"] = sh[is_goal & outside]["match_id"]
+        hits["goal_beyond_halfway"] = sh[is_goal & (depth >= 52.5)]["match_id"]
+        hits["penalty_awarded"] = sh[sh["is_penalty"].astype(bool)]["match_id"]   # taken, scored or not
+    else:
+        hits["penalty_awarded"] = goals[goals["goal_type"] == "penalty"]["match_id"]  # scored only
+    out = {}
+    for k, ids in hits.items():
+        m = int(ids.nunique())
+        out[k] = {"rate": round(m / n, 4), "n_matches": n, "n_events": m}
+    return out
+
+
+def build_rare_events(seasons_back: int = 3) -> dict:
+    """Serie A base rates over the last `seasons_back` complete seasons plus
+    the current one, written to rare_events.json with the season list."""
+    mp = pd.read_parquet(MAPPING_PATH)
+    sa_seasons = sorted(mp[mp["league"] == "serie_a"]["season"].dropna().unique())
+    seasons = sa_seasons[-(seasons_back + 1):]
+    shots = pd.read_parquet(SHOTS_PATH) if SHOTS_PATH.exists() else None
+    rates = rare_event_rates(pd.read_parquet(INCIDENTS_PATH), mp, shots, "serie_a", seasons)
+    out = {"generated_at": pd.Timestamp.utcnow().isoformat(), "league": "serie_a",
+           "seasons": list(seasons), "rates": rates}
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    RARE_PATH.write_text(json.dumps(out, indent=2))
+    return out
+
+
+def rare_event_rows(league: str = "serie_a") -> list:
+    """Tier C rows (base rate only) for the Speciali match group."""
+    if league != "serie_a" or not RARE_PATH.exists():
+        return []
+    d = json.loads(RARE_PATH.read_text())
+    rows = []
+    for k, (group, bet_type, sel) in RARE_LABELS.items():
+        r = d.get("rates", {}).get(k)
+        if not r:
+            continue
+        if r["n_events"] == 0:   # below the table's resolution: say so on the row, never print 0.0% as a price
+            sel = f"{sel} (0 in {r['n_matches']} matches)"
+        rows.append({"group": group, "bet_type": bet_type, "selection": sel,
+                     "probability_pct": round(r["rate"] * 100, 1), "tier": "C", "source": "rare_event_table",
+                     "n_matches": r["n_matches"], "n_events": r["n_events"], "seasons": d.get("seasons")})
+    return rows
+
+
 # =============================================================== backtest ==
 def backtest(test_seasons=("2023-2024", "2024-2025", "2025-2026"), n: int = 3000, seed: int = 0) -> dict:
     """Walk-forward by season: profile fitted on seasons BEFORE the test season,
@@ -473,6 +582,7 @@ def main(argv=None):
     ap.add_argument("--build-timeline", action="store_true")
     ap.add_argument("--fit-profile", action="store_true", help="fit on every season and write profile.json")
     ap.add_argument("--backtest", action="store_true")
+    ap.add_argument("--rare-events", action="store_true", help="write rare_events.json (Speciali match base rates)")
     ap.add_argument("--sims", type=int, default=3000)
     ap.add_argument("--simulate", nargs=2, type=float, metavar=("XG_HOME", "XG_AWAY"))
     ap.add_argument("--over25", type=float, default=None)
@@ -494,6 +604,9 @@ def main(argv=None):
         out = backtest(n=a.sims)
         for k, g in sorted(out["gate"].items(), key=lambda kv: -kv[1]["skill"]):
             print(f"{k:24s} n={g['n']:5d} base={g['base_rate']:.3f} brier={g['brier']:.4f} base_brier={g['brier_base']:.4f} skill={g['skill']:+.4f} {'PASS' if g['passed'] else '-'}")
+    if a.rare_events:
+        out = build_rare_events()
+        print(json.dumps({"seasons": out["seasons"], **{k: v["rate"] for k, v in out["rates"].items()}}))
     if a.simulate:
         for r in served_rows(a.simulate[0], a.simulate[1], a.over25):
             print(f"{r['group']:12s} {r['bet_type']:28s} {r['selection']:14s} {r['probability_pct']:6.1f}%  {r['tier']}  k={r['calibration_k']}")

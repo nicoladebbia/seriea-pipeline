@@ -130,3 +130,42 @@ def test_served_rows_take_tiers_from_the_live_backtest(tmp_path, monkeypatch):
 def test_served_rows_refuse_a_league_the_gate_never_measured():
     gp._SERVED_CACHE.clear()
     assert gp.served_rows(1.3, 1.1, 0.5, n=500, league="premier_league") == []
+
+
+def test_rare_event_rates_count_matches_not_events():
+    """Two own goals in one match is ONE match with an own goal; a bench goal
+    needs the scorer to have come on BEFORE the goal; shots decide box/halfway."""
+    inc = pd.DataFrame({
+        "match_id": [1, 1, 1, 1, 2, 2],
+        "incident_type": ["goal", "goal", "substitution", "goal", "card", "goal"],
+        "incident_class": ["ownGoal", "ownGoal", None, "regular", "red", "regular"],
+        "minute": [10, 20, 60, 70, 30, 1], "added_time": [0] * 6,
+        "player_id": ["9", "9", "", "77", "5", "8"], "player_in_id": ["", "", "77", "", "", ""],
+        "is_home": [True] * 6, "card_type": [None, None, None, None, "red", None],
+        "goal_type": ["ownGoal", "ownGoal", None, "regular", None, "regular"],
+    })
+    mp = pd.DataFrame({"match_id": ["2024-01-01_A_B", "2024-01-02_C_D"], "sofascore_id": [1, 2],
+                       "season": ["2023-2024"] * 2, "league": ["serie_a"] * 2})
+    shots = pd.DataFrame({"match_id": ["2024-01-01_A_B", "2024-01-01_A_B", "2024-01-02_C_D"],
+                          "shot_x": [10.0, 30.0, 60.0], "shot_y": [50.0, 50.0, 50.0],
+                          "is_goal": [True, True, True], "is_penalty": [True, False, False]})
+    r = gp.rare_event_rates(inc, mp, shots, "serie_a")
+    assert r["own_goal"] == {"rate": 0.5, "n_matches": 2, "n_events": 1}
+    assert r["goal_from_bench"]["n_events"] == 1          # player 77 on at 60', scored at 70'
+    assert r["goal_minute_1"]["n_events"] == 1 and r["red_card"]["n_events"] == 1
+    assert r["goal_outside_box"]["n_events"] == 2         # x=30 (31.5 m) and x=60; x=10 (10.5 m) is inside
+    assert r["goal_beyond_halfway"]["n_events"] == 1      # x=60 → 63 m
+    assert r["penalty_awarded"]["n_events"] == 1
+    assert gp.rare_event_rates(inc, mp, shots, "premier_league") == {}
+
+
+def test_rare_event_rates_accept_shots_keyed_on_sofascore_id():
+    """all_shots_with_xg.parquet keys on the Sofascore id as a string (measured
+    2026-09-05: 0% canonical, 100% sofascore_id); the first live run returned
+    0.0 for every shot-based rate because of it."""
+    inc = pd.DataFrame({"match_id": [1], "incident_type": ["goal"], "incident_class": ["regular"], "minute": [5],
+                        "added_time": [0], "player_id": ["1"], "player_in_id": [""], "is_home": [True],
+                        "card_type": [None], "goal_type": ["regular"]})
+    mp = pd.DataFrame({"match_id": ["2024-01-01_A_B"], "sofascore_id": [1], "season": ["2023-2024"], "league": ["serie_a"]})
+    shots = pd.DataFrame({"match_id": ["1"], "shot_x": [30.0], "shot_y": [50.0], "is_goal": [True], "is_penalty": [False]})
+    assert gp.rare_event_rates(inc, mp, shots, "serie_a")["goal_outside_box"]["n_events"] == 1
