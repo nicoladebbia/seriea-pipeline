@@ -179,6 +179,9 @@ def _run_notifications(monkeypatch, has_bets):
                       "stake": 5.0, "commentary": "needs 2 more goals",
                       "is_winning": None, "parlay_legs": []}] if has_bets else [])}
     monkeypatch.setattr(lm, "_get_bet_context", lambda *a, **kw: ctx)
+    # these tests describe the "bets" ping mode; the default has been "all"
+    # since bee4aae (every tracked match pings) — test_live_fast_tick covers it
+    monkeypatch.setattr(lm, "_goal_ping_mode", lambda: "bets")
 
     match_data = {"home_team": "Inter", "away_team": "Milan", "snapshots": []}
     lm._send_live_event_notifications("Inter vs Milan", match_data,
