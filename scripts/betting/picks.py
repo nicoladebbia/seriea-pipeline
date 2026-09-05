@@ -717,6 +717,24 @@ def _grade(bet: dict, res: dict | None, h1: tuple[int, int] | None,
     return None
 
 
+_FIRST_HALF_MARKETS = ("h2h_h1", "totals_h1", "btts_h1", "double_chance_h1")
+
+
+def _needs_first_half(bet: dict) -> bool:
+    mk = bet.get("market") or ""
+    return mk in _FIRST_HALF_MARKETS or mk == "halftime_fulltime"
+
+
+def _first_half_from_espn(league: str, date: str, home: str, away: str) -> tuple[int, int] | None:
+    """ESPN's post-match key events as the first-half score. Never raises."""
+    try:
+        from scripts.data.live_espn import first_half_score
+        return first_half_score(league, date, home, away)
+    except Exception as e:  # noqa: BLE001 - network / parse trouble -> stays pending
+        log.debug("ESPN first-half lookup failed for %s vs %s (%s): %s", home, away, date, e)
+        return None
+
+
 def _first_half_scores() -> dict[str, tuple[int, int]]:
     if not GOAL_TIMELINE.exists():
         return {}
@@ -750,6 +768,7 @@ def settle_picks(results: dict[str, dict] | None = None) -> dict:
     results = results or {}
     h1_scores = _first_half_scores()
     tl_ids = set(h1_scores) | _timeline_match_ids()
+    espn_h1: dict[str, tuple[int, int] | None] = {}
     pms = None
     for bet in pending:
         match = bet.get("match", "")
@@ -759,6 +778,13 @@ def settle_picks(results: dict[str, dict] | None = None) -> dict:
         h1 = h1_scores.get(canon) if canon in tl_ids else None
         if canon in tl_ids and h1 is None:
             h1 = (0, 0)  # the timeline holds the match with no first-half goal
+        if h1 is None and _needs_first_half(bet) and (res or {}).get("status", "").lower() == "finished":
+            # the Sofascore incidents feed stopped at 2026-08-24 (API challenge):
+            # without this every first-half pick stayed pending forever
+            if canon not in espn_h1:
+                espn_h1[canon] = _first_half_from_espn(bet.get("league") or "serie_a",
+                                                       str(bet.get("date") or ""), home, away)
+            h1 = espn_h1[canon]
         player_row = None
         player = (bet.get("extra") or {}).get("player")
         if player and PMS_PATH.exists():

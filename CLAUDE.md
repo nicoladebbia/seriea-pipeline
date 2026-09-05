@@ -342,7 +342,10 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   so they could not be graded.
 - **Grading** (`settle_picks`, called by auto_settle after the paper track): full-time
   markets from the results dict, first-half markets from `goal_timeline.parquet` (canonical
-  `{date}_{Home}_{Away}` id, a match present with no 1H goal is 0-0), player props from
+  `{date}_{Home}_{Away}` id, a match present with no 1H goal is 0-0; when the timeline lacks a
+  FINISHED match — the Sofascore incidents feed stopped at 2026-08-24 under the API
+  challenge — `live_espn.first_half_score` grades it from ESPN's post-match key events,
+  once per match per run), player props from
   `player_match_stats.parquet` (date + team + accent-folded name). Anything else stays
   pending and is COUNTED once per run, never warned per bet. `picks_record()` is the
   per-market bar: a market earns real stakes the way O/U 1.5 and the EPL gate do — a

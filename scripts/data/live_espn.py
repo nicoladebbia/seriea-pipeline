@@ -209,6 +209,11 @@ def match_referee(league: str, date: str, home: str, away: str) -> str | None:
     ESPN, or the match has not been played yet. Fills ground truth: the
     Sofascore fixture list names no referee (0 of 21 finished 2026-27
     fixtures) and worldfootball publishes the season late."""
+    return referee_from_summary(_summary_for(league, date, home, away))
+
+
+def _summary_for(league: str, date: str, home: str, away: str) -> dict[str, Any] | None:
+    """Scoreboard for the day -> event -> summary payload, else None."""
     slug = LEAGUE_SLUGS.get(league)
     if not slug or not date:
         return None
@@ -218,7 +223,44 @@ def match_referee(league: str, date: str, home: str, away: str) -> str | None:
     event = find_event(home, away, board)
     if not event:
         return None
-    return referee_from_summary(_get_json(f"{_BASE}/{slug}/summary?event={event.get('id')}"))
+    return _get_json(f"{_BASE}/{slug}/summary?event={event.get('id')}")
+
+
+def first_half_from_summary(summary: dict[str, Any] | None) -> tuple[int, int] | None:
+    """(home, away) goals in the first half of a FINISHED match, else None.
+
+    Goals come from ``keyEvents`` through ``parse_key_events`` (own goals
+    already credited to the beneficiary's opponent's side there, so the
+    scorer's side is flipped back here); a goal at minute <= 45 — "45'+3'"
+    parses to (45, 3) — is first half. A match that is not ``post`` returns
+    None: a partial timeline would grade a first-half market on half a half.
+    """
+    if not summary:
+        return None
+    comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]
+    if (((comp.get("status") or {}).get("type") or {}).get("state") or "").lower() != "post":
+        return None
+    home_side, _ = _sides(comp.get("competitors") or [])
+    home_id = str((home_side.get("team") or home_side).get("id") or "")
+    if not home_id:
+        return None
+    h = a = 0
+    for ev in parse_key_events(summary.get("keyEvents") or [], home_id):
+        if ev.get("type") != "goal" or ev.get("is_home") is None or int(ev.get("minute") or 0) > 45:
+            continue
+        credited_home = ev["is_home"] if ev.get("goal_type") != "ownGoal" else not ev["is_home"]
+        if credited_home:
+            h += 1
+        else:
+            a += 1
+    return h, a
+
+
+def first_half_score(league: str, date: str, home: str, away: str) -> tuple[int, int] | None:
+    """First-half score of a PLAYED match from ESPN, else None. The grader's
+    fallback when the Sofascore incidents feed (goal_timeline.parquet) has not
+    ingested the match — it stopped at 2026-08-24 under the API challenge."""
+    return first_half_from_summary(_summary_for(league, date, home, away))
 
 
 def _minute(clock: dict[str, Any] | None) -> tuple[int, int]:

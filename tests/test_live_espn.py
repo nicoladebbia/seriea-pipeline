@@ -304,3 +304,29 @@ def test_match_referee_walks_scoreboard_event_summary(monkeypatch, board):
     assert live_espn.match_referee("ligue_1", "2026-09-05", home, away) is None
     assert live_espn.match_referee("serie_a", "2026-09-05", "Nowhere", "Nobody") is None
     assert live_espn.match_referee("serie_a", "", home, away) is None
+
+
+# ─── first-half score from the summary ───────────────────────────────────────
+
+def _h1_summary(state, key_events):
+    return {"header": {"competitions": [{"status": {"type": {"state": state}},
+                                         "competitors": [{"homeAway": "home", "team": {"id": "109"}},
+                                                         {"homeAway": "away", "team": {"id": "239"}}]}]},
+            "keyEvents": key_events}
+
+
+def _h1_ke(slug, clock, team_id):
+    return {"type": {"type": slug}, "clock": {"displayValue": clock}, "team": {"id": team_id}, "participants": []}
+
+
+def test_first_half_from_summary_counts_goals_up_to_45_plus_stoppage_and_only_when_post():
+    events = [_h1_ke("goal", "12'", "109"),          # home, 1H
+              _h1_ke("goal", "45'+3'", "239"),       # away, 1H stoppage
+              _h1_ke("own-goal", "30'", "239"),      # ESPN's team is the BENEFICIARY (away): an away goal
+              _h1_ke("goal", "47'", "109"),          # 2H
+              _h1_ke("yellow-card", "20'", "239")]
+    assert live_espn.first_half_from_summary(_h1_summary("post", events)) == (1, 2)
+    assert live_espn.first_half_from_summary(_h1_summary("in", events)) is None
+    assert live_espn.first_half_from_summary(_h1_summary("post", [])) == (0, 0)
+    assert live_espn.first_half_from_summary(None) is None
+    assert live_espn.first_half_from_summary({"header": {"competitions": [{"status": {"type": {"state": "post"}}}]}}) is None

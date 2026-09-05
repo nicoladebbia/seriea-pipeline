@@ -180,3 +180,26 @@ def test_record_card_reads_in_italian_promoted_first():
 def test_bot_record_command_renders(monkeypatch):
     import scripts.pipeline.telegram_bot as tb
     assert "Record mercati" in tb._handle_record()
+
+
+def test_first_half_pick_grades_from_espn_when_the_timeline_lacks_the_match(monkeypatch, tmp_path):
+    """goal_timeline.parquet stopped at 2026-08-24 (Sofascore API challenge):
+    every first-half pick would stay pending forever. ESPN's post-match key
+    events are the fallback, only for finished matches, once per match."""
+    monkeypatch.setattr(P, "GOAL_TIMELINE", tmp_path / "no_timeline.parquet")
+    now = datetime(2026, 10, 25, 17, 0, tzinfo=UTC)
+    lean = {"market_key": "h2h_h1", "bet_type": "1° tempo 1x2", "selection": "1", "probability_pct": 40.0,
+            "implied_pct": 34.0, "edge_pct": 6.0, "odds": 2.9, "book": "Pinnacle", "tier": "A"}
+    P.journal_lean("Juventus vs Milan", "2026-10-25", lean, "serie_a", placed_at=now)
+    P.journal_lean("Roma vs Lazio", "2026-10-25", dict(lean, selection="2"), "serie_a", placed_at=now)
+    calls = []
+    monkeypatch.setattr(P, "_first_half_from_espn",
+                        lambda league, date, home, away: calls.append((league, date, home, away)) or (1, 0))
+    res = {"Juventus vs Milan": {"home_score": 1, "away_score": 2, "status": "finished"},
+           "Roma vs Lazio": {"home_score": 0, "away_score": 0, "status": "in_progress"}}
+    out = P.settle_picks(res)
+    assert out["settled"] == 1 and calls == [("serie_a", "2026-10-25", "Juventus", "Milan")]
+    from scripts.betting.bet_journal import get_settled_bets, get_pending_bets
+    (won,) = get_settled_bets(journal_path=P.PICKS_JOURNAL_PATH)
+    assert won["match"] == "Juventus vs Milan" and won["status"] == "won"      # 1-0 at the break, lost at FT
+    assert [b["match"] for b in get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH)] == ["Roma vs Lazio"]
