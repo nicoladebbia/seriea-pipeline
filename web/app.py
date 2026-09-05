@@ -912,6 +912,8 @@ def _ou_signal(match_key: str, league: str, goal_pred, totals,
       candidate  would-bet from the latest morning/evening dry-run (betting_candidates.json);
                  commits at T-30 against fresh odds — this IS the live design
       near_miss  priced by the gate and rejected post-edge (slip near_misses)
+      vetoed     priced, then blocked by the cold_home / away_fav_ref factor veto
+                 (a near_miss whose reason starts with "veto_factor")
       none       no signal in either file (a T-30 scan may still price it)
     The model/market comparison is raw (no shrinkage, no situational adjustment):
     it is the INPUT, the verdict is the DECISION.
@@ -937,6 +939,8 @@ def _ou_signal(match_key: str, league: str, goal_pred, totals,
     entry = slip_selected or candidate or slip_near
     if entry:
         status = "selected" if slip_selected else "candidate" if candidate else "near_miss"
+        if status == "near_miss" and str(entry.get("reason", "")).startswith("veto_factor"):
+            status = "vetoed"  # priced, in or near band, blocked by a 1X2-era factor veto
         bet = {
             "status": status,
             "selection": entry.get("selection", ""),

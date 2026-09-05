@@ -998,9 +998,11 @@ class UnifiedBettingEngine:
 
     def top_near_misses(self, n: int = 10) -> List[Dict]:
         """Closest-to-band rejections first (gap_pp 0 = inside the edge band,
-        rejected by another gate), then by descending edge."""
+        rejected by another gate), then by descending edge. Factor-vetoed
+        candidates sort last: they are informative, not near."""
         return sorted(self.near_misses,
-                      key=lambda m: (m["gap_pp"], -m["edge_pct"]))[:n]
+                      key=lambda m: (str(m.get("reason", "")).startswith("veto_factor"),
+                                     m["gap_pp"], -m["edge_pct"]))[:n]
 
     def _log_near_misses(self, n: int = 5) -> None:
         top = self.top_near_misses(n)
@@ -1253,16 +1255,19 @@ class UnifiedBettingEngine:
                     min_edge, market_cat, selection, tags
                 )
 
-        # Veto factors that are statistically losing
+        # Veto factors that are statistically losing — on 1X2/DC/DNB (journal:
+        # n=8, -33% ROI). Applied to every market via this shared builder; the
+        # O/U evidence is n=2. Resolved AFTER the edge calc below so the slip
+        # records it (2026-09-04: 14/19 SA matches vanished here silently).
         _VETO_FACTORS = {"cold_home", "away_fav_ref"}
+        _veto_hits: set = set()
         if pred:
             _all_factors = set(
                 (pred.get("neutral_factors") or []) +
                 (pred.get("home_factors") or []) +
                 (pred.get("away_factors") or [])
             )
-            if _all_factors & _VETO_FACTORS:
-                return None
+            _veto_hits = _all_factors & _VETO_FACTORS
 
         # Validate inputs — reject NaN/inf before any calculation
         if (any(math.isnan(v) or math.isinf(v) for v in [model_p, sharp_p, best_o] if isinstance(v, float))
@@ -1315,6 +1320,9 @@ class UnifiedBettingEngine:
 
         # Hard cap removed — now handled by per-market max_edge (7.0%) at line below.
         # Previously: edges >8% hit 37.7% WR. Now capped at 7% via market_rules.
+
+        if _veto_hits:
+            return _miss("veto_factor:" + ",".join(sorted(_veto_hits)))
 
         # Odds-range gating: 1.5-2.0 is a dead zone (live: 15 bets, 40% WR, -EUR121).
         if 1.5 <= best_o < 2.0:
@@ -3689,7 +3697,7 @@ def save_report(report: Dict):
     slip = report.get("_slip")
     engine = report.get("_engine")
     if slip and engine:
-        save_bet_slip(slip, engine.all_bets, near_misses=engine.top_near_misses(10),
+        save_bet_slip(slip, engine.all_bets, near_misses=engine.top_near_misses(40),
                       best_picks=getattr(engine, 'best_picks', []))
     else:
         # No slip/engine attached: nothing to journal. The old fallback wrote
@@ -3837,7 +3845,7 @@ Examples:
         # exactly what a 0-bet day needs on disk (dashboard, /picks, digest).
         if not cfg.dry_run:
             save_bet_slip(slip, all_bets,
-                          near_misses=engine.top_near_misses(10),
+                          near_misses=engine.top_near_misses(40),
                           best_picks=getattr(engine, 'best_picks', []))
         if args.json:
             print(json.dumps({"bets": [], "message": "No value bets found"},
@@ -3900,7 +3908,7 @@ Examples:
     # -- Save --
     if not cfg.dry_run:
         save_bet_slip(slip, all_bets, engine.accumulators,
-                      near_misses=engine.top_near_misses(10),
+                      near_misses=engine.top_near_misses(40),
                       best_picks=getattr(engine, 'best_picks', []))
         n_recorded = record_bets(slip)
         log.info("Recorded %d bets to history tracker", n_recorded)

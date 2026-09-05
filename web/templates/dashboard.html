@@ -94,6 +94,7 @@
   .bet-pill--selected  { background:rgba(74,222,128,0.18); color:var(--green); border:1px solid rgba(74,222,128,0.35); }
   .bet-pill--candidate { background:rgba(129,140,248,0.15); color:var(--accent); border:1px solid rgba(129,140,248,0.3); }
   .bet-pill--near_miss { background:rgba(251,191,36,0.12); color:var(--amber); }
+  .bet-pill--vetoed    { color:var(--text-secondary); border:1px dashed rgba(251,191,36,0.45); }
   .bet-pill--none, .bet-pill--no_odds, .bet-pill--no_model { color:var(--text-tertiary); }
   .bet-pill--gated { color:var(--text-tertiary); border:1px dashed var(--border-default); }
   /* Verdict older than the odds it was priced against: the age rides ON the pill */
@@ -279,7 +280,7 @@ function renderBetCell(ou, m) {
   // Verdict age vs the odds it was priced against. Candidates come from the
   // morning/evening dry-run file; selected/near-miss from the slip.
   let aged = false, ageTxt = '', ageNote = '';
-  if (st === 'selected' || st === 'candidate' || st === 'near_miss') {
+  if (st === 'selected' || st === 'candidate' || st === 'near_miss' || st === 'vetoed') {
     const scanTs = st === 'candidate' ? window._dashFresh.cand : window._dashFresh.slip;
     const scanAge = _minsAgo(scanTs), oddsAge = _minsAgo(window._dashFresh.odds);
     if (scanAge != null && oddsAge != null && scanAge - oddsAge > VERDICT_AGED_MIN) {
@@ -300,6 +301,9 @@ function renderBetCell(ou, m) {
     case 'near_miss':
       label = `NEAR ${sel}`; sub = `${edge}${b.min_edge != null ? ' <' + Number(b.min_edge).toFixed(1) : ''}`;
       title = `Priced and rejected: ${b.reason || ''} (edge ${edge}, band ${b.min_edge ?? '?'}–${b.max_edge ?? '?'})`; break;
+    case 'vetoed':
+      label = `VETO ${sel}`; sub = edge;
+      title = `Priced at ${edge} (band ${b.min_edge ?? '?'}–${b.max_edge ?? '?'}) then blocked by a factor veto: ${(b.reason || '').replace('veto_factor:', '')}. The veto's evidence is 1X2 (n=8, −33% ROI); on O/U it is untested (n=2).`; break;
     case 'gated':   label = 'GATED';    title = 'League betting disabled (deployment_state.json)'; break;
     case 'no_odds': label = 'NO ODDS';  title = 'No totals market with 3+ bookmakers on a bettable line'; break;
     case 'no_model':label = 'NO MODEL'; title = 'No O/U prediction for this match'; break;
@@ -310,7 +314,7 @@ function renderBetCell(ou, m) {
 
 // Triage order: what the gate said, then kickoff. 0-2 = a verdict worth reading,
 // 3-4 = nothing to act on, 5 = league gated (collapsed by default).
-const _BET_TIER = { selected: 0, candidate: 1, near_miss: 2, none: 3, no_odds: 4, no_model: 4, gated: 5 };
+const _BET_TIER = { selected: 0, candidate: 1, near_miss: 2, vetoed: 2.5, none: 3, no_odds: 4, no_model: 4, gated: 5 };
 function _betTier(m) { return _BET_TIER[m.ou?.bet?.status] ?? 3; }
 function _triageSort(a, b) {
   const t = _betTier(a) - _betTier(b);
@@ -467,10 +471,11 @@ function groupMatchesByDate(matches) {
 function _betSummary(matches, data) {
   const count = st => matches.filter(m => (m.ou?.bet?.status) === st).length;
   const parts = [];
-  const sel = count('selected'), cand = count('candidate'), near = count('near_miss'), gated = count('gated');
+  const sel = count('selected'), cand = count('candidate'), near = count('near_miss'), vetoed = count('vetoed'), gated = count('gated');
   parts.push(`${sel} bet${sel !== 1 ? 's' : ''}`);
   if (cand) parts.push(`${cand} candidate${cand !== 1 ? 's' : ''} (commit at T-30)`);
   if (near) parts.push(`${near} near miss${near !== 1 ? 'es' : ''}`);
+  if (vetoed) parts.push(`${vetoed} vetoed`);
   if (gated) parts.push(`${gated} gated`);
   const age = ts => { if (!ts) return 'never'; const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000); return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`; };
   // Two verdict clocks: the slip (selected + near-miss, written at T-30 / manual run)
@@ -539,7 +544,7 @@ function _renderUpdatedLine() {
   el.textContent = `updated ${ago} · ${c.n} row${c.n !== 1 ? 's' : ''} changed`;
 }
 
-const _TIER_LABEL = { selected: 'BET', candidate: 'CANDIDATE', near_miss: 'NEAR MISS', none: 'no signal', gated: 'gated', no_odds: 'no odds', no_model: 'no model' };
+const _TIER_LABEL = { selected: 'BET', candidate: 'CANDIDATE', near_miss: 'NEAR MISS', vetoed: 'VETOED', none: 'no signal', gated: 'gated', no_odds: 'no odds', no_model: 'no model' };
 function _applyDashboard(next, diff) {
   window._dashData = next; window._dashPending = null;
   const chip = document.getElementById('dash-pending'); if (chip) chip.style.display = 'none';

@@ -603,9 +603,6 @@ function renderHero(m, ctx) {
   const aPts = standings[m.away_team]?.points;
   const hForm = standings[m.home_team]?.form_last5;
   const aForm = standings[m.away_team]?.form_last5;
-  const edges = getMatchEdges(m);
-  const bestEdge = Math.max(edges.home||0, edges.draw||0, edges.away||0);
-  const hasValue = bestEdge > 3;
   const mi = m.market_intelligence||{}, om = m.odds_movement||{};
   const hasSteam = mi.steam_detected || om.is_steam_move;
   const isCompleted = m.status === 'completed';
@@ -630,7 +627,6 @@ function renderHero(m, ctx) {
           ? `<span class="badge ${predCorrect ? 'badge--green' : 'badge--red'}">${predCorrect ? 'CORRECT' : 'WRONG'}</span>
              <span class="text-small text-tertiary">Predicted: ${m.predicted_outcome || '?'} | Actual: ${actualResult || '?'}</span>`
           : `${m.lineup_source==='confirmed'?'<span class="badge badge--outline-green">CONFIRMED XI</span>':''}
-             ${hasValue?`<span class="badge badge--green">VALUE +${bestEdge.toFixed(1)}%</span>`:''}
              ${hasSteam?'<span class="badge badge--red">STEAM MOVE</span>':''}
              ${confBadge(m.confidence_level)}`
         }
@@ -710,18 +706,19 @@ function renderMatchIntel(intel, m) {
       <!-- Top scorer suitability per team -->
       <div style="border:1px solid var(--border);border-radius:6px;padding:var(--space-2);grid-column:1/-1">
         <div style="font-size:11px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:4px">Top scorer suitability</div>
-        <div style="margin-bottom:4px"><b style="color:var(--accent)">${home}:</b> ${renderScorers(ss.home_top)}</div>
-        <div><b style="color:var(--accent)">${away}:</b> ${renderScorers(ss.away_top)}</div>
-        ${ss._unavailable ? '<div style="margin-top:4px">' + naBadge + ' — run scorer pipeline.</div>' : ''}
+        ${ss._unavailable
+          ? '<div class="text-small text-tertiary">No model. Scorer markets measured no-skill (2026-06-04); nothing writes scorers_predictions.json any more. Player shot / foul floors are on /projections.</div>'
+          : `<div style="margin-bottom:4px"><b style="color:var(--accent)">${home}:</b> ${renderScorers(ss.home_top)}</div>
+             <div><b style="color:var(--accent)">${away}:</b> ${renderScorers(ss.away_top)}</div>`}
       </div>
     </div>
 
     <!-- AI reasoning -->
     <div style="background:var(--surface-2);border-left:3px solid var(--accent);padding:var(--space-2) var(--space-3);border-radius:4px">
       <div style="font-size:11px;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:4px">AI reasoning</div>
-      <div style="font-style:italic">
-        ${ai.sentence || naBadge}
-      </div>
+      ${ai.sentence
+        ? `<div style="font-style:italic">${ai.sentence}</div>`
+        : '<div class="text-small text-tertiary">Off. The generator was a Groq call, disabled in the 2026-05-06 cost audit. The factors above are the model\'s own reasons.</div>'}
     </div>
   `;
 }
@@ -782,7 +779,7 @@ function renderVerdict(m) {
     const bestEdge = edges[bestSide] || 0;
     const edgeCol = bestEdge > 3 ? 'text-green' : bestEdge > 0 ? 'text-amber' : 'text-red';
     html += `<div style="display:flex;justify-content:center;gap:var(--space-6);margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-subtle)">
-      <div style="text-align:center"><span class="text-label">Best Edge</span><div class="text-mono font-semibold ${edgeCol}" style="font-size:16px;margin-top:2px">${bestEdge > 0 ? '+' : ''}${bestEdge.toFixed(1)}%</div></div>
+      <div style="text-align:center"><span class="text-label">Model − market (1X2, not bet)</span><div class="text-mono font-semibold ${edgeCol}" style="font-size:16px;margin-top:2px">${bestEdge > 0 ? '+' : ''}${bestEdge.toFixed(1)}%</div></div>
       <div style="text-align:center"><span class="text-label">Market H</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.home||0)*100).toFixed(0)}%</div></div>
       <div style="text-align:center"><span class="text-label">Market D</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.draw||0)*100).toFixed(0)}%</div></div>
       <div style="text-align:center"><span class="text-label">Market A</span><div class="text-mono text-tertiary" style="font-size:14px;margin-top:2px">${((mk.away||0)*100).toFixed(0)}%</div></div>
@@ -798,10 +795,7 @@ function renderVerdict(m) {
 // ═══════════════════════════════════════════════════════════════
 function renderValueBets(m, slipBets) {
   // slipBets = array of bets from unified_bet_slip.json matching this match
-  const edges = getMatchEdges(m);
-  const h2h = m.odds?.h2h || {};
   const totals = m.odds?.totals || [];
-  const rec = m.betting_recommendation;
   let bets = [];
 
   // Priority 1: Pipeline-curated bets from unified_bet_slip.json
@@ -820,20 +814,28 @@ function renderValueBets(m, slipBets) {
     }
   }
 
-  // Priority 2: Ad-hoc 1X2 edge computation (only if no slip bets)
+  // No ad-hoc computation here. Until 2026-09-05 this fell back to a browser-side
+  // 1X2 model-minus-market gap (>3pp) and labelled it a value bet — on a market
+  // the engine has had DISABLED since April (−20% ROI), unshrunk, ignoring the
+  // factor veto. Fiorentina–Torino showed "Draw +5.7%" and "Torino Win +8.0%"
+  // for a match the engine never priced. The page shows the gate's own word.
   if (!bets.length) {
-    for (const [side, label] of [['home', m.home_team + ' Win'], ['draw', 'Draw'], ['away', m.away_team + ' Win']]) {
-      const edge = edges[side];
-      if (edge && edge > 3) {
-        bets.push({ market: '1X2', selection: label, odds: h2h[side], edge, source: 'computed' });
-      }
-    }
-  }
-
-  if (!bets.length) {
-    const wrap = document.getElementById('sec-value-bets-wrap');
-    if (wrap) wrap.style.display = 'none';
-    return '';
+    const ob = m.ou?.bet || {};
+    const st = ob.status || 'none';
+    const edge = ob.edge_pct != null ? `${ob.edge_pct > 0 ? '+' : ''}${Number(ob.edge_pct).toFixed(1)}%` : '';
+    const band = ob.min_edge != null ? ` (band ${ob.min_edge}–${ob.max_edge ?? '?'})` : '';
+    const why = {
+      near_miss: `Priced and rejected by the gate: ${sanitizeHTML(ob.selection || '')} at ${edge}${band}, reason <code>${sanitizeHTML(ob.reason || '')}</code>.`,
+      vetoed: `Priced at ${edge}${band}, then blocked by the factor veto <code>${sanitizeHTML((ob.reason || '').replace('veto_factor:', ''))}</code>. That veto's evidence is 1X2 (n=8, −33% ROI); on O/U it is untested (n=2).`,
+      selected: `Journaled bet: ${sanitizeHTML(ob.selection || '')} at ${edge} @ ${ob.best_odds ?? '?'}${ob.stake_amount ? ' · €' + Number(ob.stake_amount).toFixed(2) : ''}.`,
+      candidate: `Would bet ${sanitizeHTML(ob.selection || '')} at ${edge}; commits at T-30 against fresh odds.`,
+      gated: 'League betting is disabled (deployment_state.json).',
+      no_odds: 'No totals market with 3+ bookmakers on a bettable line.',
+      no_model: 'No O/U prediction for this match.',
+      none: 'No signal in the latest scan. The T-30 scan re-prices before kickoff.',
+    }[st] || 'No signal in the latest scan.';
+    return `<div class="text-small text-secondary">${why}</div>
+      <div class="text-small text-tertiary" style="margin-top:6px">Only O/U Over 1.5 / 2.5 are bet. 1X2, draws, double chance and Unders are switched off in the engine config; a model-vs-market gap on those is not a bet.</div>`;
   }
 
   let html = '<div class="vb-grid">';
@@ -865,13 +867,6 @@ function renderValueBets(m, slipBets) {
     html += '</div></div>';
   }
 
-  // Recommendation
-  if (rec) {
-    html += `<div style="margin-top:var(--space-3);padding:var(--space-3) var(--space-4);background:rgba(74,222,128,0.04);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
-      <div class="text-label" style="color:var(--green)">Recommendation</div>
-      <div class="text-secondary font-medium mt-1" style="font-size:13px">${rec}</div>
-    </div>`;
-  }
 
   // Update count badge
   const countEl = document.getElementById('value-bets-count');
@@ -1395,12 +1390,11 @@ function renderBetting(m) {
   const edges = getMatchEdges(m);
   const h2h = m.odds?.h2h || {};
   const totals = m.odds?.totals || [];
-  const rec = m.betting_recommendation;
 
   let html = '';
 
   // Edges summary
-  html += '<div class="text-label mb-2">Market Edges</div>';
+  html += '<div class="text-label mb-2">Model − market, 1X2 (display only: 1X2 betting off since April, −20% ROI)</div>';
   html += '<div style="display:flex;gap:var(--space-4);margin-bottom:var(--space-3)">';
   for (const [side, label, col] of [['home','Home','--green'],['draw','Draw','--amber'],['away','Away','--red']]) {
     const edge = edges[side];
@@ -1413,13 +1407,6 @@ function renderBetting(m) {
   }
   html += '</div>';
 
-  // Recommendation
-  if (rec) {
-    html += `<div style="margin-top:var(--space-2);padding:var(--space-3);background:rgba(74,222,128,0.05);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
-      <span class="text-label">Recommendation</span>
-      <div class="text-secondary font-medium mt-1">${rec}</div>
-    </div>`;
-  }
 
   // Totals
   if (totals.length) {
@@ -1739,7 +1726,7 @@ async function loadMatchDetail() {
         const hasScorers = intel?.scorer_suitability && !intel.scorer_suitability._unavailable;
         document.getElementById('intel-source-badge').innerHTML = hasScorers
           ? '<span style="color:var(--success)">scorer model live</span>'
-          : '<span style="color:var(--warning)">scorer model not yet run</span>';
+          : '<span style="color:var(--text-tertiary)">no scorer model</span>';
       })
       .catch(e => {
         document.getElementById('body-match-intel').innerHTML =

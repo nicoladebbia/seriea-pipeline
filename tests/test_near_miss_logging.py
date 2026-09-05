@@ -72,3 +72,37 @@ def test_top_near_misses_orders_by_gap_then_edge():
     top = eng.top_near_misses(2)
     assert [m["gap_pp"] for m in top] == [1.0, 2.0]
     assert top[1]["edge_pct"] == 12.0  # tie on gap -> larger edge first
+
+
+def _vetoed_pred(*factors):
+    return {"match": "Inter vs Napoli", "home_factors": list(factors),
+            "away_factors": [], "neutral_factors": []}
+
+
+def test_factor_veto_is_recorded_not_silent():
+    """2026-09-04: 14 of 19 Serie A matches died on the cold_home / away_fav_ref
+    veto BEFORE the edge calc — no near-miss, no log line, and an in-band
+    Atalanta–Cagliari Over 2.5 vanished without a trace. The veto stays (its
+    1X2 evidence is real); it must just say so."""
+    eng = UnifiedBettingEngine()
+    # edge 6.8 in band, golden-zone odds: would be a bet without the veto
+    assert _bet(eng, 0.648, 0.58, pred=_vetoed_pred("away_fav_ref")) is None
+    (m,) = eng.near_misses
+    assert m["reason"] == "veto_factor:away_fav_ref"
+    assert m["edge_pct"] == 6.8 and m["gap_pp"] == 0.0
+
+
+def test_veto_lists_every_hit_factor_sorted():
+    eng = UnifiedBettingEngine()
+    assert _bet(eng, 0.648, 0.58, pred=_vetoed_pred("cold_home", "away_fav_ref")) is None
+    assert eng.near_misses[0]["reason"] == "veto_factor:away_fav_ref,cold_home"
+
+
+def test_vetoed_rejections_sort_after_real_near_misses():
+    """A vetoed in-band candidate has gap 0 and would otherwise crowd the real
+    near misses (gap 0.3) out of the slip's top-N."""
+    eng = UnifiedBettingEngine()
+    _bet(eng, 0.648, 0.58, pred=_vetoed_pred("cold_home"))     # veto, gap 0
+    _bet(eng, 0.50, 0.44, min_edge_override=7.0)                # edge 6 -> gap 1.0
+    top = eng.top_near_misses(1)
+    assert top[0]["reason"] == "below_min_edge"

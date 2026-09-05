@@ -120,3 +120,15 @@ def test_endpoint_survives_null_lists_in_slip_and_candidates(monkeypatch):
     assert d["slip_generated_at"] == "2026-09-04T14:26:00"
     assert all("ou" in m and m["ou"]["bet"]["status"] in
                ("none", "gated", "no_odds", "no_model") for m in d["matches"])
+
+
+def test_factor_veto_is_its_own_status_not_a_near_miss():
+    """The engine records the cold_home / away_fav_ref veto as a near-miss row
+    with reason veto_factor:*; the pill must not call that NEAR."""
+    nm = {"match": "Atalanta vs Cagliari", "market": "O/U 2.5", "selection": "Over 2.5",
+          "edge_pct": 7.5, "min_edge": 7.0, "max_edge": 10.0, "gap_pp": 0.0,
+          "reason": "veto_factor:away_fav_ref", "best_odds": 2.02}
+    s = _ou_signal("Atalanta vs Cagliari", "serie_a", GP, TOTALS, None, nm, True)
+    assert s["bet"]["status"] == "vetoed"
+    assert s["bet"]["reason"] == "veto_factor:away_fav_ref"
+    assert s["bet"]["edge_pct"] == 7.5
