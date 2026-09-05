@@ -337,7 +337,6 @@ function renderMatchRow(m, idx) {
           <span class="prob-mini"><span style="width:${pH}%;background:var(--green)"></span><span style="width:${pD}%;background:var(--amber)"></span><span style="width:${pA}%;background:var(--red)"></span></span>
           <span class="text-mono text-tertiary" style="font-size:10px">${pH}-${pD}-${pA}</span></span>
         <span><span class="dash-detail__k">1X2 edge</span><span class="edge-cell ${edgeVal > 3 ? 'text-green' : edgeVal < -3 ? 'text-red' : 'text-tertiary'}">${edgeVal ? (edgeVal > 0 ? '+' : '') + edgeVal.toFixed(1) + '%' : '-'}</span><span class="text-tertiary" style="font-size:9px;margin-left:4px">not bet since Apr</span></span>
-        <span><span class="dash-detail__k">Conf</span>${confBadge(m.confidence_level)}</span>
         ${m.ou && m.ou.expected_total_goals ? `<span><span class="dash-detail__k">xTotal</span><span class="text-mono">${m.ou.expected_total_goals.toFixed(2)}</span></span>` : ''}
         <a href="/prediction/${matchSlug}" style="margin-left:auto;color:var(--accent);text-decoration:none">Full analysis &rarr;</a>
       </div>
