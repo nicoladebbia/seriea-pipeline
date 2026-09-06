@@ -338,6 +338,23 @@ _HISTORY_PATH = DATA_DIR / "notification_history.jsonl"
 # Environment helpers
 # ---------------------------------------------------------------------------
 
+def _sending_suppressed() -> bool:
+    """True when no channel may fire: NOTIFY_DISABLED=1, or running under pytest.
+
+    2026-09-06: tests/test_weekly_retrain.py drove auto_retrain() eleven times per
+    run; the function imports notify_matchweek_summary inside its body, so the
+    harness's stub of weekly_retrain._notify never intercepted it, and every
+    pytest run posted eleven real "Matchweek 3" cards to Telegram (101 in one
+    afternoon). Pytest sets PYTEST_CURRENT_TEST in os.environ for the duration of
+    every test, and child processes inherit it, so this is the one gate that
+    covers every caller — a test must never be able to reach a real channel.
+    """
+    flag = os.environ.get("NOTIFY_DISABLED", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 def _load_env_key(name: str) -> str:
     """Load a key from os.environ or .env file."""
     val = os.environ.get(name)
@@ -582,6 +599,8 @@ def _notify_macos(message: str, title: str) -> bool:
     """
     if not message or not message.strip():
         return False  # Telegram-only request from caller
+    if _sending_suppressed():
+        return False
     try:
         prefs = load_preferences()
         sound = prefs.get("sound", "Basso")
@@ -633,6 +652,8 @@ def _notify_telegram(message: str, title: str, level: str = "info",
 
     Silently skips if TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID are not set.
     """
+    if _sending_suppressed():
+        return False
     token = _load_env_key("TELEGRAM_BOT_TOKEN")
     chat_id = _load_env_key("TELEGRAM_CHAT_ID")
 
@@ -769,6 +790,10 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
         category = "system"
     if not priority:
         priority = _get_priority(category, level)
+
+    if _sending_suppressed():
+        log.debug("notify suppressed (test/NOTIFY_DISABLED): %s", title)
+        return {"macos": False, "telegram": False, "suppressed": True}
 
     results = {}
 

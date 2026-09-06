@@ -1,5 +1,6 @@
 """Shared fixtures for the Serie A pipeline test suite."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,11 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# No test may reach a real notification channel. notify() already refuses
+# under pytest (PYTEST_CURRENT_TEST); this env flag reaches children spawned by
+# a test, which pytest's per-test variable also does but only while a test runs.
+os.environ.setdefault("NOTIFY_DISABLED", "1")
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +155,21 @@ def _promotion_state_isolated(tmp_path, monkeypatch):
     exactly this class of leak, on bankroll.json)."""
     from scripts.betting import market_promotion as _mp
     monkeypatch.setattr(_mp, "STATE_PATH", tmp_path / "market_promotion.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_notifications(monkeypatch):
+    """Tripwire behind notify's own pytest guard: if that guard is ever removed,
+    the test that reaches a transport fails loudly instead of posting to
+    Telegram (2026-09-06: 101 real "Matchweek 3" cards from one afternoon of
+    test runs)."""
+    from scripts.pipeline import notify as _n
+
+    originals = (_n._notify_telegram, _n._notify_macos)
+
+    def _trip(*a, **k):
+        raise AssertionError("test reached a real notification transport")
+
+    monkeypatch.setattr(_n, "_notify_telegram", _trip)
+    monkeypatch.setattr(_n, "_notify_macos", _trip)
+    yield originals  # a test of the transports themselves requests this fixture
