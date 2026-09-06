@@ -13,10 +13,16 @@ Weather factors affect:
 
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
+
 import requests
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config.settings import atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -107,7 +113,7 @@ def get_weather_forecast(team: str, date: str, time: str = "15:00") -> Optional[
     try:
         from datetime import datetime as _dt
         match_date = _dt.strptime(date, "%Y-%m-%d").date()
-        days_until = (match_date - _dt.now().date()).days
+        days_until = (match_date - now_local().date()).days
         if days_until > 5:
             log.info(f"Skipping weather for {team} on {date} — {days_until} days away (max 5)")
             return None
@@ -288,11 +294,10 @@ def fetch_all_match_weather(matches_file: str = None) -> Dict:
 
     # Save weather data
     output_path = DATA_DIR / "upcoming" / "weather.json"
-    with open(output_path, "w") as f:
-        json.dump({
-            "fetched_at": datetime.now().isoformat(),
-            "matches": weather_data
-        }, f, indent=2)
+    atomic_write_json(output_path, {
+        "fetched_at": now_utc().isoformat(),
+        "matches": weather_data
+    }, indent=2)
 
     log.info(f"Saved weather data to {output_path}")
     return weather_data

@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "data" / "external" / "sofascore" / "player_match_stats.parquet"
 CACHE = ROOT / "data" / "fantacalcio" / "player_rates.json"
@@ -102,9 +104,7 @@ def load_rates(refresh: bool = False) -> dict | None:
         return None
     payload = _build(df)
     payload["source_mtime"] = src_mtime
-    tmp = CACHE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False))
-    tmp.replace(CACHE)
+    atomic_write_json(CACHE, payload, ensure_ascii=False)
     return payload
 
 

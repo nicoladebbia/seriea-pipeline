@@ -11,19 +11,16 @@ Usage:
 """
 
 import argparse
-import json
-import math
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 BANKROLL_OUT_DIR = DATA_DIR / "bankroll"
 
@@ -65,7 +62,7 @@ class BetOpportunity:
 
 def load_historical_edge_distribution(
     config: RuinSimConfig,
-    features_path: Optional[Path] = None,
+    features_path: Path | None = None,
 ) -> list[BetOpportunity]:
     """Extract historical bet distribution from features.parquet.
 
@@ -376,7 +373,7 @@ def main():
     optimal_f, optimal_r = find_optimal_fraction(results, config.max_ruin_prob)
 
     output = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "config": {
             "n_paths": config.n_paths,
             "ruin_threshold": config.ruin_threshold,
@@ -393,8 +390,7 @@ def main():
 
     BANKROLL_OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = BANKROLL_OUT_DIR / "ruin_simulation.json"
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(out_path, output, indent=2)
     print(f"\nResults saved to {out_path}")
 
 

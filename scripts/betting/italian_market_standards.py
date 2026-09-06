@@ -15,16 +15,17 @@ Italian Betting Culture:
 
 import json
 import logging
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List
 
 log = logging.getLogger(__name__)
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 # =============================================================================
 # ITALIAN MARKET STANDARDS
@@ -87,7 +88,7 @@ def is_standard_italian_line(line: float, market_type: str = "totals") -> bool:
     return True
 
 
-def normalize_line_to_italian(line: float, market_type: str = "totals") -> Optional[float]:
+def normalize_line_to_italian(line: float, market_type: str = "totals") -> float | None:
     """Convert an Asian-style line to the nearest Italian standard line.
 
     Args:
@@ -145,7 +146,7 @@ def normalize_line_to_italian(line: float, market_type: str = "totals") -> Optio
     return line
 
 
-def format_italian_selection(market: str, selection: str, line: Optional[float] = None) -> str:
+def format_italian_selection(market: str, selection: str, line: float | None = None) -> str:
     """Format a selection for Italian market display.
 
     Args:
@@ -406,7 +407,7 @@ def apply_italian_standards_to_file(input_path: Path, output_path: Path = None) 
     # Add Italian standards metadata
     data["italian_market_standards"] = {
         "applied": True,
-        "applied_at": datetime.now().isoformat(),
+        "applied_at": now_utc().isoformat(),
         "original_bets": original_count,
         "filtered_bets": filtered_count,
         "removed_asian_lines": original_count - filtered_count,
@@ -423,8 +424,7 @@ def apply_italian_standards_to_file(input_path: Path, output_path: Path = None) 
     if output_path is None:
         output_path = input_path
 
-    with open(output_path, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(output_path, data, indent=2)
 
     return {
         "original_bets": original_count,

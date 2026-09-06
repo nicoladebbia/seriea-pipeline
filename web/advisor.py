@@ -20,6 +20,8 @@ from typing import Any
 
 from flask import Blueprint, Response, jsonify, render_template, request
 
+from scripts.utils.match_timing import now_local, now_utc
+
 log = logging.getLogger(__name__)
 
 advisor_bp = Blueprint("advisor", __name__)
@@ -27,8 +29,9 @@ advisor_bp = Blueprint("advisor", __name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-from config.settings import DATA_DIR, UPCOMING_DIR, BETTING_DIR, LIVE_DIR
+from config.settings import BETTING_DIR, DATA_DIR, LIVE_DIR, UPCOMING_DIR, atomic_write_json, season_file_suffix
 from scripts.utils.json_utils import load_json_safe
+
 USAGE_FILE = DATA_DIR / "api_usage.json"
 # Project root. Six call sites (Sofascore player stats, match incidents, matches,
 # features) build paths as `_BASE / "data" / ...`; a past "deduplicate path
@@ -76,7 +79,9 @@ def _resolve_team(query: str) -> str | None:
     """Fuzzy-resolve user input to canonical team name (Serie A + EPL)."""
     try:
         from config.team_names import (
-            normalize_team, SERIE_A_2026_27, PREMIER_LEAGUE_2026_27,
+            PREMIER_LEAGUE_2026_27,
+            SERIE_A_2026_27,
+            normalize_team,
         )
     except ImportError:
         return query
@@ -848,7 +853,8 @@ def _tool_get_player_stats(args: dict) -> str:
 
                 # --- Availability / injury detection ---
                 try:
-                    from datetime import date as dt_date, timedelta
+                    from datetime import date as dt_date
+                    from datetime import timedelta
                     player_team = sof_rows["team"].mode().iloc[0]
                     current_season_sof = sof_rows[sof_rows["date"] >= "2025-08-01"]
                     if not current_season_sof.empty:
@@ -1017,7 +1023,7 @@ def _tool_get_player_stats(args: dict) -> str:
     try:
         import pandas as pd
         tm_dir = DATA_DIR / "external" / "transfermarkt"
-        mv_path = tm_dir / "market_values_2026_2027.parquet"
+        mv_path = tm_dir / f"market_values_{season_file_suffix()}.parquet"
         if mv_path.exists():
             mv = pd.read_parquet(mv_path)
             mmask = _player_name_match(mv["player_name"], player_q)
@@ -1036,7 +1042,7 @@ def _tool_get_player_stats(args: dict) -> str:
                     "nationality": row.get("nationality"),
                 }
                 # Capology salary estimate, matched by (team, fuzzy name).
-                sal_path = tm_dir / "salaries_2026_2027.parquet"
+                sal_path = tm_dir / f"salaries_{season_file_suffix()}.parquet"
                 if sal_path.exists():
                     sal = pd.read_parquet(sal_path)
                     smask = _player_name_match(sal["player_name"], player_q)
@@ -1068,7 +1074,7 @@ def _tool_get_player_stats(args: dict) -> str:
                 # zeros that invite a fabricated wage/contract.
                 dep = None
                 try:
-                    tf_path = tm_dir / "transfers_2026_2027.parquet"
+                    tf_path = tm_dir / f"transfers_{season_file_suffix()}.parquet"
                     if tf_path.exists():
                         tf = pd.read_parquet(tf_path)
                         tmask = _player_name_match(tf["player_name"], player_q)
@@ -1371,12 +1377,10 @@ def _tool_get_h2h(args: dict) -> str:
 
 
 def _tool_get_value_bets(args: dict) -> str:
-    from datetime import datetime as _dt
-
     slip = load_json_safe(UPCOMING_DIR / "unified_bet_slip.json")
     bets = slip.get("selected_bets", [])
     summary = slip.get("summary", {})
-    today = _dt.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
 
     # Separate today's bets from future bets
     today_bets = []
@@ -1606,13 +1610,13 @@ def _tool_get_match_players(args: dict) -> str:
 
 def _tool_get_live_matches(args: dict) -> str:
     """Get live match data from today's matchday file."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     matchday = load_json_safe(LIVE_DIR / f"{today}.json")
 
     if not matchday or not matchday.get("matches"):
         # Try yesterday (late matches may still be in yesterday's file)
         from datetime import timedelta
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = (now_local() - timedelta(days=1)).strftime("%Y-%m-%d")
         matchday = load_json_safe(LIVE_DIR / f"{yesterday}.json")
         if not matchday or not matchday.get("matches"):
             return json.dumps({"status": "No live match data available for today."})
@@ -2293,7 +2297,7 @@ def _tool_place_bet(args: dict) -> str:
                 "pinnacle_odds": b.get("pinnacle_odds"),
                 "stake": b.get("stake_amount"),
                 "confidence": b.get("confidence_tier"),
-                "placed_at": datetime.now().isoformat(),
+                "placed_at": now_utc().isoformat(),
                 "pipeline_status": "advisor_placed",
             }
             bet_id = add_bet(bet_data)
@@ -2405,7 +2409,7 @@ def _tool_place_bet(args: dict) -> str:
         "pinnacle_odds": b.get("pinnacle_odds"),
         "stake": custom_stake or b.get("stake_amount"),
         "confidence": b.get("confidence_tier"),
-        "placed_at": datetime.now().isoformat(),
+        "placed_at": now_utc().isoformat(),
         "pipeline_status": "advisor_placed",
     }
     bet_id = add_bet(bet_data)
@@ -2430,9 +2434,7 @@ def _tool_place_bet(args: dict) -> str:
 
 def _tool_manage_bets(args: dict) -> str:
     """List, cancel, or update pending bets in the journal."""
-    from scripts.betting.bet_journal import (
-        _load_journal, _save_journal, get_pending_bets, get_journal_stats
-    )
+    from scripts.betting.bet_journal import _load_journal, _save_journal, get_journal_stats, get_pending_bets
 
     action = args.get("action", "list").lower()
 
@@ -2487,7 +2489,7 @@ def _tool_manage_bets(args: dict) -> str:
             # Match by bet_id
             if bet_id_query and bet_id_query in bid:
                 bet["status"] = "void"
-                bet["settled_at"] = datetime.now().isoformat()
+                bet["settled_at"] = now_utc().isoformat()
                 bet["profit"] = 0
                 cancelled.append({"bet_id": bid, "match": bet.get("match"),
                                    "market": bet.get("market")})
@@ -2505,7 +2507,7 @@ def _tool_manage_bets(args: dict) -> str:
                     if mq not in bm and bm not in mq:
                         continue
                 bet["status"] = "void"
-                bet["settled_at"] = datetime.now().isoformat()
+                bet["settled_at"] = now_utc().isoformat()
                 bet["profit"] = 0
                 cancelled.append({"bet_id": bid, "match": bet.get("match"),
                                    "market": bet.get("market"),
@@ -2548,7 +2550,7 @@ def _tool_manage_bets(args: dict) -> str:
                 bet["odds"] = float(new_odds)
             if new_stake is not None:
                 bet["stake"] = float(new_stake)
-            bet["updated_at"] = datetime.now().isoformat()
+            bet["updated_at"] = now_utc().isoformat()
             updated.append({
                 "bet_id": bid, "match": bet.get("match"),
                 "market": bet.get("market"), "selection": bet.get("selection"),
@@ -3060,7 +3062,7 @@ def _tool_build_parlay(args: dict) -> str:
             "profit": None,
             "closing_odds": None,
             "clv_pct": None,
-            "placed_at": datetime.now().isoformat(),
+            "placed_at": now_utc().isoformat(),
             "settled_at": None,
             "pipeline_status": "advisor_parlay",
             "legs": legs,
@@ -3590,10 +3592,10 @@ You know the user's live bankroll, ROI, peak, drawdown, and streak (injected in 
         )
         parts.append("")
 
-    parts.append("Today is " + datetime.now().strftime("%A, %B %d, %Y") + ".")
+    parts.append("Today is " + now_local().strftime("%A, %B %d, %Y") + ".")
 
     # Inject upcoming matches so Claude knows what's scheduled — WITH dates
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_local().strftime("%Y-%m-%d")
     predictions = load_json_safe(UPCOMING_DIR / "predictions.json")
     upcoming_list = predictions.get("predictions", [])
     if isinstance(upcoming_list, list) and upcoming_list:
@@ -3635,7 +3637,7 @@ def _build_greeting() -> dict:
 
     Leads with insight, not data dump. The dashboard already shows numbers.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
 
     # Check if matches settled today
     history = load_json_safe(BETTING_DIR / "history.json")
@@ -3986,7 +3988,7 @@ def _track_usage(usage: dict, model: str = _MODEL_SONNET):
     the request. Unknown model IDs fall back to Sonnet pricing (never understate)."""
     try:
         data = load_json_safe(USAGE_FILE, default={"daily": {}, "total": {}})
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_local().strftime("%Y-%m-%d")
 
         day = data.setdefault("daily", {}).setdefault(today, {
             "requests": 0,
@@ -4012,8 +4014,7 @@ def _track_usage(usage: dict, model: str = _MODEL_SONNET):
         day["estimated_cost"] = round(day["estimated_cost"] + cost, 6)
 
         USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(USAGE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(USAGE_FILE, data, indent=2)
     except Exception as e:
         log.warning("Failed to track usage: %s", e)
 

@@ -43,10 +43,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.utils.match_timing import now_local, now_utc
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.settings import MODELS_DIR, latest_season_with_results
+from config.settings import MODELS_DIR, atomic_write_json, latest_season_with_results
 from ml.evaluation import MIN_GATE_TEST_MATCHES
 from storage.paths import features_path
 
@@ -79,8 +81,7 @@ def _load_retrain_state() -> dict:
 def _save_retrain_state(state: dict):
     """Save retrain state."""
     RETRAIN_STATE.parent.mkdir(parents=True, exist_ok=True)
-    with open(RETRAIN_STATE, "w") as f:
-        json.dump(state, f, indent=2)
+    atomic_write_json(RETRAIN_STATE, state, indent=2)
 
 
 def _last_retrained_for_season(state: dict, season: str) -> int:
@@ -145,7 +146,7 @@ def get_matchweek_status() -> dict:
         remainder = total_matches % MATCHES_PER_MATCHWEEK
 
         last_date = str(current_season["match_date"].max())[:10]
-        days_since_last = (datetime.now() - pd.Timestamp(last_date)).days
+        days_since_last = (now_utc() - pd.Timestamp(last_date, tz='UTC')).days
 
         # Check if we already retrained for this matchweek count
         state = _load_retrain_state()
@@ -305,7 +306,7 @@ def _load_selected_features() -> list[str] | None:
 def _archive_current_models():
     """Copy current production models to timestamped archive."""
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    ts = now_local().strftime("%Y%m%dT%H%M%S")
     archive_path = ARCHIVE_DIR / ts
 
     src = MODELS_DIR / "universal"
@@ -534,7 +535,7 @@ def rebuild_features() -> bool:
     t0 = time.time()
     try:
         from features.build import build_features
-        build_features(use_cache=False)
+        build_features()
         elapsed = time.time() - t0
         log.info("Features rebuilt in %.1f seconds", elapsed)
         return True
@@ -789,10 +790,9 @@ def full_retrain(dry_run: bool = False) -> dict:
     t0 = time.time()
 
     try:
-        from ml.training import train_optimized
-
         # Train both leagues with all improvements (exclude_odds, per-league)
         from config.leagues import ACTIVE_LEAGUES
+        from ml.training import train_optimized
         trained: list[str] = []
         for _league in ACTIVE_LEAGUES:
             log.info("Training %s...", _league)
@@ -966,7 +966,7 @@ def rollback(version: str | None = None) -> bool:
 def _is_last_week_of_month() -> bool:
     """Check if today is in the last 7 days of the month."""
     import calendar
-    today = datetime.now()
+    today = now_utc()
     _, last_day = calendar.monthrange(today.year, today.month)
     return today.day > last_day - 7
 # ---------------------------------------------------------------------------

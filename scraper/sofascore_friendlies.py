@@ -49,7 +49,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from config.leagues import LEAGUE_REGISTRY
-from config.settings import get_current_season
+from config.settings import atomic_write_json, get_current_season
 from scraper.sofascore_events import _BASE_URL, _get_json, _jitter_delay
 from scraper.sofascore_lineups import _normalize_sofascore_team
 
@@ -454,9 +454,7 @@ def _save_opp_cache(cache: dict[str, Any]) -> None:
         _OPP_CACHE.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(cache)
         payload[_OPP_CACHE_SEASON_KEY] = get_current_season()
-        tmp = _OPP_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        tmp.replace(_OPP_CACHE)
+        atomic_write_json(_OPP_CACHE, payload, indent=2, sort_keys=True)
     except OSError as exc:
         log.warning("could not persist opponent cache: %s", exc)
 
@@ -592,9 +590,7 @@ def _save_club_roster(our_teams: dict[int, tuple[str, str]]) -> None:
     }
     try:
         _CLUB_ROSTER.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CLUB_ROSTER.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2))
-        tmp.replace(_CLUB_ROSTER)
+        atomic_write_json(_CLUB_ROSTER, payload, indent=2)
     except OSError as exc:
         log.warning("could not write club roster: %s", exc)
 

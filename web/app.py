@@ -10,6 +10,8 @@ import threading
 import time as _time
 from collections import defaultdict
 from datetime import UTC, datetime, timezone, timedelta
+
+from scripts.utils.match_timing import now_local, now_utc
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,7 +25,7 @@ except ImportError:
 
 from flask import Flask, render_template, jsonify, request as flask_request
 from config.settings import (
-    DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, LIVE_DIR,
+    DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, LIVE_DIR, atomic_write_json,
 )
 from config.leagues import LEAGUE_REGISTRY
 from config.team_names import strip_accents
@@ -452,7 +454,7 @@ def _next_fixture_for_team(league: str, team: str) -> dict | None:
         return None
 
     team_norm = normalize_team(team)
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
 
     candidates = []
     for fx in fixtures:
@@ -474,7 +476,7 @@ def _next_fixture_for_team(league: str, team: str) -> dict | None:
 
     candidates.sort(key=lambda x: x[0])
     ts, fx, ht, at = candidates[0]
-    kickoff = datetime.fromtimestamp(ts, tz=timezone.utc)
+    kickoff = datetime.fromtimestamp(ts, tz=UTC)
     is_home = normalize_team(ht) == team_norm
     return {
         "match": f"{ht} vs {at}",
@@ -1439,13 +1441,10 @@ def api_fantacalcio_my_team():
     payload = flask_request.get_json(silent=True) or {}
     roster = [{"id": int(r["id"]), "paid": int(r.get("paid", 0))}
               for r in payload.get("roster", []) if str(r.get("id", "")).isdigit()]
-    data = {"saved_at": datetime.now(timezone.utc).isoformat(),
+    data = {"saved_at": datetime.now(UTC).isoformat(),
             "budget": int(payload.get("budget", 500)), "roster": roster}
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=1)
-    tmp.replace(path)
+    atomic_write_json(path, data, indent=1)
     return jsonify({"ok": True, "n": len(roster)})
 
 
@@ -1470,8 +1469,7 @@ def api_fantacalcio_tracker():
         try:
             from scripts.fantacalcio.tracker import build
             data = build(refresh=flask_request.args.get("refresh") == "1")
-            with open(out, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=1)
+            atomic_write_json(out, data, indent=1)
             return jsonify(data)
         except (OSError, ValueError, KeyError, ImportError) as exc:
             app.logger.warning("tracker rebuild failed: %s", exc)
@@ -1506,8 +1504,7 @@ def api_fantacalcio_xi_advisor():
             # ?repin=1 re-pins the giornata's ONE formation from a fresh
             # solve (trade, bad pin) — see xi_advisor.PIN_WINDOW_H.
             data = build_advice(repin=flask_request.args.get("repin") == "1")
-            with open(out, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=1)
+            atomic_write_json(out, data, indent=1)
             return jsonify(_with_round_context(data))
         except (OSError, ValueError, KeyError, ImportError) as exc:
             app.logger.warning("xi advisor rebuild failed: %s", exc)
@@ -2650,7 +2647,7 @@ def _club_leagues_dormant(horizon_days: int = 14) -> dict[str, bool]:
     try:
         from scripts.utils.match_timing import _load_sofascore_fixtures
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Silence has two causes and they demand opposite answers: a readable
         # season file with nothing inside the window is a REAL off-season
         # (dormant, suppress); an unreadable or empty one is a failure to read,
@@ -2699,7 +2696,7 @@ def _league_ingest_lag(grace_hours: float = 24.0) -> dict[str, dict]:
     from datetime import timedelta
 
     out: dict[str, dict] = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(hours=grace_hours)
 
     try:
@@ -2748,7 +2745,7 @@ def _league_ingest_lag(grace_hours: float = 24.0) -> dict[str, dict]:
             ts = r.get("startTimestamp")
             if not isinstance(ts, (int, float)):
                 continue
-            if datetime.fromtimestamp(ts, tz=timezone.utc) <= cutoff:
+            if datetime.fromtimestamp(ts, tz=UTC) <= cutoff:
                 expected += 1
         entry["expected_played"] = expected
 
@@ -2861,7 +2858,7 @@ def api_data_freshness():
     if last:
         try:
             t = datetime.fromisoformat(last.replace("Z", "+00:00"))
-            delta = datetime.now(timezone.utc) - t
+            delta = datetime.now(UTC) - t
             out["stale_hours"] = round(delta.total_seconds() / 3600, 1)
         except Exception:
             pass
@@ -2875,8 +2872,8 @@ def api_data_freshness():
     max_file_hours = 0
     for league, p in fixtures_paths.items():
         if p is not None and p.exists():
-            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
-            age_h = round((datetime.now(timezone.utc) - mtime).total_seconds() / 3600, 1)
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=UTC)
+            age_h = round((datetime.now(UTC) - mtime).total_seconds() / 3600, 1)
             file_age[league] = age_h
             max_file_hours = max(max_file_hours, age_h)
         else:
@@ -2908,12 +2905,12 @@ def api_data_freshness():
         pq_path = parquet_paths.get(lg)
         pq_age_h = None
         if pq_path and pq_path.exists():
-            mt = datetime.fromtimestamp(pq_path.stat().st_mtime, tz=timezone.utc)
-            pq_age_h = round((datetime.now(timezone.utc) - mt).total_seconds() / 3600, 1)
+            mt = datetime.fromtimestamp(pq_path.stat().st_mtime, tz=UTC)
+            pq_age_h = round((datetime.now(UTC) - mt).total_seconds() / 3600, 1)
 
         last_success = h.get("last_success_at", 0)
         last_success_iso = (
-            datetime.fromtimestamp(last_success, tz=timezone.utc).isoformat()
+            datetime.fromtimestamp(last_success, tz=UTC).isoformat()
             if last_success else None
         )
 
@@ -3834,7 +3831,7 @@ def api_dashboard():
 
     # Overlay actual live status from live monitoring data (replaces wall-clock guessing)
     try:
-        live_path = LIVE_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.json"
+        live_path = LIVE_DIR / f"{datetime.now(UTC).strftime('%Y-%m-%d')}.json"
         live_data = _load_json(live_path, default=None)
         if live_data and isinstance(live_data.get("matches"), dict):
             _LIVE_STATUS_MAP = {
@@ -3955,7 +3952,7 @@ def _load_commence_times() -> dict:
                     try:
                         local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
                         local_aware = local_dt.astimezone()
-                        utc_dt = local_aware.astimezone(timezone.utc)
+                        utc_dt = local_aware.astimezone(UTC)
                         ct_map[mk] = utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                     except (ValueError, TypeError):
                         pass
@@ -4028,7 +4025,7 @@ def _parse_kickoff_utc(entry: dict, pred_lookup: dict = None) -> "datetime | Non
         try:
             # Assume match hasn't happened yet if it's today — use 23:59 local
             local = datetime.strptime(f"{d} 23:59", "%Y-%m-%d %H:%M")
-            return local.replace(tzinfo=timezone(_italy_offset(d))).astimezone(timezone.utc)
+            return local.replace(tzinfo=timezone(_italy_offset(d))).astimezone(UTC)
         except (ValueError, TypeError) as e:
             log.debug(f"Failed to parse date-only '{d}': {e}")
 
@@ -4044,7 +4041,7 @@ def _match_status(entry: dict, pred_lookup: dict = None) -> str:
     kick = _parse_kickoff_utc(entry, pred_lookup)
     if kick is None:
         return "upcoming"  # If we can't determine kickoff, assume upcoming
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     elapsed = (now - kick).total_seconds()
     if elapsed < 0:
         return "upcoming"
@@ -4834,8 +4831,8 @@ def _live_data_freshness(cached: dict) -> dict:
             candidates.append(max(f.stat().st_mtime for f in json_files))
         if candidates:
             newest = max(candidates)
-            mtime = datetime.fromtimestamp(newest)
-            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            mtime = datetime.fromtimestamp(newest, tz=UTC)
+            age_h = (now_utc() - mtime).total_seconds() / 3600
             result["understat_ppda"] = {
                 "seasons": len(json_files) if json_files else 0,
                 "last_updated": mtime.isoformat(),
@@ -4852,8 +4849,8 @@ def _live_data_freshness(cached: dict) -> dict:
             ss_files = [f for f in ss_dir.glob("*.parquet") if f.is_file()]
             if ss_files:
                 newest = max(f.stat().st_mtime for f in ss_files)
-                mtime = datetime.fromtimestamp(newest)
-                age_h = (datetime.now() - mtime).total_seconds() / 3600
+                mtime = datetime.fromtimestamp(newest, tz=UTC)
+                age_h = (now_utc() - mtime).total_seconds() / 3600
                 result["sofascore"] = {
                     **(result.get("sofascore") or {}),
                     "last_updated": mtime.isoformat(),
@@ -4870,8 +4867,8 @@ def _live_data_freshness(cached: dict) -> dict:
             inj_files = [f for f in inj_dir.glob("*.parquet") if f.is_file()]
             if inj_files:
                 newest = max(f.stat().st_mtime for f in inj_files)
-                mtime = datetime.fromtimestamp(newest)
-                age_h = (datetime.now() - mtime).total_seconds() / 3600
+                mtime = datetime.fromtimestamp(newest, tz=UTC)
+                age_h = (now_utc() - mtime).total_seconds() / 3600
                 result["injuries"] = {
                     **(result.get("injuries") or {}),
                     "last_updated": mtime.isoformat(),
@@ -4885,8 +4882,8 @@ def _live_data_freshness(cached: dict) -> dict:
     try:
         pred_path = UPCOMING_DIR / "predictions.json"
         if pred_path.exists():
-            mtime = datetime.fromtimestamp(pred_path.stat().st_mtime)
-            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            mtime = datetime.fromtimestamp(pred_path.stat().st_mtime, tz=UTC)
+            age_h = (now_utc() - mtime).total_seconds() / 3600
             result["predictions"] = {
                 **(result.get("predictions") or {}),
                 "last_updated": mtime.isoformat(),
@@ -4899,8 +4896,8 @@ def _live_data_freshness(cached: dict) -> dict:
     try:
         odds_path = UPCOMING_DIR / "odds_full.json"
         if odds_path.exists():
-            mtime = datetime.fromtimestamp(odds_path.stat().st_mtime)
-            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            mtime = datetime.fromtimestamp(odds_path.stat().st_mtime, tz=UTC)
+            age_h = (now_utc() - mtime).total_seconds() / 3600
             result["odds"] = {
                 **(result.get("odds") or {}),
                 "last_updated": mtime.isoformat(),
@@ -5083,8 +5080,8 @@ def api_health():
     files = {}
     for name, path in data_files.items():
         if path.exists():
-            mtime = datetime.fromtimestamp(path.stat().st_mtime)
-            age_h = (datetime.now() - mtime).total_seconds() / 3600
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+            age_h = (now_utc() - mtime).total_seconds() / 3600
             files[name] = {"exists": True, "age_hours": round(age_h, 1), "stale": age_h > 24}
         else:
             files[name] = {"exists": False, "stale": True}
@@ -5093,7 +5090,7 @@ def api_health():
     return jsonify({
         "status": "fresh" if stale == 0 else "stale",
         "files": files,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
     })
 
 
@@ -5320,7 +5317,7 @@ def api_logs_clear():
 # ---------------------------------------------------------------------------
 
 def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 @app.route("/api/live")
@@ -5882,7 +5879,7 @@ def _live_window_open(now=None, kickoffs=None, stopped_at=None) -> bool:
         if kickoffs is None:
             from scripts.pipeline.scheduler import get_kickoff_times
             kickoffs = get_kickoff_times()
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         stopped = _live_stopped_at if stopped_at is None else stopped_at
         for k in kickoffs:
             mins = (k["kickoff_utc"] - now).total_seconds() / 60
@@ -6173,7 +6170,7 @@ def _parse_kickoff(commence_time: str, date_str: str = "", time_str: str = ""):
         try:
             # Assume typical Italian prime-time kickoff: 20:45 CET = 19:45 UTC
             local = datetime.strptime(f"{date_str} 19:45", "%Y-%m-%d %H:%M")
-            return local.replace(tzinfo=timezone.utc)
+            return local.replace(tzinfo=UTC)
         except (ValueError, TypeError) as e:
             log.debug(f"Failed to parse kickoff date-only: {e}")
     return None
@@ -6202,7 +6199,7 @@ def _format_countdown(secs: float) -> str:
 def api_match_clock():
     """Real-time match status for all upcoming/live/completed-today matches.
     Reads local files only — no external API calls. Designed for 30s polling."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today_str = now.strftime("%Y-%m-%d")
 
     # Load data sources (all leagues)
@@ -6392,7 +6389,7 @@ def _run_pipeline_background():
     _pipeline_running = True
     _pipeline_progress = {
         "step": 0, "total": 28, "message": "Starting pipeline...",
-        "started_at": datetime.now().isoformat(), "error": "",
+        "started_at": now_utc().isoformat(), "error": "",
     }
 
     try:
@@ -6543,7 +6540,7 @@ def api_sofascore_scrape():
     def _run():
         global _sofascore_running, _sofascore_status
         _sofascore_running = True
-        _sofascore_status = {"message": "Running...", "started_at": datetime.now().isoformat()}
+        _sofascore_status = {"message": "Running...", "started_at": now_utc().isoformat()}
         try:
             import subprocess
             result = subprocess.run(
@@ -6572,8 +6569,8 @@ def api_sofascore_status():
     parquet_path = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
     stats = {}
     if parquet_path.exists():
-        mtime = datetime.fromtimestamp(parquet_path.stat().st_mtime)
-        age_h = (datetime.now() - mtime).total_seconds() / 3600
+        mtime = datetime.fromtimestamp(parquet_path.stat().st_mtime, tz=UTC)
+        age_h = (now_utc() - mtime).total_seconds() / 3600
         stats = {
             "exists": True,
             "last_modified": mtime.isoformat(),
@@ -6616,7 +6613,7 @@ def api_understat_scrape():
     def _run():
         global _understat_running, _understat_status
         _understat_running = True
-        _understat_status = {"message": "Running...", "started_at": datetime.now().isoformat()}
+        _understat_status = {"message": "Running...", "started_at": now_utc().isoformat()}
         try:
             import subprocess
             result = subprocess.run(
@@ -6654,8 +6651,8 @@ def api_understat_status():
     json_files = sorted(understat_dir.glob("understat_*.json")) if understat_dir.exists() else []
     if json_files:
         latest = json_files[-1]
-        mtime = datetime.fromtimestamp(latest.stat().st_mtime)
-        age_h = (datetime.now() - mtime).total_seconds() / 3600
+        mtime = datetime.fromtimestamp(latest.stat().st_mtime, tz=UTC)
+        age_h = (now_utc() - mtime).total_seconds() / 3600
         stats = {
             "exists": True,
             "last_modified": mtime.isoformat(),
@@ -6686,7 +6683,7 @@ def api_credits():
         usage = _load_usage()
 
         # Build per-day breakdown for the current month
-        month = datetime.now().strftime("%Y-%m")
+        month = now_local().strftime("%Y-%m")
         daily = {k: v for k, v in usage.get("daily_calls", {}).items() if k.startswith(month)}
 
         return jsonify({
@@ -6740,12 +6737,11 @@ def _save_scheduler_config():
     """Persist scheduler config + recent log to disk."""
     try:
         _SCHEDULER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_SCHEDULER_CONFIG_PATH, "w") as f:
-            json.dump({
-                "config": _scheduler_config,
-                "log": _scheduler_log[-30:],
-                "saved_at": datetime.now().isoformat(),
-            }, f, indent=2)
+        atomic_write_json(_SCHEDULER_CONFIG_PATH, {
+            "config": _scheduler_config,
+            "log": _scheduler_log[-30:],
+            "saved_at": now_utc().isoformat(),
+        }, indent=2)
     except Exception as e:
         log.warning("Failed to save scheduler config: %s", e)
 
@@ -6756,7 +6752,7 @@ _load_scheduler_config()
 
 def _scheduler_add_log(action: str, detail: str = ""):
     _scheduler_log.append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "action": action,
         "detail": detail,
     })
@@ -6780,7 +6776,7 @@ def _scheduler_loop():
 
     while _scheduler_active:
         try:
-            now = datetime.now()
+            now = now_local()
             now_ts = _time.time()
             today_str = now.strftime("%Y-%m-%d")
             time_str = now.strftime("%H:%M")
@@ -7089,7 +7085,7 @@ def _automation_registry() -> list:
 @app.route("/api/scheduler/status")
 def api_scheduler_status():
     """Get scheduler status, config, launchd jobs, upcoming match windows, and log."""
-    now = datetime.now()
+    now = now_local()
     time_str = now.strftime("%H:%M")
     today_str = now.strftime("%Y-%m-%d")
     cfg = _scheduler_config
@@ -7289,7 +7285,7 @@ def api_refresh_smart():
 
     _smart_refresh_result = {
         "status": "running",
-        "started_at": datetime.now().isoformat(),
+        "started_at": now_utc().isoformat(),
         "message": "Starting incremental refresh...",
     }
     _smart_refresh_progress["step"] = 0
@@ -7336,7 +7332,7 @@ def api_refresh_smart():
                 builtins.print = _real_print
 
             _smart_refresh_result = result
-            _smart_refresh_result["finished_at"] = datetime.now().isoformat()
+            _smart_refresh_result["finished_at"] = now_utc().isoformat()
             _smart_refresh_progress["message"] = "Complete"
 
             # Notify if new value bets were found (coaching style)
@@ -7356,7 +7352,7 @@ def api_refresh_smart():
             _smart_refresh_result = {
                 "status": "error",
                 "error": str(e),
-                "finished_at": datetime.now().isoformat(),
+                "finished_at": now_utc().isoformat(),
             }
             _smart_refresh_progress["message"] = f"Error: {e}"
         finally:
@@ -7404,7 +7400,7 @@ def api_settle():
 
     _settle_result = {
         "status": "running",
-        "started_at": datetime.now().isoformat(),
+        "started_at": now_utc().isoformat(),
         "message": "Fetching results and settling bets...",
     }
     _settle_progress["step"] = 0
@@ -7461,7 +7457,7 @@ def api_settle():
                 "status": "done",
                 **summary,
                 "prop_settlement": prop_summary,
-                "finished_at": datetime.now().isoformat(),
+                "finished_at": now_utc().isoformat(),
                 "matchday_update": {"status": "starting"},
             }
 
@@ -7487,7 +7483,7 @@ def api_settle():
                 **summary,
                 "prop_settlement": prop_summary,
                 "matchday_update": matchday_summary,
-                "finished_at": datetime.now().isoformat(),
+                "finished_at": now_utc().isoformat(),
             }
 
             # Send coaching-style settlement notification
@@ -7516,7 +7512,7 @@ def api_settle():
             _settle_result = {
                 "status": "error",
                 "error": str(e),
-                "finished_at": datetime.now().isoformat(),
+                "finished_at": now_utc().isoformat(),
             }
         finally:
             _settle_running = False
@@ -7791,7 +7787,7 @@ def _auto_settle_loop():
             _time.sleep(SETTLE_CHECK_INTERVAL)
 
             # Skip quiet hours (no matches finishing at 3 AM)
-            hour = datetime.now().hour
+            hour = now_local().hour
             if SETTLE_QUIET_HOURS[0] <= hour < SETTLE_QUIET_HOURS[1]:
                 continue
 
@@ -7806,7 +7802,7 @@ def _auto_settle_loop():
 
             # Run full settlement (same flow as /api/settle)
             log.info("Auto-settle: found unsettled past bets, fetching results...")
-            _auto_settle_last_run = datetime.now().isoformat()
+            _auto_settle_last_run = now_utc().isoformat()
             try:
                 from scripts.data.results_fetcher import fetch_and_settle
                 summary = fetch_and_settle()
@@ -7885,7 +7881,7 @@ def _has_unsettled_past_bets() -> bool:
         with open(journal_path) as f:
             journal = json.load(f)
         bets = journal.get("bets", {})
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_local().strftime("%Y-%m-%d")
         for bet in bets.values():
             status = bet.get("status", "")
             if status not in ("pending", "superseded"):
@@ -8886,7 +8882,7 @@ def api_team(team_name):
 
     ct_map = _get_commence_times()
     from datetime import datetime, timezone
-    _now_utc = datetime.now(timezone.utc)
+    _now_utc = datetime.now(UTC)
     _today_str = _now_utc.strftime("%Y-%m-%d")
     for pred in pred_list:
         if isinstance(pred, dict):
@@ -8902,7 +8898,7 @@ def api_team(team_name):
                     try:
                         _kt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
                         if _kt.tzinfo is None:
-                            _kt = _kt.replace(tzinfo=timezone.utc)
+                            _kt = _kt.replace(tzinfo=UTC)
                         _is_past = _kt < _now_utc
                     except Exception:
                         pass
@@ -9145,7 +9141,7 @@ def _get_sofascore_lookup():
                     ts = fix.get("startTimestamp", 0)
                     if not fid or not ts:
                         continue
-                    d = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                    d = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
                     h = normalize_team(fix.get("homeTeam", {}).get("name", ""))
                     a = normalize_team(fix.get("awayTeam", {}).get("name", ""))
                     if h and a:
@@ -10556,7 +10552,7 @@ def _player_age(pm: dict):
             born = datetime.strptime(str(dob)[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
             return pm.get("age")
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
     return (pm or {}).get("age")
 
@@ -11431,7 +11427,7 @@ def api_place_bet():
             "stake": stake,
             "model_prob": data.get("model_prob", 0),
             "edge_pct": data.get("edge_pct", 0),
-            "placed_at": datetime.now().isoformat(),
+            "placed_at": now_utc().isoformat(),
         }
         result = add_bet(bet_data)
 

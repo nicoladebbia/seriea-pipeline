@@ -20,12 +20,12 @@ Usage:
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -50,15 +50,14 @@ def _load_lessons() -> dict:
                 return json.load(f)
         except Exception as e:
             log.warning(f"Failed to load lessons file: {e}")
-    return {"lessons": [], "metadata": {"version": 1, "created": datetime.now().isoformat()}}
+    return {"lessons": [], "metadata": {"version": 1, "created": now_utc().isoformat()}}
 
 
 def _save_lessons(data: dict):
     """Save lessons file."""
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    data["metadata"]["updated"] = datetime.now().isoformat()
-    with open(LESSONS_PATH, "w") as f:
-        json.dump(data, f, indent=2)
+    data["metadata"]["updated"] = now_utc().isoformat()
+    atomic_write_json(LESSONS_PATH, data, indent=2)
 
 
 def _next_lesson_id(lessons: list) -> str:
@@ -110,7 +109,7 @@ def _generate_xg_bias_lessons(audit: dict, existing_ids: set) -> list:
         # If positive bias -> we overestimate this team -> reduce xG
         lesson = {
             "id": None,  # Filled by caller
-            "created": datetime.now().isoformat()[:10],
+            "created": now_utc().isoformat()[:10],
             "type": "xg_bias",
             "scope": {"team": team},
             "correction": {"team_xg_adjust": round(correction, 2)},
@@ -162,7 +161,7 @@ def _generate_confidence_lessons(audit: dict, existing_ids: set) -> list:
 
         lesson = {
             "id": None,
-            "created": datetime.now().isoformat()[:10],
+            "created": now_utc().isoformat()[:10],
             "type": "confidence_shift",
             "scope": {"confidence_level": level},
             "correction": {"confidence_adjust": round(shift, 3)},
@@ -202,7 +201,7 @@ def _generate_market_lessons(roi_report: dict, existing_ids: set) -> list:
 
             lesson = {
                 "id": None,
-                "created": datetime.now().isoformat()[:10],
+                "created": now_utc().isoformat()[:10],
                 "type": "market_penalty",
                 "scope": {"market_type": market},
                 "correction": {"confidence_reduce": round(penalty, 3)},

@@ -32,17 +32,17 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -219,6 +219,7 @@ from scripts.utils.match_timing import (  # noqa: E402
     _is_future,
     _load_sofascore_fixtures,
 )
+
 
 def load_upcoming_matches() -> List[Dict]:
     """Load upcoming matches from all available sources, freshest source first.
@@ -668,7 +669,7 @@ class UnifiedPredictor:
     def _init_xg_only(self) -> bool:
         """Initialize xG predictor only."""
         try:
-            from scripts.prediction.ensemble_prediction_engine import XGPredictor, FeatureBuilder
+            from scripts.prediction.ensemble_prediction_engine import FeatureBuilder, XGPredictor
             self._xg_predictor = XGPredictor()
             if not self._xg_predictor.load_models():
                 log.error("xG models not found")
@@ -686,7 +687,7 @@ class UnifiedPredictor:
     def _init_ml_only(self) -> bool:
         """Initialize ML classifier only."""
         try:
-            from scripts.prediction.ensemble_prediction_engine import MLClassifier, FeatureBuilder
+            from scripts.prediction.ensemble_prediction_engine import FeatureBuilder, MLClassifier
             self._ml_classifier = MLClassifier()
             if not self._ml_classifier.load_model():
                 log.error("ML classifier not found")
@@ -863,7 +864,7 @@ class UnifiedPredictor:
             match = {
                 "home_team": home_team,
                 "away_team": away_team,
-                "date": datetime.now().strftime("%Y-%m-%d"),
+                "date": now_local().strftime("%Y-%m-%d"),
             }
 
         mode = self.config.mode
@@ -1259,7 +1260,7 @@ class UnifiedPredictor:
 
         # Build output
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "model_version": self._get_model_version(),
             "mode": self.config.mode,
             "strategy": self.config.strategy,
@@ -1283,8 +1284,7 @@ class UnifiedPredictor:
         output_path = self.config.output_path or str(
             DATA_DIR / "upcoming" / "predictions.json"
         )
-        with open(output_path, "w") as f:
-            json.dump(output, f, indent=2, cls=_NumpySafeEncoder)
+        atomic_write_json(output_path, output, indent=2, cls=_NumpySafeEncoder)
         log.info(f"Saved predictions to {output_path}")
 
         return output
@@ -1340,7 +1340,7 @@ class UnifiedPredictor:
         ))
 
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "model_version": self._get_model_version(),
             "mode": self.config.mode,
             "matchday": matchday,
@@ -1725,7 +1725,7 @@ def main():
     if config.home_team and config.away_team:
         pred = predictor.predict_single(config.home_team, config.away_team)
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "mode": config.mode,
             "predictions": [pred],
             "summary": {"total_matches": 1},

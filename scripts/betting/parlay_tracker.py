@@ -9,12 +9,12 @@ Usage:
 """
 
 import json
-from datetime import datetime
+import sys
 from pathlib import Path
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 HISTORY_FILE = DATA_DIR / "betting" / "parlay_history.jsonl"
 STATS_FILE = DATA_DIR / "betting" / "parlay_stats.json"
@@ -29,7 +29,7 @@ def record_parlays(top_picks: list):
         return
 
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().isoformat()
+    timestamp = now_utc().isoformat()
 
     with open(HISTORY_FILE, "a") as f:
         for pick in top_picks:
@@ -142,7 +142,7 @@ def settle_parlays(results: dict):
             else:
                 record["status"] = "lost"
                 record["profit"] = -stake
-            record["settled_at"] = datetime.now().isoformat()
+            record["settled_at"] = now_utc().isoformat()
             settled_count += 1
 
     if settled_count > 0:
@@ -259,7 +259,7 @@ def _update_stats(records: list):
     dc_won = sum(1 for r in dc_settled if r["status"] == "won")
 
     stats = {
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": now_utc().isoformat(),
         "overall": {
             "total": total,
             "won": won,
@@ -278,8 +278,7 @@ def _update_stats(records: list):
     }
 
     STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATS_FILE, "w") as f:
-        json.dump(stats, f, indent=2)
+    atomic_write_json(STATS_FILE, stats, indent=2)
 
     return stats
 

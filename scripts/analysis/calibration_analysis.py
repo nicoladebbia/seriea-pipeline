@@ -9,30 +9,33 @@ Usage:
 """
 
 import argparse
-import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
 
+from scripts.utils.match_timing import now_utc
+
 try:
-    from sklearn.linear_model import LogisticRegression
     from sklearn.isotonic import IsotonicRegression
+    from sklearn.linear_model import LogisticRegression
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
-from scripts.prediction.ensemble_prediction_engine import (
-    EnsemblePredictor, ENSEMBLE_WEIGHTS,
-    XGPredictor, MLClassifier, PlayerXGPredictor,
-)
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
 from models.deep_learning import DeepPredictor
+from scripts.prediction.ensemble_prediction_engine import (
+    MLClassifier,
+    PlayerXGPredictor,
+    XGPredictor,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -346,7 +349,7 @@ class CalibrationAnalyzer:
         log.info(f"Analyzing calibration on {len(test_df)} matches")
 
         results = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "test_seasons": test_seasons,
             "n_matches": len(test_df),
             "models": {},
@@ -397,13 +400,11 @@ class CalibrationAnalyzer:
         params = {
             "temperatures": self.temperatures,
             "platt_scalers": self.platt_scalers,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
         }
 
         params_file = output_dir / "calibration_params.json"
-        with open(params_file, "w") as f:
-            json.dump(params, f, indent=2)
-
+        atomic_write_json(params_file, params, indent=2)
         log.info(f"Saved calibration parameters to {params_file}")
         return params_file
 
@@ -455,11 +456,9 @@ def main():
     # Save results
     results_dir = DATA_DIR / "optimization"
     results_dir.mkdir(parents=True, exist_ok=True)
-    results_file = results_dir / f"calibration_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_file = results_dir / f"calibration_analysis_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
 
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2, default=str)
-
+    atomic_write_json(results_file, results, indent=2, default=str)
     print(f"\nResults saved to: {results_file}")
 
     # Save calibration params if --fix

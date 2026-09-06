@@ -10,13 +10,13 @@ import json
 import logging
 import math
 import sys
-from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 
 def _load_current_roster() -> set:
@@ -335,15 +335,14 @@ def generate_player_props() -> dict:
     props = compute_player_props(predictions, profiles)
 
     output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "match_count": len(props),
         "total_profiles": len(profiles),
         "matches": props,
     }
 
     out_path = DATA_DIR / "upcoming" / "player_props.json"
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(out_path, output, indent=2)
 
     total_players = sum(len(m["players"]) for m in props.values())
     log.info("Generated player props for %d matches (%d players) -> %s",

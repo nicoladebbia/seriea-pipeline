@@ -14,15 +14,16 @@ Now fetches real BTTS odds from The Odds API for accurate value detection.
 
 import json
 import logging
-from datetime import datetime
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
 
-import sys
+from scripts.utils.match_timing import now_utc
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
-from ml.poisson import poisson_probability, poisson_cumulative
+from config.settings import DATA_DIR, atomic_write_json
+from ml.poisson import poisson_cumulative
 from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -864,7 +865,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
 
     # BTTS predictions
     btts_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "model": "btts_v1",
         "predictions": [
             {
@@ -881,12 +882,10 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
             for p in btts_preds
         ]
     }
-    with open(output_dir / "btts_predictions.json", "w") as f:
-        json.dump(btts_data, f, indent=2)
-
+    atomic_write_json(output_dir / "btts_predictions.json", btts_data, indent=2)
     # Corners predictions
     corners_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "model": "corners_v1",
         "predictions": [
             {
@@ -904,9 +903,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
             for p in corners_preds
         ]
     }
-    with open(output_dir / "corners_predictions.json", "w") as f:
-        json.dump(corners_data, f, indent=2)
-
+    atomic_write_json(output_dir / "corners_predictions.json", corners_data, indent=2)
     # Bets
     recommended = [b for b in bets if b.recommendation == "BET"]
     consider = [b for b in bets if b.recommendation == "CONSIDER"]
@@ -920,7 +917,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
         return infer_league(home, away)
 
     bets_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "summary": {
             "btts_bets": len([b for b in bets if b.market == "btts"]),
             "corners_bets": len([b for b in bets if b.market == "corners"]),
@@ -951,9 +948,7 @@ def save_predictions(btts_preds: List, corners_preds: List, bets: List):
             for b in consider
         ]
     }
-    with open(output_dir / "btts_corners_bets.json", "w") as f:
-        json.dump(bets_data, f, indent=2)
-
+    atomic_write_json(output_dir / "btts_corners_bets.json", bets_data, indent=2)
     log.info("Saved BTTS and corners predictions")
 
 

@@ -25,7 +25,7 @@ from typing import Dict, List
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -105,8 +105,8 @@ def generate_ml_predictions() -> Dict:
 
             # Fill missing features that FeatureBuilder doesn't produce
             # but predict_all_markets() requires (37 contextual/derived features)
-            import datetime as _dt
-            now = _dt.datetime.now()
+            from scripts.utils.match_timing import now_local
+            now = now_local()
             _defaults = {
                 "us_coverage": 1, "kickoff_hour": 15, "is_night_match": 0,
                 "is_weekend": 1 if now.weekday() >= 5 else 0,
@@ -199,8 +199,7 @@ def save_ml_predictions(all_preds: Dict):
 
     # 1. Save comprehensive ML predictions (overwrite — this file is ML-only)
     ml_path = out_dir / "ml_predictions.json"
-    with open(ml_path, "w") as f:
-        json.dump(all_preds, f, indent=2, default=str)
+    atomic_write_json(ml_path, all_preds, indent=2, default=str)
     log.info("Saved comprehensive ML predictions to %s", ml_path)
 
     # 2. cards_predictions.json — merge per-match
@@ -227,8 +226,7 @@ def save_ml_predictions(all_preds: Dict):
     if cards_preds:
         cards_path = out_dir / "cards_predictions.json"
         merged = _merge_predictions_by_match(cards_path, cards_preds)
-        with open(cards_path, "w") as f:
-            json.dump({"predictions": merged}, f, indent=2)
+        atomic_write_json(cards_path, {"predictions": merged}, indent=2)
         log.info("Updated cards_predictions.json: %d ML + %d preserved = %d total",
                  len(cards_preds), len(merged) - len(cards_preds), len(merged))
 
@@ -256,8 +254,7 @@ def save_ml_predictions(all_preds: Dict):
     if corners_preds:
         corners_path = out_dir / "corners_predictions.json"
         merged = _merge_predictions_by_match(corners_path, corners_preds)
-        with open(corners_path, "w") as f:
-            json.dump({"predictions": merged}, f, indent=2)
+        atomic_write_json(corners_path, {"predictions": merged}, indent=2)
         log.info("Updated corners_predictions.json: %d ML + %d preserved = %d total",
                  len(corners_preds), len(merged) - len(corners_preds), len(merged))
 
@@ -282,8 +279,7 @@ def save_ml_predictions(all_preds: Dict):
     if btts_preds:
         btts_path = out_dir / "btts_predictions.json"
         merged = _merge_predictions_by_match(btts_path, btts_preds)
-        with open(btts_path, "w") as f:
-            json.dump({"predictions": merged}, f, indent=2)
+        atomic_write_json(btts_path, {"predictions": merged}, indent=2)
         log.info("Updated btts_predictions.json: %d ML + %d preserved = %d total",
                  len(btts_preds), len(merged) - len(btts_preds), len(merged))
 

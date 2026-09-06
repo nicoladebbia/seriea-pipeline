@@ -17,7 +17,9 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, UTC
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -31,9 +33,7 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-from config.team_names import TEAM_NAME_MAP
 from scraper.lineup_fetcher import (
-    normalize_player_name,
     standardize_api_team_name,
 )
 
@@ -84,7 +84,7 @@ class SquadFetcher:
             if not fetched_at:
                 return False
             dt = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
-            age = datetime.now(timezone.utc) - dt
+            age = datetime.now(UTC) - dt
             return age.days < CACHE_MAX_AGE_DAYS
         except Exception:
             return False
@@ -180,7 +180,7 @@ class SquadFetcher:
             return None
 
         return {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
             "source": "api_football",
             "season": SERIE_A_SEASON,
             "teams": result_teams,
@@ -226,8 +226,8 @@ class SquadFetcher:
                 age = None
                 if dob:
                     try:
-                        born = datetime.strptime(dob, "%Y-%m-%d")
-                        age = (datetime.now() - born).days // 365
+                        born = datetime.strptime(dob, "%Y-%m-%d").replace(tzinfo=UTC)
+                        age = (now_utc() - born).days // 365
                     except ValueError as e:
                         log.debug(f"Failed to parse player date of birth '{dob}': {e}")
 
@@ -246,7 +246,7 @@ class SquadFetcher:
             return None
 
         return {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
             "source": "football_data_org",
             "season": SERIE_A_SEASON,
             "teams": result_teams,
@@ -288,7 +288,7 @@ class SquadFetcher:
             log.warning("No squad data available from any source")
 
         return {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
             "source": "profiles_fallback",
             "season": SERIE_A_SEASON,
             "teams": result_teams,

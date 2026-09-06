@@ -29,9 +29,7 @@ a flagged edge.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
-
+from dataclasses import dataclass
 
 # Per-market config derived from the 2026-06-03 calibration backtest
 # (.plans/projection-backtest-results.md). Each market has:
@@ -161,9 +159,9 @@ class EdgeResult:
 
 
 def compare_one(market: str, outcome: str, model_prob: float, book_odds: float,
-                book: str = "", devig_implied: Optional[float] = None,
-                min_edge_pct: Optional[float] = None,
-                min_odds: float = MIN_ODDS, max_odds: float = MAX_ODDS) -> Optional[EdgeResult]:
+                book: str = "", devig_implied: float | None = None,
+                min_edge_pct: float | None = None,
+                min_odds: float = MIN_ODDS, max_odds: float = MAX_ODDS) -> EdgeResult | None:
     """Compare one model probability against one book price. Returns EdgeResult or None.
 
     devig_implied: the book's de-vigged implied prob for this outcome (preferred).

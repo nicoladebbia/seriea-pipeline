@@ -12,7 +12,8 @@ matches outside `pred_by_match` when it is given.
 import inspect
 
 from scripts.betting.betting_unified import (
-    UnifiedBettingEngine, _gate_aux_predictions,
+    UnifiedBettingEngine,
+    _gate_aux_predictions,
 )
 
 _EPL = "Arsenal vs Chelsea"
@@ -72,4 +73,43 @@ def test_gate_aux_predictions_passes_non_lists_through():
 def test_run_gates_every_auxiliary_list():
     src = inspect.getsource(UnifiedBettingEngine.run)
     for label in ("goal", "btts", "cards", "corners", "margin"):
-        assert f'_gate_aux_predictions({label}_preds, _allowed, "{label}")' in src
+        assert f'_gate_aux_predictions({label}_preds, _allowed, "{label}", league=_league)' in src
+
+
+def test_row_league_stamp_is_checked_even_when_the_match_is_allowed(caplog):
+    # The stamp is the row's own word; an EPL-stamped row is dropped even if a
+    # same-named match slipped into the allowed set. Unstamped rows fall back
+    # to the allowed set alone (files written before the stamp existed).
+    rows = [{"match": _SA, "league": "serie_a"}, {"match": _SA, "league": "premier_league"},
+            {"match": _EPL, "league": "premier_league"}, {"match": _SA}]
+    with caplog.at_level("WARNING"):
+        kept = _gate_aux_predictions(rows, {_SA, _EPL}, "goal", league="serie_a")
+    assert kept == [{"match": _SA, "league": "serie_a"}, {"match": _SA}]
+    assert "dropped 2/4" in caplog.text
+    # no league given: allowed set only (the pre-stamp behaviour)
+    assert len(_gate_aux_predictions(rows, {_SA, _EPL}, "goal")) == 4
+
+
+def test_goal_and_margin_writers_stamp_league(tmp_path, monkeypatch):
+    import scripts.models.handicap_model as hm
+    import scripts.models.over_under_model as ou
+    monkeypatch.setattr(ou, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(hm, "DATA_DIR", tmp_path)
+    (tmp_path / "upcoming").mkdir()
+    gp = ou.GoalPrediction(match=_EPL, home_team="Arsenal", away_team="Chelsea", date="2026-09-06",
+                           expected_home_goals=1.5, expected_away_goals=1.2, expected_total_goals=2.7,
+                           over_0_5=0.9, over_1_5=0.75, over_2_5=0.55, over_3_5=0.3, over_4_5=0.1,
+                           factors=[], confidence="MEDIUM", confidence_rank=2,
+                           home_attack_strength=1.0, away_attack_strength=1.0,
+                           home_defense_strength=1.0, away_defense_strength=1.0)
+    ou.save_over_under_predictions([gp], [])
+    import json
+    rows = json.loads((tmp_path / "upcoming" / "goal_predictions.json").read_text())["predictions"]
+    assert rows[0]["league"] == "premier_league"
+    mp = hm.MarginPrediction(match=_SA, home_team="Inter", away_team="Napoli", date="2026-09-06",
+                             expected_margin=0.4, margin_std_dev=1.4, home_rating=1.0, away_rating=0.8,
+                             rating_diff=0.2, handicap_probs={}, factors=[], confidence="MEDIUM",
+                             confidence_rank=2)
+    hm.save_handicap_predictions([mp], [])
+    rows = json.loads((tmp_path / "upcoming" / "margin_predictions.json").read_text())["predictions"]
+    assert rows[0]["league"] == "serie_a"

@@ -24,6 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from config.settings import atomic_write_json
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -184,7 +186,7 @@ def run(shadow_log_path: Path, output_path: Path, preserve_existing: bool = Fals
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, default=str))
+    atomic_write_json(output_path, payload, indent=2, default=str)
     log.info("Wrote template for %d fixtures to %s", len(fixture_entries), output_path)
     return payload
 

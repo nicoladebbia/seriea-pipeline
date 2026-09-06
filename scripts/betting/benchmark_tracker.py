@@ -10,13 +10,14 @@ Usage:
 
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def _load_benchmark() -> Dict:
             return json.load(f)
     return {
         "cutoff_date": IMPROVEMENT_CUTOFF,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now_utc().isoformat(),
         "target_bets": VALIDATION_TARGET,
         "improvements": [
             "Accuracy: 52.03% -> 53.34% (+1.31pp)",
@@ -206,7 +207,7 @@ def get_benchmark_report() -> Dict:
         "best_worst": _compute_best_worst(all_bets),
         "weekly_trend": _compute_weekly_trend(all_bets),
         "clv_analysis": _compute_clv_analysis(all_bets),
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
     }
 
 

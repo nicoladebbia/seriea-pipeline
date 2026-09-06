@@ -20,14 +20,14 @@ Usage:
 import json
 import logging
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ def score_predictions(predictions: List[Dict], results: Dict[str, Dict]) -> List
             "away_xg": away_xg,
             "total_goals": total_goals,
             "over_2_5_hit": (total_goals > 2.5) if ou_prob is not None else None,
-            "scored_at": datetime.now().isoformat(),
+            "scored_at": now_utc().isoformat(),
         })
 
     return scored
@@ -342,7 +342,7 @@ def load_tracker() -> Dict:
 def save_tracker(tracker: Dict):
     """Save tracker state."""
     TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TRACKER_PATH.write_text(json.dumps(tracker, indent=2, default=str))
+    atomic_write_json(TRACKER_PATH, tracker, indent=2, default=str)
 
 
 def run(fetch: bool = False, days: int = 3, draw_only: bool = False,
@@ -384,9 +384,9 @@ def run(fetch: bool = False, days: int = 3, draw_only: bool = False,
     new_scored = [s for s in scored
                   if (s["home_team"], s["away_team"], s["match_date"]) not in existing_keys]
     tracker["scored"].extend(new_scored)
-    tracker["last_scored_at"] = datetime.now().isoformat()
+    tracker["last_scored_at"] = now_utc().isoformat()
     tracker["metrics_history"].append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "total_scored": len(scored),
         "new_scored": len(new_scored),
         "accuracy": metrics["accuracy"],

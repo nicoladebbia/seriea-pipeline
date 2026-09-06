@@ -29,6 +29,7 @@ import json
 import logging
 from pathlib import Path
 
+from config.settings import atomic_write_json
 from config.team_names import normalize_team
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -181,9 +182,7 @@ def build_comparison_odds(
 
     if write:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(result, indent=1))
-        tmp.replace(out_path)
+        atomic_write_json(out_path, result, indent=1)
         log.info("betfair-adapter: wrote %s (%d matches)", out_path.name, n_written)
 
     return result

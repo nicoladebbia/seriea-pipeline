@@ -28,6 +28,8 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / "data" / "fantacalcio" / "team_pulse.json"
 
@@ -179,7 +181,7 @@ def update(items: list[dict], next_round: int | None) -> dict:
     st["seen"] = sorted(seen)[-2000:]
     st["generated_at"] = now.isoformat()
     st["labeled_this_run"] = labeled
-    STATE.write_text(json.dumps(st, indent=1, ensure_ascii=False))
+    atomic_write_json(STATE, st, indent=1, ensure_ascii=False)
     return st
 
 

@@ -179,7 +179,7 @@ class TestFeaturePipeline:
             def apply(self, state: FeatureState) -> FeatureState:
                 return state
 
-        pipeline = FeaturePipeline(cache_dir=Path("/tmp/test_cache"))
+        pipeline = FeaturePipeline()
         pipeline.register(DummyPlugin())
 
         assert len(pipeline._plugins) == 1
@@ -197,7 +197,7 @@ class TestFeaturePipeline:
             def apply(self, state: FeatureState) -> FeatureState:
                 return state
 
-        pipeline = FeaturePipeline(cache_dir=Path("/tmp/test_cache"))
+        pipeline = FeaturePipeline()
         pipeline.register(DummyPlugin())
 
         with pytest.raises(ValueError, match="Duplicate plugin name"):
@@ -236,7 +236,7 @@ class TestFeaturePipeline:
                 execution_order.append("c")
                 return state
 
-        pipeline = FeaturePipeline(cache_dir=Path("/tmp/test_cache_dep"))
+        pipeline = FeaturePipeline()
 
         # Register in reverse order to test dependency resolution
         pipeline.register(PluginC())
@@ -269,7 +269,7 @@ class TestFeaturePipeline:
             def apply(self, state: FeatureState) -> FeatureState:
                 return state
 
-        pipeline = FeaturePipeline(cache_dir=Path("/tmp/test_cache_circ"))
+        pipeline = FeaturePipeline()
         pipeline.register(PluginX())
         pipeline.register(PluginY())
 
@@ -288,14 +288,14 @@ class TestFeaturePipeline:
             def apply(self, state: FeatureState) -> FeatureState:
                 return state
 
-        pipeline = FeaturePipeline(cache_dir=Path("/tmp/test_cache_miss"))
+        pipeline = FeaturePipeline()
         pipeline.register(PluginZ())
 
         with pytest.raises(ValueError, match="Missing dependency"):
             pipeline._resolve_order()
 
-    def test_feature_caching(self, tmp_path, sample_matches_df):
-        """Plugin results are cached to parquet and retrieved correctly."""
+    def test_feature_build_always_recomputes(self, sample_matches_df):
+        """No step cache (removed 2026-09-06): a second build calls apply() again."""
         from features.build import FeaturePipeline, FeaturePlugin, FeatureState
 
         call_count = {"n": 0}
@@ -310,61 +310,11 @@ class TestFeaturePipeline:
                 state.feature_df = pd.DataFrame({"col_a": [1, 2, 3], "col_b": [4, 5, 6]})
                 return state
 
-        cache_dir = tmp_path / "cache"
-        pipeline = FeaturePipeline(cache_dir=cache_dir)
-        plugin = CountingPlugin()
-        pipeline.register(plugin)
-
-        # First run: should compute
-        state = FeatureState(matches=sample_matches_df)
-        result = pipeline.build(state, use_cache=True)
-        assert call_count["n"] == 1
-        assert result.feature_df is not None
-
-        # Cache file should exist
-        cache_file = pipeline._cache_path(plugin)
-        assert cache_file.exists()
-
-        # Second run: should use cache
-        state2 = FeatureState(matches=sample_matches_df)
-        pipeline2 = FeaturePipeline(cache_dir=cache_dir)
-        pipeline2.register(CountingPlugin())
-        result2 = pipeline2.build(state2, use_cache=True)
-        # The plugin apply() should NOT have been called again
-        # (call_count["n"] stays at 1 because the second pipeline instance
-        # has its own CountingPlugin, but the cache was hit)
-        assert result2.feature_df is not None
-
-    def test_feature_build_no_cache(self, tmp_path, sample_matches_df):
-        """Feature pipeline works with caching disabled (use_cache=False)."""
-        from features.build import FeaturePipeline, FeaturePlugin, FeatureState
-
-        call_count = {"n": 0}
-
-        class NoCachePlugin(FeaturePlugin):
-            name = "nocache_plugin"
-            version = "1.0"
-            dependencies = []
-
-            def apply(self, state: FeatureState) -> FeatureState:
-                call_count["n"] += 1
-                state.feature_df = pd.DataFrame({"x": [10, 20]})
-                return state
-
-        pipeline = FeaturePipeline(cache_dir=tmp_path / "cache_nc")
-        pipeline.register(NoCachePlugin())
-
-        state = FeatureState(matches=sample_matches_df)
-        result = pipeline.build(state, use_cache=False)
-        assert call_count["n"] == 1
-        assert result.feature_df is not None
-
-        # Run again with cache disabled -- should re-compute
-        state2 = FeatureState(matches=sample_matches_df)
-        pipeline2 = FeaturePipeline(cache_dir=tmp_path / "cache_nc")
-        pipeline2.register(NoCachePlugin())
-        result2 = pipeline2.build(state2, use_cache=False)
-        assert call_count["n"] == 2
+        for expected in (1, 2):
+            pipeline = FeaturePipeline()
+            pipeline.register(CountingPlugin())
+            result = pipeline.build(FeatureState(matches=sample_matches_df))
+            assert call_count["n"] == expected and result.feature_df is not None
 
     def test_full_feature_build(self, features_df):
         """Full feature pipeline produces expected output shape on real data."""

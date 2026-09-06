@@ -34,6 +34,8 @@ import pickle
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.settings import atomic_write_json
+
 # Allow temporary variant comparisons without overwriting prod models.
 # WALKFORWARD_SUFFIX=2017plus   → loads from 1x2__2017plus/ instead of 1x2/
 # USE_RAW_PROBA=1               → skips calibrator application (for debugging
@@ -275,8 +277,7 @@ def main() -> None:
 
     out_path = PROJECT_ROOT / "data" / "diagnostics" / "deep_backtest_1x2.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as fh:
-        json.dump(out, fh, indent=2)
+    atomic_write_json(out_path, out, indent=2)
     print(f"\nWrote {out_path}")
 
 

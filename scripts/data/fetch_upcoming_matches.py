@@ -44,16 +44,15 @@ the synthetic fallback's fingerprint.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
 
 from config.leagues import ACTIVE_LEAGUES
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.data.odds_fetcher import (
     API_BASE_URL,
     API_KEY,
@@ -83,7 +82,7 @@ def _event_to_match(event: dict[str, Any], league: str) -> dict[str, Any] | None
     # commence_time is UTC ISO with a trailing Z (e.g. 2026-04-17T16:30:00Z).
     parsed = datetime.fromisoformat(commence.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
 
     return {
         "home_team": normalize_team(home_raw),
@@ -185,12 +184,12 @@ def save_upcoming_matches(matches: list[dict[str, Any]]) -> None:
     """Write matches.json in the shape notify.py:1950 reads."""
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
         "matches": matches,
         "count": len(matches),
     }
     tmp = OUTPUT_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
+    atomic_write_json(tmp, payload, indent=2)
     tmp.replace(OUTPUT_PATH)  # atomic — readers never see a half-written file
     log.info("Wrote %d upcoming matches to %s", len(matches), OUTPUT_PATH)
 

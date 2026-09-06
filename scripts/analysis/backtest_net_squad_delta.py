@@ -28,7 +28,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from features.transfer_impact_analysis import compute_net_squad_delta
 from ml.config import LABEL_MAP, ValidationConfig
 from scripts.models.retrain_no_odds_catboost import (
@@ -169,7 +169,7 @@ def main() -> int:
         "verdict": "PASS" if skill > 0 else "FAIL",
     }
     outpath = MODELS_DIR / "universal" / "net_squad_delta_backtest.json"
-    outpath.write_text(json.dumps(out, indent=2))
+    atomic_write_json(outpath, out, indent=2)
     print(f"\nwrote {outpath}")
     return 0
 

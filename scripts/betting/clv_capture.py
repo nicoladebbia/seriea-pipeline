@@ -27,12 +27,12 @@ Usage:
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ def _load_cached_odds() -> Dict:
     return odds
 
 
-def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Optional[float]:
+def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> float | None:
     """Find sharp bookmaker odds for a selection, falling back to market average.
 
     Args:
@@ -136,7 +136,7 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Optional[flo
     return None
 
 
-def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Optional[Tuple[float, str]]:
+def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
     """Match a pending bet to current odds.
 
     Returns (closing_odds, source_description) or None if no match.
@@ -401,7 +401,7 @@ def capture_clv(dry_run: bool = False, from_cache: bool = False) -> Dict:
         "no_match": no_match,
         "total_pending": len(pending),
         "dry_run": dry_run,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
     }
 
     log.info("CLV capture: %d captured, %d skipped (already have CLV), %d no match",
@@ -428,13 +428,12 @@ def _append_clv_history(n_captured: int, bets: List[Dict]):
             pass
 
     history["captures"].append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "captured": n_captured,
         "bets_count": len(bets),
     })
 
-    with open(history_path, "w") as f:
-        json.dump(history, f, indent=2)
+    atomic_write_json(history_path, history, indent=2)
 
 
 # =============================================================================

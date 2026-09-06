@@ -14,14 +14,14 @@ Usage:
 
 import json
 import logging
-import os
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
 import sys
+from datetime import timedelta
+from pathlib import Path
+from typing import Dict, List
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc
 
 try:
     from dotenv import load_dotenv
@@ -47,8 +47,8 @@ BANKROLL_FILE = DATA_DIR / "betting" / "bankroll.json"
 RESULTS_FILE = DATA_DIR / "upcoming" / "results.json"
 
 # Team name normalization — use the canonical mapping from config/team_names.py
-from config.team_names import normalize_team
 from config.api_keys import get_odds_api_key
+from config.team_names import normalize_team
 
 
 def fetch_scores(days_from: int = 3) -> List[Dict]:
@@ -168,13 +168,12 @@ def parse_scores(raw_scores: List[Dict]) -> Dict[str, Dict]:
 def save_results(results: Dict[str, Dict]) -> Path:
     """Save parsed results to file."""
     output = {
-        "fetched_at": datetime.now().isoformat(),
+        "fetched_at": now_utc().isoformat(),
         "results": results,
     }
 
     RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(RESULTS_FILE, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(RESULTS_FILE, output, indent=2)
 
     log.info(f"Saved {len(results)} results to {RESULTS_FILE}")
     return RESULTS_FILE
@@ -224,8 +223,7 @@ def _save_history(history: List[Dict]):
     """
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = HISTORY_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(history, f, indent=2)
+    atomic_write_json(tmp, history, indent=2)
     tmp.rename(HISTORY_FILE)
 
 
@@ -234,8 +232,8 @@ def _load_bankroll() -> Dict:
     defaults = {
         "initial_balance": 1000.0,
         "current_balance": 1000.0,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
+        "created_at": now_utc().isoformat(),
+        "updated_at": now_utc().isoformat(),
         "total_deposited": 1000.0,
         "total_withdrawn": 0.0,
         "peak_balance": 1000.0,
@@ -267,11 +265,10 @@ def _save_bankroll(bankroll: Dict):
     only. The old `peak_balance/lowest_balance` mutations in callers were
     the root cause of drift between journal and bankroll.
     """
-    bankroll["updated_at"] = datetime.now().isoformat()
+    bankroll["updated_at"] = now_utc().isoformat()
     BANKROLL_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = BANKROLL_FILE.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(bankroll, f, indent=2)
+    atomic_write_json(tmp, bankroll, indent=2)
     tmp.rename(BANKROLL_FILE)
 
 
@@ -356,7 +353,8 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
     journal_bets = []
     use_journal = False
     try:
-        from scripts.betting.bet_journal import get_pending_bets, settle_bet as journal_settle
+        from scripts.betting.bet_journal import get_pending_bets
+        from scripts.betting.bet_journal import settle_bet as journal_settle
         journal_bets = get_pending_bets()
         if journal_bets:
             use_journal = True
@@ -371,7 +369,7 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
         # stake). The scores API reaches 3 days back, so one older than that can
         # never resolve here: 12 of them from Feb–Apr re-warned "No result found"
         # every 15-min cycle for five months.
-        reach_cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        reach_cutoff = (now_local() - timedelta(days=3)).strftime("%Y-%m-%d")
         n_unreachable = 0
         for jb in journal_bets:
             if jb.get("status") == "superseded" and (jb.get("date") or "9999") < reach_cutoff:
@@ -473,7 +471,7 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
         if not result:
             # Log warning for past matches not found in results
             bet_date = bet.get("date", "")
-            if bet_date and bet_date <= datetime.now().strftime("%Y-%m-%d"):
+            if bet_date and bet_date <= now_local().strftime("%Y-%m-%d"):
                 log.warning("No result found for past bet: %s (date: %s, market: %s)",
                            match_key, bet_date, market)
             continue
@@ -625,7 +623,7 @@ def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:
             "status": outcome,
             "profit": round(profit, 2),
             "result": f"{result['home_score']}-{result['away_score']}",
-            "settled_at": datetime.now().isoformat(),
+            "settled_at": now_utc().isoformat(),
             "match_kickoff_at": commence_iso or None,
             "confidence": bet.get("confidence", "MEDIUM"),
             "value_pct": bet.get("value_pct", 0),
@@ -763,7 +761,7 @@ def fetch_and_settle() -> Dict:
     try:
         from scripts.betting.bet_journal import get_pending_bets
         pending = get_pending_bets(include_superseded=False)
-        cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        cutoff = (now_local() - timedelta(days=3)).strftime("%Y-%m-%d")
         orphaned = [b for b in pending
                     if b.get("date", "9999") < cutoff]
         if orphaned:

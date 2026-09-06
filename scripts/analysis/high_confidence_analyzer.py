@@ -26,7 +26,7 @@ from sklearn.metrics import accuracy_score
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from ml.config import LABEL_MAP
 from scripts.models.train_unified import time_series_split
 
@@ -337,9 +337,7 @@ def main():
         ],
     }
 
-    with open(results_path, "w") as f:
-        json.dump(output, f, indent=2)
-
+    atomic_write_json(results_path, output, indent=2)
     log.info(f"\nResults saved to {results_path}")
 
     # ==========================================

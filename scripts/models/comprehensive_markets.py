@@ -41,6 +41,8 @@ import math
 import sys
 import warnings
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -51,7 +53,7 @@ from scipy.stats import poisson
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
 from ml.feature_selection import correlation_pruning
 from storage.paths import features_path
 
@@ -643,7 +645,7 @@ def train_all_models(df: pd.DataFrame, features: List[str], test_season: str = "
 
     # Save metadata
     metadata = {
-        "trained_at": datetime.now().isoformat(),
+        "trained_at": now_utc().isoformat(),
         "features": selected_features,
         "n_features": len(selected_features),
         "initial_features": len(features),
@@ -652,9 +654,7 @@ def train_all_models(df: pd.DataFrame, features: List[str], test_season: str = "
         "test_season": test_season,
         "results": results,
     }
-    with open(model_dir / "metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
-
+    atomic_write_json(model_dir / "metadata.json", metadata, indent=2)
     log.info("\n=== TRAINING COMPLETE ===")
     for k, v in results.items():
         log.info("  %s: %.4f", k, v)
@@ -1150,9 +1150,7 @@ def build_player_scorer_model() -> Dict:
             "starter_pct": round(row["is_starter_pct"], 2),
         }
 
-    with open(MARKET_MODELS_DIR / "player_scorer_model.json", "w") as f:
-        json.dump(scorer_model, f, indent=2)
-
+    atomic_write_json(MARKET_MODELS_DIR / "player_scorer_model.json", scorer_model, indent=2)
     log.info("Player scorer model: %d players", len(scorer_model))
     return scorer_model
 
@@ -1379,9 +1377,7 @@ def backtest_all_markets(df: pd.DataFrame, features: List[str], season: str) -> 
     # Save backtest results
     results["season"] = season
     results["matches"] = len(season_df)
-    with open(MARKET_MODELS_DIR / f"backtest_{season}.json", "w") as f:
-        json.dump(results, f, indent=2)
-
+    atomic_write_json(MARKET_MODELS_DIR / f"backtest_{season}.json", results, indent=2)
     return results
 
 

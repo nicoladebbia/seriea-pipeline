@@ -1205,7 +1205,7 @@ def fetch_historical_odds() -> dict[str, Any]:
             "n_missing_odds": misses,
             "rows": rows,
         }
-        HISTORICAL_ODDS_JSON.write_text(json.dumps(out, indent=2))
+        atomic_write_json(HISTORICAL_ODDS_JSON, out)
         print(f"{label}: {len(rows)} matches with odds, {misses} without")
     return out
 

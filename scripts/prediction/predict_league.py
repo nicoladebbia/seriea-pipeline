@@ -28,7 +28,8 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR, LEAGUES, DEFAULT_LEAGUE
+from config.settings import DATA_DIR, DEFAULT_LEAGUE, LEAGUES, MODELS_DIR, atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -110,9 +111,8 @@ def fetch_league_odds(league: str, use_cache: bool = True) -> Dict:
     if league != "serie_a" and odds:
         out_path = _league_odds_path(league)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w") as f:
-            json.dump({"matches": odds, "league": league,
-                        "fetched_at": datetime.now().isoformat()}, f, indent=2)
+        atomic_write_json(out_path, {"matches": odds, "league": league,
+                        "fetched_at": now_utc().isoformat()}, indent=2)
         log.info("Saved %d %s odds to %s", len(odds), league, out_path.name)
 
     return odds
@@ -299,7 +299,7 @@ def _predict_match(model, match_key: str, match_data: Dict, league: str) -> Opti
     home_team = match_data.get("home_team", match_key.split(" vs ")[0] if " vs " in match_key else "?")
     away_team = match_data.get("away_team", match_key.split(" vs ")[1] if " vs " in match_key else "?")
     commence_time = match_data.get("commence_time", "")
-    date_str = commence_time[:10] if commence_time else datetime.now().strftime("%Y-%m-%d")
+    date_str = commence_time[:10] if commence_time else now_local().strftime("%Y-%m-%d")
 
     # Extract best odds
     h2h = match_data.get("h2h", {})
@@ -394,7 +394,7 @@ def _predict_match(model, match_key: str, match_data: Dict, league: str) -> Opti
         },
         "betting_recommendation": f"{'Back ' + home_team if predicted == 'H' else 'Back ' + away_team if predicted == 'A' else 'Draw'} ({conf.lower()} confidence)" if abs(edge) > 0.03 else "",
         "model_source": "league_model",
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
     }
 
 

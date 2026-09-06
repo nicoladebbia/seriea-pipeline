@@ -18,19 +18,20 @@ API: The Odds API (https://the-odds-api.com/)
 """
 
 import gzip
+import hashlib
 import json
 import logging
-import os
-import time
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-import hashlib
-
 import sys
+import time
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Tuple
+from zoneinfo import ZoneInfo
+
+from scripts.utils.match_timing import now_local, now_utc, to_utc
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 # Load environment variables from .env file
 try:
@@ -127,14 +128,11 @@ HARD_STOP_REMAINING = 500    # Block everything except explicit critical=True (T
 USAGE_FILE = DATA_DIR / "api_usage.json"
 
 # Team name normalization — uses the central system (400+ mappings, all leagues)
-from config.team_names import normalize_team as _central_normalize_team
-
-
 # =============================================================================
 # API KEY MANAGEMENT
 # =============================================================================
-
 from config.api_keys import get_odds_api_key
+from config.team_names import normalize_team as _central_normalize_team
 
 API_KEY = get_odds_api_key()
 
@@ -176,12 +174,11 @@ def _load_usage() -> Dict:
 def _save_usage(usage: Dict):
     """Save API usage tracking data."""
     USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(USAGE_FILE, "w") as f:
-        json.dump(usage, f, indent=2, default=str)
+    atomic_write_json(USAGE_FILE, usage, indent=2, default=str)
 
 
 def track_api_call(
-    credits_remaining: Optional[int] = None,
+    credits_remaining: int | None = None,
     estimated_cost: int = 1,
     endpoint: str = "",
 ) -> int:
@@ -204,8 +201,8 @@ def track_api_call(
     """
     usage = _load_usage()
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    month = datetime.now().strftime("%Y-%m")
+    today = now_local().strftime("%Y-%m-%d")
+    month = now_local().strftime("%Y-%m")
 
     prev_remaining = usage.get("remaining_credits")
 
@@ -245,13 +242,13 @@ def track_api_call(
     usage["request_count"] = usage.get("request_count", 0) + 1
     usage["daily_calls"][today] = usage["daily_calls"].get(today, 0) + real_cost
     usage["monthly_calls"][month] = usage["monthly_calls"].get(month, 0) + real_cost
-    usage["last_call"] = datetime.now().isoformat()
+    usage["last_call"] = now_utc().isoformat()
 
     if credits_remaining is not None:
         usage["remaining_credits"] = credits_remaining
 
     usage["history"].append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "endpoint": endpoint,
         "credits_used": real_cost,
         "estimated": estimated_cost,
@@ -349,7 +346,7 @@ def check_budget_pacing(priority: int = PRIORITY_EXTRAS, critical: bool = False)
         return False, msg
 
     usage = _load_usage()
-    now = datetime.now()
+    now = now_local()
     month_key = now.strftime("%Y-%m")
     month_used = usage.get("monthly_calls", {}).get(month_key, 0)
 
@@ -388,7 +385,7 @@ def check_rate_limit(critical: bool = False) -> Tuple[bool, str]:
         return False, msg
 
     usage = _load_usage()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     daily_used = usage["daily_calls"].get(today, 0)
 
     # 2) Daily guard (only matters if circuit breaker didn't already trip)
@@ -397,8 +394,8 @@ def check_rate_limit(critical: bool = False) -> Tuple[bool, str]:
 
     # 3) Per-minute courtesy throttle
     if usage["last_call"]:
-        last_call = datetime.fromisoformat(usage["last_call"])
-        seconds_since = (datetime.now() - last_call).total_seconds()
+        last_call = to_utc(usage["last_call"])
+        seconds_since = (now_utc() - last_call).total_seconds() if last_call else 0
         if seconds_since < (60 / CALLS_PER_MINUTE):
             wait_time = (60 / CALLS_PER_MINUTE) - seconds_since
             time.sleep(wait_time)
@@ -409,18 +406,18 @@ def check_rate_limit(critical: bool = False) -> Tuple[bool, str]:
 def get_usage_summary() -> Dict:
     """Get API usage summary."""
     usage = _load_usage()
-    today = datetime.now().strftime("%Y-%m-%d")
-    month = datetime.now().strftime("%Y-%m")
+    today = now_local().strftime("%Y-%m-%d")
+    month = now_local().strftime("%Y-%m")
 
     monthly_used = usage["monthly_calls"].get(month, 0)
     api_remaining = usage.get("remaining_credits")
 
     # Monthly reset = first day of next month, 00:00 UTC (Odds API convention)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if now.month == 12:
-        reset = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+        reset = datetime(now.year + 1, 1, 1, tzinfo=UTC)
     else:
-        reset = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+        reset = datetime(now.year, now.month + 1, 1, tzinfo=UTC)
     days_to_reset = max(0, (reset - now).days)
 
     return {
@@ -470,15 +467,15 @@ def _is_cache_valid(cache_path: Path) -> bool:
         with open(cache_path) as f:
             cache = json.load(f)
 
-        cached_time = datetime.fromisoformat(cache.get("cached_at", "2000-01-01"))
-        age_minutes = (datetime.now() - cached_time).total_seconds() / 60
+        cached_time = to_utc(cache.get("cached_at")) or datetime(2000, 1, 1, tzinfo=UTC)
+        age_minutes = (now_utc() - cached_time).total_seconds() / 60
 
         return age_minutes < CACHE_DURATION_MINUTES
     except Exception:
         return False
 
 
-def _load_from_cache(market: str, sport_key: str = SERIE_A_KEY) -> Optional[List[Dict]]:
+def _load_from_cache(market: str, sport_key: str = SERIE_A_KEY) -> List[Dict] | None:
     """Load data from cache if valid."""
     cache_path = _get_cache_path(market, sport_key)
 
@@ -499,13 +496,12 @@ def _save_to_cache(market: str, data: List[Dict], sport_key: str = SERIE_A_KEY):
     cache_path = _get_cache_path(market, sport_key)
 
     cache = {
-        "cached_at": datetime.now().isoformat(),
+        "cached_at": now_utc().isoformat(),
         "market": market,
         "data": data
     }
 
-    with open(cache_path, "w") as f:
-        json.dump(cache, f)
+    atomic_write_json(cache_path, cache, indent=None)
 
 
 def clear_cache():
@@ -1317,14 +1313,13 @@ def save_extra_markets(extra_data: Dict[str, Dict], league: str = "serie_a") -> 
     _suffix = f"_{league}" if league != "serie_a" else ""
     output_path = output_dir / f"odds_extra_markets{_suffix}.json"
 
-    with open(output_path, "w") as f:
-        json.dump({
-            "fetched_at": datetime.now().isoformat(),
-            "source": "the-odds-api.com (per-event endpoint)",
-            "markets": list(PER_EVENT_MARKETS.keys()),
-            "match_count": len(extra_data),
-            "matches": extra_data,
-        }, f, indent=2)
+    atomic_write_json(output_path, {
+        "fetched_at": now_utc().isoformat(),
+        "source": "the-odds-api.com (per-event endpoint)",
+        "markets": list(PER_EVENT_MARKETS.keys()),
+        "match_count": len(extra_data),
+        "matches": extra_data,
+    }, indent=2)
 
     log.info(f"Saved extra markets for {len(extra_data)} matches to {output_path}")
     return output_path
@@ -1823,8 +1818,7 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
             }
 
     odds_path = output_dir / f"odds{_suffix}.json"
-    with open(odds_path, "w") as f:
-        json.dump(simple_odds, f, indent=2)
+    atomic_write_json(odds_path, simple_odds, indent=2)
     output_paths["h2h"] = odds_path
 
     # Save over/under odds
@@ -1839,8 +1833,7 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
 
     if totals_odds:
         totals_path = output_dir / f"odds_totals{_suffix}.json"
-        with open(totals_path, "w") as f:
-            json.dump(totals_odds, f, indent=2)
+        atomic_write_json(totals_path, totals_odds, indent=2)
         output_paths["totals"] = totals_path
 
     # Save spreads odds
@@ -1855,8 +1848,7 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
 
     if spreads_odds:
         spreads_path = output_dir / f"odds_spreads{_suffix}.json"
-        with open(spreads_path, "w") as f:
-            json.dump(spreads_odds, f, indent=2)
+        atomic_write_json(spreads_path, spreads_odds, indent=2)
         output_paths["spreads"] = spreads_path
 
     # Save BTTS odds
@@ -1871,8 +1863,7 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
 
     if btts_odds:
         btts_path = output_dir / f"odds_btts{_suffix}.json"
-        with open(btts_path, "w") as f:
-            json.dump(btts_odds, f, indent=2)
+        atomic_write_json(btts_path, btts_odds, indent=2)
         output_paths["btts"] = btts_path
 
     # Save Draw No Bet odds
@@ -1887,20 +1878,18 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
 
     if dnb_odds:
         dnb_path = output_dir / f"odds_dnb{_suffix}.json"
-        with open(dnb_path, "w") as f:
-            json.dump(dnb_odds, f, indent=2)
+        atomic_write_json(dnb_path, dnb_odds, indent=2)
         output_paths["draw_no_bet"] = dnb_path
 
     # Save full unified data
     full_path = output_dir / f"odds_full{_suffix}.json"
-    with open(full_path, "w") as f:
-        json.dump({
-            "fetched_at": datetime.now().isoformat(),
-            "source": "the-odds-api.com",
-            "league": league,
-            "markets": list(MARKETS.keys()) + list(EXTRA_MARKETS.keys()),
-            "matches": odds_data
-        }, f, indent=2)
+    atomic_write_json(full_path, {
+        "fetched_at": now_utc().isoformat(),
+        "source": "the-odds-api.com",
+        "league": league,
+        "markets": list(MARKETS.keys()) + list(EXTRA_MARKETS.keys()),
+        "matches": odds_data
+    }, indent=2)
     output_paths["full"] = full_path
 
     # Save per-bookmaker data (compact format for market intelligence)
@@ -1926,11 +1915,10 @@ def save_odds(odds_data: Dict[str, Dict], league: str = "serie_a") -> Dict[str, 
 
     if bookmaker_data:
         bookmaker_path = output_dir / f"odds_bookmakers{_suffix}.json"
-        with open(bookmaker_path, "w") as f:
-            json.dump({
-                "fetched_at": datetime.now().isoformat(),
-                "matches": bookmaker_data
-            }, f, indent=2)
+        atomic_write_json(bookmaker_path, {
+            "fetched_at": now_utc().isoformat(),
+            "matches": bookmaker_data
+        }, indent=2)
         output_paths["bookmakers"] = bookmaker_path
 
     log.info(f"Saved odds to {len(output_paths)} files")
@@ -2000,9 +1988,10 @@ def fetch_and_save_odds(markets: List[str] = None, use_cache: bool = True, leagu
                 matches = cached.get("matches", {})
                 age_str = "?"
                 try:
-                    fetched_dt = datetime.fromisoformat(fetched_at)
-                    age_hours = (datetime.now() - fetched_dt).total_seconds() / 3600
-                    age_str = f"{age_hours:.1f}h"
+                    fetched_dt = to_utc(fetched_at)
+                    if fetched_dt:
+                        age_hours = (now_utc() - fetched_dt).total_seconds() / 3600
+                        age_str = f"{age_hours:.1f}h"
                 except Exception:
                     pass
                 log.warning(
@@ -2043,15 +2032,14 @@ def fetch_and_save_odds(markets: List[str] = None, use_cache: bool = True, leagu
     # Update pipeline_state so health-monitor sees a recent fetch.
     # Without this, the staleness check perpetually warns even when fetches succeed.
     try:
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
         state_path = DATA_DIR / "pipeline_state.json"
         state = {}
         if state_path.exists():
             with open(state_path) as fh:
                 state = json.load(fh) or {}
-        state["last_odds_fetch"] = _dt.now(_tz.utc).isoformat()
-        with open(state_path, "w") as fh:
-            json.dump(state, fh, indent=2)
+        state["last_odds_fetch"] = _dt.now(UTC).isoformat()
+        atomic_write_json(state_path, state, indent=2)
     except Exception as e:
         log.debug(f"Failed to update last_odds_fetch state: {e}")
 
@@ -2147,16 +2135,16 @@ def sync_matches_from_odds(odds_data: Dict[str, Dict]) -> List[Dict]:
         log.info("No matches to sync from odds data")
         return []
 
+    now = now_local()
     output = {
         "matches": synced_matches,
         "matchweek": matchweek,
-        "season": season or f"{datetime.now().year - 1}-{str(datetime.now().year)[2:]}",
-        "updated_at": datetime.now().isoformat(),
+        "season": season or f"{now.year - 1}-{str(now.year)[2:]}",
+        "updated_at": now_utc().isoformat(),
         "source": "synced_from_odds_api",
     }
 
-    with open(manual_path, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(manual_path, output, indent=2)
 
     log.info(f"Synced {len(synced_matches)} matches from Odds API")
     return synced_matches
@@ -2460,7 +2448,7 @@ def discover_kickoffs_via_events() -> List[Dict]:
             try:
                 kickoff_utc = datetime.fromisoformat(ct.replace("Z", "+00:00"))
                 if kickoff_utc.tzinfo is None:
-                    kickoff_utc = kickoff_utc.replace(tzinfo=timezone.utc)
+                    kickoff_utc = kickoff_utc.replace(tzinfo=UTC)
             except (ValueError, TypeError):
                 continue
             # Normalize team names so match_key aligns with the rest of the pipeline.

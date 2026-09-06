@@ -20,9 +20,7 @@ from sklearn.isotonic import IsotonicRegression
 
 from config.settings import MODELS_DIR
 from ml.config import (
-    CLASS_INDICES,
     LABEL_MAP,
-    META_COLS,
     N_CLASSES,
     CalibrationConfig,
     ValidationConfig,

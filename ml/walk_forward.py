@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -385,7 +385,10 @@ def print_walk_forward_summary(results: list[WalkForwardResult]):
         return
 
     from ml.statistical_validation import (
-        accuracy_with_ci, binomial_test, BASE_RATE_HOME_WIN, BASE_RATE_RANDOM,
+        BASE_RATE_HOME_WIN,
+        BASE_RATE_RANDOM,
+        accuracy_with_ci,
+        binomial_test,
     )
 
     print("\n" + "=" * 70)

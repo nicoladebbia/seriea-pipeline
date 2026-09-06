@@ -23,6 +23,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Optional
 
@@ -246,7 +248,7 @@ def _parse_tm_html(html: str, team: str) -> list[PlayerInjury]:
             expected_return=expected_return,
             is_currently_out=True,
             source="transfermarkt",
-            scraped_at=datetime.now(),
+            scraped_at=now_utc(),
         ))
 
     return injuries
@@ -369,7 +371,7 @@ def scrape_team_injuries_espn(team: str) -> list[PlayerInjury]:
                 expected_return=expected_return,
                 is_currently_out=is_out,
                 source="espn",
-                scraped_at=datetime.now(),
+                scraped_at=now_utc(),
             ))
 
         log.info(f"Found {len(injuries)} injured players for {team} (ESPN)")

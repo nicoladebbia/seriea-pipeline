@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 CONFIRMED = ROOT / "data" / "upcoming" / "confirmed_lineups.json"
 BOARD = ROOT / "data" / "fantacalcio" / "auction_board.json"
@@ -241,7 +243,7 @@ def run_screenshot_reminder(now_ts: float | None = None) -> str:
                     f"vero."))
     state["shot_reminder"] = adv.get("round")
     try:
-        STATE.write_text(json.dumps(state))
+        atomic_write_json(STATE, state)
     except OSError:
         pass
     return f"reminder sent ({opps})"
@@ -311,7 +313,7 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
         return "deadline passed (formation locked)"
     if not adv.get("xi"):
         return "no XI buildable"
-    ADVICE.write_text(json.dumps(adv, indent=1, ensure_ascii=False))
+    atomic_write_json(ADVICE, adv, indent=1, ensure_ascii=False)
     # Rival matrix FRESH from the official-adjusted advice: the pre-lock
     # P(win) must price the same information the alert is about. Falls back
     # to the artifact on failure (stale but better than nothing).
@@ -362,7 +364,7 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
     n_xi = sum(1 for o in overrides.values() if o["src"] == "official_xi")
     if not diff and not p_moved:
         state.update({"official_sig": sig, "p_win": p_now})
-        STATE.write_text(json.dumps(state))
+        atomic_write_json(STATE, state)
         return f"officials in ({n_xi} confirmed titolari), advice unchanged"
 
     from datetime import datetime
@@ -386,5 +388,5 @@ def run_official_lineup_check(now_ts: float | None = None) -> str:
                     + (f"\n<i>{fl}</i>" if fl else "")),
            tg_reply_markup=_SCHIERA_BTN)
     state.update({"advice": cur, "official_sig": sig, "p_win": p_now})
-    STATE.write_text(json.dumps(state))
+    atomic_write_json(STATE, state)
     return "pushed official-lineup update"

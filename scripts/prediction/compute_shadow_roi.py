@@ -31,6 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from config.settings import atomic_write_json
 from models.simulator.backtests.roi_bootstrap import compute_roi_stats
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -303,7 +304,7 @@ def run(shadow_log_path: Path, odds_path: Path, results_path: Path,
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, default=str))
+    atomic_write_json(output_path, payload, indent=2, default=str)
     return payload
 
 

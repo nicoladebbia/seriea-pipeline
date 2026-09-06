@@ -26,6 +26,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from config.settings import atomic_write_json
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -287,7 +289,7 @@ def run(shadow_log_path: Path, output_path: Path, update_history: bool = True) -
             runs.append(settlement)
         history["runs"] = runs
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(history, indent=2, default=str))
+        atomic_write_json(output_path, history, indent=2, default=str)
         log.info("Wrote settlement to %s (total runs: %d)", output_path, len(runs))
     else:
         log.info("--no-update-history flag set; returning settlement without write")

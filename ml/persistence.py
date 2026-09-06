@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import MODEL_EXTENSIONS
 
 log = logging.getLogger(__name__)
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
 
 
 def save_model(
@@ -43,7 +43,7 @@ def save_model(
     latest_path = save_dir / f"{model_type}_latest{ext}"
     model.save(str(latest_path))
 
-    saved_at = datetime.now(timezone.utc).isoformat()
+    saved_at = datetime.now(UTC).isoformat()
     # Safely extract feature importance (not all wrappers support this)
     try:
         feat_imp = model.get_feature_importance()
@@ -62,13 +62,11 @@ def save_model(
 
     # Save versioned metadata
     meta_versioned = save_dir / f"{model_type}_{ts}_metadata.json"
-    with open(meta_versioned, "w") as f:
-        json.dump(metadata, f, indent=2)
+    atomic_write_json(meta_versioned, metadata, indent=2)
 
     # Save _latest metadata (overwrite)
     meta_latest = save_dir / f"{model_type}_metadata.json"
-    with open(meta_latest, "w") as f:
-        json.dump(metadata, f, indent=2)
+    atomic_write_json(meta_latest, metadata, indent=2)
 
     log.info("Saved %s (%s) v%s to %s", model_type, variant, ts, latest_path)
     return latest_path

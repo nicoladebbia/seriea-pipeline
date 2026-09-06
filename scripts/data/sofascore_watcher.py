@@ -94,11 +94,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scraper.sofascore_standings import live_standings_via_html
 
 log = logging.getLogger(__name__)
@@ -117,14 +117,14 @@ _UNSOURCEABLE = ("home", "away")
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """Atomic write — a reader must never catch a half-written table."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
+    atomic_write_json(tmp, payload, indent=2)
     tmp.replace(path)
 
 

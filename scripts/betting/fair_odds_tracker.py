@@ -12,10 +12,11 @@ The ledger lives at data/betting/fair_odds_ledger.json.
 """
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
+from config.settings import atomic_write_json
 from scripts.utils.ledger import load_json_ledger, save_json_ledger
 
 log = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def record_predictions(predictions: List[Dict]) -> Dict:
     """
     ledger = load_json_ledger(LEDGER_PATH)
     by_key = {(r.get("match"), str(r.get("date") or "")[:10]): r for r in ledger}
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     new_count = 0
     updated = 0
@@ -119,7 +120,7 @@ def record_predictions(predictions: List[Dict]) -> Dict:
     return {"recorded": new_count, "updated": updated}
 
 
-def _parse_score(score) -> Optional[tuple]:
+def _parse_score(score) -> tuple | None:
     """Normalise a score to (home, away) ints.
 
     Accepts "2-1" / "2:1" strings, [2, 1] sequences and {"home", "away"}
@@ -152,7 +153,7 @@ def _outcome(h: int, a: int) -> str:
 
 
 def _closest_result(candidates: List[Dict], record_date: str,
-                    tolerance_days: int) -> Optional[Dict]:
+                    tolerance_days: int) -> Dict | None:
     """Pick the candidate whose date is within `tolerance_days` of the record."""
     try:
         rd = datetime.strptime(record_date[:10], "%Y-%m-%d")
@@ -195,7 +196,7 @@ def settle_predictions(results: Dict = None, tolerance_days: int = 3) -> Dict:
 
     if results is None:
         results = _load_results()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     settled_count = 0
     for record in unsettled:
@@ -218,7 +219,7 @@ def settle_predictions(results: Dict = None, tolerance_days: int = 3) -> Dict:
         record["actual_outcome"] = actual
         record["actual_score"] = [h, a]
         record["settled"] = True
-        record["settled_at"] = datetime.now(timezone.utc).isoformat()
+        record["settled_at"] = datetime.now(UTC).isoformat()
         record["prediction_correct"] = record.get("predicted_outcome") == actual
         settled_count += 1
 
@@ -332,7 +333,7 @@ def _update_summary(ledger: List[Dict]):
     recent_correct = len([r for r in recent if r.get("prediction_correct")])
 
     summary = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "total_predictions": total,
         "total_correct": correct,
         "accuracy_pct": round(correct / total * 100, 1),
@@ -348,8 +349,7 @@ def _update_summary(ledger: List[Dict]):
     }
 
     BETTING_DIR.mkdir(parents=True, exist_ok=True)
-    with open(SUMMARY_PATH, "w") as f:
-        json.dump(summary, f, indent=2)
+    atomic_write_json(SUMMARY_PATH, summary, indent=2)
 
 
 def _load_results() -> Dict[str, List[Dict]]:

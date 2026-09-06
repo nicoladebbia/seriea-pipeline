@@ -17,6 +17,8 @@ Usage:
 import json
 import logging
 from datetime import datetime, timedelta
+
+from scripts.utils.match_timing import now_utc, to_utc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
@@ -24,7 +26,7 @@ import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -114,11 +116,9 @@ class BankrollManager:
             "current_streak": self.current_streak,
             "total_bets": self.total_bets,
             "total_wins": self.total_wins,
-            "last_updated": datetime.now().isoformat(),
+            "last_updated": now_utc().isoformat(),
         }
-        with open(self.state_file, "w") as f:
-            json.dump(state, f, indent=2)
-
+        atomic_write_json(self.state_file, state, indent=2)
     def reset_daily(self):
         """Reset daily tracking (call at start of each day)."""
         self.daily_start = self.current_bankroll
@@ -284,9 +284,7 @@ class BettingTracker:
 
     def save_bets(self):
         """Save bet history to file."""
-        with open(self.bets_file, "w") as f:
-            json.dump(self.bets, f, indent=2, default=str)
-
+        atomic_write_json(self.bets_file, self.bets, indent=2, default=str)
     def log_bet(
         self,
         match: str,
@@ -307,7 +305,7 @@ class BettingTracker:
 
         bet = {
             "id": bet_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "match": match,
             "prediction": prediction,
             "odds": odds,
@@ -350,7 +348,7 @@ class BettingTracker:
                 bet["won"] = won
                 bet["returns"] = returns
                 bet["profit"] = returns - bet["stake"] if won else -bet["stake"]
-                bet["settled_at"] = datetime.now().isoformat()
+                bet["settled_at"] = now_utc().isoformat()
                 break
 
         self.save_bets()
@@ -364,10 +362,10 @@ class BettingTracker:
         settled = [b for b in self.bets if b["status"] == "settled"]
 
         if days:
-            cutoff = datetime.now() - timedelta(days=days)
+            cutoff = now_utc() - timedelta(days=days)
             settled = [
                 b for b in settled
-                if datetime.fromisoformat(b["timestamp"]) >= cutoff
+                if (to_utc(b["timestamp"]) or now_utc()) >= cutoff
             ]
 
         return settled

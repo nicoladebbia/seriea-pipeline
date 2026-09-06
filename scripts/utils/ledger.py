@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import List
 
+from config.settings import atomic_write_json
+
 log = logging.getLogger(__name__)
 
 
@@ -33,5 +35,4 @@ def load_json_ledger(path: Path) -> List[dict]:
 def save_json_ledger(path: Path, data: List[dict]) -> None:
     """Write *data* as a JSON array to *path* with indent=2."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fh:
-        json.dump(data, fh, indent=2)
+    atomic_write_json(path, data, indent=2)

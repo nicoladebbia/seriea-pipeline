@@ -38,15 +38,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from config.settings import atomic_write_json
 from storage.paths import DATA_DIR  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ def _age_from_dob(dob_iso: str, on: date | None = None) -> int | None:
         born = datetime.strptime(dob_iso, "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
-    on = on or datetime.now(timezone.utc).date()
+    on = on or datetime.now(UTC).date()
     return on.year - born.year - ((on.month, on.day) < (born.month, born.day))
 
 
@@ -145,7 +145,7 @@ def build() -> dict[str, dict]:
 
         if p.get("dateOfBirthTimestamp"):
             rec["date_of_birth"] = datetime.fromtimestamp(
-                int(p["dateOfBirthTimestamp"]), tz=timezone.utc
+                int(p["dateOfBirthTimestamp"]), tz=UTC
             ).date().isoformat()
         if p.get("height"):
             rec["height"] = int(p["height"])
@@ -181,10 +181,7 @@ def main() -> int:
         return 1
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = OUT_PATH.with_suffix(".json.tmp")
-    with open(tmp, "w") as fh:
-        json.dump(meta, fh, ensure_ascii=False, separators=(",", ":"))
-    os.replace(tmp, OUT_PATH)
+    atomic_write_json(OUT_PATH, meta, ensure_ascii=False, separators=(",", ":"))
 
     filled = lambda k: sum(1 for r in meta.values() if r.get(k))  # noqa: E731
     log.info(

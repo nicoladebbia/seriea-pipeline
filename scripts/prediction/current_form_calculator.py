@@ -20,6 +20,7 @@ import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -338,7 +339,7 @@ def calculate_all_forms(matches_file: str = None, league: str = None) -> Dict:
 
     # Save results
     output = {
-        "calculated_at": datetime.now().isoformat(),
+        "calculated_at": now_utc().isoformat(),
         "teams": forms,
         "matchups": matchups
     }

@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "data" / "fantacalcio" / "pred_ledger.json"
 SCHEDULE = ROOT / "data" / "fantacalcio" / "league_schedule.json"
@@ -46,7 +48,7 @@ def _load() -> dict:
 def _save(led: dict) -> None:
     led["updated_at"] = datetime.now(UTC).isoformat()
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    LEDGER.write_text(json.dumps(led, indent=1, ensure_ascii=False))
+    atomic_write_json(LEDGER, led, indent=1, ensure_ascii=False)
 
 
 def _round_parquet(rnd: int) -> Path:

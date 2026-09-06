@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 
 def load_failed(path: Path) -> dict:
     """Load failed-download log from *path*, returning empty dict on error."""
@@ -23,4 +25,4 @@ def load_failed(path: Path) -> dict:
 def save_failed(path: Path, failed: dict) -> None:
     """Persist *failed* dict as JSON to *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(failed, indent=2), encoding="utf-8")
+    atomic_write_json(path, failed, indent=2, encoding="utf-8")

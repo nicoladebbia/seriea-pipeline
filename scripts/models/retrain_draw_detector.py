@@ -19,7 +19,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import pickle
 import sys
@@ -36,7 +35,7 @@ from sklearn.metrics import log_loss, accuracy_score, brier_score_loss
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.evaluation import MIN_GATE_TEST_MATCHES
 from storage.paths import features_path
 
@@ -349,9 +348,7 @@ def train_and_evaluate(dry_run: bool = False) -> Dict:
             "avg_ll_improvement": round(avg_improvement, 5),
             "blend_enabled": enable_blend,
         }
-        with open(meta_path, "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
-
+        atomic_write_json(meta_path, metadata, indent=2, default=str)
         log.info("Saved draw_detector.cbm (%d features)", len(all_cols))
         log.info("Saved draw_detector_calibrator.pkl")
         log.info("Saved draw_detector_metadata.json")

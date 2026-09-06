@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from html import unescape
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "fantacalcio" / "probabili.json"
 URL = "https://www.fantacalcio.it/probabili-formazioni-serie-a"
@@ -314,8 +316,7 @@ def _cached_feed(url: str, cache: Path, parse_fn,
             data = parse_fn(r.text)
             if data is not None:
                 cache.parent.mkdir(parents=True, exist_ok=True)
-                cache.write_text(json.dumps(data, indent=1,
-                                            ensure_ascii=False))
+                atomic_write_json(cache, data, indent=1, ensure_ascii=False)
                 return data
     except Exception:
         pass

@@ -39,7 +39,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -764,7 +764,7 @@ def build_rare_events(seasons_back: int = 3) -> dict:
     out = {"generated_at": pd.Timestamp.utcnow().isoformat(), "league": "serie_a",
            "seasons": list(seasons), "rates": rates, "conditioning": conditioning}
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    RARE_PATH.write_text(json.dumps(out, indent=2))
+    atomic_write_json(RARE_PATH, out, indent=2)
     return out
 
 
@@ -839,7 +839,7 @@ def backtest(test_seasons=("2023-2024", "2024-2025", "2025-2026"), n: int = 3000
                           "skill": round(skill, 4),
                           "passed": bool(skill >= SKILL_GATE and min(n_events, len(y) - n_events) >= N_GATE)}
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    BACKTEST_PATH.write_text(json.dumps(out, indent=2))
+    atomic_write_json(BACKTEST_PATH, out, indent=2)
     return out
 
 
@@ -864,7 +864,7 @@ def main(argv=None):
         prof = json.loads(PROFILE_PATH.read_text()) if PROFILE_PATH.exists() else default_profile()
         prof["red_mult"] = rm
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        PROFILE_PATH.write_text(json.dumps(prof, indent=1))
+        atomic_write_json(PROFILE_PATH, prof, indent=1)
         print(json.dumps(rm))
     if a.fit_profile:
         tl, _ = build_goal_timeline()
@@ -874,7 +874,7 @@ def main(argv=None):
         if PROFILE_PATH.exists():  # the red-card measurement is its own step; a refit keeps it
             prof["red_mult"] = (json.loads(PROFILE_PATH.read_text()) or {}).get("red_mult")
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        PROFILE_PATH.write_text(json.dumps(prof, indent=1))
+        atomic_write_json(PROFILE_PATH, prof, indent=1)
         print(json.dumps({"n_matches": prof["n_matches"], "total": prof["total"], "state_mult": prof["state_mult"],
                           "stoppage_mass": [round(prof["hazard"][BIN_1H_STOPPAGE], 4), round(prof["hazard"][BIN_2H_STOPPAGE], 4)]}))
     if a.backtest:

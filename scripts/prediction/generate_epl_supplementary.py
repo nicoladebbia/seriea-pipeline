@@ -26,8 +26,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, UPCOMING_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -116,8 +117,7 @@ EPL_REFEREES = {
 def _save_json(path: Path, data: dict):
     """Save JSON file with pretty formatting."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(path, data, indent=2)
     log.info(f"Saved {path.name} ({len(json.dumps(data))} bytes)")
 
 
@@ -128,7 +128,7 @@ def _merge_matches(existing_data: dict, new_matches: dict, timestamp_key: str = 
     are assumed to be Serie A (the historical default) and tagged accordingly.
     """
     if not existing_data:
-        existing_data = {timestamp_key: datetime.now().isoformat(), "matches": {}}
+        existing_data = {timestamp_key: now_utc().isoformat(), "matches": {}}
 
     existing_matches = existing_data.get("matches", {})
     if isinstance(existing_matches, list):
@@ -144,7 +144,7 @@ def _merge_matches(existing_data: dict, new_matches: dict, timestamp_key: str = 
 
     existing_matches.update(new_matches)
     existing_data["matches"] = existing_matches
-    existing_data[timestamp_key] = datetime.now().isoformat()
+    existing_data[timestamp_key] = now_utc().isoformat()
     return existing_data
 
 
@@ -760,7 +760,7 @@ CONCLUSION: Sentiment edge favors {sentiment_edge.upper()}"""
             "key_factors": key_factors,
             "contrarian_opportunity": contrarian,
             "reasoning": reasoning.strip(),
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "sources_used": ["Standings & Form", "Elo Ratings", "Premier League Data"],
         }
 
@@ -1238,7 +1238,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
         filtered.extend(sentiment_results)
 
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "matches": filtered,
             "summary": {
                 "total_analyzed": len(filtered),
@@ -1264,9 +1264,9 @@ def generate_all_epl_supplementary(dry_run: bool = False):
         elif isinstance(existing, dict):
             # Flat dict format
             existing.update(weather_results)
-            merged = {"fetched_at": datetime.now().isoformat(), "matches": existing}
+            merged = {"fetched_at": now_utc().isoformat(), "matches": existing}
         else:
-            merged = {"fetched_at": datetime.now().isoformat(), "matches": weather_results}
+            merged = {"fetched_at": now_utc().isoformat(), "matches": weather_results}
         _save_json(UPCOMING_DIR / "weather.json", merged)
     print(f"         {len(weather_results)} venues fetched")
 
@@ -1320,7 +1320,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
     injury_results = generate_epl_injuries()
     if not dry_run and injury_results:
         _save_json(UPCOMING_DIR / "injuries_premier_league.json", {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "matches": injury_results,
             "match_count": len(injury_results),
         })
@@ -1355,7 +1355,7 @@ def generate_all_epl_supplementary(dry_run: bool = False):
                 existing_matchups.update(form_result.get("matchups", {}))
                 existing_form["teams"] = existing_teams
                 existing_form["matchups"] = existing_matchups
-                existing_form["calculated_at"] = datetime.now().isoformat()
+                existing_form["calculated_at"] = now_utc().isoformat()
                 _save_json(UPCOMING_DIR / "current_form.json", existing_form)
             else:
                 _save_json(UPCOMING_DIR / "current_form.json", form_result)

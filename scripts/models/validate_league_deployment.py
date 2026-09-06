@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ def save_deployment_state(league: str, state: dict) -> Path:
     out_dir = MODELS_DIR / league
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "deployment_state.json"
-    out_path.write_text(json.dumps(state, indent=2, default=str))
+    atomic_write_json(out_path, state, indent=2, default=str)
     return out_path
 
 

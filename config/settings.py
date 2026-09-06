@@ -60,6 +60,17 @@ def get_current_season() -> str:
     return f"{today.year - 1}-{today.year}"
 
 
+def season_file_suffix(season: str | None = None) -> str:
+    """The season as it appears in filenames: "2026_2027" for "2026-2027".
+
+    Derive every season-stamped filename through this (default: the season being
+    played). A literal like market_values_<year>_<year>.parquet is a time bomb with
+    an annual fuse — three instances paid for, see CLAUDE.md; the guard
+    tests/test_no_season_literals_in_paths.py fails the suite on the next one.
+    """
+    return (season or get_current_season()).replace("-", "_")
+
+
 def latest_season_with_results(df, season_col: str = "season",
                                result_col: str = "home_score"):
     """Return the latest season that actually has PLAYED matches, or None.
@@ -326,22 +337,29 @@ import json as _json
 import tempfile as _tempfile
 
 
-def atomic_write_json(path: Path, data, indent: int = 2, cls=None):
+def atomic_write_json(path: Path, data, indent: int = 2, cls=None, encoding: str = "utf-8", **dump_kwargs):
     """Write JSON atomically: write to temp file, then rename.
+
+    The ONLY way JSON state files are written in this repo (guard:
+    tests/test_atomic_json_writes.py). A crash or a concurrent launchd job
+    mid-write leaves the previous file intact, never a truncated one.
 
     When cls is provided, it takes full control of serialization (json.dump
     ignores `default` when `cls` is set). When cls is None, `default=str`
-    handles datetime/Path/etc.
+    handles datetime/Path/etc. unless the caller passes its own `default`.
+    Any other json.dump keyword (ensure_ascii, sort_keys, separators, ...)
+    passes through unchanged.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = _tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
-        with open(fd, "w") as f:
+        with open(fd, "w", encoding=encoding) as f:
             if cls is not None:
-                _json.dump(data, f, indent=indent, cls=cls)
+                _json.dump(data, f, indent=indent, cls=cls, **dump_kwargs)
             else:
-                _json.dump(data, f, indent=indent, default=str)
+                dump_kwargs.setdefault("default", str)
+                _json.dump(data, f, indent=indent, **dump_kwargs)
         Path(tmp).rename(path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

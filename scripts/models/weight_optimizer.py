@@ -20,12 +20,14 @@ Run standalone: python3 -m scripts.weight_optimizer
 import json
 import logging
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -169,7 +171,7 @@ def _build_weights_output(optimized: dict, current: dict, status: str,
 
     # Add current entry to history
     history.append({
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "n_settled": n_settled,
         "weights": optimized,
         "status": status,
@@ -190,7 +192,7 @@ def _build_weights_output(optimized: dict, current: dict, status: str,
         }
 
     return {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "status": status,
         "n_settled": n_settled,
         "reason": reason,
@@ -330,7 +332,7 @@ def compute_factor_decay(analysis: dict) -> dict:
         }
 
     return {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "n_settled": analysis.get("n_settled", 0),
         "multipliers": multipliers,
         "details": details,
@@ -348,7 +350,7 @@ def build_calibration_curve(analysis: dict) -> dict:
 
     if n_settled < 50:
         return {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "status": "insufficient_data",
             "n_settled": n_settled,
             "required": 50,
@@ -367,7 +369,7 @@ def build_calibration_curve(analysis: dict) -> dict:
 
     if not pred_probs:
         return {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "status": "no_data",
             "n_settled": n_settled,
             "curve": {},
@@ -421,7 +423,7 @@ def build_calibration_curve(analysis: dict) -> dict:
         bias = "well_calibrated"
 
     return {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "status": "active",
         "method": method,
         "n_settled": n_settled,
@@ -449,22 +451,19 @@ def run_weight_optimization() -> dict:
     # 1. Optimize weights
     weights_result = optimize_weights(analysis)
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    with open(WEIGHTS_PATH, "w") as f:
-        json.dump(weights_result, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(WEIGHTS_PATH, weights_result, indent=2, cls=_NumpySafeEncoder)
     log.info("Optimized weights saved (%s)", weights_result["status"])
 
     # 2. Factor decay/boost
     factor_result = compute_factor_decay(analysis)
-    with open(FACTOR_ADJ_PATH, "w") as f:
-        json.dump(factor_result, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(FACTOR_ADJ_PATH, factor_result, indent=2, cls=_NumpySafeEncoder)
     n_adjusted = sum(1 for d in factor_result.get("details", {}).values()
                      if d.get("action") in ("decay", "boost"))
     log.info("Factor adjustments saved (%d factors adjusted)", n_adjusted)
 
     # 3. Calibration curve
     cal_result = build_calibration_curve(analysis)
-    with open(CALIBRATION_PATH, "w") as f:
-        json.dump(cal_result, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(CALIBRATION_PATH, cal_result, indent=2, cls=_NumpySafeEncoder)
     log.info("Calibration curve saved (%s)", cal_result.get("status", "unknown"))
 
     return {

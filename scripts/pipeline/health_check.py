@@ -19,12 +19,13 @@ Exit codes: 0=HEALTHY, 1=WARNING, 2=CRITICAL
 
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, MODELS_DIR, get_current_season
+from scripts.utils.match_timing import now_local, now_utc
 
 # ─── Staleness thresholds ───
 MAX_FEATURES_AGE_DAYS = 7       # Features should be rebuilt weekly
@@ -39,8 +40,8 @@ def _file_age(path: Path) -> Tuple[float, str]:
     """Return (age_hours, human_readable_age) for a file, or (-1, 'missing')."""
     if not path.exists():
         return -1, "MISSING"
-    mtime = datetime.fromtimestamp(path.stat().st_mtime)
-    delta = datetime.now() - mtime
+    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    delta = now_utc() - mtime
     hours = delta.total_seconds() / 3600
 
     if hours < 1:
@@ -52,7 +53,7 @@ def _file_age(path: Path) -> Tuple[float, str]:
         return hours, f"{days:.1f}d ago"
 
 
-def _iso_age_days(stamp: str) -> Optional[float]:
+def _iso_age_days(stamp: str) -> float | None:
     """Age in days of an ISO timestamp, or None if it cannot be read.
 
     Naive stamps are read as UTC. That is the convention the project's bug
@@ -70,8 +71,8 @@ def _iso_age_days(stamp: str) -> Optional[float]:
     except (ValueError, TypeError):
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+        dt = dt.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - dt).total_seconds() / 86400
 
 
 def _freshest_fixture_source() -> Path:
@@ -137,7 +138,7 @@ def check_data_freshness() -> Dict:
     return checks
 
 
-def _labeled_matches_since_model() -> Dict[str, Optional[int]]:
+def _labeled_matches_since_model() -> Dict[str, int | None]:
     """How many matches with a RESULT postdate each model's training run.
 
     Uses the model file's mtime as the training instant — the same signal the
@@ -166,7 +167,7 @@ def _labeled_matches_since_model() -> Dict[str, Optional[int]]:
     """
     import pandas as pd  # local, matching this module's lazy-import convention
 
-    out: Dict[str, Optional[int]] = {}
+    out: Dict[str, int | None] = {}
     universal_dir = MODELS_DIR / "universal"
     matches_path = DATA_DIR / "parsed" / "matches.parquet"
     if not matches_path.exists():
@@ -190,7 +191,7 @@ def _labeled_matches_since_model() -> Dict[str, Optional[int]]:
             continue
         try:
             trained_on = pd.Timestamp(
-                datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                datetime.fromtimestamp(path.stat().st_mtime, UTC)
                 .replace(tzinfo=None)
             ).normalize()
         except OSError:
@@ -327,7 +328,7 @@ def check_system_integrity() -> Dict:
 
     # Check config
     try:
-        from config.settings import DATA_DIR, MODELS_DIR, PROJECT_ROOT
+        from config.settings import DATA_DIR
         checks["config"] = "OK"
     except Exception as e:
         checks["config"] = f"ERROR: {e}"
@@ -360,6 +361,7 @@ def check_model_metadata_consistency() -> Dict:
     if no_odds_model.exists() and no_odds_meta.exists():
         try:
             import json
+
             from catboost import CatBoostClassifier
             model = CatBoostClassifier()
             model.load_model(str(no_odds_model))
@@ -526,6 +528,7 @@ def check_data_quality() -> Dict:
     # .isdigit() test would false-positive.
     try:
         import pandas as pd
+
         from config.leagues import ACTIVE_LEAGUES
         matches_path = DATA_DIR / "parsed" / "matches.parquet"
         if matches_path.exists():
@@ -774,7 +777,7 @@ def check_silent_failures() -> Dict:
             import pandas as pd
             m = pd.read_parquet(matches_path)
             m["match_date"] = pd.to_datetime(m["match_date"], errors="coerce")
-            now = datetime.now()
+            now = now_utc()
             issues = []
             status = "OK"
             detail = {}
@@ -1063,11 +1066,11 @@ def _upcoming_serie_a_kickoffs(now: datetime) -> List[Tuple[str, datetime]]:
             dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
         except ValueError:
             continue
-        out.append((mk, dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)))
+        out.append((mk, dt if dt.tzinfo else dt.replace(tzinfo=UTC)))
     return sorted(out, key=lambda x: x[1])
 
 
-def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
+def check_lineup_sources(now: datetime | None = None, probe=None) -> Dict:
     """Is the lineup chain alive BEFORE it is needed, and did it deliver when it was?
 
     2026-09-05: every source was dead for a whole matchday and the only trace was a
@@ -1079,7 +1082,7 @@ def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
           run): a match inside LINEUP_DUE_MIN of kickoff, or kicked off in the last
           3h, with no team sheet is CRITICAL and carries the chain's own reason.
     `probe` is injectable for tests; default is the real ESPN request."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     kicks = _upcoming_serie_a_kickoffs(now)
     near = [(mk, dt) for mk, dt in kicks if -3 * 3600 <= (dt - now).total_seconds() <= LINEUP_PROBE_HOURS * 3600]
     out: Dict = {"status": "OK", "matchday_near": bool(near), "espn": None, "missing_sheets": [], "reason": None}
@@ -1138,7 +1141,7 @@ def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: flo
         ts = f.get("startTimestamp")
         if not ts:
             continue
-        ko = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        ko = datetime.fromtimestamp(int(ts), tz=UTC)
         if (f.get("status") or {}).get("type") in ("canceled", "postponed"):
             continue
         if min_age_s <= (now - ko).total_seconds() <= max_age_s:
@@ -1150,7 +1153,7 @@ def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: flo
 PICKS_JOURNAL_GRACE_MIN = 30.0   # the T-30 run is the last chance to journal a pick
 
 
-def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
+def check_picks_journal_activity(now: datetime | None = None) -> Dict:
     """Did the T-30 path paper-journal anything for the Serie A matches that
     kicked off in the last 24h? The T-30 run is a child process
     (`run_full_pipeline --pre-kickoff`, stdout captured by the scheduler), so
@@ -1159,7 +1162,7 @@ def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
     nothing and only a by-hand log read said why. WARNING, never CRITICAL: a
     slate where no angle beats its price is legal, just rare with 40+ priced
     rows a match."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         due = _serie_a_fixtures_kicked_off(now, PICKS_JOURNAL_GRACE_MIN * 60, 24 * 3600)
     except (OSError, ValueError, StopIteration) as e:
@@ -1181,7 +1184,7 @@ def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
             "detail": f"{n} paper pick(s) journaled for {len(due)} Serie A match(es) on {', '.join(dates)}"}
 
 
-def check_match_record_completeness(now: Optional[datetime] = None) -> Dict:
+def check_match_record_completeness(now: datetime | None = None) -> Dict:
     """Does every Serie A match finished more than STATS_GRACE_HOURS ago (last
     7 days) have incident rows AND team stats on its ground-truth row? Under
     the Sofascore API challenge both endpoints answer nothing, the ingest
@@ -1191,7 +1194,7 @@ def check_match_record_completeness(now: Optional[datetime] = None) -> Dict:
     fills both from ESPN on every run; this check says when it did not.
     WARNING: the goal-process timeline, card counts and rolling shot/corner
     features are model inputs, not money inputs."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         import pandas as pd
 
@@ -1235,14 +1238,73 @@ def check_match_record_completeness(now: Optional[datetime] = None) -> Dict:
         return {"status": "WARNING", "detail": f"match record check failed: {e}"}
 
 
-def check_referee_coverage(now: Optional[datetime] = None) -> Dict:
+
+def check_launchd_plists(repo_dir: Path | None = None, installed_dir: Path | None = None,
+                         launchctl_output: str | None = "") -> Dict:
+    """Installed launchd jobs vs the vendored copies in config/launchd/.
+
+    The 21 plists are the pipeline's entry points, and until 2026-09-06 only three
+    of them lived in the repo — a stripped or lost installed copy could not be
+    regenerated (CLAUDE.md: "All launchd plists look stripped"). Every repo plist
+    must be installed, be XML (not a bare array), and match the repo byte for byte;
+    and `launchctl list` must not show a last exit other than 0 / running.
+    launchctl_output="" means "run launchctl here"; None means it was unavailable
+    (fail closed: WARNING, never a silent OK).
+    """
+    import subprocess
+    repo_dir = Path(repo_dir) if repo_dir else Path(__file__).resolve().parents[2] / "config" / "launchd"
+    installed_dir = Path(installed_dir) if installed_dir else Path.home() / "Library" / "LaunchAgents"
+    problems: list[str] = []
+    repo_files = sorted(repo_dir.glob("com.seriea-pipeline.*.plist"))
+    if not repo_files:
+        return {"status": "WARNING", "detail": f"no vendored plists under {repo_dir}", "problems": []}
+    for f in repo_files:
+        short = f.stem.replace("com.seriea-pipeline.", "")
+        inst = installed_dir / f.name
+        if not inst.exists():
+            problems.append(f"{short}: not installed")
+            continue
+        body = inst.read_bytes()
+        if not body.lstrip().startswith(b"<"):
+            problems.append(f"{short}: stripped (not XML)")
+            continue
+        if body != f.read_bytes():
+            problems.append(f"{short}: differs from repo")
+    if launchctl_output == "":
+        try:
+            launchctl_output = subprocess.run(["/bin/launchctl", "list"], capture_output=True, text=True,
+                                              timeout=10).stdout
+        except Exception as e:  # noqa: BLE001 - unavailable launchctl is itself the finding
+            launchctl_output = None
+            problems.append(f"launchctl list failed: {type(e).__name__}")
+    if launchctl_output is None:
+        if not any(p.startswith("launchctl") for p in problems):
+            problems.append("launchctl list unavailable")
+    else:
+        for line in launchctl_output.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[2].startswith("com.seriea-pipeline."):
+                continue
+            pid, status, label = parts[0], parts[1], parts[2]
+            short = label.replace("com.seriea-pipeline.", "")
+            # health-monitor exits 1 to encode WARNING (by design, see its log);
+            # -9 / -15 are a running or restarted job.
+            if short == "health-monitor" or pid != "-":
+                continue
+            if status not in ("0", "-", "-9", "-15"):
+                problems.append(f"{short}: last exit {status}")
+    if problems:
+        return {"status": "WARNING", "detail": "; ".join(problems), "problems": problems}
+    return {"status": "OK", "detail": f"{len(repo_files)} plists installed and identical to config/launchd", "problems": []}
+
+def check_referee_coverage(now: datetime | None = None) -> Dict:
     """Does every Serie A match finished more than STATS_GRACE_HOURS ago carry a
     referee in matches.parquet? The 1X2 ensemble reads three ref_* features;
     from 2026-08-23 to 2026-09-05 every row of the season had "" (the Sofascore
     fixture list names no referee, worldfootball had not published the season)
     and no check looked. ESPN fills it after the match (matchday_updater
     backfill_referees). WARNING: a display-model input, not a money input."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         played = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400)
     except (OSError, ValueError, StopIteration) as e:
@@ -1251,6 +1313,7 @@ def check_referee_coverage(now: Optional[datetime] = None) -> Dict:
         return {"status": "OK", "detail": "no Serie A match finished in the last 7 days past the grace window"}
     try:
         import pandas as pd
+
         from config.team_names import normalize_team
         gt = pd.read_parquet(DATA_DIR / "parsed" / "matches.parquet",
                              columns=["match_date", "home_team", "away_team", "referee", "league"])
@@ -1269,14 +1332,14 @@ def check_referee_coverage(now: Optional[datetime] = None) -> Dict:
     return {"status": "OK", "detail": f"referee known for all {len(played)} Serie A match(es) finished >{STATS_GRACE_HOURS:.0f}h ago"}
 
 
-def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
+def check_player_stats_coverage(now: datetime | None = None) -> Dict:
     """Did the Sofascore player stats land for every Serie A match that finished
     more than STATS_GRACE_HOURS ago? Player-prop paper picks grade from
     player_match_stats.parquet; when the Sofascore API is challenged (2026-09-05)
     the ingestion fails silently and the record that gates real stakes never
     accrues. Fixture kickoffs come from the cached fixture file (known weeks
     ahead), so this check does not itself depend on Sofascore being up."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         played = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400)
     except (OSError, ValueError, StopIteration) as e:
@@ -1380,7 +1443,6 @@ def check_feature_model_alignment() -> Dict:
     ]
 
     try:
-        import pandas as pd
         import pyarrow.parquet as pq
         feature_cols = set(pq.ParquetFile(features_path).schema.names)
         result["data_columns"] = len(feature_cols)
@@ -1460,7 +1522,7 @@ def check_preseason_coverage() -> Dict:
             load_club_roster,
         )
 
-        today = datetime.now().date()
+        today = now_local().date()
         if not _in_friendly_window(today):
             out["detail"] = "outside the friendly window — nothing to cover"
             return out
@@ -1535,7 +1597,7 @@ def check_preseason_coverage() -> Dict:
 def run_health_check() -> Dict:
     """Run all health checks and return unified result."""
     result = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "overall_status": "HEALTHY",
         "data_freshness": check_data_freshness(),
         "data_quality": check_data_quality(),
@@ -1545,6 +1607,7 @@ def run_health_check() -> Dict:
         "player_stats_coverage": check_player_stats_coverage(),
         "picks_journal_activity": check_picks_journal_activity(),
         "referee_coverage": check_referee_coverage(),
+        "launchd_plists": check_launchd_plists(),
         "match_record_completeness": check_match_record_completeness(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),

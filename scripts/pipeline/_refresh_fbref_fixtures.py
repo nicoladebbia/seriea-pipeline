@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 
 def main(season: str) -> None:
-    from botasaurus.browser import browser, Driver
+    from botasaurus.browser import Driver, browser
 
     url = f"https://fbref.com/en/comps/11/{season}/schedule/{season}-Serie-A-Scores-and-Fixtures"
     out_dir = HTML_DIR / season.replace("-", "_")

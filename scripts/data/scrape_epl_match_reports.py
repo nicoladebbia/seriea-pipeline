@@ -193,7 +193,7 @@ def download_match_reports(
     Saves to data/raw/html/{season_epl}/{match_id}.html.
     Skips files that already exist and are >5KB.
     """
-    from botasaurus.browser import browser, Driver
+    from botasaurus.browser import Driver, browser
 
     season_dir = _epl_season_dir(season)
     season_dir.mkdir(parents=True, exist_ok=True)

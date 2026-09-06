@@ -10,10 +10,10 @@ Called from _run_settle() after match completion.
 """
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from scripts.utils.ledger import load_json_ledger, save_json_ledger
+from scripts.utils.match_timing import now_local, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def extract_substitutions(date_str: str = None) -> dict:
         dict with 'extracted' count and 'matches' summary.
     """
     if date_str is None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = now_local().strftime("%Y-%m-%d")
 
     live_file = LIVE_DIR / f"{date_str}.json"
     if not live_file.exists():
@@ -103,7 +103,7 @@ def extract_substitutions(date_str: str = None) -> dict:
                 round(sum(s["minute"] for s in away_subs) / len(away_subs), 1)
                 if away_subs else None
             ),
-            "extracted_at": datetime.now().isoformat(),
+            "extracted_at": now_utc().isoformat(),
         }
 
         # Also capture confirmed lineups if available

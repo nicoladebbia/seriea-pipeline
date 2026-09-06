@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from config.settings import atomic_write_json, season_file_suffix
+
 from scripts.fantacalcio.namematch import norm
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,15 +94,15 @@ def import_rosters(xlsx: Path = DEFAULT_XLSX) -> dict:
         raise SystemExit(f"MY_TEAM {MY_TEAM!r} not in export "
                          f"(teams: {sorted(out['teams'])})")
 
-    LEAGUE_OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    atomic_write_json(LEAGUE_OUT, out, indent=1, ensure_ascii=False)
     mine = out["teams"][MY_TEAM]
-    MY_OUT.write_text(json.dumps({
+    atomic_write_json(MY_OUT, {
         "team_name": MY_TEAM,
         "budget": BUDGET,
         "imported_at": out["generated_at"],
         "roster": [{"id": r["id"], "paid": r["paid"]} for r in mine["roster"]],
         "unmatched": mine["unmatched"],
-    }, indent=1, ensure_ascii=False))
+    }, indent=1, ensure_ascii=False)
 
     print(f"imported {len(out['teams'])} teams -> {LEAGUE_OUT.name}; "
           f"{MY_TEAM}: {len(mine['roster'])} players -> {MY_OUT.name}")
@@ -183,7 +185,7 @@ def sync_mercato(force: bool = False) -> list[str] | None:
     changes = _apply_live(board, live)
     try:
         wiki = pd.read_parquet(ROOT / "data/external/transfermarkt"
-                               / "wiki_transfers_2026_2027.parquet")
+                               / f"wiki_transfers_{season_file_suffix()}.parquet")
         listed = set()
         try:
             pj = json.loads((ROOT / "data" / "fantacalcio"
@@ -197,9 +199,7 @@ def sync_mercato(force: bool = False) -> list[str] | None:
     except (OSError, ValueError, KeyError) as e:
         print(f"sync_mercato: wiki departure pass skipped ({e})")
     board["mercato_synced_at"] = datetime.now(UTC).isoformat()
-    tmp = BOARD.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(board, indent=1, ensure_ascii=False))
-    tmp.replace(BOARD)
+    atomic_write_json(BOARD, board, indent=1, ensure_ascii=False)
     print(f"sync_mercato: {len(changes)} changes")
     for c in changes:
         print(f"  {c}")
@@ -413,7 +413,7 @@ def import_calendars(paths: list[Path] = CAL_FILES) -> dict:
                                      "rounds": rounds}
         print(f"{comp}: {len(rounds)} rounds ({fmt}), sa "
               f"{rounds[0]['sa_round']}..{rounds[-1]['sa_round']}")
-    SCHEDULE_OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    atomic_write_json(SCHEDULE_OUT, out, indent=1, ensure_ascii=False)
     return out
 
 

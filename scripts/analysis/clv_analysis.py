@@ -22,8 +22,12 @@ import logging
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from config.settings import atomic_write_json
 
 import numpy as np
 
@@ -440,7 +444,7 @@ def analyze_by_edge_bucket() -> Dict:
 def generate_full_report() -> Dict:
     """Complete CLV analysis report with all dimensions."""
     report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "market_analysis": analyze_by_market(),
         "league_analysis": analyze_by_league(),
         "selection_analysis": analyze_by_selection(),
@@ -451,8 +455,7 @@ def generate_full_report() -> Dict:
     # Save report
     out_path = BETTING_DIR / "clv_analysis_report.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(out_path, report, indent=2, default=str)
     log.info("CLV analysis saved to %s", out_path)
 
     return report

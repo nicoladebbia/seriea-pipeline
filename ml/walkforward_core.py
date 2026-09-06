@@ -45,11 +45,10 @@ Usage:
 
 from __future__ import annotations
 
-import io
 import logging
 import pickle
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -97,14 +96,14 @@ class WalkForwardConfig:
     """
     eval_seasons: list[str]
     seeds: list[int] = field(default_factory=lambda: [42])
-    min_train_season: Optional[str] = None
+    min_train_season: str | None = None
     min_prior_seasons: int = 5
     fit_calibrator: bool = False
     leakage_corr_threshold: float = 0.5
     early_stopping_rounds: int = 150
     kind: str = "multiclass"
     n_classes: int = 3
-    class_weights: Optional[tuple[float, ...]] = None
+    class_weights: tuple[float, ...] | None = None
     cal_val_fraction: float = 0.15
     iterations: int = 2000
     learning_rate: float = 0.02
@@ -127,15 +126,15 @@ class FoldResult:
     seed: int
     raw_logloss: float
     raw_accuracy: float
-    cal_logloss: Optional[float]
-    cal_accuracy: Optional[float]
+    cal_logloss: float | None
+    cal_accuracy: float | None
     ece: float
     brier: float
     n_train: int
     n_eval: int
     feature_count: int
     model_bytes: bytes = b""
-    calibrator: Optional[dict] = None
+    calibrator: dict | None = None
     per_class_accuracy: dict = field(default_factory=dict)
 
 
@@ -445,8 +444,8 @@ def run_walkforward(
             proba_cal_pool_raw = model.predict_proba(X_cal)
 
             # Calibration
-            calibrator_dict: Optional[dict] = None
-            proba_eval_cal: Optional[np.ndarray] = None
+            calibrator_dict: dict | None = None
+            proba_eval_cal: np.ndarray | None = None
             if config.fit_calibrator:
                 if config.kind == "multiclass" and int_to_class is not None:
                     cls_tuple = tuple(unique_classes)
@@ -523,7 +522,7 @@ def run_walkforward(
                 except OSError:
                     pass
 
-            calibrator_pickled: Optional[dict] = None
+            calibrator_pickled: dict | None = None
             if calibrator_dict is not None:
                 calibrator_pickled = {
                     "kind": calibrator_dict["kind"],

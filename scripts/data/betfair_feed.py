@@ -36,6 +36,8 @@ from typing import Any
 
 import requests
 
+from config.settings import atomic_write_json
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -139,7 +141,7 @@ def _cert_login(bf: dict) -> str | None:
     try:
         keys = json.loads(KEYS_PATH.read_text())
         keys.setdefault("betfair", {})["session_token"] = token
-        KEYS_PATH.write_text(json.dumps(keys, indent=2) + "\n")
+        atomic_write_json(KEYS_PATH, keys, indent=2)
     except (OSError, json.JSONDecodeError) as e:
         log.warning("betfair: could not persist refreshed token: %s", e)
     log.info("betfair: bot login OK — fresh session token stored")
@@ -293,7 +295,7 @@ def fetch_match_odds() -> int:
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = OUT_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(store, indent=1))
+    atomic_write_json(tmp, store, indent=1)
     tmp.replace(OUT_PATH)
     log.info("betfair: wrote %d markets -> %s", n, OUT_PATH.name)
     return n

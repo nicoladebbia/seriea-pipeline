@@ -79,21 +79,18 @@ class _StubPlugin(FeaturePlugin):
         return state
 
 
-def _run_pipeline(tmp_path, write_cache):
-    cache_dir = tmp_path / f"cache_{int(write_cache)}"
-    pipe = FeaturePipeline(cache_dir=cache_dir, league="testleague")
+def test_pipeline_has_no_step_cache(tmp_path, monkeypatch):
+    # The step cache was deleted 2026-09-06: a build never reads or writes
+    # data/cache/features (a cache hit used to replace the whole frame and
+    # discard every earlier recomputed step).
+    from config import settings
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+    pipe = FeaturePipeline(league="testleague")
     pipe.register(_StubPlugin())
-    state = FeatureState(matches=_historical())
-    pipe.build(state, use_cache=False, write_cache=write_cache)
-    return sorted(p.name for p in (cache_dir / "testleague").glob("*")) if (cache_dir / "testleague").exists() else []
-
-
-def test_write_cache_false_never_touches_the_step_cache(tmp_path):
-    # the upcoming-fixture build runs on a non-production frame; it used to
-    # overwrite the production step cache mid-build (2026-08-31)
-    assert _run_pipeline(tmp_path, write_cache=False) == []
-    # the guard is specific: the default path still caches
-    assert any(n.startswith("stub_step") for n in _run_pipeline(tmp_path, write_cache=True))
+    out = pipe.build(FeatureState(matches=_historical()))
+    assert (out.feature_df["stub"] == 1.0).all()
+    assert not (tmp_path / "cache").exists()
+    assert not hasattr(pipe, "_cache_dir") and not hasattr(pipe, "_load_cache")
 
 
 def test_upcoming_features_path_is_per_league():
@@ -221,8 +218,8 @@ def test_build_upcoming_features_returns_only_the_fixture_rows(monkeypatch):
     a name that no longer existed (caught by ruff after a green suite)."""
     calls = {}
 
-    def fake_pipeline(matches, season, use_cache, league, write_cache):
-        calls.update(use_cache=use_cache, write_cache=write_cache, n=len(matches))
+    def fake_pipeline(matches, season, league):
+        calls.update(league=league, n=len(matches))
         return matches.assign(home_elo=1500.0)
 
     monkeypatch.setattr(fb_mod, "_build_features_for_matches", fake_pipeline)
@@ -232,7 +229,7 @@ def test_build_upcoming_features_returns_only_the_fixture_rows(monkeypatch):
     })
     out = fb_mod.build_upcoming_features(fixtures, league="serie_a", historical=_historical())
 
-    assert calls == {"use_cache": False, "write_cache": False, "n": 4}
+    assert calls == {"league": "serie_a", "n": 4}
     assert len(out) == 2
     assert sorted(out["match_id"]) == ["2026-09-04_Genoa_Como", "2026-09-05_Roma_Lazio"]
     assert out["home_score"].isna().all() and (out["home_elo"] == 1500.0).all()

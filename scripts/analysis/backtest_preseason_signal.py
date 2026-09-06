@@ -62,6 +62,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from config.settings import atomic_write_json  # noqa: E402
 from scripts.prediction import lineup_predictor as lp  # noqa: E402
 
 XI = 11
@@ -213,8 +214,7 @@ def run_backtest(seasons: list[str] | None = None,
         _report(fx, summary)
     if write:
         OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        OUT_PATH.write_text(json.dumps(
-            {"summary": summary, "fixtures": fixtures}, indent=2, default=str))
+        atomic_write_json(OUT_PATH, {"summary": summary, "fixtures": fixtures}, indent=2, default=str)
     return {"summary": summary, "fixtures": fx}
 
 

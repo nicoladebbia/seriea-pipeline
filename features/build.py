@@ -18,8 +18,6 @@ Orchestrates all feature modules (37 steps) via FeaturePlugin subclasses:
 
 from __future__ import annotations
 
-import hashlib
-import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -176,6 +174,7 @@ except ImportError:
     HAS_EUROPEAN_CONGESTION = False
 
 from storage.paths import features_path, parsed_path
+from datetime import UTC
 
 log = logging.getLogger(__name__)
 
@@ -198,13 +197,13 @@ class FeatureState:
     (feature_df) at the pivot step (Step 9).
     """
     matches: pd.DataFrame
-    season: Optional[str] = None
-    team_log: Optional[pd.DataFrame] = None
-    feature_df: Optional[pd.DataFrame] = None
+    season: str | None = None
+    team_log: pd.DataFrame | None = None
+    feature_df: pd.DataFrame | None = None
     # League the pipeline is building features for (e.g. "serie_a",
     # "premier_league"). Plugins that load league-specific external files
     # (Sofascore, FBref EPL, etc.) must route on this value.
-    league: Optional[str] = None
+    league: str | None = None
 
     # Track column counts for logging
     _cols_before: set = field(default_factory=set, repr=False)
@@ -247,14 +246,10 @@ class FeaturePipeline:
     Each plugin's output can be cached to parquet for fast re-runs.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None, league: Optional[str] = None):
-        from config.settings import DATA_DIR
+    def __init__(self, league: str | None = None):
         self._plugins: List[FeaturePlugin] = []
         self._plugin_map: dict[str, FeaturePlugin] = {}
         self._league = league
-        base_cache = cache_dir or (DATA_DIR / "cache" / "features")
-        # Per-league cache isolation prevents cross-league contamination
-        self._cache_dir = base_cache / league if league else base_cache
 
     def register(self, plugin: FeaturePlugin) -> None:
         """Register a plugin for execution."""
@@ -296,192 +291,37 @@ class FeaturePipeline:
 
         return [self._plugin_map[n] for n in order]
 
-    def _cache_path(self, plugin: FeaturePlugin, suffix: str = "") -> Path:
-        """Return the cache file path for a plugin's output."""
-        tag = f"{plugin.name}_v{plugin.version}"
-        if suffix:
-            tag += f"_{suffix}"
-        return self._cache_dir / f"{tag}.parquet"
+    def build(self, state: FeatureState) -> FeatureState:
+        """Run every registered plugin in dependency order, always from scratch.
 
-    def _source_fingerprint(self, plugin: FeaturePlugin) -> str:
-        """Return a hash combining the plugin's apply() source code AND any
-        declared data inputs (mtime+size manifest).
-
-        Used to detect:
-          1. Plugin logic changes (source hash) — catches code edits without version bumps.
-          2. Data input changes (mtime+size manifest) — catches data backfills,
-             scrapes, and parquet rewrites without manual cache busts.
-
-        Plugins that don't declare `data_inputs` get source-only fingerprinting
-        (backward compatible). Plugins that DO declare them get full data-aware
-        invalidation.
-        """
-        parts = []
-        try:
-            parts.append(inspect.getsource(plugin.apply))
-        except (OSError, TypeError):
-            parts.append("source_unavailable")
-
-        # Build mtime+size manifest for declared data inputs.
-        # Missing files are recorded as "missing" — if a file later appears,
-        # the manifest changes and the cache is invalidated.
-        repo_root = Path(__file__).resolve().parent.parent
-        for rel_path in plugin.data_inputs:
-            full = repo_root / rel_path
-            try:
-                st = full.stat()
-                parts.append(f"{rel_path}:{int(st.st_mtime)}:{st.st_size}")
-            except FileNotFoundError:
-                parts.append(f"{rel_path}:missing")
-
-        combined = "\n".join(parts)
-        return hashlib.md5(combined.encode()).hexdigest()[:12]
-
-    def _is_cache_valid(self, plugin: FeaturePlugin) -> bool:
-        """Check if a cached result exists and is still valid.
-
-        A cache file is valid if:
-          1. It exists on disk
-          2. The plugin version matches (encoded in filename)
-          3. The plugin source code hasn't changed (fingerprint check)
-        """
-        cache_file = self._cache_path(plugin)
-        if not cache_file.exists():
-            return False
-
-        # Check source fingerprint — detect code changes without version bumps
-        fp_file = cache_file.with_suffix(".fingerprint")
-        current_fp = self._source_fingerprint(plugin)
-        if fp_file.exists():
-            stored_fp = fp_file.read_text().strip()
-            if stored_fp != current_fp:
-                log.info("Cache invalidated for %s: source code changed (was %s, now %s)",
-                         plugin.name, stored_fp[:8], current_fp[:8])
-                return False
-        return True
-
-    def _save_cache(self, plugin: FeaturePlugin, df: pd.DataFrame,
-                    suffix: str = "") -> None:
-        """Save a DataFrame and source fingerprint to the plugin's cache file."""
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
-        path = self._cache_path(plugin, suffix)
-        from config.settings import atomic_write_parquet
-        atomic_write_parquet(path, df, index=False)
-        # Save source fingerprint alongside cache for invalidation
-        fp_file = path.with_suffix(".fingerprint")
-        fp_file.write_text(self._source_fingerprint(plugin))
-        log.debug("Cached %s → %s (%d rows x %d cols)",
-                  plugin.name, path.name, len(df), len(df.columns))
-
-    def _load_cache(self, plugin: FeaturePlugin,
-                    suffix: str = "") -> pd.DataFrame:
-        """Load a cached DataFrame for a plugin."""
-        path = self._cache_path(plugin, suffix)
-        df = pd.read_parquet(path)
-        log.debug("Loaded cache %s ← %s (%d rows x %d cols)",
-                  plugin.name, path.name, len(df), len(df.columns))
-        return df
-
-    def build(self, state: FeatureState,
-              use_cache: bool = True,
-              write_cache: bool = True) -> FeatureState:
-        """Execute all registered plugins in dependency order.
-
-        Args:
-            state: The initial FeatureState with matches loaded.
-            use_cache: If True, skip plugins with valid cache.
-                       If False, force rebuild everything.
-            write_cache: If False, never write step caches. Ad-hoc builds on
-                       a non-production frame (e.g. fixtures appended by
-                       build_upcoming_features) must not overwrite the
-                       production cache — found 2026-08-31 when such a run
-                       left a 1M-row derived_match_level snapshot behind.
-
-        Returns:
-            The final FeatureState with all features computed.
+        There is deliberately no step cache. Until 2026-09-06 each step's
+        cumulative frame was cached to parquet and a cache hit REPLACED the
+        whole frame, so a recomputed earlier step was discarded by the next
+        cached one, and the fingerprint hashed the two-line wrapper rather
+        than the feature module it delegated to — three committed fixes sat
+        inert for a session (CLAUDE.md, "the rebuild logs success and the
+        parquet is byte-identical"). The weekly retrain and the matchday
+        rebuild already ran fresh; the daily build was the only user, and it
+        served a frame the models were not trained on. A fresh build is
+        ~23 min; consistency is worth it.
         """
         plugins = self._resolve_order()
         total = len(plugins)
-        completed = 0
-        cache_hits = 0
-        cache_misses = 0
-
         log.info("Feature pipeline: %d plugins registered", total)
 
         for i, plugin in enumerate(plugins, 1):
             step_start = time.perf_counter()
-
-            # Determine which DataFrame this plugin produces
-            # Team-level plugins (before pivot) produce team_log
-            # Match-level plugins (after pivot) produce feature_df
-            is_team_level = plugin.name in {
-                "team_match_log", "rolling_stats", "home_away_splits",
-                "xg_trends", "strength_ratings", "rest_days",
-                "momentum_streaks", "derived_team_features",
-            }
-            # Pivot and special plugins are never cached
-            never_cache = plugin.name in {
-                "pivot_to_match_level", "backfill_managers",
-                "backfill_referees", "odds", "market_data",
-                "manager_h2h_noop",
-            }
-
-            # Check cache
-            cache_hit = False
-            if use_cache and not never_cache and self._is_cache_valid(plugin):
+            if plugin.non_critical:
                 try:
-                    cached_df = self._load_cache(plugin)
-                    if is_team_level:
-                        state.team_log = cached_df
-                    else:
-                        state.feature_df = cached_df
-                    cache_hit = True
-                    cache_hits += 1
-                except Exception as e:
-                    log.warning("Cache load failed for %s: %s — rebuilding",
-                                plugin.name, e)
-                    cache_hit = False
-
-            if not cache_hit:
-                cache_misses += 1
-                plugin_succeeded = True
-                # Execute the plugin
-                if plugin.non_critical:
-                    try:
-                        state = plugin.apply(state)
-                    except Exception as e:
-                        log.warning(
-                            "Plugin %s failed (non-critical): %s",
-                            plugin.name, e,
-                        )
-                        plugin_succeeded = False
-                else:
                     state = plugin.apply(state)
+                except Exception as e:  # noqa: BLE001 - declared non-critical by the plugin
+                    log.warning("Plugin %s failed (non-critical): %s", plugin.name, e)
+            else:
+                state = plugin.apply(state)
+            log.info("Step %d/%d: %-35s %.2fs", i, total, plugin.name,
+                     time.perf_counter() - step_start)
 
-                # Save to cache ONLY if plugin succeeded (don't cache failure states)
-                if write_cache and not never_cache and plugin_succeeded:
-                    try:
-                        df_to_cache = (
-                            state.team_log if is_team_level
-                            else state.feature_df
-                        )
-                        if df_to_cache is not None:
-                            self._save_cache(plugin, df_to_cache)
-                    except Exception as e:
-                        log.debug("Cache save failed for %s: %s", plugin.name, e)
-
-            elapsed = time.perf_counter() - step_start
-            status = "CACHE HIT" if cache_hit else "computed"
-            completed += 1
-            log.info(
-                "Step %d/%d: %-35s [%s] %.2fs",
-                i, total, plugin.name, status, elapsed,
-            )
-
-        log.info(
-            "Feature pipeline complete: %d/%d steps, %d cache hits, %d computed",
-            completed, total, cache_hits, cache_misses,
-        )
+        log.info("Feature pipeline complete: %d/%d steps computed", total, total)
         return state
 
 
@@ -1453,7 +1293,7 @@ class Step43EuropeanCongestion(FeaturePlugin):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
+def _create_pipeline(league: str | None = None) -> FeaturePipeline:
     """Create the feature pipeline and register all step plugins."""
     pipeline = FeaturePipeline(league=league)
 
@@ -1542,9 +1382,7 @@ def _create_pipeline(league: Optional[str] = None) -> FeaturePipeline:
 
 def _build_features_for_matches(matches: pd.DataFrame,
                                 season: str | None = None,
-                                use_cache: bool = True,
-                                league: str | None = None,
-                                write_cache: bool = True) -> pd.DataFrame:
+                                league: str | None = None) -> pd.DataFrame:
     """Build features for a single league's matches.
 
     This is the core feature-building pipeline extracted from build_features()
@@ -1557,7 +1395,7 @@ def _build_features_for_matches(matches: pd.DataFrame,
     state = FeatureState(matches=matches, season=season, league=league)
 
     # Execute the full pipeline
-    state = pipeline.build(state, use_cache=use_cache, write_cache=write_cache)
+    state = pipeline.build(state)
 
     feature_df = state.feature_df
 
@@ -1688,9 +1526,8 @@ def _atomic_to_parquet(df: pd.DataFrame, path: Path) -> None:
     tmp.replace(path)
 
 
-def build_features(season: str | None = None,
-                   use_cache: bool = True) -> pd.DataFrame:
-    """Build the complete ML feature table.
+def build_features(season: str | None = None) -> pd.DataFrame:
+    """Build the complete ML feature table, always from scratch.
 
     Returns a DataFrame with one row per match and ~400+ feature columns.
     If multi-league data is present, builds features per-league to keep
@@ -1698,8 +1535,6 @@ def build_features(season: str | None = None,
 
     Args:
         season: Optional season filter (e.g. "2024-2025").
-        use_cache: If True (default), use intermediate caching.
-                   Set to False to force full rebuild.
     """
     # Load matches
     matches_path = parsed_path("matches")
@@ -1738,7 +1573,7 @@ def build_features(season: str | None = None,
             log.info("--- Building features for %s (%d matches) ---",
                      league, len(league_matches))
             features = _build_features_for_matches(
-                league_matches, season, use_cache=use_cache, league=league
+                league_matches, season, league=league
             )
             if not features.empty:
                 # Save per-league parquet (source of truth for per-league training)
@@ -1761,7 +1596,7 @@ def build_features(season: str | None = None,
         feature_df.drop(columns=["_sort_date"], inplace=True)
     else:
         feature_df = _build_features_for_matches(
-            matches, season, use_cache=use_cache
+            matches, season
         )
 
     # Tag columns: mark which are safe for ML input vs metadata/leakage
@@ -1840,7 +1675,7 @@ def _fixture_frame(fixtures: pd.DataFrame, historical: pd.DataFrame,
 def build_upcoming_features(
     fixtures: pd.DataFrame,
     league: str = "serie_a",
-    historical: Optional[pd.DataFrame] = None,
+    historical: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build feature rows for unplayed fixtures by running them through the
     full 58-step pipeline alongside historical settled matches.
@@ -1867,11 +1702,9 @@ def build_upcoming_features(
         ValueError if `fixtures` lacks required columns or no rows survive
         the pipeline.
 
-    Caching: this helper deliberately runs with `use_cache=False`. The
-    pipeline cache key only hashes plugin source + declared external file
-    paths, NOT the input matches DF — so a cache hit returns the previous
-    historical-only output, which silently drops the fixture rows. Trade-off
-    accepted: ~5-15 minutes per call vs. silent wrong results.
+    The step cache was removed on 2026-09-06 (see FeaturePipeline.build);
+    this helper never wrote it either: an ad-hoc frame must not become the
+    production one.
     """
     required = {"home_team", "away_team", "match_date", "season"}
     missing = required - set(fixtures.columns)
@@ -1883,7 +1716,7 @@ def build_upcoming_features(
     combined = _fixture_frame(fixtures, historical, league)
 
     feats = _build_features_for_matches(
-        combined, season=None, use_cache=False, league=league, write_cache=False
+        combined, season=None, league=league
     )
 
     feats["match_date"] = pd.to_datetime(feats["match_date"])
@@ -1926,7 +1759,7 @@ def build_upcoming_feature_rows(leagues=None, horizon_days: int = 10,
     from config.settings import get_current_season
     from scripts.utils.match_timing import _load_sofascore_fixtures
 
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     leagues = list(leagues) if leagues else ["serie_a"]
     fixtures = _load_sofascore_fixtures(now, horizon_days=horizon_days)
     season = get_current_season()

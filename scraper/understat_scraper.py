@@ -22,6 +22,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from config.settings import atomic_write_json
+
 log = logging.getLogger(__name__)
 
 UNDERSTAT_BASE = "https://understat.com"
@@ -283,8 +285,7 @@ class UnderstatScraper:
                 if output_dir and data:
                     season_file = output_dir / f"understat_{season.replace('-', '_')}.json"
                     season_file.parent.mkdir(parents=True, exist_ok=True)
-                    with open(season_file, "w") as f:
-                        json.dump(data, f, indent=2)
+                    atomic_write_json(season_file, data, indent=2)
                     log.info(f"Saved {season} data to {season_file}")
         finally:
             # Always close the browser when done
@@ -350,8 +351,7 @@ def scrape_understat_xg(
         for season in df["season"].unique() if "season" in df.columns else []:
             season_file = json_dir / f"understat_{season.replace('-', '_')}.json"
             season_data = df[df["season"] == season].to_dict(orient="records")
-            with open(season_file, "w") as f:
-                json.dump(season_data, f, indent=2, default=str)
+            atomic_write_json(season_file, season_data, indent=2, default=str)
             log.info(f"Saved {len(season_data)} matches to {season_file}")
 
     return df

@@ -34,7 +34,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from storage.paths import parsed_path
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -251,9 +251,7 @@ class FormationMatchupMatrix:
         }
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
+        atomic_write_json(path, data, indent=2)
         log.info(f"Saved formation matchups to {path}")
 
     def load(self, path: Path = None) -> bool:
@@ -512,9 +510,7 @@ class FormationDatabase:
         }
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
+        atomic_write_json(path, data, indent=2)
         # Also save matchup matrix
         self.matchup_matrix.save()
 

@@ -16,13 +16,13 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT))
 
 from config.settings import get_current_season  # noqa: E402  (needs sys.path above)
+from scripts.utils.match_timing import now_local
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ def main() -> int:
 
     log.info("")
     log.info("=" * 70)
-    log.info("WEEKLY DATA REFRESH — %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    log.info("WEEKLY DATA REFRESH — %s", now_local().strftime("%Y-%m-%d %H:%M:%S"))
     log.info("=" * 70)
 
     results = {}
@@ -223,8 +223,9 @@ def main() -> int:
 
     # --- Step 5: Understat refresh (best-effort — scraper may fail on schema changes) ---
     try:
-        from scraper.understat_scraper import scrape_understat_xg
         import pandas as pd
+
+        from scraper.understat_scraper import scrape_understat_xg
         df = scrape_understat_xg()
         if df is not None and len(df) > 0:
             for col in df.columns:
@@ -244,8 +245,9 @@ def main() -> int:
 
     # --- Step 6: Referee refresh (per active league; SA has scraper, EPL falls back) ---
     try:
-        from scraper.referee import scrape_all_referee_assignments, _get_season_id
         import pandas as pd
+
+        from scraper.referee import _get_season_id, scrape_all_referee_assignments
         ref_dfs = []
         unpublished = []
         for _league in ACTIVE_LEAGUES:
@@ -305,6 +307,7 @@ def main() -> int:
     # --- Step 7: Weather backfill ---
     try:
         import pandas as pd
+
         from scraper.weather import fetch_weather_for_matches
         m = pd.read_parquet(PROJECT / "data" / "parsed" / "matches.parquet")
         m = m[m["league"].isin(ACTIVE_LEAGUES) & (m["season"] == CURRENT_SEASON)]

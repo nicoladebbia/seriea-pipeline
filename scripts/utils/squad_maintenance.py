@@ -12,20 +12,20 @@ Run: python3 -m scripts.squad_maintenance [--check|--sync-understat|--summary]
 
 import json
 import logging
-from datetime import datetime
+import sys
 from pathlib import Path
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
-from config.team_names import SERIE_A_2026_27, normalize_team
+from config.settings import DATA_DIR, season_file_suffix
+from config.team_names import SERIE_A_2026_27
+from scripts.utils.match_timing import now_utc, to_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 SQUADS_PATH = DATA_DIR / "squads" / "current_squads.json"
 PROFILES_PATH = DATA_DIR / "features" / "player_xg_profiles.json"
-UNDERSTAT_PATH = DATA_DIR / "external" / "understat" / "players_xg_2025_2026.parquet"
+UNDERSTAT_PATH = DATA_DIR / "external" / "understat" / f"players_xg_{season_file_suffix()}.parquet"
 
 # Canonical team name mapping (Understat -> pipeline)
 UNDERSTAT_TEAM_MAP = {
@@ -53,9 +53,12 @@ def check_freshness():
 
     if fetched_at:
         try:
-            dt = datetime.fromisoformat(fetched_at)
-            age = datetime.now() - dt
-            age_str = f"{age.days} days ago" if age.days > 0 else "today"
+            dt = to_utc(fetched_at)
+            if dt:
+                age = now_utc() - dt
+                age_str = f"{age.days} days ago" if age.days > 0 else "today"
+            else:
+                age_str = "unknown"
         except ValueError:
             age_str = "unknown"
     else:

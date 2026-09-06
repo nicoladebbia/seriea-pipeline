@@ -36,6 +36,8 @@ import math
 from datetime import UTC, datetime
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "data" / "predictions" / "component_ledger.json"
 PREDICTIONS = ROOT / "data" / "upcoming" / "predictions.json"
@@ -68,9 +70,7 @@ def _load() -> dict:
 def _save(led: dict) -> None:
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
     led["updated_at"] = datetime.now(UTC).isoformat()
-    tmp = LEDGER.with_suffix(".tmp")
-    tmp.write_text(json.dumps(led, ensure_ascii=False))
-    tmp.replace(LEDGER)
+    atomic_write_json(LEDGER, led, ensure_ascii=False, indent=None)
 
 
 def _nt(name: str) -> str:
@@ -427,13 +427,13 @@ def refit_weights(current: dict | None = None) -> dict:
               "holdout_ll_current": round(ll_cur, 4),
               "weights_fitted": w, "weights_current": cur}
     if ll_new < ll_cur:
-        WEIGHTS_OVERRIDE.write_text(json.dumps({
+        atomic_write_json(WEIGHTS_OVERRIDE, {
             "weights": w, "fitted_at": datetime.now(UTC).isoformat(),
             "n_settled": len(rows),
             "holdout_ll_new": round(ll_new, 4),
             "holdout_ll_current": round(ll_cur, 4),
             "provenance": "component_ledger.refit_weights",
-        }, indent=1))
+        }, indent=1)
         report["status"] = "deployed"
     return report
 
@@ -501,12 +501,12 @@ def refit_ou_blend(current: dict | None = None) -> dict:
     statuses = {r["status"] for r in report["lines"].values()}
     if changed:
         OU_WEIGHTS_OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
-        OU_WEIGHTS_OVERRIDE.write_text(json.dumps({
+        atomic_write_json(OU_WEIGHTS_OVERRIDE, {
             "weights": new_weights,
             "fitted_at": datetime.now(UTC).isoformat(),
             "lines": report["lines"],
             "provenance": "component_ledger.refit_ou_blend",
-        }, indent=1))
+        }, indent=1)
         report["status"] = "deployed"
     elif "gated-fail" in statuses:
         report["status"] = "gated-fail"

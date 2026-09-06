@@ -46,7 +46,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import (
     META_COLS,
     MODEL_TYPES,
@@ -260,7 +260,7 @@ def train_league_model(
         "top_20_features": sorted_imp[:20],
     }
     report_path = output_dir / "training_report.json"
-    report_path.write_text(json.dumps(report, indent=2, default=str))
+    atomic_write_json(report_path, report, indent=2, default=str)
     log.info("Saved training report to %s", report_path)
 
     # --- Final summary ---

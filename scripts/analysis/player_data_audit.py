@@ -23,7 +23,7 @@ import pandas as pd
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from config.settings import DATA_DIR, RAW_HTML_DIR, SEASONS
+from config.settings import DATA_DIR, RAW_HTML_DIR, SEASONS, atomic_write_json
 from storage.paths import parsed_path
 
 log = logging.getLogger(__name__)
@@ -226,8 +226,7 @@ def main():
     }
     out_path = DATA_DIR / "player_data_audit.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(out_path, report, indent=2, default=str)
     print(f"\n  Full report saved to: {out_path}")
     print("=" * 70 + "\n")
 

@@ -24,21 +24,22 @@ Usage:
     python sentiment_analyzer.py --all  # Analyze all upcoming matches
 """
 
+import argparse
+import hashlib
+import json
+import logging
 import os
 import sys
-import json
 import time
-import hashlib
-import argparse
-import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, PROJECT_ROOT
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc, to_utc
 
 try:
     import requests
@@ -123,16 +124,15 @@ class APIUsageTracker:
 
     def _save(self):
         try:
-            with open(self._file, "w") as f:
-                json.dump(self._usage, f, indent=2)
+            atomic_write_json(self._file, self._usage, indent=2)
         except OSError as e:
             log.warning(f"Failed to save API usage: {e}")
 
     def _today(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d")
+        return now_local().strftime("%Y-%m-%d")
 
     def _month(self) -> str:
-        return datetime.now().strftime("%Y-%m")
+        return now_local().strftime("%Y-%m")
 
     def record_call(self, provider: str):
         """Record one API call for a provider."""
@@ -601,8 +601,8 @@ class SentimentAnalyzer:
                 data = json.load(f)
 
             # Check if cache is still valid
-            cached_time = datetime.fromisoformat(data["generated_at"])
-            if datetime.now() - cached_time > timedelta(hours=CACHE_DURATION_HOURS):
+            cached_time = to_utc(datetime.fromisoformat(data["generated_at"]))
+            if now_utc() - cached_time > timedelta(hours=CACHE_DURATION_HOURS):
                 return None
 
             return MatchSentiment(**data)
@@ -617,8 +617,7 @@ class SentimentAnalyzer:
         cache_file = CACHE_DIR / f"{cache_key}.json"
 
         try:
-            with open(cache_file, "w") as f:
-                json.dump(asdict(sentiment), f, indent=2)
+            atomic_write_json(cache_file, asdict(sentiment), indent=2)
         except Exception as e:
             log.warning(f"Cache save error: {e}")
 
@@ -1084,7 +1083,7 @@ CONCLUSION: Sentiment edge favors {sentiment_edge.upper()}
             key_factors=key_factors,
             contrarian_opportunity=contrarian,
             reasoning=reasoning.strip(),
-            generated_at=datetime.now().isoformat(),
+            generated_at=now_utc().isoformat(),
             sources_used=sources,
         )
 
@@ -1198,18 +1197,17 @@ def analyze_all_upcoming_matches() -> List[MatchSentiment]:
 
     # Save results
     output_path = DATA_DIR / "upcoming" / "sentiment_analysis.json"
-    with open(output_path, "w") as f:
-        json.dump({
-            "generated_at": datetime.now().isoformat(),
-            "matches": [asdict(s) for s in results],
-            "summary": {
-                "total_analyzed": len(results),
-                "home_edge": sum(1 for s in results if s.sentiment_edge == "home"),
-                "away_edge": sum(1 for s in results if s.sentiment_edge == "away"),
-                "neutral": sum(1 for s in results if s.sentiment_edge == "neutral"),
-                "contrarian_opportunities": sum(1 for s in results if s.contrarian_opportunity)
-            }
-        }, f, indent=2)
+    atomic_write_json(output_path, {
+        "generated_at": now_utc().isoformat(),
+        "matches": [asdict(s) for s in results],
+        "summary": {
+            "total_analyzed": len(results),
+            "home_edge": sum(1 for s in results if s.sentiment_edge == "home"),
+            "away_edge": sum(1 for s in results if s.sentiment_edge == "away"),
+            "neutral": sum(1 for s in results if s.sentiment_edge == "neutral"),
+            "contrarian_opportunities": sum(1 for s in results if s.contrarian_opportunity)
+        }
+    }, indent=2)
 
     log.info(f"Saved sentiment analysis to {output_path}")
     return results
@@ -1237,7 +1235,7 @@ def main():
 
     elif args.home and args.away:
         analyzer = SentimentAnalyzer()
-        date = args.date or datetime.now().strftime("%Y-%m-%d")
+        date = args.date or now_local().strftime("%Y-%m-%d")
         sentiment = analyzer.analyze_match(args.home, args.away, date)
         print(sentiment.reasoning)
 
@@ -1246,7 +1244,7 @@ def main():
         if " vs " in args.match:
             home, away = args.match.split(" vs ")
             analyzer = SentimentAnalyzer()
-            date = args.date or datetime.now().strftime("%Y-%m-%d")
+            date = args.date or now_local().strftime("%Y-%m-%d")
             sentiment = analyzer.analyze_match(home.strip(), away.strip(), date)
             print(sentiment.reasoning)
         else:

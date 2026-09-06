@@ -18,13 +18,13 @@ import json
 import logging
 import os
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team as _canonical_normalize
 
 LINEUP_CHAIN_FILE = DATA_DIR / "upcoming" / "lineup_chain_status.json"
@@ -541,12 +541,12 @@ def fetch_and_save_lineups(odds_data: Dict = None,
                 chain["api_football"]["error"] = str(e)[:200]
 
     # ── Chain status: every run, so a silent chain is impossible ─────
-    report = {"checked_at": datetime.now(timezone.utc).isoformat(), "n_matches": len(odds_data),
+    report = {"checked_at": datetime.now(UTC).isoformat(), "n_matches": len(odds_data),
               "confirmed": sorted(confirmed), "sources": chain,
               "reason": None if confirmed else lineup_chain_reason(chain)}
     try:
         LINEUP_CHAIN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LINEUP_CHAIN_FILE.write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        atomic_write_json(LINEUP_CHAIN_FILE, report, indent=2, ensure_ascii=False)
     except OSError as e:
         log.warning("Could not write %s: %s", LINEUP_CHAIN_FILE, e)
     if not confirmed:
@@ -572,12 +572,11 @@ def fetch_and_save_lineups(odds_data: Dict = None,
         for lineup in confirmed.values():
             sources.add(lineup.get("source_api", "unknown"))
 
-        with open(output_path, "w") as f:
-            json.dump({
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "sources": sorted(sources),
-                "matches": confirmed,
-            }, f, indent=2)
+        atomic_write_json(output_path, {
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "sources": sorted(sources),
+            "matches": confirmed,
+        }, indent=2)
         log.info("Saved %d confirmed lineups to %s (sources: %s)",
                  len(confirmed), output_path, ", ".join(sorted(sources)))
 

@@ -10,17 +10,19 @@ Depends on: config.settings (DATA_DIR)
 
 import json
 import logging
+import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
+from typing import Callable, Dict, List, TypeVar
+
 import requests
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -337,8 +339,8 @@ def get_cached_or_fetch(
     # Check cache
     if cache_path.exists():
         try:
-            mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
-            age = datetime.now() - mtime
+            mtime = datetime.fromtimestamp(cache_path.stat().st_mtime, tz=UTC)
+            age = now_utc() - mtime
             is_stale = age > timedelta(hours=max_age_hours)
 
             with open(cache_path) as f:
@@ -358,8 +360,7 @@ def get_cached_or_fetch(
             # Save to cache
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(cache_path, "w") as f:
-                    json.dump(fresh_data, f, indent=2, default=str)
+                atomic_write_json(cache_path, fresh_data, indent=2, default=str)
                 log.info(f"{feature_name}: Fetched fresh data and cached")
             except Exception as e:
                 log.warning(f"{feature_name}: Cache write failed: {e}")
@@ -399,9 +400,9 @@ class FeatureStatus:
         self.status[feature] = {
             "available": available,
             "details": details,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": now_utc().isoformat()
         }
-        self.last_check[feature] = datetime.now()
+        self.last_check[feature] = now_utc()
 
     def is_available(self, feature: str) -> bool:
         """Check if a feature is available."""
@@ -418,7 +419,7 @@ class FeatureStatus:
         """Export full status to dict."""
         return {
             "features": self.status,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": now_utc().isoformat()
         }
 
 
@@ -463,7 +464,7 @@ def health_check() -> Dict:
     """Perform system health check."""
     health = {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "checks": {},
         "issues": []
     }
@@ -521,7 +522,7 @@ def safe_load_matches() -> List[Dict]:
     """
     from scripts.utils.match_timing import _is_future, _load_sofascore_fixtures
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     matches = []
 
     for match in _load_sofascore_fixtures(now):

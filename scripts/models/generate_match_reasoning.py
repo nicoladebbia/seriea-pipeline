@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -197,10 +197,10 @@ def main() -> int:
         log.warning("No reasoning generated.")
         return 0
     path = UPCOMING_DIR / "match_reasoning.json"
-    path.write_text(json.dumps({
+    atomic_write_json(path, {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "predictions": out,
-    }, indent=2))
+    }, indent=2)
     log.info("Wrote %s (%d entries)", path, len(out))
     return 0
 

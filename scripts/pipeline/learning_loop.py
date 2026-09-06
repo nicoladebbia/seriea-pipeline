@@ -17,12 +17,12 @@ import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -204,7 +204,7 @@ def _run_prediction_audit() -> dict:
         }
 
     audit = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "n_settled": len(matched),
         "per_team_calibration": per_team_calibration,
         "lineup_reconciliation": lineup_stats,
@@ -212,8 +212,7 @@ def _run_prediction_audit() -> dict:
     }
 
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    with open(FEEDBACK_DIR / "prediction_audit.json", "w") as f:
-        json.dump(audit, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(FEEDBACK_DIR / "prediction_audit.json", audit, indent=2, cls=_NumpySafeEncoder)
 
     # Find most biased teams
     biased = sorted(
@@ -323,7 +322,7 @@ def _run_drift_detection() -> dict:
         drift_results[feat] = result
 
     report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "total_features_checked": len(check_features),
         "drifted_count": drifted_count,
         "high_nan_count": high_nan_count,
@@ -334,8 +333,7 @@ def _run_drift_detection() -> dict:
     }
 
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    with open(FEEDBACK_DIR / "drift_report.json", "w") as f:
-        json.dump(report, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(FEEDBACK_DIR / "drift_report.json", report, indent=2, cls=_NumpySafeEncoder)
 
     return {
         "status": "ok",
@@ -486,7 +484,7 @@ def _run_roi_analysis() -> dict:
         log.warning(f"Failed to load ledger metrics for learning loop: {e}")
 
     roi_report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "total_settled": len(settled),
         "total_staked": round(total_staked, 2),
         "total_profit": round(total_profit, 2),
@@ -503,8 +501,7 @@ def _run_roi_analysis() -> dict:
     }
 
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    with open(FEEDBACK_DIR / "roi_report.json", "w") as f:
-        json.dump(roi_report, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(FEEDBACK_DIR / "roi_report.json", roi_report, indent=2, cls=_NumpySafeEncoder)
 
     # Generate per-market stake multipliers for bankroll manager
     # Markets with strong negative ROI get reduced; positive ROI get a small boost
@@ -525,13 +522,12 @@ def _run_roi_analysis() -> dict:
             market_adjustments[market] = 1.0
 
     adjustments_output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "market_multipliers": market_adjustments,
         "source": "roi_analysis",
         "min_bets_for_signal": 3,
     }
-    with open(FEEDBACK_DIR / "market_adjustments.json", "w") as f:
-        json.dump(adjustments_output, f, indent=2)
+    atomic_write_json(FEEDBACK_DIR / "market_adjustments.json", adjustments_output, indent=2)
 
     return {
         "status": "ok",

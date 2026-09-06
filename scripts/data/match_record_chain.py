@@ -50,7 +50,7 @@ from typing import Any
 
 import pandas as pd
 
-from config.settings import DATA_DIR, atomic_write_parquet, get_current_season
+from config.settings import DATA_DIR, atomic_write_json, atomic_write_parquet, get_current_season
 from config.team_names import normalize_team
 
 log = logging.getLogger(__name__)
@@ -467,7 +467,7 @@ def _write_status(summary: dict[str, Any]) -> None:
             state = {}
     state[summary["league"]] = summary
     tmp = STATUS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, indent=1, default=str))
+    atomic_write_json(tmp, state, indent=1, default=str)
     tmp.replace(STATUS_FILE)
 
 

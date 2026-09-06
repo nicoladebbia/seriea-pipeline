@@ -32,22 +32,22 @@ Usage:
     python scripts/betting_unified.py --dry-run                # No file writes
 """
 
-import sys
 import json
-import math
 import logging
+import math
 import random
+import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field, asdict
-from itertools import combinations
+from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-from config.settings import DATA_DIR, MODELS_DIR, UPCOMING_DIR as UPCOMING
+from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import UPCOMING_DIR as UPCOMING
+from scripts.utils.match_timing import now_local, now_utc
 
 
 def _league_betting_enabled(league: str) -> bool:
@@ -561,7 +561,7 @@ def load_predictions() -> List[Dict]:
         log.error("No prediction files found")
 
     # Filter out past matches at load time — prevents stale re-bets on pipeline re-runs
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_local().strftime("%Y-%m-%d")
     pre_filter = len(all_preds)
     all_preds = [p for p in all_preds if p.get("date", "9999-99-99")[:10] >= today_str]
     if pre_filter > len(all_preds):
@@ -629,22 +629,32 @@ def load_extended_markets() -> Dict:
     return data.get("matches", {})
 
 
-def _gate_aux_predictions(rows, allowed: set, label: str):
+def _gate_aux_predictions(rows, allowed: set, label: str, league: str | None = None):
     """Row-level league gate for the AUXILIARY prediction files.
 
-    goal/btts/cards/corners/margin predictions are merged both-league files with
-    NO league field (goal_predictions.json on 2026-08-31: 23 rows = 10 SA + 10 EPL
-    + 3 stale). The per-league betting gate lives in load_predictions() only, and
-    the O/U scanner — the ONLY enabled market — iterated these files against the
-    merged odds with no gate, so a gated-league (EPL) O/U bet would have been
-    journaled as Serie A the moment its edge landed in band. Keep only matches
-    that survived the gate in load_predictions().
+    goal/btts/cards/corners/margin predictions are merged both-league files
+    (goal_predictions.json on 2026-08-31: 23 rows = 10 SA + 10 EPL + 3 stale).
+    The per-league betting gate lived in load_predictions() only, and the O/U
+    scanner — the ONLY enabled market — iterated these files against the merged
+    odds with no gate, so a gated-league (EPL) O/U bet would have been journaled
+    as Serie A the moment its edge landed in band.
+
+    Two checks, both required: the match survived the gate in load_predictions()
+    (`allowed`), and — since 2026-09-06 every writer stamps `league` on the row —
+    a row that names a league names THIS run's league. A row without the stamp
+    (a file written before the stamp existed) falls back to `allowed` alone.
     """
     if not isinstance(rows, list):
         return rows
-    kept = [r for r in rows if isinstance(r, dict) and r.get("match") in allowed]
-    dropped = [r.get("match") if isinstance(r, dict) else r
-               for r in rows if not (isinstance(r, dict) and r.get("match") in allowed)]
+
+    def _ok(r) -> bool:
+        if not (isinstance(r, dict) and r.get("match") in allowed):
+            return False
+        row_league = r.get("league")
+        return league is None or not row_league or row_league == league
+
+    kept = [r for r in rows if _ok(r)]
+    dropped = [r.get("match") if isinstance(r, dict) else r for r in rows if not _ok(r)]
     if dropped:
         log.warning("  %s predictions: dropped %d/%d rows with no gated prediction "
                     "(league gated or stale): %s%s", label, len(dropped), len(rows),
@@ -681,11 +691,11 @@ def run_paper_track() -> int:
     same T-30 timing as real ones (>24h-early bets measured -5% ROI, <24h
     +63% — paper CLV evidence must not be gathered on the losing timing).
     """
-    from scripts.betting.bet_journal import (
-        PAPER_JOURNAL_PATH, add_bet as journal_add_bet)
+    from scripts.betting.bet_journal import PAPER_JOURNAL_PATH
+    from scripts.betting.bet_journal import add_bet as journal_add_bet
 
     n_journaled = 0
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_local().strftime("%Y-%m-%d")
     for fname, league_key in PREDICTION_FILES:
         if _league_betting_enabled(league_key):
             continue  # real path covers it
@@ -708,7 +718,7 @@ def run_paper_track() -> int:
         allowed = {q.get("match") for q in preds if q.get("match")}
         pred_by_match = {q["match"]: q for q in preds if q.get("match")}
         goal_preds = _gate_aux_predictions(
-            load_goal_predictions(), allowed, f"paper:{league_key}")
+            load_goal_predictions(), allowed, f"paper:{league_key}", league=league_key)
         if not goal_preds:
             continue
 
@@ -1009,7 +1019,7 @@ class UnifiedBettingEngine:
         self.all_bets: List[ValueBet] = []
         self.selected: List[ValueBet] = []
         self.accumulators: List[AccumulatorBet] = []
-        self.slip: Optional[BetSlip] = None
+        self.slip: BetSlip | None = None
         # Rejections recorded AFTER an edge was computed — makes "0 bets" auditable.
         self.near_misses: List[Dict] = []
 
@@ -1229,7 +1239,7 @@ class UnifiedBettingEngine:
     def _make_bet(self, match, date, market, selection, model_p, sharp_p,
                   best_o, best_bk, avg_o, pin_o, count, confidence=0,
                   max_edge_override=None, min_edge_override=None,
-                  pred=None) -> Optional[ValueBet]:
+                  pred=None) -> ValueBet | None:
         """Shared bet construction with mandatory +EV gate.
         Returns None if the bet is not +EV at best available odds.
         Uses per-market edge thresholds from BettingConfig.market_rules,
@@ -2477,7 +2487,7 @@ class UnifiedBettingEngine:
     # ACCUMULATOR GENERATION
     # -----------------------------------------------------------------
     def generate_accumulators(self, selected_singles: List[ValueBet],
-                              parlay_only_bets: Optional[List[ValueBet]] = None,
+                              parlay_only_bets: List[ValueBet] | None = None,
                               ) -> List[AccumulatorBet]:
         """Generate parlays in two tiers: Safe (high-prob) and Value (edge-based).
 
@@ -2690,7 +2700,7 @@ class UnifiedBettingEngine:
     # -----------------------------------------------------------------
     # MONTE CARLO SIMULATION
     # -----------------------------------------------------------------
-    def monte_carlo_simulation(self, slip: BetSlip) -> Optional[Dict]:
+    def monte_carlo_simulation(self, slip: BetSlip) -> Dict | None:
         """Simulate portfolio outcomes to show expected distribution.
 
         For each simulation, each bet wins/loses based on blended probability
@@ -2748,7 +2758,7 @@ class UnifiedBettingEngine:
             total_ev=round(sum(b.expected_profit for b in selected), 2),
             exposure_pct=round(sum(b.stake_pct for b in selected), 2),
             n_matches=len(set(b.match for b in selected)),
-            generated_at=datetime.now().isoformat(),
+            generated_at=now_utc().isoformat(),
             bankroll=self.cfg.bankroll,
         )
 
@@ -2793,7 +2803,7 @@ class UnifiedBettingEngine:
         margin_preds = load_margin_predictions()
 
         # -- Filter out past matches (prevent betting on already-played games) --
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = now_local().strftime("%Y-%m-%d")
         pre_filter = len(predictions)
         predictions = [
             p for p in predictions
@@ -2803,14 +2813,20 @@ class UnifiedBettingEngine:
             log.warning("  Filtered out %d past matches (date < %s)",
                         pre_filter - len(predictions), today_str)
 
-        # Auxiliary prediction files carry BOTH leagues and no league field —
-        # gate them to the matches that passed the per-league gate above.
+        # Auxiliary prediction files carry BOTH leagues — gate them to the
+        # matches that passed the per-league gate above AND to this run's
+        # league by the row's own stamp.
         _allowed = {p.get("match") for p in predictions}
-        goal_preds = _gate_aux_predictions(goal_preds, _allowed, "goal")
-        btts_preds = _gate_aux_predictions(btts_preds, _allowed, "btts")
-        cards_preds = _gate_aux_predictions(cards_preds, _allowed, "cards")
-        corners_preds = _gate_aux_predictions(corners_preds, _allowed, "corners")
-        margin_preds = _gate_aux_predictions(margin_preds, _allowed, "margin")
+        _leagues = {p.get("league") for p in predictions if p.get("league")}
+        _league = next(iter(_leagues)) if len(_leagues) == 1 else None
+        if len(_leagues) > 1:
+            log.warning("  Gated predictions name %d leagues (%s): row-level league "
+                        "check disabled for this run", len(_leagues), sorted(_leagues))
+        goal_preds = _gate_aux_predictions(goal_preds, _allowed, "goal", league=_league)
+        btts_preds = _gate_aux_predictions(btts_preds, _allowed, "btts", league=_league)
+        cards_preds = _gate_aux_predictions(cards_preds, _allowed, "cards", league=_league)
+        corners_preds = _gate_aux_predictions(corners_preds, _allowed, "corners", league=_league)
+        margin_preds = _gate_aux_predictions(margin_preds, _allowed, "margin", league=_league)
 
         log.info("  Predictions:    %d matches", len(predictions))
         log.info("  Odds (40+ bk):  %d matches", len(odds_full))
@@ -2827,7 +2843,7 @@ class UnifiedBettingEngine:
 
         if not predictions or not odds_full:
             log.error("Missing critical data. Run prediction pipeline first.")
-            empty_slip = BetSlip(generated_at=datetime.now().isoformat(),
+            empty_slip = BetSlip(generated_at=now_utc().isoformat(),
                                  bankroll=cfg.bankroll)
             return empty_slip, []
 
@@ -2884,7 +2900,7 @@ class UnifiedBettingEngine:
 
         # Auto-kill losing markets from risk controls
         try:
-            from scripts.betting.risk_controls import check_market_health, _load_settled_bets, RiskConfig
+            from scripts.betting.risk_controls import RiskConfig, _load_settled_bets, check_market_health
             _health = check_market_health(_load_settled_bets(), RiskConfig())
             for _killed in _health.get("kill_markets", []):
                 _mkt = _killed.split("(")[0].strip()
@@ -3411,7 +3427,7 @@ def update_results():
 
         # CLV tracking integration
         try:
-            from scripts.betting.clv_tracker import track_clv_for_settled_bets, get_clv_summary
+            from scripts.betting.clv_tracker import get_clv_summary, track_clv_for_settled_bets
             settled = [h for h in history if h.get("result") in ("WIN", "LOSS")]
             if settled:
                 clv_result = track_clv_for_settled_bets(settled)
@@ -3588,7 +3604,7 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                   accumulators: List[AccumulatorBet] = None,
                   dry_run: bool = False,
                   near_misses: List[Dict] = None,
-                  best_picks: List[Dict] = None) -> Optional[Path]:
+                  best_picks: List[Dict] = None) -> Path | None:
     """Save bet slip to JSON for tracking."""
     output = {
         "generated_at": slip.generated_at,
@@ -3994,7 +4010,7 @@ Examples:
 
         # CLV tracking
         try:
-            from scripts.betting.clv_tracker import record_bet_placement, get_clv_summary
+            from scripts.betting.clv_tracker import get_clv_summary, record_bet_placement
             from scripts.data.odds_tracker import save_snapshot
             save_snapshot()
             n_clv = record_bet_placement()

@@ -20,7 +20,7 @@ import pandas as pd
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 # Import computed referee features from the training pipeline
 try:
@@ -389,8 +389,7 @@ def create_referee_template(matches: List[Dict]):
 
     template_path = DATA_DIR / "upcoming" / "referees.json"
 
-    with open(template_path, "w") as f:
-        json.dump(template, f, indent=2)
+    atomic_write_json(template_path, template, indent=2)
 
     log.info(f"Created referee template at {template_path}")
     log.info("Fill in referee names to enable 91.5% accuracy predictions!")

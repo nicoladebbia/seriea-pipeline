@@ -28,16 +28,14 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-import numpy as np
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, UPCOMING_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR, atomic_write_json
 from scripts.betting.betting_unified import remove_overround
+from scripts.utils.match_timing import now_local, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -149,8 +147,7 @@ def _load_state() -> Dict:
 def _save_state(state: Dict):
     """Save monitor state."""
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_PATH, "w") as f:
-        json.dump(state, f, indent=2, default=str)
+    atomic_write_json(STATE_PATH, state, indent=2, default=str)
 
 
 
@@ -295,7 +292,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                 # of the best-line triplet. Lower-confidence edge — flagged so
                 # it can be filtered/down-weighted downstream.
                 "no_sharp_ref": bet_info_unsharp,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_utc().isoformat(),
             }
 
             # Reject obviously wrong edges (>50% = model overconfidence or data issue)
@@ -418,7 +415,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
                      if bm.get("over", 0) == over_odds), ""),
                 "market_category": "O/U_Over",
                 "enabled": thresholds.get("enabled", False),
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_utc().isoformat(),
             }
 
             # Reject obviously wrong edges (>50% = model overconfidence or data issue)
@@ -438,7 +435,7 @@ def scan_for_edges(predictions: Dict, odds_data: Dict) -> Dict:
     return {
         "value_bets": sorted(value_bets, key=lambda x: x["edge_pct"], reverse=True),
         "watchlist": sorted(watchlist, key=lambda x: x.get("gap_to_threshold") or 99),
-        "scan_time": datetime.now().isoformat(),
+        "scan_time": now_utc().isoformat(),
         "matches_scanned": len(matches),
     }
 
@@ -457,7 +454,7 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
     """
     if os.environ.get("LIVE_MONITORING", "0") != "1":
         return []
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     live_path = DATA_DIR / "live" / f"{today}.json"
     if not live_path.exists():
         return []
@@ -544,7 +541,7 @@ def scan_live_value(predictions: Dict) -> List[Dict]:
                     "goals_needed": goals_needed_25,
                     "no_sharp_ref": no_sharp_ref,
                     "is_live": True,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": now_utc().isoformat(),
                 })
 
     return live_value
@@ -740,7 +737,7 @@ def run_scan(fetch_fresh: bool = True, leagues: List[str] = None) -> Dict:
             new_watchlist.append(bet)
             state["watchlist"][key] = bet
 
-    state["last_poll"] = datetime.now().isoformat()
+    state["last_poll"] = now_utc().isoformat()
     _save_state(state)
 
     # Send notifications for new discoveries
@@ -754,8 +751,7 @@ def run_scan(fetch_fresh: bool = True, leagues: List[str] = None) -> Dict:
     # Save scan result
     out_path = BETTING_DIR / "edge_scan_latest.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(scan_result, f, indent=2, default=str)
+    atomic_write_json(out_path, scan_result, indent=2, default=str)
 
     return scan_result
 
@@ -793,7 +789,7 @@ def _notify_discoveries(new_value: list, new_watchlist: list,
                         improved: list, live_value: list):
     """Send notifications for new edge discoveries."""
     try:
-        from scripts.pipeline.notify import notify, TgMsg, PRIORITY_URGENT, PRIORITY_NORMAL
+        from scripts.pipeline.notify import PRIORITY_NORMAL, PRIORITY_URGENT, TgMsg, notify
     except ImportError:
         log.debug("Notification system not available")
         return

@@ -21,7 +21,7 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import LABEL_MAP, META_COLS, ModelConfig, ValidationConfig
 from ml.data import DataLoader
 from ml.evaluation import compute_metrics, gate_folds
@@ -160,8 +160,7 @@ def train_no_odds(top_k: int = 60, corr_threshold: float = 0.70) -> Dict:
 
     # Save report
     report_path = OUTPUT_DIR / "training_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(report_path, report, indent=2, default=str)
     log.info("Training report saved to %s", report_path)
 
     # --- Print comparison with current model ---

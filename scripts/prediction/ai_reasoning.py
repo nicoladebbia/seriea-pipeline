@@ -23,7 +23,8 @@ except ImportError:
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc, to_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -61,8 +62,8 @@ def load_cached_reasoning(cache_key: str) -> Optional[Dict]:
             with open(cache_file) as f:
                 cached = json.load(f)
             # Check if cache is less than 24 hours old
-            cached_time = datetime.fromisoformat(cached.get("generated_at", "2000-01-01"))
-            if (datetime.now() - cached_time).total_seconds() < 86400:
+            cached_time = to_utc(datetime.fromisoformat(cached.get("generated_at", "2000-01-01")))
+            if (now_utc() - cached_time).total_seconds() < 86400:
                 return cached
         except Exception as e:
             log.debug(f"Failed to load cached AI reasoning: {e}")
@@ -72,9 +73,8 @@ def load_cached_reasoning(cache_key: str) -> Optional[Dict]:
 def save_cached_reasoning(cache_key: str, reasoning: Dict):
     """Save reasoning to cache."""
     cache_file = CACHE_DIR / f"{cache_key}.json"
-    reasoning["generated_at"] = datetime.now().isoformat()
-    with open(cache_file, "w") as f:
-        json.dump(reasoning, f, indent=2)
+    reasoning["generated_at"] = now_utc().isoformat()
+    atomic_write_json(cache_file, reasoning, indent=2)
 
 
 def generate_bet_reasoning(bet_data: Dict, match_context: Optional[Dict] = None) -> Dict:
@@ -408,7 +408,7 @@ def generate_fallback_reasoning(bet_data: Dict) -> Dict:
             "Team news and late changes can affect outcome",
         ],
         "model": "statistical_fallback",
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
     }
 
 
@@ -457,7 +457,7 @@ def load_and_analyze_bets() -> Dict:
         reasonings.append(reasoning)
 
     return {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "total_bets": len(bets),
         "reasonings": reasonings,
     }

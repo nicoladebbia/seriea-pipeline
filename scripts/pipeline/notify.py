@@ -32,15 +32,18 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+
+from scripts.utils.match_timing import now_local, now_utc, to_utc
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+
+from config.settings import atomic_write_json
 
 log = logging.getLogger("notify")
 
@@ -299,6 +302,7 @@ class _NotificationBatcher:
 _batcher = _NotificationBatcher(window_sec=45.0)
 
 import atexit
+
 atexit.register(_batcher.shutdown)
 
 # Default preferences — used when data/notification_preferences.json doesn't exist
@@ -408,8 +412,7 @@ def save_preferences(prefs: dict) -> bool:
     """Save notification preferences to disk. Returns True on success."""
     try:
         _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_PREFS_PATH, "w") as f:
-            json.dump(prefs, f, indent=2)
+        atomic_write_json(_PREFS_PATH, prefs, indent=2)
         return True
     except Exception as e:
         log.warning("Failed to save notification preferences: %s", e)
@@ -422,7 +425,7 @@ def _is_quiet_hours(prefs: dict) -> bool:
     if not qh.get("enabled", False):
         return False
     try:
-        now = datetime.now()
+        now = now_local()
         start_h, start_m = map(int, qh.get("start", "23:00").split(":"))
         end_h, end_m = map(int, qh.get("end", "07:00").split(":"))
         current_minutes = now.hour * 60 + now.minute
@@ -470,7 +473,7 @@ def _should_send(channel: str, category: str) -> bool:
 def _record_history(title: str, message: str, level: str, category: str, channels: dict):
     """Append notification to history file (JSONL). Keeps last _MAX_HISTORY entries."""
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "title": title,
         "message": message,
         "level": level,
@@ -543,7 +546,7 @@ def get_notification_stats() -> dict:
     """Return aggregated notification stats: today, this week, by category, by channel."""
     try:
         all_entries = get_notification_history(limit=200)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         today_count = 0
         week_count = 0
@@ -829,7 +832,7 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
                 emergency_log = PROJECT_ROOT / "logs" / "emergency_alerts.log"
                 emergency_log.parent.mkdir(parents=True, exist_ok=True)
                 with open(emergency_log, "a") as f:
-                    f.write(f"[{datetime.now().isoformat()}] [{level.upper()}] {title}: {message}\n")
+                    f.write(f"[{now_utc().isoformat()}] [{level.upper()}] {title}: {message}\n")
             except Exception:
                 pass
 
@@ -934,10 +937,10 @@ def _edge_label(edge_pct: float) -> str:
 def _time_until_kickoff(match_date: str) -> str:
     """Return human-readable time until kickoff, or empty string."""
     # match_date is typically YYYY-MM-DD without time — just return date context
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     if match_date == today:
         return "today"
-    tomorrow = (datetime.now() + __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d")
+    tomorrow = (now_local() + __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d")
     if match_date == tomorrow:
         return "tomorrow"
     return ""
@@ -987,7 +990,7 @@ def _detect_league_name(match_dict: dict) -> str:
         return ""
 
     try:
-        from config.team_names import normalize_team, SERIE_A_NAMES, PREMIER_LEAGUE_NAMES
+        from config.team_names import PREMIER_LEAGUE_NAMES, SERIE_A_NAMES, normalize_team
         canonical = normalize_team(home)
         if canonical in SERIE_A_NAMES.values() or canonical in SERIE_A_NAMES:
             return "Serie A"
@@ -1160,7 +1163,7 @@ def notify_value_bets(bets: list[dict]) -> dict:
 
     # Dedup: skip if same set of bets already notified today
     import hashlib as _hl
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_local().strftime("%Y-%m-%d")
     bet_sig = _hl.md5(
         "|".join(sorted(f"{b.get('match','')}-{b.get('selection','')}" for b in bets)).encode()
     ).hexdigest()[:12]
@@ -1241,7 +1244,7 @@ def notify_value_bets(bets: list[dict]) -> dict:
     # Save dedup marker
     try:
         with open(_vb_dedup_path, "w") as _f:
-            json.dump({"date": today_str, "sig": bet_sig}, _f)
+            atomic_write_json(_vb_dedup_path, {"date": today_str, "sig": bet_sig})
     except Exception:
         pass
 
@@ -1470,9 +1473,10 @@ def notify_proof_of_edge(days: int = 7) -> dict:
     Sends nothing on a week with no settled bets.
     """
     try:
-        from scripts.betting.bet_journal import _load_journal
         from datetime import timedelta as _td
-        cutoff = (datetime.now() - _td(days=days - 1)).strftime("%Y-%m-%d")
+
+        from scripts.betting.bet_journal import _load_journal
+        cutoff = (now_local() - _td(days=days - 1)).strftime("%Y-%m-%d")
         rows = [b for b in _load_journal()["bets"].values()
                 if b.get("status") in ("won", "lost", "push", "void", "voided")
                 and (b.get("date") or "") >= cutoff]
@@ -1517,8 +1521,9 @@ def notify_proof_of_edge(days: int = 7) -> dict:
            f"{len(rows)} settled ({len(decisive)} decisive)")
     tg.blank()
     if avg_clv is not None:
+        em_dash = "\u2014"
         tg.raw(f"CLV: <b>{avg_clv:+.2f}%</b> avg on {len(clvs)} bets "
-               f"{'\u2014 beating the close' if avg_clv > 0 else '\u2014 behind the close'}")
+               f"{em_dash + ' beating the close' if avg_clv > 0 else em_dash + ' behind the close'}")
         for m, vals in sorted(by_market.items()):
             tg.raw(f"  {_html_escape(m)}: {sum(vals) / len(vals):+.2f}% (n={len(vals)})")
     else:
@@ -1908,8 +1913,8 @@ def _chain_armed_check() -> list:
         raw = state.get("last_odds_fetch") or ""
         dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+            dt = dt.replace(tzinfo=UTC)
+        age_h = (datetime.now(UTC) - dt).total_seconds() / 3600
         if age_h < 26:
             checks.append(("ok", f"odds key (fetched {age_h:.0f}h ago)"))
         else:
@@ -1943,7 +1948,7 @@ def notify_daily_digest() -> dict:
         from zoneinfo import ZoneInfo
         _now_local = datetime.now(ZoneInfo("Europe/Rome"))
     except Exception:
-        _now_local = datetime.now()
+        _now_local = now_local()
     today_str = _now_local.strftime("%Y-%m-%d")
     tomorrow_str = (_now_local + _td(days=1)).strftime("%Y-%m-%d")
 
@@ -1981,11 +1986,10 @@ def notify_daily_digest() -> dict:
         if not gen:
             return float("inf")
         try:
-            from datetime import timezone as _tz
             dt = datetime.fromisoformat(str(gen).replace("Z", "+00:00"))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_tz.utc)
-            return (datetime.now(_tz.utc) - dt).total_seconds() / 3600
+                dt = dt.replace(tzinfo=UTC)
+            return (datetime.now(UTC) - dt).total_seconds() / 3600
         except Exception:
             return float("inf")
 
@@ -2145,11 +2149,10 @@ def notify_daily_digest() -> dict:
     gen_at = (slip.get("generated_at") if isinstance(slip, dict) else None) or ""
     if gen_at:
         try:
-            from datetime import timezone as _tz
             gen_dt = datetime.fromisoformat(str(gen_at).replace("Z", "+00:00"))
             if gen_dt.tzinfo is None:
-                gen_dt = gen_dt.replace(tzinfo=_tz.utc)
-            slip_age_hours = (datetime.now(_tz.utc) - gen_dt).total_seconds() / 3600
+                gen_dt = gen_dt.replace(tzinfo=UTC)
+            slip_age_hours = (datetime.now(UTC) - gen_dt).total_seconds() / 3600
             slip_is_stale = slip_age_hours > 48
         except (ValueError, TypeError):
             pass
@@ -2222,8 +2225,8 @@ def notify_daily_digest() -> dict:
             cand_line = "  Candidates queued: unknown"
             if isinstance(cand, dict) and cand.get("generated_at"):
                 try:
-                    gen = datetime.fromisoformat(str(cand["generated_at"]))
-                    age_h = (datetime.now() - gen).total_seconds() / 3600
+                    gen = to_utc(str(cand["generated_at"]))
+                    age_h = (now_utc() - gen).total_seconds() / 3600
                     if age_h < 28:
                         n_cand = len(cand.get("candidates") or [])
                         cand_line = (f"  Candidates queued: {n_cand} "
@@ -2350,7 +2353,7 @@ def notify_daily_digest() -> dict:
     try:
         _cand = _load_json(DATA_DIR / "upcoming" / "betting_candidates.json")
         _cgen = (_cand or {}).get("generated_at") or ""
-        _cage = (datetime.now() - datetime.fromisoformat(str(_cgen))).total_seconds() / 3600
+        _cage = (now_utc() - to_utc(str(_cgen))).total_seconds() / 3600
         if _cage > 28:
             _lbl = f"{_cage:.0f}h" if _cage < 72 else f"{_cage / 24:.0f}d"
             tg.raw(f"  ⚠️ <i>Candidate store stale ({_lbl}) — "
@@ -2414,7 +2417,7 @@ def notify_daily_digest() -> dict:
     # (scripts/betting/market_promotion.py). Weekly because a market moves
     # by tens of settled bets, not by one evening.
     try:
-        if datetime.now().weekday() == 0:
+        if now_local().weekday() == 0:
             from scripts.betting.market_promotion import load_state, record_card
             tg.blank()
             for _ln in record_card(load_state(), html=True).split("\n"):
@@ -2646,8 +2649,8 @@ def notify_matchweek_summary(matchweek: int = 0) -> dict:
                 pass
 
         # Get bets from the last 10 days (covers split matchweeks)
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+        from datetime import timedelta
+        cutoff = (now_local() - timedelta(days=10)).strftime("%Y-%m-%d")
 
         week_bets = []
         for bet_id, bet in bets.items():
@@ -2826,7 +2829,7 @@ def _load_json_safe(path: Path, default):
 def _save_json_safe(path: Path, data) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, default=str))
+        atomic_write_json(path, data, indent=2, default=str)
     except Exception as e:
         log.warning("Failed to save %s: %s", path, e)
 
@@ -2858,7 +2861,10 @@ def notify_scheduler_run(
         "fail": "error", "failed": "error", "error": "error",
     }.get(status_l, "info")
 
-    now = datetime.now()
+    # The digest's Systems block filters/reads this as a LOCAL-time string
+    # (startswith(today_str) where today_str is now_local()-derived, and
+    # slices [11:16] for an HH:MM display) — store local to match, not UTC.
+    now = now_local()
     when = now.strftime("%H:%M")
 
     # Persist last-run state (consumed by daily-digest Systems block)
@@ -2974,7 +2980,11 @@ def notify_health_state_change(current: dict) -> dict:
     is_first_run = not prev_state
 
     _TRANSIENT_WINDOW_MIN = 120
-    _NOW = datetime.now()
+    # _NOW is both the age-delta reference (self-consistent since every
+    # partner below is stamped from _NOW.isoformat() on a prior cycle) and
+    # feeds a human-facing "%H:%M" title — now_local() so that display is
+    # correct; the numeric deltas are aware-vs-aware either way.
+    _NOW = now_local()
 
     def _issue_key(level: str, msg: str) -> str:
         """Stable identity for an issue: strip volatile suffixes like

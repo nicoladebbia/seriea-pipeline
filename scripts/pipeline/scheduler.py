@@ -8,21 +8,24 @@ Called by: systemd/cron (daemon mode), manual CLI invocation (once mode)
 Depends on: config.settings (DATA_DIR, PROJECT_ROOT)
 """
 
-import os
-import sys
-import json
-import signal
 import argparse
-import subprocess
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import List, Optional, Dict
+import json
 import logging
+import os
+import signal
+import subprocess
+import sys
+from datetime import UTC, datetime, timezone
+from pathlib import Path
+from typing import Dict, List
+
 import pandas as pd
+
+from scripts.utils.match_timing import now_local, now_utc, timedelta
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, PROJECT_ROOT
+from config.settings import DATA_DIR, PROJECT_ROOT, atomic_write_json
 
 # Try to import APScheduler (optional)
 try:
@@ -183,7 +186,7 @@ def is_match_day(date: datetime = None, leagues: List[str] = None) -> bool:
         leagues: Leagues to check (default: ACTIVE_LEAGUES).
     """
     if date is None:
-        date = datetime.now()
+        date = now_local()
 
     matches = get_upcoming_matches(leagues)
     today_str = date.strftime("%Y-%m-%d")
@@ -198,12 +201,12 @@ def is_match_day(date: datetime = None, leagues: List[str] = None) -> bool:
 
 def get_today_matches(leagues: List[str] = None) -> List[Dict]:
     """Get matches scheduled for today across all active leagues."""
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_local().strftime("%Y-%m-%d")
     matches = get_upcoming_matches(leagues)
     return [m for m in matches if m.get("date", "") == today_str]
 
 
-def get_next_match_time() -> Optional[datetime]:
+def get_next_match_time() -> datetime | None:
     """Get the time of the next match (if today).
 
     Checks both Serie A and EPL typical match times from schedule config.
@@ -212,7 +215,7 @@ def get_next_match_time() -> Optional[datetime]:
     if not today_matches:
         return None
 
-    now = datetime.now()
+    now = now_utc()
 
     # Collect all typical match times (Serie A + EPL)
     all_match_times = list(SCHEDULE_CONFIG["typical_match_times"])
@@ -538,7 +541,7 @@ def _dispatch_odds_stage(stage: Dict, matches: List[Dict]) -> bool:
         leagues_to_fetch = set(ACTIVE_LEAGUES)
 
     try:
-        from scripts.data.odds_fetcher import fetch_tagged_snapshot, check_budget_pacing
+        from scripts.data.odds_fetcher import check_budget_pacing, fetch_tagged_snapshot
     except Exception as e:
         log.warning("odds stage %s: odds_fetcher unavailable — %s", stage["name"], e)
         return False
@@ -712,8 +715,8 @@ def run_refresh(bankroll: float = 0, leagues: list = None) -> bool:
     log.info("=" * 60)
 
     try:
-        from scripts.pipeline.run_full_pipeline import run_incremental
         from scripts.betting.bankroll_loader import get_effective_bankroll
+        from scripts.pipeline.run_full_pipeline import run_incremental
 
         br = bankroll if bankroll > 0 else get_effective_bankroll()
         summary = run_incremental(bankroll=br, leagues=leagues)
@@ -1022,8 +1025,9 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
 
             # Check which matches actually got confirmed lineups
             try:
-                from config.settings import DATA_DIR
                 import json as _json
+
+                from config.settings import DATA_DIR
                 lineups_path = DATA_DIR / "upcoming" / "confirmed_lineups.json"
                 confirmed_matches = set()
                 if lineups_path.exists():
@@ -1251,11 +1255,10 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
     # Refresh fixtures if stale (>24h) — pipeline needs fresh fixture list
     try:
         import os
-        from datetime import datetime as _dt
         _fixtures_path = DATA_DIR / "upcoming" / "matches.json"
         _fixtures_age_h = 999
         if _fixtures_path.exists():
-            _fixtures_age_h = (_dt.now() - _dt.fromtimestamp(os.path.getmtime(_fixtures_path))).total_seconds() / 3600
+            _fixtures_age_h = (now_utc() - datetime.fromtimestamp(os.path.getmtime(_fixtures_path), tz=UTC)).total_seconds() / 3600
         if _fixtures_age_h > 24:
             log.info("Fixtures are %.0fh old — refreshing...", _fixtures_age_h)
             from scripts.data.fetch_upcoming_matches import get_upcoming_matches, save_upcoming_matches
@@ -1346,13 +1349,12 @@ def run_pipeline(bankroll: float = 0, quick: bool = False, leagues: list = None)
                 # didn't write it (belt-and-suspenders)
                 try:
                     import json as _json
-                    from datetime import datetime as _dt
                     state_path = PROJECT_ROOT / "data" / "pipeline_state.json"
                     state = {}
                     if state_path.exists():
                         with open(state_path) as _f:
                             state = _json.load(_f)
-                    state["last_run"] = _dt.now().isoformat()
+                    state["last_run"] = now_utc().isoformat()
                     state["last_run_status"] = "success"
                     from config.settings import atomic_write_json as _awj
                     _awj(state_path, state)
@@ -1562,10 +1564,10 @@ def _post_settlement_wrap(result: dict) -> None:
     settlement after the wrap (postponed finish, void correction) falls back
     to the classic settlement card so it is never silent. Never raises.
     """
-    from scripts.pipeline.notify import notify_day_wrap, notify_settlement
     from scripts.betting.bet_journal import get_journal_stats, get_pending_bets
+    from scripts.pipeline.notify import notify_day_wrap, notify_settlement
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     balance = result.get("settlement", {}).get("balance", 0)
     stats = get_journal_stats()
     settled_today = stats.get("settled_today", []) or []
@@ -1596,7 +1598,7 @@ def _post_settlement_wrap(result: dict) -> None:
     notify_day_wrap(settled_today, balance=balance)
     try:
         _DAY_WRAP_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _DAY_WRAP_MARKER.write_text(json.dumps({"date": today, "wrapped": True}))
+        atomic_write_json(_DAY_WRAP_MARKER, {"date": today, "wrapped": True})
     except OSError as e:
         log.debug("Day-wrap marker write failed: %s", e)
 
@@ -1609,7 +1611,7 @@ def _maybe_proof_of_edge() -> None:
     still marks the week (no retry loop). Never raises.
     """
     try:
-        now = datetime.now()
+        now = now_utc()
         if now.weekday() != 6 or now.hour < 22:
             return
         week = now.strftime("%G-W%V")
@@ -1621,7 +1623,7 @@ def _maybe_proof_of_edge() -> None:
         from scripts.pipeline.notify import notify_proof_of_edge
         notify_proof_of_edge(days=7)
         _PROOF_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _PROOF_MARKER.write_text(json.dumps({"week": week}))
+        atomic_write_json(_PROOF_MARKER, {"week": week})
     except Exception as e:
         log.debug("Proof-of-edge check failed: %s", e)
 
@@ -1694,8 +1696,8 @@ def run_settle() -> bool:
         # batch notify_settlement() already shows each bet with full details)
         if settled > 0:
             try:
-                from scripts.pipeline.notify import notify_loss_streak
                 from scripts.betting.bet_journal import get_journal_stats
+                from scripts.pipeline.notify import notify_loss_streak
 
                 stats = get_journal_stats()
                 streak = stats.get("current_streak", 0)
@@ -2069,7 +2071,7 @@ def run_once(bankroll: float = 0, quick: bool = False, leagues: list = None):
         log.debug("component ledger run skipped: %s", e)
 
     # Infer which schedule this is (morning vs evening) from wall-clock hour
-    hour = datetime.now().hour
+    hour = now_local().hour
     if 5 <= hour < 14:
         sched_name = "morning"
     elif 17 <= hour < 23:
@@ -2290,7 +2292,7 @@ def main():
         success = run_settle()
         sys.exit(0 if success else 1)
     elif args.mode == "health":
-        from scripts.pipeline.health_check import run_health_check, print_health_check
+        from scripts.pipeline.health_check import print_health_check, run_health_check
         result = run_health_check()
         print_health_check(result)
         sys.exit(0 if result["overall_status"] == "HEALTHY" else 1)

@@ -58,6 +58,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _sps
 
+from config.settings import atomic_write_json
 from config.team_names import normalize_team_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -741,7 +742,7 @@ def measure_start_calibration(archive_dir: Path | None = None, pms=None, *, min_
     })
     if write:
         _START_CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _START_CALIBRATION_PATH.write_text(json.dumps(out, indent=1))
+        atomic_write_json(_START_CALIBRATION_PATH, out, indent=1)
     return out
 
 
@@ -935,7 +936,7 @@ def validate_halves(league: str = "serie_a", test_seasons=("2023-2024", "2024-20
               "per_half": out, "gate": gate}
     out_path = out_path or _HALVES_BACKTEST_PATH
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, indent=2))
+    atomic_write_json(out_path, result, indent=2)
     return result
 
 

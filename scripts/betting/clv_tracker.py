@@ -29,13 +29,13 @@ Writes:
 
 import json
 import logging
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
-
 import sys
+from pathlib import Path
+from typing import Dict, List
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -83,9 +83,8 @@ def _load_clv_history() -> Dict:
 def _save_clv_history(data: Dict):
     """Save CLV history."""
     CLV_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data["updated_at"] = datetime.now().isoformat()
-    with open(CLV_HISTORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    data["updated_at"] = now_utc().isoformat()
+    atomic_write_json(CLV_HISTORY_FILE, data, indent=2)
 
 
 # =============================================================================
@@ -123,7 +122,7 @@ def record_bet_placement(slip_path: Path = None) -> int:
     }
 
     new_count = 0
-    now = datetime.now().isoformat()
+    now = now_utc().isoformat()
 
     for bet in selected:
         key = (bet.get("match", ""), bet.get("market", ""), bet.get("selection", ""))
@@ -171,15 +170,14 @@ def _load_placed_bets() -> Dict:
 
 def _save_placed_bets(data: Dict):
     PLACED_BETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PLACED_BETS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(PLACED_BETS_FILE, data, indent=2)
 
 
 # =============================================================================
 # CLOSING LINE LOOKUP
 # =============================================================================
 
-def get_closing_odds(match_key: str) -> Optional[Dict]:
+def get_closing_odds(match_key: str) -> Dict | None:
     """Get the last recorded odds snapshot for a match (closing line proxy).
 
     Looks for the most recent snapshot that contains this match.
@@ -201,7 +199,7 @@ def get_closing_odds(match_key: str) -> Optional[Dict]:
     return None
 
 
-def get_closing_odds_bookmaker(match_key: str, bookmaker: str = None) -> Optional[Dict]:
+def get_closing_odds_bookmaker(match_key: str, bookmaker: str = None) -> Dict | None:
     """Get closing odds from per-bookmaker snapshots for more accurate CLV.
 
     Bookmaker snapshots have structure:
@@ -285,7 +283,7 @@ def get_closing_odds_bookmaker(match_key: str, bookmaker: str = None) -> Optiona
     return get_closing_odds(match_key)
 
 
-def get_closing_odds_extra(match_key: str) -> Optional[Dict]:
+def get_closing_odds_extra(match_key: str) -> Dict | None:
     """Get closing odds from extra market snapshots (BTTS, DC, DNB, alt totals).
 
     These snapshots contain markets not available in the h2h/totals/spreads snapshots.
@@ -545,7 +543,7 @@ def track_clv_for_settled_bets(settled_bets: List[Dict]) -> Dict:
             "clv_pct": round(clv * 100, 2),
             "result": bet.get("result", "unknown"),
             "placed_at": bet.get("placed_at", bet.get("date", "")),
-            "tracked_at": datetime.now().isoformat(),
+            "tracked_at": now_utc().isoformat(),
         }
 
         history["bets"].append(clv_entry)
@@ -558,7 +556,7 @@ def track_clv_for_settled_bets(settled_bets: List[Dict]) -> Dict:
 
         # Update journal with CLV data
         try:
-            from scripts.betting.bet_journal import update_clv, _generate_bet_id
+            from scripts.betting.bet_journal import _generate_bet_id, update_clv
             bet_id = _generate_bet_id(
                 bet.get("date", ""),
                 match_key,
@@ -715,7 +713,7 @@ def generate_clv_report() -> Dict:
 
     report = {
         "status": "ok",
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "total_bets": len(bets),
         "avg_clv_pct": round(sum(all_clvs) / len(all_clvs) * 100, 2),
         "positive_clv_rate": round(pos_count / len(bets), 3),
@@ -726,8 +724,7 @@ def generate_clv_report() -> Dict:
     # Save report
     report_path = DATA_DIR / "betting" / "clv_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
+    atomic_write_json(report_path, report, indent=2)
 
     return report
 

@@ -10,13 +10,13 @@ Depends on: config.settings (DATA_DIR)
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
-
 import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +53,7 @@ def load_state() -> Dict:
 def save_state(state: Dict) -> Path:
     """Save pipeline state to disk."""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    atomic_write_json(STATE_FILE, state, indent=2)
     return STATE_FILE
 
 
@@ -124,14 +123,14 @@ def needs_odds_refresh(state: Dict, max_age_hours: float = 6.0) -> bool:
         # against a UTC-aware now so the subtraction never raises (the bug
         # that made this gate always return True → wake-storm credit burn).
         if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - last_dt
+            last_dt = last_dt.replace(tzinfo=UTC)
+        age = datetime.now(UTC) - last_dt
         return age > timedelta(hours=max_age_hours)
     except (ValueError, TypeError):
         return True
 
 
-def mark_predicted(state: Dict, match_keys: List[str], dates: Optional[List[str]] = None) -> Dict:
+def mark_predicted(state: Dict, match_keys: List[str], dates: List[str] | None = None) -> Dict:
     """Mark matches as predicted in state.
 
     Args:
@@ -151,7 +150,7 @@ def mark_predicted(state: Dict, match_keys: List[str], dates: Optional[List[str]
     return state
 
 
-def mark_settled(state: Dict, match_keys: List[str], dates: Optional[List[str]] = None) -> Dict:
+def mark_settled(state: Dict, match_keys: List[str], dates: List[str] | None = None) -> Dict:
     """Mark matches as settled in state.
 
     Args:
@@ -183,13 +182,13 @@ def update_timestamp(state: Dict, field: str) -> Dict:
     """
     # UTC-aware to match odds_fetcher.py's writer — all timestamps in this repo
     # are UTC-aware ISO strings (CLAUDE.md prevention rule).
-    state[field] = datetime.now(timezone.utc).isoformat()
+    state[field] = datetime.now(UTC).isoformat()
     return state
 
 
 def get_state_summary(state: Dict) -> Dict:
     """Get a human-readable summary of pipeline state."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     def _age_str(iso_str):
         if not iso_str:
@@ -197,7 +196,7 @@ def get_state_summary(state: Dict) -> Dict:
         try:
             dt = datetime.fromisoformat(iso_str)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             delta = now - dt
             if delta.total_seconds() < 60:
                 return "just now"

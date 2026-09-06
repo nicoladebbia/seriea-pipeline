@@ -8,7 +8,7 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
-from ml.config import LABEL_MAP, MODEL_EXTENSIONS, MODEL_TYPES, ModelConfig, N_CLASSES
+from ml.config import LABEL_MAP, ModelConfig
 
 log = logging.getLogger(__name__)
 

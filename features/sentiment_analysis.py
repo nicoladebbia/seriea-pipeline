@@ -28,6 +28,8 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
@@ -370,7 +372,7 @@ class TeamSentimentAnalyzer:
                 with open(cache_path) as f:
                     data = json.load(f)
                 # Only use recent headlines (last 7 days)
-                cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+                cutoff = (now_utc() - timedelta(days=7)).isoformat()
                 headlines = [
                     h["text"] for h in data.get("headlines", [])
                     if h.get("date", "") > cutoff

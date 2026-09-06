@@ -20,13 +20,15 @@ import json
 import logging
 import sys
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, SEASONS
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import TEAM_NAME_MAP
 
 log = logging.getLogger(__name__)
@@ -425,8 +427,7 @@ def check_feature_correlations(threshold: float = 0.95) -> dict:
     quality_dir = DATA_DIR / "quality"
     quality_dir.mkdir(parents=True, exist_ok=True)
     report_path = quality_dir / "correlation_report.json"
-    with open(report_path, "w") as f:
-        json.dump(result, f, indent=2)
+    atomic_write_json(report_path, result, indent=2)
     log.info("Correlation report saved to %s", report_path)
 
     return result
@@ -435,7 +436,7 @@ def check_feature_correlations(threshold: float = 0.95) -> dict:
 def generate_full_report() -> dict:
     """Generate comprehensive data quality report."""
     report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "parquet_files": check_parquet_files(),
         "season_coverage": check_season_coverage(),
         "null_rates": check_null_rates(),
@@ -548,6 +549,5 @@ if __name__ == "__main__":
 
     # Save report
     report_path = DATA_DIR / "quality_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(report_path, report, indent=2, default=str)
     print(f"\nReport saved to {report_path}")

@@ -19,20 +19,18 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from sklearn.metrics import log_loss as sk_log_loss
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.calibration import AutoCalibrator, ProbabilityCalibrator
 from ml.config import (
     CLASS_INDICES,
     LABEL_MAP,
-    LABEL_NAMES,
-    META_COLS,
     MODEL_EXTENSIONS,
     N_CLASSES,
     RANDOM_SEED,
@@ -412,8 +410,7 @@ class WeightedAverageEnsemble:
             "weights": self.weights.tolist(),
             "n_base_models": len(self.base_models),
         }
-        with open(save_dir / "ensemble_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
+        atomic_write_json(save_dir / "ensemble_metadata.json", metadata, indent=2)
 
         log.info("Saved ensemble to %s", save_dir)
         return save_dir

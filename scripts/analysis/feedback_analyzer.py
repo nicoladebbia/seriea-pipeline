@@ -12,12 +12,14 @@ Run standalone: python3 -m scripts.feedback_analyzer
 import json
 import logging
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -522,7 +524,7 @@ def run_feedback_analysis() -> dict:
     factor_count = compute_factor_count_accuracy(matched)
 
     analysis = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "n_settled": len(matched),
         "overall": overall,
         "method_brier_scores": method_brier,
@@ -544,9 +546,7 @@ def run_feedback_analysis() -> dict:
     }
 
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-    with open(ANALYSIS_PATH, "w") as f:
-        json.dump(analysis, f, indent=2, cls=_NumpySafeEncoder)
-
+    atomic_write_json(ANALYSIS_PATH, analysis, indent=2, cls=_NumpySafeEncoder)
     log.info("Feedback analysis saved to %s", ANALYSIS_PATH)
     log.info("  Settled: %d, Accuracy: %.1f%%, Mean Brier: %.4f",
              overall.get("n_settled", 0),

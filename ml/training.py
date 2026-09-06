@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import (
-    META_COLS,
     MODEL_TYPES,
     FeatureConfig,
-    drop_meta,
     TuningConfig,
     ValidationConfig,
+    drop_meta,
 )
 from ml.data import DataLoader, TimeSeriesSplitter
-from ml.evaluation import MIN_GATE_TEST_MATCHES, compute_metrics, print_report
+from ml.evaluation import MIN_GATE_TEST_MATCHES, compute_metrics
 from ml.models import get_model
 from ml.persistence import save_model
 from ml.tuning import _compute_sample_weights
@@ -253,9 +250,11 @@ def train_optimized(
     from ml.ensemble import WeightedAverageEnsemble, evaluate_ensemble_cv
     from ml.feature_selection import (
         correlation_pruning,
-        exclude_odds as _exclude_odds,
         importance_based_selection,
         save_importance_history,
+    )
+    from ml.feature_selection import (
+        exclude_odds as _exclude_odds,
     )
     from ml.tuning import tune_model
 
@@ -541,7 +540,7 @@ def train_optimized(
 
     # --- Save full training report JSON ---
     report = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "model_type": "weighted_average_ensemble",
         "note": "This report covers the 3-model ensemble (XGB+LGB+CB). "
                 "The no-odds CatBoost model has its own metadata at "
@@ -559,7 +558,7 @@ def train_optimized(
     report_dir = MODELS_DIR / variant
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "training_report.json"
-    report_path.write_text(json.dumps(report, indent=2, default=str))
+    atomic_write_json(report_path, report, indent=2, default=str)
     log.info("Saved training report to %s", report_path)
 
     return results

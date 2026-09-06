@@ -27,10 +27,13 @@ import fcntl
 import json
 import logging
 import shutil
-from datetime import datetime, timedelta
+from datetime import timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
+
+from config.settings import atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc, to_utc
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +111,7 @@ def journal_lock():
 # JOURNAL I/O
 # =============================================================================
 
-def _load_journal(journal_path: Optional[Path] = None) -> Dict:
+def _load_journal(journal_path: Path | None = None) -> Dict:
     """Load the journal file. Returns dict with 'metadata' and 'bets' keys."""
     journal_path = journal_path or JOURNAL_PATH
     if journal_path.exists():
@@ -125,25 +128,21 @@ def _load_journal(journal_path: Optional[Path] = None) -> Dict:
             log.warning("Failed to load journal: %s", e)
     return {
         "metadata": {
-            "created_at": datetime.now().isoformat(),
+            "created_at": now_utc().isoformat(),
             "version": 1,
         },
         "bets": {},
     }
 
 
-def _save_journal(journal: Dict, journal_path: Optional[Path] = None):
+def _save_journal(journal: Dict, journal_path: Path | None = None):
     """Save journal to disk atomically."""
     journal_path = journal_path or JOURNAL_PATH
     journal_path.parent.mkdir(parents=True, exist_ok=True)
-    journal["metadata"]["updated_at"] = datetime.now().isoformat()
+    journal["metadata"]["updated_at"] = now_utc().isoformat()
     journal["metadata"]["total_bets"] = len(journal["bets"])
 
-    # Write to temp file then rename for atomicity
-    tmp_path = journal_path.with_suffix(".tmp")
-    with open(tmp_path, "w") as f:
-        json.dump(journal, f, indent=2, default=str)
-    tmp_path.rename(journal_path)
+    atomic_write_json(journal_path, journal, indent=2, default=str)
 
 
 def get_clv_lookup() -> Dict[str, float]:
@@ -278,10 +277,10 @@ MAX_EDGE_PCT = 12.0  # Defense-in-depth: reject bets above this edge regardless 
 
 _MODEL_VERSION_CACHE: Dict = {"mtime": None, "data": None}
 _DEPLOYMENT_STATE_PATH = DATA_DIR / "models" / "deployment_state.json"
-_GIT_SHA_CACHE: Optional[str] = None
+_GIT_SHA_CACHE: str | None = None
 
 
-def _get_git_sha() -> Optional[str]:
+def _get_git_sha() -> str | None:
     """Current HEAD short SHA. Cached per-process. None if not a git repo / git missing."""
     global _GIT_SHA_CACHE
     if _GIT_SHA_CACHE is not None:
@@ -351,7 +350,7 @@ def _stamp_model_version(entry: Dict) -> None:
 
 
 @_with_journal_lock
-def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
+def add_bet(bet_data: Dict, journal_path: Path | None = None, *,
             dedup_by_market: bool = False) -> str:
     """Add a bet to the journal. Returns bet_id.
 
@@ -380,7 +379,7 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
         return ""
 
     if not bet_data.get("date"):
-        bet_data["date"] = datetime.now().strftime("%Y-%m-%d")
+        bet_data["date"] = now_local().strftime("%Y-%m-%d")
 
     journal = _load_journal(journal_path)
 
@@ -428,7 +427,7 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
                      "league", "odds", "stake"):
             if key in bet_data and bet_data[key] is not None:
                 existing[key] = bet_data[key]
-        existing["updated_at"] = datetime.now().isoformat()
+        existing["updated_at"] = now_utc().isoformat()
         log.debug("Updated pending bet %s", bet_id)
     else:
         # New bet entry
@@ -454,7 +453,7 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
             "profit": None,
             "closing_odds": None,
             "clv_pct": None,
-            "placed_at": bet_data.get("placed_at", datetime.now().isoformat()),
+            "placed_at": bet_data.get("placed_at", now_utc().isoformat()),
             "settled_at": None,
             "pipeline_status": bet_data.get("pipeline_status"),
             # free-form context the grader needs (picks: player, side, line);
@@ -471,7 +470,7 @@ def add_bet(bet_data: Dict, journal_path: Optional[Path] = None, *,
 
 
 def get_pending_bets(match_date: str = None, include_superseded: bool = True,
-                     journal_path: Optional[Path] = None) -> List[Dict]:
+                     journal_path: Path | None = None) -> List[Dict]:
     """Get all unsettled bets, optionally filtered by match date.
 
     Args:
@@ -492,7 +491,7 @@ def get_pending_bets(match_date: str = None, include_superseded: bool = True,
     return sorted(pending, key=lambda b: (b.get("date") or "", b.get("match") or ""))
 
 
-def get_settled_bets(journal_path: Optional[Path] = None) -> List[Dict]:
+def get_settled_bets(journal_path: Path | None = None) -> List[Dict]:
     """Get all settled bets (won/lost/push/void)."""
     journal = _load_journal(journal_path)
     settled = []
@@ -624,7 +623,7 @@ def get_paper_track_stats(league: str = None) -> Dict:
 def settle_bet(bet_id: str, status: str, result_score: str = None,
                profit: float = None,
                match_kickoff_at: str | None = None,
-               journal_path: Optional[Path] = None,
+               journal_path: Path | None = None,
                closing_odds: float | None = None) -> bool:
     """Mark a bet as won/lost/push/void.
 
@@ -675,7 +674,7 @@ def settle_bet(bet_id: str, status: str, result_score: str = None,
     bet["status"] = status
     bet["result_score"] = result_score
     bet["profit"] = profit
-    bet["settled_at"] = datetime.now().isoformat()
+    bet["settled_at"] = now_utc().isoformat()
     if match_kickoff_at:
         bet["match_kickoff_at"] = match_kickoff_at
     if closing_odds and float(closing_odds) > 1.0 and not bet.get("closing_odds"):
@@ -828,7 +827,7 @@ def repair_settlements(dry_run: bool = True) -> Dict:
 
                 bet["status"] = expected
                 bet["profit"] = profit
-                bet["repaired_at"] = datetime.now().isoformat()
+                bet["repaired_at"] = now_utc().isoformat()
                 bet["repair_note"] = f"Was '{current}', fixed to '{expected}'"
                 stats["fixed"] += 1
 
@@ -908,7 +907,7 @@ def get_journal_stats() -> Dict:
 
     # Bets contested or settled today -- the settlement card and day wrap
     # read this key (it was read for months before it existed; see 2026-08-28).
-    _today = datetime.now().strftime("%Y-%m-%d")
+    _today = now_local().strftime("%Y-%m-%d")
     settled_today = [
         b for b in settled
         if (b.get("date") or "").startswith(_today)
@@ -1000,7 +999,7 @@ def mark_bet_fill(bet_id: str, fill_status: str,
             bet["filled_odds"] = round(odds, 2)
     else:
         bet.pop("filled_odds", None)
-    bet["fill_updated_at"] = datetime.now().isoformat()
+    bet["fill_updated_at"] = now_utc().isoformat()
     _save_journal(journal)
     log.info("Fill recorded: %s -> %s%s", bet_id, fill_status,
              f" @ {bet.get('filled_odds')}" if bet.get("filled_odds") else "")
@@ -1017,7 +1016,7 @@ def sweep_unverified_fills(bet_ids) -> int:
     """
     journal = _load_journal()
     flagged = 0
-    now = datetime.now().isoformat()
+    now = now_utc().isoformat()
     for bid in bet_ids or []:
         bet = journal["bets"].get(bid)
         if bet is None or bet.get("fill_status"):
@@ -1340,7 +1339,7 @@ def generate_report(days: int = 7) -> str:
         return "No bets in journal."
 
     # Date range
-    end_date = datetime.now().date()
+    end_date = now_local().date()
     start_date = end_date - timedelta(days=days)
     end_str = end_date.strftime("%b %-d, %Y")
     start_str = start_date.strftime("%b %-d, %Y")
@@ -1355,8 +1354,9 @@ def generate_report(days: int = 7) -> str:
         sa = b.get("settled_at", "")
         if sa:
             try:
-                settled_date = datetime.fromisoformat(sa).date()
-                if start_date <= settled_date <= end_date:
+                settled_dt = to_utc(sa)
+                settled_date = settled_dt.date() if settled_dt else None
+                if settled_date and start_date <= settled_date <= end_date:
                     period_settled.append(b)
             except (ValueError, TypeError):
                 pass

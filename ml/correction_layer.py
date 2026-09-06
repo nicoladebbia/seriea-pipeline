@@ -26,14 +26,14 @@ import json
 import logging
 import pickle
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -509,12 +509,11 @@ class RollingCorrector:
         """Save rolling state to JSON."""
         path = path or ROLLING_STATE_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump({
-                "buckets": self.buckets,
-                "processed_count": self.processed_count,
-                "updated_at": datetime.now().isoformat(),
-            }, f, indent=2)
+        atomic_write_json(path, {
+            "buckets": self.buckets,
+            "processed_count": self.processed_count,
+            "updated_at": now_utc().isoformat(),
+        }, indent=2)
         log.info("Saved rolling calibration state (%d buckets, watermark=%d) to %s",
                  len(self.buckets), self.processed_count, path)
 
@@ -709,7 +708,7 @@ def append_to_ledger(
         "prob_A": round(prob_A, 4),
         "predicted": predicted,
         "confidence": round(confidence, 4),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
     }
     if correction_deltas:
         entry["correction_deltas"] = correction_deltas

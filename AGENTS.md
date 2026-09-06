@@ -42,10 +42,10 @@ journal row at the sized stake; placing it is a human act.
 Layout:
 - `cli.py` — CLI entry for pipeline steps
 - `config/` — settings (note `config/settings.py:SEASONS`, §4)
-- `features/` — feature engineering; `features/build.py` is the step-cached pipeline
-  (52 plugins, topologically ordered by declared dependencies; `never_cache` =
-  `{pivot_to_match_level, backfill_managers, backfill_referees, odds, market_data,
-  manager_h2h_noop}`; `build_upcoming_features()` runs fixture rows through it)
+- `features/` — feature engineering; `features/build.py` is the plugin pipeline
+  (52 plugins, topologically ordered by declared dependencies; NO step cache since
+  2026-09-06 — every build is a fresh ~23-min run; `build_upcoming_features()` runs
+  fixture rows through it)
 - `ml/` — training config (`ml/config.py`: `time_decay_per_season = 0.90`, fold
   recency weighting), correction layer, walk-forward helpers
 - `scripts/models/` — `train_walkforward.py` (1X2), `train_over_under.py` (O/U:
@@ -257,18 +257,11 @@ Telegram rendered. Bot commands: `/today /picks /record /bets /bankroll /live /p
   merged file lets the other league through; a per-league cache that ignores its league
   argument starves the second league (`fixtures_{season}.json` did). Any loader taking a
   match id must try both parquet variants.
-- **Step cache in `features/build.py`** (the most expensive trap in the repo):
-  (A) each step caches the WHOLE cumulative frame and a cache hit REPLACES the frame, so
-  a step that recomputed earlier in the run is undone by the next cached step; the
-  final parquet is whatever the last cached step snapshotted. (B) the fingerprint hashes
-  `plugin.apply` source plus a hand-declared `data_inputs` manifest; most plugins
-  delegate to `features/*.py` modules whose source is NOT hashed and whose real inputs are
-  often undeclared. Net: editing a feature module and rebuilding yields a byte-identical
-  parquet, and `[computed]` in the log is not evidence a value reached disk. The only
-  trustworthy full rebuild is `use_cache=False`. Never write the production cache from an
-  ad-hoc frame (`build(write_cache=False)`). Verify a feature change by diffing the
-  parquet, never by reading the build log. Cache dir: `data/cache/features/<league>/`
-  (`<step>_v<ver>.parquet` + `.fingerprint`).
+- **Step cache in `features/build.py` — DELETED 2026-09-06.** It cached the WHOLE
+  cumulative frame per step and a hit REPLACED the frame (an earlier recomputed step was
+  undone by the next cached one), and its fingerprint hashed the two-line wrapper, not the
+  feature module. Every build is fresh now; `use_cache` / `write_cache` no longer exist.
+  Verify a feature change by diffing the parquet, never by reading the build log.
 - **Build-once caches under `data/parsed/`**: the idiom `if CACHE.exists(): return read()`
   freezes at first build. The correct pattern keeps a `source_mtime` column per row and
   re-parses when the source file is newer; verify with two consecutive calls (second must

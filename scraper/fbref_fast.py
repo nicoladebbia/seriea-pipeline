@@ -27,7 +27,7 @@ except ImportError:
     browser = None
     Driver = None
 
-from config.settings import DATA_DIR, REQUEST_DELAY_SECONDS
+from config.settings import DATA_DIR, REQUEST_DELAY_SECONDS, atomic_write_json
 from config.team_names import normalize_team
 
 log = logging.getLogger(__name__)
@@ -547,9 +547,7 @@ def scrape_all_seasons(
                         match_data["match_id"] = match_id
 
                         # Save individual match
-                        with open(match_file, "w") as f:
-                            json.dump(match_data, f, indent=2)
-
+                        atomic_write_json(match_file, match_data, indent=2)
                         if (i + 1) % 10 == 0:
                             log.info(f"  Scraped {i + 1}/{len(match_urls)} matches")
                     except Exception as e:

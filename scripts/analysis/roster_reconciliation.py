@@ -47,6 +47,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from config.settings import atomic_write_json, season_file_suffix
 from features.transfer_impact_analysis import _normalize_name
 from scraper.transfermarkt import (
     SERIE_A_TEAMS_TM,
@@ -61,8 +62,8 @@ from scraper.transfermarkt import (
 #   2026 -> "Detailed squad 26/27"   (this season, the current rosa)
 PREV_SEASON_ID = 2025
 CURR_SEASON_ID = 2026
-TRANSFERS_FILE = TM_DIR / "transfers_2026_2027.parquet"
-OUT_JSON = Path("data/analysis/roster_reconciliation_2026_2027.json")
+TRANSFERS_FILE = TM_DIR / f"transfers_{season_file_suffix()}.parquet"
+OUT_JSON = Path(f"data/analysis/roster_reconciliation_{season_file_suffix()}.json")
 REQUEST_GAP_S = 2.0
 
 # player-profile anchor: /profil/spieler/{id}"> Name </a>  (verified specimen)
@@ -199,7 +200,7 @@ def main() -> int:
         "clubs_checked": len([r for r in results if "error" not in r]),
         "results": results,
     }
-    OUT_JSON.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    atomic_write_json(OUT_JSON, payload, indent=2, ensure_ascii=False)
     _log(f"wrote {OUT_JSON}")
 
     graded = [r for r in results if "error" not in r]

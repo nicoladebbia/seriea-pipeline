@@ -14,6 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR, get_current_season, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 
 def generate_current_standings(season: str | None = None) -> dict:
@@ -146,7 +147,7 @@ def generate_current_standings(season: str | None = None) -> dict:
         }
 
     output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "season": season,
         "team_count": len(standings),
         "standings": standings,

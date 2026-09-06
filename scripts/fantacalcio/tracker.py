@@ -25,6 +25,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 from scripts.fantacalcio.live_scores import fetch_round, played_rounds
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -743,8 +745,7 @@ def _write_heartbeat(ok: bool, error: str | None = None,
     ok=True with an error means the advice landed but a side channel (push)
     failed. Best-effort — the stamp must never take the tracker down."""
     try:
-        path.write_text(json.dumps(
-            {"ran_at": datetime.now(UTC).isoformat(), "ok": ok, "error": error}))
+        atomic_write_json(path, {"ran_at": datetime.now(UTC).isoformat(), "ok": ok, "error": error})
     except OSError:
         pass
 
@@ -968,8 +969,7 @@ def _push_xi_advice() -> None:
                    category="alert",
                    tg_html="<b>⚠️ Rischi rosa</b>\n"
                            + "\n".join(f"• {ln}" for ln in lines))
-            state_path.write_text(json.dumps(state, indent=1,
-                                             ensure_ascii=False))
+            atomic_write_json(state_path, state, indent=1, ensure_ascii=False)
     except Exception as e:
         print(f"risk alerts failed (advice unaffected): {e}")
     # Post-round digest: once, when a new giornata lands in the tracker.
@@ -979,8 +979,7 @@ def _push_xi_advice() -> None:
             from scripts.pipeline.notify import notify
             notify(digest["text"], title=digest["title"], level="info",
                    category="alert", tg_html=digest["tg_html"])
-            state_path.write_text(json.dumps(state, indent=1,
-                                             ensure_ascii=False))
+            atomic_write_json(state_path, state, indent=1, ensure_ascii=False)
     except Exception as e:
         print(f"round digest failed (advice unaffected): {e}")
     rnd, kick = adv.get("round"), adv.get("first_kickoff")
@@ -1037,7 +1036,7 @@ def _push_xi_advice() -> None:
                        tg_reply_markup=_SCHIERA_BTN)
             except Exception as e:
                 print(f"XI final-check notify failed: {e}")
-        state_path.write_text(json.dumps(state))
+        atomic_write_json(state_path, state)
         return
 
     msg, tg = render_xi(adv, riv)
@@ -1048,7 +1047,7 @@ def _push_xi_advice() -> None:
                "modulo e XI.")
         notify(msg, title="Fantacalcio XI", level="info",
                category="system", tg_html=tg, tg_reply_markup=_SCHIERA_BTN)
-        state_path.write_text(json.dumps(_first_push_state(state, rnd, cur)))
+        atomic_write_json(state_path, _first_push_state(state, rnd, cur))
     except Exception as e:  # advice on disk is the deliverable; push is best-effort
         print(f"XI notify failed (advice still written): {e}")
 
@@ -1057,7 +1056,7 @@ def main() -> None:
     import sys
     try:
         data = build(refresh="--refresh" in sys.argv)
-        OUT.write_text(json.dumps(data, indent=1))
+        atomic_write_json(OUT, data, indent=1)
     except Exception as e:
         _write_heartbeat(False, f"{type(e).__name__}: {e}")
         raise

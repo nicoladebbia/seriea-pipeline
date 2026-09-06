@@ -27,6 +27,8 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,7 +41,7 @@ from sklearn.metrics import accuracy_score, log_loss, mean_absolute_error
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
 from features.build import get_ml_feature_columns
 from ml.config import LABEL_MAP, ODDS_COLUMN_PATTERNS
 from ml.data import _is_odds_feature
@@ -782,9 +784,7 @@ class UnifiedTrainer:
             "catboost_upcoming_metadata.json",
             "catboost_no_odds_metadata.json",
         ]:
-            with open(model_dir / name, "w") as f:
-                json.dump(metadata, f, indent=2)
-
+            atomic_write_json(model_dir / name, metadata, indent=2)
         log.info("Saved metadata to %s", model_dir)
         return metadata
 
@@ -833,9 +833,7 @@ class UnifiedTrainer:
             "cv_metrics": cls_metrics,
             "label_map": LABEL_MAP,
         }
-        with open(self._model_dir / "catboost_upcoming_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-
+        atomic_write_json(self._model_dir / "catboost_upcoming_metadata.json", metadata, indent=2)
         return {"mode": "classifier_only", "classifier_metrics": cls_metrics}
 
     # ---------------------------------------------------------------
@@ -948,9 +946,7 @@ class UnifiedTrainer:
             "excluded_odds_features": odds_cols,
             "train_accuracy": round(float(train_accuracy), 4),
         }
-        with open(self._model_dir / "catboost_no_odds_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-
+        atomic_write_json(self._model_dir / "catboost_no_odds_metadata.json", metadata, indent=2)
         return {"mode": "fast", "train_accuracy": float(train_accuracy), "model_path": str(model_path)}
 
     # ---------------------------------------------------------------
@@ -1089,9 +1085,7 @@ class UnifiedTrainer:
             "label_map": LABEL_MAP,
             "includes_odds": True,
         }
-        with open(self._model_dir / "catboost_metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-
+        atomic_write_json(self._model_dir / "catboost_metadata.json", metadata, indent=2)
         if overall_acc >= 0.65:
             log.info("TARGET MET! Accuracy %.1f%% >= 65%%", overall_acc * 100)
         else:
@@ -1168,7 +1162,7 @@ class UnifiedTrainer:
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
         trainer = DeepModelTrainer()
-        results = {"mode": "deep", "timestamp": datetime.now().isoformat()}
+        results = {"mode": "deep", "timestamp": now_utc().isoformat()}
 
         # --- LSTM ---
         log.info("\n" + "=" * 50)
@@ -1219,9 +1213,7 @@ class UnifiedTrainer:
         deep_model_dir = MODELS_DIR / "deep"
         deep_model_dir.mkdir(parents=True, exist_ok=True)
         results_path = deep_model_dir / "training_results.json"
-        with open(results_path, "w") as f:
-            json.dump(results, f, indent=2)
-
+        atomic_write_json(results_path, results, indent=2)
         # Summary
         avg_acc = (lstm_metrics["accuracy"] + transformer_metrics["accuracy"]) / 2
         avg_hc = (lstm_metrics["high_conf_accuracy"] + transformer_metrics["high_conf_accuracy"]) / 2

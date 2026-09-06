@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def detect_changes(season: str = "2026-2027") -> list[dict]:
 
     # Cold start: seed and report nothing.
     if previous is None:
-        snap_path.write_text(json.dumps(current, ensure_ascii=False))
+        atomic_write_json(snap_path, current, ensure_ascii=False, indent=None)
         log.info("seeded squad snapshot for %s (%d clubs) — no changes on first run",
                  season, len(current))
         return []
@@ -160,9 +160,9 @@ def detect_changes(season: str = "2026-2027") -> list[dict]:
     if changes:
         existing = _load_json(_changelog_path(season), [])
         combined = (changes + existing)[:MAX_LOG]
-        _changelog_path(season).write_text(json.dumps(combined, ensure_ascii=False, indent=1))
+        atomic_write_json(_changelog_path(season), combined, ensure_ascii=False, indent=1)
         log.info("logged %d transfer changes for %s", len(changes), season)
-    snap_path.write_text(json.dumps(current, ensure_ascii=False))
+    atomic_write_json(snap_path, current, ensure_ascii=False, indent=None)
     return changes
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -130,7 +130,7 @@ def expected_calibration_error(
 def kelly_profit_simulation(
     y_true: np.ndarray,
     y_proba: np.ndarray,
-    odds: Optional[np.ndarray] = None,
+    odds: np.ndarray | None = None,
     kelly_fraction: float = 0.10,  # Synced with production (betting_unified.py)
     market_overround: float = 1.07,
 ) -> dict:

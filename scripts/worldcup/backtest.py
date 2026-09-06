@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from config.settings import atomic_write_json
 from scripts.worldcup.engine import (
     DATA_DIR,
     PRODUCTION_DC_REG,
@@ -478,7 +479,7 @@ def run_backtest() -> dict[str, Any]:
             "ou25_skill > 0 with ece < 0.05 — mirrors the Serie A finding."
         ),
     }
-    METADATA_JSON.write_text(json.dumps(metadata, indent=2))
+    atomic_write_json(METADATA_JSON, metadata, indent=2)
     return metadata
 
 
@@ -641,7 +642,7 @@ def run_squad_strength_study() -> dict[str, Any]:
             ),
         },
     }
-    SQUAD_STUDY_JSON.write_text(json.dumps(study, indent=2))
+    atomic_write_json(SQUAD_STUDY_JSON, study, indent=2)
     return study
 
 

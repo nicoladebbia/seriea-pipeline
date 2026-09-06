@@ -22,11 +22,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -38,6 +37,7 @@ from sklearn.metrics import brier_score_loss, log_loss
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.settings import atomic_write_json  # noqa: E402
 from ml.feature_selection import exclude_odds  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -568,13 +568,11 @@ def walkforward_train_market(
             "output_suffix": output_suffix or None,
             "feature_names": feature_names,
             "n_features": len(feature_names),
-            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "trained_at": datetime.now(UTC).isoformat(),
             "calibration": "isotonic_per_class_on_val_pool",
             "class_weights": list(effective_weights) if effective_weights else None,
         }
-        with open(out_dir / f"season_{eval_season}_metadata.json", "w") as fh:
-            json.dump(meta, fh, indent=2)
-
+        atomic_write_json(out_dir / f"season_{eval_season}_metadata.json", meta, indent=2)
         log.info("  Eval %s: raw_ll=%.4f raw_acc=%.4f | cal_ll=%.4f cal_acc=%.4f",
                  eval_season, fold_row["raw"]["log_loss"], fold_row["raw"]["accuracy"],
                  fold_row["calibrated"]["log_loss"], fold_row["calibrated"]["accuracy"])
@@ -592,7 +590,7 @@ def walkforward_train_market(
         "output_suffix": output_suffix or None,
         "calibration": "isotonic_per_class_on_val_pool",
         "folds": fold_reports,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     }
 
     if concat_probs_raw:
@@ -653,8 +651,7 @@ def walkforward_train_market(
             }
             summary["overall"] = summary["overall_calibrated"]
 
-    with open(out_dir / "summary.json", "w") as fh:
-        json.dump(summary, fh, indent=2)
+    atomic_write_json(out_dir / "summary.json", summary, indent=2)
     return summary
 
 
@@ -718,12 +715,11 @@ def main() -> int:
     suffix_part = f"_{args.output_suffix}" if args.output_suffix else ""
     out_path = OUTPUT_ROOT / f"run_summary{suffix_part}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump({
-            "eval_seasons": eval_seasons,
-            "combos": global_summary,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }, f, indent=2)
+    atomic_write_json(out_path, {
+        "eval_seasons": eval_seasons,
+        "combos": global_summary,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }, indent=2)
 
     print("\n=== Walk-forward training summary ===")
     for key, stats in global_summary.items():

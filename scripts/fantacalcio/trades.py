@@ -28,6 +28,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 from scripts.fantacalcio.namematch import norm
 from scripts.fantacalcio.tracker import MODULES
 
@@ -190,7 +192,7 @@ def build_trades() -> dict:
            "my_team": me, "windows": windows,
            "strengths": [{"team": n, "strength": round(s, 2), "module": m,
                           "me": n == me} for n, s, m in strengths]}
-    OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    atomic_write_json(OUT, out, indent=1, ensure_ascii=False)
     return out
 
 

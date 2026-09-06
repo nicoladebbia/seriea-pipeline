@@ -23,12 +23,12 @@ API Cost: 1-2 credits per call (same as results_fetcher)
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from scripts.utils.match_timing import now_local, now_utc
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,8 +80,8 @@ def append_pnl_snapshot(settlement_summary: Dict, stats: Dict) -> Dict:
     history = _load_pnl_history()
 
     snapshot = {
-        "timestamp": datetime.now().isoformat(),
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "timestamp": now_utc().isoformat(),
+        "date": now_local().strftime("%Y-%m-%d"),
         # Settlement details
         "settled_this_run": settlement_summary.get("settled", 0),
         "won_this_run": settlement_summary.get("won", 0),
@@ -329,7 +329,7 @@ def check_performance_drift(rolling: Dict) -> List[Dict]:
 def _save_drift_alerts(alerts: List[Dict]):
     """Persist drift alerts for external monitoring."""
     data = {
-        "checked_at": datetime.now().isoformat(),
+        "checked_at": now_utc().isoformat(),
         "alerts": alerts,
         "has_critical": any(a["level"] == "CRITICAL" for a in alerts),
         "has_warning": any(a["level"] == "WARNING" for a in alerts),
@@ -343,16 +343,16 @@ def _save_drift_alerts(alerts: List[Dict]):
 # =============================================================================
 
 def print_daily_report(
-    settlement_summary: Optional[Dict],
+    settlement_summary: Dict | None,
     rolling: Dict,
     alerts: List[Dict],
-    pnl_snapshot: Optional[Dict] = None,
+    pnl_snapshot: Dict | None = None,
 ):
     """Print a concise daily report to stdout."""
     print()
     print("=" * 60)
     print("  DAILY BETTING REPORT")
-    print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  {now_local().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
 
     # Settlement results
@@ -563,8 +563,12 @@ def run(
     if completed_results and not dry_run:
         try:
             from scripts.betting.prediction_tracker import (
-                load_predictions, score_predictions, compute_metrics,
-                compute_draw_edge_pnl, save_tracker, load_tracker
+                compute_draw_edge_pnl,
+                compute_metrics,
+                load_predictions,
+                load_tracker,
+                save_tracker,
+                score_predictions,
             )
             predictions = load_predictions()
             scored = score_predictions(predictions, completed_results)
@@ -577,7 +581,7 @@ def run(
                 new_scored = [s for s in scored
                               if (s["home_team"], s["away_team"], s["match_date"]) not in existing_keys]
                 tracker["scored"].extend(new_scored)
-                tracker["last_scored_at"] = datetime.now().isoformat()
+                tracker["last_scored_at"] = now_utc().isoformat()
                 save_tracker(tracker)
                 log.info("Prediction tracker: scored %d predictions (%d new), accuracy %.1f%%",
                          len(scored), len(new_scored), metrics["accuracy"] * 100)

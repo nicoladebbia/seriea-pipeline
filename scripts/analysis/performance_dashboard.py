@@ -12,15 +12,14 @@ Run: python3 -m scripts.performance_dashboard
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, datetime, UTC
 
-import numpy as np
+from scripts.utils.match_timing import now_utc
+
 import pandas as pd
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
 
 log = logging.getLogger(__name__)
@@ -76,7 +75,7 @@ def archive_predictions():
                 # "probabilities" are accuracy-tuned, deliberately sharper).
                 "betting_probabilities": pred.get("betting_probabilities", {}),
                 "date": match_date,
-                "archived_at": datetime.now().isoformat(),
+                "archived_at": now_utc().isoformat(),
                 # Feedback loop fields (for post-settlement analysis)
                 "component_predictions": pred.get("component_predictions", {}),
                 "methods_used": pred.get("methods_used", []),
@@ -95,9 +94,7 @@ def archive_predictions():
             }
             added += 1
 
-    with open(PREDICTIONS_ARCHIVE, "w") as f:
-        json.dump(archive, f, indent=2, default=str)
-
+    atomic_write_json(PREDICTIONS_ARCHIVE, archive, indent=2, default=str)
     if added:
         log.info("Archived %d new predictions (%d total)", added, len(archive))
     return added
@@ -315,8 +312,8 @@ def check_data_freshness() -> dict:
     # Odds freshness
     odds_path = DATA_DIR / "upcoming" / "odds.json"
     if odds_path.exists():
-        mtime = datetime.fromtimestamp(odds_path.stat().st_mtime)
-        age_hours = (datetime.now() - mtime).total_seconds() / 3600
+        mtime = datetime.fromtimestamp(odds_path.stat().st_mtime, tz=UTC)
+        age_hours = (now_utc() - mtime).total_seconds() / 3600
         checks["odds"] = {
             "last_updated": mtime.isoformat(),
             "age_hours": round(age_hours, 1),
@@ -356,25 +353,25 @@ def check_data_freshness() -> dict:
     json_files = sorted(understat_dir.glob("understat_*.json"))
     if json_files:
         latest = json_files[-1]
-        mtime = datetime.fromtimestamp(latest.stat().st_mtime)
+        mtime = datetime.fromtimestamp(latest.stat().st_mtime, tz=UTC)
         checks["understat_ppda"] = {
             "seasons": len(json_files),
             "latest_file": latest.name,
             "last_updated": mtime.isoformat(),
-            "fresh": (datetime.now() - mtime).days <= 7,
+            "fresh": (now_utc() - mtime).days <= 7,
         }
     else:
         checks["understat_ppda"] = {"fresh": False, "error": "no_data"}
 
     # Features
     if FEATURES_PATH.exists():
-        mtime = datetime.fromtimestamp(FEATURES_PATH.stat().st_mtime)
+        mtime = datetime.fromtimestamp(FEATURES_PATH.stat().st_mtime, tz=UTC)
         df = pd.read_parquet(FEATURES_PATH)
         checks["features"] = {
             "rows": len(df),
             "columns": len(df.columns),
             "last_rebuilt": mtime.isoformat(),
-            "fresh": (datetime.now() - mtime).total_seconds() / 3600 < 24,
+            "fresh": (now_utc() - mtime).total_seconds() / 3600 < 24,
         }
 
     return checks
@@ -699,7 +696,7 @@ def check_bankroll_health() -> dict:
 def generate_dashboard() -> dict:
     """Generate the complete performance dashboard."""
     dashboard = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "prediction_accuracy": check_prediction_accuracy(),
         "betting_performance": check_betting_performance(),
         "settled_bet_feedback": check_settled_bet_feedback(),
@@ -710,9 +707,7 @@ def generate_dashboard() -> dict:
     }
 
     # Save
-    with open(DASHBOARD_OUT, "w") as f:
-        json.dump(dashboard, f, indent=2, default=str)
-
+    atomic_write_json(DASHBOARD_OUT, dashboard, indent=2, default=str)
     log.info("Dashboard saved to %s", DASHBOARD_OUT)
     return dashboard
 

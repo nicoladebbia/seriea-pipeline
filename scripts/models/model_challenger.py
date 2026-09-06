@@ -26,11 +26,13 @@ import logging
 import shutil
 import sys
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -70,10 +72,7 @@ def _append_log(entry: dict):
     entries.append(entry)
     # Keep last 50 entries
     entries = entries[-50:]
-    with open(LOG_PATH, "w") as f:
-        json.dump(entries, f, indent=2)
-
-
+    atomic_write_json(LOG_PATH, entries, indent=2)
 def _smoke_test() -> bool:
     """Load ensemble, predict 1 match, verify no NaN."""
     try:
@@ -131,7 +130,7 @@ def run_model_challenger() -> dict:
     log.info("MODEL CHALLENGER")
     log.info("=" * 60)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
 
     # Load current metrics
     current_metrics = _load_current_metrics()

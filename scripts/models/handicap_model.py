@@ -15,16 +15,19 @@ Based on margin analysis from 7,829 historical matches.
 
 import json
 import logging
-import math
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from scripts.utils.match_timing import now_utc
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 from scipy import stats
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.leagues import infer_league
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.betting.italian_market_standards import normalize_line_to_italian
 from scripts.models import load_predictions
 
@@ -558,12 +561,16 @@ def save_handicap_predictions(
 
     # Save margin predictions
     predictions_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "model": "normal_margin_v1",
         "predictions": [
             {
                 "match": p.match,
                 "date": p.date,
+                # Row-level league: the betting gate drops a row whose league is
+                # not the run's, whatever file it came from (per-file gating
+                # let EPL rows ride as Serie A twice, 2026-08-27 / 08-31).
+                "league": infer_league(p.home_team, p.away_team),
                 "expected_margin": p.expected_margin,
                 "margin_std_dev": p.margin_std_dev,
                 "home_rating": p.home_rating,
@@ -580,8 +587,9 @@ def save_handicap_predictions(
     }
 
     pred_path = output_dir / "margin_predictions.json"
-    with open(pred_path, "w") as f:
-        json.dump(predictions_data, f, indent=2)
+    if not predictions:
+        log.warning("%s written with 0 rows: every consumer is gated off until the next run", pred_path.name)
+    atomic_write_json(pred_path, predictions_data)
     log.info(f"Saved margin predictions to {pred_path}")
 
     # Save betting recommendations
@@ -601,7 +609,7 @@ def save_handicap_predictions(
         }
 
     bets_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "summary": {
             "total_bets_analyzed": len(bets),
             "recommended_bets": len(recommended),
@@ -638,8 +646,7 @@ def save_handicap_predictions(
     }
 
     bets_path = output_dir / "handicap_bets.json"
-    with open(bets_path, "w") as f:
-        json.dump(bets_data, f, indent=2)
+    atomic_write_json(bets_path, bets_data, indent=2)
     log.info(f"Saved betting recommendations to {bets_path}")
 
 

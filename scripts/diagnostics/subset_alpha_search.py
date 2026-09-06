@@ -26,6 +26,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.settings import atomic_write_json
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
@@ -428,9 +430,7 @@ def main() -> int:
     # Save findings
     out_path = PROJECT_ROOT / "data" / "diagnostics" / "subset_alpha_findings.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(findings, f, indent=2, default=str)
-
+    atomic_write_json(out_path, findings, indent=2, default=str)
     print()
     print("=" * 80)
     print(f"Saved {len(findings)} findings to {out_path.relative_to(PROJECT_ROOT)}")

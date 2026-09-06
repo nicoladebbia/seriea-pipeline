@@ -40,6 +40,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from config.settings import atomic_write_json
 from scripts.worldcup.engine import (
     DATA_DIR,
     canon_team,
@@ -516,7 +517,7 @@ def validate_scrape() -> dict[str, Any]:
             "scope_note": "validated conditional on playing >=1 minute",
         },
     }
-    SCRAPE_METADATA_JSON.write_text(json.dumps(metadata, indent=2))
+    atomic_write_json(SCRAPE_METADATA_JSON, metadata, indent=2)
     return metadata
 
 
@@ -657,7 +658,7 @@ def run_backtest() -> dict[str, Any]:
             "current-squad filter on top."
         ),
     }
-    PLAYER_METADATA_JSON.write_text(json.dumps(metadata, indent=2))
+    atomic_write_json(PLAYER_METADATA_JSON, metadata, indent=2)
     return metadata
 
 
@@ -715,7 +716,7 @@ def generate(sims_meta_required: bool = True) -> dict[str, Any]:
             "per_match": {},
             "golden_boot": [],
         }
-        PLAYER_PREDICTIONS_JSON.write_text(json.dumps(payload_empty, indent=2))
+        atomic_write_json(PLAYER_PREDICTIONS_JSON, payload_empty, indent=2)
         return payload_empty
 
     # Scraped context: recent minutes (starter dampening — gate-checked),
@@ -897,7 +898,7 @@ def generate(sims_meta_required: bool = True) -> dict[str, Any]:
                 context[team]["club_elo_coverage_pct"] = round(
                     float(blob["coverage_pct"])
                 )
-    TEAM_CONTEXT_JSON.write_text(json.dumps(context, indent=2, ensure_ascii=False))
+    atomic_write_json(TEAM_CONTEXT_JSON, context, indent=2, ensure_ascii=False)
 
     payload = {
         "generated_at": datetime.now(UTC).isoformat(),

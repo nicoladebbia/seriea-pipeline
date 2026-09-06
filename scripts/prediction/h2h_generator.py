@@ -13,7 +13,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 
 def generate_h2h_for_upcoming(league: str = None) -> dict:
@@ -138,19 +139,18 @@ def generate_h2h_for_upcoming(league: str = None) -> dict:
         existing_h2h = existing.get("h2h", {})
         existing_h2h.update(h2h_data)
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "match_count": len(existing_h2h),
             "h2h": existing_h2h,
         }
     else:
         output = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "match_count": len(h2h_data),
             "h2h": h2h_data,
         }
 
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(out_path, output, indent=2)
 
     print(f"Generated H2H for {len(h2h_data)} {league or 'serie_a'} matches -> {out_path}")
     return output

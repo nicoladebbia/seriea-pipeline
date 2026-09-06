@@ -95,6 +95,11 @@ def _freeze(monkeypatch, day: _dt.date):
 
     monkeypatch.setattr(hc, "datetime", _D)
     monkeypatch.setattr("config.settings.date", _Date)
+    # Since 2026-09-06 health_check reads the clock through match_timing's
+    # now_local()/now_utc() (naive datetime.now() is banned); freeze those too.
+    frozen_utc = _dt.datetime(day.year, day.month, day.day, 12, 0, tzinfo=_dt.UTC)
+    monkeypatch.setattr(hc, "now_utc", lambda: frozen_utc)
+    monkeypatch.setattr(hc, "now_local", lambda: frozen_utc.astimezone())
 
 
 # --------------------------------------------------------------------------

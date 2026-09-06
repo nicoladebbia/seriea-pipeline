@@ -280,6 +280,9 @@ def test_settle_picks_settles_gradable_and_leaves_the_rest_pending(tmp_path, mon
     monkeypatch.setattr(P, "PICKS_JOURNAL_PATH", tmp_path / "picks_journal.json")
     monkeypatch.setattr(P, "GOAL_TIMELINE", tmp_path / "missing.parquet")
     monkeypatch.setattr(P, "PMS_PATH", tmp_path / "missing_pms.parquet")
+    # The ESPN first-half fallback reaches the network; on the real 2026-09-06
+    # matchday it graded the 1H pick and the assertion below went 1 -> 2.
+    monkeypatch.setattr(P, "_first_half_from_espn", lambda *a, **k: None)
     now = datetime(2026, 9, 6, 18, 0, tzinfo=UTC)
     ft_lean = {"market_key": "h2h", "bet_type": "1x2 finale", "selection": "1", "probability_pct": 52.0,
                "implied_pct": 50.0, "edge_pct": 4.0, "odds": 2.0, "book": "best of market", "tier": "A"}

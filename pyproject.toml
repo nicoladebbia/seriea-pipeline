@@ -43,7 +43,7 @@ target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "B", "I", "UP", "S", "BLE"]
+select = ["E", "F", "W", "B", "I", "UP", "S", "BLE", "DTZ003", "DTZ005"]
 ignore = ["E501", "S101", "B905"]
 # E = pycodestyle errors
 # F = pyflakes (unused imports, undefined names)
@@ -55,7 +55,7 @@ ignore = ["E501", "S101", "B905"]
 # BLE = blind except (bare except: blocks)
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]       # Allow assert in tests
+"tests/*" = ["S101", "DTZ003", "DTZ005"]       # Allow assert in tests
 "scripts/legacy/*" = ["ALL"]  # Ignore legacy scripts
 
 # =============================================================================

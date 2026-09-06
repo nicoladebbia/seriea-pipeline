@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from config.settings import atomic_write_json
+
 from config.team_names import normalize_team as NT
 from scripts.fantacalcio.probabili import (
     BALLOT_CLAMP,
@@ -689,9 +691,7 @@ def _write_pin(rnd: int | None, kick: float | None, adv: dict) -> dict:
            "xi_names": {str(int(x["id"])): x["nome"] for x in adv.get("xi") or []},
            "bench": [int(x["id"]) for x in adv.get("bench") or []],
            "risky": list(adv.get("risky") or [])}
-    tmp = PIN.with_suffix(".tmp")
-    tmp.write_text(json.dumps(pin, indent=1, ensure_ascii=False))
-    tmp.replace(PIN)
+    atomic_write_json(PIN, pin, indent=1, ensure_ascii=False)
     return pin
 
 
@@ -871,9 +871,7 @@ def build_round_context() -> dict | None:
                        "mine": mine.get(f["home"], []) + mine.get(f["away"], [])})
     payload = {"round": rnd, "generated_at": datetime.now(UTC).isoformat(),
                "fixtures": out_fx}
-    tmp = ROUND_CONTEXT.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False))
-    tmp.replace(ROUND_CONTEXT)
+    atomic_write_json(ROUND_CONTEXT, payload, ensure_ascii=False)
     return payload
 
 
@@ -1029,9 +1027,7 @@ def _club_congestion(fixtures: dict) -> dict:
     except ImportError:
         pass
     if clubs:
-        CONGESTION_CACHE.write_text(json.dumps(
-            {"fetched_at": datetime.now(UTC).isoformat(), "clubs": clubs},
-            indent=1, ensure_ascii=False))
+        atomic_write_json(CONGESTION_CACHE, {"fetched_at": datetime.now(UTC).isoformat(), "clubs": clubs}, indent=1, ensure_ascii=False)
         return clubs
     return (cached or {}).get("clubs", {})
 
@@ -1343,7 +1339,7 @@ def build_scorer_edges() -> dict | None:
     out = {"built_at": datetime.now(UTC).isoformat(),
            "matches": matches_out,
            "by_pid": {str(k): v for k, v in by_pid.items()}}
-    SCORER_EDGES.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    atomic_write_json(SCORER_EDGES, out, indent=1, ensure_ascii=False)
     return out
 
 
@@ -1908,7 +1904,7 @@ def record_fielded(team: str, module: str, rnd: int,
     except (OSError, ValueError):
         data = {}
     data.setdefault(team, {})[str(rnd)] = module
-    path.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+    atomic_write_json(path, data, indent=1, ensure_ascii=False)
     return data
 
 
@@ -2371,7 +2367,7 @@ def main() -> None:
         return
     out = build_advice(repin="--repin" in sys.argv)
     if "--repin" in sys.argv:
-        ADVICE.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+        atomic_write_json(ADVICE, out, indent=1, ensure_ascii=False)
     print(json.dumps({k: out.get(k) for k in ("round", "module", "total",
                                              "modifier", "pin")},
                      indent=1, ensure_ascii=False))

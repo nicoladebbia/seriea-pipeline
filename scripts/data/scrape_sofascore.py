@@ -44,7 +44,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from config.leagues import LEAGUE_REGISTRY, get_league_config
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
 from scripts.utils.scraper_state import load_failed, save_failed
 
@@ -203,8 +203,7 @@ async def get_season_fixtures(
 
     if all_fixtures:
         tmp_path = cache_file.with_suffix(".tmp")
-        with open(tmp_path, "w") as f:
-            json.dump(all_fixtures, f, indent=1)
+        atomic_write_json(tmp_path, all_fixtures, indent=1)
         tmp_path.rename(cache_file)
 
     played = [f for f in all_fixtures if f.get("status", {}).get("type") == "finished"]
@@ -267,8 +266,7 @@ async def refresh_fixtures_cache(
                         league_key, len(all_fixtures), len(existing))
             return existing
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "w") as f:
-            json.dump(all_fixtures, f, indent=1)
+        atomic_write_json(cache_file, all_fixtures, indent=1)
         log.info("Refreshed fixtures cache: %d total fixtures for %s [%s]", len(all_fixtures), season, league_key)
 
     return all_fixtures
@@ -294,11 +292,10 @@ async def scrape_match_stats(
             try:
                 team_stats = await match.stats()
                 cached["team_stats"] = team_stats
-                with open(cache_file, "w") as f:
-                    json.dump(cached, f)
+                atomic_write_json(cache_file, cached)
                 log.debug("Backfilled team_stats for match %d", match_id)
-            except (OSError, ConnectionError):
-                log.debug("Could not backfill team_stats for %d: %s", match_id, e if 'e' in locals() else "unknown")
+            except (OSError, ConnectionError) as e:
+                log.debug("Could not backfill team_stats for %d: %s", match_id, e)
                 cached["team_stats"] = {}
         return cached
 
@@ -332,13 +329,12 @@ async def scrape_match_stats(
 
         # Cache
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "w") as f:
-            json.dump(result, f)
+        atomic_write_json(cache_file, result)
 
         return result
 
-    except (OSError, ConnectionError):
-        log.debug("Failed to get lineups for match %d: %s", match_id, e if 'e' in locals() else "unknown")
+    except (OSError, ConnectionError) as e:
+        log.debug("Failed to get lineups for match %d: %s", match_id, e)
         return None
 
 
@@ -359,7 +355,7 @@ def _kickoff_date(fixture: dict) -> str:
     if not start_ts:
         return ""
     return datetime.datetime.fromtimestamp(
-        start_ts, datetime.timezone.utc
+        start_ts, datetime.UTC
     ).strftime("%Y-%m-%d")
 
 

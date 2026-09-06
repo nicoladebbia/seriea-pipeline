@@ -36,6 +36,7 @@ from typing import Any
 
 import pandas as pd
 
+from config.settings import atomic_write_json
 from scripts.worldcup.engine import DATA_DIR, canon_team
 from scripts.worldcup.players import (
     CONFIRMED_LINEUPS_JSON,
@@ -354,7 +355,7 @@ def build(horizon_days: int = HORIZON_DAYS) -> dict[str, Any]:
         "horizon_days": horizon_days,
         "matches": matches,
     }
-    AVAILABILITY_JSON.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    atomic_write_json(AVAILABILITY_JSON, payload, indent=2, ensure_ascii=False)
     n_news = sum(
         1
         for m in matches.values()
@@ -446,7 +447,7 @@ def study() -> dict[str, Any]:
         )
     else:
         result["note"] = "insufficient sample — adjustment stays mechanical"
-    STUDY_JSON.write_text(json.dumps(result, indent=2))
+    atomic_write_json(STUDY_JSON, result, indent=2)
     print(json.dumps(result, indent=2))
     return result
 

@@ -18,15 +18,16 @@ bookmakers that offer cards markets (Bet365, William Hill, etc.)
 
 import json
 import logging
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple
+
+from scripts.utils.match_timing import now_utc
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
-from ml.poisson import poisson_probability, poisson_cumulative, calculate_over_probability
+from config.settings import DATA_DIR, atomic_write_json
+from ml.poisson import calculate_over_probability
 from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -540,7 +541,7 @@ def save_cards_predictions(
 
     # Save predictions
     predictions_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "model": "poisson_cards_v1",
         "note": "Cards odds not available via API - use with external bookmakers",
         "predictions": [
@@ -567,8 +568,7 @@ def save_cards_predictions(
     }
 
     pred_path = output_dir / "cards_predictions.json"
-    with open(pred_path, "w") as f:
-        json.dump(predictions_data, f, indent=2)
+    atomic_write_json(pred_path, predictions_data, indent=2)
     log.info(f"Saved cards predictions to {pred_path}")
 
     # Save betting recommendations
@@ -576,7 +576,7 @@ def save_cards_predictions(
     consider = [b for b in bets if b.recommendation == "CONSIDER"]
 
     bets_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "note": "Compare suggested odds with bookmaker odds - bet when bookmaker offers higher",
         "summary": {
             "total_analyzed": len(bets),
@@ -611,8 +611,7 @@ def save_cards_predictions(
     }
 
     bets_path = output_dir / "cards_bets.json"
-    with open(bets_path, "w") as f:
-        json.dump(bets_data, f, indent=2)
+    atomic_write_json(bets_path, bets_data, indent=2)
     log.info(f"Saved cards bets to {bets_path}")
 
 

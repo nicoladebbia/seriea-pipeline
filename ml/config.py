@@ -11,7 +11,6 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-
 # ---------------------------------------------------------------------------
 # Label encoding (derived from the data; the only "hardcoded" mapping)
 # ---------------------------------------------------------------------------

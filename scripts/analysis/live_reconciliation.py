@@ -18,13 +18,15 @@ import json
 import sys
 from collections import defaultdict
 from datetime import datetime
+
+from scripts.utils.match_timing import now_local, now_utc
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 
 def load_live_bets() -> List[Dict]:
@@ -267,7 +269,7 @@ def print_reconciliation_report(
     print()
     print("=" * 80)
     print("  LIVE vs BACKTEST RECONCILIATION")
-    print(f"  {len(bets)} settled bets | {datetime.now().strftime('%Y-%m-%d')}")
+    print(f"  {len(bets)} settled bets | {now_local().strftime('%Y-%m-%d')}")
     print("=" * 80)
 
     # ── 1. Overall performance ──
@@ -413,7 +415,7 @@ def run():
 
     # Save to file
     output = {
-        "run_date": datetime.now().isoformat(),
+        "run_date": now_utc().isoformat(),
         "n_bets": len(bets),
         "calibration": calibration,
         "edge_performance": edge_perf,
@@ -422,8 +424,7 @@ def run():
     }
     output_path = DATA_DIR / "optimization" / "live_reconciliation.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    atomic_write_json(output_path, output, indent=2, default=str)
     print(f"Results saved to {output_path}")
 
 

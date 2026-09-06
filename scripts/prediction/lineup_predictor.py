@@ -25,8 +25,9 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
+from scripts.utils.match_timing import now_local, now_utc
 
 # Serie A suspension thresholds
 YELLOW_SUSPENSION_THRESHOLD = 5  # 5 yellows = 1-match ban
@@ -1205,7 +1206,7 @@ def get_missing_players(stats_df: pd.DataFrame, team: str) -> list:
     if not match_ids:
         return []
 
-    today = datetime.now().date()
+    today = now_local().date()
     reason_map = {1: "Injury", 2: "Suspension", 3: "National Team",
                   4: "Personal", 13: "Suspension", 5: "Other"}
 
@@ -2242,7 +2243,7 @@ def generate_lineup_predictions() -> dict:
         }
 
     output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "match_count": len(match_predictions),
         "team_count": len(team_predictions),
         "matches": match_predictions,
@@ -2250,17 +2251,15 @@ def generate_lineup_predictions() -> dict:
     }
 
     out_path = DATA_DIR / "upcoming" / "lineup_predictions.json"
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    atomic_write_json(out_path, output, indent=2, default=str)
 
     # Archive a copy so predictions aren't lost when re-generated.
     # Each archive is keyed by generation date. After the matches are played,
     # evaluate_past_predictions() compares these against actual Sofascore data.
     archive_dir = DATA_DIR / "lineup_history"
     archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_name = f"predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(archive_dir / archive_name, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    archive_name = f"predictions_{now_local().strftime('%Y%m%d_%H%M%S')}.json"
+    atomic_write_json(archive_dir / archive_name, output, indent=2, default=str)
 
     print(f"Generated lineup predictions for {len(match_predictions)} matches → {out_path}")
     print(f"Archived → {archive_dir / archive_name}")
@@ -2429,7 +2428,7 @@ def evaluate_past_predictions(verbose: bool = True) -> dict:
         team_avgs = {}
 
     evaluation = {
-        "last_evaluated": datetime.now().isoformat(),
+        "last_evaluated": now_utc().isoformat(),
         "total_evaluations": len(all_results),
         "new_evaluations": len(new_results),
         "overall_avg_overlap": overall_avg,
@@ -2439,8 +2438,7 @@ def evaluate_past_predictions(verbose: bool = True) -> dict:
     }
 
     # Save
-    with open(eval_path, "w") as f:
-        json.dump(evaluation, f, indent=2, default=str)
+    atomic_write_json(eval_path, evaluation, indent=2, default=str)
 
     if verbose:
         print(f"\n{'='*50}")

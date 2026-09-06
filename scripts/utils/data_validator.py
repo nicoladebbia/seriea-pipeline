@@ -17,13 +17,13 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from scripts.utils.json_utils import load_json_safe
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def _extract_match_keys(data: Any) -> set[str]:
 def _classify_league(match_keys: set[str]) -> dict[str, set[str]]:
     """Classify match keys into leagues using team name registry."""
     try:
-        from config.team_names import SERIE_A_NAMES, PREMIER_LEAGUE_NAMES
+        from config.team_names import PREMIER_LEAGUE_NAMES, SERIE_A_NAMES
         sa_canon = set(SERIE_A_NAMES.values())
         epl_canon = set(PREMIER_LEAGUE_NAMES.values())
     except ImportError:
@@ -220,7 +220,7 @@ def _check_odds_sanity(issues: dict[str, list]) -> None:
 
 def _check_staleness(issues: dict[str, list]) -> None:
     """Check critical files are not too old."""
-    now = datetime.now()
+    now = now_utc()
     for fname, max_age_h in FRESHNESS_LIMITS.items():
         fpath = UPCOMING_DIR / fname
         if not fpath.exists():
@@ -228,7 +228,7 @@ def _check_staleness(issues: dict[str, list]) -> None:
                 issues["critical"].append(f"{fname}: FILE MISSING")
             continue
 
-        mtime = datetime.fromtimestamp(fpath.stat().st_mtime)
+        mtime = datetime.fromtimestamp(fpath.stat().st_mtime, tz=UTC)
         age_h = (now - mtime).total_seconds() / 3600
         if age_h > max_age_h:
             level = "critical" if fname in ("predictions.json", "odds_full.json") else "warning"

@@ -137,7 +137,7 @@
 > canonical-keyed FBref source, removing the root cause. Verified 0 numeric across
 > the whole derived layer, N>1 under fixed conditions (different code paths, built
 > at different times today): `features_serie_a.parquet` (0/380, built 14:19), all
-> **54** `data/cache/features/serie_a/*` caches (0 total), and
+> **54** `data/cache/features/serie_a/*` caches — DELETED 2026-09-06 (step cache removed from `features/build.py`), and
 > `data/external/weather.parquet` (0, built 10:36). **Residual risk (a guard, not
 > a bug):** a *new* matchday match that arrives Sofascore-only — before that
 > week's FBref report lands — could transiently re-mint a numeric key until the
@@ -703,7 +703,7 @@ unreliable = df[df.days_dark > 3]   # scraper blind here — trust neither verdi
 **Still NEVER a model feature.** This makes rumors *studyable*, which is the precondition for ever deciding whether they earn a feature slot — not a promotion of rumors to one.
 
 ### Auto-refresh (transfers)
-- **`com.seriea-pipeline.transfer-refresh` plist** (`deploy/launchagents/`, daily 06:00, `RunAtLoad: false`) runs `scripts/data/refresh_transfers.py` → scrapes confirmed + market values + rumors. Window-gated (summer 06-01→09-05, winter 01-01→02-05); exits instantly off-window. NOT auto-loaded — load with `launchctl load ~/Library/LaunchAgents/...` when wanted.
+- **`com.seriea-pipeline.transfer-refresh` plist** (`config/launchd/`, daily 06:00, `RunAtLoad: false`) runs `scripts/data/refresh_transfers.py` → scrapes confirmed + market values + rumors. Window-gated (summer 06-01→09-05, winter 01-01→02-05); exits instantly off-window. NOT auto-loaded — load with `launchctl load ~/Library/LaunchAgents/...` when wanted.
 
 ### `data/external/injuries/injuries_YYYY-MM-DD.parquet`
 - **Weekly snapshots** (usually Friday)

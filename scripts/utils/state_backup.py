@@ -10,11 +10,12 @@ monitor.check_state_backup via the heartbeat this writes.
 """
 from __future__ import annotations
 
-import json
 import os
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
+
+from config.settings import atomic_write_json
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = (
@@ -56,10 +57,10 @@ def run(dest: Path | None = None, keep: int = KEEP,
     # written AFTER the tar closes, so each archive carries the PREVIOUS
     # run's heartbeat — cosmetic (nothing reads it from inside the archive)
     heartbeat.parent.mkdir(parents=True, exist_ok=True)
-    heartbeat.write_text(json.dumps(
-        {"ran_at": datetime.now(UTC).isoformat(), "dest": str(out),
-         "bytes": out.stat().st_size,
-         "kept": min(len(archives), keep)}, indent=1))
+    atomic_write_json(heartbeat, {
+        "ran_at": datetime.now(UTC).isoformat(), "dest": str(out),
+        "bytes": out.stat().st_size,
+        "kept": min(len(archives), keep)}, indent=1)
     return out
 
 

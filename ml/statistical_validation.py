@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
-import numpy as np
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -322,10 +321,9 @@ def get_reproducibility_metadata(seed: int = 42) -> dict:
     and random seed used.
     """
     import sys
-    from datetime import datetime
 
     metadata = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "random_seed": seed,
         "python_version": sys.version.split()[0],
     }

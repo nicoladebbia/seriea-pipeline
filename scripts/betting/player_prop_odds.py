@@ -19,19 +19,19 @@ Usage:
     python -m scripts.betting.player_prop_odds --scan-only  # scan cached odds
 """
 
+import argparse
 import json
 import logging
-import os
 import sys
 import time
-import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team, strip_accents
+from scripts.utils.match_timing import now_utc, to_utc
 
 try:
     import requests
@@ -87,7 +87,6 @@ CACHE_DIR = DATA_DIR / "cache"
 OUTPUT_DIR = DATA_DIR / "upcoming"
 
 from config.api_keys import get_odds_api_key
-
 
 # =============================================================================
 # FETCHING
@@ -161,7 +160,7 @@ def fetch_player_prop_odds(use_cache: bool = True, league: str = "serie_a") -> D
         try:
             with open(cache_path) as f:
                 cached = json.load(f)
-            age_mins = (datetime.now() - datetime.fromisoformat(cached.get("fetched_at", "2000-01-01"))).total_seconds() / 60
+            age_mins = (now_utc() - to_utc(datetime.fromisoformat(cached.get("fetched_at", "2000-01-01")))).total_seconds() / 60
             if age_mins < 15:
                 log.info(f"Using cached player props ({age_mins:.0f}min old, {len(cached.get('matches', {}))} matches)")
                 return cached.get("matches", {})
@@ -329,8 +328,7 @@ def fetch_player_prop_odds(use_cache: bool = True, league: str = "serie_a") -> D
 
     # Cache results
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w") as f:
-        json.dump({"fetched_at": datetime.now().isoformat(), "matches": all_props}, f, indent=2)
+    atomic_write_json(cache_path, {"fetched_at": now_utc().isoformat(), "matches": all_props}, indent=2)
 
     return all_props
 
@@ -339,14 +337,13 @@ def save_player_prop_odds(props: Dict) -> Path:
     """Save player prop odds to JSON."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "player_prop_odds.json"
-    with open(out_path, "w") as f:
-        json.dump({
-            "fetched_at": datetime.now().isoformat(),
-            "source": "the-odds-api.com",
-            "markets": list(PLAYER_PROP_MARKETS.keys()),
-            "match_count": len(props),
-            "matches": props,
-        }, f, indent=2)
+    atomic_write_json(out_path, {
+        "fetched_at": now_utc().isoformat(),
+        "source": "the-odds-api.com",
+        "markets": list(PLAYER_PROP_MARKETS.keys()),
+        "match_count": len(props),
+        "matches": props,
+    }, indent=2)
     log.info(f"Saved player prop odds to {out_path}")
     return out_path
 
@@ -405,7 +402,7 @@ def _fuzzy_match_player(model_name: str, odds_name: str) -> bool:
 
 def scan_for_value(
     props: Dict,
-    model_preds: Optional[Dict] = None,
+    model_preds: Dict | None = None,
     min_value_pct: float = MIN_VALUE_PCT,
 ) -> List[Dict]:
     """Compare model predictions against bookmaker odds to find value bets.
@@ -423,7 +420,9 @@ def scan_for_value(
         log.info("No pre-computed predictions — generating on the fly from player database...")
         try:
             from scripts.betting.player_predictions import (
-                load_player_data, build_player_features, predict_player_markets
+                build_player_features,
+                load_player_data,
+                predict_player_markets,
             )
             pms = load_player_data()
             pms = build_player_features(pms)
@@ -651,13 +650,12 @@ def save_value_bets(value_bets: List[Dict]) -> Path:
         ).get("bookmaker", "Unknown")
         clean_bets.append(clean)
 
-    with open(out_path, "w") as f:
-        json.dump({
-            "generated_at": datetime.now().isoformat(),
-            "min_edge_pct": MIN_VALUE_PCT,
-            "total_value_bets": len(clean_bets),
-            "bets": clean_bets,
-        }, f, indent=2)
+    atomic_write_json(out_path, {
+        "generated_at": now_utc().isoformat(),
+        "min_edge_pct": MIN_VALUE_PCT,
+        "total_value_bets": len(clean_bets),
+        "bets": clean_bets,
+    }, indent=2)
 
     log.info(f"Saved {len(clean_bets)} value bets to {out_path}")
     return out_path

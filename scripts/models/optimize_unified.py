@@ -37,28 +37,27 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
 import logging
 import sys
 import time
 import warnings
-from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.stats import poisson
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import log_loss
+
+from scripts.utils.match_timing import now_utc
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
-from ml.poisson import poisson_1x2, poisson_1x2_vec, market_implied_probs
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
+from ml.poisson import market_implied_probs, poisson_1x2_vec
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,9 +207,9 @@ class UnifiedOptimizer:
         """
         try:
             from scripts.models.comprehensive_markets import (
-                load_unified_training_data,
-                get_training_features,
                 _compute_targets,
+                get_training_features,
+                load_unified_training_data,
             )
             df = load_unified_training_data()
             features = get_training_features(df)
@@ -672,8 +671,8 @@ class UnifiedOptimizer:
     ) -> Dict[str, Any]:
         """Use the ml/tuning.py module for walk-forward-based tuning."""
         try:
-            from ml.tuning import tune_model
             from ml.config import META_COLS, SEASON_COL
+            from ml.tuning import tune_model
 
             # Prepare data with _season meta column
             X = df_valid[features].copy()
@@ -1376,7 +1375,7 @@ class UnifiedOptimizer:
             return {"error": "Failed to load data"}
 
         results = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "config": {
                 "target": self.config.target,
                 "n_trials": self.config.n_trials,
@@ -1696,7 +1695,7 @@ def main():
         results_dir = DATA_DIR / "optimization"
         results_dir.mkdir(parents=True, exist_ok=True)
         save_path = str(
-            results_dir / f"optimize_unified_{config.target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            results_dir / f"optimize_unified_{config.target}_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
         )
 
     # Clean for JSON serialization
@@ -1717,8 +1716,7 @@ def main():
 
     cleaned = clean_for_json(results)
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(save_path, "w") as f:
-        json.dump(cleaned, f, indent=2, default=str)
+    atomic_write_json(save_path, cleaned, indent=2, default=str)
     log.info("Results saved to %s", save_path)
 
 

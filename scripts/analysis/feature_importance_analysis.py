@@ -12,6 +12,8 @@ import argparse
 import json
 import logging
 from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, List, Tuple
 import numpy as np
@@ -33,7 +35,7 @@ except ImportError:
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -259,7 +261,7 @@ class FeatureImportanceAnalyzer:
         log.info("Running full feature importance analysis...")
 
         results = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "n_features": len(self.feature_cols),
         }
 
@@ -360,7 +362,7 @@ def main():
     # Save results
     results_dir = DATA_DIR / "optimization"
     results_dir.mkdir(parents=True, exist_ok=True)
-    results_file = results_dir / f"feature_importance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_file = results_dir / f"feature_importance_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
 
     # Convert to JSON-serializable format
     json_results = {
@@ -368,9 +370,7 @@ def main():
         for k, v in results.items()
     }
 
-    with open(results_file, "w") as f:
-        json.dump(json_results, f, indent=2, default=str)
-
+    atomic_write_json(results_file, json_results, indent=2, default=str)
     print(f"\nResults saved to: {results_file}")
 
     # Save reduced feature list if requested
@@ -380,9 +380,8 @@ def main():
                         if f not in low_imp]
 
         reduced_file = MODELS_DIR / "reduced_features.json"
-        with open(reduced_file, "w") as f:
-            json.dump({"features": keep_features, "original_count": len(analyzer.feature_cols),
-                      "reduced_count": len(keep_features)}, f, indent=2)
+        atomic_write_json(reduced_file, {"features": keep_features, "original_count": len(analyzer.feature_cols),
+                  "reduced_count": len(keep_features)}, indent=2)
         print(f"Reduced feature list saved to: {reduced_file}")
 
 

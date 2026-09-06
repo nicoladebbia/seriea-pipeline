@@ -23,26 +23,25 @@ Usage:
     python player_analyzer.py --all
 """
 
-import os
-import sys
-import json
-import time
-import re
-import hashlib
 import argparse
+import json
 import logging
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict, field
+import sys
+import time
 from collections import defaultdict
+from dataclasses import asdict, dataclass, field
+from datetime import timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from scripts.utils.match_timing import now_local, now_utc, to_utc
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, PROJECT_ROOT, latest_season_with_results
+from config.settings import DATA_DIR, atomic_write_json, latest_season_with_results
 from config.team_names import normalize_team
-from scripts.utils.parsing import get_cache_path
 from scraper.lineup_fetcher import normalize_player_name
+from scripts.utils.parsing import get_cache_path
 
 try:
     import requests
@@ -230,8 +229,8 @@ class PlayerDataScraper:
             with open(cache_path) as f:
                 data = json.load(f)
 
-            cached_time = datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
-            if datetime.now() - cached_time > timedelta(hours=max_age_hours):
+            cached_time = to_utc(data.get("cached_at", "2000-01-01"))
+            if cached_time and now_utc() - cached_time > timedelta(hours=max_age_hours):
                 return None
 
             return data.get("data")
@@ -242,11 +241,10 @@ class PlayerDataScraper:
         """Save data to cache."""
         cache_path = get_cache_path(CACHE_DIR, key)
         try:
-            with open(cache_path, "w") as f:
-                json.dump({
-                    "cached_at": datetime.now().isoformat(),
-                    "data": data
-                }, f)
+            atomic_write_json(cache_path, {
+                "cached_at": now_utc().isoformat(),
+                "data": data
+            }, indent=None)
         except Exception as e:
             log.warning(f"Cache save error: {e}")
 
@@ -1094,7 +1092,7 @@ class PlayerAnalyzer:
 
         if not team_players:
             log.warning(f"No players found for {team}")
-            return TeamSquad(team=team, generated_at=datetime.now().isoformat())
+            return TeamSquad(team=team, generated_at=now_utc().isoformat())
 
         # Convert to PlayerStats
         player_stats = []
@@ -1197,7 +1195,7 @@ class PlayerAnalyzer:
             squad_depth=squad_depth,
             strengths=strengths,
             weaknesses=weaknesses,
-            generated_at=datetime.now().isoformat()
+            generated_at=now_utc().isoformat()
         )
 
     def analyze_match(self, home_team: str, away_team: str, match_date: str) -> MatchPlayerAnalysis:
@@ -1277,7 +1275,7 @@ CONCLUSION: {'Home advantage' if home_strength > away_strength else 'Away advant
             away_injury_impact=away_injury_impact,
             key_factors=key_factors,
             analysis_summary=summary.strip(),
-            generated_at=datetime.now().isoformat()
+            generated_at=now_utc().isoformat()
         )
 
     def _calculate_team_strength(self, squad: TeamSquad) -> float:
@@ -1404,7 +1402,7 @@ def analyze_all_upcoming_matches() -> List[MatchPlayerAnalysis]:
 
     # Convert to serializable format
     output_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "matches": []
     }
 
@@ -1438,9 +1436,7 @@ def analyze_all_upcoming_matches() -> List[MatchPlayerAnalysis]:
         }
         output_data["matches"].append(match_data)
 
-    with open(output_path, "w") as f:
-        json.dump(output_data, f, indent=2)
-
+    atomic_write_json(output_path, output_data, indent=2)
     log.info(f"Saved player analysis to {output_path}")
     return results
 
@@ -1499,7 +1495,7 @@ def main():
     elif args.match:
         if " vs " in args.match:
             home, away = args.match.split(" vs ")
-            date = datetime.now().strftime("%Y-%m-%d")
+            date = now_local().strftime("%Y-%m-%d")
             analysis = analyzer.analyze_match(home.strip(), away.strip(), date)
             print(analysis.analysis_summary)
         else:

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/nicoladebbia</string>
+		<key>PATH</key>
+		<string>/Users/nicoladebbia/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+		<key>PYTHONPATH</key>
+		<string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+	</dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.seriea-pipeline.weekly-data-refresh</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/nicoladebbia/.pyenv/versions/3.13.3/bin/python3</string>
+		<string>-m</string>
+		<string>scripts.pipeline.refresh_weekly_data</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-weekly-data-refresh-err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline/logs/launchd-weekly-data-refresh.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>5</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+		<key>Weekday</key>
+		<integer>1</integer>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/nicoladebbia/Projects/seriea-pipeline</string>
+</dict>
+</plist>

@@ -22,18 +22,18 @@ import logging
 import math
 import sys
 from collections import defaultdict
-from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import poisson, norm
+from scipy.stats import norm, poisson
 
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, UPCOMING_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
+from scripts.utils.match_timing import now_local, now_utc
 from scripts.utils.parsing import extract_line
 
 BETTING_DIR = DATA_DIR / "betting"
@@ -163,7 +163,6 @@ def calibrate_beta_k(backtest_path: str | Path | None = None) -> dict:
 
     Saves to data/calibration/beta_k.json and returns the K dict.
     """
-    import glob as glob_mod
 
     # Find most recent backtest file
     if backtest_path is None:
@@ -265,8 +264,7 @@ def calibrate_beta_k(backtest_path: str | Path | None = None) -> dict:
     cal_dir = DATA_DIR / "calibration"
     cal_dir.mkdir(parents=True, exist_ok=True)
     cal_path = cal_dir / "beta_k.json"
-    with open(cal_path, "w") as f:
-        json.dump(full_calibrated, f, indent=2)
+    atomic_write_json(cal_path, full_calibrated, indent=2)
     print(f"Calibrated Beta K saved to {cal_path}: {full_calibrated}")
 
     # Update module-level cache
@@ -430,10 +428,10 @@ def _save_input_hash():
     """Store current input hash after successful generation."""
     hash_path = BETTING_DIR / ".parlay_input_hash.json"
     hash_path.parent.mkdir(parents=True, exist_ok=True)
-    hash_path.write_text(json.dumps({
+    atomic_write_json(hash_path, {
         "hash": _compute_input_hash(),
-        "generated_at": datetime.now().isoformat(),
-    }))
+        "generated_at": now_utc().isoformat(),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1957,10 +1955,12 @@ def _mc_sgp(combo: dict, n_sims: int, rng: np.random.Generator) -> np.ndarray:
 
     Returns boolean hit array of length n_sims.
     """
+
     from scripts.betting.extended_markets import (
-        BivariatePoissonParams, sample_scores, derive_market_outcomes,
+        BivariatePoissonParams,
+        derive_market_outcomes,
+        sample_scores,
     )
-    from scipy.stats import beta as beta_dist
 
     legs = combo["legs"]
     home_xg = combo.get("_home_xg", 1.3)
@@ -2582,7 +2582,7 @@ def _load_todays_singles() -> set:
     if isinstance(bets, dict):
         bets = list(bets.values())
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     tuples = set()
     for b in bets:
         if b.get("date", "") >= today:
@@ -2845,7 +2845,7 @@ def generate_parlay_report(bankroll=None):
     if len(legs) < 2:
         print("  Not enough value legs to generate parlays")
         report = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "regenerated": True,
             "total_parlays": 0,
             "total_legs_available": len(legs),
@@ -2888,7 +2888,7 @@ def generate_parlay_report(bankroll=None):
 
     if not combos:
         report = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now_utc().isoformat(),
             "regenerated": True,
             "total_parlays": 0,
             "total_legs_available": len(legs),
@@ -3013,7 +3013,7 @@ def generate_parlay_report(bankroll=None):
                   f"— {p.get('combined_odds', 0):.2f}x, {len(p.get('legs', []))} legs")
 
     report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "regenerated": True,
         "total_parlays": total,
         "total_legs_available": len(legs),
@@ -3052,8 +3052,7 @@ def _model_info():
 def _save_report(report):
     BETTING_DIR.mkdir(parents=True, exist_ok=True)
     out_path = BETTING_DIR / "parlay_report.json"
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2, cls=_NumpySafeEncoder)
+    atomic_write_json(out_path, report, indent=2, cls=_NumpySafeEncoder)
     print(f"  Saved {report['total_parlays']} parlays -> {out_path}")
 
 

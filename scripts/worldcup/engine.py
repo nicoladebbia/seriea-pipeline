@@ -29,6 +29,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from config.settings import atomic_write_json as _atomic_write_json
+
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "worldcup"
 RESULTS_CSV = DATA_DIR / "international_results.csv"
 
@@ -76,11 +78,7 @@ def atomic_write_json(path: Path, obj: object) -> None:
     The automation rewrites several JSONs every 2h for 6 weeks; refresh.py's
     subprocess timeout SIGKILLs children, so plain write_text WILL eventually
     be interrupted."""
-    import json
-
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False))
-    tmp.replace(path)
+    _atomic_write_json(path, obj, indent=2, ensure_ascii=False)
 
 
 def read_json_safe(path: Path, default: object, *, quarantine: bool = False) -> object:

@@ -1,12 +1,11 @@
 """CLI entry point for the Serie A pipeline."""
 
 import logging
-import sys
 
 import click
 
 from config.settings import SEASONS
-from ml.config import FeatureConfig, MODEL_TYPES, TuningConfig
+from ml.config import MODEL_TYPES, TuningConfig
 from storage.paths import ensure_dirs
 
 logging.basicConfig(
@@ -54,6 +53,7 @@ def fetch_odds(season: str):
 def fetch_weather():
     """Fetch historical weather data for all parsed matches."""
     import pandas as pd
+
     from scraper.weather import fetch_weather_for_matches
     from storage.paths import parsed_path
 
@@ -134,8 +134,9 @@ def features(season: str | None):
 @main.command()
 def status():
     """Show pipeline status: parsed-table and feature counts."""
-    from storage.paths import parsed_path, features_path
     import pandas as pd
+
+    from storage.paths import features_path, parsed_path
 
     for table in ["matches", "player_stats", "goalkeeper_stats", "shots", "lineups", "events"]:
         p = parsed_path(table)
@@ -200,7 +201,6 @@ def train_rich(season: str | None, model_types: tuple):
 @click.option("--model", default="xgboost", help="Model type")
 def evaluate(variant: str, model: str):
     """Evaluate a trained model on the last season."""
-    import pandas as pd
     from ml.data import DataLoader
     from ml.evaluation import compute_metrics, print_report
     from ml.persistence import load_model
@@ -425,9 +425,9 @@ def retrain_history():
 @ml.command()
 def ablation():
     """Compare models with and without betting odds features."""
+    from ml.data import DataLoader
     from ml.feature_selection import exclude_odds
     from ml.training import train_universal
-    from ml.data import DataLoader
     from storage.paths import features_path
 
     fp = str(features_path())

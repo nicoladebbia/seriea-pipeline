@@ -16,17 +16,16 @@ import json
 import logging
 import math
 import sys
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 
 def poisson_pmf(k: int, lam: float) -> float:
@@ -110,7 +109,7 @@ class BivariatePoissonParams:
 def bivariate_score_matrix(
     params: BivariatePoissonParams,
     max_goals: int = 7,
-    draw_calibration: Optional[float] = None,
+    draw_calibration: float | None = None,
 ) -> np.ndarray:
     """Exact NxN probability matrix via bivariate Poisson PMF.
 
@@ -168,7 +167,7 @@ def bivariate_score_matrix(
 def sample_scores(
     params: BivariatePoissonParams,
     n_samples: int = 10000,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized MC sampling via Karlis-Ntzoufras decomposition.
 
@@ -252,7 +251,7 @@ def derive_market_outcomes(
     }
 
 
-def calibrate_rho(features_path: Optional[Path] = None) -> float:
+def calibrate_rho(features_path: Path | None = None) -> float:
     """Fit rho from historical home/away goal covariance in features.parquet.
 
     rho = Cov(home_goals, away_goals) / sqrt(Var(home) * Var(away))
@@ -910,7 +909,7 @@ def generate_extended_markets():
         }
 
     output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "match_count": len(matches),
         "markets_available": [
             "double_chance", "team_totals", "first_half", "exact_score",
@@ -924,8 +923,7 @@ def generate_extended_markets():
     }
 
     out_path = DATA_DIR / "upcoming" / "extended_markets.json"
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(out_path, output, indent=2)
 
     log.info("Extended markets generated for %d matches (%d market types) -> %s",
              len(matches), len(output['markets_available']), out_path)

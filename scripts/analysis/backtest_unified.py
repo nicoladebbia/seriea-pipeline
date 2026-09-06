@@ -45,7 +45,8 @@ import sys
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,8 +57,8 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR, SEASONS
-from ml.evaluation import (
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
+from ml.evaluation import (  # noqa: F401 - _multiclass_brier is re-exported for tests/test_integration.py
     _multiclass_brier,
     expected_calibration_error,
     ranked_probability_score,
@@ -1130,13 +1131,12 @@ class BacktestEngine:
             cal_dir = DATA_DIR / "calibration"
             cal_dir.mkdir(parents=True, exist_ok=True)
             temp_path = cal_dir / "temperature.json"
-            with open(temp_path, "w") as f:
-                json.dump({
-                    "temperature": round(T, 4),
-                    "fitted_on_n": len(all_predictions),
-                    "fitted_on_seasons": self.config.seasons,
-                    "raw_log_loss": overall["log_loss"],
-                }, f, indent=2)
+            atomic_write_json(temp_path, {
+                "temperature": round(T, 4),
+                "fitted_on_n": len(all_predictions),
+                "fitted_on_seasons": self.config.seasons,
+                "raw_log_loss": overall["log_loss"],
+            }, indent=2)
             log.info("Temperature saved to %s", temp_path)
 
         return overall
@@ -1504,7 +1504,7 @@ class BacktestEngine:
         """
         log.info("Running ML walk-forward cross-validation")
 
-        from ml.walk_forward import walk_forward_split, WalkForwardFold
+        from ml.walk_forward import walk_forward_split
 
         # Get feature columns (exclude meta and target columns)
         exclude_cols = {
@@ -1654,7 +1654,7 @@ class BacktestEngine:
             return {"error": "Failed to load data"}
 
         results = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "config": {
                 "mode": self.config.mode,
                 "seasons": self.config.seasons,
@@ -2031,7 +2031,7 @@ def main():
         results_dir = DATA_DIR / "optimization"
         results_dir.mkdir(parents=True, exist_ok=True)
         save_path = str(
-            results_dir / f"backtest_unified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            results_dir / f"backtest_unified_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
         )
 
     # Clean results for JSON serialization
@@ -2050,8 +2050,7 @@ def main():
 
     cleaned = clean_for_json(results)
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(save_path, "w") as f:
-        json.dump(cleaned, f, indent=2, default=str)
+    atomic_write_json(save_path, cleaned, indent=2, default=str)
     log.info("Results saved to %s", save_path)
 
     # --calibrate: run Beta K calibration on the just-saved results

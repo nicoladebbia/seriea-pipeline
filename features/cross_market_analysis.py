@@ -18,7 +18,8 @@ from typing import Dict, List, Optional
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -335,9 +336,8 @@ class CrossMarketAnalyzer:
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        from datetime import datetime
         output = {
-            "analyzed_at": datetime.now().isoformat(),
+            "analyzed_at": now_utc().isoformat(),
             "matches": results,
             "summary": {
                 "total_matches": len(results),
@@ -360,9 +360,7 @@ class CrossMarketAnalyzer:
             },
         }
 
-        with open(path, "w") as f:
-            json.dump(output, f, indent=2)
-
+        atomic_write_json(path, output, indent=2)
         log.info(f"Saved cross-market analysis: {output['summary']}")
         return path
 

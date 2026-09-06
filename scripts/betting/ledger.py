@@ -37,13 +37,14 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
-import os
-import tempfile
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 from zoneinfo import ZoneInfo
+
+from config.settings import atomic_write_json
+from scripts.utils.match_timing import now_utc, to_utc
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -76,16 +77,7 @@ _ACTIVE_STATUSES = _SETTLED_STATUSES + ("pending",)
 # ---------------------------------------------------------------------------
 def _atomic_write(path: Path, data: Any) -> None:
     """Atomic JSON write via temp file + rename. Safe against crashes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(tmp, path)
-    except Exception:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    atomic_write_json(path, data, indent=2, default=str)
 
 
 @contextlib.contextmanager
@@ -662,7 +654,7 @@ def rebuild_caches() -> dict:
             "lowest_balance": round(lowest, 2),
             "pending_bets": len(pending),
             "pending_stakes": pending_stakes,
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": now_utc().isoformat(),
         }
         _atomic_write(BANKROLL_PATH, bankroll)
 
@@ -676,7 +668,7 @@ def rebuild_caches() -> dict:
             st["current_bankroll"] = current
             st["peak_bankroll"] = round(peak, 2)
             st["initial_bankroll"] = round(initial, 2)
-            st["last_updated"] = datetime.now().isoformat()
+            st["last_updated"] = now_utc().isoformat()
             _atomic_write(STATE_JSON_PATH, st)
 
         history = get_history_view()
@@ -739,11 +731,11 @@ def supersede_bet(bet_id: str, new_bet_id: str | None = None) -> bool:
         if bet.get("status") != "pending":
             return False
         bet["status"] = "superseded"
-        bet["superseded_at"] = datetime.now().isoformat()
+        bet["superseded_at"] = now_utc().isoformat()
         if new_bet_id:
             bet["superseded_by"] = new_bet_id
         md = j.setdefault("metadata", {})
-        md["updated_at"] = datetime.now().isoformat()
+        md["updated_at"] = now_utc().isoformat()
         _atomic_write(JOURNAL_PATH, j)
     rebuild_caches()
     return True
@@ -766,7 +758,7 @@ def supersede_many(
     if not replacements:
         return 0
     marked = 0
-    now_iso = datetime.now().isoformat()
+    now_iso = now_utc().isoformat()
     from scripts.betting.bet_journal import journal_lock
     with journal_lock():
         j = _read_journal()
@@ -812,8 +804,8 @@ def validate_commence_time(commence_iso: str, fallback_date: str | None = None,
     if not commence_iso:
         return (fallback_date or ""), None
     try:
-        dt = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
-        days_back = (datetime.now() - dt.replace(tzinfo=None)).days
+        dt = to_utc(datetime.fromisoformat(commence_iso.replace("Z", "+00:00")))
+        days_back = (now_utc() - dt).days
         if days_back > stale_threshold_days:
             _log.warning(
                 "commence_time %s is %d days old — treating as stale cache. "

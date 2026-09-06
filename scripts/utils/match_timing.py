@@ -8,12 +8,64 @@ out live/completed matches from odds processing.
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from config.settings import DATA_DIR, get_current_season
 from config.team_names import normalize_team
+
+# ---------------------------------------------------------------------------
+# The clock — the only three ways to ask "now" in this repo (ruff DTZ003/DTZ005
+# enforce it; guard: tests/test_naive_datetime_ban.py).
+#
+# A naive datetime.now() compared with a tz-aware parsed timestamp raises
+# TypeError, and in this repo that TypeError was caught and turned into -1
+# (odds staleness read 179h while the file was minutes old, 2026-05-01).
+# 304 of 416 call sites were naive on 2026-09-06.
+#
+#   now_utc()    -> store it, compare it with anything parsed from a file/API
+#   now_local()  -> derive a calendar date or a string a human reads
+#   to_utc(x)    -> the OTHER side of a comparison: ISO string / datetime,
+#                   naive means UTC (the convention every writer uses)
+# ---------------------------------------------------------------------------
+
+def now_utc() -> datetime:
+    """Timezone-aware UTC now: the value to store and to compare against."""
+    return datetime.now(UTC)
+
+
+def now_local() -> datetime:
+    """Timezone-aware LOCAL now: for calendar dates and human-facing strings.
+
+    `.strftime("%Y-%m-%d")` on this gives the same day the old naive call
+    gave, so "today" logic keeps its meaning while the value stays aware.
+    """
+    return datetime.now(UTC).astimezone()
+
+
+def to_utc(value) -> datetime | None:
+    """Normalise an ISO string / datetime / None to an aware UTC datetime.
+
+    Naive input is taken as UTC (the convention every writer in this repo
+    follows, and what monitor._iso_age_hours assumed). Unparseable input
+    returns None rather than raising: callers treat None as "unknown age".
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +79,7 @@ WINDOW_LIVE_END = -2.0    # -2h to 0 = likely live
 
 def classify_match_window(
     commence_time_iso: str,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> str:
     """Classify a match into a timing window.
 
@@ -39,7 +91,7 @@ def classify_match_window(
         One of: "far", "approaching", "imminent", "live", "completed"
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
     try:
         commence_dt = datetime.fromisoformat(
@@ -65,11 +117,11 @@ def classify_match_window(
 
 def get_hours_until_kickoff(
     commence_time_iso: str,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> float:
     """Return hours until kickoff (negative = already started)."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     try:
         commence_dt = datetime.fromisoformat(
             commence_time_iso.replace("Z", "+00:00")
@@ -141,7 +193,7 @@ def filter_prematch_only(matches: Dict) -> Tuple[Dict, int]:
 UPCOMING_HORIZON_DAYS = int(os.environ.get("UPCOMING_HORIZON_DAYS", "10"))
 
 
-def _entry_kickoff(entry: Dict) -> Optional[datetime]:
+def _entry_kickoff(entry: Dict) -> datetime | None:
     """UTC kickoff for a fixture dict, or None if it carries no usable date.
 
     Returning None (rather than a default) is deliberate: an entry we cannot
@@ -156,11 +208,11 @@ def _entry_kickoff(entry: Dict) -> Optional[datetime]:
             dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         except (ValueError, TypeError):
             continue
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     return None
 
 
-def _is_future(entry: Dict, now: datetime, horizon_days: Optional[int] = None) -> bool:
+def _is_future(entry: Dict, now: datetime, horizon_days: int | None = None) -> bool:
     """True for a fixture that has not kicked off and is inside the horizon."""
     ko = _entry_kickoff(entry)
     if ko is None or ko <= now:
@@ -195,8 +247,8 @@ def _sofascore_fixture_files() -> List[Tuple[Path, str]]:
 
 def _load_sofascore_fixtures(
     now: datetime,
-    files: Optional[List[Tuple[Path, str]]] = None,
-    horizon_days: Optional[int] = UPCOMING_HORIZON_DAYS,
+    files: List[Tuple[Path, str]] | None = None,
+    horizon_days: int | None = UPCOMING_HORIZON_DAYS,
 ) -> List[Dict]:
     """Forward fixtures from the Sofascore season files.
 
@@ -230,7 +282,7 @@ def _load_sofascore_fixtures(
             ts = r.get("startTimestamp")
             if not isinstance(ts, (int, float)):
                 continue
-            ko = datetime.fromtimestamp(ts, tz=timezone.utc)
+            ko = datetime.fromtimestamp(ts, tz=UTC)
             if ko <= now:
                 continue
             if horizon_days is not None and ko > now + timedelta(days=horizon_days):

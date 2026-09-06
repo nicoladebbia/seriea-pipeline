@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import LABEL_MAP, ValidationConfig
 from ml.data import TimeSeriesSplitter
 from ml.evaluation import MIN_GATE_TEST_MATCHES, compute_metrics, gate_folds
@@ -831,9 +831,7 @@ def main(
     }
 
     log.info(f"Saving metadata to {metadata_path}")
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-
+    atomic_write_json(metadata_path, metadata, indent=2)
     # Update deployment_state.json — only when overwriting production
     if variant_suffix:
         log.info("Variant build — skipping deployment_state.json update")
@@ -895,8 +893,7 @@ def _update_deployment_state(deploy_path: Path, feature_names: list,
         },
     })
 
-    with open(deploy_path, "w") as f:
-        json.dump(deploy_state, f, indent=2)
+    atomic_write_json(deploy_path, deploy_state, indent=2)
     log.info("Updated deployment_state.json")
 
 

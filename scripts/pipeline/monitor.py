@@ -30,17 +30,17 @@ Exit codes: 0=HEALTHY, 1=WARNING, 2=CRITICAL
 import json
 import logging
 import os
-import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, PROJECT_ROOT
+from config.settings import DATA_DIR, PROJECT_ROOT, atomic_write_json
 from scripts.pipeline.health_check import run_health_check
 from scripts.utils.json_utils import load_json_safe
+from scripts.utils.match_timing import now_local, now_utc
 
 # ─── Paths ───
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -95,12 +95,11 @@ def _iso_age_hours(iso_str: str) -> float:
     if not iso_str:
         return -1
     try:
-        from datetime import timezone as _tz
         dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
         # Normalize: if naive, assume UTC; if aware, keep as is
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz.utc)
-        return (datetime.now(_tz.utc) - dt).total_seconds() / 3600
+            dt = dt.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - dt).total_seconds() / 3600
     except (ValueError, TypeError):
         return -1
 
@@ -109,8 +108,8 @@ def _iso_age_hours(iso_str: str) -> float:
 
 def check_odds_api_key() -> Dict:
     """Validate the Odds API key with a zero-cost /v4/sports/ call."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     key = _load_env_key("ODDS_API_KEY")
     if not key:
@@ -294,7 +293,7 @@ def check_pending_bets() -> Dict:
     if not bets:
         return {"status": "OK", "detail": "No placed bets to check", "stale_count": 0}
 
-    now = datetime.now()
+    now = now_local()
     stale = []
 
     for bet in bets:
@@ -302,8 +301,11 @@ def check_pending_bets() -> Dict:
         if not match_date_str:
             continue
         try:
-            # Match dates are YYYY-MM-DD; assume ~21:00 kickoff (Serie A evening)
-            match_dt = datetime.strptime(match_date_str, "%Y-%m-%d").replace(hour=21, minute=0)
+            # Match dates are YYYY-MM-DD; assume ~21:00 kickoff (Serie A evening,
+            # local time). .astimezone() on the naive result attaches the system
+            # local tz without shifting the wall-clock value, so it compares
+            # safely against now_local().
+            match_dt = datetime.strptime(match_date_str, "%Y-%m-%d").replace(hour=21, minute=0).astimezone()
             hours_since = (now - match_dt).total_seconds() / 3600
             if hours_since > PENDING_BET_STALE_HOURS:
                 stale.append({
@@ -489,7 +491,7 @@ def run_monitor() -> Dict:
     log.info("=" * 50)
 
     result = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "overall_status": "HEALTHY",
         "checks": {},
         "issues": [],
@@ -659,8 +661,7 @@ def run_monitor() -> Dict:
                     # Write dedup AFTER Popen succeeds — if Popen fails, we can
                     # retry on the next monitor cycle instead of being blocked for 6h
                     _recovery_dedup.parent.mkdir(parents=True, exist_ok=True)
-                    with open(_recovery_dedup, "w") as _f:
-                        json.dump({"last_attempt": datetime.now().isoformat()}, _f)
+                    atomic_write_json(_recovery_dedup, {"last_attempt": now_utc().isoformat()})
 
                     _unified_notify(
                         f"Pipeline was stale ({age:.0f}h). Auto-recovery triggered.",
@@ -679,8 +680,7 @@ def run_monitor() -> Dict:
 
     # ─── Persist status ───
     STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATUS_FILE, "w") as f:
-        json.dump(result, f, indent=2, default=str)
+    atomic_write_json(STATUS_FILE, result, indent=2, default=str)
 
     # NOTE (2026-04-24): The old "Serie A Pipeline CRITICAL" macOS alert path
     # was removed. It duplicated the far-better `notify_health_state_change`

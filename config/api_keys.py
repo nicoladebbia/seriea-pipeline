@@ -4,8 +4,11 @@ All API keys come from environment variables (loaded from .env).
 No JSON config fallback, no .env file parsing — just os.environ.
 """
 from __future__ import annotations
+
 import os
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 def get_odds_api_key() -> str:

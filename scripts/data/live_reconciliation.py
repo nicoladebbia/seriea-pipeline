@@ -23,7 +23,7 @@ Two deliberate deviations from the recovered spec, both evidence-backed:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ def reconcile_match(match: dict[str, Any]) -> dict[str, Any] | None:
         },
         "all_scores": all_scores,
         "severity": severity,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
     }
 
 

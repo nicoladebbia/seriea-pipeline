@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import (
     LABEL_MAP,
-    META_COLS,
     ODDS_COLUMN_PATTERNS,
     ODDS_META_KEEP,
     FeatureConfig,
@@ -294,7 +293,7 @@ def save_importance_history(
 
     sorted_imp = sorted(importance.items(), key=lambda x: -x[1])
     history.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "n_selected": len(selected),
         "top_20": [[f, round(s, 6)] for f, s in sorted_imp[:20]],
         "importance": {k: round(v, 6) for k, v in importance.items()},
@@ -302,7 +301,7 @@ def save_importance_history(
 
     # Keep last 10 runs
     history = history[-10:]
-    history_path.write_text(json.dumps(history, indent=2))
+    atomic_write_json(history_path, history, indent=2)
     log.info("Saved feature importance history (%d runs) to %s", len(history), history_path)
 
 

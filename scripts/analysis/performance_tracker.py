@@ -19,6 +19,8 @@ import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+from scripts.utils.match_timing import now_local
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -355,7 +357,7 @@ def run_backtest(n_months: int = 3) -> Dict:
     df = df.sort_values("match_date", ascending=False)
 
     # Take last n months
-    cutoff = datetime.now() - timedelta(days=n_months * 30)
+    cutoff = now_local() - timedelta(days=n_months * 30)
     recent = df[df["match_date"] >= str(cutoff.date())]
 
     if len(recent) < 50:

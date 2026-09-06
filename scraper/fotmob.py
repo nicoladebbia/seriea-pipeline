@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
 
 log = logging.getLogger(__name__)
@@ -196,9 +196,7 @@ def save_raw(payload: dict[str, Any], league: str, season: str, fotmob_id: int) 
     """The whole payload, as served — nothing is lost to a parser that changes later."""
     p = raw_path(league, season, fotmob_id)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False))
-    tmp.replace(p)
+    atomic_write_json(p, payload, ensure_ascii=False)
     return p
 
 

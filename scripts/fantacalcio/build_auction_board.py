@@ -21,6 +21,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config.settings import atomic_write_json, season_file_suffix
+
 warnings.filterwarnings("ignore")
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -202,9 +204,9 @@ def gk_projection(ty: int = TARGET_YEAR, clean_sheet_bonus: float = 0.0,
 
 def assemble(listone: pd.DataFrame, out: pd.DataFrame, gk: pd.DataFrame) -> pd.DataFrame:
     """Join every listone row to its projection and to the live Transfermarkt squad."""
-    tm = pd.read_parquet(ROOT / "data/external/transfermarkt/market_values_2026_2027.parquet")
+    tm = pd.read_parquet(ROOT / f"data/external/transfermarkt/market_values_{season_file_suffix()}.parquet")
     tm["team"] = tm.team.map(NT)
-    wk = pd.read_parquet(ROOT / "data/external/transfermarkt/wiki_transfers_2026_2027.parquet")
+    wk = pd.read_parquet(ROOT / f"data/external/transfermarkt/wiki_transfers_{season_file_suffix()}.parquet")
 
     tm_idx = build_index(tm.player_name, tm.team)
     proj = {"P": gk.set_index("player"), "OUT": out.set_index("player")}
@@ -1015,7 +1017,7 @@ def main() -> int:
         "players": players,
     }
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(json.dumps(payload, indent=1))
+    atomic_write_json(a.out, payload, indent=1)
     tot = sum(round(s["market_price"]) for s in squad if s.get("market_price"))
     print(f"wrote {a.out}  players={len(players)} squad={len(squad)} "
           f"spend={tot}/{a.budget} score={plan['score']:.1f}")

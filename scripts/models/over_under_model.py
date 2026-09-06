@@ -16,15 +16,18 @@ Based on 7,829 historical matches with validated factors.
 
 import json
 import logging
-from datetime import datetime
+import sys
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR
-from ml.poisson import poisson_probability, poisson_cumulative, calculate_over_probability
+from config.leagues import infer_league
+from config.settings import DATA_DIR, atomic_write_json
+from ml.poisson import calculate_over_probability, poisson_probability
 from scripts.models import load_predictions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -831,12 +834,16 @@ def save_over_under_predictions(
 
     # Save goal predictions
     predictions_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "model": "poisson_v1",
         "predictions": [
             {
                 "match": p.match,
                 "date": p.date,
+                # Row-level league: the betting gate drops a row whose league is
+                # not the run's, whatever file it came from (per-file gating
+                # let EPL rows ride as Serie A twice, 2026-08-27 / 08-31).
+                "league": infer_league(p.home_team, p.away_team),
                 "expected_home_goals": p.expected_home_goals,
                 "expected_away_goals": p.expected_away_goals,
                 "expected_total_goals": p.expected_total_goals,
@@ -856,8 +863,9 @@ def save_over_under_predictions(
     }
 
     pred_path = output_dir / "goal_predictions.json"
-    with open(pred_path, "w") as f:
-        json.dump(predictions_data, f, indent=2)
+    if not predictions:
+        log.warning("%s written with 0 rows: every consumer is gated off until the next run", pred_path.name)
+    atomic_write_json(pred_path, predictions_data)
     log.info(f"Saved goal predictions to {pred_path}")
 
     # Save betting recommendations
@@ -865,7 +873,7 @@ def save_over_under_predictions(
     consider = [b for b in bets if b.recommendation == "CONSIDER"]
 
     bets_data = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "summary": {
             "total_bets_analyzed": len(bets),
             "recommended_bets": len(recommended),
@@ -901,8 +909,7 @@ def save_over_under_predictions(
     }
 
     bets_path = output_dir / "over_under_bets.json"
-    with open(bets_path, "w") as f:
-        json.dump(bets_data, f, indent=2)
+    atomic_write_json(bets_path, bets_data, indent=2)
     log.info(f"Saved betting recommendations to {bets_path}")
 
 

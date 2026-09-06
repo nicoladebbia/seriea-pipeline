@@ -57,6 +57,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from config.settings import atomic_write_json
 from models.simulator.base_rates.card_rates import CardRateEstimator
 from models.simulator.base_rates.corner_rates import CornerRateEstimator
 from models.simulator.base_rates.lineup_allocator import allocate_team_shots_to_players
@@ -379,7 +380,7 @@ def run(matches_path: Path, output_path: Path, only_future: bool = True) -> dict
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, default=str))
+    atomic_write_json(output_path, payload, indent=2, default=str)
     log.info("Wrote %d fixture predictions to %s", len(results), output_path)
     return payload
 

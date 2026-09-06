@@ -43,12 +43,12 @@ import argparse
 import glob
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scripts.models import goal_process as gp
 
 log = logging.getLogger(__name__)
@@ -441,7 +441,7 @@ def journal_pick(mk: str, entry: dict, snap: dict, pick: dict, *, journal_path: 
         "market": pick["market"], "selection": pick["selection"],
         "model_prob": pick["fair"], "sharp_implied_prob": None,
         "edge_pct": pick["edge_pct"], "odds": pick["odds"], "bookmaker": "avg_inplay",
-        "stake": PAPER_STAKE, "placed_at": snap.get("ts") or datetime.now(timezone.utc).isoformat(),
+        "stake": PAPER_STAKE, "placed_at": snap.get("ts") or datetime.now(UTC).isoformat(),
         "pipeline_status": "inplay:paper",
         "extra": {"minute": snap.get("min"), "score": snap.get("score"), "market_prob": pick["market_prob"],
                   "side": pick.get("side"), "line": pick.get("line"), "snapshot_ts": snap.get("ts"),
@@ -743,7 +743,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
     pick_f = [x for k, v in by_min.items() if k != "86+" for x in v["fair"]]
     pick_m = [x for k, v in by_min.items() if k != "86+" for x in v["market"]]
     result = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "files": len(files), "matches": n_matches, "matches_without_baseline": n_no_baseline,
         "matches_other_league_skipped": n_other_league, "league": PROFILE_LEAGUE, "priced_snapshots": n_snaps,
         "baseline_fallback": measure_baseline_window(files),
@@ -781,8 +781,7 @@ def backtest(files: list[str] | None = None, n: int = N_SIMS_BACKTEST, write: bo
         except Exception as exc:  # noqa: BLE001
             result["model_variant"] = {"error": str(exc)}
         BACKTEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(BACKTEST_PATH, "w") as f:
-            json.dump(result, f, indent=2, default=str)
+        atomic_write_json(BACKTEST_PATH, result, indent=2, default=str)
     return result
 
 

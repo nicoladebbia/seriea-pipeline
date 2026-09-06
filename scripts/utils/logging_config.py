@@ -9,15 +9,12 @@ Provides consistent logging across all modules with:
 - API call logging
 """
 
+import json
 import logging
 import logging.handlers
 import os
-import re
 import sys
 from pathlib import Path
-from datetime import datetime
-from typing import Optional
-import json
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -36,9 +33,9 @@ PERFORMANCE_LOG = LOG_DIR / "performance.log"
 # notify, web/app.py). Only run_full_pipeline.py imports THIS module, so a
 # security control installed here would have protected almost nothing.
 from config.settings import (  # noqa: E402
-    SecretRedactingFilter,
     install_secret_redaction,
 )
+from scripts.utils.match_timing import now_utc
 
 
 class ColoredFormatter(logging.Formatter):
@@ -64,7 +61,7 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record):
         log_data = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc().isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -246,14 +243,14 @@ class PerformanceLogger:
 
     def start_timer(self, operation: str):
         """Start timing an operation."""
-        self.timings[operation] = datetime.now()
+        self.timings[operation] = now_utc()
 
     def end_timer(self, operation: str, success: bool = True, details: dict = None):
         """End timing and log the result."""
         if operation not in self.timings:
             return
 
-        duration = (datetime.now() - self.timings[operation]).total_seconds()
+        duration = (now_utc() - self.timings[operation]).total_seconds()
         del self.timings[operation]
 
         extra = {

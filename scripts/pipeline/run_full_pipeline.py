@@ -52,12 +52,14 @@ import fcntl
 import json
 import os
 import sys
-import time
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict
+
+from scripts.utils.match_timing import now_local, now_utc, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -68,13 +70,9 @@ try:
 except ImportError:
     pass  # dotenv not required if env vars set externally
 
-from config.settings import DATA_DIR, PROJECT_ROOT, get_current_season
+from config.settings import DATA_DIR, PROJECT_ROOT, atomic_write_json, get_current_season
 from scripts.utils.logging_config import (
     PipelineLogger,
-    log_pipeline_start,
-    log_pipeline_end,
-    log_step,
-    log_step_complete,
 )
 
 # Initialize centralized logging
@@ -162,13 +160,12 @@ def _update_placed_bets_log(settlement: dict):
         for skey, status in settled_keys:
             if skey == key and status in ("won", "lost"):
                 bet["status"] = status
-                bet["settled_at"] = datetime.now().isoformat()
+                bet["settled_at"] = now_utc().isoformat()
                 updated += 1
                 break
 
     if updated > 0:
-        with open(log_path, "w") as f:
-            json.dump(bet_log, f, indent=2)
+        atomic_write_json(log_path, bet_log, indent=2)
 
 
 def _archive_bets(bets: list, generated_at: str):
@@ -219,8 +216,7 @@ def _archive_bets(bets: list, generated_at: str):
 
     changed = new_count + updated_count
     if changed > 0:
-        with open(archive_path, "w") as f:
-            json.dump(existing, f, indent=2)
+        atomic_write_json(archive_path, existing, indent=2)
         parts = []
         if new_count:
             parts.append(f"{new_count} new")
@@ -230,9 +226,9 @@ def _archive_bets(bets: list, generated_at: str):
 
     # Also write to unified journal + mark stale bets from previous runs
     try:
-        from scripts.betting.bet_journal import add_bet as journal_add_bet, _load_journal
-        from scripts.betting.bet_journal import _generate_bet_id
         from scripts.betting import ledger as _ledger
+        from scripts.betting.bet_journal import _generate_bet_id, _load_journal
+        from scripts.betting.bet_journal import add_bet as journal_add_bet
 
         # Compute logical-key -> new_bet_id for the supersede backlink
         current_bet_ids: set = set()
@@ -294,6 +290,7 @@ def banner(text: str):
 
 
 import time as _time
+
 _step_times = {}
 
 def step(num: int, total: int, name: str):
@@ -352,10 +349,10 @@ def _is_data_stale(filepath: Path, max_age_hours: float) -> bool:
             if not files:
                 return True
             newest = max(f.stat().st_mtime for f in files if f.is_file())
-            mtime = datetime.fromtimestamp(newest)
+            mtime = datetime.fromtimestamp(newest, tz=UTC)
         else:
-            mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
-        age = datetime.now() - mtime
+            mtime = datetime.fromtimestamp(filepath.stat().st_mtime, tz=UTC)
+        age = now_utc() - mtime
         return age > timedelta(hours=max_age_hours)
     except Exception:
         return True
@@ -386,7 +383,7 @@ def _run_market_analysis(odds: dict, summary: dict):
     # Odds movement tracking
     print(f"    Odds movement...")
     try:
-        from scripts.data.odds_tracker import save_snapshot, analyze_movements
+        from scripts.data.odds_tracker import analyze_movements, save_snapshot
         if odds:
             simple_odds = {}
             for mk, md in odds.items():
@@ -433,9 +430,14 @@ def _run_market_analysis(odds: dict, summary: dict):
     print(f"    EPL market data merge...")
     try:
         from scripts.prediction.generate_epl_supplementary import (
-            generate_epl_bookmaker_analysis, generate_epl_cross_market_signals,
-            generate_epl_market_intelligence, _load_json, _merge_matches, _save_json,
-            get_epl_predictions, UPCOMING_DIR,
+            UPCOMING_DIR,
+            _load_json,
+            _merge_matches,
+            _save_json,
+            generate_epl_bookmaker_analysis,
+            generate_epl_cross_market_signals,
+            generate_epl_market_intelligence,
+            get_epl_predictions,
         )
         if get_epl_predictions():
             bk = generate_epl_bookmaker_analysis()
@@ -518,16 +520,23 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     Returns a summary dict suitable for the web UI.
     """
     import time as _time
+
     from scripts.pipeline.pipeline_state import (
-        load_state, save_state, get_new_results, get_new_fixtures,
-        needs_odds_refresh, mark_predicted, mark_settled, update_timestamp,
+        get_new_fixtures,
+        get_new_results,
+        load_state,
+        mark_predicted,
+        mark_settled,
+        needs_odds_refresh,
+        save_state,
+        update_timestamp,
     )
 
     start_time = _time.time()
     state = load_state()
 
     banner("INCREMENTAL REFRESH")
-    print(f"\n  Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n  Start Time: {now_local().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Previously predicted: {len(state.get('predicted_matches', []))} matches")
     print(f"  Previously settled: {len(state.get('settled_matches', []))} matches")
 
@@ -671,7 +680,7 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     extra_leagues = [l for l in (leagues or []) if l != "serie_a"]
     if extra_leagues and odds_were_refreshed:
         try:
-            from scripts.prediction.predict_league import fetch_league_odds, LEAGUE_DISPLAY_NAMES
+            from scripts.prediction.predict_league import LEAGUE_DISPLAY_NAMES, fetch_league_odds
             for league in extra_leagues:
                 display = LEAGUE_DISPLAY_NAMES.get(league, league)
                 try:
@@ -817,7 +826,7 @@ def run_incremental(bankroll: float = 1000.0, leagues: list = None) -> Dict:
     if extra_leagues:
         print(f"\n[5b/6] Multi-league predictions ({', '.join(extra_leagues)})...")
         try:
-            from scripts.prediction.predict_league import run_predictions_for_league, LEAGUE_DISPLAY_NAMES
+            from scripts.prediction.predict_league import LEAGUE_DISPLAY_NAMES, run_predictions_for_league
             for league in extra_leagues:
                 display = LEAGUE_DISPLAY_NAMES.get(league, league)
                 try:
@@ -905,7 +914,7 @@ def _t30_state() -> dict:
     day-unique ticket line numbers ("bets": {"1": {"bet_id", "match"}, ...})
     that the Telegram \u2713/\u2717 confirm buttons, /fill, the T-10 nudge and
     the post-kickoff unverified sweep all resolve against."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_local().strftime("%Y-%m-%d")
     try:
         st = json.loads(_T30_MARKER.read_text())
         if st.get("date") == today:
@@ -924,7 +933,7 @@ def _t30_mark(matches, bets: dict | None = None) -> None:
         st["bets"].update({str(k): v for k, v in bets.items()})
     try:
         _T30_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _T30_MARKER.write_text(json.dumps(st))
+        atomic_write_json(_T30_MARKER, st)
     except OSError as e:
         log.debug("t30 marker write failed: %s", e)
 
@@ -1012,6 +1021,93 @@ def _send_t30_ticket(pre_ids: set, imminent: list, odds_map: dict, confirmed: di
         log.warning("T-30 ticket step failed: %s", e)
 
 
+def _t30_serie_a_keys(keys: list, odds_map: dict) -> list:
+    """The Serie A subset of odds-map match keys ("Home vs Away").
+
+    The odds map merges every league; predictions.json is Serie A only (other
+    leagues write predictions_<league>.json and are betting-gated), so the
+    coverage contract below is checked on the Serie A keys alone. A pair the
+    league inference cannot place is kept: fail closed, require coverage.
+    """
+    from config.leagues import infer_league
+    out = []
+    for key in keys:
+        entry = odds_map.get(key) or {}
+        home, away = entry.get("home_team"), entry.get("away_team")
+        if not (home and away) and " vs " in key:
+            home, away = key.split(" vs ", 1)
+        try:
+            if infer_league(home, away) == "serie_a":
+                out.append(key)
+        except Exception:  # noqa: BLE001 - unknown pair: fail closed, require coverage
+            out.append(key)
+    return out
+
+
+def _verify_t30_inputs(run_start: float, imminent: list, approaching: list,
+                       odds_map: dict) -> str | None:
+    """Output contract between Step 4 and Step 5 of the T-30 run.
+
+    Every step of run_pre_kickoff is wrapped in try/except so a cycle never
+    dies half-way. The cost was silent: a Step 4 that raised printed
+    "Prediction error" and Step 5 then read the PREVIOUS predictions.json off
+    disk and journaled real bets on it. The contract is on the artifact, not on
+    the return value:
+
+      * predictions.json was written by THIS run (mtime >= run start) and has a
+        row for every imminent Serie A match;
+      * goal_predictions.json (the O/U model, written by the morning pipeline
+        and NOT by the T-30 — it reads no lineups) is readable and has a row
+        for every imminent Serie A match.
+
+    Match keys are "Home vs Away" in the odds map and in both prediction files.
+    Returns None when the contract holds, else one reason string fit for the
+    failure card. Nothing to act on (no Serie A match imminent or approaching)
+    is a pass: the contract guards a commit, not a quiet cycle.
+    """
+    if not _t30_serie_a_keys(list(imminent) + list(approaching), odds_map):
+        return None
+    sa_imminent = _t30_serie_a_keys(list(imminent), odds_map)
+    upcoming = DATA_DIR / "upcoming"
+    problems = []
+    for fname, must_be_fresh in (("predictions.json", True), ("goal_predictions.json", False)):
+        path = upcoming / fname
+        if not path.exists():
+            problems.append(f"{fname} missing")
+            continue
+        mtime = path.stat().st_mtime
+        if must_be_fresh and mtime < run_start - 2:
+            problems.append(f"{fname} predates this run by {(run_start - mtime) / 60:.0f} min")
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except Exception as e:  # noqa: BLE001 - any parse trouble is the finding
+            problems.append(f"{fname} unreadable ({type(e).__name__}: {e})")
+            continue
+        rows = data.get("predictions") if isinstance(data, dict) else data
+        have = {r.get("match") for r in (rows or []) if isinstance(r, dict)}
+        missing = [m for m in sa_imminent if m not in have]
+        if missing:
+            problems.append(f"{fname} has no row for " + ", ".join(missing[:3])
+                            + (" ..." if len(missing) > 3 else ""))
+    return "; ".join(problems) or None
+
+
+def _notify_t30_failure(stage: str, reason: str) -> None:
+    """Loud failure for the money path: log at ERROR and push the failure card.
+
+    A print inside a captured child process reaches pipeline.log and nobody;
+    the card reaches Telegram. Never raises — the notifier must not be the
+    thing that kills the run.
+    """
+    log.error("T-30 %s: %s", stage, reason)
+    try:
+        from scripts.pipeline.notify import notify_scheduler_failure
+        notify_scheduler_failure(f"pre-kickoff {stage}", reason)
+    except Exception as e:  # noqa: BLE001 - notifier trouble must not mask the failure
+        log.warning("T-30 failure card not sent: %s", e)
+
+
 def run_pre_kickoff(bankroll: float = 1000.0):
     """Run a focused pre-kickoff pipeline for imminent matches.
 
@@ -1026,7 +1122,7 @@ def run_pre_kickoff(bankroll: float = 1000.0):
     total = 5
 
     banner("PRE-KICKOFF PIPELINE - 5 STEPS")
-    print(f"\n  Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n  Start Time: {now_local().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Mode: Pre-kickoff (confirmed lineups)")
     print(f"  Bankroll: ${bankroll:.2f}")
 
@@ -1092,6 +1188,7 @@ def run_pre_kickoff(bankroll: float = 1000.0):
     # Step 4: Regenerate predictions
     step(4, total, "Regenerating Ensemble Predictions")
     predictions = []
+    step4_error = None
     try:
         from scripts.prediction.ensemble_prediction_engine import run_ensemble_predictions
         result = run_ensemble_predictions(use_ensemble=True)
@@ -1102,6 +1199,20 @@ def run_pre_kickoff(bankroll: float = 1000.0):
             print(f"  {confirmed_count} with confirmed lineups (boosted player_xg)")
     except Exception as e:
         print(f"  Prediction error: {e}")
+        step4_error = f"{type(e).__name__}: {e}"
+
+    # Output contract: Step 5 may only bet on artifacts THIS run produced and
+    # that cover every imminent Serie A match. A failed Step 4 used to fall
+    # through here and bet on yesterday's predictions.json.
+    reason = _verify_t30_inputs(start_time, imminent, approaching, odds)
+    if step4_error:
+        reason = f"Step 4 raised ({step4_error})" + (f"; {reason}" if reason else "")
+    if reason:
+        print(f"  ABORTED before the betting engine: {reason}")
+        _notify_t30_failure("aborted before Step 5", reason)
+        elapsed = time.time() - start_time
+        banner(f"PRE-KICKOFF ABORTED ({elapsed:.1f}s)")
+        return None
 
     # Step 5: Regenerate betting recommendations
     step(5, total, "Regenerating Betting Recommendations")
@@ -1115,6 +1226,7 @@ def run_pre_kickoff(bankroll: float = 1000.0):
     except Exception:
         _pre_ids = set()
     report = None
+    engine_failed = False
     try:
         from scripts.betting.betting_unified import generate_unified_report, save_report
         report = generate_unified_report(bankroll)
@@ -1125,13 +1237,17 @@ def run_pre_kickoff(bankroll: float = 1000.0):
         if report.get("bets"):
             _archive_bets(report["bets"], report.get("generated_at", ""))
     except Exception as e:
-        print(f"  Betting engine warning: {e}")
+        engine_failed = True
+        print(f"  Betting engine FAILED: {e}")
+        _notify_t30_failure("betting engine", f"{type(e).__name__}: {e}")
 
     # Step 5c: ORDER TICKET at the commit moment (or the no-action notice).
     # Before 2026-08-27 this moment was mute: the briefing came from the
     # scheduler's separate 15-min poll, briefed only the most imminent match,
-    # and carried no book / floor price / payout.
-    _send_t30_ticket(_pre_ids, imminent, odds, confirmed)
+    # and carried no book / floor price / payout. An engine failure sends the
+    # failure card above instead: a "no action" notice would claim a choice.
+    if not engine_failed:
+        _send_t30_ticket(_pre_ids, imminent, odds, confirmed)
 
     # Step 5b: Betfair exchange snapshot at T-30 — the exchange close is the
     # sharpest public line, so this is the CLV benchmark captured at the moment
@@ -1141,8 +1257,8 @@ def run_pre_kickoff(bankroll: float = 1000.0):
     # reachable with the VPN up — 0 markets at T-30 (matches are imminent by
     # definition here) means unreachable, so nag via Telegram, once per day.
     try:
-        from scripts.data.betfair_feed import fetch_match_odds
         from scripts.betting.betfair_to_comparison import main as _betfair_bridge
+        from scripts.data.betfair_feed import fetch_match_odds
         n_bf = fetch_match_odds()
         if n_bf > 0:
             _betfair_bridge()
@@ -1272,7 +1388,7 @@ def _run_parallel_data_collection(quick: bool = False, total_steps: int = 32):
         # Step 6: Track odds movement
         ts_step(6, total_steps, "Tracking Odds Movement")
         try:
-            from scripts.data.odds_tracker import save_snapshot, analyze_movements
+            from scripts.data.odds_tracker import analyze_movements, save_snapshot
             if odds:
                 simple_odds = {}
                 for mk, md in odds.items():
@@ -1433,7 +1549,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     _pipeline_lock_fd = open(lock_path, "w")
     try:
         fcntl.flock(_pipeline_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _pipeline_lock_fd.write(f"PID {os.getpid()} since {datetime.now().isoformat()}\n")
+        _pipeline_lock_fd.write(f"PID {os.getpid()} since {now_utc().isoformat()}\n")
         _pipeline_lock_fd.flush()
     except BlockingIOError:
         print("  Another pipeline is already running. Exiting.")
@@ -1448,7 +1564,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     mode_label = "Snapshot-only" if snapshot_only else ("Quick (cached)" if quick else "Full (fresh data)")
 
     banner(f"FULL BETTING PIPELINE - {total_steps} STEPS")
-    print(f"\n  Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n  Start Time: {now_local().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Mode: {mode_label}")
     print(f"  Bankroll: ${bankroll:.2f}")
 
@@ -1535,11 +1651,12 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         # The merge is idempotent so safe to run daily even when no new CSV data.
         step(2.5, total_steps, "Refreshing Historical Odds (CSV → matches.parquet)")
         try:
-            import datetime as _dt, subprocess as _sp
+            import datetime as _dt
+            import subprocess as _sp
             # Weekly backfill: only on Mondays AND only if Odds API quota allows.
             # If quota burned out, skip silently — the daily import below still picks
             # up whatever is already in the CSV from the last successful backfill.
-            if _dt.datetime.now().weekday() == 0:  # Monday
+            if now_local().weekday() == 0:  # Monday
                 since = (_dt.date.today() - _dt.timedelta(days=10)).isoformat()
                 print(f"  Weekly backfill: Odds API since {since}...")
                 try:
@@ -1615,7 +1732,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
 
         step(6, total_steps, "Tracking Odds Movement")
         try:
-            from scripts.data.odds_tracker import save_snapshot, analyze_movements
+            from scripts.data.odds_tracker import analyze_movements, save_snapshot
             if odds:
                 simple_odds = {}
                 for mk, md in odds.items():
@@ -1717,7 +1834,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         try:
             _ss_dir = DATA_DIR / "external" / "sofascore"
             _ss_files = list(_ss_dir.glob("*.parquet")) if _ss_dir.exists() else []
-            _ss_age = max(((datetime.now().timestamp() - f.stat().st_mtime) / 3600 for f in _ss_files), default=999)
+            _ss_age = max(((now_utc().timestamp() - f.stat().st_mtime) / 3600 for f in _ss_files), default=999)
             if _ss_age > 72:  # >3 days
                 print(f"  Sofascore data stale ({_ss_age:.0f}h) — starting background refresh...")
                 import subprocess as _sp
@@ -1735,7 +1852,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         # Auto-refresh Understat if >5 days stale
         try:
             _us_path = DATA_DIR / "parsed" / "understat_players.parquet"
-            _us_age = (datetime.now().timestamp() - _us_path.stat().st_mtime) / 3600 if _us_path.exists() else 999
+            _us_age = (now_utc().timestamp() - _us_path.stat().st_mtime) / 3600 if _us_path.exists() else 999
             if _us_age > 120:  # >5 days
                 print(f"  Understat data stale ({_us_age:.0f}h) — refreshing...")
                 from scraper.understat_scraper import scrape_understat_xg
@@ -1758,8 +1875,9 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # Step 10a: Fetch Weather Data for Upcoming Matches
     # =========================================================================
     try:
-        from scraper.weather import fetch_weather_for_matches
         import pandas as _pd
+
+        from scraper.weather import fetch_weather_for_matches
         _fixtures_path = DATA_DIR / "upcoming" / "fixtures.json"
         if _fixtures_path.exists():
             import json as _json
@@ -1799,7 +1917,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     if extra_leagues:
         print(f"\n  Fetching odds for extra leagues: {', '.join(extra_leagues)}")
         try:
-            from scripts.prediction.predict_league import fetch_league_odds, LEAGUE_DISPLAY_NAMES
+            from scripts.prediction.predict_league import LEAGUE_DISPLAY_NAMES, fetch_league_odds
             for league in extra_leagues:
                 display = LEAGUE_DISPLAY_NAMES.get(league, league)
                 try:
@@ -1889,7 +2007,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
         # A bare wrapper self-perpetuates (bare in -> bare out), and the dashboard
         # then shows "Preds: N/A" forever. The predictions in memory are from THIS
         # run, so stamping now is honest whenever the engine's stamp was lost.
-        wrapper.setdefault("generated_at", datetime.now().isoformat())
+        wrapper.setdefault("generated_at", now_utc().isoformat())
         # Preserve league field through enrichment (infer from team names when missing)
         from config.leagues import infer_league as _infer_league
         for _p in predictions:
@@ -1905,7 +2023,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     if extra_leagues:
         step(11, total_steps, f"Multi-League Predictions ({', '.join(extra_leagues)})")
         try:
-            from scripts.prediction.predict_league import run_predictions_for_league, LEAGUE_DISPLAY_NAMES
+            from scripts.prediction.predict_league import LEAGUE_DISPLAY_NAMES, run_predictions_for_league
             for league in extra_leagues:
                 display = LEAGUE_DISPLAY_NAMES.get(league, league)
                 result = run_predictions_for_league(league)
@@ -2129,10 +2247,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(20, total_steps, "Running Handicap Model")
     try:
-        from scripts.models.handicap_model import (
-            generate_handicap_predictions,
-            save_handicap_predictions
-        )
+        from scripts.models.handicap_model import generate_handicap_predictions, save_handicap_predictions
 
         margin_preds, hc_bets = generate_handicap_predictions()
         save_handicap_predictions(margin_preds, hc_bets)
@@ -2148,10 +2263,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(21, total_steps, "Running Cards Model")
     try:
-        from scripts.models.cards_model import (
-            generate_cards_predictions,
-            save_cards_predictions
-        )
+        from scripts.models.cards_model import generate_cards_predictions, save_cards_predictions
 
         cards_preds, cards_bets = generate_cards_predictions()
         save_cards_predictions(cards_preds, cards_bets)
@@ -2167,10 +2279,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(22, total_steps, "Running BTTS & Corners Model")
     try:
-        from scripts.models.btts_corners_model import (
-            generate_all_predictions,
-            save_predictions
-        )
+        from scripts.models.btts_corners_model import generate_all_predictions, save_predictions
 
         btts_preds, corners_preds, bc_bets = generate_all_predictions()
         save_predictions(btts_preds, corners_preds, bc_bets)
@@ -2213,10 +2322,9 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(22, total_steps, "Running Player-Level Predictions")
     try:
-        from scripts.betting.player_predictions import (
-            load_player_data, build_player_features, predict_player_markets
-        )
         import json as _json
+
+        from scripts.betting.player_predictions import build_player_features, load_player_data, predict_player_markets
 
         pms = load_player_data()
         pms = build_player_features(pms)
@@ -2268,8 +2376,10 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     step(22, total_steps, "Fetching Player Prop Odds & Scanning for Value")
     try:
         from scripts.betting.player_prop_odds import (
-            fetch_player_prop_odds, save_player_prop_odds,
-            scan_for_value, save_value_bets
+            fetch_player_prop_odds,
+            save_player_prop_odds,
+            save_value_bets,
+            scan_for_value,
         )
         props = fetch_player_prop_odds(use_cache=quick)
         if props:
@@ -2315,10 +2425,10 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     step(24, total_steps, step_label)
     try:
         from scripts.betting.betting_unified import (
-            generate_unified_report,
-            save_report,
             BettingConfig,
             UnifiedBettingEngine,
+            generate_unified_report,
+            save_report,
         )
 
         if candidate_only:
@@ -2334,7 +2444,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             # Persist candidates so the T-30 stage can re-evaluate them
             import json
             candidates_payload = {
-                "generated_at": datetime.now().isoformat(),
+                "generated_at": now_utc().isoformat(),
                 "candidates": [
                     {
                         "match": b.match, "date": b.date, "market": b.market,
@@ -2348,7 +2458,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
             }
             cand_path = Path("data/upcoming/betting_candidates.json")
             cand_path.parent.mkdir(parents=True, exist_ok=True)
-            cand_path.write_text(json.dumps(candidates_payload, indent=2, default=str))
+            atomic_write_json(cand_path, candidates_payload, indent=2, default=str)
             report = None  # downstream parlay/etc steps treat as no-op
         else:
             report = generate_unified_report(bankroll)
@@ -2393,7 +2503,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(25, total_steps, "CLV Tracking — Recording Placements & Computing CLV")
     try:
-        from scripts.betting.clv_tracker import record_bet_placement, track_clv_from_slip, get_clv_summary
+        from scripts.betting.clv_tracker import get_clv_summary, record_bet_placement, track_clv_from_slip
         n_recorded = record_bet_placement()
         if n_recorded:
             print(f"  Recorded {n_recorded} new bet placements")
@@ -2511,7 +2621,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
 
         # CLV tracking
         try:
-            from scripts.betting.clv_tracker import track_clv_for_settled_bets, get_clv_summary
+            from scripts.betting.clv_tracker import get_clv_summary, track_clv_for_settled_bets
 
             history_path = DATA_DIR / "betting" / "history.json"
             if history_path.exists():
@@ -2612,7 +2722,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     # =========================================================================
     step(30, total_steps, "Performance Dashboard")
     try:
-        from scripts.analysis.performance_dashboard import generate_dashboard, print_dashboard
+        from scripts.analysis.performance_dashboard import generate_dashboard
         dashboard = generate_dashboard()
         pa = dashboard.get("prediction_accuracy", {})
         bp = dashboard.get("betting_performance", {})
@@ -2669,7 +2779,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
 
     banner("PIPELINE COMPLETE")
     print(f"\n  Elapsed Time: {elapsed:.1f} seconds")
-    print(f"  Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Finished: {now_local().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if report:
         print("\n" + "=" * 70)
@@ -2806,9 +2916,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
                         level="warning",
                     )
                     sig_path.parent.mkdir(parents=True, exist_ok=True)
-                    sig_path.write_text(json.dumps(
-                        {"sig": sig, "issues": validation["critical"][:10],
-                         "updated": datetime.now().isoformat(timespec="seconds")}))
+                    atomic_write_json(sig_path, {"sig": sig, "issues": validation["critical"][:10], "updated": now_utc().isoformat(timespec="seconds")})
             except Exception:
                 pass
         elif n_warn:

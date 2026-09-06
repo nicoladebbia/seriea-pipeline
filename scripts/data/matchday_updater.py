@@ -30,10 +30,9 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 import time
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -41,19 +40,19 @@ import pandas as pd
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from config.settings import DATA_DIR, get_current_season, atomic_write_parquet
+from config.leagues import get_league_config
+from config.settings import DATA_DIR, atomic_write_json, atomic_write_parquet, get_current_season
 from config.team_names import normalize_team
-from config.leagues import get_league_config, LEAGUE_REGISTRY
 from scripts.data.scrape_sofascore import (
-    OUTPUT_DIR as SOFASCORE_DIR,
-    MATCH_CACHE_DIR,
-    RATE_LIMIT,
     LEAGUE_SEASON_MAPS,
-    SERIE_A_LEAGUE_ID,
+    RATE_LIMIT,
     extract_player_rows,
     extract_shotmap_rows,
     extract_team_stats_rows,
     scrape_match_stats,
+)
+from scripts.data.scrape_sofascore import (
+    OUTPUT_DIR as SOFASCORE_DIR,
 )
 
 log = logging.getLogger(__name__)
@@ -95,7 +94,7 @@ def set_sofascore_cooldown(reason: str, minutes: int = SOFASCORE_COOLDOWN_MINUTE
     payload = {"set_at": now.isoformat(), "until_ts": now.timestamp() + minutes * 60,
                "minutes": minutes, "reason": reason}
     tmp = SOFASCORE_COOLDOWN_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload))
+    atomic_write_json(tmp, payload, indent=None)
     tmp.replace(SOFASCORE_COOLDOWN_FILE)
 
 
@@ -194,8 +193,7 @@ async def _refresh_fixtures_cache(season: str, league: str = "serie_a") -> list[
                 )
                 return existing
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w") as f:
-                json.dump(all_fixtures, f, indent=1)
+            atomic_write_json(cache_path, all_fixtures, indent=1)
             log.info("Refreshed fixtures cache: %d total fixtures for %s %s", len(all_fixtures), league, season)
 
         return all_fixtures
@@ -603,7 +601,7 @@ def update_matches_parquet(
         # Date from timestamp
         start_ts = fixture.get("startTimestamp", 0)
         if start_ts:
-            match_dt = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            match_dt = datetime.fromtimestamp(start_ts, tz=UTC)
             match_date = match_dt.strftime("%Y-%m-%d")
             kickoff_time = match_dt.strftime("%H:%M")
         else:
@@ -932,7 +930,7 @@ def heal_from_espn(season: str | None = None, league: str = "serie_a",
         season = get_current_season()
     summary = {"league": league, "season": season, "candidates": 0, "incidents_matches": 0,
                "incident_rows": 0, "stats_rows": 0, "unreachable": 0}
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     # A fixture counts as played when the cached list says "finished" OR when it
     # kicked off more than three hours ago: under a Sofascore API challenge the
     # fixture cache cannot refresh, so the status never flips and the three
@@ -958,7 +956,7 @@ def heal_from_espn(season: str | None = None, league: str = "serie_a",
     stats_fill: list[tuple] = []  # (index, values dict, ht tuple|None, fixture id)
     for f in fixtures:
         fid = int(f["id"])
-        match_date = datetime.fromtimestamp(int(f["startTimestamp"]), tz=timezone.utc).strftime("%Y-%m-%d")
+        match_date = datetime.fromtimestamp(int(f["startTimestamp"]), tz=UTC).strftime("%Y-%m-%d")
         home = normalize_team((f.get("homeTeam") or {}).get("name", ""))
         away = normalize_team((f.get("awayTeam") or {}).get("name", ""))
         need_incidents = fid not in covered and fid not in espn_ids
@@ -1030,7 +1028,7 @@ def backfill_referees(season: str | None = None, league: str = "serie_a",
     empty = gt["referee"].astype(object).map(lambda v: isinstance(v, str) and not v.strip())
     summary["blanked"] = int(empty.sum())
     gt.loc[empty, "referee"] = None
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     dates = gt["match_date"].astype(str).str[:10]
     mask = ((gt["league"] == league) & (gt["season"] == season) & gt["referee"].isna()
             & (dates <= today) & gt["home_score"].notna())
@@ -1095,7 +1093,7 @@ def backfill_matches_parquet(
         if not (ts and home and away):
             continue
         # Same key derivation as update_matches_parquet — the two MUST agree.
-        date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        date = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
         if (date, home, away) in existing:
             continue
         summary["missing"] += 1
@@ -1142,7 +1140,6 @@ def _fallback_ingest_from_results(season: str | None = None) -> int:
     """
     if season is None:
         season = get_current_season()
-    import numpy as np
     from config.team_names import normalize_team
 
     results_path = DATA_DIR / "upcoming" / "results.json"
@@ -1254,7 +1251,7 @@ def _player_meta_needs_refresh(path: Path, matches_fetched: int | None) -> bool:
 def _should_rebuild_features(summary: dict) -> bool:
     """Rebuild features only when this run actually changed the data on disk.
 
-    build_features(use_cache=False) is a ~23-minute full rebuild, not the
+    build_features() is a ~23-minute full rebuild, not the
     "~30s" the old log line claimed. The settlement tick calls this every
     5 minutes on matchdays, so an unconditional rebuild saturated the box
     all afternoon on 2026-08-28 and starved the T-30 pre-kickoff run into
@@ -1425,10 +1422,10 @@ def run_matchday_update(
         log.info("Step 6b skipped — nothing ingested this run, features already current")
         rebuild_features = False
     if rebuild_features:
-        log.info("Step 6b: Rebuilding features.parquet (full use_cache=False rebuild, ~23 min)...")
+        log.info("Step 6b: Rebuilding features.parquet (full rebuild, no step cache, ~23 min)...")
         try:
             from features.build import build_features
-            features_df = build_features(use_cache=False)
+            features_df = build_features()
             summary["features_rebuilt"] = len(features_df)
             log.info("Features rebuilt: %d rows × %d cols",
                      len(features_df), len(features_df.columns))

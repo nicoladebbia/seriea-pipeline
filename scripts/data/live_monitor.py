@@ -28,13 +28,13 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.leagues import infer_league
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
 
 try:
@@ -127,7 +127,7 @@ def _leagues_with_active_matches(window_min: int = 180) -> set[str]:
     Reads fixtures_*.json (cheap, local).
     """
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Season is DERIVED via the one existing helper — a "fixtures_2025_2026"
     # literal here is exactly the annual-fuse trap CLAUDE.md documents (this
@@ -136,7 +136,7 @@ def _leagues_with_active_matches(window_min: int = 180) -> set[str]:
     # were silently dead all season).
     from scripts.utils.match_timing import _sofascore_fixture_files
     active = set()
-    now_ts = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(UTC).timestamp()
     for p, league in _sofascore_fixture_files():
         if league not in SPORT_KEYS_BY_LEAGUE or not p.exists():
             continue
@@ -207,13 +207,13 @@ def fetch_live_odds_all_leagues(api_key: str, leagues: set[str] | None = None) -
 
 # ─── Match State Logic ────────────────────────────────────────────────────────
 
-def estimate_match_minute(commence_iso: str, now: datetime = None) -> Optional[int]:
+def estimate_match_minute(commence_iso: str, now: datetime = None) -> int | None:
     """Estimate current match minute from commence_time.
 
     Returns None if match hasn't started. Accounts for ~15 min half-time.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     try:
         ct = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
@@ -249,7 +249,7 @@ def classify_match_status(commence_iso: str, completed: bool, scores) -> str:
         return "first_half"
     if minute == 45:
         # Could be end of first half or start of second
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             ct = datetime.fromisoformat(commence_iso.replace("Z", "+00:00"))
             elapsed = (now - ct).total_seconds() / 60
@@ -270,9 +270,9 @@ def check_bet_settlement(
     bet: Dict,
     home_score: int,
     away_score: int,
-    minute: Optional[int],
+    minute: int | None,
     completed: bool,
-) -> Optional[str]:
+) -> str | None:
     """Check if a bet outcome is decided.
 
     Understands the REAL journal shapes (market 'O/U 2.5' / '1X2' / 'DC' /
@@ -420,7 +420,7 @@ def check_bet_settlement(
 
 def _matchday_path(date_str: str = None) -> Path:
     if date_str is None:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
     return LIVE_DIR / f"{date_str}.json"
 
 
@@ -430,7 +430,7 @@ def load_matchday(date_str: str = None) -> Dict:
         with open(path) as f:
             return json.load(f)
     return {
-        "date": date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "date": date_str or datetime.now(UTC).strftime("%Y-%m-%d"),
         "polls": 0,
         "api_calls": 0,
         "matches": {},
@@ -441,8 +441,7 @@ def load_matchday(date_str: str = None) -> Dict:
 def save_matchday(data: Dict):
     LIVE_DIR.mkdir(parents=True, exist_ok=True)
     path = _matchday_path(data["date"])
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(path, data, indent=2)
 
 
 def _load_active_bets() -> List[Dict]:
@@ -472,7 +471,7 @@ def _closing_line_from_snapshots(home: str, away: str, commence: str) -> Dict:
     try:
         kick = datetime.fromisoformat(commence.replace("Z", "+00:00"))
         if kick.tzinfo is None:
-            kick = kick.replace(tzinfo=timezone.utc)
+            kick = kick.replace(tzinfo=UTC)
     except (TypeError, ValueError, AttributeError):
         return {}
     key = _pre_match_key(home, away)
@@ -480,7 +479,7 @@ def _closing_line_from_snapshots(home: str, away: str, commence: str) -> Dict:
     if not snap_dir.exists():
         return {}
     days = {(kick - timedelta(days=d)).astimezone().strftime("%Y%m%d") for d in (0, 1)}
-    best: Optional[Tuple[datetime, Dict, str]] = None
+    best: Tuple[datetime, Dict, str] | None = None
     for path in snap_dir.glob("odds_*.json"):
         if path.stem.split("_")[1] not in days:
             continue
@@ -618,7 +617,7 @@ def _fetch_footballdata_scores() -> Dict[str, Dict]:
         log.warning("football-data.org backup: requests library not available")
         return {}
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     url = "https://api.football-data.org/v4/competitions/SA/matches"
     params = {
         "status": "LIVE,IN_PLAY,PAUSED,FINISHED",
@@ -710,7 +709,7 @@ def _make_event_key(event: Dict) -> str:
 
 def _get_bet_context(match_key: str, home_score: int = 0, away_score: int = 0,
                      minute: int = None,
-                     player_stats: dict = None) -> Optional[Dict]:
+                     player_stats: dict = None) -> Dict | None:
     """Get bet context for a match, or None if unavailable."""
     try:
         from scripts.betting.live_bet_context import get_match_bet_context
@@ -884,7 +883,7 @@ def _stamp_age_s(stamp: str | None) -> float:
     if not stamp:
         return float("inf")
     try:
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds()
+        return (datetime.now(UTC) - datetime.fromisoformat(stamp)).total_seconds()
     except (TypeError, ValueError):
         return float("inf")
 
@@ -894,7 +893,7 @@ def _fast_is_fresh(entry: Dict, now: datetime | None = None) -> bool:
     if not stamp:
         return False
     try:
-        age = ((now or datetime.now(timezone.utc)) - datetime.fromisoformat(stamp)).total_seconds()
+        age = ((now or datetime.now(UTC)) - datetime.fromisoformat(stamp)).total_seconds()
     except (TypeError, ValueError):
         return False
     return 0 <= age < FAST_FRESH_S
@@ -998,7 +997,7 @@ _CLOCK_RE = re.compile(r"(\d+)'(?:\+(\d+)')?")
 FAST_STATE_FRESH_S = 90
 
 
-def fast_state_for_snapshot(entry: Dict, now: datetime | None = None) -> Optional[Dict]:
+def fast_state_for_snapshot(entry: Dict, now: datetime | None = None) -> Dict | None:
     """The ESPN clock + score for a snapshot, when the fast tick read them
     within FAST_STATE_FRESH_S. The Odds API path estimates the minute from
     wall-clock time since the listed kickoff (fixed 15-min interval, no
@@ -1009,7 +1008,7 @@ def fast_state_for_snapshot(entry: Dict, now: datetime | None = None) -> Optiona
     clock = entry.get("live_clock")
     if not stamp or not clock:
         return None
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         age = (now - datetime.fromisoformat(stamp)).total_seconds()
     except (TypeError, ValueError):
@@ -1046,7 +1045,7 @@ def refresh_live_fast() -> Dict:
     """
     from scripts.data import live_espn
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     matchday = load_matchday(now.strftime("%Y-%m-%d"))
     live = {mk: e for mk, e in matchday.get("matches", {}).items() if e.get("status") in LIVE_STATUSES}
     if not live:
@@ -1083,7 +1082,7 @@ def poll_once() -> Dict:
         log.error("ODDS_API_KEY not set")
         return {"error": "no_api_key"}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today = now.strftime("%Y-%m-%d")
     matchday = load_matchday(today)
 
@@ -1729,7 +1728,7 @@ def poll_once() -> Dict:
 
 def show_status():
     """Display current live monitoring status."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     matchday = load_matchday(today)
 
     print(f"\n{'='*70}")
@@ -1906,7 +1905,7 @@ def watch_loop():
                 consecutive_no_live = 0
 
             # Wait for next poll
-            next_poll = datetime.now(timezone.utc) + timedelta(seconds=POLL_INTERVAL_SECONDS)
+            next_poll = datetime.now(UTC) + timedelta(seconds=POLL_INTERVAL_SECONDS)
             print(f"  Next poll at {next_poll.strftime('%H:%M:%S')} UTC")
             time.sleep(POLL_INTERVAL_SECONDS)
 

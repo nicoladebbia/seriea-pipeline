@@ -12,15 +12,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-from pathlib import Path
 from typing import Dict
 
 import pandas as pd
 
 from config.leagues import ACTIVE_LEAGUES
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -101,8 +99,7 @@ def main() -> None:
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = build_team_rates()
-    with open(OUT_PATH, "w") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(OUT_PATH, data, indent=2)
     log.info("Wrote team rates: %d teams -> %s", data["n_teams"], OUT_PATH)
 
 

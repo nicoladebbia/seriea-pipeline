@@ -26,6 +26,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from config.settings import atomic_write_json
+from scripts.utils.match_timing import now_local
+
 log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -82,7 +85,11 @@ def _ts_from_name(path: Path) -> datetime | None:
     if not m:
         return None
     try:
-        return datetime.strptime(m.group(1), _TS_FMT)
+        # Filenames carry a naive LOCAL wall-clock stamp (see save_snapshot's
+        # docstring). .astimezone() on a naive datetime assumes it's already
+        # local time and attaches the system tz, so it compares safely against
+        # now_local() without shifting the wall-clock value.
+        return datetime.strptime(m.group(1), _TS_FMT).astimezone()
     except ValueError:
         return None
 
@@ -138,12 +145,11 @@ def save_snapshot(odds: dict[str, dict[str, float]] | None = None) -> str | None
         return None
 
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
+    now = now_local()
     stamp = now.strftime(_TS_FMT)
     iso = now.isoformat()
 
-    with open(SNAPSHOTS_DIR / f"odds_{stamp}.json", "w") as fh:
-        json.dump({"timestamp": iso, "matches": odds}, fh, indent=2)
+    atomic_write_json(SNAPSHOTS_DIR / f"odds_{stamp}.json", {"timestamp": iso, "matches": odds}, indent=2)
     log.info("Saved odds snapshot: odds_%s.json (%d matches)", stamp, len(odds))
 
     for label, src in (("bookmakers", BOOKMAKERS_PATH), ("extra", EXTRA_MARKETS_PATH)):
@@ -152,8 +158,7 @@ def save_snapshot(odds: dict[str, dict[str, float]] | None = None) -> str | None
         if not matches:
             log.warning("save_snapshot: %s has no matches; skipping %s_%s.json", src.name, label, stamp)
             continue
-        with open(SNAPSHOTS_DIR / f"{label}_{stamp}.json", "w") as fh:
-            json.dump({"timestamp": iso, "matches": matches}, fh, indent=2)
+        atomic_write_json(SNAPSHOTS_DIR / f"{label}_{stamp}.json", {"timestamp": iso, "matches": matches}, indent=2)
         log.info("Saved %s snapshot: %s_%s.json", "bookmaker" if label == "bookmakers" else label, label, stamp)
 
     return stamp
@@ -182,7 +187,7 @@ def analyze_movements(
     if not current_odds:
         return {}
 
-    now = datetime.now()
+    now = now_local()
     cutoff = now - timedelta(hours=MOVEMENT_WINDOW_HOURS)
     history = [(ts, p) for ts, p in _iter_snapshots() if cutoff <= ts <= now]
 
@@ -246,12 +251,11 @@ def _save_movement(movements: dict[str, dict[str, Any]]) -> None:
     }
     UPCOMING_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
-        "analyzed_at": datetime.now().isoformat(),
+        "analyzed_at": now_local().isoformat(),
         "matches": movements,
         "summary": summary,
     }
-    with open(MOVEMENT_PATH, "w") as fh:
-        json.dump(payload, fh, indent=2)
+    atomic_write_json(MOVEMENT_PATH, payload, indent=2)
     log.info("Saved movement analysis: %s", summary)
 
 

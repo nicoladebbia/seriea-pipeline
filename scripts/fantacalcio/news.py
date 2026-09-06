@@ -19,6 +19,8 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+from config.settings import atomic_write_json
+
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "fantacalcio" / "news.json"
 
@@ -112,7 +114,7 @@ def fetch_news(roster: list[dict], refresh: bool = True) -> dict:
     items = items[:MAX_ITEMS]
     out = {"generated_at": datetime.now(UTC).isoformat(), "items": items}
     CACHE.parent.mkdir(parents=True, exist_ok=True)
-    CACHE.write_text(json.dumps(out, indent=1, ensure_ascii=False))
+    atomic_write_json(CACHE, out, indent=1, ensure_ascii=False)
     return out
 
 

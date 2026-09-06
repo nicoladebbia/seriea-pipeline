@@ -27,7 +27,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from scripts.utils.parsing import extract_line
 
@@ -224,7 +224,7 @@ def _match_bet_to_parlays(bet: dict, parlay_map: dict,
 
 # ─── Line / side resolution ──────────────────────────────────────────────────
 
-def resolve_bet_line(market: str, selection: str) -> Optional[float]:
+def resolve_bet_line(market: str, selection: str) -> float | None:
     """The true line for a totals/AH bet.
 
     The journal rounds AH selection lines to 1dp ('AH 0.25' -> 'Away -0.2'),
@@ -491,7 +491,7 @@ def _generate_commentary(market: str, selection: str, home_score: int,
 
 
 def _check_winning(market: str, selection: str, home_score: int,
-                   away_score: int) -> Optional[bool]:
+                   away_score: int) -> bool | None:
     """Quick check: is this bet currently winning? None if unclear/push."""
     commentary = _generate_commentary(market, selection, home_score, away_score)
     if any(w in commentary for w in ("PUSH", "stake refunded")):

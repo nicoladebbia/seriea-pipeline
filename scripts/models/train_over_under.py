@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, atomic_write_json
 from ml.config import META_COLS, ValidationConfig
 from ml.data import DataLoader, TimeSeriesSplitter
 from ml.feature_selection import correlation_pruning, exclude_odds
@@ -402,11 +402,9 @@ def _write_pair(model, meta: Dict, model_path: Path, meta_path: Path) -> None:
     _latest.cbm with its metadata's feature list, so a crash between the two
     writes must never leave a new model next to stale metadata."""
     tmp_model = model_path.with_suffix(".cbm.tmp")
-    tmp_meta = meta_path.with_suffix(".json.tmp")
     model.save_model(str(tmp_model))
-    tmp_meta.write_text(json.dumps(meta, indent=2, default=str))
     tmp_model.replace(model_path)
-    tmp_meta.replace(meta_path)
+    atomic_write_json(meta_path, meta, indent=2, default=str)
 
 
 def dry_run_decision(promoted: bool, reason: str) -> Tuple[bool, str]:
@@ -682,8 +680,7 @@ def train_over_under(
 
     # Save overall report
     report_path = OUTPUT_DIR / "training_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(report_path, report, indent=2, default=str)
     log.info("Report saved to %s", report_path)
     print("=" * 70)
 

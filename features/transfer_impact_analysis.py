@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta
+
+from scripts.utils.match_timing import now_local
 from pathlib import Path
 from typing import Optional
 
@@ -323,7 +325,7 @@ def compute_january_window_features(
     # Estimate games since signing based on current date vs Jan window
     if matches_df is not None and not arrivals.empty:
         # Count team matches since Jan 15 (mid-window estimate)
-        jan_mid = pd.Timestamp(f"{datetime.now().year}-01-15")
+        jan_mid = pd.Timestamp(f"{now_local().year}-01-15")
         if "match_date" in matches_df.columns:
             m_dates = pd.to_datetime(matches_df["match_date"], errors="coerce")
             team_mask = (

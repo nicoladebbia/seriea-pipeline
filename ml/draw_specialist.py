@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+
 try:
     from catboost import CatBoostClassifier
     HAS_CATBOOST = True
@@ -32,8 +32,8 @@ except ImportError:
     HAS_XGBOOST = False
 
 try:
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -132,8 +132,8 @@ class DrawSpecialist:
     ):
         self.class_weight = class_weight
         self.threshold = threshold
-        self.model: Optional[CatBoostClassifier] = None
-        self.feature_names: Optional[list[str]] = None
+        self.model: CatBoostClassifier | None = None
+        self.feature_names: list[str] | None = None
         self.fitted = False
 
         # Draw-specific features to prioritize
@@ -148,7 +148,7 @@ class DrawSpecialist:
         self,
         X: pd.DataFrame,
         y: pd.Series,
-        feature_names: Optional[list[str]] = None,
+        feature_names: list[str] | None = None,
     ) -> "DrawSpecialist":
         """Train the draw specialist model.
 

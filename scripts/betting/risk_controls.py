@@ -21,13 +21,13 @@ Usage:
 import json
 import logging
 import sys
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_DIR
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -376,7 +376,7 @@ def check_risk_gates(
         "stake_multiplier": multiplier,
         "reason": reason,
         "checks": checks,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "n_settled": len(settled),
     }
 

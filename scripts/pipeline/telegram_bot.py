@@ -36,6 +36,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.settings import atomic_write_json
+from scripts.utils.match_timing import now_local, timedelta
+
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -326,16 +329,14 @@ class ConversationManager:
     def _save(self):
         try:
             _CONVERSATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(_CONVERSATION_FILE, "w") as f:
-                json.dump(self._history, f)
+            atomic_write_json(_CONVERSATION_FILE, self._history)
         except Exception as e:
             log.debug("Failed to save conversation: %s", e)
 
     def _save_league_pref(self):
         try:
             _LEAGUE_PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(_LEAGUE_PREFS_FILE, "w") as f:
-                json.dump({"league_filter": self._league_filter}, f)
+            atomic_write_json(_LEAGUE_PREFS_FILE, {"league_filter": self._league_filter})
         except Exception as e:
             log.debug("Failed to save league pref: %s", e)
 
@@ -764,7 +765,7 @@ def _ai_budget_ok() -> bool:
     st["calls"] += 1
     try:
         _AI_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _AI_USAGE_FILE.write_text(json.dumps(st))
+        atomic_write_json(_AI_USAGE_FILE, st)
     except OSError:
         pass
     return True
@@ -1755,7 +1756,7 @@ def _handle_today(token: str | None = None, chat_id: str | None = None) -> str:
 
     try:
         from config.settings import DATA_DIR
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_local().strftime("%Y-%m-%d")
 
         # Load predictions from all league files
         all_preds = []
@@ -2121,7 +2122,6 @@ def _handle_picks(max_matches: int = 20) -> str:
     picks = doc.get("picks") or []
     if not picks:
         return "Nessuna partita in programma nel file picks."
-    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     try:
         gen = datetime.fromisoformat(str(doc.get("generated_at") or "").replace("Z", "+00:00"))
@@ -2430,7 +2430,7 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
             with open(preds_path) as f:
                 preds = json.load(f)
             pred_list = preds.get("predictions", [])
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = now_local().strftime("%Y-%m-%d")
             today_matches = [p for p in pred_list if p.get("date", "").startswith(today)]
             all_upcoming = pred_list
         else:
@@ -2509,7 +2509,7 @@ def _handle_match(token: str, chat_id: str) -> bool:
     """
     try:
         from config.settings import DATA_DIR
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_local().strftime("%Y-%m-%d")
 
         # Load predictions from ALL leagues
         pred_list = []
@@ -2555,14 +2555,13 @@ def _resolve_ticket_num(num: str):
     on a later day must fail safely, never touch the wrong bet.
     """
     import json as _json
-    from datetime import datetime as _dt
     from pathlib import Path as _Path
     marker = _Path(__file__).parent.parent.parent / "data" / "pipeline" / "t30_ticket_state.json"
     try:
         st = _json.loads(marker.read_text())
     except (OSError, ValueError):
         return None, "No ticket on record today."
-    if st.get("date") != _dt.now().strftime("%Y-%m-%d"):
+    if st.get("date") != now_local().strftime("%Y-%m-%d"):
         return None, "That ticket expired \u2014 numbers reset daily."
     entry = (st.get("bets") or {}).get(str(num))
     if isinstance(entry, dict) and entry.get("bet_id"):
@@ -2612,12 +2611,11 @@ def _handle_fill_command(text: str) -> str:
         return _record_fill(num, placed=True, odds=odds)
     # Bare /fill: show today's ticket state
     import json as _json
-    from datetime import datetime as _dt
     from pathlib import Path as _Path
     marker = _Path(__file__).parent.parent.parent / "data" / "pipeline" / "t30_ticket_state.json"
     try:
         st = _json.loads(marker.read_text())
-        assert st.get("date") == _dt.now().strftime("%Y-%m-%d")
+        assert st.get("date") == now_local().strftime("%Y-%m-%d")
         entries = st.get("bets") or {}
         assert entries
     except (OSError, ValueError, AssertionError):
@@ -3300,10 +3298,9 @@ def _wc_json_load(path: Path, default):
 
 
 def _wc_json_save(path: Path, data) -> None:
-    import json as _json
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(_json.dumps(data, indent=1))
+    atomic_write_json(tmp, data, indent=1)
     tmp.replace(path)
 
 
@@ -4317,7 +4314,7 @@ def _wc_postmatch_check(token: str, chat_id: str) -> None:
                 _wc_spawn_refresh(sent)       # globally throttled to 1/10min
                 changed = True
         if changed:
-            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+            atomic_write_json(WC_ALERT_STATE, sent, indent=1)
     except Exception as e:  # noqa: BLE001 — must never kill the bot loop
         log.warning("postmatch check failed: %s", e)
 
@@ -4402,7 +4399,7 @@ def _check_prematch_alerts(token: str, chat_id: str) -> None:
                 _tg_send_message(token, chat_id, _build_daily_ladder(tier="risk"))
                 sent[day_key] = now.isoformat()
         if changed:
-            WC_ALERT_STATE.write_text(_json.dumps(sent, indent=1))
+            atomic_write_json(WC_ALERT_STATE, sent, indent=1)
     except Exception as e:  # noqa: BLE001 — alerts must never kill the bot loop
         log.warning("prematch alert check failed: %s", e)
 

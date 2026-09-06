@@ -13,7 +13,6 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class BetDecision:
 class BettingRules:
     """Encapsulates the betting_rules.json contract."""
 
-    def __init__(self, rules: Optional[dict] = None):
+    def __init__(self, rules: dict | None = None):
         self._rules = rules if rules is not None else self._load_default()
         self._version = (self._rules.get("_meta") or {}).get("version", "unknown")
 
@@ -176,7 +175,7 @@ class BettingRules:
 
 
 # Convenience module-level singleton for callers that want a simple API.
-_default_rules: Optional[BettingRules] = None
+_default_rules: BettingRules | None = None
 
 
 def get_rules() -> BettingRules:

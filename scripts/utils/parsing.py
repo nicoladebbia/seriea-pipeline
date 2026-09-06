@@ -3,10 +3,9 @@
 import hashlib
 import re
 from pathlib import Path
-from typing import Optional
 
 
-def extract_line(s: str, default: Optional[float] = None) -> Optional[float]:
+def extract_line(s: str, default: float | None = None) -> float | None:
     """Extract numeric line from a market/selection string.
 
     Examples:

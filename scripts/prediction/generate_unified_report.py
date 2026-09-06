@@ -40,7 +40,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from config.settings import atomic_write_json
 from scripts.utils.json_utils import load_json_safe
+from scripts.utils.match_timing import now_utc
 
 log = logging.getLogger(__name__)
 
@@ -376,7 +378,7 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
 
     # ── Build final report ─────────────────────────────────────────
     report = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "match_count": len(matches_report),
         "data_sources_found": sorted(sources_used),
         "data_sources_count": len(sources_used),
@@ -388,8 +390,7 @@ def generate_unified_report(data_dir: Optional[Path] = None) -> dict:
 
     # Write output
     out_path = data_dir / "unified_report.json"
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    atomic_write_json(out_path, report, indent=2, default=str)
 
     log.info("Unified report written to %s (%d matches, %d data sources)",
              out_path, len(matches_report), len(sources_used))

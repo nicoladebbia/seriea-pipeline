@@ -25,12 +25,12 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from config.settings import DATA_DIR, UPCOMING_DIR
+from config.settings import DATA_DIR, UPCOMING_DIR, atomic_write_json
 from config.team_names import strip_accents
 from scripts.utils.ledger import load_json_ledger, save_json_ledger
 from scripts.utils.parsing import extract_line
@@ -57,7 +57,6 @@ def _evaluate_prop_outcome(market: str, pstats: dict, source: str | None = None)
     Returns {"status": "hit"|"lost"|"void", "actual": value, "line": line}
     """
     market_lower = market.lower()
-    import re
 
     if source == "espn" and any(k in market_lower for k in _ESPN_UNGRADABLE):
         return {"status": "void", "actual": None, "line": None, "reason": "stat not in ESPN feed"}
@@ -135,7 +134,7 @@ def settle_props(date_str: str = None) -> Dict:
     Returns summary dict with hit counts, ROI, etc.
     """
     if date_str is None:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
     # Load live matchday data
     live_path = LIVE_DIR / f"{date_str}.json"
@@ -266,7 +265,7 @@ def settle_props(date_str: str = None) -> Dict:
                 "outcome": "void",
                 "actual": None,
                 "line": None,
-                "settled_at": datetime.now(timezone.utc).isoformat(),
+                "settled_at": datetime.now(UTC).isoformat(),
             })
             continue
 
@@ -290,7 +289,7 @@ def settle_props(date_str: str = None) -> Dict:
             "outcome": result["status"],
             "actual": result["actual"],
             "line": result["line"],
-            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "settled_at": datetime.now(UTC).isoformat(),
         }
         new_entries.append(entry)
 
@@ -443,7 +442,7 @@ def _update_performance(ledger: List[Dict]):
         stats["calibration_error"] = round(stats["actual_rate"] - stats["avg_prob"], 1)
 
     performance = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "total_bets": total,
         "total_hits": len(hits),
         "hit_rate": round(len(hits) / total * 100, 1),
@@ -456,8 +455,7 @@ def _update_performance(ledger: List[Dict]):
     }
 
     BETTING_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PERFORMANCE_PATH, "w") as f:
-        json.dump(performance, f, indent=2)
+    atomic_write_json(PERFORMANCE_PATH, performance, indent=2)
 
     log.info("Prop performance: %d bets, %.1f%% hit rate, %.1f%% ROI",
              total, performance["hit_rate"], performance["roi_pct"])

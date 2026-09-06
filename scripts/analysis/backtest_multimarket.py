@@ -15,13 +15,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+
+from scripts.utils.match_timing import now_utc
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,7 +31,7 @@ from scipy.stats import poisson
 
 from scripts.betting.betting_unified import remove_overround
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from storage.paths import features_path
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -579,7 +579,7 @@ class MultiMarketBacktest:
             "evaluation_type": "out-of-sample" if self.walk_forward else "in-sample",
             "thresholds": self.thresholds,
             "flat_stake": FLAT_STAKE,
-            "run_date": datetime.now().isoformat(),
+            "run_date": now_utc().isoformat(),
         }
         if not self.walk_forward:
             results["meta"]["leakage_warning"] = (
@@ -886,7 +886,7 @@ class MultiMarketBacktest:
                 "away_min_edge": AWAY_MIN_EDGE if enable_1x2_away else None,
                 "max_edge": MAX_EDGE,
                 "situational_adjustments": self._PROD_SITUATIONAL,
-                "run_date": datetime.now().isoformat(),
+                "run_date": now_utc().isoformat(),
             },
             "by_market": by_market,
             "combined": stats(bets),
@@ -1499,7 +1499,7 @@ def main():
     if save_path is None:
         results_dir = DATA_DIR / "optimization"
         results_dir.mkdir(parents=True, exist_ok=True)
-        save_path = str(results_dir / f"multimarket_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        save_path = str(results_dir / f"multimarket_backtest_{now_utc().strftime('%Y%m%d_%H%M%S')}.json")
 
     def clean_for_json(obj):
         if isinstance(obj, dict):
@@ -1516,9 +1516,7 @@ def main():
 
     cleaned = clean_for_json(results)
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(save_path, "w") as f:
-        json.dump(cleaned, f, indent=2, default=str)
-
+    atomic_write_json(save_path, cleaned, indent=2, default=str)
     log.info("Results saved to %s", save_path)
 
 

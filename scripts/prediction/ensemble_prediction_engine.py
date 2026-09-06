@@ -26,7 +26,8 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 import pandas as pd
 
@@ -39,12 +40,14 @@ class _NumpySafeEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
+import sys
+
 from scipy.stats import poisson
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR
+from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
+from scripts.utils.match_timing import now_local, now_utc
 
 # Import formation analysis
 try:
@@ -92,12 +95,12 @@ except ImportError:
 
 # Import Phase 6: Calibration Pipeline (Draw Detection, Confidence Filtering, Home Calibration)
 try:
+    from features.draw_detection import DrawDetector
     from features.prediction_calibration import (
-        CalibrationPipeline,
         BETTING_STRATEGIES,
+        CalibrationPipeline,
         list_strategies,
     )
-    from features.draw_detection import DrawDetector
     CALIBRATION_AVAILABLE = True
 except ImportError:
     CALIBRATION_AVAILABLE = False
@@ -106,8 +109,8 @@ except ImportError:
 try:
     from ml.correction_layer import (
         CorrectionLayer,
-        extract_context_features,
         append_to_ledger,
+        extract_context_features,
     )
     CORRECTION_LAYER_AVAILABLE = True
 except ImportError:
@@ -120,21 +123,27 @@ from scripts.utils.match_timing import _is_future, _load_sofascore_fixtures
 
 # Import existing components
 try:
-    from scripts.prediction.predict_unified import (
-        FACTOR_LIFTS, STACKING_BONUSES, BASE_RATES,
-        load_upcoming_matches, identify_all_factors, generate_prediction,
-    )
-    from scripts.prediction.weather_integration import fetch_all_match_weather
     from scripts.prediction.current_form_calculator import calculate_all_forms
+    from scripts.prediction.predict_unified import (
+        BASE_RATES,
+        FACTOR_LIFTS,
+        STACKING_BONUSES,
+        generate_prediction,
+        identify_all_factors,
+        load_upcoming_matches,
+    )
     from scripts.prediction.referee_integration import analyze_referee_impact
+    from scripts.prediction.weather_integration import fetch_all_match_weather
 except ImportError:
-    from scripts.prediction.predict_unified import (
-        FACTOR_LIFTS, STACKING_BONUSES, BASE_RATES,
-        load_upcoming_matches, identify_all_factors, generate_prediction,
-    )
-    from scripts.prediction.weather_integration import fetch_all_match_weather
     from scripts.prediction.current_form_calculator import calculate_all_forms
+    from scripts.prediction.predict_unified import (
+        BASE_RATES,
+        generate_prediction,
+        identify_all_factors,
+        load_upcoming_matches,
+    )
     from scripts.prediction.referee_integration import analyze_referee_impact
+    from scripts.prediction.weather_integration import fetch_all_match_weather
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -418,8 +427,9 @@ class DrawDetector:
     def load_model(self) -> bool:
         """Load draw detector model + isotonic calibrator."""
         try:
-            from catboost import CatBoostClassifier
             import pickle
+
+            from catboost import CatBoostClassifier
 
             model_path = MODELS_DIR / "universal" / "draw_detector.cbm"
             cal_path = MODELS_DIR / "universal" / "draw_detector_calibrator.pkl"
@@ -1108,12 +1118,12 @@ class MLClassifier:
                 if len(s) >= 100:
                     quantiles[col] = [float(s.quantile(0.005)),
                                       float(s.quantile(0.995))]
-            qpath.write_text(json.dumps({
+            atomic_write_json(qpath, {
                 "source_mtime": src_mtime,
                 "built_at": datetime.now(timezone.utc).isoformat(),
                 "n_features": len(quantiles),
                 "quantiles": quantiles,
-            }))
+            }, indent=None)
             self._train_quantiles_cache = quantiles
             log.info("ML classifier: built %d training quantile bands", len(quantiles))
         except Exception as e:
@@ -1192,7 +1202,7 @@ class PlayerXGPredictor:
         and only falls back to FBref if SofaScore is unavailable.
         """
         try:
-            from features.player_xg_model import PlayerXGDatabase, LineupXGPredictor
+            from features.player_xg_model import LineupXGPredictor, PlayerXGDatabase
 
             self.player_db = PlayerXGDatabase()
 
@@ -3747,9 +3757,9 @@ class EnsemblePredictor:
 
             # Calendar features — use match date, not script run date
             try:
-                _md = pd.to_datetime(match_date) if match_date else datetime.now()
+                _md = pd.to_datetime(match_date) if match_date else now_local()
             except Exception:
-                _md = datetime.now()
+                _md = now_local()
             _CAL_DEFAULTS = {
                 "kickoff_hour": 15, "is_night_match": 0, "is_evening_kickoff": 0,
                 "is_weekend": float(_md.weekday() >= 5),
@@ -4266,8 +4276,7 @@ class EnsemblePredictor:
             return
         lessons_path = DATA_DIR / "feedback" / "lessons.json"
         try:
-            with open(lessons_path, "w") as f:
-                json.dump(self._lessons_data, f, indent=2)
+            atomic_write_json(lessons_path, self._lessons_data, indent=2)
         except Exception as e:
             log.error(f"Failed to flush lessons data: {e}")
         self._lessons_dirty = False
@@ -4777,7 +4786,7 @@ def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a")
 
     # Save predictions
     output = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": now_utc().isoformat(),
         "league": league,
         "model_version": "v4.0-deep-learning" if use_ensemble else "v2.0-21seasons",
         "ensemble_enabled": use_ensemble,
@@ -4798,10 +4807,7 @@ def run_ensemble_predictions(use_ensemble: bool = True, league: str = "serie_a")
         output_path = DATA_DIR / "upcoming" / f"predictions_{league}.json"
 
     # Atomic write: temp file + rename to prevent corruption on crash
-    tmp_path = output_path.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
-        json.dump(output, f, indent=2, cls=_NumpySafeEncoder)
-    tmp_path.replace(output_path)
+    atomic_write_json(output_path, output, indent=2, cls=_NumpySafeEncoder)
 
     log.info(f"\nSaved {league_display} ensemble predictions to {output_path}")
     return output

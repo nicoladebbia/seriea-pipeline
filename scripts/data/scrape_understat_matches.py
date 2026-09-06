@@ -33,7 +33,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from scraper.understat_scraper import SEASON_MAP
 from scripts.utils.scraper_state import load_failed, save_failed
 
@@ -127,8 +127,7 @@ def get_season_match_ids(season: str) -> list[dict]:
         "players": players_data or [],
     }
     json_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(json_file, "w") as f:
-        json.dump(cache_data, f, indent=2)
+    atomic_write_json(json_file, cache_data, indent=2)
     log.info("Cached league data for %s", season)
 
     played = [d for d in (dates_data or []) if d.get("isResult")]
@@ -163,8 +162,7 @@ def scrape_match(client, client_type: str, match_id: str) -> dict | None:
 
     # Cache
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_file, "w") as f:
-        json.dump(result, f)
+    atomic_write_json(cache_file, result, indent=None)
 
     return result
 

@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from storage.paths import parsed_path
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 from config.team_names import normalize_team
 from scraper.lineup_fetcher import normalize_player_name
 
@@ -291,9 +291,7 @@ class PlayerXGDatabase:
         }
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
+        atomic_write_json(path, data, indent=2)
         log.info(f"Saved {len(data)} player profiles to {path}")
 
     def load(self, path: Path = None) -> bool:

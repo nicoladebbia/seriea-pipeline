@@ -18,7 +18,7 @@ from typing import Dict, List
 
 import requests
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -138,8 +138,7 @@ def scrape_all(current_only: bool = False) -> Dict[str, List[Dict]]:
             existing = [m for m in existing if m.get("season") != "2025/2026"]
             coppa = existing + coppa
     
-    with open(PARSED_DIR / "coppa_italia_matches.json", "w") as f:
-        json.dump(coppa, f, indent=2)
+    atomic_write_json(PARSED_DIR / "coppa_italia_matches.json", coppa, indent=2)
     log.info("Saved %d Coppa Italia matches", len(coppa))
     results["coppa_italia_matches.json"] = coppa
 
@@ -158,8 +157,7 @@ def scrape_all(current_only: bool = False) -> Dict[str, List[Dict]]:
             existing = [m for m in existing if m.get("season") != "2025/2026"]
             euro = existing + euro
 
-    with open(PARSED_DIR / "european_matches.json", "w") as f:
-        json.dump(euro, f, indent=2)
+    atomic_write_json(PARSED_DIR / "european_matches.json", euro, indent=2)
     log.info("Saved %d European matches", len(euro))
     results["european_matches.json"] = euro
 
