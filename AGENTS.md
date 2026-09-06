@@ -446,7 +446,11 @@ arguments), the maintainer's memory directory (per-path, not in the repo), and u
 `data/`: every `*_metadata.json`, `backtest.json`, `rare_events.json`,
 `halves_backtest.json`, `start_calibration.json`, `walkforward/**/summary.json`,
 `market_promotion.json`, `data/betting/*report*.json`, `*summary*.json`, `*stats.json`,
-`pnl_history.json`, `data/upcoming/backtest_results.json`, `data/monitoring/`.
+`pnl_history.json`, `data/upcoming/backtest_results.json`, `data/monitoring/`, and the
+directories of stored analyses and LLM narratives: `data/ai_reasoning_cache/`,
+`data/analysis/`, `data/diagnostics/`, `data/experiments/`, `data/feedback/`,
+`data/optimization/`, `data/quality/`, `data/pipeline/proof_of_edge_state.json`,
+`data/upcoming/{match_reasoning,sentiment_analysis,bookmaker_analysis,player_analysis}.json`.
 
 Cannot be withheld: the code's structure encodes the decisions; test names, docstrings and
 the ROI comments beside thresholds carry rationale. A repo-level read can re-verify
@@ -465,13 +469,17 @@ tar -czf ../seriea-cold-pack.tgz \
   --exclude=CLEANUP_PLAN.md --exclude=AUGUST_RUNBOOK.md --exclude=.plans --exclude=docs \
   --exclude=logs --exclude='__pycache__' --exclude='.*_cache' --exclude=catboost_info \
   --exclude=data/cache --exclude=data/monitoring --exclude=data/models/universal/archive \
+  --exclude=data/ai_reasoning_cache --exclude=data/analysis --exclude=data/diagnostics \
+  --exclude=data/experiments --exclude=data/feedback --exclude=data/optimization --exclude=data/quality \
+  --exclude=proof_of_edge_state.json --exclude=match_reasoning.json --exclude=sentiment_analysis.json \
+  --exclude=bookmaker_analysis.json --exclude=player_analysis.json \
   --exclude='*_metadata.json' --exclude='backtest.json' --exclude='backtest_results.json' \
   --exclude='rare_events.json' --exclude='halves_backtest.json' --exclude='start_calibration.json' \
   --exclude='summary.json' --exclude='market_promotion.json' --exclude='*report*.json' \
   --exclude='*summary*.json' --exclude='*stats.json' --exclude='pnl_history.json' \
   --exclude='*_report.md' --exclude='*_REPORT.md' \
   .
-tar -tzf ../seriea-cold-pack.tgz | grep -E '/\.env$|CLAUDE\.md|README\.md|_metadata\.json$|/backtest\.json$|/logs/' ; echo "(must print nothing)"
+tar -tzf ../seriea-cold-pack.tgz | grep -E '/\.env$|CLAUDE\.md|README\.md|_metadata\.json$|/backtest\.json$|/logs/|ai_reasoning|/diagnostics/|/optimization/|reasoning|sentiment' ; echo "(must print nothing)"
 ```
 
 If the reader is a Claude Code session, run it from the extracted directory (a new path
