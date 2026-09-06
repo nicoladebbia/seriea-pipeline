@@ -173,7 +173,7 @@ exists, else `sharp_implied_prob − 1/placed_odds`. Paper entries carry `extra`
 
 **Paper→real promotion** (`scripts/betting/market_promotion.py`): per market key, a paper
 market is promoted when ≥ 50 settled paper bets (won/lost/push; voids excluded), ROI > 0,
-z ≥ 1.0 where z = mean(unit return) / (pstdev / √n), and CLV > 0 once ≥ 20 closing prices
+z ≥ 2.5 where z = mean(unit return) / (pstdev / √n), and CLV > 0 once ≥ 20 closing prices
 exist. **The check runs after every settlement run and promotes at the FIRST crossing**;
 there is no fixed evaluation point. Promoted markets are mirrored into the real journal
 at Kelly × 0.5, cap 1.5%, floor 0.2%, tagged `extra.picks_ref`, `pipeline_status

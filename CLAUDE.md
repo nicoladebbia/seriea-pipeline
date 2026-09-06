@@ -183,7 +183,7 @@ with CLV against the NEXT snapshot — the price a human could actually have tak
 - **Read the verdict from `data/models/inplay/backtest.json`, never from a doc.** The gate is
   skill vs the in-play market's own 1X2 probabilities (≥ 0.02 on ≥ 200 snapshots) AND the
   state-change paper picks at the NEXT snapshot's price meeting `PROMOTION_BAR` (≥ 50
-  settled, ROI > 0, z ≥ 1) — `gate.skill_leg` / `gate.record_leg` in the file, both required
+  settled, ROI > 0, z ≥ 2.5) — `gate.skill_leg` / `gate.record_leg` in the file, both required
   (`gate_verdict`). Until 2026-09-05 evening the code checked skill only, and the day the
   de-vig was fixed the skill leg crossed 0.02 while the record was 8 picks at −42% — the
   file would have said "passes". The first two runs of 2026-09-05 FAILED it (skill went
@@ -375,7 +375,7 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
 - **Promotion gate (2026-09-05, `scripts/betting/market_promotion.py`) — a paper market earns
   real stakes by its settled record, never by hand.** Nicola wanted the props (shots, SoT,
   goalscorer, first-half angles) bet for real; the measured record said props −54% at real money
-  and zero settled paper picks. So the gate decides: ≥ 50 settled paper bets, ROI > 0, z ≥ 1.0,
+  and zero settled paper picks. So the gate decides: ≥ 50 settled paper bets, ROI > 0, z ≥ 2.5 (raised from 1.0 on 2026-09-06: the gate is re-checked after every settlement, so a zero-edge market crossed z ≥ 1 within a season 48% of the time — `market_promotion --null-sim`),
   CLV > 0 once ≥ 20 closing prices exist (`PROMOTION_BAR`). A promoted market's LEAN is mirrored
   into the REAL journal at Kelly × 0.5, cap 1.5% (`journal_promoted`, `pipeline_status:
   pick:promoted`, `extra.picks_ref`) and settled by `settle_picks` with the paper entry

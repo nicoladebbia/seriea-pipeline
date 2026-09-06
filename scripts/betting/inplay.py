@@ -609,7 +609,7 @@ def gate_verdict(result: dict) -> dict:
     probabilities by ≥ SKILL_GATE on ≥ N_GATE snapshots. Record: the
     state-change picks, graded at the NEXT snapshot's price (the one a human
     could take), meet the same PROMOTION_BAR every paper market must meet
-    (≥ 50 settled, ROI > 0, z ≥ 1). The first leg says the model knows
+    (≥ 50 settled, ROI > 0, z ≥ 2.5). The first leg says the model knows
     something; only the second says it is bettable through this feed."""
     from scripts.betting.market_promotion import PROMOTION_BAR
     skill = result.get("skill_vs_inplay_market_1x2")

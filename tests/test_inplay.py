@@ -133,7 +133,7 @@ def test_shrink_weight_is_fitted_not_set():
 
 
 def test_gate_needs_the_pick_record_as_well_as_skill():
-    good_rec = {"picks": {"state_change": {"next_odds": {"n": 60, "roi_pct": 4.0, "z": 1.3}}}}
+    good_rec = {"picks": {"state_change": {"next_odds": {"n": 60, "roi_pct": 4.0, "z": 2.7}}}}
     assert inplay.gate_verdict({"skill_vs_inplay_market_1x2": 0.03, "priced_snapshots": 500, **good_rec})["passes"] is True
     v = inplay.gate_verdict({"skill_vs_inplay_market_1x2": 0.03, "priced_snapshots": 500,
                              "picks": {"state_change": {"next_odds": {"n": 8, "roi_pct": -42.5, "z": -2.1}}}})

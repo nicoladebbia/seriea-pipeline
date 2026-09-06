@@ -55,19 +55,19 @@ def test_bar_names_the_first_unmet_condition():
     assert not ok and why.startswith("ROI +0.0%")
     ok, why = MP.passes_bar(MP.market_record(_settled("m", 26, 24))["m"])          # +4% on 50, z ~0.3
     assert not ok and why.startswith("z ")
-    ok, why = MP.passes_bar(MP.market_record(_settled("m", 35, 25))["m"])
+    ok, why = MP.passes_bar(MP.market_record(_settled("m", 40, 20))["m"])
     assert ok and why == "bar cleared"
     # CLV is required only once 20 real closing prices exist, and then must be > 0
-    rec = MP.market_record(_settled("m", 35, 25, clv=-1.0))["m"]
+    rec = MP.market_record(_settled("m", 40, 20, clv=-1.0))["m"]
     ok, why = MP.passes_bar(rec)
     assert not ok and why.startswith("CLV -1.00% on 60")
-    rec = MP.market_record(_settled("m", 35, 25, clv=+0.8))["m"]
+    rec = MP.market_record(_settled("m", 40, 20, clv=+0.8))["m"]
     assert MP.passes_bar(rec)[0]
 
 
 def test_evaluate_promotes_then_demotes_on_the_real_record_and_restarts_the_paper_count(tmp_path):
     now = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
-    paper = _settled("player_shots_on_target", 35, 25) + _settled("btts_h1", 10, 10)
+    paper = _settled("player_shots_on_target", 40, 20) + _settled("btts_h1", 10, 10)
     st = MP.evaluate_promotions(paper, [], now=now)
     assert st["markets"]["player_shots_on_target"]["status"] == "promoted"
     assert st["markets"]["player_shots_on_target"]["snapshot"]["n"] == 60

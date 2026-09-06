@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 STATE_PATH = DATA_DIR / "betting" / "market_promotion.json"
 
-PROMOTION_BAR = {"min_settled": 50, "min_roi_pct": 0.0, "min_z": 1.0,
+PROMOTION_BAR = {"min_settled": 50, "min_roi_pct": 0.0, "min_z": 2.5,
                  "min_clv_pct": 0.0, "min_clv_n": 20}
 DEMOTION_BAR = {"min_real_bets": 30, "max_roi_pct": -10.0, "max_z": -1.0}
 
