@@ -324,6 +324,26 @@ BANKROLL_DIR = DATA_DIR / "bankroll"
 LIVE_DIR = DATA_DIR / "live"
 REGISTRY_PATH = DATA_DIR / "registry.json"
 
+# ---------------------------------------------------------------------------
+# Staking — ONE definition (2026-09-06). Until then twelve files each carried
+# their own kelly literal: production was 0.15 while five modules said 0.10
+# "synced with production" and the parlay code disagreed with itself (0.05 in
+# the generator, 0.10 in the advisor). Every module that sizes a bet, backtests
+# a stake or reports the fraction imports these; a lowercase `kelly_fraction =
+# 0.xx` literal anywhere else fails tests/test_staking_config.py.
+# Nicola's 2026-09-05 decision: Kelly 0.15, cap 2.5% on singles — the ceiling
+# the incumbent ladder in market_promotion.py unlocks, not today's stake.
+# ---------------------------------------------------------------------------
+KELLY_FRACTION = 0.15
+MAX_STAKE_PCT = 2.5
+LEAGUE_KELLY_FRACTIONS = {
+    "serie_a": KELLY_FRACTION,  # live production. 0.05 Apr–Sep 2026 (EUR 5–10 a bet); 3x on
+                                # 2026-09-05 on the settled O/U record (1.5: +10.5% ROI n=47,
+                                # CLV +2.4; 2.5: CLV +4.8) — worst drawdown so far -5.4%.
+    "premier_league": 0.12,     # one notch tighter (0.8x SA) — pending 50+ EPL settled bets
+}
+PARLAY_KELLY_FRACTION = 0.05  # multi-leg: edge estimation is noisier than on singles
+
 # Existing data (from old project)
 OLD_PROJECT_ROOT = PROJECT_ROOT.parent
 OLD_HTML_DIR = OLD_PROJECT_ROOT / "season_2024_2025"

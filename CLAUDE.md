@@ -570,7 +570,7 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   current_balance = 1000.0 + total_profit
   ```
   Then update `data/betting/bankroll.json` and (separately) append the new settlements to `data/betting/history.json` if they're missing.
-- **Prevention rule**: **never edit `bankroll.json` or `history.json` directly when settling bets**. Only edit `bet_journal.json`; the snapshots derive from it. If a snapshot drifts, recompute, don't patch the snapshot in place.
+- **Prevention rule**: **never edit `bankroll.json` or `history.json` directly when settling bets**. Only edit `bet_journal.json`; the snapshots derive from it. If a snapshot drifts, recompute, don't patch the snapshot in place. Since 2026-09-06 no web reader opens `history.json` at all — `web/app.py` and `web/advisor.py` call `scripts.betting.ledger.get_history_view()` (journal-derived); the file is a courtesy snapshot written by `ledger.rebuild_caches()`.
 
 ### Symptom: "Daily Odds API spend spikes after Mac wake/launchctl reload"
 
@@ -589,9 +589,17 @@ Organised by *symptom-first* so you can grep for what you're seeing:
 - **Why**: `is_match_day()` is too lax — returns True for the entire calendar day. Page visit triggered `_ensure_auto_poll()`.
 - **Fix**: only auto-start when a match is **imminent** (within 30 min of kickoff or already live). Bail out after 4 empty polls, not 12.
 - **Prevention rule**: **never auto-poll based on calendar day alone**. Always require a kickoff-time check. Default bail-out for empty polls = 4 (20 min), not 12 (60 min).
-- **Arming (2026-09-05)**: `web/app.py::_live_window_open` is the ONE gate (T-5 to T+150 per
-  fixture, minus fixtures the loop already saw finished via `_live_stopped_at`), read by the
-  `/api/live` visit path, and by `_live_arm_loop`, a boot thread that checks it every 60s.
+- **Arming (2026-09-05, moved 2026-09-06)**: `scripts/data/live_monitor.py::live_window_open`
+  is the ONE gate (T-5 to T+150 per fixture, minus fixtures the loop already saw finished via
+  its `stopped_at`). Since 2026-09-06 the loop is its OWN launchd process
+  (`com.seriea-pipeline.live-loop`, `python3 -m scripts.data.live_monitor --loop`, KeepAlive,
+  log `logs/launchd-live-loop.log`): it checks the gate every 60s, polls, runs the ESPN fast
+  tick and writes `data/monitoring/live_loop_status.json` (heartbeat every 15s). `web/app.py`
+  never polls — `/api/live/auto-poll` and `/api/live/config` write a request / an interval
+  into `pipeline_state.json` and every page field comes from the status file
+  (`live_loop_alive`). `health_check.check_live_loop` WARNs on a stale heartbeat, CRITICAL
+  with a kickoff inside the window. `live_loop_step` is tested at a frozen clock
+  (`tests/test_live_loop.py`).
   Before that the loop armed only at boot (`is_match_day()`, calendar day: 4 wasted polls at
   04:00, then nothing) or on a page visit: the Roma–Atalanta pings of 2026-09-05 existed only
   because a /live tab happened to be open. The ESPN fast tick (`refresh_live_fast`, free) runs
@@ -1032,7 +1040,12 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   (`data/external/fotmob/match_details/`). Player ids: resolved to Sofascore ids from the parquet's
   own history when unique, else `-fotmob_id`.
 - **What it does NOT do**: retry Sofascore. The first denial of a run stops the run's fetches and
-  writes a 60-min cooldown (`sofascore_cooldown.json`) — 310 logged 403s in two days is how the IP
+  writes a 60-min cooldown (`sofascore_cooldown.json` — since 2026-09-06 owned by
+  `scraper/sofascore_client.py`, the ONE Sofascore client: every module goes through
+  `get_json`, a 401/403/429 parks the tier on the first hit with no retry, `api` and `www`
+  tiers park independently (`sofascore_cooldown_www.json`), the live monitor's private
+  10-min breaker in pipeline_state is gone, and `tests/conftest.py` redirects the cooldown
+  dir so no test can park the live ingest) — 310 logged 403s in two days is how the IP
   got blanket-denied on 2026-09-06. A blanket deny (robots.txt 403, `server: Varnish`, connect
   refusals) lifts with a different egress IP, not with waiting or retries.
 - **Reading the state**: `ingest_chain_status.json` names every match, what filled it and why a
@@ -1056,11 +1069,13 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   It is an anti-live switch. Never touch it to "go live".**
 - The system is de-facto paper exactly when the Odds API key is dead (engine finds no odds →
   0 bets). With a live key the chain is armed end-to-end and nothing needs flipping.
-- **Stake size is Nicola's 2026-09-05 decision: Kelly 0.15 (was 0.05), cap 2.5%.** Three
-  places must agree or `_make_bet` silently rescales: `BettingConfig.kelly_fraction`,
-  `_LEAGUE_KELLY_DEFAULTS["serie_a"]` (the per-league scaler divides by the cfg value) and
-  `market_rules["O/U_Over"]["kelly_fraction"]` (the 1.5 line's own fraction). A test pins all
-  three. Dry run on the MW3 slate: EUR 5–8 a bet → EUR 18–22 (the 1.5 line sits at the cap ×
+- **Stake size is Nicola's 2026-09-05 decision: Kelly 0.15 (was 0.05), cap 2.5%.** Since
+  2026-09-06 there is ONE definition, `config/settings.py` (`KELLY_FRACTION`, `MAX_STAKE_PCT`,
+  `LEAGUE_KELLY_FRACTIONS`, `PARLAY_KELLY_FRACTION`): `BettingConfig`, `_LEAGUE_KELLY_DEFAULTS`,
+  `market_rules["O/U_Over"]`, the backtests, `predict_unified`, `value_betting`, `ml/evaluation`
+  and both parlay sites read it (thirteen files carried their own literal before — production
+  was 0.15 while five said 0.10 "synced with production"). `tests/test_staking_config.py`
+  fails on any lowercase `kelly_fraction = 0.xx` literal outside the definition. Dry run on the MW3 slate: EUR 5–8 a bet → EUR 18–22 (the 1.5 line sits at the cap ×
   the 0.85 marginal-edge multiplier = 2.1%). Same day, the cold_home / away_fav_ref veto was
   scoped to 1X2/DC/DNB (`_veto_applies`): O/U candidates are judged on edge alone, 1 → 3
   selected on the same inputs. Both changes reach the T-30 run at its next cycle (the T-30
@@ -1128,6 +1143,8 @@ done
 sleep 8
 curl -s http://localhost:5001/api/data-freshness | python3 -m json.tool
 launchctl list | grep "com.seriea-pipeline" | awk '$2 != 0 && $2 != "-" {print}'
+# the live loop is its own job: a heartbeat under 180s old means it is alive
+python3 -c "from scripts.data.live_monitor import read_live_loop_status as r; print(r())"
 ```
 
 Healthy signal: `ok=True` with `severity` in {`ok`, `fixtures_stale_html_ok`, `offseason_dormant`, `html_blocked_data_current`}. **`live_standings_ok=false` is NOT a failure on its own** — under `html_blocked_data_current` it just means the live scraper is blocked while the served table is complete through the latest played matchweek (check `leagues_health[*].missing == 0`). Exit codes other than `0` or `-15`/`-9` (running) on any job indicate a real failure to investigate.

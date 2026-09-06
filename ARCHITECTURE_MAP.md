@@ -29,6 +29,7 @@
 | friendlies-refresh | `scraper.sofascore_friendlies` | `scraper/sofascore_friendlies.py` |
 | telegram-bot | `telegram_bot` | `scripts/pipeline/telegram_bot.py` |
 | web-dashboard | `app.py` | `web/app.py` |
+| live-loop | `live_monitor.py --loop` | `scripts/data/live_monitor.py` (added 2026-09-06: arming + Odds API polls + ESPN fast tick, out of the web process) |
 
 **External subscriptions/APIs:** Odds API (h2h/totals/spreads bulk + per-event markets), Groq (sentiment — default OFF, `RUN_SENTIMENT=1`, `$1/day` cap), Telegram Bot API. Key env vars: `RUN_SENTIMENT`, `GROQ_DAILY_BUDGET_USD`, Odds API key/tier.
 
@@ -232,6 +233,8 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: cli.py, features/build.py, scripts/pipeline/refresh_weekly_data.py; imports: config/settings.py (DATA_DIR), config/team_names.py (normalize_team), pandas, requests, BeautifulSoup
 - **Quality signals:** 80+ LOC (partial read), worldfootball.net scraper with season ID mappings, regex-based referee/team parsing, multi-league support (WF_LEAGUE_SLUGS, WF_COMP_CODES).
 
+
+🟢 `scraper/sofascore_client.py` — grade A · keep (added 2026-09-06). The ONE Sofascore HTTP client: `get_json(url)` with per-tier (`api` / `www`) file-backed cooldowns, no retry on a denial, backoff on 5xx/transport, `last_failure_status()`. Imported by scraper/sofascore_events.py (thin `_get_json` wrapper that mirrors `_LAST_FAILURE_STATUS`), scripts/data/live_sofascore.py, scripts/data/matchday_updater.py, scraper/sofascore_standings.py, scripts/fantacalcio/xi_advisor.py, scripts/worldcup/sofascore_fetch.py. To change how a Sofascore denial is handled, the file is this one. Tests: tests/test_sofascore_client.py.
 
 #### 🟢 `scraper/sofascore_events.py` — grade A · keep
 - **Does:** Scrape match incidents (goals, cards, subs, captain data) from Sofascore API with persistent session, connection reuse, and exponential backoff.
@@ -988,7 +991,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** Zero importers, dead_candidate.
 - **Verdict reason:** Abandoned experiment.
 
-#### ⚫ `scripts/models/generate_match_reasoning.py` — grade F · **delete**
+#### ⚫ `scripts/models/generate_match_reasoning.py` — grade F · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Generate match-level reasoning/explanations for predictions.
 - **Talks to:** Imported by: (none). Imports: config.settings.
 - **Quality signals:** Zero importers, minimal imports, marked dead_candidate.
@@ -1066,7 +1069,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** Zero importers, dead_candidate.
 - **Verdict reason:** Abandoned experiment.
 
-#### ⚫ `scripts/models/train_draw_specialist_production.py` — grade F · **delete**
+#### ⚫ `scripts/models/train_draw_specialist_production.py` — grade F · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Train a production draw-specialist model.
 - **Talks to:** Imported by: (none). Imports: ml.draw_specialist.
 - **Quality signals:** Zero importers, dead_candidate, imports non-existent or abandoned ml.draw_specialist.
@@ -1397,7 +1400,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Three arms:** `naive` (top 11 by raw start count — the floor), `off`, `on`. Always read `player_slots_changed` beside the delta: an accuracy delta with ~zero changed slots is noise whatever its sign. `--sweep` calibrates on the earlier season and validates on a holdout, and restores the module globals in a `finally` so a crashed sweep cannot leave swept constants in the live predictor.
 - **To re-calibrate after a new season lands, this is the file.** To change what the signal *does*, it is `lineup_predictor.py`.
 
-#### ⚫ `scripts/analysis/backtest_multimarket.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/backtest_multimarket.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Backtests 3 betting markets (1X2, O/U 2.5, Asian Handicap) against Pinnacle sharp odds with lineup-adjusted xG comparison.
 - **Talks to:** imports: config/settings.py (DATA_DIR, MODELS_DIR), storage/paths.py (features_path), scripts/betting/betting_unified.py (remove_overround), features/player_xg_model.py, ml/ensemble.py; imported_by: scripts/models/optimize_weights.py, scripts/models/optimize_unified.py
 - **Quality signals:** Well-structured with edge threshold sweeps, Poisson matrix calculations, situational context tagging. Imports player_xg_model but code snippet shows no usage of it. Has CLI entry point (argparse). Fact card says dead_candidate=true, no importers. Based on code it appears to be an older backtest variant (suggests lineup-adjusted xG comparison) superseded by backtest_unified.py
@@ -1418,7 +1421,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imports: config/settings.py (DATA_DIR, MODELS_DIR, SEASONS), ml/evaluation.py (_multiclass_brier, expected_calibration_error, ranked_probability_score), ml/poisson.py (poisson_win_prob), ml/walk_forward.py (lazy), storage/paths.py (features_path); imported_by: scripts/models/optimize_unified.py, scripts/models/optimize_weights.py, tests/test_integration.py
 - **Quality signals:** Large, well-structured consolidation of multiple backtest modes. Lazy-loads ML classifier, walk-forward fold models, and isotonic calibrator. Implements multiple backtest modes (accuracy, betting, value, ml-walkforward, all) with clear command-line interface. Data leakage prevention (USE_ISOTONIC_CALIBRATION=False by default). Walk-forward mode support. Used by optimize scripts and integration tests. ~150 lines read shows solid architecture with proper abstraction
 
-#### ⚫ `scripts/analysis/calibration_analysis.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/calibration_analysis.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Analyzes and fixes model calibration using temperature scaling and Platt scaling across XG, ML, player XG, and deep learning predictors.
 - **Talks to:** imports: config/settings.py, models/deep_learning.py, scripts/prediction/ensemble_prediction_engine.py (EnsemblePredictor, XGPredictor, MLClassifier, PlayerXGPredictor); imported_by: none
 - **Quality signals:** Implements CalibrationAnalyzer class with load_data, get_model_predictions, temperature scaling, Platt scaling. Has --fix option for applying fixes. Imports multiple predictor classes. Fact card: dead_candidate=true, zero importers. Code snippet shows it loads predictors but the test set code is incomplete (line 100 cuts off). Suggests this is exploratory Phase 1.2 work that was not integrated into production
@@ -1431,7 +1434,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: scripts/pipeline/scheduler.py; imports: none (uses DATA_DIR/BETTING_DIR constants defined inline)
 - **Quality signals:** Well-designed analysis: load_clv_with_pnl merges clv_history.json with bet_journal.json, analyze_by_market computes per-market CLV + P&L, analyze_trends detects time-based patterns, analyze_by_edge_bucket and analyze_by_selection provide segmented views. Comprehensive output with generate_full_report and print_report. Used by scheduler. Pure function structure, no external dependencies beyond json/logging
 
-#### ⚫ `scripts/analysis/data_quality_report.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/data_quality_report.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Comprehensive data quality audit: checks parquet row counts, season coverage, null percentages, team name consistency, xG cross-reference (FBref vs Understat), data freshness, and feature performance monitoring.
 - **Talks to:** imports: config/settings.py (DATA_DIR, SEASONS), config/team_names.py (TEAM_NAME_MAP), features/understat_features.py, scraper/injuries.py; imported_by: none
 - **Quality signals:** Thorough audit with 7 check categories (parquet files, season coverage, null %, team names, xG cross-ref, data freshness, features). Builds TEAM_NAME_VARIANTS from TEAM_NAME_MAP. Code snippet shows check_parquet_files and check_season_coverage functions with proper error handling. Fact card: dead_candidate=true, zero importers. Suggests this is a one-off diagnostic run, not integrated into pipeline
@@ -1439,7 +1442,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **⚠️ Missing connection:** Imports feature/understat_features and scraper/injuries but uses them only for checks, not feedback
 - **Verdict reason:** Dead candidate with zero importers. One-off diagnostic tool that doesn't integrate into pipeline. If data quality checks are needed, codify them into pipeline health checks or converter. Remove to reduce clutter
 
-#### ⚫ `scripts/analysis/feature_importance_analysis.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/feature_importance_analysis.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Analyzes feature importance using SHAP and CatBoost, identifying noisy features and ranking feature contributions to predictions.
 - **Talks to:** imports: config/settings.py (DATA_DIR, MODELS_DIR); imports optional: shap, catboost; imported_by: none
 - **Quality signals:** Implements FeatureImportanceAnalyzer with load_data and load_model. Optional SHAP/CatBoost imports with fallback warnings. Loads features.parquet and universal/classifier_extended.cbm. Code snippet shows initialization and basic loading logic. Fact card: dead_candidate=true, zero importers. Phase 1.3 exploration, not integrated
@@ -1453,7 +1456,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **⚠️ Missing connection:** Defines formation system but no consumers; not integrated into prediction engine or pipeline
 - **Verdict reason:** Dead candidate with zero importers. Incomplete scaffolding for a Tier 2 formation-adjusted system that was never finished or integrated. Remove incomplete code
 
-#### ⚫ `scripts/analysis/high_confidence_analyzer.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/high_confidence_analyzer.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Analyzes high-confidence predictions strategy: evaluates accuracy ONLY on high-confidence (>65%/70%/75%) predictions to model professional betting approach of quality over quantity.
 - **Talks to:** imports: config/settings.py, ml/config.py (LABEL_MAP), scripts/models/train_unified.py (time_series_split); imported_by: none
 - **Quality signals:** Implements time-series split validation, trains binary classifiers (CatBoostClassifier) for multiple markets (result, home_clean_sheet, away_clean_sheet, home_scores, away_scores, btts, over_2_5, over_1_5). Has BASE_FEATURES list with ~25 features. Code snippet shows train_binary_model and BASE_FEATURES. Fact card: dead_candidate=true, zero importers. Exploratory analysis of high-confidence strategy
@@ -1469,7 +1472,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: scripts/pipeline/run_full_pipeline.py; imports: config/settings.py, features/bankroll_manager.py, scripts/utils/json_utils.py (load_json_safe)
 - **Quality signals:** Comprehensive dashboard with 8+ check functions: archive_predictions, check_prediction_accuracy, check_betting_performance, check_data_freshness, check_feature_drift, check_confidence_calibration, check_settled_bet_feedback, check_bankroll_health. Loads and merges multiple data sources (predictions.json, archive, results.json, betting history, bankroll). Used by main pipeline. Output to performance_dashboard.json
 
-#### ⚫ `scripts/analysis/performance_tracker.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/performance_tracker.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Analytics and optimization for betting performance: tracks win rate by confidence level, ROI by factor combination, factor performance analysis, backtesting validation, and optimization recommendations.
 - **Talks to:** imports: config/settings.py (DATA_DIR), optional pandas; imported_by: none
 - **Quality signals:** Implements analysis by confidence (analyze_by_confidence), loads bet history and validation data. Builds defaultdict for confidence metrics. Code snippet shows load_bet_history and load_validation_data functions with pandas optional dependency. Fact card: dead_candidate=true, zero importers. Likely superseded by performance_dashboard.py which provides similar tracking in an integrated way
@@ -1480,7 +1483,7 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: scripts/pipeline/run_full_pipeline.py; imports: config/leagues.py, config/settings.py, config/team_names.py, scraper/lineup_fetcher.py (normalize_player_name), scripts/utils/parsing.py (get_cache_path)
 - **Quality signals:** Large, comprehensive system with multiple data classes (PlayerStats, TeamSquad, PlayerMatchup, MatchPlayerAnalysis) and classes (PlayerDataScraper, PlayerAnalyzer). Caching system with CACHE_DIR and CACHE_DURATION_DAYS. Position importance weights. Free data sources (FBref, Understat, Transfermarkt). Multiple entry points (analyze_all_upcoming_matches, get_player_factors). Used by main pipeline. Optional requests/bs4 dependencies with HAS_SCRAPING flag
 
-#### ⚫ `scripts/analysis/player_data_audit.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/player_data_audit.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Audits player data coverage across all seasons: reports per-season row counts in player_stats.parquet and understat_players.parquet, raw HTML file counts, registry coverage, and identifies seasons needing scraping.
 - **Talks to:** imports: config/settings.py (DATA_DIR, RAW_HTML_DIR, SEASONS), storage/paths.py (parsed_path); imported_by: none
 - **Quality signals:** Implements audit_player_stats_parquet and audit_understat_players functions checking row counts, unique players, season coverage. Defines PLAYER_STATS_SEASONS constraint (seasons >= 2017). Code snippet shows proper data validation with .nunique() counts and missing column handling. Fact card: dead_candidate=true, zero importers. One-shot diagnostic, not integrated
@@ -1491,13 +1494,13 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Talks to:** imported_by: scripts/pipeline/telegram_bot.py, web/app.py; imports: none (uses DATA_DIR constant and pandas)
 - **Quality signals:** Builds player history dict from two data sources: Understat (2014-2025 broad coverage) and Sofascore (2022+ recent). Implements detect_career_gaps to identify seasons away from Serie A. get_player_profile, find_ex_players, get_match_context utilities for querying history. Handles season normalization, duplicate detection, and sorting. Used by telegram_bot and web app for enriched context. ~150 lines shows complete, production-quality implementation
 
-#### ⚫ `scripts/analysis/train_draw_specialist.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/train_draw_specialist.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Trains and validates DrawSpecialist binary classifier for draws using walk-forward cross-validation across seasons 2005-2025, evaluates calibration vs ensemble, backtests on 2023-2025 Pinnacle odds, and tests blended approaches.
 - **Talks to:** imports: ml/draw_specialist.py (DrawSpecialist, compute_draw_specific_features); imported_by: none; uses: sklearn.metrics (accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, brier_score_loss)
 - **Quality signals:** Implements complete walk-forward training and evaluation: load_data (features.parquet with result column creation), get_feature_columns (numeric only, excludes match metadata). Computes precision, recall, F1, AUC-ROC, Brier score per fold. Backtests on 2023-2025. Code snippet shows load_data and get_feature_columns with proper filtering. Fact card: dead_candidate=true, zero importers. Suggests this is a specialized model variant that was not integrated
 - **Verdict reason:** Dead candidate with zero importers. Specialized model for draw prediction that was not integrated into the ensemble. If draw prediction is important, integrate DrawSpecialist into backtest_unified and ensemble rather than keeping as standalone. Remove
 
-#### ⚫ `scripts/analysis/validate_player_backfill.py` — grade B · **delete**
+#### ⚫ `scripts/analysis/validate_player_backfill.py` — grade B · keep (CLEANUP_PLAN keep-list, 2026-06-01: valid standalone; reconciled 2026-09-06)
 - **Does:** Validates backfilled player_stats.parquet data quality: checks record counts (~12,000+/season), season coverage (2017-2025), key player presence, no duplicates, stat sanity (minutes <=95, xG >=0), 20 teams/season, cross-reference with matches.parquet.
 - **Talks to:** imports: storage/paths.py (parsed_path); imported_by: none
 - **Quality signals:** Implements 7 validation checks: check_record_counts (warns <10k rows), check_season_coverage (expects 2017-2025 + 2025-2026), check_key_players (spot-check known stars per era with STAR_PLAYERS dict), plus stat sanity and team coverage. Code snippet shows check_record_counts and check_season_coverage with per-season analysis. Fact card: dead_candidate=true, zero importers. One-time backfill validation

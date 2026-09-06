@@ -261,7 +261,6 @@ def test_unresolvable_matches_are_omitted_not_blanked(monkeypatch):
 
 
 def test_one_bad_match_does_not_sink_the_cycle(monkeypatch):
-    monkeypatch.setattr("scripts.data.live_sofascore._sofascore_blocked_until", 0.0)  # breaker is persisted state now
     monkeypatch.setattr(
         "scripts.data.live_sofascore.get_sofascore_match_ids",
         lambda t: {"Milan vs Como": 1, "Roma vs Lazio": 2},
@@ -296,7 +295,6 @@ def _espn_payload(mk):
 
 def test_sofascore_403_on_every_endpoint_falls_back_to_espn(monkeypatch):
     import scripts.data.live_sofascore as mod
-    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
     monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 16285005})
     monkeypatch.setattr(mod, "fetch_live_data_for_match", _all_403)
     monkeypatch.setattr(mod._ss, "_LAST_FAILURE_STATUS", 403, raising=False)
@@ -304,14 +302,13 @@ def test_sofascore_403_on_every_endpoint_falls_back_to_espn(monkeypatch):
     out = fetch_live_data_for_matches(["AS Roma vs Atalanta BC"])
     assert out["AS Roma vs Atalanta BC"]["source"] == "espn"
     assert out["AS Roma vs Atalanta BC"]["sofascore_id"] == 16285005  # id survives the swap
-    assert mod._sofascore_blocked_until > 0  # breaker tripped
+    assert mod._client.cooldown_remaining("api") > 0  # the shared cooldown tripped
     assert mod.LAST_ERRORS == {}
 
 
 def test_breaker_skips_sofascore_and_goes_straight_to_espn(monkeypatch):
-    import time as _t
     import scripts.data.live_sofascore as mod
-    monkeypatch.setattr(mod, "_sofascore_blocked_until", _t.monotonic() + 600)
+    mod._client.set_cooldown("test", tier="api", minutes=10)
 
     def boom(*a, **k):  # pragma: no cover - must not run while cooling down
         raise AssertionError("Sofascore was called during the 403 cooldown")
@@ -325,7 +322,6 @@ def test_breaker_skips_sofascore_and_goes_straight_to_espn(monkeypatch):
 
 def test_nothing_answers_means_omitted_with_a_reason(monkeypatch):
     import scripts.data.live_sofascore as mod
-    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
     monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 1})
     monkeypatch.setattr(mod, "fetch_live_data_for_match", _all_403)
     monkeypatch.setattr(mod._ss, "_LAST_FAILURE_STATUS", 403, raising=False)
@@ -340,7 +336,6 @@ def test_partial_sofascore_answer_is_kept_not_replaced(monkeypatch):
     """/incidents answered, /statistics 403'd: keep the Sofascore payload (its
     flags tell live_monitor to leave live_stats alone), do not swap to ESPN."""
     import scripts.data.live_sofascore as mod
-    monkeypatch.setattr(mod, "_sofascore_blocked_until", 0.0)
     monkeypatch.setattr(mod, "get_sofascore_match_ids", lambda t: {"AS Roma vs Atalanta BC": 1})
 
     def partial(sid):

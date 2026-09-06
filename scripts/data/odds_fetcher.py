@@ -413,7 +413,7 @@ def get_usage_summary() -> Dict:
     api_remaining = usage.get("remaining_credits")
 
     # Monthly reset = first day of next month, 00:00 UTC (Odds API convention)
-    now = datetime.now(UTC)
+    now = now_utc()
     if now.month == 12:
         reset = datetime(now.year + 1, 1, 1, tzinfo=UTC)
     else:

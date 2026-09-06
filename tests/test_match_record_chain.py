@@ -176,7 +176,6 @@ def test_shot_rebuild_keeps_stand_ins_until_the_cache_holds_the_match(isolated):
 
 
 def test_sofascore_cooldown_is_written_on_a_denial_and_skips_the_next_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(mu, "SOFASCORE_COOLDOWN_FILE", tmp_path / "cool.json")
     assert mu.sofascore_cooldown_remaining() == 0.0
     assert mu._looks_denied(RuntimeError("HTTP 403: challenge")) and not mu._looks_denied(RuntimeError("timeout"))
     mu.set_sofascore_cooldown("HTTP 403", minutes=30)
@@ -188,7 +187,6 @@ def test_fetch_loop_stops_at_the_first_denial(tmp_path, monkeypatch):
     import asyncio
     import sys
     import types
-    monkeypatch.setattr(mu, "SOFASCORE_COOLDOWN_FILE", tmp_path / "cool.json")
     monkeypatch.setattr(mu, "RATE_LIMIT", 0)
     calls = []
 

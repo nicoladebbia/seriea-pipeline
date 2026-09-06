@@ -1239,6 +1239,29 @@ def check_match_record_completeness(now: datetime | None = None) -> Dict:
 
 
 
+def check_live_loop(status: dict | None = None, window_open: bool | None = None) -> dict:
+    """The live loop process (com.seriea-pipeline.live-loop, KeepAlive) must
+    always have a fresh heartbeat in data/monitoring/live_loop_status.json.
+    Dead outside the arming window = WARNING (launchd should have restarted
+    it); dead while a kickoff is inside the window = CRITICAL (no goal pings,
+    no live odds, and the /live page would say "idle" for a match on the pitch)."""
+    from scripts.data.live_monitor import LIVE_LOOP_STALE_SEC, live_window_open, read_live_loop_status
+    st = status if status is not None else read_live_loop_status()
+    if st.get("alive"):
+        return {"status": "OK", "detail": f"live loop alive (pid {st.get('pid')}, "
+                                         f"{'polling' if st.get('active') else 'idle'}, "
+                                         f"heartbeat {st.get('heartbeat_age_s')}s ago)"}
+    age = st.get("heartbeat_age_s")
+    why = ("live loop has never written a heartbeat" if age is None
+           else f"live loop heartbeat {age}s old (stale after {LIVE_LOOP_STALE_SEC}s)")
+    near = window_open if window_open is not None else live_window_open()
+    if near:
+        return {"status": "CRITICAL", "detail": why + " while a kickoff is inside the arming window — "
+                                                "no goal pings, no live odds; check com.seriea-pipeline.live-loop"}
+    return {"status": "WARNING", "detail": why + " (KeepAlive should have restarted it: "
+                                                 "launchctl list | grep live-loop)"}
+
+
 def check_launchd_plists(repo_dir: Path | None = None, installed_dir: Path | None = None,
                          launchctl_output: str | None = "") -> Dict:
     """Installed launchd jobs vs the vendored copies in config/launchd/.
@@ -1608,6 +1631,7 @@ def run_health_check() -> Dict:
         "picks_journal_activity": check_picks_journal_activity(),
         "referee_coverage": check_referee_coverage(),
         "launchd_plists": check_launchd_plists(),
+        "live_loop": check_live_loop(),
         "match_record_completeness": check_match_record_completeness(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),

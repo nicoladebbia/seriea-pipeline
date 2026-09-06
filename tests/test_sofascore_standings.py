@@ -202,14 +202,23 @@ def test_transport_failure_is_not_a_schema_break(serve, slept):
     shape" and drives a different alert in the dashboard's health endpoint.
 
     A 403 is also the exact symptom of the Cloudflare IP ban this whole HTML
-    path exists to survive, so it must be retried, not treated as a hard status.
+    path exists to survive. Since 2026-09-06 it is NOT retried: the first hit
+    parks the www tier in the shared client cooldown (every retry was a vote for
+    the blanket deny the IP earned that day) and the failure still counts here.
     """
+    from scraper import sofascore_client as sc
     serve(_Resp("", status=403))
     assert ss.live_standings_via_html("serie_a") == {}
     h = ss.html_health_now("serie_a")
     assert h["schema_break"] is False
     assert h["consecutive_failures"] == 1
-    assert slept == [1, 2], "403 must back off 1s then 2s before giving up"
+    assert slept == [], "a 403 is parked on the first hit, never backed off and retried"
+    assert sc.cooldown_remaining("www") > 0 and sc.cooldown_remaining("api") == 0
+    # while parked, the next tick asks nothing of Sofascore and still counts a failure
+    ss._html_standings_cache.clear()
+    serve(AssertionError("requested Sofascore during the www cooldown"))
+    assert ss.live_standings_via_html("serie_a") == {}
+    assert ss.html_health_now("serie_a")["consecutive_failures"] == 2
 
 
 def test_a_hard_status_is_not_retried(serve, slept):
@@ -265,8 +274,8 @@ def test_failures_are_negative_cached_so_sofascore_is_not_hammered(serve):
     try:
         for _ in range(5):
             assert ss.live_standings_via_html("serie_a") == {}
-        # 3 in-call retries on the first attempt, then the {} marker is cached.
-        assert calls["n"] == 3, f"re-hammered Sofascore: {calls['n']} requests"
+        # ONE request: the 403 parks the www tier, then the {} marker is cached.
+        assert calls["n"] == 1, f"re-hammered Sofascore: {calls['n']} requests"
     finally:
         monkey.undo()
 

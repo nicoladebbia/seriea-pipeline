@@ -108,19 +108,32 @@ def html_is_broken(league: str) -> bool:
 def sofascore_get_retry(s: Any, url: str, timeout: int = 10, attempts: int = 3) -> tuple[Any, str]:
     """GET with in-call retry on transient transport errors.
 
-    Retries connect failures, timeouts, and Cloudflare-mood statuses (403/429/5xx)
-    with 1s/2s backoff so a single blip never reaches the failure breaker.
+    Retries connect failures, timeouts and 5xx with 1s/2s backoff so a single
+    blip never reaches the failure breaker. A 403/429 is NOT retried: it parks
+    the www tier in the shared client cooldown (scraper.sofascore_client).
     Returns (response, "") on success or hard status (404 etc.); (None, err) when
     all attempts were transient failures.
     """
+    from scraper import sofascore_client as _client
+    cooling = _client.cooldown_remaining("www")
+    if cooling > 0:
+        return None, f"www cooldown ({int(cooling)}s left)"
     err = ""
     for attempt in range(1, attempts + 1):
         try:
             r = s.get(url, timeout=timeout)
         except Exception as e:  # noqa: BLE001 — transport errors vary by curl_cffi backend
             err = f"{type(e).__name__}: {str(e)[:120]}"
+            if _client.looks_denied(e):
+                _client.set_cooldown(f"{err} on {url}", tier="www")
+                return None, f"{err} (www cooldown set)"
         else:
-            if r.status_code in (403, 429) or r.status_code >= 500:
+            if r.status_code in _client.DENIED_STATUSES:
+                # A denial is parked on the first hit: every retry is a vote for a
+                # longer ban (2026-09-06: 310 retried 403s got the IP blanket-denied).
+                _client.set_cooldown(f"HTTP {r.status_code} on {url}", tier="www")
+                return None, f"HTTP {r.status_code} (www cooldown set)"
+            if r.status_code >= 500:
                 err = f"HTTP {r.status_code}"
             else:
                 return r, ""

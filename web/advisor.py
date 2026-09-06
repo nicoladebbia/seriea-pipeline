@@ -20,6 +20,7 @@ from typing import Any
 
 from flask import Blueprint, Response, jsonify, render_template, request
 
+from scripts.betting.ledger import get_history_view
 from scripts.utils.match_timing import now_local, now_utc
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,15 @@ advisor_bp = Blueprint("advisor", __name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-from config.settings import BETTING_DIR, DATA_DIR, LIVE_DIR, UPCOMING_DIR, atomic_write_json, season_file_suffix
+from config.settings import (
+    BETTING_DIR,
+    DATA_DIR,
+    LIVE_DIR,
+    PARLAY_KELLY_FRACTION,
+    UPCOMING_DIR,
+    atomic_write_json,
+    season_file_suffix,
+)
 from scripts.utils.json_utils import load_json_safe
 
 USAGE_FILE = DATA_DIR / "api_usage.json"
@@ -1703,7 +1712,7 @@ def _tool_get_results(args: dict) -> str:
         })
 
     # Settled bets for those matches
-    history = load_json_safe(BETTING_DIR / "history.json")
+    history = get_history_view()
     settled = history.get("settled_bets", []) if isinstance(history, dict) else history if isinstance(history, list) else []
 
     # Filter settled bets to matching dates
@@ -1807,7 +1816,7 @@ def _tool_get_betting_performance(args: dict) -> str:
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
 
     # Load data sources
-    history = load_json_safe(BETTING_DIR / "history.json")
+    history = get_history_view()
     journal = load_json_safe(BETTING_DIR / "bet_journal.json")
     pnl = load_json_safe(BETTING_DIR / "pnl_history.json", default=[])
     perf_dash = load_json_safe(DATA_DIR / "performance_dashboard.json")
@@ -2982,7 +2991,7 @@ def _tool_build_parlay(args: dict) -> str:
     # Kelly stake for parlay
     b_val = combined_odds - 1
     kelly_raw = (b_val * combined_prob - (1 - combined_prob)) / b_val if b_val > 0 else 0
-    kelly_fraction = 0.10  # 10% Kelly for parlays (conservative)
+    kelly_fraction = PARLAY_KELLY_FRACTION  # config.settings: the generator uses the same
     kelly_adj = max(kelly_raw * kelly_fraction, 0)
 
     bankroll = _get_bankroll()
@@ -3640,7 +3649,7 @@ def _build_greeting() -> dict:
     today = now_local().strftime("%Y-%m-%d")
 
     # Check if matches settled today
-    history = load_json_safe(BETTING_DIR / "history.json")
+    history = get_history_view()
     settled_bets = history.get("settled_bets", []) if isinstance(history, dict) else history if isinstance(history, list) else []
     today_settled = [
         b for b in settled_bets

@@ -41,7 +41,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, atomic_write_json
+from config.settings import DATA_DIR, KELLY_FRACTION, atomic_write_json
 from scripts.utils.match_timing import now_local, now_utc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -78,7 +78,7 @@ class PredictionConfig:
 
     # Bankroll management
     bankroll: float = 1000.0
-    kelly_fraction: float = 0.10    # Synced with production (betting_unified.py)
+    kelly_fraction: float = KELLY_FRACTION  # config.settings: the one definition
 
     # Output control
     output_format: str = "text"  # text, json

@@ -19,11 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-try:
-    from curl_cffi import requests as cffi_requests
-    _HAS_CFFI = True
-except ImportError:
-    _HAS_CFFI = False
+from scraper import sofascore_client as _client
 
 log = logging.getLogger(__name__)
 
@@ -35,123 +31,23 @@ _CAPTAINS_PATH = _SOFASCORE_DIR / "captains.parquet"
 _BASE_URL = "https://api.sofascore.com/api/v1"
 _DELAY = 2.5  # seconds between requests (session reuse makes lower delay safe)
 
-_HEADERS = {
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.sofascore.com/",
-}
-
-# Impersonation options to rotate through on failures
-_IMPERSONATE_OPTIONS = ["chrome", "chrome110", "chrome120", "safari", "safari15_5"]
-
-_consecutive_failures = 0  # track API outages
-# Status code of the last _get_json call that returned None after exhausting
-# retries on 403/429/503 (None when the last call succeeded or 404'd) — lets
-# callers tell "lineups not published yet" apart from "Sofascore is blocking".
+# The HTTP layer lives in scraper.sofascore_client (one cooldown per tier,
+# shared by every process). These names stay because six modules and a dozen
+# tests import them from here; _LAST_FAILURE_STATUS mirrors the client's
+# answer after every call so `getattr(sofascore_events, "_LAST_FAILURE_STATUS")`
+# readers (lineup chain, live monitor) keep telling "blocked" from "not yet".
 _LAST_FAILURE_STATUS: int | None = None
-_current_impersonate_idx = 0
-_session = None  # persistent session for connection reuse
-
-
-def _get_session() -> cffi_requests.Session:
-    """Get or create a persistent curl_cffi Session.
-
-    Using a session with connection reuse is critical — Cloudflare/Sofascore
-    intermittently blocks NEW TCP connections (~40% failure rate), but an
-    established session with keep-alive reuses the same connection (100% success).
-    """
-    global _session, _current_impersonate_idx
-    if _session is None:
-        imp = _IMPERSONATE_OPTIONS[_current_impersonate_idx % len(_IMPERSONATE_OPTIONS)]
-        if _HAS_CFFI:
-            _session = cffi_requests.Session(impersonate=imp)
-            _session.headers.update(_HEADERS)
-        else:
-            import requests as _req
-            _session = _req.Session()
-            _session.headers.update(_HEADERS)
-        log.info("Created new Sofascore session (impersonate=%s)", imp)
-    return _session
-
-
-def _reset_session() -> None:
-    """Close and recreate the session (e.g. after repeated failures)."""
-    global _session, _current_impersonate_idx
-    if _session is not None:
-        try:
-            _session.close()
-        except Exception as e:
-            log.debug(f"Failed to close session cleanly: {e}")
-    _session = None
-    _current_impersonate_idx += 1
-    log.info("Session reset, will use impersonate=%s",
-             _IMPERSONATE_OPTIONS[_current_impersonate_idx % len(_IMPERSONATE_OPTIONS)])
-
-
-def _jitter_delay(base: float = _DELAY) -> None:
-    """Sleep for base ± 30% random jitter to avoid pattern detection."""
-    import random
-    jitter = base * 0.3 * (2 * random.random() - 1)
-    time.sleep(max(1.0, base + jitter))
+_get_session = _client.get_session
+_reset_session = _client.reset_session
+_jitter_delay = _client.jitter_delay
 
 
 def _get_json(url: str, session=None) -> dict | None:
-    """Fetch JSON from Sofascore API using a persistent curl_cffi Session.
-
-    Key reliability features:
-    - Persistent session with TCP connection reuse (100% vs 60% success rate)
-    - Session recreation after 5 consecutive failures
-    - Exponential backoff up to 60s per attempt
-    - Pauses 3 minutes after 8 consecutive failures
-    """
-    global _consecutive_failures, _LAST_FAILURE_STATUS
-    _LAST_FAILURE_STATUS = None
-
-    # If API has been consistently failing, pause and reset session
-    if _consecutive_failures >= 8:
-        pause = 180
-        log.warning("API rate-limited (%d consecutive failures). Pausing %ds + resetting session...",
-                     _consecutive_failures, pause)
-        _reset_session()
-        time.sleep(pause)
-        _consecutive_failures = 3
-
-    sess = session or _get_session()
-
-    for attempt in range(4):
-        try:
-            resp = sess.get(url, timeout=20)
-
-            if resp.status_code == 200:
-                _consecutive_failures = 0
-                return resp.json()
-            if resp.status_code == 404:
-                _consecutive_failures = 0
-                return None
-            if resp.status_code in (403, 429, 503):
-                _LAST_FAILURE_STATUS = resp.status_code
-                wait = min(60, _DELAY * (2 ** attempt))
-                log.warning("HTTP %d, waiting %.0fs (attempt %d)",
-                            resp.status_code, wait, attempt + 1)
-                if attempt >= 2:
-                    _reset_session()
-                    sess = _get_session()
-                time.sleep(wait)
-                continue
-            log.warning("HTTP %d for %s", resp.status_code, url)
-            _consecutive_failures = 0
-            return None
-        except Exception as exc:
-            _consecutive_failures += 1
-            wait = min(60, _DELAY * (2 ** attempt))
-            log.warning("Request error (attempt %d/4, consec=%d): %s",
-                        attempt + 1, _consecutive_failures, str(exc)[:80])
-            # Recreate session after connection errors
-            if _consecutive_failures >= 5 or attempt >= 1:
-                _reset_session()
-                sess = _get_session()
-            time.sleep(wait)
-    return None
+    """Fetch JSON from the Sofascore API through the shared client."""
+    global _LAST_FAILURE_STATUS
+    data = _client.get_json(url, session=session)
+    _LAST_FAILURE_STATUS = _client.last_failure_status()
+    return data
 
 
 def _parse_incidents(data: dict, match_id: int) -> list[dict]:

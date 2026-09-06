@@ -2878,7 +2878,7 @@ def run_pipeline(quick: bool = False, bankroll: float = 1000.0, snapshot_only: b
     print("\n  1. Review the betting recommendations above")
     print("  2. Compare with bookmaker odds for value")
     print("  3. Place bets with recommended stakes")
-    print("  4. Track results with: python scripts/performance_tracker.py")
+    print("  4. Track results with: python3 scripts/analysis/performance_tracker.py")
     print("  5. Run --snapshot-only 3-4x daily for temporal depth")
 
     # Post-pipeline data validation — catch issues before they reach users

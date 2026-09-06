@@ -31,7 +31,7 @@ from scipy.stats import norm, poisson
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config.settings import DATA_DIR, UPCOMING_DIR, atomic_write_json
+from config.settings import DATA_DIR, PARLAY_KELLY_FRACTION, UPCOMING_DIR, atomic_write_json
 from scripts.utils.json_utils import load_json_safe
 from scripts.utils.match_timing import now_local, now_utc
 from scripts.utils.parsing import extract_line
@@ -48,7 +48,7 @@ POISSON_CORRELATION_RHO = 0.10
 COPULA_RHO_SAME_DAY = 0.03
 COPULA_RHO_SAME_ROUND = 0.01
 MONTE_CARLO_SIMS = 5000
-KELLY_FRACTION = 0.10
+KELLY_FRACTION = PARLAY_KELLY_FRACTION  # reported in the output metadata; the stake below uses the same
 MAX_STAKE_PCT = 0.02
 TOP_N_PER_CATEGORY = 8
 MAX_TOTAL_PARLAYS = 50
@@ -2159,7 +2159,7 @@ def _kelly_parlay_stake(combo, bankroll):
 
     # 1. Base fraction: 5% Kelly for parlays (vs 10% for singles).
     # Industry standard for multi-leg bets where edge estimation is noisier.
-    parlay_kelly_fraction = 0.05
+    parlay_kelly_fraction = PARLAY_KELLY_FRACTION
 
     # 2. Quality-weighted confidence
     avg_quality = np.mean([l.get("quality_score", 50) for l in combo["legs"]])

@@ -31,7 +31,7 @@ from scipy.stats import poisson
 
 from scripts.betting.betting_unified import remove_overround
 
-from config.settings import DATA_DIR, atomic_write_json
+from config.settings import DATA_DIR, KELLY_FRACTION, atomic_write_json
 from storage.paths import features_path
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -636,7 +636,7 @@ class MultiMarketBacktest:
         self,
         staking: str = "proportional",
         bankroll_start: float = 1000.0,
-        kelly_fraction: float = 0.10,
+        kelly_fraction: float = KELLY_FRACTION,
         proportional_pct: float = 2.0,
         max_stake_pct: float = 2.5,
         draw_min_edge: float = 0.04,

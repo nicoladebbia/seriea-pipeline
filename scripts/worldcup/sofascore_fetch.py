@@ -63,6 +63,9 @@ def get_json(session: Any, path: str) -> dict[str, Any] | None:
     """Polite GET with one retry; None on failure (caller decides severity).
     Trips SourceDownError after _BREAKER_LIMIT consecutive failures."""
     global _CONSEC_FAILURES
+    from scraper import sofascore_client as _client
+    if _client.cooldown_remaining("www") > 0:
+        raise SourceDownError("Sofascore www tier is cooling down (shared client cooldown)")
     if _CONSEC_FAILURES >= _BREAKER_LIMIT:
         raise SourceDownError(
             f"{_BREAKER_LIMIT} consecutive Sofascore failures — breaker open"
@@ -81,8 +84,9 @@ def get_json(session: Any, path: str) -> dict[str, Any] | None:
                 _CONSEC_FAILURES = 0
                 return None
             if r.status_code in (403, 429):
-                time.sleep(10.0 * attempt)
-                continue
+                _client.set_cooldown(f"HTTP {r.status_code} on {path}", tier="www")
+                _CONSEC_FAILURES += 1
+                return None
             _CONSEC_FAILURES += 1
             return None
         except Exception:  # noqa: BLE001 — transport errors vary by backend; retry-once then None

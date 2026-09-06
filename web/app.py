@@ -24,6 +24,7 @@ except ImportError:
     pass
 
 from flask import Flask, render_template, jsonify, request as flask_request
+from scripts.betting.ledger import get_history_view
 from config.settings import (
     DATA_DIR, get_current_season, UPCOMING_DIR, BETTING_DIR, LIVE_DIR, atomic_write_json,
 )
@@ -4587,7 +4588,7 @@ def _get_placed_bets():
 
 @app.route("/api/analytics")
 def api_analytics():
-    history_raw = _load_json(BETTING_DIR / "history.json")
+    history_raw = get_history_view()
     placed_log_raw = _load_json(BETTING_DIR / "placed_bets_log.json", default=[])
 
     # --- Bankroll + stats from ledger.get_metrics() (journal = source of truth) ---
@@ -4773,7 +4774,7 @@ def api_analytics():
 def api_analytics_export():
     """Export bet history as CSV."""
     import csv, io
-    history_raw = _load_json(BETTING_DIR / "history.json")
+    history_raw = get_history_view()
     placed_log = _load_json(BETTING_DIR / "placed_bets_log.json", default=[])
     if isinstance(placed_log, dict):
         placed_log = placed_log.get("bets", placed_log.get("log", []))
@@ -4914,7 +4915,7 @@ def api_system():
     dashboard = _load_json(DATA_DIR / "performance_dashboard.json")
     quality = _load_json(DATA_DIR / "quality_report.json")
     archive = _load_json(UPCOMING_DIR / "predictions_archive.json")
-    history_raw = _load_json(BETTING_DIR / "history.json")
+    history_raw = get_history_view()
 
     # Prediction archive: convert dict to list
     archive_list = []
@@ -5327,12 +5328,8 @@ def api_live():
     path = LIVE_DIR / f"{today}.json"
     data = _load_json(path, default=None)
 
-    # If auto-poll isn't running, only start it when a match is IMMINENT
-    # (kicks off within next 30 min) or already live. Just being a "match day"
-    # is too lax — burns ~24 credits/hour for hours before kickoff.
-    if not _auto_poll_active and _live_window_open():
-        _ensure_auto_poll()
-        log.info("Live poll auto-started — match imminent (within 30min) or live")
+    # The live loop process arms itself on the kickoff window (live_monitor.
+    # live_window_open); a page visit reads its status and never polls.
     # Re-read file in case a poll just completed
     if data is None:
         data = _load_json(path, default=None)
@@ -5345,9 +5342,7 @@ def api_live():
             "matches": {},
             "bet_tracking": [],
             "has_live": False,
-            "auto_poll_active": _auto_poll_active,
-            "auto_poll_interval": _auto_poll_interval,
-            "auto_poll_next_at": 0,
+            **_live_status_fields(),
         })
 
     # Filter out matches from previous days (they leak in when monitor runs past midnight)
@@ -5374,11 +5369,7 @@ def api_live():
             break
 
     data["has_live"] = has_live
-    data["auto_poll_active"] = _auto_poll_active
-    data["auto_poll_interval"] = _auto_poll_interval
-    data["auto_poll_next_at"] = _auto_poll_next_at if _auto_poll_active else 0
-    data["live_fast_interval"] = _live_fast_interval
-    data["live_fast_at"] = _live_fast_last["at"] if _auto_poll_active else 0
+    data.update(_live_status_fields())
     try:
         from scripts.data.live_monitor import _goal_ping_mode
         data["live_goal_pings"] = _goal_ping_mode()
@@ -5857,259 +5848,74 @@ def _evaluate_prop(market: str, pstats: dict, is_completed: bool) -> dict:
 
 
 
-LIVE_ARM_BEFORE_MIN = 5      # arm the live loop this long before a kickoff (the scores feed
-                             # reports a match live only after the whistle; earlier polls are empty)
-LIVE_ARM_AFTER_MIN = 150     # outer bound after kickoff (90' + HT + long stoppages); liveness
-                             # itself comes from the poll, the window only bounds the arming
-LIVE_OVER_MIN = 95           # a "no live matches" stop this long after a kickoff means that match is over
-LIVE_ARM_CHECK_SEC = 60
-_live_stopped_at = 0.0       # epoch of the last auto-poll stop for lack of live matches
+# ---------------------------------------------------------------------------
+# Live loop — its own launchd process since 2026-09-06
+# (`python3 -m scripts.data.live_monitor --loop`, com.seriea-pipeline.live-loop).
+# The web app never polls: these routes write a request into pipeline_state.json
+# or an interval, and every "is the loop running" field on the page is read from
+# data/monitoring/live_loop_status.json (rewritten by the loop on every state
+# change and every 15s). A dead loop shows as live_loop_alive=false, never as a
+# quiet Saturday — health_check.check_live_loop WARNs on it.
+# ---------------------------------------------------------------------------
+from scripts.data import live_monitor as _live  # noqa: E402
 
 
-def _live_window_open(now=None, kickoffs=None, stopped_at=None) -> bool:
-    """True while some fixture kicks off within LIVE_ARM_BEFORE_MIN or kicked
-    off less than LIVE_ARM_AFTER_MIN ago AND the loop has not already stopped
-    for lack of live matches after that fixture's LIVE_OVER_MIN mark (a stop at
-    +100' says the match is over; re-arming would poll the tail of the window
-    for nothing, ~5 credits a minute). The one gate for arming the live loop:
-    page visits, the boot check and the arming thread all read it, so a quiet
-    Saturday with no tab open still gets its goal pings and a match day never
-    burns polls hours before the first kickoff."""
-    try:
-        if kickoffs is None:
-            from scripts.pipeline.scheduler import get_kickoff_times
-            kickoffs = get_kickoff_times()
-        now = now or datetime.now(UTC)
-        stopped = _live_stopped_at if stopped_at is None else stopped_at
-        for k in kickoffs:
-            mins = (k["kickoff_utc"] - now).total_seconds() / 60
-            if not (-LIVE_ARM_AFTER_MIN <= mins <= LIVE_ARM_BEFORE_MIN):
-                continue
-            if stopped and stopped > k["kickoff_utc"].timestamp() + LIVE_OVER_MIN * 60:
-                continue  # the loop already saw this match finished
-            return True
-        return False
-    except Exception as e:  # noqa: BLE001 - a broken fixture file must not crash the arming thread
-        log.debug("live window check failed: %s", e)
-        return False
-
-
-def _live_arm_loop():
-    """Arms the auto-poll thread whenever the live window is open and it is not
-    running. Before 2026-09-05 the loop started only at boot (calendar match
-    day, then 4 empty polls and stop) or on a /api/live visit: tonight's pings
-    existed because a tab happened to be open."""
-    import time as _t
-    while True:
-        try:
-            if not _auto_poll_active and _live_window_open():
-                log.info("Live window open — arming the live poll")
-                _ensure_auto_poll()
-        except Exception as e:  # noqa: BLE001
-            log.debug("live arm check failed: %s", e)
-        _t.sleep(LIVE_ARM_CHECK_SEC)
-
-
-def _ensure_auto_poll():
-    """Restart auto-poll if it's not running and there are live matches."""
-    global _auto_poll_active, _auto_poll_thread
-    if _auto_poll_active and _auto_poll_thread and _auto_poll_thread.is_alive():
-        return  # Already running
-    _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
-    _auto_poll_thread.start()
+def _live_status_fields() -> dict:
+    """The live-loop fields every live/scheduler payload carries, read from the loop's status file."""
+    st = _live.read_live_loop_status()
+    active = bool(st.get("active"))
+    return {
+        "auto_poll_active": active,
+        "auto_poll_interval": st.get("interval"),
+        "auto_poll_next_at": st.get("next_at") if active else 0,
+        "live_fast_interval": st.get("fast_interval"),
+        "live_fast_at": st.get("fast_at") if active else 0,
+        "live_loop_alive": bool(st.get("alive")),
+        "live_loop_heartbeat_age_s": st.get("heartbeat_age_s"),
+        "live_loop_pid": st.get("pid"),
+    }
 
 
 @app.route("/api/live/trigger", methods=["POST"])
 def api_live_trigger():
-    """Trigger a single live poll on demand (2 API calls)."""
+    """One live poll on demand (2 API calls); asks the loop to keep going if matches are live."""
     try:
         from scripts.data.live_monitor import poll_once
         result = poll_once()
-        # If we found live matches, make sure auto-poll is running
         if result.get("has_live_matches"):
-            _ensure_auto_poll()
-        return jsonify({"ok": True, "result": result})
+            _live.request_live_loop("start")
+        return jsonify({"ok": True, "result": result, **_live_status_fields()})
     except Exception as e:
         log.error(f"Live poll trigger failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ---------------------------------------------------------------------------
-# Background auto-poll thread (enhanced with configurable interval)
-# ---------------------------------------------------------------------------
-
-_AUTO_POLL_DEFAULT_S = 300  # 5 min default — 60s burnt ~2880 Odds API calls/day
-_AUTO_POLL_BOUNDS = (30, 3600)
-_LIVE_POLL_STATE_KEY = "live_poll_interval"
-
-
-def _clamp_poll_interval(value, default=_AUTO_POLL_DEFAULT_S) -> int:
-    try:
-        return max(_AUTO_POLL_BOUNDS[0], min(_AUTO_POLL_BOUNDS[1], int(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _load_live_poll_interval(default=_AUTO_POLL_DEFAULT_S) -> int:
-    """The interval chosen on /live, read back from pipeline_state.json.
-
-    The choice used to live only in this process, so every Flask restart
-    (launchd kickstart, deploy) silently went back to 5 min while the page's
-    select still said "1 min". A chosen interval is state, so it lives with
-    the rest of the pipeline state.
-    """
-    try:
-        from scripts.pipeline.pipeline_state import load_state
-        saved = load_state().get(_LIVE_POLL_STATE_KEY)
-    except Exception as e:  # noqa: BLE001 - state file trouble must not stop the app
-        log.debug(f"live poll interval: state unreadable ({e}), using default")
-        saved = None
-    return _clamp_poll_interval(saved, default) if saved is not None else default
-
-
-def _save_live_poll_interval(interval: int) -> None:
-    try:
-        from scripts.pipeline.pipeline_state import load_state, save_state
-        state = load_state()
-        state[_LIVE_POLL_STATE_KEY] = int(interval)
-        save_state(state)
-    except Exception as e:  # noqa: BLE001
-        log.warning(f"live poll interval {interval}s not persisted: {e}")
-
-
-_LIVE_FAST_DEFAULT_S = 5
-_LIVE_FAST_BOUNDS = (3, 60)
-_LIVE_FAST_STATE_KEY = "live_fast_interval"
-
-
-def _load_live_fast_interval() -> int:
-    try:
-        from scripts.pipeline.pipeline_state import load_state
-        saved = load_state().get(_LIVE_FAST_STATE_KEY)
-    except Exception:  # noqa: BLE001
-        saved = None
-    try:
-        return max(_LIVE_FAST_BOUNDS[0], min(_LIVE_FAST_BOUNDS[1], int(saved)))
-    except (TypeError, ValueError):
-        return _LIVE_FAST_DEFAULT_S
-
-
-_auto_poll_active = False
-_auto_poll_thread = None
-_auto_poll_interval = _load_live_poll_interval()  # seconds; survives restarts
-_auto_poll_next_at = 0.0  # timestamp of next poll
-# Fast live tick (ESPN score/stats/events, free) between two Odds API polls.
-_live_fast_interval = _load_live_fast_interval()
-_live_fast_last = {"at": 0.0, "refreshed": 0}
-
-def _auto_poll_loop():
-    """Background thread: poll at configurable interval while live matches exist."""
-    global _auto_poll_active, _auto_poll_next_at
-    _auto_poll_active = True
-    consecutive_no_live = 0
-    consecutive_auth_errors = 0
-
-    log.info(f"Auto-poll thread started (every {_auto_poll_interval}s)")
-
-    while _auto_poll_active:
-        result = {}
-        try:
-            from scripts.data.live_monitor import poll_once
-            result = poll_once()
-
-            if result.get("error"):
-                log.warning(f"Auto-poll error: {result['error']}")
-                break
-
-            if not result.get("has_live_matches"):
-                consecutive_no_live += 1
-                log.info(f"Auto-poll: no live matches ({consecutive_no_live}/4)")
-                # Stop after 4 empty polls (20 min) instead of 12 (60 min) — saves ~16 credits per false start
-                if consecutive_no_live >= 4:
-                    log.info("Auto-poll: stopping after 4 polls with no live matches")
-                    global _live_stopped_at
-                    _live_stopped_at = _time.time()
-                    break
-            else:
-                consecutive_no_live = 0
-            consecutive_auth_errors = 0
-
-        except Exception as e:
-            msg = str(e)
-            if "401" in msg or "OUT_OF_USAGE_CREDITS" in msg or "Unauthorized" in msg:
-                consecutive_auth_errors += 1
-                if consecutive_auth_errors >= 3:
-                    log.warning(
-                        "Auto-poll: 3 consecutive auth/quota errors — stopping thread. "
-                        "Will restart on next match-day trigger."
-                    )
-                    break
-                log.warning(f"Auto-poll auth error ({consecutive_auth_errors}/3): {e}")
-            else:
-                log.error(f"Auto-poll error: {e}")
-
-        # Between two Odds API polls: sleep in 1s steps (responsive stop and
-        # interval changes) and run the FREE fast tick — ESPN score / stats /
-        # events for matches on the pitch — every _live_fast_interval seconds.
-        _auto_poll_next_at = _time.time() + _auto_poll_interval
-        elapsed = 0.0
-        has_live = bool(result.get("has_live_matches")) if isinstance(result, dict) else False
-        next_fast = _time.time() + _live_fast_interval
-        while elapsed < _auto_poll_interval and _auto_poll_active:
-            _time.sleep(1)
-            elapsed += 1
-            if has_live and _time.time() >= next_fast:
-                # cadence counts from the START of the tick: a 3s ESPN round
-                # trip must not stretch a 5s interval into 8s
-                next_fast = _time.time() + _live_fast_interval
-                try:
-                    from scripts.data.live_monitor import refresh_live_fast
-                    fast = refresh_live_fast()
-                    _live_fast_last["at"] = _time.time()
-                    _live_fast_last["refreshed"] = fast.get("refreshed", 0)
-                    has_live = bool(fast.get("has_live_matches"))
-                except Exception as e:  # noqa: BLE001
-                    log.debug(f"fast live tick failed: {e}")
-            # Re-read interval in case it was shortened mid-sleep
-            if _auto_poll_interval <= elapsed:
-                break
-
-    _auto_poll_active = False
-    _auto_poll_next_at = 0.0
-    log.info("Auto-poll thread stopped")
-
-
 @app.route("/api/live/auto-poll", methods=["POST"])
 def api_live_auto_poll():
-    """Start or stop the background auto-poll thread."""
-    global _auto_poll_active, _auto_poll_thread
+    """Ask the live loop process to start or stop (consumed on its next tick)."""
     action = flask_request.json.get("action", "start") if flask_request.is_json else "start"
-
-    if action == "stop":
-        _auto_poll_active = False
-        return jsonify({"ok": True, "active": False})
-
-    if _auto_poll_active and _auto_poll_thread and _auto_poll_thread.is_alive():
-        return jsonify({"ok": True, "active": True, "message": "already running"})
-
-    _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
-    _auto_poll_thread.start()
-    return jsonify({"ok": True, "active": True})
+    if action not in ("start", "stop"):
+        return jsonify({"ok": False, "error": f"unknown action {action!r}"}), 400
+    try:
+        req = _live.request_live_loop(action)
+    except Exception as e:  # noqa: BLE001
+        log.error(f"live loop request failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    fields = _live_status_fields()
+    return jsonify({"ok": True, "requested": req, "active": fields["auto_poll_active"], **fields})
 
 
 @app.route("/api/live/config", methods=["POST"])
 def api_live_config():
     """Set live poll interval (seconds). Accepts 30-3600."""
-    global _auto_poll_interval, _live_fast_interval
     data = flask_request.get_json(silent=True) or {}
-    interval = _clamp_poll_interval(data.get("interval", _auto_poll_interval), _auto_poll_interval)
-    _auto_poll_interval = interval
-    _save_live_poll_interval(interval)
+    current = _live.load_live_poll_interval()
+    interval = _live.clamp_poll_interval(data.get("interval", current), current)
+    _live.save_live_poll_interval(interval)
+    fast_interval = _live.load_live_fast_interval()
     if "fast_interval" in data:
         try:
-            _live_fast_interval = max(_LIVE_FAST_BOUNDS[0], min(_LIVE_FAST_BOUNDS[1], int(data["fast_interval"])))
-            from scripts.pipeline.pipeline_state import load_state, save_state
-            st = load_state(); st[_LIVE_FAST_STATE_KEY] = _live_fast_interval; save_state(st)
+            fast_interval = _live.save_live_fast_interval(data["fast_interval"])
         except Exception as e:  # noqa: BLE001
             log.warning(f"fast interval not applied: {e}")
     goal_pings = None
@@ -6134,8 +5940,8 @@ def api_live_config():
                 inplay_pings = mode
         except Exception as e:  # noqa: BLE001
             log.warning(f"in-play ping mode not applied: {e}")
-    log.info(f"Live poll interval set to {interval}s (fast tick {_live_fast_interval}s)")
-    return jsonify({"ok": True, "interval": interval, "fast_interval": _live_fast_interval, "goal_pings": goal_pings,
+    log.info(f"Live poll interval set to {interval}s (fast tick {fast_interval}s)")
+    return jsonify({"ok": True, "interval": interval, "fast_interval": fast_interval, "goal_pings": goal_pings,
                     "inplay_pings": inplay_pings})
 
 
@@ -6369,8 +6175,7 @@ def api_match_clock():
 
     return jsonify({
         "ts": now.isoformat(),
-        "auto_poll_active": _auto_poll_active,
-        "auto_poll_interval": _auto_poll_interval,
+        **_live_status_fields(),
         "matches": matches,
     })
 
@@ -6854,26 +6659,10 @@ def _scheduler_loop():
                     _scheduler_add_log("results_error", str(e))
                 last_results = now_ts
 
-            # 5. Auto-start live polling on matchday
-            if cfg.get("auto_live_on_matchday") and not _auto_poll_active:
-                try:
-                    manual_path = DATA_DIR / "upcoming" / "manual_matches.json"
-                    if manual_path.exists():
-                        with open(manual_path) as f:
-                            manual = json.load(f)
-                        for m in manual.get("matches", []):
-                            if m.get("date") == today_str:
-                                # Match today — start auto poll
-                                global _auto_poll_thread, _auto_poll_interval
-                                # the interval chosen on /live wins over the scheduler default
-                                _auto_poll_interval = _load_live_poll_interval(
-                                    default=cfg.get("matchday_live_poll_min", 2) * 60)
-                                _auto_poll_thread = threading.Thread(target=_auto_poll_loop, daemon=True)
-                                _auto_poll_thread.start()
-                                _scheduler_add_log("auto_live", f"Started live polling ({cfg.get('matchday_live_poll_min', 2)} min)")
-                                break
-                except Exception as e:
-                    log.debug(f"Failed to check match schedule for live polling: {e}")
+            # 5. Live polling on matchday is the live loop process's job
+            #    (live_monitor.live_window_open, T-5..T+150 per fixture) — the old
+            #    calendar-day start here burnt 4 empty polls at 04:00 and never
+            #    re-armed for the 20:45 match.
 
         except Exception as e:
             _scheduler_add_log("error", str(e))
@@ -7229,8 +7018,7 @@ def api_scheduler_status():
         "log": _scheduler_log[-20:],
         "pipeline_running": _pipeline_running,
         "snapshot_running": _snapshot_running,
-        "auto_poll_active": _auto_poll_active,
-        "auto_poll_interval": _auto_poll_interval,
+        **_live_status_fields(),
     })
 
 
@@ -8065,16 +7853,7 @@ if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
     start_auto_settle()
     start_intel_maintenance()
 
-    # Arm the live poll whenever a kickoff is within reach — at boot and every
-    # LIVE_ARM_CHECK_SEC after, no page visit needed. (The old boot check used
-    # is_match_day(): a calendar-day test that started 4 wasted polls at 04:00
-    # and then never re-armed for the 20:45 match.)
-    def _live_arm_after_boot():
-        import time as _t
-        _t.sleep(10)  # Let app fully initialize
-        _live_arm_loop()
-
-    threading.Thread(target=_live_arm_after_boot, daemon=True).start()
+    # The live loop is its own launchd process (com.seriea-pipeline.live-loop); nothing to arm here.
 
 
 # ---------------------------------------------------------------------------

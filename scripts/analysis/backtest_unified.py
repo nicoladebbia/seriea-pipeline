@@ -57,7 +57,7 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config.settings import DATA_DIR, MODELS_DIR, atomic_write_json
+from config.settings import DATA_DIR, KELLY_FRACTION, MODELS_DIR, atomic_write_json
 from ml.evaluation import (  # noqa: F401 - _multiclass_brier is re-exported for tests/test_integration.py
     _multiclass_brier,
     expected_calibration_error,
@@ -251,7 +251,7 @@ class BacktestConfig:
 
     # Betting simulation parameters
     bankroll: float = 1000.0
-    kelly_fraction: float = 0.10    # Synced with production (betting_unified.py)
+    kelly_fraction: float = KELLY_FRACTION  # config.settings: the one definition
     min_edge: float = 0.05      # Walk-forward calibrated: +0.6% / +11.2% per season
     max_edge: float = 0.15      # Walk-forward calibrated: T=1.289 widens edge distribution
     max_bets_per_match: int = 3

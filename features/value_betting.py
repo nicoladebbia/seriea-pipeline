@@ -23,7 +23,7 @@ import pandas as pd
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import DATA_DIR
+from config.settings import DATA_DIR, KELLY_FRACTION
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -408,7 +408,7 @@ class ValueBettingPipeline:
 
     def __init__(
         self,
-        kelly_fraction: float = 0.10,  # Synced with production (betting_unified.py)
+        kelly_fraction: float = KELLY_FRACTION,  # config.settings: the one definition
         value_mode: str = "standard",
         min_ev: float = 0.02,
     ):
@@ -487,7 +487,7 @@ class ValueBettingPipeline:
 
 
 def get_value_pipeline(
-    kelly_fraction: float = 0.10,  # Synced with production (betting_unified.py)
+    kelly_fraction: float = KELLY_FRACTION,  # config.settings: the one definition
     value_mode: str = "standard",
 ) -> ValueBettingPipeline:
     """Factory function for value betting pipeline."""
@@ -502,7 +502,7 @@ if __name__ == "__main__":
     print("Testing Value Betting Pipeline")
     print("=" * 60)
 
-    pipeline = get_value_pipeline(kelly_fraction=0.10, value_mode="standard")
+    pipeline = get_value_pipeline(kelly_fraction=KELLY_FRACTION, value_mode="standard")
 
     # Test case: Model predicts home win with edge
     probs = {"home": 0.55, "draw": 0.25, "away": 0.20}

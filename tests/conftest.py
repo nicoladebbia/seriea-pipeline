@@ -158,6 +158,17 @@ def _promotion_state_isolated(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sofascore_cooldown_isolated(tmp_path, monkeypatch):
+    """The shared Sofascore cooldown is a file under data/monitoring; a test
+    that exercises a 403 must park a temp dir, never the live ingest."""
+    from scraper import sofascore_client as _sc
+    monkeypatch.setattr(_sc, "COOLDOWN_DIR", tmp_path / "sofascore_cooldown")
+    monkeypatch.setattr(_sc, "_LAST_STATUS", None)
+    monkeypatch.setattr(_sc, "_sessions", {})
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_notifications(monkeypatch):
     """Tripwire behind notify's own pytest guard: if that guard is ever removed,
     the test that reaches a transport fails loudly instead of posting to

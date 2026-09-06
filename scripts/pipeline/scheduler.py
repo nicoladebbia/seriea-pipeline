@@ -838,6 +838,60 @@ def _ensure_awake_hold(kickoffs: List[Dict], now, spawn=None,
     return True
 
 
+def _stages_due(horizon_matches: list[dict], processed: dict, now: datetime,
+                today_italy: str) -> tuple[dict[str, list[dict]], dict]:
+    """Which MATCH_CLOCK_STAGES fire NOW for which matches, and the processed
+    markers that stop them firing twice. Pure in `now`: the money path's
+    T-30 decision, testable at any frozen clock (tests/test_money_path_clock.py).
+    Returns (stage_name -> matches to dispatch, updated processed markers)."""
+    # actions_needed maps stage_name → list of match dicts (full objects, for dispatch)
+    actions_needed: dict[str, list[dict]] = {s["name"]: [] for s in MATCH_CLOCK_STAGES}
+
+    for match in horizon_matches:
+        match_key = match["match"]
+        kickoff_utc = match["kickoff_utc"]
+        match_date = match.get("date", today_italy)
+        # Both are UTC-aware — subtraction gives correct timedelta anywhere
+        minutes_until = (kickoff_utc - now).total_seconds() / 60
+
+        # Initialize match state (scoped by each match's own date, not today's)
+        match_state = processed.get(match_key, {"date": match_date, "stages": {}})
+        if match_state.get("date") != match_date:
+            match_state = {"date": match_date, "stages": {}}
+        stages_done = match_state.get("stages", {})
+
+        for stage in MATCH_CLOCK_STAGES:
+            stage_name = stage["name"]
+
+            # Check if already done — but allow retry for stages that support it
+            if stage_name in stages_done:
+                prev = stages_done[stage_name]
+                if stage.get("retry_if_empty") and prev.get("needs_retry"):
+                    pass  # Allow re-trigger
+                else:
+                    continue  # Already fired successfully
+
+            win_lo, win_hi = stage["window"]
+            if win_lo <= minutes_until <= win_hi:
+                log.info("Match clock [%s] %s: kickoff in %.0f min — TRIGGERING %s",
+                         stage_name, match_key, minutes_until, stage["description"])
+                actions_needed[stage_name].append(match)
+                stages_done[stage_name] = {
+                    "triggered_at": now.isoformat(),
+                    "minutes_until_kickoff": round(minutes_until),
+                }
+            elif minutes_until > win_hi:
+                log.debug("Match clock [%s] %s: kickoff in %.0f min — too early",
+                          stage_name, match_key, minutes_until)
+            elif minutes_until < win_lo:
+                log.debug("Match clock [%s] %s: kickoff in %.0f min — window passed",
+                          stage_name, match_key, minutes_until)
+
+        match_state["stages"] = stages_done
+        processed[match_key] = match_state
+    return actions_needed, processed
+
+
 def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     """Multi-stage match clock — orchestrates all match-day events.
 
@@ -919,51 +973,7 @@ def run_pre_kickoff_monitor(bankroll: float = 0) -> bool:
     processed = {k: v for k, v in processed.items()
                  if isinstance(v, dict) and v.get("date", "") >= cutoff}
 
-    # actions_needed maps stage_name → list of match dicts (full objects, for dispatch)
-    actions_needed: Dict[str, List[Dict]] = {s["name"]: [] for s in MATCH_CLOCK_STAGES}
-
-    for match in horizon_matches:
-        match_key = match["match"]
-        kickoff_utc = match["kickoff_utc"]
-        match_date = match.get("date", today_italy)
-        # Both are UTC-aware — subtraction gives correct timedelta anywhere
-        minutes_until = (kickoff_utc - now).total_seconds() / 60
-
-        # Initialize match state (scoped by each match's own date, not today's)
-        match_state = processed.get(match_key, {"date": match_date, "stages": {}})
-        if match_state.get("date") != match_date:
-            match_state = {"date": match_date, "stages": {}}
-        stages_done = match_state.get("stages", {})
-
-        for stage in MATCH_CLOCK_STAGES:
-            stage_name = stage["name"]
-
-            # Check if already done — but allow retry for stages that support it
-            if stage_name in stages_done:
-                prev = stages_done[stage_name]
-                if stage.get("retry_if_empty") and prev.get("needs_retry"):
-                    pass  # Allow re-trigger
-                else:
-                    continue  # Already fired successfully
-
-            win_lo, win_hi = stage["window"]
-            if win_lo <= minutes_until <= win_hi:
-                log.info("Match clock [%s] %s: kickoff in %.0f min — TRIGGERING %s",
-                         stage_name, match_key, minutes_until, stage["description"])
-                actions_needed[stage_name].append(match)
-                stages_done[stage_name] = {
-                    "triggered_at": now.isoformat(),
-                    "minutes_until_kickoff": round(minutes_until),
-                }
-            elif minutes_until > win_hi:
-                log.debug("Match clock [%s] %s: kickoff in %.0f min — too early",
-                          stage_name, match_key, minutes_until)
-            elif minutes_until < win_lo:
-                log.debug("Match clock [%s] %s: kickoff in %.0f min — window passed",
-                          stage_name, match_key, minutes_until)
-
-        match_state["stages"] = stages_done
-        processed[match_key] = match_state
+    actions_needed, processed = _stages_due(horizon_matches, processed, now, today_italy)
 
     # Save state before executing actions (prevents double-triggers on crash)
     state["processed"] = processed

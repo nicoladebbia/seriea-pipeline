@@ -1919,6 +1919,305 @@ def watch_loop():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# ===========================================================================
+# The live loop PROCESS (reliability phase 8, 2026-09-06)
+#
+# Until this, the arming loop, the Odds API poll thread and the ESPN fast tick
+# were daemon threads inside web/app.py (11.5k lines): a Flask restart killed a
+# live poll mid-match, the loop's log lines were buried in the web log, and
+# nothing outside the web process could tell whether the loop was alive. Now
+# `python3 -m scripts.data.live_monitor --loop` is its own launchd job
+# (com.seriea-pipeline.live-loop, KeepAlive) with its own log; the web app only
+# WRITES requests (start / stop / intervals into pipeline_state.json) and READS
+# `data/monitoring/live_loop_status.json`, which the loop rewrites on every
+# state change and every LIVE_LOOP_HEARTBEAT_SEC. A heartbeat older than
+# LIVE_LOOP_STALE_SEC while a kickoff is inside the arming window is a health
+# WARNING (health_check.check_live_loop) — the loop being dead is loud, not a
+# quiet Saturday.
+#
+# `live_loop_step(state, now)` is one tick, pure in `now` with injectable
+# collaborators, so the whole arm / poll / stop / re-arm machine is tested at a
+# frozen clock (tests/test_live_loop.py).
+# ===========================================================================
+LIVE_ARM_BEFORE_MIN = 5      # arm this long before a kickoff (the scores feed reports a match
+                             # live only after the whistle; earlier polls are empty)
+LIVE_ARM_AFTER_MIN = 150     # outer bound after kickoff (90' + HT + long stoppages)
+LIVE_OVER_MIN = 95           # a "no live matches" stop this long after a kickoff means it is over
+LIVE_ARM_CHECK_SEC = 60
+AUTO_POLL_DEFAULT_S = 300    # 60s burnt ~2880 Odds API calls/day
+AUTO_POLL_BOUNDS = (30, 3600)
+LIVE_POLL_STATE_KEY = "live_poll_interval"
+LIVE_FAST_DEFAULT_S = 5
+LIVE_FAST_BOUNDS = (3, 60)
+LIVE_FAST_STATE_KEY = "live_fast_interval"
+LIVE_LOOP_REQUEST_KEY = "live_loop_request"
+LIVE_LOOP_STATUS_FILE = DATA_DIR / "monitoring" / "live_loop_status.json"
+LIVE_LOOP_HEARTBEAT_SEC = 15
+LIVE_LOOP_STALE_SEC = 3 * LIVE_ARM_CHECK_SEC
+EMPTY_POLLS_TO_STOP = 4      # 4 empty polls (20 min at the default) instead of 12 — ~16 credits per false start
+AUTH_ERRORS_TO_STOP = 3
+
+
+def clamp_poll_interval(value, default: int = AUTO_POLL_DEFAULT_S) -> int:
+    try:
+        return max(AUTO_POLL_BOUNDS[0], min(AUTO_POLL_BOUNDS[1], int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def load_live_poll_interval(default: int = AUTO_POLL_DEFAULT_S) -> int:
+    """The interval chosen on /live, read back from pipeline_state.json (a
+    chosen interval is state: it must survive any restart)."""
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        saved = load_state().get(LIVE_POLL_STATE_KEY)
+    except Exception as e:  # noqa: BLE001 - state file trouble must not stop anything
+        log.debug("live poll interval: state unreadable (%s), using default", e)
+        saved = None
+    return clamp_poll_interval(saved, default) if saved is not None else default
+
+
+def save_live_poll_interval(interval: int) -> None:
+    try:
+        from scripts.pipeline.pipeline_state import load_state, save_state
+        state = load_state()
+        state[LIVE_POLL_STATE_KEY] = int(interval)
+        save_state(state)
+    except Exception as e:  # noqa: BLE001
+        log.warning("live poll interval %ss not persisted: %s", interval, e)
+
+
+def load_live_fast_interval() -> int:
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        saved = load_state().get(LIVE_FAST_STATE_KEY)
+    except Exception:  # noqa: BLE001
+        saved = None
+    try:
+        return max(LIVE_FAST_BOUNDS[0], min(LIVE_FAST_BOUNDS[1], int(saved)))
+    except (TypeError, ValueError):
+        return LIVE_FAST_DEFAULT_S
+
+
+def save_live_fast_interval(value) -> int:
+    v = max(LIVE_FAST_BOUNDS[0], min(LIVE_FAST_BOUNDS[1], int(value)))
+    from scripts.pipeline.pipeline_state import load_state, save_state
+    st = load_state()
+    st[LIVE_FAST_STATE_KEY] = v
+    save_state(st)
+    return v
+
+
+def live_window_open(now=None, kickoffs=None, stopped_at: float = 0.0) -> bool:
+    """True while some fixture kicks off within LIVE_ARM_BEFORE_MIN or kicked
+    off less than LIVE_ARM_AFTER_MIN ago AND the loop has not already stopped
+    for lack of live matches after that fixture's LIVE_OVER_MIN mark (a stop at
+    +100' says the match is over; re-arming would poll the tail of the window
+    for nothing, ~5 credits a minute). The ONE gate for arming the live loop."""
+    try:
+        if kickoffs is None:
+            from scripts.pipeline.scheduler import get_kickoff_times
+            kickoffs = get_kickoff_times()
+        now = now or datetime.now(UTC)
+        for k in kickoffs:
+            mins = (k["kickoff_utc"] - now).total_seconds() / 60
+            if not (-LIVE_ARM_AFTER_MIN <= mins <= LIVE_ARM_BEFORE_MIN):
+                continue
+            if stopped_at and stopped_at > k["kickoff_utc"].timestamp() + LIVE_OVER_MIN * 60:
+                continue  # the loop already saw this match finished
+            return True
+        return False
+    except Exception as e:  # noqa: BLE001 - a broken fixture file must not crash the loop
+        log.debug("live window check failed: %s", e)
+        return False
+
+
+def request_live_loop(action: str) -> dict:
+    """The web app's only lever: a start/stop request the loop consumes on its next tick."""
+    if action not in ("start", "stop"):
+        raise ValueError(f"unknown live loop action {action!r}")
+    from scripts.pipeline.pipeline_state import load_state, save_state
+    st = load_state()
+    req = {"action": action, "at": datetime.now(UTC).isoformat()}
+    st[LIVE_LOOP_REQUEST_KEY] = req
+    save_state(st)
+    return req
+
+
+def _read_request() -> dict | None:
+    try:
+        from scripts.pipeline.pipeline_state import load_state
+        req = load_state().get(LIVE_LOOP_REQUEST_KEY)
+        return req if isinstance(req, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def read_live_loop_status(now: float | None = None) -> dict:
+    """What the web app and the health check see. `alive` is a heartbeat
+    inside LIVE_LOOP_STALE_SEC; a missing file is a loop that never ran."""
+    now = now if now is not None else time.time()
+    try:
+        data = json.loads(LIVE_LOOP_STATUS_FILE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    hb = float(data.get("heartbeat") or 0.0)
+    age = (now - hb) if hb else None
+    out = {"active": False, "interval": load_live_poll_interval(), "next_at": 0.0,
+           "fast_interval": load_live_fast_interval(), "fast_at": 0.0, "fast_refreshed": 0,
+           "has_live": False, "stopped_at": 0.0, "heartbeat": hb, "pid": None}
+    out.update({k: v for k, v in data.items() if k in out})
+    out["heartbeat_age_s"] = int(age) if age is not None else None
+    out["alive"] = bool(age is not None and age < LIVE_LOOP_STALE_SEC)
+    if not out["alive"]:
+        out["active"] = False  # a dead loop is not polling, whatever its last file said
+    return out
+
+
+class LiveLoopState:
+    """The loop's whole state — one object, no module globals."""
+
+    def __init__(self, interval: int | None = None, fast_interval: int | None = None):
+        self.active = False
+        self.interval = interval if interval is not None else load_live_poll_interval()
+        self.fast_interval = fast_interval if fast_interval is not None else load_live_fast_interval()
+        self.next_poll_at = 0.0
+        self.next_fast_at = 0.0
+        self.next_arm_check = 0.0
+        self.stopped_at = 0.0
+        self.has_live = False
+        self.empty_polls = 0
+        self.auth_errors = 0
+        self.fast_at = 0.0
+        self.fast_refreshed = 0
+        self.last_request_at = ""
+        self.last_heartbeat = 0.0
+        self.polls = 0
+
+    def snapshot(self) -> tuple:
+        return (self.active, self.has_live, self.next_poll_at, self.interval, self.fast_interval)
+
+    def arm(self, now: float, why: str) -> None:
+        log.info("Live loop armed (%s) — polling every %ss, fast tick %ss", why, self.interval, self.fast_interval)
+        self.active = True
+        self.empty_polls = 0
+        self.auth_errors = 0
+        self.has_live = False
+        self.next_poll_at = now  # poll now
+
+    def stop(self, now: float, why: str, *, match_over: bool = False) -> None:
+        log.info("Live loop stopped: %s", why)
+        self.active = False
+        self.has_live = False
+        if match_over:
+            self.stopped_at = now
+
+
+def live_loop_step(st: LiveLoopState, now: float, *, poll=None, fast=None, window=None) -> LiveLoopState:
+    """One tick of the loop, pure in `now`. Order: web request, self-arming on
+    the kickoff window, the Odds API poll when due, the free ESPN fast tick
+    when due. Collaborators default to the real ones."""
+    poll = poll or poll_once
+    fast = fast or refresh_live_fast
+    window = window or live_window_open
+
+    # 1. a start/stop request from the web app (consumed once, by its timestamp)
+    req = _read_request()
+    if req and req.get("at") and req["at"] != st.last_request_at:
+        st.last_request_at = str(req["at"])
+        if req.get("action") == "stop" and st.active:
+            st.stop(now, "stop requested from /live")
+        elif req.get("action") == "start" and not st.active:
+            st.arm(now, "start requested from /live")
+
+    # 2. self-arming: the one gate, checked every LIVE_ARM_CHECK_SEC
+    if not st.active and now >= st.next_arm_check:
+        st.next_arm_check = now + LIVE_ARM_CHECK_SEC
+        if window(stopped_at=st.stopped_at):
+            st.arm(now, "kickoff window open")
+
+    # 3. the Odds API poll
+    if st.active and now >= st.next_poll_at:
+        st.interval = load_live_poll_interval(st.interval)
+        st.fast_interval = load_live_fast_interval()
+        try:
+            result = poll() or {}
+            st.polls += 1
+            if result.get("error"):
+                st.stop(now, f"poll error: {result['error']}")
+            elif not result.get("has_live_matches"):
+                st.empty_polls += 1
+                st.has_live = False
+                log.info("Live loop: no live matches (%d/%d)", st.empty_polls, EMPTY_POLLS_TO_STOP)
+                if st.empty_polls >= EMPTY_POLLS_TO_STOP:
+                    st.stop(now, f"{EMPTY_POLLS_TO_STOP} polls with no live matches", match_over=True)
+            else:
+                st.empty_polls = 0
+                st.has_live = True
+            st.auth_errors = 0
+        except Exception as e:  # noqa: BLE001 - one bad poll must not kill the process
+            msg = str(e)
+            if "401" in msg or "OUT_OF_USAGE_CREDITS" in msg or "Unauthorized" in msg:
+                st.auth_errors += 1
+                log.warning("Live loop auth/quota error (%d/%d): %s", st.auth_errors, AUTH_ERRORS_TO_STOP, e)
+                if st.auth_errors >= AUTH_ERRORS_TO_STOP:
+                    st.stop(now, "3 consecutive auth/quota errors — re-arms on the next window")
+            else:
+                log.error("Live loop poll failed: %s", e)
+        st.next_poll_at = now + st.interval
+        st.next_fast_at = now + st.fast_interval
+
+    # 4. the free fast tick between two polls (ESPN score / stats / events)
+    if st.active and st.has_live and now >= st.next_fast_at:
+        # cadence counts from the START of the tick: a 3s ESPN round trip must
+        # not stretch a 5s interval into 8s
+        st.next_fast_at = now + st.fast_interval
+        try:
+            f = fast() or {}
+            st.fast_at = now
+            st.fast_refreshed = int(f.get("refreshed", 0) or 0)
+            st.has_live = bool(f.get("has_live_matches"))
+        except Exception as e:  # noqa: BLE001
+            log.debug("fast live tick failed: %s", e)
+    return st
+
+
+def write_live_loop_status(st: LiveLoopState, now: float) -> None:
+    atomic_write_json(LIVE_LOOP_STATUS_FILE, {
+        "active": st.active, "interval": st.interval, "next_at": st.next_poll_at if st.active else 0.0,
+        "fast_interval": st.fast_interval, "fast_at": st.fast_at if st.active else 0.0,
+        "fast_refreshed": st.fast_refreshed, "has_live": st.has_live, "stopped_at": st.stopped_at,
+        "polls": st.polls, "heartbeat": now, "pid": os.getpid(),
+    }, indent=None)
+    st.last_heartbeat = now
+
+
+def run_live_loop(*, sleep=time.sleep, clock=time.time, max_ticks: int | None = None) -> LiveLoopState:
+    """The process entry: tick every second, write the status file on every
+    state change and every LIVE_LOOP_HEARTBEAT_SEC."""
+    st = LiveLoopState()
+    log.info("Live loop process started (pid %d, poll %ss, fast %ss)", os.getpid(), st.interval, st.fast_interval)
+    ticks = 0
+    prev = None
+    while max_ticks is None or ticks < max_ticks:
+        now = clock()
+        try:
+            live_loop_step(st, now)
+        except Exception as e:  # noqa: BLE001 - the loop must outlive any one tick
+            log.error("Live loop tick failed: %s", e)
+        snap = st.snapshot()
+        if snap != prev or now - st.last_heartbeat >= LIVE_LOOP_HEARTBEAT_SEC:
+            try:
+                write_live_loop_status(st, now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("live loop status not written: %s", e)
+            prev = snap
+        ticks += 1
+        sleep(1)
+    return st
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live Match Monitor")
     parser.add_argument("--once", action="store_true",
@@ -1927,11 +2226,17 @@ def main():
                        help="Continuous polling every 15 min")
     parser.add_argument("--status", action="store_true",
                        help="Show current live monitoring status")
+    parser.add_argument("--loop", action="store_true",
+                       help="The live loop process (launchd com.seriea-pipeline.live-loop): "
+                            "arms itself on the kickoff window, polls, fast-ticks, writes its status file")
     parser.add_argument("--history", type=str, metavar="YYYY-MM-DD",
                        help="Show archived matchday data")
     args = parser.parse_args()
 
-    if args.history:
+    if args.loop:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+        run_live_loop()
+    elif args.history:
         show_history(args.history)
     elif args.status:
         show_status()

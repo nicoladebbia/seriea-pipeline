@@ -1004,7 +1004,7 @@ def _club_congestion(fixtures: dict) -> dict:
     try:
         import time
 
-        from curl_cffi import requests as rq
+        from scraper import sofascore_client as _sofa
         for name, fx in fixtures.items():
             tid, next_ts = ids.get(name), fx.get("ts")
             if not tid or not next_ts:
@@ -1012,12 +1012,11 @@ def _club_congestion(fixtures: dict) -> dict:
             if failures >= 3:      # breaker: do not grind a banned endpoint
                 break
             try:
-                r = rq.get(f"https://api.sofascore.com/api/v1/team/{tid}"
-                           f"/events/last/0", impersonate="chrome124", timeout=15)
-                if r.status_code != 200:
+                payload = _sofa.get_json(f"{_sofa.API_BASE}/team/{tid}/events/last/0", timeout=15)
+                if payload is None:
                     failures += 1
                     continue
-                info = _congestion_from_events(r.json().get("events", []), next_ts)
+                info = _congestion_from_events(payload.get("events", []), next_ts)
                 if info:
                     clubs[name] = info
                 failures = 0

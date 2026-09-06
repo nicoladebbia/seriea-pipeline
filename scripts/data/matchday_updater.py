@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config.leagues import get_league_config
 from config.settings import DATA_DIR, atomic_write_json, atomic_write_parquet, get_current_season
 from config.team_names import normalize_team
+from scraper import sofascore_client as _sofa
 from scripts.data.scrape_sofascore import (
     LEAGUE_SEASON_MAPS,
     RATE_LIMIT,
@@ -67,35 +68,20 @@ CAPTAINS_PARQUET = SOFASCORE_DIR / "captains.parquet"
 
 # Fixtures cache staleness threshold (seconds)
 FIXTURES_CACHE_MAX_AGE = 6 * 3600  # 6 hours
-SOFASCORE_COOLDOWN_FILE = DATA_DIR / "monitoring" / "sofascore_cooldown.json"
-SOFASCORE_COOLDOWN_MINUTES = 60
-_DENIED_MARKERS = ("403", "forbidden", "challenge", "429", "too many requests")
-
-
-def _looks_denied(exc: BaseException) -> bool:
-    s = str(exc).lower()
-    return any(m in s for m in _DENIED_MARKERS)
+# The ingest cooldown is the shared Sofascore client's api-tier cooldown
+# (scraper.sofascore_client): one file, every process, set on the first denial.
+SOFASCORE_COOLDOWN_FILE = _sofa.cooldown_path("api")
+SOFASCORE_COOLDOWN_MINUTES = _sofa.COOLDOWN_MINUTES
+_looks_denied = _sofa.looks_denied
 
 
 def sofascore_cooldown_remaining(now: float | None = None) -> float:
     """Seconds left on the Sofascore ingest cooldown, 0 when none."""
-    try:
-        d = json.loads(SOFASCORE_COOLDOWN_FILE.read_text())
-        until = float(d.get("until_ts") or 0)
-    except (OSError, ValueError, TypeError):
-        return 0.0
-    now = now or datetime.now(UTC).timestamp()
-    return max(0.0, until - now)
+    return _sofa.cooldown_remaining("api", now)
 
 
 def set_sofascore_cooldown(reason: str, minutes: int = SOFASCORE_COOLDOWN_MINUTES) -> None:
-    SOFASCORE_COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(UTC)
-    payload = {"set_at": now.isoformat(), "until_ts": now.timestamp() + minutes * 60,
-               "minutes": minutes, "reason": reason}
-    tmp = SOFASCORE_COOLDOWN_FILE.with_suffix(".json.tmp")
-    atomic_write_json(tmp, payload, indent=None)
-    tmp.replace(SOFASCORE_COOLDOWN_FILE)
+    _sofa.set_cooldown(reason, tier="api", minutes=minutes)
 
 
 # ---------------------------------------------------------------------------

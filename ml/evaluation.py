@@ -7,6 +7,8 @@ from typing import Dict
 
 import numpy as np
 import pandas as pd
+
+from config.settings import KELLY_FRACTION
 from sklearn.metrics import (
     accuracy_score,
     log_loss,
@@ -131,7 +133,7 @@ def kelly_profit_simulation(
     y_true: np.ndarray,
     y_proba: np.ndarray,
     odds: np.ndarray | None = None,
-    kelly_fraction: float = 0.10,  # Synced with production (betting_unified.py)
+    kelly_fraction: float = KELLY_FRACTION,  # config.settings: the one definition
     market_overround: float = 1.07,
 ) -> dict:
     """Simulate Kelly criterion betting profit on a test set.
