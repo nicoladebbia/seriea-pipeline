@@ -2104,12 +2104,15 @@ def _engine_note_it(note: str | None) -> str:
 
 
 def _handle_picks(max_matches: int = 20) -> str:
-    """/picks — one clean card per upcoming match (scripts/betting/picks.py):
-    the best bet in bold (💰 the engine's real bet, else 📝 the paper lean),
-    then up to three more from the ranked pool (▫️ alternatives, 🎲 exotic:
-    player props, first half, HT/FT), one per family, never a negative edge.
-    ➖ = nothing beats its price. Bets are written in plain Italian with the
-    team names; the only numbers are the price and the edge."""
+    """/picks — one card per upcoming match (scripts/betting/picks.py), split
+    the way the money is split. 💰 is the engine's REAL bet on that match, with
+    its stake, or "nessuna vera". 📝 are the PAPER bets (€10 each): exactly what
+    the T-30 run journals for the match — the headline lean, the best exotic,
+    then every other angle inside the credible band — deduped one per family
+    and capped at MAX_CARD_LINES so the card stays readable (Nicola's rule,
+    2026-09-05). An angle below the band is journaled nowhere, so it is shown
+    nowhere. ➖ = nothing beats its price. Plain Italian, team names, price and
+    edge only."""
     try:
         doc = json.loads((PROJECT_ROOT / "data" / "upcoming" / "picks.json").read_text())
     except (OSError, ValueError):
@@ -2118,63 +2121,86 @@ def _handle_picks(max_matches: int = 20) -> str:
     picks = doc.get("picks") or []
     if not picks:
         return "Nessuna partita in programma nel file picks."
-    c = doc.get("counts") or {}
-    out = [f"🎯 <b>Scelte</b> · {len(picks)} partite",
-           f"💰 {c.get('VALUE', 0)} vera · 📝 {c.get('LEAN', 0)} carta · ➖ {c.get('NO_EDGE', 0)} niente"]
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    try:
+        gen = datetime.fromisoformat(str(doc.get("generated_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        gen = None
+    journaled_now = bool(doc.get("n_journaled"))
+    blocks: list[str] = []
+    n_real = sum(1 for q in picks if q.get("label") == "VALUE" and q.get("pick"))
+    paper_all = [_paper_bets(q, q.get("lean") if q.get("label") == "VALUE" else (q.get("pick") if q.get("label") == "LEAN" else None))
+                 for q in picks]
+    n_paper, n_paper_matches = sum(len(x) for x in paper_all), sum(1 for x in paper_all if x)
     for p in picks[:max_matches]:
         home, away = p.get("home_team") or "Casa", p.get("away_team") or "Ospite"
+        ko_dt = None
         try:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-            dt = datetime.fromisoformat((p.get("kickoff_utc") or "").replace("Z", "+00:00")).astimezone(ZoneInfo("Europe/Rome"))
+            ko_dt = datetime.fromisoformat((p.get("kickoff_utc") or "").replace("Z", "+00:00"))
+            dt = ko_dt.astimezone(ZoneInfo("Europe/Rome"))
             ko = f"{_IT_DAYS[dt.weekday()]} {dt.strftime('%d/%m %H:%M')}"
         except (ValueError, TypeError):
             ko = (p.get("date") or "?")[5:]
         xi = " · XI ufficiali ✓" if p.get("lineup_state") == "confirmed" else ""
         block = [f"\n<b>{home.upper()} – {away.upper()}</b> · {ko}{xi}"]
-        label = p.get("label")
-        headline = p.get("pick")
+        label, headline = p.get("label"), p.get("pick")
+
+        # ---- 💰 the real bet on this match --------------------------------
+        if label == "VALUE" and headline:
+            stake = headline.get("stake")
+            eur = f" · €{stake:.0f}" if isinstance(stake, int | float) and stake > 0 else ""
+            tag = " <i>vera · si conferma a T-30</i>" if p.get("stage") == "candidate" else " <i>vera · in slip</i>"
+            block.append(f"💰 <b>{_bet_line('', headline, home, away).strip()}</b>{eur}{tag}")
+        else:
+            block.append("💰 <i>nessuna vera</i>")
+
+        # ---- 📝 the paper bets: what the T-30 run journals ---------------
+        lean = p.get("lean") if label == "VALUE" else (headline if label == "LEAN" else None)
+        paper = _paper_bets(p, lean)
         key = lambda a: (a.get("bet_type"), a.get("selection"), a.get("player"))  # noqa: E731
         seen: set = set()
         fams: set = set()
-
-        def take(a: dict) -> bool:
+        if headline and label == "VALUE":
+            seen.add(("Under/over", headline.get("selection"), None))
+            fams.add(_bet_family(headline))
+        shown: list[dict] = []
+        for a in paper:
             k, f = key(a), _bet_family(a)
             if k in seen or f in fams:
-                return False
+                continue
             seen.add(k)
             fams.add(f)
-            return True
-
-        def best(icon: str, a: dict, tag: str = "") -> str:
-            return f"{icon} <b>{_bet_line('', a, home, away).strip()}</b>{tag}"
-
-        if label == "VALUE" and headline:
-            tag = " <i>puntata vera</i>" if p.get("stage") != "candidate" else " <i>si conferma a T-30</i>"
-            block.append(best("💰", headline, tag))
-            take(headline)
-            seen.add(("Under/over", headline.get("selection"), None))
-            if p.get("lean") and take(p["lean"]):
-                block.append(_bet_line("📝", p["lean"], home, away, _engine_note_it(p["lean"].get("engine_note"))))
-        elif label == "LEAN" and headline:
-            block.append(best("📝", headline, _engine_note_it(headline.get("engine_note"))))
-            take(headline)
-        elif p.get("most_probable"):
-            block.append(_bet_line("➖", p["most_probable"], home, away, " <i>il più probabile, ma la quota lo paga già</i>"))
-            take(p["most_probable"])
-        else:
-            block.append("➖ <i>nessuna quota ancora</i>")
-        pool = [("▫️", a) for a in (p.get("alternatives") or [])] + [("🎲", a) for a in (p.get("exotic") or [])]
-        for icon, a in pool:
-            if len(block) - 1 >= MAX_CARD_LINES:
+            shown.append(a)
+            if len(shown) >= MAX_CARD_LINES:
                 break
-            if take(a):
-                block.append(_bet_line(icon, a, home, away))
-        out.append("\n".join(block))
+        if paper:
+            inside = ko_dt is not None and gen is not None and timedelta(0) <= (ko_dt - gen) <= timedelta(hours=3)
+            when = "scritte a T-30" if journaled_now and inside else "si scrivono a T-30"
+            more = f" · {len(paper) - len(shown)} altre" if len(paper) > len(shown) else ""
+            block.append(f"📝 <i>carta €10 l'una · {len(paper)} · {when}{more}</i>")
+            for i, a in enumerate(shown):
+                note = _engine_note_it(a.get("engine_note")) if a is lean else ""
+                line = _bet_line("📝", a, home, away, note)
+                if i == 0:
+                    line = f"📝 <b>{_bet_line('', a, home, away).strip()}</b>{note}"
+                block.append(line)
+        elif label != "VALUE":
+            block.append("📝 <i>nessuna carta</i>")
+        if not paper and label not in ("VALUE", "LEAN"):
+            if p.get("most_probable"):
+                block.append(_bet_line("➖", p["most_probable"], home, away, " <i>il più probabile, ma la quota lo paga già</i>"))
+            else:
+                block.append("➖ <i>nessuna quota ancora</i>")
+        blocks.append("\n".join(block))
+    out = [f"🎯 <b>Scelte</b> · {len(picks)} partite",
+           f"💰 {n_real} con puntata vera · 📝 {n_paper} scommesse carta su {n_paper_matches} partite"]
+    out.extend(blocks)
     if len(picks) > max_matches:
         out.append(f"\n<i>… e altre {len(picks) - max_matches} partite.</i>")
-    out.append("\n<i>grassetto = scelta migliore · 💰 vera (slip del motore, T-30) · 📝 carta €10 · "
-               "▫️ alternative · 🎲 insolite · ➖ niente da giocare\n"
+    out.append("\n<i>💰 vera = soldi veri, slip del motore (si conferma a T-30) · 📝 carta €10 = finta, "
+               "per costruire lo storico che promuove un mercato a soldi veri (/record) · "
+               "grassetto = la migliore · ➖ niente da giocare\n"
                "✓ backtest superato · ~ solo tasso base · % = edge sulla quota · "
                "XI prob. = giocatore atteso, formazione non ufficiale</i>")
     try:
@@ -2189,6 +2215,29 @@ def _handle_picks(max_matches: int = 20) -> str:
     except Exception:  # noqa: BLE001 - the record is a footer, never a failure
         pass
     return "\n".join(out) + _fanta_age_note(doc.get("generated_at"))
+
+
+def _paper_bets(p: dict, lean: dict | None) -> list[dict]:
+    """The paper bets of one match, in journal order: mirrors
+    picks._journal_candidates (headline lean, best exotic, then every other
+    alternative / exotic inside the band). A candidate without `in_band` (older
+    files, fixtures) counts as in band; one flagged below it is dropped — the
+    card must show what gets journaled, nothing that does not."""
+    out: list[dict] = []
+    seen: set = set()
+    head = [lean, (p.get("exotic") or [None])[0]]
+    rest = [c for c in (p.get("alternatives") or []) + (p.get("exotic") or []) if c.get("in_band", True)]
+    for c in head + rest:
+        if not c or not isinstance(c.get("odds"), int | float):
+            continue
+        if isinstance(c.get("edge_pct"), int | float) and c["edge_pct"] < 0:
+            continue
+        k = (c.get("bet_type"), c.get("selection"), c.get("player"))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return out
 
 
 def _handle_record() -> str:

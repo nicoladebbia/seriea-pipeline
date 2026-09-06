@@ -123,12 +123,18 @@ def test_handle_picks_renders_every_label_and_tolerates_missing(tmp_path, monkey
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
     assert "<b>LAZIO – MILAN</b> · sab 12/09 18:00" in out
-    assert "💰 <b>Over 1.5 gol @1.41 · +6.5%</b> <i>puntata vera</i>" in out
-    assert "📝 Milan o pareggio @1.40 · +9.6%" in out
+    # the real bet is its own line, marked as such; a paper section follows
+    assert "💰 <b>Over 1.5 gol @1.41 · +6.5%</b> <i>vera · in slip</i>" in out
+    assert "📝 <i>carta €10 l'una · 1 · si scrivono a T-30</i>\n📝 <b>Milan o pareggio @1.40 · +9.6%</b>" in out
+    # a match with no real bet says so, then lists its paper bets, all marked 📝
+    assert "💰 <i>nessuna vera</i>\n📝 <i>carta €10 l'una · 3 · si scrivono a T-30</i>" in out
     assert "📝 <b>Genoa vince @2.90 · +4.4% ✓</b>" in out and "motore: veto fattori" in out
-    assert "▫️ Over 2.5 gol @1.90 · +2.0%" in out
-    assert "🎲 Dimarco assist @4.50 · +3.5% ~ (1 book)" in out
-    assert "➖ Como vince @1.50 · -4.0% ✓ <i>il più probabile" in out
+    assert "📝 Dimarco assist @4.50 · +3.5% ~ (1 book)" in out
+    assert "📝 Over 2.5 gol @1.90 · +2.0%" in out
+    assert "▫️" not in out and "🎲" not in out
+    # no edge anywhere: no real, no paper, the most probable shown as a non-bet
+    assert "💰 <i>nessuna vera</i>\n📝 <i>nessuna carta</i>\n➖ Como vince @1.50 · -4.0% ✓ <i>il più probabile" in out
+    assert "💰 1 con puntata vera · 📝 4 scommesse carta su 2 partite" in out
     assert "carta €10" in out and "tasso base" in out          # the legend
     assert out.count("<b>Over") == 1 and out.count("<b>Genoa") == 1  # only the best bet is bold
 
@@ -245,17 +251,19 @@ def test_handle_picks_one_bet_per_family_and_at_most_four_lines(tmp_path, monkey
     card = [ln for ln in out.splitlines() if ln[:1] in "💰📝▫️🎲➖" and "@" in ln]
     assert card == [
         "📝 <b>Laurienté over 1.5 tiri in porta @5.00 · +10.5% ✓</b>",   # official sheet: no XI marker
-        "▫️ Under 3.5 gol @1.49 · +4.9%",
-        "▫️ Bologna vince @2.90 · +4.4% ✓",
-        "▫️ Gol entrambe: no @2.24 · +6.8%",
+        "📝 Under 3.5 gol @1.49 · +4.9%",
+        "📝 Bologna vince @2.90 · +4.4% ✓",
+        "📝 Gol entrambe: no @2.24 · +6.8%",
     ]
+    # 8 candidates are journaled (Laurienté SoT twice is one family on the card, two bets in the journal)
+    assert "📝 <i>carta €10 l'una · 8 · si scrivono a T-30 · 4 altre</i>" in out
     assert "Raimondo" not in out and "Drobnic" not in out  # no filler, cap at 4 lines
     doc["picks"][0]["alternatives"] = []
     (up / "picks.json").write_text(json.dumps(doc))
     out = tb._handle_picks()
     # predicted XI: the card says so, with the predictor's start% (Pašalić was
     # listed off a predicted XI while not in the squad, 2026-09-05)
-    assert "🎲 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓ · XI prob. 72%" in out
+    assert "📝 Drobnic over 0.5 tiri totali @2.80 · +3.0% ✓ · XI prob. 72%" in out
     assert out.count("Laurienté") == 1 and "XI prob. = giocatore atteso" in out
 
 

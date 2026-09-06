@@ -1223,6 +1223,22 @@ def notify_value_bets(bets: list[dict]) -> dict:
     return result
 
 
+def _paper_count_for(match_key: str) -> int:
+    """How many paper bets the pick engine journals for this match (the ticket
+    is the money message; the paper side is one count, never a list). Reads
+    data/upcoming/picks.json; 0 on any failure."""
+    try:
+        from scripts.betting.picks import _journal_candidates
+        doc = json.loads((DATA_DIR / "upcoming" / "picks.json").read_text())
+        for p in doc.get("picks") or []:
+            if p.get("match") == match_key:
+                lean = p.get("lean") if p.get("label") == "VALUE" else (p.get("pick") if p.get("label") == "LEAN" else None)
+                return len(_journal_candidates(p, lean))
+    except Exception as e:  # noqa: BLE001 - a footer, never a failure of the ticket
+        log.debug("paper count for %s unavailable: %s", match_key, e)
+    return 0
+
+
 def notify_order_ticket(bets: list[dict]) -> dict:
     """T-30 ORDER TICKET — sent from run_pre_kickoff at the moment bets are
     journaled. This is the message money is placed from: every bet in the
@@ -1293,6 +1309,9 @@ def notify_order_ticket(bets: list[dict]) -> dict:
                     pass
             if bits:
                 tg.raw("  " + "  ·  ".join(bits))
+        n_paper = _paper_count_for(mk)
+        if n_paper:
+            tg.raw(f"  📝 + {n_paper} paper bet{'s' if n_paper != 1 else ''} on this match (€10 each, /picks) — not money")
 
     tg.blank()
     tg.raw("<i>Below min price: don't place — the edge is gone.</i>")
