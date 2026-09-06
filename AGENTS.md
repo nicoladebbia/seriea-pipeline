@@ -66,7 +66,7 @@ Layout:
 - `scripts/pipeline/` — `run_full_pipeline.py` (the driver), `scheduler.py` (match-clock
   stages + settlement), `health_check.py`, `telegram_bot.py`
 - `web/app.py` — Flask app (~11k lines, two background threads; never import it to
-  borrow a helper). Page routes: `/`, `/live`, `/picks`, `/projections`, `/matches`,
+  borrow a helper). Page routes: `/`, `/live`, `/projections`, `/matches`,
   `/track-record`, `/value-bets`, `/prediction/<slug>`, `/rosters`, `/fantacalcio`,
   `/worldcup`. API: `/api/dashboard`, `/api/live`, `/api/data-freshness`,
   `/api/standings/<league>`, `/api/projections`, `/api/match-markets/<slug>`,

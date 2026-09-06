@@ -99,6 +99,12 @@ def setup_logging(
     Returns:
         Configured root logger
     """
+    # Never write logs/ from a test run. PYTEST_CURRENT_TEST exists only while a
+    # test body runs; `pytest` in sys.modules also covers collection-time imports
+    # (this module attaches its handlers at import, via pipeline_logger below).
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
+        file_output = False
+
     # Get root logger
     logger = logging.getLogger()
     logger.setLevel(getattr(logging, level.upper()))
