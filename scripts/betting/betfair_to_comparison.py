@@ -2,7 +2,7 @@
 
 Fills the one missing link between the Betfair fetcher (scripts/data/betfair_feed.py)
 and the source-agnostic edge-comparison UI (odds_comparison.compare_match, read by
-/api/projections and /api/value-bets). Betfair is a value-DISCOVERY source here —
+/api/projections). Betfair is a value-DISCOVERY source here —
 it is deliberately NOT wired into the production betting engine (betting_unified.py),
 which relies on Pinnacle sharp/soft divergence that an exchange cannot provide.
 

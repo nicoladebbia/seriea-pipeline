@@ -322,10 +322,6 @@
   <!-- Status Bar: Open Bets, Win Rate, ROI, Total Staked, Total Profit -->
   <div id="stats-bar" class="vb-status-bar" style="display:none"></div>
 
-  <!-- Promotion gate: which market bets real money, at what stake, and why.
-       Same state as Telegram /record (data/betting/market_promotion.json). -->
-  <div id="market-record" class="vb-inner-card" style="display:none;margin-bottom:var(--space-6);"></div>
-
   <!-- LIVE NOW banner -->
   <div id="live-banner" style="display:none;margin-bottom:var(--space-6);"></div>
 
@@ -346,6 +342,11 @@
 
   <!-- Section 3: Parlays (collapsible) -->
   <div id="parlays" style="display:none;margin-top:var(--space-8);"></div>
+
+  <!-- Section 4: Real-money gate — which market bets real money, at what stake, and why.
+       Same state as Telegram /record (data/betting/market_promotion.json). Last on purpose:
+       it is reference, not today's slate. -->
+  <div id="market-record" class="vb-inner-card" style="display:none;margin-top:var(--space-8);"></div>
 
   <!-- Empty state -->
   <div id="empty" style="display:none;text-align:center;padding:80px 0;color:var(--text-tertiary);">
@@ -405,6 +406,7 @@ let playerPropVBets = [];
 let livePropCache = {};
 let propPerformance = null;
 let kellyPnl = null;
+let marketRecordData = null;   // /api/market-record payload (gate + stake ladder), also feeds the stats row
 
 // ---- Real-money gate card (/api/market-record) --------------------------------
 // Answers one question in plain words: which markets the engine bets with real
@@ -437,6 +439,8 @@ async function loadMarketRecord() {
   let d;
   try { d = await (await fetch('/api/market-record')).json(); } catch (e) { return; }
   if (!d || d.error) return;
+  marketRecordData = d;
+  if (_lastStatsArgs) renderStatsBar(..._lastStatsArgs);
   const bar = d.bar || {}, dem = d.demotion_bar || {};
   const minN = d.full_stake_min_n || 30, scale = d.promoted_kelly_scale ?? 0.5;
   const ageMin = d.updated_at ? Math.max(0, Math.round((Date.now() - new Date(d.updated_at).getTime()) / 60000)) : null;
@@ -666,47 +670,62 @@ function startRefreshPolling() {
 // ============================================================
 // STATS BAR
 // ============================================================
+let _lastStatsArgs = null;   // re-render when the gate state lands (stake-level + season-record cards)
 function renderStatsBar(bankroll, summary) {
   const el = document.getElementById('stats-bar');
+  _lastStatsArgs = [bankroll, summary];
   const s = summary || {};
   const totalStake = s.total_stake || 0;
   const totalBets = s.total_bets || 0;
   const avgStake = totalBets > 0 ? (totalStake / totalBets) : 0;
   const avgValue = s.average_value || 0;
 
+  // Stake level = gate ladder (market_promotion) x risk controls (drawdown); both halve independently.
+  const gate = (marketRecordData && marketRecordData.incumbents && marketRecordData.incumbents.length)
+    ? Math.min(...marketRecordData.incumbents.map(r => (r.stake_scale == null ? 1 : r.stake_scale))) : null;
+  const risk = (riskState && riskState.reduce_stakes && riskState.stake_multiplier != null) ? riskState.stake_multiplier : 1;
+  const level = gate == null ? null : gate * risk;
+  const levelParts = [];
+  if (gate != null && gate < 1) levelParts.push(`gate ×${gate}`);
+  if (risk < 1) levelParts.push(`drawdown ×${risk}`);
+  const levelCol = level == null ? 'var(--text-tertiary)' : level >= 1 ? 'var(--green)' : level >= 0.5 ? 'var(--amber)' : 'var(--red)';
+
+  // Season record on the current model = the incumbents' since-go-live real record, summed.
+  let season = null;
+  if (marketRecordData && marketRecordData.incumbents) {
+    const rs = marketRecordData.incumbents.map(r => r.real_since_live || {});
+    const n = rs.reduce((a, r) => a + (r.n || 0), 0);
+    const profit = rs.reduce((a, r) => a + (r.profit || 0), 0);
+    const won = rs.reduce((a, r) => a + (r.won || 0), 0);
+    season = { n, profit, won, since: (marketRecordData.live_from || '').slice(0, 10) };
+  }
+
   let html = `
-    <div class="vb-stat">
-      <div class="vb-stat__label">Open Bets</div>
+    <div class="vb-stat" onclick="location.href='/open-bets'" style="cursor:pointer;" title="Open the list: every bet on, and why">
+      <div class="vb-stat__label">Open Bets <span style="color:var(--accent);font-weight:400;text-transform:none;letter-spacing:0;">· see them →</span></div>
       <div class="vb-stat__value">${totalBets}</div>
-      <div class="vb-stat__sub">\u20ac${avgStake.toFixed(0)} avg stake</div>
+      <div class="vb-stat__sub">€${avgStake.toFixed(0)} avg stake</div>
     </div>
     <div class="vb-stat">
       <div class="vb-stat__label">Exposure</div>
-      <div class="vb-stat__value">\u20ac${totalStake.toFixed(0)}</div>
+      <div class="vb-stat__value">€${totalStake.toFixed(0)}</div>
       <div class="vb-stat__sub"><a href="/" style="color:var(--accent);font-size:10px;">Bankroll on Dashboard</a></div>
     </div>
     <div class="vb-stat">
       <div class="vb-stat__label">Avg Edge</div>
       <div class="vb-stat__value" style="color:${avgValue > 0 ? 'var(--green)' : 'var(--text-primary)'}">${avgValue > 0 ? '+' : ''}${avgValue.toFixed(1)}%</div>
-      <div class="vb-stat__sub">value over market</div>
+      <div class="vb-stat__sub">model vs de-vigged market, on the slate</div>
+    </div>
+    <div class="vb-stat" onclick="document.getElementById('market-record')?.scrollIntoView({behavior:'smooth'})" style="cursor:pointer;" title="Why: the real-money gate at the bottom of the page">
+      <div class="vb-stat__label">Stake Level</div>
+      <div class="vb-stat__value" style="color:${levelCol}">${level == null ? '—' : Math.round(level * 100) + '%'}</div>
+      <div class="vb-stat__sub">${level == null ? 'of full Kelly' : level >= 1 ? 'full Kelly 0.15, cap 2.5%' : levelParts.join(' · ') + ' of full'}</div>
+    </div>
+    <div class="vb-stat" onclick="document.getElementById('market-record')?.scrollIntoView({behavior:'smooth'})" style="cursor:pointer;" title="Real bets settled on the current model">
+      <div class="vb-stat__label">Season Record</div>
+      <div class="vb-stat__value" style="color:${season && season.n ? (season.profit >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-primary)'}">${season && season.n ? `${season.won}–${season.n - season.won}` : '0 settled'}</div>
+      <div class="vb-stat__sub">${season && season.n ? `${season.profit >= 0 ? '+' : '−'}€${Math.abs(season.profit).toFixed(0)} real, since ${season.since}` : `real bets since ${season ? season.since : 'go-live'} · none graded yet`}</div>
     </div>`;
-
-  if (fairOddsSummary && fairOddsSummary.total_predictions > 0) {
-    html += `<div class="vb-stat">
-      <div class="vb-stat__label">Model Accuracy</div>
-      <div class="vb-stat__value">${fairOddsSummary.accuracy_pct}%</div>
-      <div class="vb-stat__sub">${fairOddsSummary.total_predictions} predictions</div>
-    </div>`;
-  }
-
-  // Placeholder for 5th stat if needed
-  if (!fairOddsSummary || !fairOddsSummary.total_predictions) {
-    html += `<div class="vb-stat">
-      <div class="vb-stat__label">Avg Edge</div>
-      <div class="vb-stat__value">${avgValue > 0 ? '+' : ''}${avgValue.toFixed(1)}%</div>
-      <div class="vb-stat__sub">model vs market</div>
-    </div>`;
-  }
 
   el.innerHTML = html;
   el.style.display = '';

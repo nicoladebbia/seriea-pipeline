@@ -363,3 +363,46 @@ def test_api_market_record_serves_the_same_state_as_the_bot_card(tmp_path):
     (mk,) = d["markets"]
     assert mk["key"] == "btts_h1" and mk["name"] == "Goal 1° tempo" and mk["status"] == "paper" and mk["distance"] == "20/50 settled"
     assert "market-record" in appmod.app.test_client().get("/betting").get_data(as_text=True)
+
+
+def test_api_open_bets_lists_every_pending_real_bet_with_its_reason_and_flags_early_ones(monkeypatch):
+    """The Open Bets card on /betting opens /open-bets: every pending entry in
+    the real journal with the arithmetic that put it there, an early flag when
+    it was journaled > 24h before kickoff, and the slip's not-yet-journaled
+    selections as candidates."""
+    import web.app as appmod
+    BJ.add_bet({"match": "Lazio vs Milan", "date": "2026-09-12", "league": "serie_a", "market": "O/U 1.5",
+                "selection": "Over 1.5", "model_prob": 0.784, "sharp_implied_prob": 0.6993, "edge_pct": 5.08,
+                "odds": 1.39, "bookmaker": "Alt totals book", "pinnacle_odds": 1.35, "stake": 21.76,
+                "confidence": "STRONG", "status": "pending", "placed_at": "2026-09-06T08:30:40+00:00",
+                "match_kickoff_at": "2026-09-12T10:00:00+00:00", "pipeline_status": "current"})
+    BJ.add_bet({"match": "Bologna vs Sassuolo", "date": "2026-09-06", "league": "serie_a", "market": "O/U 2.5",
+                "selection": "Over 2.5", "model_prob": 0.52, "sharp_implied_prob": 0.44, "edge_pct": 8.0,
+                "odds": 2.3, "bookmaker": "bet365", "stake": 10.0, "confidence": "STANDARD", "status": "pending",
+                "placed_at": "2026-09-06T09:30:00+00:00", "match_kickoff_at": "2026-09-06T10:00:00+00:00"})
+    monkeypatch.setattr(appmod, "_load_json", lambda path, default=None: (
+        {"generated_at": "2026-09-06T08:30:41+00:00", "selected_bets": [
+            {"match": "Lazio vs Milan", "market": "O/U 1.5", "selection": "Over 1.5", "best_odds": 1.39, "stake_amount": 21.76},
+            {"match": "Napoli vs Bologna", "date": "2026-09-13", "market": "O/U 1.5", "selection": "Over 1.5",
+             "best_odds": 1.36, "best_bookmaker": "Alt totals book", "stake_amount": 10.0, "edge_pct": 4.2,
+             "model_prob": 0.77, "confidence_tier": "STRONG", "stake_scale": 0.5, "stake_note": "since go-live 0/30 settled"}]}
+        if str(path).endswith("unified_bet_slip.json")
+        else {"matches": {"Lazio vs Milan": {"commence_time": "2026-09-12T10:00:00Z"},
+                          "Bologna vs Sassuolo": {"commence_time": "2026-09-06T10:00:00Z"}}}
+        if str(path).endswith("odds_full.json") else (default if default is not None else {})))
+    monkeypatch.setattr(appmod, "compute_current_bankroll", lambda cfg: {"current_balance": 1000.0, "pending_stakes": 31.76}, raising=False)
+    client = appmod.app.test_client()
+    d = client.get("/api/open-bets").get_json()
+    assert d["count"] == 2 and d["total_stake"] == 31.76 and d["early_count"] == 1
+    lazio, bologna = [b for b in d["bets"] if b["match"] == "Lazio vs Milan"][0], [b for b in d["bets"] if b["match"] == "Bologna vs Sassuolo"][0]
+    assert lazio["early"] and lazio["hours_before_kickoff"] == pytest.approx(145.5, abs=0.1)
+    assert not bologna["early"] and bologna["hours_before_kickoff"] == 0.5
+    assert lazio["band"]["shrinkage"] == 0.6 and lazio["band"]["min_edge_pct"] == 5.0 and lazio["to_return"] == pytest.approx(30.25, abs=0.01)
+    why = " ".join(lazio["why"])
+    assert "78.4%" in why and "69.9%" in why and "+8.5pp" in why and "×0.6 shrinkage" in why and "Best price 1.39" in why
+    assert bologna["band"]["min_edge_pct"] == 7.0 and bologna["band"]["max_edge_pct"] == 10.0
+    assert [c["match"] for c in d["candidates"]] == ["Napoli vs Bologna"]      # Lazio is already journaled
+    assert d["candidates"][0]["stake_scale"] == 0.5
+    assert "Open Bets" in client.get("/open-bets").get_data(as_text=True)
+    assert client.get("/value-bets").status_code == 404                        # the duplicate page is gone
+    assert client.get("/betting").get_data(as_text=True).count("sidebar__nav-label\">Value Bets") == 1

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Open Bets — SerieAI{% endblock %}
+{% block page_title %}Open Bets{% endblock %}
+
+{% block page_subtitle %}
+<span style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">
+  Every real-money bet that is on right now, and the arithmetic that put it there · <a href="/betting" style="color:var(--accent);">← back to Value Bets</a>
+</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  .ob-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:20px; }
+  @media (max-width:900px) { .ob-summary { grid-template-columns:repeat(2,1fr); } }
+  .ob-stat { background:var(--bg-secondary); border:1px solid var(--border-default); border-radius:var(--radius-md); padding:10px 14px; }
+  .ob-stat__label { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-tertiary); font-weight:600; }
+  .ob-stat__value { font-size:20px; font-weight:700; font-family:var(--font-mono); color:var(--text-primary); }
+  .ob-stat__sub { font-size:10px; color:var(--text-tertiary); }
+  .ob-card { background:var(--bg-secondary); border:1px solid var(--border-default); border-radius:var(--radius-md); padding:14px 16px; margin-bottom:12px; }
+  .ob-card--early { border-left:3px solid var(--amber); }
+  .ob-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+  .ob-match { font-size:15px; font-weight:700; color:var(--text-primary); }
+  .ob-pick { font-size:14px; font-weight:700; color:var(--green); }
+  .ob-meta { font-size:11px; color:var(--text-tertiary); }
+  .ob-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px 16px; margin:8px 0 10px; font-size:11px; }
+  .ob-grid .k { color:var(--text-tertiary); }
+  .ob-grid .v { font-family:var(--font-mono); color:var(--text-primary); font-weight:600; }
+  .ob-why { font-size:12px; line-height:1.6; color:var(--text-secondary); border-top:1px solid var(--border-subtle); padding-top:8px; }
+  .ob-why b { color:var(--text-primary); }
+  .ob-badge { font-size:9px; padding:2px 6px; border-radius:3px; font-weight:700; letter-spacing:.3px; }
+  .ob-badge--live { background:rgba(74,222,128,.15); color:var(--green); }
+  .ob-badge--early { background:rgba(251,191,36,.15); color:var(--amber); }
+  .ob-badge--promo { background:rgba(129,140,248,.15); color:var(--accent); }
+  .ob-empty { padding:40px; text-align:center; color:var(--text-tertiary); font-size:13px; }
+  .ob-section { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-tertiary); margin:20px 0 8px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="ob-summary" id="ob-summary"></div>
+<div id="ob-list"><div class="ob-empty">Loading open bets…</div></div>
+<div id="ob-candidates"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  const eur = v => (v == null ? '—' : '€' + Number(v).toFixed(2));
+  const pct = (v, dp = 1) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(dp)}%`);
+  const when = iso => { const d = new Date(iso); return isNaN(d) ? (iso || '—') : d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+  const hrs = h => (h == null ? '—' : Math.abs(h) < 48 ? `${Math.round(Math.abs(h))}h` : `${(Math.abs(h) / 24).toFixed(1)}d`);
+
+  function render(d) {
+    const bets = d.bets || [];
+    document.getElementById('ob-summary').innerHTML = `
+      <div class="ob-stat"><div class="ob-stat__label">Bets on</div><div class="ob-stat__value">${bets.length}</div><div class="ob-stat__sub">pending in the real journal</div></div>
+      <div class="ob-stat"><div class="ob-stat__label">At risk</div><div class="ob-stat__value">${eur(d.total_stake)}</div><div class="ob-stat__sub">${d.bankroll ? (d.total_stake / d.bankroll * 100).toFixed(1) + '% of €' + Number(d.bankroll).toFixed(0) + ' bankroll' : ''}</div></div>
+      <div class="ob-stat"><div class="ob-stat__label">If all win</div><div class="ob-stat__value" style="color:var(--green)">+${eur(d.total_to_win).replace('€','€')}</div><div class="ob-stat__sub">profit on top of the stakes</div></div>
+      <div class="ob-stat"><div class="ob-stat__label">Placed early</div><div class="ob-stat__value" style="color:${d.early_count ? 'var(--amber)' : 'var(--text-primary)'}">${d.early_count || 0}</div><div class="ob-stat__sub">journaled &gt; 24h before kickoff (the −5% path)</div></div>`;
+
+    const list = document.getElementById('ob-list');
+    if (!bets.length) {
+      list.innerHTML = '<div class="ob-empty">No real-money bet is open. The engine commits at T-30 before each kickoff; candidates for the coming days are listed below.</div>';
+    } else {
+      list.innerHTML = `<div class="ob-section">On now · ${bets.length}</div>` + bets.map(b => {
+        const band = b.band || {};
+        const badges = [
+          b.early ? `<span class="ob-badge ob-badge--early">JOURNALED ${hrs(b.hours_before_kickoff).toUpperCase()} EARLY</span>` : `<span class="ob-badge ob-badge--live">T-${hrs(b.hours_before_kickoff)}</span>`,
+          b.pipeline_status === 'pick:promoted' ? '<span class="ob-badge ob-badge--promo">PROMOTED MARKET</span>' : '',
+        ].join(' ');
+        const kickoff = b.hours_to_kickoff == null ? '' : b.hours_to_kickoff > 0 ? `kicks off in ${hrs(b.hours_to_kickoff)}` : `kicked off ${hrs(b.hours_to_kickoff)} ago · awaiting result`;
+        return `<div class="ob-card ${b.early ? 'ob-card--early' : ''}">
+          <div class="ob-head">
+            <div><span class="ob-match">${esc(b.match)}</span> <span class="ob-meta">· ${esc(b.league || '')} · ${when(b.kickoff_at)} · ${kickoff}</span></div>
+            <div>${badges}</div>
+          </div>
+          <div class="ob-pick">${esc(b.market)} → ${esc(b.selection)} <span style="color:var(--text-tertiary);font-weight:400;font-size:11px;">@ ${Number(b.odds).toFixed(2)} ${esc(b.bookmaker || '')}</span></div>
+          <div class="ob-grid">
+            <div><div class="k">Stake</div><div class="v">${eur(b.stake)} <span style="color:var(--text-tertiary);font-weight:400;">(${b.stake_pct != null ? b.stake_pct.toFixed(1) + '%' : '—'})</span></div></div>
+            <div><div class="k">Returns if it wins</div><div class="v" style="color:var(--green)">${eur(b.to_return)} <span style="color:var(--text-tertiary);font-weight:400;">(+${eur(b.to_win)})</span></div></div>
+            <div><div class="k">Model · market</div><div class="v">${b.model_prob != null ? (b.model_prob * 100).toFixed(1) + '%' : '—'} · ${b.sharp_implied_prob != null ? (b.sharp_implied_prob * 100).toFixed(1) + '%' : '—'}</div></div>
+            <div><div class="k">Counted edge · band</div><div class="v">${pct(b.edge_pct)} <span style="color:var(--text-tertiary);font-weight:400;">in [${band.min_edge_pct ?? '?'}, ${band.max_edge_pct ?? '?'}]</span></div></div>
+            <div><div class="k">Placed</div><div class="v" style="font-weight:400;">${when(b.placed_at)}</div></div>
+            <div><div class="k">Source</div><div class="v" style="font-weight:400;">${esc(b.origin)} · ${esc(b.model_version || '')}${b.git_sha ? ' @ ' + esc(b.git_sha) : ''}</div></div>
+          </div>
+          <div class="ob-why"><b>Why this bet:</b> ${(b.why || []).map(esc).join(' ')}
+            ${b.early ? `<div style="margin-top:6px;color:var(--amber);">Journaled ${hrs(b.hours_before_kickoff)} before kickoff. The engine's own journal analysis found bets placed more than 24h early ran −5% ROI and bets inside 24h +63%; the T-30 commit exists for that reason.</div>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    const cands = d.candidates || [];
+    document.getElementById('ob-candidates').innerHTML = cands.length ? `
+      <div class="ob-section">Not yet on · ${cands.length} candidate${cands.length > 1 ? 's' : ''} on the slip, commit at T-30 if the edge still holds</div>
+      ${cands.map(c => `<div class="ob-card" style="opacity:.8;">
+        <div class="ob-head"><div><span class="ob-match">${esc(c.match)}</span> <span class="ob-meta">· ${esc(c.date || '')}</span></div>
+          <span class="ob-meta">candidate · re-priced at T-30${c.stake_scale != null && c.stake_scale < 1 ? ` · stake ×${c.stake_scale} (${esc(c.stake_note || '')})` : ''}</span></div>
+        <div class="ob-pick">${esc(c.market)} → ${esc(c.selection)} <span style="color:var(--text-tertiary);font-weight:400;font-size:11px;">@ ${c.odds != null ? Number(c.odds).toFixed(2) : '—'} ${esc(c.bookmaker || '')} · edge ${pct(c.edge_pct)} · model ${c.model_prob != null ? (c.model_prob * 100).toFixed(0) + '%' : '—'} · would stake ${eur(c.stake)}</span></div>
+      </div>`).join('')}` : '';
+  }
+
+  function load() {
+    fetch('/api/open-bets').then(r => r.json()).then(render).catch(e => {
+      document.getElementById('ob-list').innerHTML = '<div class="ob-empty" style="color:var(--red)">Failed to load: ' + esc(e.message) + '</div>';
+    });
+  }
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+{% endblock %}

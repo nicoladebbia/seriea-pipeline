@@ -9,7 +9,7 @@ import sys
 import threading
 import time as _time
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -291,7 +291,7 @@ def _read_parquet_cached(path, columns=None):
         return pd.DataFrame()
 
 # Book names that mean "these prices were made up". A comparison_odds.json
-# carrying one of these must never reach /value-bets: the page presents edges as
+# carrying one of these must never reach a betting page: it presents edges as
 # real money opportunities, and fabricated prices produce fabricated edges that
 # are indistinguishable from genuine ones on screen.
 #
@@ -2622,58 +2622,6 @@ def api_projections():
         "count": len(projections),
         "odds_source": book_name,
         "projections": projections,
-    })
-
-
-@app.route("/value-bets")
-@app.route("/value")
-def value_bets_page():
-    resp = app.make_response(render_template("value_bets.html", active_page="value_bets"))
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return resp
-
-
-@app.route("/api/value-bets")
-def api_value_bets():
-    """All value bets across all matches, sorted by edge — the bet-slip view.
-
-    Reads predictions.json + comparison_odds.json, runs the comparison engine,
-    flattens every flagged value bet with its match context. Separates 'skill'
-    (trusted) from 'noise' (model-unreliable) so the UI can warn appropriately.
-    """
-    predictions_raw = _load_json(UPCOMING_DIR / "predictions.json")
-    preds = predictions_raw.get("predictions", []) if isinstance(predictions_raw, dict) else (predictions_raw or [])
-    book_name, book_odds_by_match = _load_comparison_odds()
-
-    if not book_odds_by_match:
-        return jsonify({"odds_source": "", "value_bets": [], "count": 0,
-                        "message": "No book odds loaded — wire Betfair/Sisal odds to comparison_odds.json"})
-
-    from scripts.betting.odds_comparison import compare_match, best_value_bets
-
-    all_bets = []
-    for p in preds:
-        proj = _build_score_range_projection(p)
-        if proj is None:
-            continue
-        mo = book_odds_by_match.get(proj.get("match"))
-        if not mo:
-            continue
-        for r in best_value_bets(compare_match(proj, mo, book=book_name), top_n=99):
-            bet = r.to_dict()
-            bet["match"] = proj.get("match")
-            bet["home_team"] = proj.get("home_team")
-            bet["away_team"] = proj.get("away_team")
-            bet["date"] = proj.get("date", "")
-            bet["time"] = proj.get("time", "")
-            all_bets.append(bet)
-
-    all_bets.sort(key=lambda b: -b["edge_pct"])
-    return jsonify({
-        "odds_source": book_name,
-        "count": len(all_bets),
-        "trusted_count": sum(1 for b in all_bets if b["trust"] == "skill"),
-        "value_bets": all_bets,
     })
 
 
@@ -7658,6 +7606,159 @@ def api_market_record():
     except (ImportError, OSError, ValueError, TypeError) as e:
         log.warning(f"market record failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/open-bets")
+def open_bets_page():
+    """The bets that are actually on: every pending entry in the real journal,
+    each with the arithmetic that put it there. Reached from the Open Bets
+    card on /betting."""
+    resp = app.make_response(render_template("open_bets.html", active_page="betting"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+def _ou_line_band(market: str, selection: str) -> dict:
+    """The edge band and shrinkage the engine judged this line against
+    (BettingConfig.market_rules), so the page shows the bar the bet cleared,
+    not a bare edge number."""
+    try:
+        from scripts.betting.betting_unified import BettingConfig
+        rules = BettingConfig().market_rules
+    except (ImportError, ValueError, TypeError) as e:
+        log.debug("market rules unavailable for open-bets: %s", e)
+        return {}
+    cat = None
+    if str(market).startswith("O/U"):
+        cat = "O/U_Over" if str(selection).lower().startswith("over") else "O/U_Under"
+    elif market in rules:
+        cat = market
+    rule = rules.get(cat or "", {})
+    if not rule:
+        return {}
+    line = None
+    try:
+        line = float(str(market).split()[-1])
+    except (ValueError, IndexError):
+        pass
+    lo = (rule.get("line_min_edge") or {}).get(line, rule.get("min_edge_pct"))
+    hi = (rule.get("line_max_edge") or {}).get(line, rule.get("max_edge_pct"))
+    shrink = (rule.get("line_shrinkage") or {}).get(line, rule.get("edge_shrinkage", 1.0))
+    return {"category": cat, "line": line, "min_edge_pct": lo, "max_edge_pct": hi,
+            "shrinkage": shrink, "kelly_fraction": rule.get("kelly_fraction")}
+
+
+def _iso_utc(v) -> datetime | None:
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=UTC)
+
+
+def _open_bet_row(b: dict, bankroll: float, now: datetime) -> dict:
+    """One journal entry plus the plain-English reason it exists."""
+    from scripts.betting.market_promotion import INCUMBENT_MARKETS
+    from scripts.betting.market_promotion import PIPELINE_STATUS as PROMOTED_STATUS
+    market, sel = b.get("market") or "", b.get("selection") or ""
+    band = _ou_line_band(market, sel)
+    mp, sp = b.get("model_prob"), b.get("sharp_implied_prob")
+    raw_gap = (mp - sp) * 100 if mp is not None and sp is not None else None
+    edge = b.get("edge_pct")
+    stake = float(b.get("stake") or 0)
+    odds = float(b.get("odds") or 0)
+    kick = b.get("match_kickoff_at") or (f"{b.get('date')}T00:00:00+00:00" if b.get("date") else None)
+    kd, pd_ = _iso_utc(kick), _iso_utc(b.get("placed_at"))
+    hours_early = round((kd - pd_).total_seconds() / 3600, 1) if kd and pd_ else None
+    hours_to_kick = round((kd - now).total_seconds() / 3600, 1) if kd else None
+    is_incumbent = any(market == m and sel.startswith(side) for m, side in INCUMBENT_MARKETS.values())
+    origin = ("promoted paper market" if b.get("pipeline_status") == PROMOTED_STATUS
+              else "engine slip (O/U model)" if is_incumbent else "engine slip")
+    why = []
+    if mp is not None and sp is not None:
+        why.append(f"The model gives {sel} {mp * 100:.1f}%; the de-vigged sharp price says {sp * 100:.1f}%, "
+                   f"a raw gap of {raw_gap:+.1f}pp.")
+    if edge is not None and band and band.get("min_edge_pct") is not None:
+        sh = band.get("shrinkage") or 1.0
+        shrink_txt = f" after ×{sh:g} shrinkage (this line over-claims, CLV says so)" if sh < 1 else ""
+        lo, hi = band["min_edge_pct"], band.get("max_edge_pct")
+        why.append(f"Counted edge {edge:+.1f}%{shrink_txt}, judged against the configured {market} band [{lo:g}, {hi:g}] "
+                   f"(a high-confidence tier can lower the floor at run time): below it is noise, above {hi:g} ran negative in the journal.")
+    elif edge is not None:
+        why.append(f"Counted edge {edge:+.1f}%.")
+    if odds:
+        pin = b.get("pinnacle_odds")
+        why.append(f"Best price {odds:.2f} at {b.get('bookmaker') or 'book'}"
+                   + (f" (Pinnacle {float(pin):.2f})" if pin else "") + ".")
+    if stake and bankroll:
+        kf = band.get("kelly_fraction")
+        why.append(f"Stake €{stake:.2f} = {stake / bankroll * 100:.1f}% of the €{bankroll:,.0f} bankroll"
+                   + (f" at Kelly {kf:g}" if kf else "") + f"; tier {b.get('confidence') or '—'}.")
+    return {
+        "bet_id": b.get("bet_id"), "match": b.get("match"), "date": b.get("date"), "league": b.get("league"),
+        "market": market, "selection": sel, "odds": odds, "bookmaker": b.get("bookmaker"),
+        "pinnacle_odds": b.get("pinnacle_odds"), "stake": stake,
+        "stake_pct": round(stake / bankroll * 100, 2) if bankroll else None,
+        "to_return": round(stake * odds, 2) if odds else None, "to_win": round(stake * (odds - 1), 2) if odds else None,
+        "model_prob": mp, "sharp_implied_prob": sp, "raw_gap_pp": round(raw_gap, 1) if raw_gap is not None else None,
+        "edge_pct": edge, "band": band, "confidence": b.get("confidence"), "status": b.get("status"),
+        "pipeline_status": b.get("pipeline_status"), "origin": origin,
+        "placed_at": b.get("placed_at"), "kickoff_at": kick, "hours_before_kickoff": hours_early,
+        "hours_to_kickoff": hours_to_kick, "early": bool(hours_early is not None and hours_early > 24), "why": why,
+        "model_version": b.get("model_version"), "git_sha": b.get("git_sha"),
+    }
+
+
+@app.route("/api/open-bets")
+def api_open_bets():
+    """Every pending entry in the REAL journal (engine slip + promoted
+    mirrors; paper picks live in picks_journal and are not money) with the
+    reason each exists, plus the slip's selected bets not yet journaled
+    (candidates that commit at T-30)."""
+    from scripts.betting.bet_journal import get_pending_bets
+    info: dict = {}
+    bankroll = 0.0
+    try:
+        from scripts.betting.bankroll_loader import compute_current_bankroll, load_bankroll_config
+        info = compute_current_bankroll(load_bankroll_config())
+        bankroll = float(info.get("current_balance") or 0)
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as e:
+        log.debug("bankroll unavailable for open-bets: %s", e)
+    now = datetime.now(UTC)
+    # A pending entry has no kickoff stamp (the journal adds match_kickoff_at at
+    # settlement); the odds files carry commence_time per match.
+    kickoffs: dict[str, str] = {}
+    for fname in ("odds_full.json", "odds_full_premier_league.json"):
+        odds = _load_json(UPCOMING_DIR / fname)
+        for mk, row in ((odds or {}).get("matches") or {}).items() if isinstance(odds, dict) else []:
+            if isinstance(row, dict) and row.get("commence_time"):
+                kickoffs.setdefault(mk, row["commence_time"])
+    pending = [dict(b, match_kickoff_at=b.get("match_kickoff_at") or kickoffs.get(b.get("match") or ""))
+               for b in get_pending_bets(include_superseded=False)]
+    rows = sorted((_open_bet_row(b, bankroll, now) for b in pending),
+                  key=lambda r: (r.get("kickoff_at") or "", r.get("match") or ""))
+    keyed = {(r["match"], r["market"], r["selection"]) for r in rows}
+    slip = _load_json(UPCOMING_DIR / "unified_bet_slip.json")
+    slip = slip if isinstance(slip, dict) else {}
+    candidates = []
+    for b in slip.get("selected_bets") or []:
+        if (b.get("match"), b.get("market"), b.get("selection")) in keyed:
+            continue
+        candidates.append({"match": b.get("match"), "date": b.get("date"), "market": b.get("market"),
+                           "selection": b.get("selection"), "odds": b.get("best_odds"), "bookmaker": b.get("best_bookmaker"),
+                           "stake": b.get("stake_amount"), "edge_pct": b.get("edge_pct"), "model_prob": b.get("model_prob"),
+                           "confidence": b.get("confidence_tier"), "stake_scale": b.get("stake_scale"),
+                           "stake_note": b.get("stake_note")})
+    return jsonify({
+        "generated_at": now.isoformat(), "bankroll": bankroll,
+        "pending_stakes": float(info.get("pending_stakes") or 0) or round(sum(r["stake"] for r in rows), 2),
+        "count": len(rows), "total_stake": round(sum(r["stake"] for r in rows), 2),
+        "total_to_win": round(sum(r["to_win"] or 0 for r in rows), 2),
+        "early_count": sum(1 for r in rows if r["early"]),
+        "bets": rows, "candidates": candidates, "slip_generated_at": slip.get("generated_at"),
+    })
 
 
 # ---------------------------------------------------------------------------
