@@ -1286,15 +1286,30 @@ def check_player_stats_coverage(now: Optional[datetime] = None) -> Dict:
     pms = DATA_DIR / "external" / "sofascore" / "player_match_stats.parquet"
     try:
         import pandas as pd
-        have = set(pd.read_parquet(pms, columns=["date"])["date"].astype(str).str[:10])
+        try:
+            df = pd.read_parquet(pms, columns=["match_id", "source"])
+        except (KeyError, ValueError):  # older file: no source column
+            df = pd.read_parquet(pms, columns=["match_id"]).assign(source=None)
     except Exception as e:  # noqa: BLE001
         return {"status": "CRITICAL", "detail": f"player_match_stats unreadable: {e}"}
-    missing = sorted({d for d, _, _ in played} - have)
+    # Per MATCH, not per date (until 2026-09-06 one ingested match on a three-match
+    # day made the other two look covered). A stand-in row (fotmob / espn, from
+    # match_record_chain) grades props, so it counts — and is named.
+    src_by_match = df.groupby(df["match_id"].astype(str))["source"].agg(
+        lambda s: "sofascore" if s.isna().any() or (s.astype(object) == "sofascore").any() else str(s.iloc[0]))
+    played_ids = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400, with_id=True)
+    missing = [f"{d} {h} v {a}" for d, h, a, mid in played_ids if str(mid) not in src_by_match.index]
+    stand_ins = [f"{d} {h} v {a} ({src_by_match[str(mid)]})" for d, h, a, mid in played_ids
+                 if str(mid) in src_by_match.index and src_by_match[str(mid)] != "sofascore"]
     if missing:
-        n = sum(1 for d, _, _ in played if d in missing)
-        return {"status": "CRITICAL", "missing_dates": missing,
-                "detail": f"{n} finished Serie A match(es) with no player stats on disk (dates {', '.join(missing)}) — "
-                          "player-prop picks cannot be graded; Sofascore ingestion is failing"}
+        return {"status": "CRITICAL", "missing": missing, "stand_ins": stand_ins,
+                "detail": f"{len(missing)} finished Serie A match(es) with no player stats on disk ({'; '.join(missing)}) — "
+                          "player-prop picks cannot be graded; Sofascore ingestion is failing and the record chain "
+                          "found no other source (see data/monitoring/ingest_chain_status.json)"}
+    if stand_ins:
+        return {"status": "WARNING", "stand_ins": stand_ins,
+                "detail": f"player stats present for every finished Serie A match; {len(stand_ins)} from a stand-in "
+                          f"source, replaced when Sofascore answers: {'; '.join(stand_ins)}"}
     return {"status": "OK", "detail": f"player stats cover every Serie A match finished >{STATS_GRACE_HOURS:.0f}h ago"}
 
 

@@ -211,7 +211,9 @@ def test_every_espn_serie_a_name_maps_to_a_canonical_team():
 def test_player_stats_coverage_flags_a_finished_match_with_no_stats(tmp_path, monkeypatch):
     """Sofascore challenged -> the evening ingest silently writes nothing ->
     player-prop paper picks never grade. Fixture kickoffs (cached, known ahead)
-    vs the dates present in player_match_stats.parquet."""
+    vs the MATCH IDS present in player_match_stats.parquet — per match since
+    2026-09-06 (one ingested match on a three-match day used to cover the
+    other two); a stand-in row (fotmob / espn) counts but is a WARNING."""
     from datetime import UTC, datetime
 
     import pandas as pd
@@ -223,24 +225,37 @@ def test_player_stats_coverage_flags_a_finished_match_with_no_stats(tmp_path, mo
     monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
     ko = lambda s: int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())  # noqa: E731
     fx.write_text(json.dumps([
-        {"startTimestamp": ko("2026-09-04T18:45:00"), "status": {"type": "finished"},
+        {"id": 1, "startTimestamp": ko("2026-09-04T18:45:00"), "status": {"type": "finished"},
          "homeTeam": {"name": "Como"}, "awayTeam": {"name": "Genoa"}},
-        {"startTimestamp": ko("2026-09-05T18:45:00"), "status": {"type": "finished"},
+        {"id": 2, "startTimestamp": ko("2026-09-05T18:45:00"), "status": {"type": "finished"},
          "homeTeam": {"name": "Roma"}, "awayTeam": {"name": "Atalanta"}},
-        {"startTimestamp": ko("2026-09-05T13:00:00"), "status": {"type": "postponed"},
+        {"id": 3, "startTimestamp": ko("2026-09-05T13:00:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Fiorentina"}, "awayTeam": {"name": "Torino"}},
+        {"id": 4, "startTimestamp": ko("2026-09-05T13:00:00"), "status": {"type": "postponed"},
          "homeTeam": {"name": "X"}, "awayTeam": {"name": "Y"}},
-        {"startTimestamp": ko("2026-09-13T18:45:00"), "status": {"type": "notstarted"},
+        {"id": 5, "startTimestamp": ko("2026-09-13T18:45:00"), "status": {"type": "notstarted"},
          "homeTeam": {"name": "Lazio"}, "awayTeam": {"name": "Milan"}},
     ]))
     pms = tmp_path / "external" / "sofascore" / "player_match_stats.parquet"
     pms.parent.mkdir(parents=True)
-    pd.DataFrame({"date": ["2026-09-04"]}).to_parquet(pms)
+    pd.DataFrame({"match_id": [1], "date": ["2026-09-04"], "source": [None]}).to_parquet(pms)
     # 6h after the Roma match: inside the grace window, only Friday is due -> OK
     assert hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 0, 45, tzinfo=UTC))["status"] == "OK"
-    # next morning: Saturday's stats are due and missing -> CRITICAL, postponed fixture ignored
+    # next morning: Saturday's two matches are due and missing -> CRITICAL, postponed fixture ignored
     out = hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))
-    assert out["status"] == "CRITICAL" and out["missing_dates"] == ["2026-09-05"] and "1 finished" in out["detail"]
-    pd.DataFrame({"date": ["2026-09-04", "2026-09-05"]}).to_parquet(pms)
+    assert out["status"] == "CRITICAL" and len(out["missing"]) == 2 and "2 finished" in out["detail"]
+    # one of the two lands from Sofascore: the OTHER is still named (per match, not per date)
+    pd.DataFrame({"match_id": [1, 2], "date": ["2026-09-04", "2026-09-05"], "source": [None, "sofascore"]}).to_parquet(pms)
+    out = hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))
+    assert out["status"] == "CRITICAL" and out["missing"] == ["2026-09-05 Fiorentina v Torino"]
+    # the record chain fills it from FotMob: present, graded, but a WARNING that names the stand-in
+    pd.DataFrame({"match_id": [1, 2, 3], "date": ["2026-09-04", "2026-09-05", "2026-09-05"],
+                  "source": [None, "sofascore", "fotmob"]}).to_parquet(pms)
+    out = hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))
+    assert out["status"] == "WARNING" and out["stand_ins"] == ["2026-09-05 Fiorentina v Torino (fotmob)"]
+    # Sofascore answers: its rows replace the stand-in -> OK
+    pd.DataFrame({"match_id": [1, 2, 3], "date": ["2026-09-04", "2026-09-05", "2026-09-05"],
+                  "source": [None, "sofascore", "sofascore"]}).to_parquet(pms)
     assert hc.check_player_stats_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))["status"] == "OK"
 
 

@@ -33,7 +33,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -68,6 +68,35 @@ CAPTAINS_PARQUET = SOFASCORE_DIR / "captains.parquet"
 
 # Fixtures cache staleness threshold (seconds)
 FIXTURES_CACHE_MAX_AGE = 6 * 3600  # 6 hours
+SOFASCORE_COOLDOWN_FILE = DATA_DIR / "monitoring" / "sofascore_cooldown.json"
+SOFASCORE_COOLDOWN_MINUTES = 60
+_DENIED_MARKERS = ("403", "forbidden", "challenge", "429", "too many requests")
+
+
+def _looks_denied(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _DENIED_MARKERS)
+
+
+def sofascore_cooldown_remaining(now: float | None = None) -> float:
+    """Seconds left on the Sofascore ingest cooldown, 0 when none."""
+    try:
+        d = json.loads(SOFASCORE_COOLDOWN_FILE.read_text())
+        until = float(d.get("until_ts") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0.0
+    now = now or datetime.now(UTC).timestamp()
+    return max(0.0, until - now)
+
+
+def set_sofascore_cooldown(reason: str, minutes: int = SOFASCORE_COOLDOWN_MINUTES) -> None:
+    SOFASCORE_COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC)
+    payload = {"set_at": now.isoformat(), "until_ts": now.timestamp() + minutes * 60,
+               "minutes": minutes, "reason": reason}
+    tmp = SOFASCORE_COOLDOWN_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(SOFASCORE_COOLDOWN_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +221,17 @@ def _get_existing_sofascore_match_ids(league: str = "serie_a") -> set[int]:
     visible under force_refresh=True.
     """
     path = _sofascore_parquet("player_match_stats", league)
-    if path.exists():
+    if not path.exists():
+        return set()
+    # A stand-in row (source fotmob / espn, written by match_record_chain while
+    # Sofascore was denied) is NOT coverage: the match stays "new" so Sofascore
+    # replaces it the day it answers (see _save_merged replace_stand_ins).
+    try:
+        df = pd.read_parquet(path, columns=["match_id", "source"])
+        df = df[df["source"].isna() | (df["source"].astype(object) == "sofascore")]
+    except (KeyError, ValueError):  # older file: every row is Sofascore's
         df = pd.read_parquet(path, columns=["match_id"])
-        return set(df["match_id"].unique())
-    return set()
+    return set(df["match_id"].unique())
 
 
 def detect_new_matches(
@@ -281,8 +317,15 @@ async def fetch_match_details(
     """
     from sofascore_wrapper.api import SofascoreAPI
 
-    api = SofascoreAPI()
     results = []
+    cooldown = sofascore_cooldown_remaining()
+    if cooldown:
+        log.warning("Sofascore cooldown active (%.0f min left) — not fetching %d match(es); "
+                    "match_record_chain fills the gap from FotMob/ESPN", cooldown / 60, len(fixtures))
+        return results
+
+    api = SofascoreAPI()
+    denied = 0
 
     try:
         for i, fixture in enumerate(fixtures):
@@ -305,6 +348,15 @@ async def fetch_match_details(
                     log.warning("  SKIP — no data returned for match %d", match_id)
             except Exception as e:
                 log.error("  FAIL — match %d: %s", match_id, e)
+                if _looks_denied(e):
+                    denied += 1
+                    # One denial is the site's answer for the whole run: every
+                    # further call is a vote for a longer IP ban (310 logged 403s
+                    # in two days earned the 2026-09-06 blanket deny).
+                    set_sofascore_cooldown(f"{type(e).__name__}: {str(e)[:120]}")
+                    log.warning("Sofascore denied the request — stopping this run's fetches, "
+                                "cooldown %d min", SOFASCORE_COOLDOWN_MINUTES)
+                    break
 
             # Rate limit between API calls
             if i < len(fixtures) - 1:
@@ -320,14 +372,27 @@ async def fetch_match_details(
 # 3. Merge into Sofascore parquets
 # ---------------------------------------------------------------------------
 
-def _save_merged(new_df: pd.DataFrame, output_path: Path, dedup_cols: list[str]) -> int:
-    """Merge new data with existing parquet, dedup, and save. Returns rows added."""
+def _save_merged(new_df: pd.DataFrame, output_path: Path, dedup_cols: list[str],
+                 replace_stand_ins: bool = False) -> int:
+    """Merge new data with existing parquet, dedup, and save. Returns rows added.
+
+    ``replace_stand_ins``: the incoming rows are Sofascore's — drop every
+    fotmob / espn stand-in row the parquet holds for those match ids first (a
+    stand-in's foreign player ids would otherwise survive the dedup next to
+    the real rows)."""
     if new_df.empty:
         return 0
 
     if output_path.exists():
         existing = pd.read_parquet(output_path)
         rows_before = len(existing)
+        if replace_stand_ins and "source" in existing.columns and "match_id" in new_df.columns:
+            incoming = set(new_df["match_id"].astype(str))
+            stand_in = existing["source"].notna() & (existing["source"].astype(object) != "sofascore")
+            drop = stand_in & existing["match_id"].astype(str).isin(incoming)
+            if drop.any():
+                log.info("Replacing %d stand-in rows in %s with Sofascore rows", int(drop.sum()), output_path.name)
+                existing = existing[~drop]
 
         # Align columns
         for c in new_df.columns:
@@ -384,26 +449,32 @@ def merge_to_sofascore_parquets(
 
     if all_player_rows:
         df = pd.DataFrame(all_player_rows)
+        df["source"] = "sofascore"
         result["player_match_stats"] = _save_merged(
             df,
             _sofascore_parquet("player_match_stats", league),
             ["match_id", "player_id", "season"],
+            replace_stand_ins=True,
         )
 
     if all_team_rows:
         df = pd.DataFrame(all_team_rows)
+        df["source"] = "sofascore"
         result["match_team_stats"] = _save_merged(
             df,
             _sofascore_parquet("match_team_stats", league),
             ["match_id", "team", "period", "season"],
+            replace_stand_ins=True,
         )
 
     if all_shotmap_rows:
         df = pd.DataFrame(all_shotmap_rows)
+        df["source"] = "sofascore"
         result["shotmap_stats"] = _save_merged(
             df,
             _sofascore_parquet("shotmap_stats", league),
             ["match_id", "team", "season"],
+            replace_stand_ins=True,
         )
 
     return result
@@ -1319,6 +1390,16 @@ def run_matchday_update(
                     summary["espn_heal"][k] = summary["espn_heal"].get(k, 0) + heal[k]
             except Exception as e:  # noqa: BLE001 - a gap, not a failed ingest
                 log.warning("[%s] ESPN heal failed: %s", league, e)
+            # Player / team / shot stats the Sofascore ingest left empty:
+            # FotMob, then ESPN, stamped `source`, replaced when Sofascore answers.
+            try:
+                from scripts.data.match_record_chain import heal_missing
+                chain = heal_missing(season=season, league=league)
+                summary["chain"] = summary.get("chain", {})
+                for k in ("matches_missing_before", "matches_filled", "matches_partial", "matches_unfilled"):
+                    summary["chain"][k] = summary["chain"].get(k, 0) + chain[k]
+            except Exception as e:  # noqa: BLE001 - a gap, not a failed ingest
+                log.warning("[%s] record chain failed: %s", league, e)
 
     if dry_run:
         total_detected = summary["new_matches_detected"]
@@ -1453,6 +1534,12 @@ Examples:
                              "Sofascore ingest left empty from ESPN's post-match summary. "
                              "Honors --season, --league, --dry-run. Idempotent.")
 
+    parser.add_argument("--chain", action="store_true",
+                        help="Fill player / team / shot stats the Sofascore ingest left empty from "
+                             "FotMob, then ESPN (scripts/data/match_record_chain.py). Honors "
+                             "--season, --league, --dry-run. Idempotent; stand-ins are replaced "
+                             "when Sofascore answers.")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1472,6 +1559,15 @@ Examples:
     if args.backfill_referees:
         results = [
             backfill_referees(season=args.season, league=lg, dry_run=args.dry_run)
+            for lg in (leagues or ["serie_a", "premier_league"])
+        ]
+        print(json.dumps(results, indent=2, default=str))
+        return
+
+    if args.chain:
+        from scripts.data.match_record_chain import heal_missing
+        results = [
+            heal_missing(season=args.season, league=lg, dry_run=args.dry_run)
             for lg in (leagues or ["serie_a", "premier_league"])
         ]
         print(json.dumps(results, indent=2, default=str))

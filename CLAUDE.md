@@ -1055,6 +1055,33 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   the parquet), or a partial ingest is final forever.** And a stand-in row must say it is
   one (`source`) so the real feed can replace it instead of being told the work is done.
 
+### Symptom: "Sofascore is denied and a finished match has no player stats / team stats / shot map" (CHAIN, 2026-09-06)
+
+- **What you'll see**: `check_player_stats_coverage` CRITICAL naming matches, `ingest_chain_status.json`
+  with `still_missing`, `sofascore_cooldown.json` present, `pipeline.log` full of 403s from the ingest.
+- **What exists now**: `scripts/data/match_record_chain.py` runs after `heal_from_espn` on every
+  matchday pass (and as `matchday_updater --chain` / `python3 -m scripts.data.match_record_chain`).
+  Per finished fixture it fills each parquet with no Sofascore-backed rows from **FotMob**
+  (`scraper/fotmob.py`: full player stats, 3-period team stats, shot map with xG — verified live
+  2026-09-06, no key) then **ESPN** (shots / SoT / goals / assists / fouls / cards / saves +
+  minutes, boxscore ALL). Every row carries `source`; a stand-in is NOT coverage — the detector keeps
+  the match "new", Sofascore replaces the stand-in rows the day it answers (`_save_merged
+  replace_stand_ins`, `rebuild_from_cache`), and `all_shots_with_xg` is rebuilt from the cached
+  Sofascore json before any stand-in is written. Raw payloads always saved
+  (`data/external/fotmob/match_details/`). Player ids: resolved to Sofascore ids from the parquet's
+  own history when unique, else `-fotmob_id`.
+- **What it does NOT do**: retry Sofascore. The first denial of a run stops the run's fetches and
+  writes a 60-min cooldown (`sofascore_cooldown.json`) — 310 logged 403s in two days is how the IP
+  got blanket-denied on 2026-09-06. A blanket deny (robots.txt 403, `server: Varnish`, connect
+  refusals) lifts with a different egress IP, not with waiting or retries.
+- **Reading the state**: `ingest_chain_status.json` names every match, what filled it and why a
+  source declined (team name did not normalise, FotMob lists no such match, breaker parked).
+  `check_player_stats_coverage` is per MATCH (was per date) and WARNs on stand-ins by name.
+- **Prevention rules**: **every row written by a fallback source carries `source`, and a stand-in
+  never counts as coverage** — the real feed must be able to replace it, and the detector must
+  diff on the source, not on presence. **A source that answers 403 once is parked for the run** —
+  every retry is a vote for a longer ban. And a stat the fallback does not carry is None, never 0.
+
 ### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
 
 - **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is

@@ -120,6 +120,7 @@ def shot_rows_from_shotmap(shots: list[dict], sofascore_id: str,
             "is_set_piece": int(situation in _SET_PIECE),
             "is_fast_break": int(situation == "fast-break"),
             "xg_predicted": xg,  # see module docstring — never read for 2025-26
+            "source": "sofascore",
         })
     return rows
 
@@ -172,7 +173,15 @@ def rebuild_from_cache(season: str, league: str = "serie_a") -> int:
 
     if path.exists():
         existing = pd.read_parquet(path)
-        existing = existing[existing["season"] != season]
+        keep = existing["season"] != season
+        if "source" in existing.columns:
+            # A stand-in (source fotmob / espn, written by match_record_chain
+            # while Sofascore was denied) survives the season rewrite unless the
+            # cache now holds that match — then Sofascore's rows replace it.
+            stand_in = existing["source"].notna() & (existing["source"].astype(object) != "sofascore")
+            rebuilt = set(new_df["match_id"].astype(str))
+            keep |= stand_in & ~existing["match_id"].astype(str).isin(rebuilt)
+        existing = existing[keep]
         for c in new_df.columns:
             if c not in existing.columns:
                 existing[c] = None

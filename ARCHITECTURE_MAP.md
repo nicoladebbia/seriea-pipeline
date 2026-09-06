@@ -65,6 +65,19 @@ Legend — Liveness: 🟢 live · 🔧 one-shot · 🧪 test · ⚫ dead. Verdic
 - **Quality signals:** parsers tested against saved real specimens in `tests/fixtures/espn/` (13 tests, `tests/test_live_espn.py`); network isolated behind `_get_json` / `_scoreboard`.
 - ⚠️ **Own-goal side and red-card slugs are unverified** (no specimen yet) — see the module docstring.
 
+#### 🟢 `scripts/data/match_record_chain.py` — grade A · keep
+- **Does:** Finished-match record chain: for every finished fixture of the season (calendar status, or kicked off >3h ago) asks each stat parquet whether it holds Sofascore-backed rows and fills each missing component from FotMob, then ESPN, stamped `source`; rebuilds `all_shots_with_xg` from the cached Sofascore json first when that is what is missing. Writes `data/monitoring/ingest_chain_status.json`.
+- **Talks to:** imports `scraper.fotmob` (fetch + parsers), `scripts.data.live_espn` (post-match summary → rows), `scripts.data.matchday_updater` (`_sofascore_parquet`, `_load_fixtures`), `scripts.data.write_shot_level_xg` (`cache_dir`, `rebuild_from_cache`). imported_by: `matchday_updater.run_matchday_update` (after `heal_from_espn`, every league pass) and its `--chain` flag; `python3 -m scripts.data.match_record_chain`.
+- **To change the source order or add a source, the file is this one (`SOURCE_ORDER`, `SOURCES`).** To change what counts as coverage, `sofascore_backed_ids`. Replacement of stand-ins by Sofascore lives in `matchday_updater._save_merged` and `write_shot_level_xg.rebuild_from_cache`.
+- **Quality signals:** 11 tests on tmp parquets + fake sources (`tests/test_match_record_chain.py`): missing detection incl. the cached shot map, chain walk, partial fill, idempotent rewrite, stand-in replacement, detector ignores stand-ins, cooldown, rebuild preservation, ESPN rows on a saved specimen.
+
+#### 🟢 `scraper/fotmob.py` — grade A · keep
+- **Does:** FotMob adapter: `/api/data/matches?date=` (day listing, leagues 55/47) and `/api/data/matchDetails?matchId=` behind one breaker (403 / 429 / connect → 10 min); raw payload saved; PURE parsers into the `player_match_stats` / `match_team_stats` (3 periods) / `all_shots_with_xg` / `shotmap_stats` vocabularies, absent stat = None, zero shots derived from the player's own (complete) shot map.
+- **Talks to:** `config.team_names.normalize_team` + `FOTMOB_TEAM_ALIASES`, `curl_cffi`. imported_by: `scripts/data/match_record_chain.py`.
+- **To change a stat mapping, the file is this one (`player_rows`, `team_stats_rows`, `shot_rows`).** Coordinates: metres on 105×68 with the attacked goal at x=105 → Sofascore percent-from-goal-line.
+- **Quality signals:** 11 tests on trimmed live specimens (`tests/fixtures/fotmob_*.json`, Fiorentina–Torino and Man City–Coventry 2026-09-05; `tests/test_fotmob.py`).
+- ⚠️ Unofficial site API, terms forbid scraping, a signed `x-mas` header was required for a while in 2024 — a rung of the chain, never the spine.
+
 #### 🟢 `scripts/data/rumor_history.py` — grade A · keep
 - **Does:** Append-only transfer-rumor lifecycle store. Folds each daily `scrape_rumors` result into `rumor_history.parquet` (one row per rumor ever, with `first_seen`/`last_seen`/`times_seen`) plus `rumor_scrape_log.parquet` (per-run, per-club coverage). Exists because `rumors_<season>.parquet` is overwritten daily and is therefore survivorship-biased — unusable for any retrospective study.
 - **Talks to:** imported_by: `scripts/data/refresh_transfers.py` (step 3, right after `scrape_rumors`); imports: pandas, pathlib. Reads/writes `data/external/transfermarkt/rumor_history.parquet` + `rumor_scrape_log.parquet`.
