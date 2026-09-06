@@ -322,6 +322,10 @@
   <!-- Status Bar: Open Bets, Win Rate, ROI, Total Staked, Total Profit -->
   <div id="stats-bar" class="vb-status-bar" style="display:none"></div>
 
+  <!-- Promotion gate: which market bets real money, at what stake, and why.
+       Same state as Telegram /record (data/betting/market_promotion.json). -->
+  <div id="market-record" class="vb-inner-card" style="display:none;margin-bottom:var(--space-6);"></div>
+
   <!-- LIVE NOW banner -->
   <div id="live-banner" style="display:none;margin-bottom:var(--space-6);"></div>
 
@@ -401,6 +405,83 @@ let playerPropVBets = [];
 let livePropCache = {};
 let propPerformance = null;
 let kellyPnl = null;
+
+// ---- Promotion gate card (/api/market-record) --------------------------------
+// The record that decides real money: the incumbents (O/U Over) scored on the
+// bar they impose on the props, their since-go-live record and stake ladder,
+// then each paper market's distance to real stakes. Re-fetched every 60s.
+async function loadMarketRecord() {
+  const el = document.getElementById('market-record');
+  if (!el) return;
+  let d;
+  try { d = await (await fetch('/api/market-record')).json(); } catch (e) { return; }
+  if (!d || d.error) return;
+  const bar = d.bar || {}, dem = d.demotion_bar || {};
+  const pct = (v, dp = 1) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(dp)}%`);
+  const col = (v, good, bad) => (v == null ? 'var(--text-tertiary)' : v > good ? 'var(--green)' : v < bad ? 'var(--red)' : 'var(--amber)');
+  const ageMin = d.updated_at ? Math.max(0, Math.round((Date.now() - new Date(d.updated_at).getTime()) / 60000)) : null;
+  const age = ageMin == null ? '' : ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.round(ageMin / 60)}h ago` : `${Math.round(ageMin / 1440)}d ago`;
+  const th = (t, align = 'right') => `<th style="text-align:${align};font-weight:600;color:var(--text-tertiary);padding:4px 8px;white-space:nowrap;">${t}</th>`;
+  const td = (t, style = '', align = 'right') => `<td style="text-align:${align};padding:5px 8px;white-space:nowrap;${style}">${t}</td>`;
+  const rows = [];
+  for (const r of d.incumbents || []) {
+    const rr = r.real || {}, sl = r.real_since_live || {};
+    const barCell = r.bar_passed
+      ? `<span style="color:var(--green);">✓ cleared</span>`
+      : `<span style="color:var(--amber);">✗ ${esc(r.distance || '')}</span>`;
+    const stakeCell = (r.stake_scale == null || r.stake_scale >= 1)
+      ? `<span style="color:var(--green);">full · Kelly 0.15, cap 2.5%</span>`
+      : `<span style="color:var(--amber);font-weight:600;">×${r.stake_scale} Kelly & cap</span> <span style="color:var(--text-tertiary);">until ${d.full_stake_min_n} real bets since go-live hold up</span>`;
+    rows.push(`<tr style="border-top:1px solid var(--border-subtle);">
+      ${td(`🏦 <b>${esc(r.name)}</b>`, '', 'left')}
+      ${td('<span style="color:var(--accent);">real · incumbent</span>', '', 'left')}
+      ${td(rr.n ?? 0)}${td(pct(rr.roi_pct), `color:${col(rr.roi_pct, 0, -10)};font-weight:600;`)}
+      ${td(rr.z == null ? '—' : Number(rr.z).toFixed(2), `color:${col(rr.z, bar.min_z ?? 2.5, -1)};`)}
+      ${td(rr.mean_clv_pct == null ? '—' : `${pct(rr.mean_clv_pct, 2)} <span style="color:var(--text-tertiary);">(${rr.n_clv})</span>`, `color:${col(rr.mean_clv_pct, 0, 0)};`)}
+      ${td(barCell, '', 'left')}
+      ${td(`${sl.n ?? 0}${sl.n ? ` · ${pct(sl.roi_pct)} · z ${Number(sl.z).toFixed(2)}` : ''}`)}
+      ${td(stakeCell, '', 'left')}
+    </tr>`);
+  }
+  for (const r of d.markets || []) {
+    const p = r.paper || {}, rr = r.real || {};
+    const promoted = r.status === 'promoted';
+    const stakeCell = promoted
+      ? `<span style="color:var(--green);">Kelly ×${d.promoted_kelly_scale}, cap ${d.promoted_max_stake_pct}%</span>${rr.n ? ` <span style="color:var(--text-tertiary);">· real n=${rr.n} ${pct(rr.roi_pct)}</span>` : ''}`
+      : `<span style="color:var(--text-tertiary);">paper €10</span>`;
+    rows.push(`<tr style="border-top:1px solid var(--border-subtle);">
+      ${td(`${promoted ? '💰' : '📝'} ${esc(r.name)}`, '', 'left')}
+      ${td(promoted ? '<span style="color:var(--green);">promoted</span>' : '<span style="color:var(--text-tertiary);">paper</span>', '', 'left')}
+      ${td(p.n ?? 0)}${td(pct(p.roi_pct), `color:${col(p.roi_pct, 0, -10)};`)}
+      ${td(p.z == null ? '—' : Number(p.z).toFixed(2), `color:${col(p.z, bar.min_z ?? 2.5, -1)};`)}
+      ${td(p.mean_clv_pct == null ? '—' : `${pct(p.mean_clv_pct, 2)} <span style="color:var(--text-tertiary);">(${p.n_clv})</span>`)}
+      ${td(promoted ? '<span style="color:var(--green);">✓ promoted</span>' : `<span style="color:var(--text-tertiary);">${esc(r.distance || '')}</span>`, '', 'left')}
+      ${td('—')}
+      ${td(stakeCell, '', 'left')}
+    </tr>`);
+  }
+  const body = rows.length ? `
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--font-mono);">
+      <thead><tr>${th('Market', 'left')}${th('Status', 'left')}${th('n')}${th('ROI')}${th('z')}${th('CLV (n)')}${th('Bar', 'left')}${th('Since go-live')}${th('Stake', 'left')}</tr></thead>
+      <tbody>${rows.join('')}</tbody>
+    </table></div>`
+    : `<div style="font-size:11px;color:var(--text-tertiary);padding:6px 0;">No settled paper pick yet: every market is paper until it has ${bar.min_settled} settled picks with ROI &gt; 0.</div>`;
+  el.innerHTML = `
+    <div class="vb-flex-between" style="margin-bottom:var(--space-2);">
+      <div class="vb-flex" style="gap:var(--space-3);align-items:baseline;">
+        <span style="font-size:13px;font-weight:700;color:var(--text-primary);">Market record · who bets real money, and at what stake</span>
+        <span style="font-size:10px;color:var(--text-tertiary);">bar: ≥${bar.min_settled} settled, ROI &gt; ${bar.min_roi_pct}%, z ≥ ${bar.min_z}, CLV &gt; 0 once ${bar.min_clv_n} closing prices · demotion: ≥${dem.min_real_bets} real at ROI &lt; ${dem.max_roi_pct}% or z &lt; ${dem.max_z}</span>
+      </div>
+      <span style="font-size:10px;color:var(--text-tertiary);">${age ? `evaluated ${age}` : ''} · same state as Telegram /record</span>
+    </div>
+    ${body}
+    <div style="font-size:10px;color:var(--text-tertiary);margin-top:var(--space-2);">
+      🏦 incumbent = bet real money before the bar existed, measured on the same bar, staked at ×${d.promoted_kelly_scale} until its record since ${(d.live_from || '').slice(0, 10)} (the current model) reaches ${d.full_stake_min_n} held-up bets ·
+      💰 promoted = paper record cleared the bar, mirrored into the real journal · 📝 paper = €10 flat, building the record.
+    </div>`;
+  el.style.display = '';
+}
 let fairOddsSummary = null;
 let rejectedBets = [];
 let riskState = {};
@@ -2233,6 +2314,7 @@ async function loadBetting() {
 
     fetch('/api/props/performance').then(r => r.json()).then(d => { propPerformance = d.performance || null; }).catch(() => {});
     fetch('/api/props/kelly-pnl').then(r => r.json()).then(d => { if (!d.error) kellyPnl = d; }).catch(() => {});
+    loadMarketRecord();
     fetch('/api/fair-odds/summary').then(r => r.json()).then(d => { if (!d.error) fairOddsSummary = d; }).catch(() => {});
     riskState = data.risk_state || {};
     bttsPredictions = data.btts_predictions || [];
@@ -2750,6 +2832,7 @@ function renderLiveBanner() {
 function startClockSystem() {
   pollMatchClock();
   setInterval(pollMatchClock, 30000);
+  setInterval(loadMarketRecord, 60000);
   clockTickerInterval = setInterval(tickMatchClocks, 1000);
 }
 

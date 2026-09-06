@@ -342,3 +342,24 @@ def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
     other = UnifiedBettingEngine()._make_bet("Udinese vs Lazio", "2026-09-05", "1X2", "Home",
                                              0.50, 0.44, 2.45, "Pinnacle", 2.45, 2.40, 5, min_edge_override=3.0)
     assert other is None or other.stake_scale == 1.0
+
+
+def test_api_market_record_serves_the_same_state_as_the_bot_card(tmp_path):
+    """/betting renders the gate from /api/market-record; it must read the
+    same derived file the Telegram card reads, with names and thresholds."""
+    import web.app as appmod
+    live = "2026-09-13T17:00:00+00:00"
+    real = _real_engine("O/U 1.5", "Over 1.5", 35, 12, 1.41, "2026-03-01T17:00:00+00:00", clv=2.4)
+    MP.evaluate_promotions(_settled("btts_h1", 10, 10), [], real_all=real, now=datetime(2026, 9, 14, tzinfo=UTC))
+    r = appmod.app.test_client().get("/api/market-record")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["bar"] == MP.PROMOTION_BAR and d["full_stake_min_n"] == 30 and d["updated_at"].startswith("2026-09-14")
+    assert [i["key"] for i in d["incumbents"]] == ["ou_over_1_5", "ou_over_2_5"]   # both, always
+    inc = d["incumbents"][0]
+    assert inc["name"] == "Over 1.5 (motore)"
+    assert inc["real"]["n"] == 47 and not inc["bar_passed"] and inc["stake_scale"] == MP.PROMOTED_KELLY_SCALE
+    assert inc["real_since_live"]["n"] == 0
+    (mk,) = d["markets"]
+    assert mk["key"] == "btts_h1" and mk["name"] == "Goal 1° tempo" and mk["status"] == "paper" and mk["distance"] == "20/50 settled"
+    assert "market-record" in appmod.app.test_client().get("/betting").get_data(as_text=True)

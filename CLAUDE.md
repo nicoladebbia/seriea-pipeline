@@ -405,7 +405,9 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `stake_scale` / `stake_reason`, `_make_bet` reads them once per engine run
   (`_incumbent_stake_scale`, fail-closed to 0.5 with no state), `ValueBet.stake_scale` /
   `stake_note` carry it. Dry run on the MW3 slate: EUR 18–22 → EUR 10 a bet (1.5 line at
-  the halved 1.25% cap × 0.85). Kelly 0.15 itself is unchanged and re-arms by itself the
+  the halved 1.25% cap × 0.85). The gate is visible on the web at `/betting` (the "Market
+  record" card, `/api/market-record`) — it serves the same state file the Telegram card
+  reads, so the two cannot disagree; keep any new gate field in both renderers. Kelly 0.15 itself is unchanged and re-arms by itself the
   day 30 real bets on the current model hold up — nobody edits a number to get there.
 - **The T-30 run re-reads the code every time — no kickstart needed for `picks.py` /
   `betting_unified.py`.** The pre-kickoff monitor is a launchd `StartInterval 900` job (not

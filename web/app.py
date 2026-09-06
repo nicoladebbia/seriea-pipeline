@@ -7630,6 +7630,36 @@ def api_props_kelly_pnl():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/market-record")
+def api_market_record():
+    """The promotion gate exactly as Telegram /record sees it: the derived
+    state in data/betting/market_promotion.json (rewritten after every
+    settlement) — the incumbents (O/U Over 1.5 / 2.5) scored against the
+    same bar they impose on the props, their since-go-live record and the
+    stake ladder, then every paper market with its distance to real money.
+    Same file, same thresholds, so the page and the bot cannot disagree."""
+    try:
+        from scripts.betting.market_promotion import (
+            DEMOTION_BAR, INCUMBENT_FULL_STAKE_MIN_N, INCUMBENT_LIVE_FROM, MARKET_NAMES_IT,
+            PROMOTED_KELLY_SCALE, PROMOTED_MAX_STAKE_PCT, PROMOTION_BAR, load_state,
+        )
+        st = load_state()
+        incumbents = [{"key": k, "name": MARKET_NAMES_IT.get(k, k), **v}
+                      for k, v in (st.get("incumbents") or {}).items()]
+        order = {"promoted": 0, "paper": 1}
+        markets = [{"key": k, "name": MARKET_NAMES_IT.get(k, k), **v}
+                   for k, v in sorted((st.get("markets") or {}).items(),
+                                      key=lambda kv: (order.get(kv[1].get("status"), 2),
+                                                      -(kv[1].get("paper") or {}).get("n", 0)))]
+        return jsonify({"updated_at": st.get("updated_at"), "bar": PROMOTION_BAR, "demotion_bar": DEMOTION_BAR,
+                        "full_stake_min_n": INCUMBENT_FULL_STAKE_MIN_N, "live_from": INCUMBENT_LIVE_FROM,
+                        "promoted_kelly_scale": PROMOTED_KELLY_SCALE, "promoted_max_stake_pct": PROMOTED_MAX_STAKE_PCT,
+                        "incumbents": incumbents, "markets": markets})
+    except (ImportError, OSError, ValueError, TypeError) as e:
+        log.warning(f"market record failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Background Auto-Settlement Scheduler
 # ---------------------------------------------------------------------------
