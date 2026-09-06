@@ -766,6 +766,170 @@ def _referee_from_espn(league: str, match_date: str, home: str, away: str) -> st
         return None
 
 
+# ESPN boxscore stat name -> matches.parquet column stems (home_/away_ prefixed).
+# Sofascore's writer above fills both the legacy `shots_total` and the
+# `shots_on_target_total` (= total shots) column with the same number; so here.
+_ESPN_STAT_STEMS: dict[str, tuple[str, ...]] = {
+    "possessionPct": ("possession",),
+    "totalShots": ("shots_total", "shots_on_target_total"),
+    "shotsOnTarget": ("shots_on_target", "shots_on_target_count"),
+    "foulsCommitted": ("fouls",),
+    "wonCorners": ("corners",),
+    "saves": ("saves", "saves_count", "saves_total"),
+    "offsides": ("offsides",),
+    "totalTackles": ("tackles",),
+    "interceptions": ("interceptions",),
+    "effectiveClearance": ("clearances",),
+    "accuratePasses": ("passing_accuracy_count",),
+    "totalPasses": ("passing_accuracy_total",),
+    "accurateCrosses": ("crosses",),
+    "accurateLongBalls": ("long_balls",),
+}
+
+
+def _espn_post_summary(league: str, match_date: str, home: str, away: str) -> dict | None:
+    """ESPN summary of a PLAYED match, else None. Never raises."""
+    if not match_date:
+        return None
+    try:
+        from scripts.data.live_espn import post_match_summary
+        return post_match_summary(league, match_date, home, away)
+    except Exception as e:  # noqa: BLE001 - network / parse trouble
+        log.debug("ESPN summary failed for %s vs %s (%s): %s", home, away, match_date, e)
+        return None
+
+
+def _espn_stat_values(summary: dict) -> dict[str, float | None]:
+    """{matches.parquet column: value} from the post-match boxscore, plus the
+    derived passing accuracy. Absent stats are absent, not zero."""
+    from scripts.data.live_espn import boxscore_by_side
+    sides = boxscore_by_side(summary.get("boxscore") or {})
+    out: dict[str, float | None] = {}
+    for espn_key, stems in _ESPN_STAT_STEMS.items():
+        for side in ("home", "away"):
+            val = sides[side].get(espn_key)
+            if val is None:
+                continue
+            for stem in stems:
+                out[f"{side}_{stem}"] = val
+    for side in ("home", "away"):
+        acc, tot = out.get(f"{side}_passing_accuracy_count"), out.get(f"{side}_passing_accuracy_total")
+        if acc is not None and tot:
+            out[f"{side}_passing_accuracy"] = round(float(acc) / float(tot) * 100, 1)
+    return out
+
+
+def _fixture_row_index(gt: pd.DataFrame, league: str, match_date: str, home: str, away: str):
+    """Index label of the played matches.parquet row for a fixture, else None."""
+    dates = gt["match_date"].astype(str).str[:10]
+    mask = ((gt["league"] == league) & (dates == match_date) & (gt["home_team"] == home)
+            & (gt["away_team"] == away) & gt["home_score"].notna())
+    hits = gt.index[mask]
+    return hits[0] if len(hits) else None
+
+
+def heal_from_espn(season: str | None = None, league: str = "serie_a",
+                   dry_run: bool = False) -> dict:
+    """Fill what the Sofascore ingest left empty, from ESPN's post-match summary.
+
+    Two gaps, one cause: with the Sofascore API tier challenged (2026-09-05),
+    a finished match can get a ground-truth row with NO team stats (the
+    statistics endpoint answered nothing) and NO incident rows (same for the
+    incidents endpoint) — and nothing retried either, because the detector
+    diffs fixture ids against player_match_stats, where the match already was.
+    Nine of 21 finished 2026-27 Serie A matches had no incidents, six rows no
+    possession/shots/corners/fouls, before this pass.
+
+    Per finished fixture in the cached list (Sofascore ids, known weeks ahead):
+      * no incident rows at all -> goals / cards / substitutions from ESPN,
+        stamped ``source="espn"`` (sofascore_events replaces them the day the
+        real feed answers; `scrape_incidents` does not count them as covered);
+      * matches.parquet row with ``home_possession`` or ``home_yellow_cards``
+        NaN (the eight MW2 rows had stats but no incidents) -> the team stats ESPN
+        lists (possession, shots, SoT, corners, fouls, saves, offsides, tackles,
+        interceptions, clearances, passes, crosses, long balls), the half-time
+        score, the card counts from the incidents on disk, ``data_source``
+        "espn". Only NaN cells are written. xG is not on ESPN and stays NaN.
+    Idempotent: a healed match is not a candidate on the next call. A match
+    ESPN cannot serve (not ``post``, not found) is counted and retried next run.
+    Never raises past the caller's try.
+    """
+    from scraper.sofascore_events import _save_incidents, incident_rows_from_espn, sofascore_covered_ids
+    from scripts.data.live_espn import half_time_from_summary
+
+    if season is None:
+        season = get_current_season()
+    summary = {"league": league, "season": season, "candidates": 0, "incidents_matches": 0,
+               "incident_rows": 0, "stats_rows": 0, "unreachable": 0}
+    now_ts = datetime.now(timezone.utc).timestamp()
+    fixtures = [f for f in _load_fixtures(season, league)
+                if (f.get("status") or {}).get("type") == "finished"
+                and f.get("id") and f.get("startTimestamp") and f["startTimestamp"] <= now_ts]
+    if not fixtures:
+        return summary
+    covered = sofascore_covered_ids()
+    espn_ids: set[int] = set()
+    if INCIDENTS_PARQUET.exists():
+        try:
+            inc = pd.read_parquet(INCIDENTS_PARQUET, columns=["match_id", "source"])
+            espn_ids = set(inc.loc[inc["source"].astype(object) == "espn", "match_id"].unique())
+        except (KeyError, ValueError):
+            espn_ids = set()
+    gt = pd.read_parquet(MATCHES_PARQUET) if MATCHES_PARQUET.exists() else None
+    new_rows: list[dict] = []
+    stats_fill: list[tuple] = []  # (index, values dict, ht tuple|None, fixture id)
+    for f in fixtures:
+        fid = int(f["id"])
+        match_date = datetime.fromtimestamp(int(f["startTimestamp"]), tz=timezone.utc).strftime("%Y-%m-%d")
+        home = normalize_team((f.get("homeTeam") or {}).get("name", ""))
+        away = normalize_team((f.get("awayTeam") or {}).get("name", ""))
+        need_incidents = fid not in covered and fid not in espn_ids
+        idx = _fixture_row_index(gt, league, match_date, home, away) if gt is not None else None
+        need_stats = idx is not None and (pd.isna(gt.at[idx, "home_possession"])
+                                          or pd.isna(gt.at[idx, "home_yellow_cards"]))
+        if not (need_incidents or need_stats):
+            continue
+        summary["candidates"] += 1
+        s = _espn_post_summary(league, match_date, home, away)
+        if s is None:
+            summary["unreachable"] += 1
+            continue
+        if need_incidents:
+            rows = incident_rows_from_espn(s, fid)
+            if rows:
+                new_rows.extend(rows)
+                summary["incidents_matches"] += 1
+                summary["incident_rows"] += len(rows)
+        if need_stats:
+            stats_fill.append((idx, _espn_stat_values(s), half_time_from_summary(s), fid))
+    log.info("[%s] ESPN heal %s: %d candidates, incidents for %d matches (%d rows), "
+             "team stats for %d rows, %d unreachable%s", league, season, summary["candidates"],
+             summary["incidents_matches"], summary["incident_rows"], len(stats_fill),
+             summary["unreachable"], " (dry run)" if dry_run else "")
+    if dry_run:
+        summary["stats_rows"] = len(stats_fill)
+        return summary
+    if new_rows:
+        _save_incidents(new_rows, set())
+    if stats_fill and gt is not None:
+        for idx, values, ht, fid in stats_fill:
+            cards = _extract_card_counts(fid)  # incidents just written, or Sofascore's
+            values = dict(values)
+            values.update(cards)
+            values["home_cards"] = cards["home_yellow_cards"] + cards["home_red_cards"]
+            values["away_cards"] = cards["away_yellow_cards"] + cards["away_red_cards"]
+            if ht is not None:
+                values["home_ht_score"], values["away_ht_score"] = ht
+            for col, val in values.items():
+                if col in gt.columns and val is not None and pd.isna(gt.at[idx, col]):
+                    gt.at[idx, col] = val
+            if "data_source" in gt.columns and pd.isna(gt.at[idx, "data_source"]):
+                gt.at[idx, "data_source"] = "espn"
+            summary["stats_rows"] += 1
+        atomic_write_parquet(MATCHES_PARQUET, gt)
+    return summary
+
+
 def backfill_referees(season: str | None = None, league: str = "serie_a",
                       dry_run: bool = False) -> dict:
     """Fill the referee of played rows that have none (NaN or "") from ESPN,
@@ -1133,6 +1297,15 @@ def run_matchday_update(
                 summary["referees_filled"] = summary.get("referees_filled", 0) + ref_fill["filled"]
             except Exception as e:  # noqa: BLE001 - a NaN feature, not a failed ingest
                 log.warning("[%s] referee backfill failed: %s", league, e)
+            # Incidents / team stats the challenged Sofascore API left empty:
+            # ESPN's post-match summary fills them (see heal_from_espn).
+            try:
+                heal = heal_from_espn(season=season, league=league)
+                summary["espn_heal"] = summary.get("espn_heal", {})
+                for k in ("candidates", "incidents_matches", "incident_rows", "stats_rows", "unreachable"):
+                    summary["espn_heal"][k] = summary["espn_heal"].get(k, 0) + heal[k]
+            except Exception as e:  # noqa: BLE001 - a gap, not a failed ingest
+                log.warning("[%s] ESPN heal failed: %s", league, e)
 
     if dry_run:
         total_detected = summary["new_matches_detected"]
@@ -1262,6 +1435,11 @@ Examples:
                              "(summary officials) and normalise '' to null. Honors "
                              "--season, --league, --dry-run. Idempotent.")
 
+    parser.add_argument("--heal-espn", action="store_true",
+                        help="Fill incidents (goals/cards/subs) and team stats that the "
+                             "Sofascore ingest left empty from ESPN's post-match summary. "
+                             "Honors --season, --league, --dry-run. Idempotent.")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1281,6 +1459,14 @@ Examples:
     if args.backfill_referees:
         results = [
             backfill_referees(season=args.season, league=lg, dry_run=args.dry_run)
+            for lg in (leagues or ["serie_a", "premier_league"])
+        ]
+        print(json.dumps(results, indent=2, default=str))
+        return
+
+    if args.heal_espn:
+        results = [
+            heal_from_espn(season=args.season, league=lg, dry_run=args.dry_run)
             for lg in (leagues or ["serie_a", "premier_league"])
         ]
         print(json.dumps(results, indent=2, default=str))

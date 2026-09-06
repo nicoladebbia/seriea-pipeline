@@ -263,6 +263,130 @@ def first_half_score(league: str, date: str, home: str, away: str) -> tuple[int,
     return first_half_from_summary(_summary_for(league, date, home, away))
 
 
+# ---------------------------------------------------------------------------
+# Post-match record: the Sofascore-shaped incidents + team stats the matchday
+# updater falls back to while the Sofascore API is challenged (2026-09-05: nine
+# of 21 finished Serie A matches had no incidents on disk, six ground-truth rows
+# no team stats). Only a summary whose state is ``post`` is used, and it is
+# cached per process: a finished match's summary never changes.
+# ---------------------------------------------------------------------------
+
+_POST_SUMMARIES: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+
+def _is_post(summary: dict[str, Any] | None) -> bool:
+    if not summary:
+        return False
+    comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]
+    return (((comp.get("status") or {}).get("type") or {}).get("state") or "").lower() == "post"
+
+
+def post_match_summary(league: str, date: str, home: str, away: str) -> dict[str, Any] | None:
+    """The ESPN summary of a PLAYED match (state ``post``), else None."""
+    key = (league, str(date)[:10], home, away)
+    hit = _POST_SUMMARIES.get(key)
+    if hit is not None:
+        return hit
+    summary = _summary_for(*key)
+    if not _is_post(summary):
+        return None
+    _POST_SUMMARIES[key] = summary  # type: ignore[assignment]
+    return summary
+
+
+def _home_id(summary: dict[str, Any]) -> str:
+    comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]
+    home_side, _ = _sides(comp.get("competitors") or [])
+    return str((home_side.get("team") or home_side).get("id") or "")
+
+
+def _pseudo_player_id(name: str) -> str:
+    """ESPN athlete ids are not Sofascore ids. A name-derived key keeps the
+    bench-goal join (goal player_id == substitution player_in_id) meaningful
+    for ESPN rows and never collides with a numeric Sofascore id — and never
+    with another ESPN row through a shared blank."""
+    return f"espn:{_fold(name)}" if name else ""
+
+
+def incident_rows_from_summary(summary: dict[str, Any] | None, match_id: int) -> list[dict[str, Any]]:
+    """``match_incidents.parquet`` rows (the Sofascore schema, ``source``
+    "espn") from a post-match summary: goals, cards, substitutions. VAR reviews
+    and missed penalties are not in ESPN's feed, so the match is NOT
+    ``var_checked`` and the rare-event rates leave it out of their denominator.
+
+    Side convention, verified against the parquet (2026-09-05): a Sofascore
+    goal row's ``is_home`` is the side CREDITED with the goal, so an own goal by
+    a home player is ``is_home=False``. ``parse_key_events`` stores the scorer's
+    side for the live card; it is flipped back here.
+    """
+    if not _is_post(summary):
+        return []
+    home_id = _home_id(summary)  # type: ignore[arg-type]
+    if not home_id:
+        return []
+    rows: list[dict[str, Any]] = []
+    for ev in parse_key_events(summary.get("keyEvents") or [], home_id):  # type: ignore[union-attr]
+        kind = ev.get("type")
+        if kind not in ("goal", "card", "substitution"):
+            continue
+        is_home = ev.get("is_home")
+        row: dict[str, Any] = {
+            "match_id": int(match_id), "incident_type": kind, "incident_class": "",
+            "minute": int(ev.get("minute") or 0), "added_time": int(ev.get("added_time") or 0),
+            "player_name": "", "player_id": "", "is_home": is_home,
+            "player_in_name": None, "player_in_id": None, "card_type": None,
+            "goal_type": None, "assist_player": None, "confirmed": None, "source": "espn",
+        }
+        if kind == "goal":
+            goal_type = ev.get("goal_type") or "regular"
+            if goal_type == "ownGoal" and is_home is not None:
+                row["is_home"] = not is_home
+            row.update(incident_class=goal_type, goal_type=goal_type,
+                       player_name=ev.get("player") or "",
+                       player_id=_pseudo_player_id(ev.get("player") or ""),
+                       assist_player=ev.get("assist") or "")
+        elif kind == "card":
+            card_type = ev.get("card_type") or "yellow"
+            row.update(incident_class=card_type, card_type=card_type,
+                       player_name=ev.get("player") or "",
+                       player_id=_pseudo_player_id(ev.get("player") or ""))
+        else:
+            row.update(incident_class="regular",
+                       player_name=ev.get("player_out") or "",
+                       player_id=_pseudo_player_id(ev.get("player_out") or ""),
+                       player_in_name=ev.get("player_in") or "",
+                       player_in_id=_pseudo_player_id(ev.get("player_in") or ""))
+        rows.append(row)
+    return rows
+
+
+def half_time_from_summary(summary: dict[str, Any] | None) -> tuple[int, int] | None:
+    """(home, away) at half-time: the competitors' first ``linescores`` entry,
+    else counted from the goal events; None unless the match is ``post``."""
+    if not _is_post(summary):
+        return None
+    comp = ((summary.get("header") or {}).get("competitions") or [{}])[0]  # type: ignore[union-attr]
+    home_side, away_side = _sides(comp.get("competitors") or [])
+    try:
+        parts = []
+        for side in (home_side, away_side):
+            first = (side.get("linescores") or [])[0]
+            parts.append(int(float(first.get("displayValue") if first.get("displayValue") not in (None, "") else first.get("value"))))
+        return parts[0], parts[1]
+    except (IndexError, TypeError, ValueError):
+        return first_half_from_summary(summary)
+
+
+def boxscore_by_side(boxscore: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """{"home": {espn stat name: number}, "away": {...}} — every stat ESPN
+    lists, by its own name (``possessionPct``, ``totalShots``, ...)."""
+    home, away = _sides(boxscore.get("teams") or [])
+    return {
+        "home": {s.get("name"): _num(s.get("displayValue")) for s in home.get("statistics") or []},
+        "away": {s.get("name"): _num(s.get("displayValue")) for s in away.get("statistics") or []},
+    }
+
+
 def _minute(clock: dict[str, Any] | None) -> tuple[int, int]:
     """("45'+5'") -> (45, 5); ("47'") -> (47, 0); falls back to clock.value."""
     clock = clock or {}
@@ -441,12 +565,8 @@ def _num(value: Any) -> Any:
 
 def parse_boxscore(boxscore: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """live_stats for one match from ESPN's team boxscore; absent stats are omitted."""
-    home, away = _sides(boxscore.get("teams") or [])
     out: dict[str, dict[str, Any]] = {}
-    per_side = {
-        "home": {s.get("name"): _num(s.get("displayValue")) for s in home.get("statistics") or []},
-        "away": {s.get("name"): _num(s.get("displayValue")) for s in away.get("statistics") or []},
-    }
+    per_side = boxscore_by_side(boxscore)
     for espn_key, our_key in _STAT_KEYS.items():
         h, a = per_side["home"].get(espn_key), per_side["away"].get(espn_key)
         if h is None and a is None:

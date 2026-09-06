@@ -314,3 +314,48 @@ def test_referee_coverage_flags_a_finished_match_with_no_referee(tmp_path, monke
     pd.DataFrame({"match_date": pd.to_datetime(["2026-09-04", "2026-09-05"]), "home_team": ["Genoa", "Roma"],
                   "away_team": ["Como", "Atalanta"], "referee": ["Marco Guida", "Davide Massa"], "league": ["serie_a"] * 2}).to_parquet(gt)
     assert hc.check_referee_coverage(now=datetime(2026, 9, 6, 9, 0, tzinfo=UTC))["status"] == "OK"
+
+
+def test_match_record_completeness_flags_missing_incidents_and_score_only_rows(tmp_path, monkeypatch):
+    """Nine of 21 finished matches had no incident rows and six rows no team
+    stats for days, and the health page was green. Fixture ids vs the
+    incidents parquet; fixture names (Sofascore) vs matches.parquet (normalised)."""
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    import scripts.pipeline.health_check as hc
+    import scripts.utils.match_timing as mt
+    fx = tmp_path / "fixtures.json"
+    monkeypatch.setattr(mt, "_sofascore_fixture_files", lambda: [(fx, "serie_a")])
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    ko = lambda s: int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())  # noqa: E731
+    fx.write_text(json.dumps([
+        {"id": 1, "startTimestamp": ko("2026-09-04T18:45:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Genoa"}, "awayTeam": {"name": "Como"}},
+        {"id": 2, "startTimestamp": ko("2026-09-04T16:30:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "AS Roma"}, "awayTeam": {"name": "Atalanta"}},
+        {"id": 3, "startTimestamp": ko("2026-09-04T16:30:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Inter"}, "awayTeam": {"name": "Napoli"}},
+        {"id": 4, "startTimestamp": ko("2026-09-06T16:30:00"), "status": {"type": "finished"},
+         "homeTeam": {"name": "Lazio"}, "awayTeam": {"name": "Milan"}},          # inside the grace
+    ]))
+    (tmp_path / "external" / "sofascore").mkdir(parents=True)
+    pd.DataFrame({"match_id": [1, 3], "incident_type": ["goal", "card"]}).to_parquet(
+        tmp_path / "external" / "sofascore" / "match_incidents.parquet")
+    (tmp_path / "parsed").mkdir()
+    pd.DataFrame({"match_date": pd.to_datetime(["2026-09-04", "2026-09-04"]), "home_team": ["Genoa", "Inter"],
+                  "away_team": ["Como", "Napoli"], "league": ["serie_a"] * 2, "home_score": [1, 2],
+                  "home_possession": [None, 55.0]}).to_parquet(tmp_path / "parsed" / "matches.parquet")
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    r = hc.check_match_record_completeness(now=now)
+    assert r["status"] == "WARNING" and r["count"] == 2
+    assert r["matches"] == ["Genoa-Como 2026-09-04 (no team stats)",
+                            "Roma-Atalanta 2026-09-04 (no incidents, no ground-truth row)"]
+    assert "heal-espn" in r["detail"]
+    pd.DataFrame({"match_id": [1, 2, 3], "incident_type": ["goal"] * 3}).to_parquet(
+        tmp_path / "external" / "sofascore" / "match_incidents.parquet")
+    pd.DataFrame({"match_date": pd.to_datetime(["2026-09-04"] * 3), "home_team": ["Genoa", "Inter", "Roma"],
+                  "away_team": ["Como", "Napoli", "Atalanta"], "league": ["serie_a"] * 3, "home_score": [1, 2, 0],
+                  "home_possession": [40.0, 55.0, 61.0]}).to_parquet(tmp_path / "parsed" / "matches.parquet")
+    assert hc.check_match_record_completeness(now=now)["status"] == "OK"

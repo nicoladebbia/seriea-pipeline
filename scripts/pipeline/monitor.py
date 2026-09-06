@@ -454,6 +454,12 @@ def check_referee_coverage_row() -> Dict:
     return {"status": r["status"], "detail": r.get("detail", "")}
 
 
+def check_match_record_completeness_row() -> Dict:
+    from scripts.pipeline.health_check import check_match_record_completeness
+    r = check_match_record_completeness()
+    return {"status": r["status"], "detail": r.get("detail", "")}
+
+
 def check_state_backup() -> Dict:
     """Off-disk state backup freshness (bet journal, fantacalcio state). The
     backup job is daily; >50h means two misses."""
@@ -606,7 +612,8 @@ def run_monitor() -> Dict:
                       ("lineup_sources", check_lineup_sources_summary),
                       ("player_stats_coverage", check_player_stats_coverage_row),
                       ("picks_journal_activity", check_picks_journal_activity_row),
-                      ("referee_coverage", check_referee_coverage_row)):
+                      ("referee_coverage", check_referee_coverage_row),
+                      ("match_record_completeness", check_match_record_completeness_row)):
         try:
             res = chk()
         except Exception as e:

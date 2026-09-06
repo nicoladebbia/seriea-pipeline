@@ -1006,6 +1006,34 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   the WRITE (`if df.empty: return`), not only the read.** And when a source publishes late
   (worldfootball, FBref), name the second source in the code, not a comment.
 
+### Symptom: "a finished match has a score but no incidents / no team stats, and nothing retries" (FIXED 2026-09-05)
+
+- **What you'll see**: `match_incidents.parquet` stops days behind the fixtures (nine of 21
+  finished 2026-27 Serie A matches had zero rows), `goal_timeline.parquet` stalls with it,
+  `matches.parquet` rows carry a score and NaN for possession/shots/corners/fouls/cards/HT
+  (six rows, `data_source` None), and every run logs `No new matches detected`.
+- **Why**: under the Sofascore API "challenge" the `/statistics` and `/incidents` endpoints
+  answer nothing while the match JSON still gets written; `update_matches_parquet` then
+  stores a score-only row and the detector diffs fixture ids against `player_match_stats`,
+  where the match already is. Nothing was ever retried. The same shape hit the referee
+  column a day earlier.
+- **Fix**: `matchday_updater.heal_from_espn` (every `run_matchday_update` league pass, and
+  `--heal-espn`): per finished fixture in the cached list, a match with no incident rows
+  gets goals / cards / substitutions from ESPN's post-match `keyEvents` stamped
+  `source="espn"` (own goals credited to the beneficiary, like Sofascore; player ids are
+  `espn:<folded name>` so the bench-goal join still works and never joins on ""); a row
+  with `home_possession` or `home_yellow_cards` NaN gets the boxscore stats, the
+  half-time score from `linescores`, the card counts from the incidents on disk and
+  `data_source="espn"`, NaN cells only. xG is not on ESPN and stays NaN. ESPN rows are NOT
+  coverage: `scrape_incidents` re-fetches those ids and `_save_incidents` replaces the
+  stand-ins the day Sofascore answers. Verified: credited goals == final score on 9/9
+  refilled matches, HT == fixture `period1` on 11/11. `check_match_record_completeness`
+  (WARNING, >14h after kickoff) names the matches still incomplete.
+- **Prevention rule**: **a record that exists is not a record that is complete — the
+  detector must diff on content (this column is NaN) as well as on presence (this id is in
+  the parquet), or a partial ingest is final forever.** And a stand-in row must say it is
+  one (`source`) so the real feed can replace it instead of being told the work is done.
+
 ### Symptom: "I want to make the betting go live" / "flip the dry-run flag"
 
 - **`BETTING_DRY_RUN_FROM_MORNING=true` (morning+evening plists) is NOT paper mode — it is

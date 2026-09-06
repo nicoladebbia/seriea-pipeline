@@ -191,3 +191,114 @@ def test_backfill_referees_fills_played_rows_and_normalises_blanks(isolated, mon
     assert all(pd.isna(df[t]) for t in ("Roma", "Lazio", "Arsenal"))   # unnamed, unplayed, other league
     # idempotent: the second pass has one candidate left (Roma) and nothing to blank
     assert mu.backfill_referees(season="2026-2027", league="serie_a")["blanked"] == 0
+
+
+# --- ESPN heal: what the challenged Sofascore ingest left empty --------------
+
+def _played_row(date, home, away, **extra):
+    row = {"match_id": f"{date}_{home}_{away}", "season": "2026-2027", "league": "serie_a",
+           "match_date": pd.Timestamp(date), "home_team": home, "away_team": away,
+           "home_score": 1, "away_score": 2, "home_possession": None, "away_possession": None,
+           "home_shots_total": None, "away_shots_total": None, "home_shots_on_target_total": None,
+           "away_shots_on_target_total": None, "home_fouls": None, "away_fouls": None,
+           "home_passing_accuracy": None, "home_passing_accuracy_count": None,
+           "home_passing_accuracy_total": None, "home_yellow_cards": None, "away_yellow_cards": None,
+           "home_red_cards": None, "away_red_cards": None, "home_cards": None, "away_cards": None,
+           "home_ht_score": None, "away_ht_score": None, "home_xg": None, "data_source": None}
+    row.update(extra)
+    return row
+
+
+def _fx(fid, home, away, ts):
+    return {"id": fid, "startTimestamp": ts, "status": {"type": "finished"},
+            "homeTeam": {"name": home}, "awayTeam": {"name": away}}
+
+
+def _sofa_row(mid, kind, cls, minute, player, is_home):
+    return {"match_id": mid, "incident_type": kind, "incident_class": cls, "minute": minute, "added_time": 0,
+            "player_name": player, "player_id": "1", "is_home": is_home}
+
+
+def test_heal_from_espn_fills_incidents_and_team_stats_only_where_sofascore_left_nothing(isolated, tmp_path, monkeypatch):
+    """Genoa–Como 2026-09-04: a score-only row and zero incident rows, and the
+    detector considered the match done. ESPN fills both; a match Sofascore
+    served (incidents present, possession filled) is never touched; the
+    second run has nothing to do and fetches nothing."""
+    import scraper.sofascore_events as se
+    import scripts.data.live_espn as le
+    inc_path = tmp_path / "match_incidents.parquet"
+    monkeypatch.setattr(mu, "INCIDENTS_PARQUET", inc_path)
+    monkeypatch.setattr(se, "_INCIDENTS_PATH", inc_path)
+    monkeypatch.setattr(se, "_SOFASCORE_DIR", tmp_path)
+    pd.DataFrame([_sofa_row(101, "goal", "regular", 10, "A", True),
+                  _sofa_row(101, "card", "yellow", 50, "B", False)]).to_parquet(inc_path, index=False)
+    pd.DataFrame([_played_row("2026-09-04", "Genoa", "Como"),
+                  _played_row("2026-09-05", "Inter", "Napoli", home_possession=55.0, away_possession=45.0,
+                              home_yellow_cards=1, away_yellow_cards=2, home_red_cards=0, away_red_cards=0)]
+                 ).to_parquet(isolated, index=False)
+    ts = int(datetime(2026, 9, 4, 18, 45, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setattr(mu, "_load_fixtures", lambda season, league="serie_a": [
+        _fx(102, "Genoa", "Como", ts), _fx(101, "Inter", "Napoli", ts + 86400),
+        _fx(103, "Roma", "Atalanta", ts + 10 * 86400)])                  # 103: not kicked off yet
+    fetched = []
+
+    def fake_summary(league, date, home, away):
+        fetched.append((date, home, away))
+        return {"fake": (date, home, away)}
+    monkeypatch.setattr(mu, "_espn_post_summary", fake_summary)
+    monkeypatch.setattr(se, "incident_rows_from_espn", lambda s, fid: [
+        {**_sofa_row(fid, "goal", "regular", 19, "Osmajic", True), "player_id": "espn:osmajic", "source": "espn"},
+        {**_sofa_row(fid, "card", "yellow", 36, "Sow", True), "player_id": "espn:sow", "source": "espn"},
+        {**_sofa_row(fid, "card", "red", 70, "Baturina", False), "player_id": "espn:baturina", "source": "espn"}])
+    monkeypatch.setattr(le, "half_time_from_summary", lambda s: (1, 3))
+    monkeypatch.setattr(mu, "_espn_stat_values", lambda s: {
+        "home_possession": 37.6, "away_possession": 62.4, "home_shots_total": 11, "home_shots_on_target_total": 11,
+        "home_fouls": 8, "home_passing_accuracy_count": 307, "home_passing_accuracy_total": 380,
+        "home_passing_accuracy": 80.8})
+
+    out = mu.heal_from_espn(season="2026-2027", league="serie_a")
+    assert out["candidates"] == 1 and out["incidents_matches"] == 1 and out["incident_rows"] == 3
+    assert out["stats_rows"] == 1 and out["unreachable"] == 0
+    assert fetched == [("2026-09-04", "Genoa", "Como")]
+
+    inc = pd.read_parquet(inc_path)
+    assert set(inc["match_id"]) == {101, 102}
+    assert inc.loc[inc["match_id"] == 102, "source"].eq("espn").all()
+    assert inc.loc[inc["match_id"] == 101, "source"].isna().all()       # Sofascore rows untouched
+    assert se.sofascore_covered_ids(inc_path) == {101}                  # ESPN rows are not coverage
+
+    gt = pd.read_parquet(isolated).set_index("home_team")
+    g = gt.loc["Genoa"]
+    assert g["home_possession"] == 37.6 and g["home_shots_total"] == 11 and g["home_fouls"] == 8
+    assert g["home_yellow_cards"] == 1 and g["home_red_cards"] == 0 and g["away_red_cards"] == 1
+    assert g["home_cards"] == 1 and g["away_cards"] == 1
+    assert (g["home_ht_score"], g["away_ht_score"]) == (1, 3) and g["data_source"] == "espn"
+    assert pd.isna(g["home_xg"])                                        # ESPN has no xG: stays NaN, never 0
+    i = gt.loc["Inter"]
+    assert i["home_possession"] == 55.0 and pd.isna(i["data_source"]) and pd.isna(i["home_ht_score"])
+
+    # idempotent: nothing left to heal, no fetch
+    again = mu.heal_from_espn(season="2026-2027", league="serie_a")
+    assert again["candidates"] == 0 and len(fetched) == 1
+
+    # the day Sofascore answers, its rows replace the ESPN stand-ins
+    se._save_incidents([_sofa_row(102, "goal", "regular", 19, "Milutin Osmajic", True)], set())
+    inc = pd.read_parquet(inc_path)
+    rows_102 = inc[inc["match_id"] == 102]
+    assert len(rows_102) == 1 and rows_102["source"].isna().all()
+    assert se.sofascore_covered_ids(inc_path) == {101, 102}
+
+
+def test_heal_from_espn_counts_a_match_espn_cannot_serve_and_retries_it_next_run(isolated, tmp_path, monkeypatch):
+    import scraper.sofascore_events as se
+    inc_path = tmp_path / "match_incidents.parquet"
+    monkeypatch.setattr(mu, "INCIDENTS_PARQUET", inc_path)
+    monkeypatch.setattr(se, "_INCIDENTS_PATH", inc_path)
+    pd.DataFrame([_played_row("2026-09-04", "Genoa", "Como")]).to_parquet(isolated, index=False)
+    ts = int(datetime(2026, 9, 4, 18, 45, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setattr(mu, "_load_fixtures", lambda season, league="serie_a": [_fx(102, "Genoa", "Como", ts)])
+    monkeypatch.setattr(mu, "_espn_post_summary", lambda *a: None)
+    out = mu.heal_from_espn(season="2026-2027", league="serie_a")
+    assert out == {"league": "serie_a", "season": "2026-2027", "candidates": 1, "incidents_matches": 0,
+                   "incident_rows": 0, "stats_rows": 0, "unreachable": 1}
+    assert not inc_path.exists() and pd.isna(pd.read_parquet(isolated)["home_possession"]).all()

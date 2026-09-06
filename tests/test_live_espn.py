@@ -330,3 +330,82 @@ def test_first_half_from_summary_counts_goals_up_to_45_plus_stoppage_and_only_wh
     assert live_espn.first_half_from_summary(_h1_summary("post", [])) == (0, 0)
     assert live_espn.first_half_from_summary(None) is None
     assert live_espn.first_half_from_summary({"header": {"competitions": [{"status": {"type": {"state": "post"}}}]}}) is None
+
+
+# --- post-match record: incidents + team stats for the matchday updater ----
+
+def _pm_ke(slug, clock, team_id, *names):
+    return {"type": {"type": slug}, "clock": {"displayValue": clock}, "team": {"id": team_id},
+            "participants": [{"athlete": {"displayName": n}} for n in names]}
+
+
+def _pm_summary(state, key_events, linescores=((1, 2), (3, 1))):
+    (h1, h2), (a1, a2) = linescores
+    return {"header": {"competitions": [{"status": {"type": {"state": state}},
+                                         "competitors": [
+                                             {"homeAway": "home", "team": {"id": "109"},
+                                              "linescores": [{"displayValue": str(h1)}, {"displayValue": str(h2)}]},
+                                             {"homeAway": "away", "team": {"id": "239"},
+                                              "linescores": [{"displayValue": str(a1)}, {"displayValue": str(a2)}]}]}]},
+            "keyEvents": key_events,
+            "boxscore": {"teams": [
+                {"homeAway": "home", "statistics": [{"name": "possessionPct", "displayValue": "37.6"},
+                                                    {"name": "totalShots", "displayValue": "11"}]},
+                {"homeAway": "away", "statistics": [{"name": "possessionPct", "displayValue": "62.4"},
+                                                    {"name": "totalShots", "displayValue": "20"}]}]}}
+
+
+def test_incident_rows_from_summary_use_the_sofascore_schema_and_credit_own_goals_to_the_beneficiary():
+    """A Sofascore goal row's is_home is the side CREDITED (verified on the
+    parquet: Comuzzo's own goal for Fiorentina at home is is_home=False).
+    parse_key_events stores the scorer's side for the live card; the parquet
+    row must flip it back. Player ids are name-derived so the bench-goal join
+    (goal player_id == sub player_in_id) still works and never joins on ''."""
+    events = [_pm_ke("goal", "19'", "109", "Milutin Osmajic", "Lorenzo Colombo"),
+              _pm_ke("own-goal", "30'", "239", "Leo Østigard"),           # home defender, credited to away
+              _pm_ke("penalty---scored", "45'+2'", "239", "Nico Paz"),
+              _pm_ke("yellow-card", "36'", "109", "Djibril Sow"),
+              _pm_ke("red-card", "70'", "239", "Martin Baturina"),
+              _pm_ke("substitution", "66'", "239", "Moise Kean", "Anastasios Douvikas"),
+              _pm_ke("halftime", "45'", "")]
+    rows = live_espn.incident_rows_from_summary(_pm_summary("post", events), 16285001)
+    by = {(r["incident_type"], r["player_name"]): r for r in rows}
+    assert len(rows) == 6 and all(r["source"] == "espn" and r["match_id"] == 16285001 for r in rows)
+    g = by[("goal", "Milutin Osmajic")]
+    assert g["is_home"] is True and g["goal_type"] == "regular" and g["incident_class"] == "regular"
+    assert g["assist_player"] == "Lorenzo Colombo" and g["player_id"] == "espn:milutin osmajic"
+    og = by[("goal", "Leo Østigard")]
+    assert og["is_home"] is False and og["goal_type"] == "ownGoal"      # credited side, like Sofascore
+    pen = by[("goal", "Nico Paz")]
+    assert pen["goal_type"] == "penalty" and pen["minute"] == 45 and pen["added_time"] == 2
+    assert by[("card", "Djibril Sow")]["card_type"] == "yellow" and by[("card", "Martin Baturina")]["card_type"] == "red"
+    sub = by[("substitution", "Anastasios Douvikas")]                   # player_name = the player OFF
+    assert sub["player_in_name"] == "Moise Kean" and sub["player_in_id"] == "espn:moise kean"
+    assert sub["incident_class"] == "regular" and sub["player_id"] == "espn:anastasios douvikas"
+    assert live_espn.incident_rows_from_summary(_pm_summary("in", events), 1) == []
+    assert live_espn.incident_rows_from_summary(None, 1) == []
+
+
+def test_half_time_and_boxscore_read_the_post_match_summary():
+    s = _pm_summary("post", [], linescores=((1, 0), (3, 1)))
+    assert live_espn.half_time_from_summary(s) == (1, 3)
+    assert live_espn.half_time_from_summary(_pm_summary("in", [])) is None
+    no_lines = _pm_summary("post", [_pm_ke("goal", "12'", "109", "X")])
+    for c in no_lines["header"]["competitions"][0]["competitors"]:
+        c.pop("linescores")
+    assert live_espn.half_time_from_summary(no_lines) == (1, 0)          # counted from the goals
+    box = live_espn.boxscore_by_side(s["boxscore"])
+    assert box["home"]["possessionPct"] == 37.6 and box["away"]["totalShots"] == 20
+
+
+def test_post_match_summary_caches_only_finished_matches(monkeypatch):
+    calls = []
+    state = {"v": "in"}
+    monkeypatch.setattr(live_espn, "_summary_for", lambda *a: (calls.append(a), _pm_summary(state["v"], []))[1])
+    live_espn._POST_SUMMARIES.clear()
+    assert live_espn.post_match_summary("serie_a", "2026-09-04", "Genoa", "Como") is None
+    state["v"] = "post"
+    assert live_espn.post_match_summary("serie_a", "2026-09-04", "Genoa", "Como") is not None
+    assert live_espn.post_match_summary("serie_a", "2026-09-04", "Genoa", "Como") is not None
+    assert len(calls) == 2                                               # in-play never cached, post cached
+    live_espn._POST_SUMMARIES.clear()

@@ -303,11 +303,12 @@ def scrape_incidents(
     if match_ids is None:
         match_ids = get_match_ids()
 
-    # Load existing data to skip already-scraped matches
+    # Load existing data to skip already-scraped matches. A match whose rows
+    # came from ESPN (matchday_updater.heal_from_espn, while the Sofascore API
+    # is challenged) is NOT covered: Sofascore's own rows replace them on save.
     existing_ids = set()
     if _INCIDENTS_PATH.exists() and not force:
-        existing = pd.read_parquet(_INCIDENTS_PATH)
-        existing_ids = set(existing["match_id"].unique())
+        existing_ids = sofascore_covered_ids()
         log.info("Found %d matches already scraped for incidents", len(existing_ids))
 
     to_scrape = [mid for mid in match_ids if mid not in existing_ids]
@@ -355,7 +356,7 @@ def scrape_incidents(
             all_rows = []  # Clear buffer after checkpoint
             # Reload existing_ids to include newly saved
             if _INCIDENTS_PATH.exists():
-                existing_ids = set(pd.read_parquet(_INCIDENTS_PATH, columns=["match_id"])["match_id"].unique())
+                existing_ids = sofascore_covered_ids()
 
     # Final save
     if all_rows:
@@ -372,7 +373,7 @@ def scrape_incidents(
                 retry_rows.extend(_parse_incidents(data, mid))
         if retry_rows:
             if _INCIDENTS_PATH.exists():
-                existing_ids = set(pd.read_parquet(_INCIDENTS_PATH, columns=["match_id"])["match_id"].unique())
+                existing_ids = sofascore_covered_ids()
             _save_incidents(retry_rows, existing_ids)
 
     if _INCIDENTS_PATH.exists():
@@ -419,15 +420,47 @@ def backfill_var_incidents(match_ids: list[int], save_every: int = 25) -> int:
     return fetched
 
 
+def incident_rows_from_espn(summary: dict, match_id: int) -> list[dict]:
+    """ESPN post-match summary -> rows in THIS parquet's schema, ``source``
+    "espn" (matchday_updater.heal_from_espn). Lives in live_espn; re-exported
+    here so the incidents store has one import surface."""
+    from scripts.data.live_espn import incident_rows_from_summary
+    return incident_rows_from_summary(summary, match_id)
+
+
+def sofascore_covered_ids(path: Path | None = None) -> set:
+    """Match ids with Sofascore-sourced incident rows. Rows stamped
+    ``source == "espn"`` are a stand-in, not coverage."""
+    path = path or _INCIDENTS_PATH
+    if not path.exists():
+        return set()
+    try:
+        df = pd.read_parquet(path, columns=["match_id", "source"])
+    except (KeyError, ValueError):  # older file: no source column
+        return set(pd.read_parquet(path, columns=["match_id"])["match_id"].unique())
+    return set(df.loc[df["source"].astype(object) != "espn", "match_id"].unique())
+
+
 def _save_incidents(new_rows: list[dict], existing_ids: set) -> pd.DataFrame | None:
-    """Save incidents, merging with existing data."""
+    """Save incidents, merging with existing data. Sofascore rows for a match
+    REPLACE any ESPN stand-in rows it had (the reverse never happens: ESPN
+    rows are only written for matches without Sofascore rows)."""
     if not new_rows:
         return None
 
     new_df = pd.DataFrame(new_rows)
+    if "source" not in new_df.columns:
+        new_df["source"] = None
 
     if _INCIDENTS_PATH.exists():
         existing = pd.read_parquet(_INCIDENTS_PATH)
+        if "source" not in existing.columns:
+            existing["source"] = None
+        real = new_df.loc[new_df["source"].astype(object) != "espn", "match_id"].unique()
+        stand_in = (existing["source"].astype(object) == "espn") & existing["match_id"].isin(real)
+        if stand_in.any():
+            log.info("Sofascore rows replace ESPN stand-ins for %d matches", int(existing.loc[stand_in, "match_id"].nunique()))
+            existing = existing.loc[~stand_in]
         combined = pd.concat([existing, new_df], ignore_index=True)
         # incident_class is part of the identity: two VAR reviews at the same
         # minute for the same player (penaltyAwarded + cardUpgrade) are two rows

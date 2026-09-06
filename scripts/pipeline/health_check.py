@@ -1123,7 +1123,8 @@ def check_lineup_sources(now: Optional[datetime] = None, probe=None) -> Dict:
 STATS_GRACE_HOURS = 14.0   # the evening (20:00) and morning (08:00) runs both get a chance
 
 
-def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: float) -> List[Tuple[str, str, str]]:
+def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: float,
+                                 with_id: bool = False) -> List[Tuple]:
     """[(date, home, away)] of Serie A fixtures whose kickoff lies between
     `min_age_s` and `max_age_s` ago, from the cached fixture file (known weeks
     ahead, so no check built on it depends on Sofascore being up). Canceled /
@@ -1141,7 +1142,8 @@ def _serie_a_fixtures_kicked_off(now: datetime, min_age_s: float, max_age_s: flo
         if (f.get("status") or {}).get("type") in ("canceled", "postponed"):
             continue
         if min_age_s <= (now - ko).total_seconds() <= max_age_s:
-            out.append((ko.strftime("%Y-%m-%d"), (f.get("homeTeam") or {}).get("name"), (f.get("awayTeam") or {}).get("name")))
+            item = (ko.strftime("%Y-%m-%d"), (f.get("homeTeam") or {}).get("name"), (f.get("awayTeam") or {}).get("name"))
+            out.append(item + (f.get("id"),) if with_id else item)
     return out
 
 
@@ -1177,6 +1179,60 @@ def check_picks_journal_activity(now: Optional[datetime] = None) -> Dict:
                           "around T-30 (the child's output is captured, not in the monitor log)"}
     return {"status": "OK", "dates": dates, "n_matches": len(due), "n_journaled": n,
             "detail": f"{n} paper pick(s) journaled for {len(due)} Serie A match(es) on {', '.join(dates)}"}
+
+
+def check_match_record_completeness(now: Optional[datetime] = None) -> Dict:
+    """Does every Serie A match finished more than STATS_GRACE_HOURS ago (last
+    7 days) have incident rows AND team stats on its ground-truth row? Under
+    the Sofascore API challenge both endpoints answer nothing, the ingest
+    writes a score-only row, the detector then sees the match as done, and
+    nothing retries: nine of 21 finished 2026-27 matches had no incidents and
+    six rows no possession before 2026-09-05. matchday_updater.heal_from_espn
+    fills both from ESPN on every run; this check says when it did not.
+    WARNING: the goal-process timeline, card counts and rolling shot/corner
+    features are model inputs, not money inputs."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        import pandas as pd
+
+        from config.team_names import normalize_team
+        played = _serie_a_fixtures_kicked_off(now, STATS_GRACE_HOURS * 3600, 7 * 86400, with_id=True)
+        if not played:
+            return {"status": "OK", "detail": "no Serie A match past the stats grace in the last 7 days"}
+        inc_path = DATA_DIR / "external" / "sofascore" / "match_incidents.parquet"
+        with_incidents: set = set()
+        if inc_path.exists():
+            with_incidents = set(pd.read_parquet(inc_path, columns=["match_id"])["match_id"].unique())
+        gt_path = DATA_DIR / "parsed" / "matches.parquet"
+        gt = pd.read_parquet(gt_path, columns=["match_date", "home_team", "away_team", "league",
+                                                "home_score", "home_possession"]) if gt_path.exists() else pd.DataFrame()
+        rows = {}
+        if len(gt):
+            gt = gt[gt["league"] == "serie_a"]
+            dates = gt["match_date"].astype(str).str[:10]
+            for d, h, a, sc, poss in zip(dates, gt["home_team"], gt["away_team"], gt["home_score"], gt["home_possession"]):
+                rows[(d, h, a)] = (sc, poss)
+        gaps = []
+        for d, h, a, fid in played:
+            key = (d, normalize_team(h or ""), normalize_team(a or ""))
+            what = []
+            if fid not in with_incidents:
+                what.append("no incidents")
+            row = rows.get(key)
+            if row is None or pd.isna(row[0]):
+                what.append("no ground-truth row")
+            elif pd.isna(row[1]):
+                what.append("no team stats")
+            if what:
+                gaps.append(f"{key[1]}-{key[2]} {d} ({', '.join(what)})")
+        if gaps:
+            return {"status": "WARNING", "count": len(gaps), "matches": gaps,
+                    "detail": f"{len(gaps)} of {len(played)} finished match(es) incomplete: "
+                              f"{'; '.join(gaps[:4])}{' ...' if len(gaps) > 4 else ''} "
+                              f"— run matchday_updater --heal-espn (Sofascore challenged?)"}
+        return {"status": "OK", "detail": f"{len(played)}/{len(played)} finished matches have incidents and team stats"}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "WARNING", "detail": f"match record check failed: {e}"}
 
 
 def check_referee_coverage(now: Optional[datetime] = None) -> Dict:
@@ -1474,6 +1530,7 @@ def run_health_check() -> Dict:
         "player_stats_coverage": check_player_stats_coverage(),
         "picks_journal_activity": check_picks_journal_activity(),
         "referee_coverage": check_referee_coverage(),
+        "match_record_completeness": check_match_record_completeness(),
         "log_sizes": check_log_sizes(),
         "feature_model_alignment": check_feature_model_alignment(),
         "model_freshness": check_model_freshness(),
@@ -1570,6 +1627,9 @@ def run_health_check() -> Dict:
     rc = result.get("referee_coverage", {})
     if rc.get("status") == "WARNING":
         issues.append(("WARNING", f"Referees: {rc.get('detail')}"))
+    mr = result.get("match_record_completeness", {})
+    if mr.get("status") == "WARNING":
+        issues.append(("WARNING", f"Match record: {mr.get('detail')}"))
 
     disk = result.get("disk_space", {})
     if disk.get("status") == "CRITICAL":
