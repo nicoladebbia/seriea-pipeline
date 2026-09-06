@@ -27,6 +27,17 @@ per-bet return >= 1.0, and CLV > 0 when >= 20 real closing prices exist
 is often unmeasurable and then not required). Demotion: a promoted market
 with >= 30 settled REAL bets and real ROI < -10% or z < -1 goes back to
 paper; re-promotion needs a fresh 50 paper bets placed after the demotion.
+
+Incumbents (INCUMBENT_MARKETS). O/U Over 1.5 / 2.5 bet real money before this
+gate existed and were never asked to pass it. Measured on the real journal
+the day after the bar was set (2026-09-06): O/U 1.5 Over n=47, ROI +5.3%,
+z +0.59, CLV +2.4%; O/U 2.5 Over n=44, ROI -1.8%, z -0.10, CLV +4.7%. Neither
+clears the bar it imposes on every prop, and the record ends 2026-05-17 on a
+model that has since been refit (real bets since go-live: 0). So the gate
+scores them against the SAME bar on their REAL record, keeps a separate
+since-go-live record for the model actually betting, and says so on the
+/record card. It does not switch them off: betting_unified owns the market
+config and that is Nicola's call, taken knowing the number.
 """
 from __future__ import annotations
 
@@ -54,8 +65,18 @@ PROMOTED_MAX_STAKE_PCT = 1.5
 PROMOTED_MIN_STAKE_PCT = 0.2
 PIPELINE_STATUS = "pick:promoted"
 
+# Markets that bet real money WITHOUT passing the bar — the incumbents when
+# the gate was written (2026-09-05). key -> (journal market, selection side).
+# Scored against PROMOTION_BAR on their real record; never promoted (already
+# real) and never demoted here (betting_unified owns the switch).
+INCUMBENT_MARKETS = {"ou_over_1_5": ("O/U 1.5", "Over"), "ou_over_2_5": ("O/U 2.5", "Over")}
+# Serie A go-live. The O/U model has been refit since the incumbent record was
+# built, so the since-go-live record is the one on the model actually betting.
+INCUMBENT_LIVE_FROM = "2026-08-27T00:00:00+00:00"
+
 # Market key -> what the bet is, for the /record card
 MARKET_NAMES_IT = {
+    "ou_over_1_5": "Over 1.5 (motore)", "ou_over_2_5": "Over 2.5 (motore)",
     "player_shots": "Tiri totali giocatore", "player_shots_on_target": "Tiri in porta giocatore",
     "player_goal_scorer_anytime": "Marcatore", "player_assists": "Assist giocatore",
     "h2h_h1": "1° tempo 1x2", "totals_h1": "1° tempo under/over", "btts_h1": "Goal 1° tempo",
@@ -201,6 +222,50 @@ def passes_bar(rec: dict, bar: dict = PROMOTION_BAR) -> tuple[bool, str]:
     return True, "bar cleared"
 
 
+def bar_misses(rec: dict, bar: dict = PROMOTION_BAR) -> list[str]:
+    """EVERY unmet condition, for a record that is not queueing for the bar
+    but being measured against it (the incumbents)."""
+    out = []
+    if rec["n"] < bar["min_settled"]:
+        out.append(f"{rec['n']}/{bar['min_settled']} settled")
+    if rec["roi_pct"] <= bar["min_roi_pct"]:
+        out.append(f"ROI {rec['roi_pct']:+.1f}%")
+    if rec["z"] < bar["min_z"]:
+        out.append(f"z {rec['z']:.2f} < {bar['min_z']:.1f}")
+    if rec["n_clv"] >= bar["min_clv_n"] and (rec["mean_clv_pct"] or 0) <= bar["min_clv_pct"]:
+        out.append(f"CLV {rec['mean_clv_pct']:+.2f}%")
+    return out
+
+
+_EMPTY_REC = {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0, "mean_clv_pct": None, "n_clv": 0}
+
+
+def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LIVE_FROM,
+                      incumbents: dict = INCUMBENT_MARKETS) -> dict[str, dict]:
+    """The real-money record of each incumbent market (engine bets: no `extra`,
+    not a promoted mirror), scored against PROMOTION_BAR exactly as a paper
+    market would be, plus the same record restricted to bets placed since
+    `live_from`. `bar_passed` / `distance` say whether the incumbent would
+    clear the bar it imposes on the props; `would_demote` applies the
+    demotion bar to the real record. Neither changes where money goes."""
+    out: dict[str, dict] = {}
+    for key, (market, side) in incumbents.items():
+        bets = [dict(b, market=key) for b in real_settled
+                if b.get("market") == market and str(b.get("selection") or "").startswith(side)
+                and not b.get("extra") and b.get("pipeline_status") != PIPELINE_STATUS]
+        rec = market_record(bets).get(key) or dict(_EMPTY_REC)
+        since = market_record(bets, since=live_from).get(key) or dict(_EMPTY_REC)
+        misses = bar_misses(rec)
+        ok, why = (not misses), ("bar cleared" if not misses else "; ".join(misses))
+        demote, dwhy = should_demote(rec)
+        dates = sorted(str(b.get("placed_at") or "")[:10] for b in bets if b.get("placed_at"))
+        out[key] = {"status": "incumbent", "market": market, "side": side, "real": rec,
+                    "real_since_live": since, "live_from": live_from,
+                    "record_span": [dates[0], dates[-1]] if dates else None,
+                    "bar_passed": ok, "distance": why, "would_demote": demote, "demotion_reason": dwhy}
+    return out
+
+
 def should_demote(real_rec: dict | None, bar: dict = DEMOTION_BAR) -> tuple[bool, str]:
     if not real_rec or real_rec["n"] < bar["min_real_bets"]:
         return False, ""
@@ -228,19 +293,31 @@ def is_promoted(market_key: str, state: dict | None = None) -> bool:
 
 
 def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: list[dict] | None = None,
-                        *, now: datetime | None = None, path: Path | None = None, write: bool = True) -> dict:
+                        *, real_all: list[dict] | None = None, now: datetime | None = None,
+                        path: Path | None = None, write: bool = True) -> dict:
     """Re-read both journals and rewrite the state. Idempotent. Every market
     seen in the paper journal gets a row; a promotion or demotion is a state
     transition with its record snapshot and reason, and is logged at WARNING
-    because it changes where real money goes."""
+    because it changes where real money goes. `real_settled` is the promoted
+    mirrors (demotion leg); `real_all` is the whole real journal, from which
+    the incumbents' record is scored (state["incumbents"])."""
     from scripts.betting.bet_journal import get_settled_bets
     from scripts.betting.picks import PICKS_JOURNAL_PATH
     now = now or datetime.now(UTC)
     if paper_settled is None:
         paper_settled = get_settled_bets(journal_path=PICKS_JOURNAL_PATH)
-    if real_settled is None:
-        real_settled = [b for b in get_settled_bets() if b.get("pipeline_status") == PIPELINE_STATUS]
+    if real_settled is None or real_all is None:
+        everything = get_settled_bets() if real_all is None else real_all
+        if real_all is None:
+            real_all = everything
+        if real_settled is None:
+            real_settled = [b for b in everything if b.get("pipeline_status") == PIPELINE_STATUS]
     state = load_state(path)
+    state["incumbents"] = incumbent_records(real_all)
+    for key, row in state["incumbents"].items():
+        if not row["bar_passed"]:
+            log.info("Incumbent %s bets real money without clearing the bar: %s (real n=%d, since go-live n=%d)",
+                     key, row["distance"], row["real"]["n"], row["real_since_live"]["n"])
     markets: dict = state.setdefault("markets", {})
     real_by = market_record(real_settled)
     seen = {b.get("market") for b in paper_settled if b.get("market")}
@@ -341,13 +418,23 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     promoted. Italian, one line per market, promoted first."""
     st = state if state is not None else load_state()
     rows = (st.get("markets") or {})
+    incumbents = (st.get("incumbents") or {})
     b = ("<b>", "</b>") if html else ("", "")
     i = ("<i>", "</i>") if html else ("", "")
-    if not rows:
+    if not rows and not incumbents:
         return (f"{b[0]}Record mercati{b[1]}\nNessuna scelta ancora liquidata: ogni mercato è carta finché "
                 f"non ha {PROMOTION_BAR['min_settled']} scelte liquidate con ROI > 0.")
     order = {"promoted": 0, "paper": 1}
-    lines = [f"{b[0]}Record mercati{b[1]} · soglia {PROMOTION_BAR['min_settled']} carta, ROI > 0, z ≥ {PROMOTION_BAR['min_z']:.0f}"]
+    lines = [f"{b[0]}Record mercati{b[1]} · soglia {PROMOTION_BAR['min_settled']} carta, ROI > 0, z ≥ {PROMOTION_BAR['min_z']:.1f}"]
+    for mk, r in incumbents.items():
+        rr = r.get("real") or {}
+        sl = r.get("real_since_live") or {}
+        clv = f" · CLV {rr['mean_clv_pct']:+.1f}%" if rr.get("mean_clv_pct") is not None else ""
+        bar = "barra superata" if r.get("bar_passed") else f"barra NON superata: {r.get('distance', '')}"
+        lines.append(f"🏦 {b[0]}{MARKET_NAMES_IT.get(mk, mk)}{b[1]} vera n={rr.get('n', 0)} ROI {rr.get('roi_pct', 0):+.0f}% "
+                     f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)}")
+    if not rows:
+        lines.append(f"📝 {i[0]}nessuna scelta carta ancora liquidata{i[1]}")
     for mk, r in sorted(rows.items(), key=lambda kv: (order.get(kv[1].get("status"), 2), -(kv[1].get("paper") or {}).get("n", 0))):
         p = r.get("paper") or {}
         name = MARKET_NAMES_IT.get(mk, mk)
@@ -359,7 +446,9 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
         else:
             lines.append(f"📝 {name} n={p.get('n', 0)} ROI {p.get('roi_pct', 0):+.0f}%{clv} · {i[0]}{r.get('distance', '')}{i[1]}")
     lines.append(f"{i[0]}💰 = puntata vera (Kelly dimezzato, max {PROMOTED_MAX_STAKE_PCT:.1f}%) · 📝 = carta €10 · "
-                 f"un mercato torna carta con ≥{DEMOTION_BAR['min_real_bets']} vere sotto {DEMOTION_BAR['max_roi_pct']:.0f}%{i[1]}")
+                 f"un mercato torna carta con ≥{DEMOTION_BAR['min_real_bets']} vere sotto {DEMOTION_BAR['max_roi_pct']:.0f}%"
+                 + (" · 🏦 = titolare: punta vero da prima della barra, senza averla passata; "
+                    "misurato sullo stesso metro, non spento da qui" if incumbents else "") + i[1])
     return "\n".join(lines)
 
 

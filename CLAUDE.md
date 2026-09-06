@@ -388,6 +388,16 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `closing_odds` (`closing_price_for`), so CLV exists only where a closing price does.
   **Do not lower the bar to hit an income target and do not promote a market by editing the
   state file** — the gate is the product.
+  **The incumbents are measured on the same metre (2026-09-06).** O/U Over 1.5 / 2.5 bet
+  real money without ever passing this bar: they were already live when it was written.
+  `INCUMBENT_MARKETS` scores their REAL record against `PROMOTION_BAR` and writes
+  `state["incumbents"]` (`bar_passed`, every unmet condition in `distance`, `would_demote`,
+  and `real_since_live` = bets since the 2026-08-27 go-live, i.e. on the model actually
+  betting). Measured that day: O/U 1.5 Over n=47, ROI +5.3%, z +0.59, CLV +2.4%; O/U 2.5
+  Over n=44, ROI −1.8%, z −0.10, CLV +4.7%; since go-live n=0 on both. Neither clears the
+  bar the props must clear, and the Kelly 0.15 decision of 2026-09-05 was taken on that
+  record. The 🏦 lines on `/record` say so. The gate does NOT switch an incumbent off —
+  `betting_unified.py` owns the market config and that stays a decision, not a script.
 - **The T-30 run re-reads the code every time — no kickstart needed for `picks.py` /
   `betting_unified.py`.** The pre-kickoff monitor is a launchd `StartInterval 900` job (not
   a long-lived process; `launchctl list` shows PID `-` between cycles) and the T-30 itself is

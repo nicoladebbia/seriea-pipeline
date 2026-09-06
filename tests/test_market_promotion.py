@@ -65,6 +65,54 @@ def test_bar_names_the_first_unmet_condition():
     assert MP.passes_bar(rec)[0]
 
 
+def _real_engine(market, selection, n_won, n_lost, odds, placed, clv=None):
+    out = []
+    for b in _settled(market, n_won, n_lost, odds=odds, placed=placed, clv=clv):
+        out.append(dict(b, selection=selection, extra=None, pipeline_status="current"))
+    return out
+
+
+def test_incumbents_are_scored_against_the_same_bar_on_their_real_record(tmp_path):
+    """O/U Over 1.5 / 2.5 bet real money without ever passing the bar. The
+    2026-09-06 real journal: 47 bets at ~1.41, 35 won -> z ~0.6; the gate must
+    say it fails, keep a since-go-live record apart, and never treat the
+    incumbent as a paper market to promote or demote."""
+    legacy = "2026-03-01T17:00:00+00:00"
+    live = "2026-09-13T17:00:00+00:00"
+    real = (_real_engine("O/U 1.5", "Over 1.5", 35, 12, 1.41, legacy, clv=2.4)
+            + _real_engine("O/U 1.5", "Over 1.5", 2, 1, 1.35, live)
+            + _real_engine("O/U 2.5", "Over 2.5", 17, 27, 2.47, legacy, clv=4.7)
+            + _real_engine("O/U 1.5", "Under 1.5", 0, 3, 3.0, legacy)          # other side: not the incumbent
+            + [dict(b, extra={"picks_ref": "x"}, pipeline_status=MP.PIPELINE_STATUS)
+               for b in _settled("O/U 1.5", 9, 0, odds=1.41, placed=live)])   # promoted mirror: not the engine
+    st = MP.evaluate_promotions([], [], real_all=real, now=datetime(2026, 9, 14, tzinfo=UTC))
+    inc = st["incumbents"]
+    assert set(inc) == {"ou_over_1_5", "ou_over_2_5"} and st["markets"] == {}
+    ou15 = inc["ou_over_1_5"]
+    assert ou15["status"] == "incumbent" and ou15["real"]["n"] == 50 and ou15["real"]["won"] == 37
+    assert 0 < ou15["real"]["z"] < 1.0 and ou15["real"]["mean_clv_pct"] == 2.4 and ou15["real"]["n_clv"] == 47
+    assert not ou15["bar_passed"] and ou15["distance"].startswith("z 0.") and "settled" not in ou15["distance"]
+    assert ou15["real_since_live"]["n"] == 3 and ou15["record_span"] == ["2026-03-01", "2026-09-13"]
+    assert not ou15["would_demote"]
+    ou25 = inc["ou_over_2_5"]
+    assert ou25["real"]["n"] == 44 and ou25["real"]["roi_pct"] < 0
+    assert ou25["distance"].startswith("44/50 settled; ROI -") and "; z -0." in ou25["distance"]   # every miss, not the first
+    assert ou25["real_since_live"]["n"] == 0 and not ou25["would_demote"]
+    assert not MP.is_promoted("ou_over_1_5", st)
+    # the state file carries it, and a re-run is idempotent
+    again = MP.evaluate_promotions([], [], real_all=real, now=datetime(2026, 9, 15, tzinfo=UTC))
+    assert again["incumbents"] == inc
+    # the default path reads the incumbents from the real journal itself
+    for b in real[:3]:
+        BJ.add_bet(dict(b, match=f"A{b['odds']} vs B", date="2026-03-01", status="pending", bet_id=None))
+    assert MP.evaluate_promotions([], now=datetime(2026, 9, 15, tzinfo=UTC))["incumbents"]["ou_over_1_5"]["real"]["n"] == 0
+    card = MP.record_card(st, html=False)
+    assert "🏦 Over 1.5 (motore) vera n=50 ROI" in card and "barra NON superata: z " in card
+    assert "dal go-live n=3" in card and "🏦 = titolare" in card
+    assert "Over 2.5 (motore) vera n=44" in card and "44/50 settled; ROI" in card and "z ≥ 2.5" in card
+    assert "nessuna scelta carta" in card
+
+
 def test_evaluate_promotes_then_demotes_on_the_real_record_and_restarts_the_paper_count(tmp_path):
     now = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
     paper = _settled("player_shots_on_target", 40, 20) + _settled("btts_h1", 10, 10)

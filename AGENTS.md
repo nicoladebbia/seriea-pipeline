@@ -181,6 +181,10 @@ pick:promoted`. Demotion at ≥ 30 real bets with ROI < −10% or z < −1, chec
 way; the paper count restarts. 14 market keys share the bar (`MARKET_NAMES_IT`). State
 `data/betting/market_promotion.json` is derived; re-derive from journals.
 `--null-sim` simulates exactly this evaluation on a market with a chosen true edge.
+The two markets the engine bets for real (`INCUMBENT_MARKETS`: O/U Over 1.5 / 2.5) never
+passed this bar; `state["incumbents"]` scores their real-journal record (engine bets:
+`extra` null, not `pick:promoted`) against the same bar and separately since the
+2026-08-27 go-live, without changing where money goes.
 
 **Pick engine** (`scripts/betting/picks.py` → `data/upcoming/picks.json`): one line per
 upcoming Serie A match. VALUE is copied from the engine's slip; LEAN is the best
