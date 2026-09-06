@@ -398,6 +398,15 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   bar the props must clear, and the Kelly 0.15 decision of 2026-09-05 was taken on that
   record. The 🏦 lines on `/record` say so. The gate does NOT switch an incumbent off —
   `betting_unified.py` owns the market config and that stays a decision, not a script.
+  **Closed the same day — the stake follows the record, not the constant.** An incumbent
+  is staked like a freshly promoted market: Kelly AND cap × `PROMOTED_KELLY_SCALE` (0.5)
+  until its since-go-live real record has `INCUMBENT_FULL_STAKE_MIN_N` (30) settled bets
+  that do not trip `DEMOTION_BAR`; then full 0.15 / 2.5%. `incumbent_records` writes
+  `stake_scale` / `stake_reason`, `_make_bet` reads them once per engine run
+  (`_incumbent_stake_scale`, fail-closed to 0.5 with no state), `ValueBet.stake_scale` /
+  `stake_note` carry it. Dry run on the MW3 slate: EUR 18–22 → EUR 10 a bet (1.5 line at
+  the halved 1.25% cap × 0.85). Kelly 0.15 itself is unchanged and re-arms by itself the
+  day 30 real bets on the current model hold up — nobody edits a number to get there.
 - **The T-30 run re-reads the code every time — no kickstart needed for `picks.py` /
   `betting_unified.py`.** The pre-kickoff monitor is a launchd `StartInterval 900` job (not
   a long-lived process; `launchctl list` shows PID `-` between cycles) and the T-30 itself is
@@ -1066,6 +1075,10 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   scoped to 1X2/DC/DNB (`_veto_applies`): O/U candidates are judged on edge alone, 1 → 3
   selected on the same inputs. Both changes reach the T-30 run at its next cycle (the T-30
   is a child process that re-reads the code; see the pick-engine section).
+  **Since 2026-09-06 the O/U stake is HALF of this until the since-go-live record earns
+  it** (incumbent ladder in `market_promotion.py`, see the promotion-gate bullet): the
+  0.15 / 2.5% figures are the ceiling the record unlocks at 30 held-up real bets, not the
+  stake on the slip today.
 - **Go-live checklist that actually matters** (all verified 2026-08-27): key alive; ledger
   invariants green (journal-derived == bankroll.json); `pre-kickoff-monitor` + `telegram-bot`
   + `settlement` jobs loaded; `betting_unified --dry-run` produces a sane slate (enabled

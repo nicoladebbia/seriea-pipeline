@@ -468,6 +468,8 @@ class ValueBet:
 
     # Entry timing (populated by EntryTimingAnalyzer)
     entry_timing: dict = field(default_factory=dict)
+    stake_scale: float = 1.0     # incumbent ladder multiplier on Kelly and cap (market_promotion)
+    stake_note: str = ""         # why the multiplier is what it is
 
 
 @dataclass
@@ -1398,14 +1400,22 @@ class UnifiedBettingEngine:
         _league_kelly = _load_league_kelly_fraction(_bet_league, default=cfg.kelly_fraction)
         if cfg.kelly_fraction > 0 and _league_kelly != cfg.kelly_fraction:
             market_kelly = market_kelly * (_league_kelly / cfg.kelly_fraction)
+        # Incumbent ladder (market_promotion, 2026-09-06): O/U Over never passed
+        # the promotion bar and its since-go-live real record is n=0 on the
+        # current model, so it is staked like a freshly promoted market — Kelly
+        # AND cap x PROMOTED_KELLY_SCALE — until 30 settled real bets that do not
+        # trip the demotion bar. The evaluated record decides, not a constant.
+        _scale, _scale_why = self._incumbent_stake_scale(market, selection)
+        market_kelly *= _scale
+        _max_stake = cfg.max_stake_pct * _scale
         kelly_raw = calculate_kelly(model_p, best_o, fraction=1.0)
         kelly_adj = calculate_kelly(model_p, best_o, fraction=market_kelly)
 
         if cfg.staking_mode == "proportional":
-            stake_pct = min(cfg.proportional_stake_pct, cfg.max_stake_pct)
+            stake_pct = min(cfg.proportional_stake_pct, _max_stake)
         else:
             # Kelly fractional — sizes proportional to perceived edge.
-            stake_pct = min(kelly_adj * 100, cfg.max_stake_pct)
+            stake_pct = min(kelly_adj * 100, _max_stake)
             if stake_pct < 0.20:
                 return _miss("kelly_below_0.2pct")  # edge too thin (lowered from 0.30)
 
@@ -1417,7 +1427,7 @@ class UnifiedBettingEngine:
                 stake_pct *= 0.85  # 15% reduction for marginal edges
 
             # Re-apply cap after multiplier
-            stake_pct = min(stake_pct, cfg.max_stake_pct)
+            stake_pct = min(stake_pct, _max_stake)
 
         # NO artificial floor — if Kelly says 0.25%, stake 0.25%.
         # The old 0.5% floor was oversizing thin edges by 67%+.
@@ -1469,7 +1479,32 @@ class UnifiedBettingEngine:
             confidence_tier=tier, model_confidence=confidence,
             league=_league,
             match_group=match,
+            stake_scale=_scale, stake_note=_scale_why,
         )
+
+    def _incumbent_stake_scale(self, market: str, selection: str) -> tuple[float, str]:
+        """market_promotion.incumbent_stake_scale on the derived state, read
+        once per engine instance. Unreadable state = the half stake (closed)."""
+        try:
+            from scripts.betting.market_promotion import PROMOTED_KELLY_SCALE, incumbent_stake_scale, load_state
+        except ImportError as e:
+            log.warning("market_promotion unavailable, incumbent stake at half: %s", e)
+            return 0.5, f"market_promotion unavailable: {e}"
+        st = getattr(self, "_promotion_state_cache", None)
+        if st is None:
+            try:
+                st = load_state()
+            except (OSError, ValueError) as e:
+                log.warning("promotion state unreadable, incumbent stake at half: %s", e)
+                st = {"incumbents": {}}
+            self._promotion_state_cache = st
+        scale, why = incumbent_stake_scale(market, selection, st)
+        if scale < 1.0:
+            seen = self.__dict__.setdefault("_incumbent_scale_logged", set())
+            if (market, selection) not in seen:            # once per market per run, not per candidate
+                seen.add((market, selection))
+                log.info("Incumbent stake x%.2f (of %.2f) on %s %s: %s", scale, PROMOTED_KELLY_SCALE, market, selection, why)
+        return (scale, why) if scale < 1.0 else (1.0, why)
 
     # -----------------------------------------------------------------
     # MARKET SCANNERS

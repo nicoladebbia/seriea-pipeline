@@ -73,6 +73,12 @@ INCUMBENT_MARKETS = {"ou_over_1_5": ("O/U 1.5", "Over"), "ou_over_2_5": ("O/U 2.
 # Serie A go-live. The O/U model has been refit since the incumbent record was
 # built, so the since-go-live record is the one on the model actually betting.
 INCUMBENT_LIVE_FROM = "2026-08-27T00:00:00+00:00"
+# Stake ladder for an incumbent (2026-09-06, closing the Kelly 0.15 question):
+# the engine stakes it at PROMOTED_KELLY_SCALE x Kelly and x cap — what a
+# freshly promoted market gets — until its since-go-live real record has this
+# many settled bets AND they do not trip DEMOTION_BAR. The record decides,
+# not a hand-set fraction.
+INCUMBENT_FULL_STAKE_MIN_N = DEMOTION_BAR["min_real_bets"]
 
 # Market key -> what the bet is, for the /record card
 MARKET_NAMES_IT = {
@@ -259,11 +265,39 @@ def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LI
         ok, why = (not misses), ("bar cleared" if not misses else "; ".join(misses))
         demote, dwhy = should_demote(rec)
         dates = sorted(str(b.get("placed_at") or "")[:10] for b in bets if b.get("placed_at"))
+        scale, scale_why = _stake_scale_from_since(since)
         out[key] = {"status": "incumbent", "market": market, "side": side, "real": rec,
                     "real_since_live": since, "live_from": live_from,
                     "record_span": [dates[0], dates[-1]] if dates else None,
-                    "bar_passed": ok, "distance": why, "would_demote": demote, "demotion_reason": dwhy}
+                    "bar_passed": ok, "distance": why, "would_demote": demote, "demotion_reason": dwhy,
+                    "stake_scale": scale, "stake_reason": scale_why}
     return out
+
+
+def _stake_scale_from_since(since: dict) -> tuple[float, str]:
+    n = since.get("n", 0)
+    if n < INCUMBENT_FULL_STAKE_MIN_N:
+        return PROMOTED_KELLY_SCALE, f"since go-live {n}/{INCUMBENT_FULL_STAKE_MIN_N} settled"
+    demote, why = should_demote(since)
+    if demote:
+        return PROMOTED_KELLY_SCALE, f"since go-live record at the demotion bar: {why}"
+    return 1.0, f"since go-live n={n} ROI {since['roi_pct']:+.1f}% z {since['z']:+.2f}"
+
+
+def incumbent_stake_scale(market: str, selection: str, state: dict | None = None) -> tuple[float, str]:
+    """(Kelly-and-cap multiplier, reason) for an engine bet. 1.0 for anything
+    that is not an incumbent; for an incumbent, what its evaluated record says
+    (`stake_scale`). No evaluated record yet = PROMOTED_KELLY_SCALE: fail
+    closed, the same half stake a promoted market starts on."""
+    key = next((k for k, (m, side) in INCUMBENT_MARKETS.items()
+                if m == market and str(selection or "").startswith(side)), None)
+    if key is None:
+        return 1.0, ""
+    st = state if state is not None else load_state()
+    row = (st.get("incumbents") or {}).get(key)
+    if not row or row.get("stake_scale") is None:
+        return PROMOTED_KELLY_SCALE, "incumbent record not evaluated yet"
+    return float(row["stake_scale"]), str(row.get("stake_reason") or "")
 
 
 def should_demote(real_rec: dict | None, bar: dict = DEMOTION_BAR) -> tuple[bool, str]:
@@ -431,8 +465,10 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
         sl = r.get("real_since_live") or {}
         clv = f" · CLV {rr['mean_clv_pct']:+.1f}%" if rr.get("mean_clv_pct") is not None else ""
         bar = "barra superata" if r.get("bar_passed") else f"barra NON superata: {r.get('distance', '')}"
+        stake = ("puntata piena" if (r.get("stake_scale") or 1.0) >= 1.0
+                 else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live")
         lines.append(f"🏦 {b[0]}{MARKET_NAMES_IT.get(mk, mk)}{b[1]} vera n={rr.get('n', 0)} ROI {rr.get('roi_pct', 0):+.0f}% "
-                     f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)}")
+                     f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)} · {stake}")
     if not rows:
         lines.append(f"📝 {i[0]}nessuna scelta carta ancora liquidata{i[1]}")
     for mk, r in sorted(rows.items(), key=lambda kv: (order.get(kv[1].get("status"), 2), -(kv[1].get("paper") or {}).get("n", 0))):
@@ -448,7 +484,7 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     lines.append(f"{i[0]}💰 = puntata vera (Kelly dimezzato, max {PROMOTED_MAX_STAKE_PCT:.1f}%) · 📝 = carta €10 · "
                  f"un mercato torna carta con ≥{DEMOTION_BAR['min_real_bets']} vere sotto {DEMOTION_BAR['max_roi_pct']:.0f}%"
                  + (" · 🏦 = titolare: punta vero da prima della barra, senza averla passata; "
-                    "misurato sullo stesso metro, non spento da qui" if incumbents else "") + i[1])
+                    "misurato sullo stesso metro, a metà puntata finché il record dal go-live non lo regge" if incumbents else "") + i[1])
     return "\n".join(lines)
 
 

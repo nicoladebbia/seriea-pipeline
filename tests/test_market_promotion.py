@@ -290,3 +290,55 @@ def test_pick_markets_archive_writes_only_this_cycle_gzipped(tmp_path):
     assert got["markets"] == list(OF.PICK_EVENT_MARKETS) and got["timestamp"].startswith("2026-09-06T15:00")
     assert OF._archive_pick_markets(store, ["b"], now, "serie_a", snapshot_dir=tmp_path) is not None
     assert OF._archive_pick_markets(store, [], now, "serie_a", snapshot_dir=tmp_path) is None
+
+
+# ---- incumbent stake ladder -----------------------------------------------------
+def test_incumbent_stake_follows_the_since_go_live_record_not_a_constant():
+    """Kelly 0.15 was set on a record the current model never produced. An
+    incumbent is staked like a freshly promoted market (x PROMOTED_KELLY_SCALE
+    on Kelly and cap) until 30 settled real bets since go-live that do not trip
+    the demotion bar; no evaluated record at all fails closed to the half."""
+    legacy = "2026-03-01T17:00:00+00:00"
+    live = "2026-09-13T17:00:00+00:00"
+    assert MP.incumbent_stake_scale("1X2", "Home", {"incumbents": {}}) == (1.0, "")
+    assert MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", {"incumbents": {}}) == (MP.PROMOTED_KELLY_SCALE, "incumbent record not evaluated yet")
+    # legacy-only record: half, however good the legacy numbers are
+    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 60, 0, 1.41, legacy), write=False)
+    assert st["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
+    assert MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st) == (MP.PROMOTED_KELLY_SCALE, "since go-live 0/30 settled")
+    # 30 real bets since go-live that hold up -> full stake
+    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 23, 7, 1.41, live), write=False)
+    scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
+    assert scale == 1.0 and why.startswith("since go-live n=30 ROI +")
+    # 30 since go-live at the demotion bar -> back to half, and the card says so
+    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 17, 13, 1.41, live), write=False)
+    scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
+    assert scale == MP.PROMOTED_KELLY_SCALE and "demotion bar" in why
+    assert "puntata ×0.5 finché 30 vere dal go-live" in MP.record_card(st, html=False)
+    # a promoted mirror since go-live is not the engine's record
+    mirror = [dict(b, extra={"picks_ref": "x"}, pipeline_status=MP.PIPELINE_STATUS)
+              for b in _settled("O/U 1.5", 30, 0, odds=1.41, placed=live)]
+    st = MP.evaluate_promotions([], [], real_all=mirror, write=False)
+    assert st["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
+
+
+def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
+    from scripts.betting.betting_unified import UnifiedBettingEngine
+
+    def make(engine):
+        # in-band O/U 2.5 shape from test_edge_band_config: 8.3pp edge, odds 2.45, a Saturday
+        return engine._make_bet("Udinese vs Lazio", "2026-09-05", "O/U 2.5", "Over 2.5",
+                                0.483, 0.40, 2.45, "Pinnacle", 2.45, 2.40, 5, min_edge_override=7.0)
+
+    half = make(UnifiedBettingEngine())                      # no state file on disk -> fail closed
+    assert half is not None and half.stake_scale == MP.PROMOTED_KELLY_SCALE
+    assert half.stake_note == "incumbent record not evaluated yet"
+    live = "2026-09-13T17:00:00+00:00"
+    MP.evaluate_promotions([], [], real_all=_real_engine("O/U 2.5", "Over 2.5", 14, 16, 2.47, live))
+    full = make(UnifiedBettingEngine())
+    assert full.stake_scale == 1.0 and full.stake_pct == pytest.approx(half.stake_pct * 2, abs=0.02)
+    assert full.stake_pct < full.stake_amount / full.stake_amount * 2.5   # under the cap, so the ratio is exact
+    # a non-incumbent bet is untouched
+    other = UnifiedBettingEngine()._make_bet("Udinese vs Lazio", "2026-09-05", "1X2", "Home",
+                                             0.50, 0.44, 2.45, "Pinnacle", 2.45, 2.40, 5, min_edge_override=3.0)
+    assert other is None or other.stake_scale == 1.0
