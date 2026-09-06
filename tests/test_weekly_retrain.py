@@ -86,6 +86,10 @@ def _run_auto(monkeypatch, dry_run, promoted):
     monkeypatch.setattr(wr, "_save_retrain_state", lambda st: saved.update(st))
     monkeypatch.setattr(wr, "_archive_current_models", lambda *a, **k: None)
     monkeypatch.setattr(wr, "_notify", lambda *a, **k: None)
+    # auto_retrain imports this inside its body, so stubbing wr._notify does not
+    # cover it — without this line every run posted the real matchweek card.
+    from scripts.pipeline import notify as _notify_mod
+    monkeypatch.setattr(_notify_mod, "notify_matchweek_summary", lambda **k: {})
     monkeypatch.setattr(wr, "_is_last_week_of_month", lambda: False)
     monkeypatch.setattr(
         wr, "quick_retrain",
@@ -188,6 +192,10 @@ def _run_auto_with_spies(monkeypatch, *, dry_run=False, ensemble_promoted=False,
     monkeypatch.setattr(wr, "_save_retrain_state", lambda st: None)
     monkeypatch.setattr(wr, "_archive_current_models", lambda *a, **k: None)
     monkeypatch.setattr(wr, "_notify", lambda *a, **k: None)
+    # auto_retrain imports this inside its body, so stubbing wr._notify does not
+    # cover it — without this line every run posted the real matchweek card.
+    from scripts.pipeline import notify as _notify_mod
+    monkeypatch.setattr(_notify_mod, "notify_matchweek_summary", lambda **k: {})
     monkeypatch.setattr(wr, "_is_last_week_of_month", lambda: False)
     monkeypatch.setattr(
         wr, "quick_retrain",
