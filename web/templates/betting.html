@@ -406,10 +406,31 @@ let livePropCache = {};
 let propPerformance = null;
 let kellyPnl = null;
 
-// ---- Promotion gate card (/api/market-record) --------------------------------
-// The record that decides real money: the incumbents (O/U Over) scored on the
-// bar they impose on the props, their since-go-live record and stake ladder,
-// then each paper market's distance to real stakes. Re-fetched every 60s.
+// ---- Real-money gate card (/api/market-record) --------------------------------
+// Answers one question in plain words: which markets the engine bets with real
+// money, at what stake, and what the settled record says about it. Same state
+// as Telegram /record (data/betting/market_promotion.json). Re-fetched every 60s.
+function _mrEsc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+function _mrPct(v, dp = 1) { return v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(dp)}%`; }
+function _mrMonth(iso) { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }); }
+function _mrNeeds(distance, bar) {
+  // "47/50 settled; z 0.59 < 2.5" -> "50 bets (has 47) · z ≥ 2.5 (has 0.59)"
+  return String(distance || '').split(';').map(t => t.trim()).filter(Boolean).map(t => {
+    let m;
+    if ((m = t.match(/^(\d+)\/(\d+) settled$/))) return `${m[2]} bets (has ${m[1]})`;
+    if ((m = t.match(/^ROI (.+)$/))) return `ROI &gt; ${bar.min_roi_pct ?? 0}% (has ${_mrEsc(m[1])})`;
+    if ((m = t.match(/^z (\S+) < (\S+)$/))) return `z ≥ ${m[2]} (has ${m[1]})`;
+    if ((m = t.match(/^z (\S+) \(needs >= (\S+)\)$/))) return `z ≥ ${m[2]} (has ${m[1]})`;
+    if ((m = t.match(/^CLV (\S+)% on (\d+).*$/))) return `CLV &gt; 0 (has ${m[1]}% on ${m[2]})`;
+    if ((m = t.match(/^CLV (\S+)%$/))) return `CLV &gt; 0 (has ${m[1]}%)`;
+    return _mrEsc(t);
+  }).join(' · ');
+}
+function _mrBar(n, target, color) {
+  const pct = Math.max(0, Math.min(100, target ? (n / target) * 100 : 0));
+  return `<div style="height:6px;border-radius:3px;background:var(--bg-primary);overflow:hidden;margin-top:4px;">
+    <div style="height:100%;width:${pct}%;background:${color};transition:width .5s;"></div></div>`;
+}
 async function loadMarketRecord() {
   const el = document.getElementById('market-record');
   if (!el) return;
@@ -417,68 +438,78 @@ async function loadMarketRecord() {
   try { d = await (await fetch('/api/market-record')).json(); } catch (e) { return; }
   if (!d || d.error) return;
   const bar = d.bar || {}, dem = d.demotion_bar || {};
-  const pct = (v, dp = 1) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(dp)}%`);
-  const col = (v, good, bad) => (v == null ? 'var(--text-tertiary)' : v > good ? 'var(--green)' : v < bad ? 'var(--red)' : 'var(--amber)');
+  const minN = d.full_stake_min_n || 30, scale = d.promoted_kelly_scale ?? 0.5;
   const ageMin = d.updated_at ? Math.max(0, Math.round((Date.now() - new Date(d.updated_at).getTime()) / 60000)) : null;
   const age = ageMin == null ? '' : ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.round(ageMin / 60)}h ago` : `${Math.round(ageMin / 1440)}d ago`;
-  const th = (t, align = 'right') => `<th style="text-align:${align};font-weight:600;color:var(--text-tertiary);padding:4px 8px;white-space:nowrap;">${t}</th>`;
-  const td = (t, style = '', align = 'right') => `<td style="text-align:${align};padding:5px 8px;white-space:nowrap;${style}">${t}</td>`;
-  const rows = [];
-  for (const r of d.incumbents || []) {
+  const roiCol = v => (v == null ? 'var(--text-tertiary)' : v > 0 ? 'var(--green)' : v < -10 ? 'var(--red)' : 'var(--amber)');
+  const num = t => `<span class="vb-mono" style="color:var(--text-primary);">${t}</span>`;
+
+  // --- A. markets betting real money now (the incumbents) ---
+  const real = (d.incumbents || []).map(r => {
     const rr = r.real || {}, sl = r.real_since_live || {};
-    const barCell = r.bar_passed
-      ? `<span style="color:var(--green);">✓ cleared</span>`
-      : `<span style="color:var(--amber);">✗ ${esc(r.distance || '')}</span>`;
-    const stakeCell = (r.stake_scale == null || r.stake_scale >= 1)
-      ? `<span style="color:var(--green);">full · Kelly 0.15, cap 2.5%</span>`
-      : `<span style="color:var(--amber);font-weight:600;">×${r.stake_scale} Kelly & cap</span> <span style="color:var(--text-tertiary);">until ${d.full_stake_min_n} real bets since go-live hold up</span>`;
-    rows.push(`<tr style="border-top:1px solid var(--border-subtle);">
-      ${td(`🏦 <b>${esc(r.name)}</b>`, '', 'left')}
-      ${td('<span style="color:var(--accent);">real · incumbent</span>', '', 'left')}
-      ${td(rr.n ?? 0)}${td(pct(rr.roi_pct), `color:${col(rr.roi_pct, 0, -10)};font-weight:600;`)}
-      ${td(rr.z == null ? '—' : Number(rr.z).toFixed(2), `color:${col(rr.z, bar.min_z ?? 2.5, -1)};`)}
-      ${td(rr.mean_clv_pct == null ? '—' : `${pct(rr.mean_clv_pct, 2)} <span style="color:var(--text-tertiary);">(${rr.n_clv})</span>`, `color:${col(rr.mean_clv_pct, 0, 0)};`)}
-      ${td(barCell, '', 'left')}
-      ${td(`${sl.n ?? 0}${sl.n ? ` · ${pct(sl.roi_pct)} · z ${Number(sl.z).toFixed(2)}` : ''}`)}
-      ${td(stakeCell, '', 'left')}
-    </tr>`);
-  }
-  for (const r of d.markets || []) {
+    const full = r.stake_scale == null || r.stake_scale >= 1;
+    const span = r.record_span ? `${_mrMonth(r.record_span[0])} – ${_mrMonth(r.record_span[1])}` : '';
+    const pill = full
+      ? `<span class="vb-badge vb-badge--won">FULL STAKE</span>`
+      : `<span class="vb-badge" style="background:rgba(251,191,36,.15);color:var(--amber);border:1px solid rgba(251,191,36,.35);">HALF STAKE · ×${r.stake_scale}</span>`;
+    const passes = r.bar_passed
+      ? `<span style="color:var(--green);font-weight:600;">Yes</span>`
+      : `<span style="color:var(--amber);font-weight:600;">No</span> <span style="color:var(--text-secondary);">— needs ${_mrNeeds(r.distance, bar)}</span>`;
+    const sinceLine = sl.n
+      ? `${num(sl.n)} of ${minN} bets · ROI ${num(_mrPct(sl.roi_pct))} · z ${num(Number(sl.z).toFixed(2))}`
+      : `${num(0)} of ${minN} bets — nothing settled yet`;
+    const stakeLine = full
+      ? `Full stake: Kelly 0.15, cap 2.5% of bankroll. Drops back to half if ${dem.min_real_bets} real bets run below ${dem.max_roi_pct}% ROI or z &lt; ${dem.max_z}.`
+      : `Half Kelly and half cap (about €10 a bet) until ${minN} real bets on the current model hold up. Then full: Kelly 0.15, cap 2.5%. Nobody flips this by hand — the record does.`;
+    return `<div class="vb-inner-card" style="background:var(--bg-secondary);">
+      <div class="vb-flex-between" style="margin-bottom:var(--space-2);">
+        <span style="font-size:14px;font-weight:700;color:var(--text-primary);">${_mrEsc(r.market)} ${_mrEsc(r.side)} <span style="font-weight:400;color:var(--text-tertiary);font-size:11px;">· the O/U model's bet</span></span>
+        ${pill}
+      </div>
+      <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
+        <div><span style="color:var(--text-tertiary);">Settled real bets:</span> ${num(rr.n ?? 0)} · ROI <span class="vb-mono" style="color:${roiCol(rr.roi_pct)};font-weight:600;">${_mrPct(rr.roi_pct)}</span> · CLV <span class="vb-mono" style="color:${roiCol(rr.mean_clv_pct)};">${rr.mean_clv_pct == null ? '—' : _mrPct(rr.mean_clv_pct)}</span> · z ${num(rr.z == null ? '—' : Number(rr.z).toFixed(2))}${span ? ` <span style="color:var(--text-tertiary);">(${span}, previous model)</span>` : ''}</div>
+        <div><span style="color:var(--text-tertiary);">Would it pass the promotion bar today?</span> ${passes}</div>
+        <div><span style="color:var(--text-tertiary);">On the current model (since ${_mrMonth(d.live_from || '')}):</span> ${sinceLine}</div>
+        ${_mrBar(sl.n || 0, minN, full ? 'var(--green)' : 'var(--amber)')}
+        <div style="margin-top:6px;color:var(--text-secondary);">${stakeLine}</div>
+      </div>
+    </div>`;
+  });
+
+  // --- B. paper markets earning their way ---
+  const paper = (d.markets || []).map(r => {
     const p = r.paper || {}, rr = r.real || {};
     const promoted = r.status === 'promoted';
-    const stakeCell = promoted
-      ? `<span style="color:var(--green);">Kelly ×${d.promoted_kelly_scale}, cap ${d.promoted_max_stake_pct}%</span>${rr.n ? ` <span style="color:var(--text-tertiary);">· real n=${rr.n} ${pct(rr.roi_pct)}</span>` : ''}`
-      : `<span style="color:var(--text-tertiary);">paper €10</span>`;
-    rows.push(`<tr style="border-top:1px solid var(--border-subtle);">
-      ${td(`${promoted ? '💰' : '📝'} ${esc(r.name)}`, '', 'left')}
-      ${td(promoted ? '<span style="color:var(--green);">promoted</span>' : '<span style="color:var(--text-tertiary);">paper</span>', '', 'left')}
-      ${td(p.n ?? 0)}${td(pct(p.roi_pct), `color:${col(p.roi_pct, 0, -10)};`)}
-      ${td(p.z == null ? '—' : Number(p.z).toFixed(2), `color:${col(p.z, bar.min_z ?? 2.5, -1)};`)}
-      ${td(p.mean_clv_pct == null ? '—' : `${pct(p.mean_clv_pct, 2)} <span style="color:var(--text-tertiary);">(${p.n_clv})</span>`)}
-      ${td(promoted ? '<span style="color:var(--green);">✓ promoted</span>' : `<span style="color:var(--text-tertiary);">${esc(r.distance || '')}</span>`, '', 'left')}
-      ${td('—')}
-      ${td(stakeCell, '', 'left')}
-    </tr>`);
-  }
-  const body = rows.length ? `
-    <div style="overflow-x:auto;">
-    <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--font-mono);">
-      <thead><tr>${th('Market', 'left')}${th('Status', 'left')}${th('n')}${th('ROI')}${th('z')}${th('CLV (n)')}${th('Bar', 'left')}${th('Since go-live')}${th('Stake', 'left')}</tr></thead>
-      <tbody>${rows.join('')}</tbody>
-    </table></div>`
-    : `<div style="font-size:11px;color:var(--text-tertiary);padding:6px 0;">No settled paper pick yet: every market is paper until it has ${bar.min_settled} settled picks with ROI &gt; 0.</div>`;
-  el.innerHTML = `
-    <div class="vb-flex-between" style="margin-bottom:var(--space-2);">
-      <div class="vb-flex" style="gap:var(--space-3);align-items:baseline;">
-        <span style="font-size:13px;font-weight:700;color:var(--text-primary);">Market record · who bets real money, and at what stake</span>
-        <span style="font-size:10px;color:var(--text-tertiary);">bar: ≥${bar.min_settled} settled, ROI &gt; ${bar.min_roi_pct}%, z ≥ ${bar.min_z}, CLV &gt; 0 once ${bar.min_clv_n} closing prices · demotion: ≥${dem.min_real_bets} real at ROI &lt; ${dem.max_roi_pct}% or z &lt; ${dem.max_z}</span>
+    const right = promoted
+      ? `<span class="vb-badge vb-badge--won">REAL · Kelly ×${scale}, cap ${d.promoted_max_stake_pct}%</span>${rr.n ? ` <span class="vb-mono" style="color:var(--text-tertiary);">real n=${rr.n} ${_mrPct(rr.roi_pct)}</span>` : ''}`
+      : `<span style="color:var(--text-secondary);">needs ${_mrNeeds(r.distance, bar)}</span>`;
+    return `<div style="padding:8px 0;border-top:1px solid var(--border-subtle);">
+      <div class="vb-flex-between" style="font-size:11px;">
+        <span><span style="font-weight:600;color:var(--text-primary);">${promoted ? '💰' : '📝'} ${_mrEsc(r.name)}</span>
+          <span style="color:var(--text-tertiary);"> · ${num(p.n ?? 0)} settled · ROI <span class="vb-mono" style="color:${roiCol(p.roi_pct)};">${_mrPct(p.roi_pct)}</span>${p.mean_clv_pct != null ? ` · CLV ${num(_mrPct(p.mean_clv_pct))}` : ''}</span></span>
+        ${right}
       </div>
-      <span style="font-size:10px;color:var(--text-tertiary);">${age ? `evaluated ${age}` : ''} · same state as Telegram /record</span>
+      ${promoted ? '' : _mrBar(p.n || 0, bar.min_settled || 50, 'var(--accent)')}
+    </div>`;
+  });
+  const paperBody = paper.length ? paper.join('')
+    : `<div style="font-size:11px;color:var(--text-secondary);padding:6px 0;">No paper pick has settled yet. Every prop and first-half market starts here at €10 paper stakes; it earns real money only by its own record.</div>`;
+
+  el.innerHTML = `
+    <div class="vb-flex-between" style="margin-bottom:var(--space-3);align-items:baseline;">
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--text-primary);">Real-money gate</div>
+        <div style="font-size:11px;color:var(--text-secondary);">Which markets the engine bets with real money, at what stake, and what the settled record says. A market earns real money by its record, never by hand.</div>
+      </div>
+      <span style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;">${age ? `evaluated ${age}` : ''} · same as Telegram /record</span>
     </div>
-    ${body}
-    <div style="font-size:10px;color:var(--text-tertiary);margin-top:var(--space-2);">
-      🏦 incumbent = bet real money before the bar existed, measured on the same bar, staked at ×${d.promoted_kelly_scale} until its record since ${(d.live_from || '').slice(0, 10)} (the current model) reaches ${d.full_stake_min_n} held-up bets ·
-      💰 promoted = paper record cleared the bar, mirrored into the real journal · 📝 paper = €10 flat, building the record.
+    <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-tertiary);margin-bottom:var(--space-2);">Betting real money now</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:var(--space-3);margin-bottom:var(--space-4);">${real.join('')}</div>
+    <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-tertiary);">Paper markets, earning their way to real money</div>
+    <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:2px;">The bar: ${bar.min_settled} settled paper picks with ROI &gt; ${bar.min_roi_pct ?? 0}%, z ≥ ${bar.min_z}, and CLV &gt; 0 once ${bar.min_clv_n} closing prices exist. Checked after every settlement.</div>
+    ${paperBody}
+    <div style="font-size:10px;color:var(--text-tertiary);margin-top:var(--space-3);border-top:1px solid var(--border-subtle);padding-top:6px;">
+      <b>z</b> = how many standard errors the average return sits above zero; 2.5 means a no-edge market would show this record about once in 160 seasons. <b>CLV</b> = closing-line value, how much better than the closing price the bet was taken at; the one number that predicts future ROI.
     </div>`;
   el.style.display = '';
 }
