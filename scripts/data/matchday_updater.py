@@ -862,9 +862,16 @@ def heal_from_espn(season: str | None = None, league: str = "serie_a",
     summary = {"league": league, "season": season, "candidates": 0, "incidents_matches": 0,
                "incident_rows": 0, "stats_rows": 0, "unreachable": 0}
     now_ts = datetime.now(timezone.utc).timestamp()
+    # A fixture counts as played when the cached list says "finished" OR when it
+    # kicked off more than three hours ago: under a Sofascore API challenge the
+    # fixture cache cannot refresh, so the status never flips and the three
+    # matches of 2026-09-05 sat score-only for a day with ESPN ready to serve
+    # them. ESPN's own "post" check below still decides whether it is served.
     fixtures = [f for f in _load_fixtures(season, league)
-                if (f.get("status") or {}).get("type") == "finished"
-                and f.get("id") and f.get("startTimestamp") and f["startTimestamp"] <= now_ts]
+                if f.get("id") and f.get("startTimestamp")
+                and ((f.get("status") or {}).get("type") == "finished"
+                     or f["startTimestamp"] <= now_ts - 3 * 3600)
+                and f["startTimestamp"] <= now_ts]
     if not fixtures:
         return summary
     covered = sofascore_covered_ids()
@@ -919,7 +926,13 @@ def heal_from_espn(season: str | None = None, league: str = "serie_a",
             values["home_cards"] = cards["home_yellow_cards"] + cards["home_red_cards"]
             values["away_cards"] = cards["away_yellow_cards"] + cards["away_red_cards"]
             if ht is not None:
+                # Both half-time column pairs: football-data's ``*_ht_goals`` +
+                # ``ht_result`` is what the feature pipeline reads; ``*_ht_score``
+                # is the Sofascore writer's pair. Until 2026-09-06 only the
+                # second was filled, so a healed row's first half stayed NaN.
                 values["home_ht_score"], values["away_ht_score"] = ht
+                values["home_ht_goals"], values["away_ht_goals"] = float(ht[0]), float(ht[1])
+                values["ht_result"] = "H" if ht[0] > ht[1] else ("A" if ht[0] < ht[1] else "D")
             for col, val in values.items():
                 if col in gt.columns and val is not None and pd.isna(gt.at[idx, col]):
                     gt.at[idx, col] = val

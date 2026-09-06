@@ -736,6 +736,9 @@ def test_lexicon_signs():
 
 def test_pulse_updates_learns_and_decays(monkeypatch, tmp_path):
     monkeypatch.setattr(tp, "STATE", tmp_path / "pulse.json")
+    # Freeze the results source: the real fixtures file labels (Torino, 3) the
+    # day round 3 is played, and the pending item vanishes before it is asserted.
+    monkeypatch.setattr(tp, "_results_by_round", lambda: {})
     item = {"link": "l1", "source": "T", "title": "Toro, vittoria e show",
             "desc": ""}
     st = tp.update([item], next_round=3)

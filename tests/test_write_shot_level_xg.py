@@ -8,8 +8,6 @@ pinned because a "reasonable" guess would get it wrong.
 """
 from __future__ import annotations
 
-import math
-
 from scripts.data.write_shot_level_xg import shot_rows_from_shotmap
 
 
@@ -100,3 +98,24 @@ def test_coordinates_map_to_the_right_columns():
 def test_blocked_shot_with_no_goalmouth_yields_null_gm_not_a_crash():
     r = _one(goalMouthCoordinates={})
     assert r["gm_x"] is None and r["gm_y"] is None
+
+
+def test_shot_level_loader_serves_both_leagues_and_tolerates_a_missing_sibling(tmp_path, monkeypatch):
+    """Until 2026-09-06 every shot-feature reader opened the Serie A file only, so
+    the EPL frame had no shot-level columns. The shared loader concatenates the
+    two files (Sofascore ids are disjoint across leagues), passes ``columns``
+    through, and a missing sibling is skipped rather than fatal."""
+    import pandas as pd
+
+    import features._utils as u
+    sa = tmp_path / "all_shots_with_xg.parquet"
+    epl = tmp_path / "all_shots_with_xg_premier_league.parquet"
+    pd.DataFrame({"match_id": [1, 1], "xg": [0.1, 0.2], "is_penalty": [0, 1]}).to_parquet(sa, index=False)
+    monkeypatch.setattr(u, "SHOT_LEVEL_XG_PATHS", (sa, epl))
+    only_sa = u.load_shot_level_xg()
+    assert len(only_sa) == 2 and set(only_sa["match_id"]) == {1}
+    pd.DataFrame({"match_id": [2], "xg": [0.5], "is_penalty": [0]}).to_parquet(epl, index=False)
+    both = u.load_shot_level_xg(columns=["match_id", "xg"])
+    assert len(both) == 3 and set(both["match_id"]) == {1, 2} and list(both.columns) == ["match_id", "xg"]
+    monkeypatch.setattr(u, "SHOT_LEVEL_XG_PATHS", (tmp_path / "nope.parquet",))
+    assert u.load_shot_level_xg() is None

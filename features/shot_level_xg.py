@@ -28,6 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from features._utils import load_shot_level_xg
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,10 +42,10 @@ MAPPING_PATH = PROJECT_ROOT / "data" / "parsed" / "match_id_mapping.parquet"
 # ---------------------------------------------------------------------------
 
 def _load_shots() -> pd.DataFrame | None:
-    if not SHOTS_PATH.exists():
+    shots = load_shot_level_xg()
+    if shots is None:
         log.warning("Shot-level xG file missing: %s", SHOTS_PATH)
-        return None
-    return pd.read_parquet(SHOTS_PATH)
+    return shots
 
 
 def _load_mapping() -> pd.DataFrame | None:

@@ -16,6 +16,38 @@ log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PMS_PATH = _PROJECT_ROOT / "data" / "external" / "sofascore" / "player_match_stats.parquet"
+_SHOTS_BASE = _PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg"
+SHOT_LEVEL_XG_PATHS = (
+    _SHOTS_BASE.with_suffix(".parquet"),
+    _PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg_premier_league.parquet",
+)
+
+
+def load_shot_level_xg(columns: list[str] | None = None) -> pd.DataFrame | None:
+    """Shot-level xG for BOTH leagues: ``all_shots_with_xg.parquet`` (Serie A) plus the
+    ``_premier_league`` sibling written by ``scripts/data/write_shot_level_xg.py``.
+
+    Until 2026-09-06 every shot-feature reader opened the Serie A file only, so
+    the EPL feature frame carried NaN for every shot-level column (situational
+    xG, shot patterns, penalty counts, shot-level rolling). Sofascore match ids
+    are disjoint across the two leagues (verified 3,389 vs 3,387, overlap 0), so
+    one concatenated frame keyed on ``match_id`` serves both. Returns None when
+    neither file exists; a missing sibling is simply skipped.
+    """
+    frames = []
+    for path in SHOT_LEVEL_XG_PATHS:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_parquet(path, columns=columns)
+        except (OSError, ValueError, KeyError) as exc:
+            log.warning("Shot-level xG: could not read %s: %s", path, exc)
+            continue
+        if not df.empty:
+            frames.append(df)
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
 
 # Sofascore team name -> pipeline team name
 SOFASCORE_TEAM_MAP: dict[str, str] = {

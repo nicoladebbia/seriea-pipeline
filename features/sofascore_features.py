@@ -38,7 +38,7 @@ import pandas as pd
 
 from config.settings import ROLLING_WINDOW
 from config.team_names import normalize_team, normalize_team_safe
-from features._utils import merge_side
+from features._utils import load_shot_level_xg, merge_side
 
 log = logging.getLogger(__name__)
 
@@ -523,13 +523,15 @@ def _build_shot_situation_stats(shots_path=None) -> pd.DataFrame | None:
     open_play_xg_pct, header_shot_pct, first_half_xg_share, last_15_xg_share).
     """
     if shots_path is None:
-        shots_path = PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg.parquet"
-
-    if not shots_path.exists():
-        log.warning("Shot data not found at %s", shots_path)
-        return None
-
-    shots = pd.read_parquet(shots_path)
+        shots = load_shot_level_xg()          # both leagues
+        if shots is None:
+            log.warning("Shot data not found (all_shots_with_xg*.parquet)")
+            return None
+    else:
+        if not shots_path.exists():
+            log.warning("Shot data not found at %s", shots_path)
+            return None
+        shots = pd.read_parquet(shots_path)
     if shots.empty:
         return None
 

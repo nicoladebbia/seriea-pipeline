@@ -55,6 +55,7 @@ EPL_TEAMS_TM: dict[str, tuple[str, int]] = {
     "Brighton": ("brighton-amp-hove-albion", 1237),
     "Burnley": ("burnley-fc", 1132),
     "Cardiff": ("cardiff-city", 2687),
+    "Coventry": ("coventry-city", 990),  # promoted 2026-27
     "Chelsea": ("fc-chelsea", 631),
     "Crystal Palace": ("crystal-palace", 873),
     "Everton": ("fc-everton", 29),

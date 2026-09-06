@@ -26,19 +26,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from features._utils import load_shot_level_xg
+
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SHOTS_PATH = PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg.parquet"
 MAPPING_PATH = PROJECT_ROOT / "data" / "parsed" / "match_id_mapping.parquet"
 
 SITUATIONAL_WINDOWS = (5, 10)
 
 
 def _load_shots() -> pd.DataFrame | None:
-    if not SHOTS_PATH.exists():
-        return None
-    return pd.read_parquet(SHOTS_PATH)
+    return load_shot_level_xg()
 
 
 def _aggregate_xg_by_situation(shots: pd.DataFrame) -> pd.DataFrame:

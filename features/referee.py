@@ -43,12 +43,12 @@ _BIG_MATCH_TEAMS = {
 
 def _load_penalty_lookup() -> dict[int, int]:
     """Load penalty counts per match_id from Sofascore shot data."""
-    shots_path = _PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg.parquet"
-    if not shots_path.exists():
-        log.info("No shot data for penalty extraction at %s", shots_path)
-        return {}
     try:
-        shots = pd.read_parquet(shots_path, columns=["match_id", "is_penalty"])
+        from features._utils import load_shot_level_xg
+        shots = load_shot_level_xg(columns=["match_id", "is_penalty"])
+        if shots is None:
+            log.info("No shot data for penalty extraction (all_shots_with_xg*.parquet)")
+            return {}
         shots["is_penalty"] = pd.to_numeric(shots["is_penalty"], errors="coerce").fillna(0)
         pen = shots[shots["is_penalty"] == 1].groupby("match_id").size().to_dict()
         log.info("Loaded penalty data: %d matches with penalties", len(pen))

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pandas as pd
 import pytest
@@ -204,7 +204,8 @@ def _played_row(date, home, away, **extra):
            "home_passing_accuracy": None, "home_passing_accuracy_count": None,
            "home_passing_accuracy_total": None, "home_yellow_cards": None, "away_yellow_cards": None,
            "home_red_cards": None, "away_red_cards": None, "home_cards": None, "away_cards": None,
-           "home_ht_score": None, "away_ht_score": None, "home_xg": None, "data_source": None}
+           "home_ht_score": None, "away_ht_score": None, "home_ht_goals": None, "away_ht_goals": None,
+           "ht_result": None, "home_xg": None, "data_source": None}
     row.update(extra)
     return row
 
@@ -302,3 +303,45 @@ def test_heal_from_espn_counts_a_match_espn_cannot_serve_and_retries_it_next_run
     assert out == {"league": "serie_a", "season": "2026-2027", "candidates": 1, "incidents_matches": 0,
                    "incident_rows": 0, "stats_rows": 0, "unreachable": 1}
     assert not inc_path.exists() and pd.isna(pd.read_parquet(isolated)["home_possession"]).all()
+
+
+def test_heal_from_espn_treats_a_kicked_off_fixture_as_played_when_the_cache_never_flipped(isolated, tmp_path, monkeypatch):
+    """2026-09-05: three Serie A matches sat score-only for a day. The fixture cache
+    could not refresh under the Sofascore challenge, so their status stayed
+    ``notstarted`` and the heal saw 0 candidates while ESPN had everything. A
+    fixture that kicked off more than three hours ago is now a candidate whatever
+    the cached status says; ESPN's own post-match check still decides. And the
+    half-time score lands in BOTH column pairs (features read ``*_ht_goals``)."""
+    import scraper.sofascore_events as se
+    import scripts.data.live_espn as le
+    inc_path = tmp_path / "match_incidents.parquet"
+    monkeypatch.setattr(mu, "INCIDENTS_PARQUET", inc_path)
+    monkeypatch.setattr(se, "_INCIDENTS_PATH", inc_path)
+    monkeypatch.setattr(se, "_SOFASCORE_DIR", tmp_path)
+    pd.DataFrame([_sofa_row(999, "goal", "regular", 10, "X", True)]).to_parquet(inc_path, index=False)
+    now = datetime.now(UTC).timestamp()
+    stale_ts, fresh_ts = int(now - 5 * 3600), int(now - 3600)
+
+    def day(ts: int) -> str:
+        return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
+
+    pd.DataFrame([_played_row(day(stale_ts), "Roma", "Atalanta"),
+                  _played_row(day(fresh_ts), "Juventus", "Milan")]).to_parquet(isolated, index=False)
+    stale = _fx(103, "Roma", "Atalanta", stale_ts)                  # kicked off 5h ago, cache says notstarted
+    stale["status"] = {"type": "notstarted"}
+    fresh = _fx(104, "Juventus", "Milan", fresh_ts)                  # kicked off 1h ago: still in play
+    fresh["status"] = {"type": "notstarted"}
+    monkeypatch.setattr(mu, "_load_fixtures", lambda season, league="serie_a": [stale, fresh])
+    monkeypatch.setattr(mu, "_espn_post_summary", lambda league, date, home, away: {"m": (home, away)})
+    monkeypatch.setattr(se, "incident_rows_from_espn", lambda s, fid: [
+        {**_sofa_row(fid, "goal", "regular", 30, "Dybala", True), "player_id": "espn:dybala", "source": "espn"}])
+    monkeypatch.setattr(le, "half_time_from_summary", lambda s: (2, 0))
+    monkeypatch.setattr(mu, "_espn_stat_values", lambda s: {"home_possession": 60.0, "away_possession": 40.0})
+
+    out = mu.heal_from_espn(season="2026-2027", league="serie_a")
+    assert out["candidates"] == 1 and out["stats_rows"] == 1          # Roma only; Juventus is not 3h old
+    g = pd.read_parquet(isolated).set_index("home_team").loc["Roma"]
+    assert (g["home_ht_score"], g["away_ht_score"]) == (2, 0)
+    assert (g["home_ht_goals"], g["away_ht_goals"]) == (2.0, 0.0) and g["ht_result"] == "H"
+    j = pd.read_parquet(isolated).set_index("home_team").loc["Juventus"]
+    assert pd.isna(j["home_possession"]) and pd.isna(j["home_ht_goals"])

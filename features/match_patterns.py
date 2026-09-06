@@ -25,7 +25,6 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_SHOTS_PATH = _PROJECT_ROOT / "data" / "external" / "sofascore" / "all_shots_with_xg.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +200,12 @@ def _load_shot_patterns() -> dict:
 
     Returns: {(match_id, is_home_bool): {feature_dict}}
     """
-    if not _SHOTS_PATH.exists():
-        return {}
-
     try:
-        shots = pd.read_parquet(_SHOTS_PATH)
+        from features._utils import load_shot_level_xg
+        shots = load_shot_level_xg()
     except Exception:
+        return {}
+    if shots is None:
         return {}
 
     for col in ["xg", "time", "is_goal"]:

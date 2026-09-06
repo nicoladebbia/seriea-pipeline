@@ -671,6 +671,7 @@ class Step13Referee(FeaturePlugin):
     dependencies = ["player_impact"]
     data_inputs = [
         "data/external/sofascore/all_shots_with_xg.parquet",
+        "data/external/sofascore/all_shots_with_xg_premier_league.parquet",
         "data/external/sofascore/player_match_stats.parquet",
     ]
     non_critical = False
@@ -957,6 +958,7 @@ class Step19dMatchPatterns(FeaturePlugin):
     dependencies = ["player_depth"]
     data_inputs = [
         "data/external/sofascore/all_shots_with_xg.parquet",
+        "data/external/sofascore/all_shots_with_xg_premier_league.parquet",
     ]
     non_critical = True
 
