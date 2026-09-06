@@ -17,6 +17,7 @@ API: The Odds API (https://the-odds-api.com/)
 - Covers Serie A and all major leagues
 """
 
+import gzip
 import json
 import logging
 import os
@@ -1001,6 +1002,28 @@ PICK_EVENT_MARKETS = (
 )
 PICK_MARKETS_FILE = DATA_DIR / "upcoming" / "pick_markets_raw.json"
 PICK_REFRESH_MIN = 45.0
+PICK_SNAPSHOT_DIR = DATA_DIR / "odds_snapshots"
+
+
+def _archive_pick_markets(store: dict, fetched_ids: list, now: datetime,
+                          league: str, snapshot_dir: Path = PICK_SNAPSHOT_DIR) -> Path | None:
+    """Append-only copy of the per-event prices fetched THIS cycle, next to the
+    bulk snapshots (``pick_markets_<ts>.json.gz``). PICK_MARKETS_FILE is a
+    merge-written cache that every refresh overwrites, so without this the
+    price a player prop or first-half line carried at T-6h / T-3h / T-30 is
+    gone the moment the next window pays; a paper record can then be settled
+    but never replayed at a different timing or against a different rule.
+    Gzipped: one cycle is ~70 KB per event raw."""
+    events = {eid: store["events"][eid] for eid in fetched_ids if eid in store.get("events", {})}
+    if not events:
+        return None
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / f"pick_markets_{now.strftime('%Y%m%d_%H%M%S')}.json.gz"
+    payload = {"timestamp": now.isoformat(), "league": league,
+               "markets": list(PICK_EVENT_MARKETS), "events": events}
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+    return path
 
 
 def fetch_pick_markets(hours_ahead: float = 6.5, league: str = "serie_a",
@@ -1041,6 +1064,7 @@ def fetch_pick_markets(hours_ahead: float = 6.5, league: str = "serie_a",
     now = datetime.now(timezone.utc)  # noqa: UP017 — module style
     due = _scorer_events_due(events, store, now, hours_ahead, refresh_min)
     markets_csv = ",".join(PICK_EVENT_MARKETS)
+    fetched_ids: list = []
     for ev in due:
         eid = ev["id"]
         ok, msg = check_rate_limit()
@@ -1082,6 +1106,7 @@ def fetch_pick_markets(hours_ahead: float = 6.5, league: str = "serie_a",
                              for m in bm.get("markets", [])]}
                 for bm in data.get("bookmakers", [])],
         }
+        fetched_ids.append(eid)
         n_mk = len({m["key"] for bm in store["events"][eid]["bookmakers"]
                     for m in bm["markets"]})
         log.info(f"Pick markets: {ev.get('home_team')} vs {ev.get('away_team')}: "
@@ -1093,6 +1118,10 @@ def fetch_pick_markets(hours_ahead: float = 6.5, league: str = "serie_a",
         PICK_MARKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
         PICK_MARKETS_FILE.write_text(
             json.dumps(store, indent=1, ensure_ascii=False))
+        try:
+            _archive_pick_markets(store, fetched_ids, now, league)
+        except OSError as e:  # the cache write is the load-bearing one
+            log.warning(f"Pick markets: snapshot archive failed: {e}")
     return store
 
 

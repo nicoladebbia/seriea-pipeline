@@ -199,7 +199,46 @@ def test_first_half_pick_grades_from_espn_when_the_timeline_lacks_the_match(monk
            "Roma vs Lazio": {"home_score": 0, "away_score": 0, "status": "in_progress"}}
     out = P.settle_picks(res)
     assert out["settled"] == 1 and calls == [("serie_a", "2026-10-25", "Juventus", "Milan")]
-    from scripts.betting.bet_journal import get_settled_bets, get_pending_bets
+    from scripts.betting.bet_journal import get_pending_bets, get_settled_bets
     (won,) = get_settled_bets(journal_path=P.PICKS_JOURNAL_PATH)
     assert won["match"] == "Juventus vs Milan" and won["status"] == "won"      # 1-0 at the break, lost at FT
     assert [b["match"] for b in get_pending_bets(journal_path=P.PICKS_JOURNAL_PATH)] == ["Roma vs Lazio"]
+
+
+def test_null_simulation_measures_the_sequential_look_not_a_single_one():
+    """The gate is re-evaluated after every settlement (settle_picks ->
+    evaluate_promotions), so a zero-edge market is promoted the FIRST time it
+    crosses. The simulation must reproduce that: first-crossing >= single-look,
+    a real edge is caught far more often than the null, and a losing market
+    on real stakes is demoted more often than a fair one."""
+    null = MP.null_simulation(n_markets=14, max_n=200, sims=600, odds=2.0, edge=0.0, seed=1)
+    assert null["first_crossing_by_max_n"] >= null["single_look_at_min"]
+    assert 0 < null["single_look_at_min"] < 0.5
+    assert null["any_of_n_markets_promoted"] == pytest.approx(
+        1 - (1 - null["first_crossing_by_max_n"]) ** 14, abs=1e-3)
+    edge = MP.null_simulation(n_markets=14, max_n=200, sims=600, odds=2.0, edge=0.15, seed=1)
+    assert edge["first_crossing_by_max_n"] > null["first_crossing_by_max_n"] + 0.3
+    vig = MP.null_simulation(n_markets=14, max_n=200, sims=600, odds=2.0, edge=-0.05, seed=1)
+    assert vig["demoted_within_real_n"] > null["demoted_within_real_n"]
+    assert null["bar"] == MP.PROMOTION_BAR
+
+
+def test_pick_markets_archive_writes_only_this_cycle_gzipped(tmp_path):
+    """PICK_MARKETS_FILE is overwritten every refresh; the archive next to the
+    bulk snapshots is what lets a prop record be replayed at another timing."""
+    import gzip
+    import json
+    from datetime import UTC, datetime
+
+    from scripts.data import odds_fetcher as OF
+    store = {"events": {"a": {"home": "A", "fetched_at": "x", "bookmakers": []},
+                        "b": {"home": "B", "fetched_at": "old", "bookmakers": []}}}
+    now = datetime(2026, 9, 6, 15, 0, tzinfo=UTC)
+    path = OF._archive_pick_markets(store, ["a", "zzz"], now, "serie_a", snapshot_dir=tmp_path)
+    assert path == tmp_path / "pick_markets_20260906_150000.json.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        got = json.load(fh)
+    assert list(got["events"]) == ["a"] and got["league"] == "serie_a"
+    assert got["markets"] == list(OF.PICK_EVENT_MARKETS) and got["timestamp"].startswith("2026-09-06T15:00")
+    assert OF._archive_pick_markets(store, ["b"], now, "serie_a", snapshot_dir=tmp_path) is not None
+    assert OF._archive_pick_markets(store, [], now, "serie_a", snapshot_dir=tmp_path) is None

@@ -66,6 +66,86 @@ MARKET_NAMES_IT = {
 
 
 # ---------------------------------------------------------------------------
+# Null simulation — what the bar does to a market with NO edge
+# ---------------------------------------------------------------------------
+def null_simulation(*, n_markets: int = 14, max_n: int = 300, sims: int = 4000,
+                    odds: float = 2.0, edge: float = 0.0, seed: int = 0,
+                    bar: dict = PROMOTION_BAR, demotion: dict = DEMOTION_BAR,
+                    real_n: int = 120) -> dict:
+    """Monte Carlo of the bar AS IT IS EVALUATED: after every settlement, from
+    `min_settled` on, promote the first time ROI > 0 and z >= min_z both hold
+    (the CLV leg is left out — paper CLV exists only where a closing price
+    does). `edge` is the true expected return per unit stake (0.0 = fair
+    price; a bookmaker margin is a negative edge, e.g. -0.05). Returns, per
+    market: the single-look pass rate at exactly `min_settled` bets, the
+    first-crossing pass rate anywhere in [min_settled, max_n], the median n
+    at promotion, and — for a promoted market that then takes real stakes at
+    the same edge — the share demoted within `real_n` real bets under the
+    demotion bar. `n_markets` markets share the null, so the any-market
+    figure is 1 - (1 - p)^n_markets."""
+    import numpy as np
+    if max_n < bar["min_settled"] or real_n < demotion["min_real_bets"]:
+        raise ValueError("max_n / real_n must reach the bars' minimum counts")
+    rng = np.random.default_rng(seed)
+    win_p = (1.0 + edge) / odds
+    win = rng.random((sims, max_n)) < win_p
+    r = np.where(win, odds - 1.0, -1.0)            # unit return per bet
+    n = np.arange(1, max_n + 1)
+    cs, cs2 = np.cumsum(r, axis=1), np.cumsum(r * r, axis=1)
+    mu = cs / n
+    var = np.maximum(cs2 / n - mu * mu, 0.0)       # pstdev, as market_record
+    sd = np.sqrt(var)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = np.where(sd > 0, mu / (sd / np.sqrt(n)), 0.0)
+    ok = (n >= bar["min_settled"]) & (mu * 100 > bar["min_roi_pct"]) & (z >= bar["min_z"])
+    k = bar["min_settled"] - 1
+    single = float(ok[:, k].mean())
+    first = ok.any(axis=1)
+    first_rate = float(first.mean())
+    n_at = np.where(first, ok.argmax(axis=1) + 1, 0)
+    median_n = float(np.median(n_at[first])) if first.any() else None
+    # real leg: a promoted null market keeps real stakes until the demotion bar trips
+    rw = rng.random((sims, real_n)) < win_p
+    rr = np.where(rw, odds - 1.0, -1.0)
+    rn = np.arange(1, real_n + 1)
+    rmu = np.cumsum(rr, axis=1) / rn
+    rvar = np.maximum(np.cumsum(rr * rr, axis=1) / rn - rmu * rmu, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rz = np.where(rvar > 0, rmu / (np.sqrt(rvar) / np.sqrt(rn)), 0.0)
+    dem = (rn >= demotion["min_real_bets"]) & ((rmu * 100 < demotion["max_roi_pct"]) | (rz < demotion["max_z"]))
+    demoted_rate = float(dem.any(axis=1).mean())
+    return {"odds": odds, "edge": edge, "n_markets": n_markets, "max_n": max_n, "sims": sims,
+            "single_look_at_min": round(single, 4),
+            "first_crossing_by_max_n": round(first_rate, 4),
+            "median_n_at_promotion": median_n,
+            "any_of_n_markets_promoted": round(1 - (1 - first_rate) ** n_markets, 4),
+            "expected_false_promotions": round(first_rate * n_markets, 2),
+            "demoted_within_real_n": round(demoted_rate, 4), "real_n": real_n,
+            "bar": dict(bar), "demotion_bar": dict(demotion)}
+
+
+def _null_sim_report(args: list[str]) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="market_promotion --null-sim")
+    ap.add_argument("--markets", type=int, default=len(MARKET_NAMES_IT))
+    ap.add_argument("--max-n", type=int, default=300)
+    ap.add_argument("--sims", type=int, default=4000)
+    ap.add_argument("--odds", type=float, nargs="+", default=[1.5, 2.0, 4.0])
+    ap.add_argument("--edge", type=float, nargs="+", default=[0.0, -0.05, 0.05])
+    a = ap.parse_args(args)
+    print(f"bar={PROMOTION_BAR} demotion={DEMOTION_BAR} markets={a.markets} max_n={a.max_n} sims={a.sims}")
+    print(f"{'odds':>5} {'edge':>6} {'single@min':>10} {'first-cross':>11} {'median n':>8} "
+          f"{'any-of-K':>8} {'E[false]':>8} {'demoted':>8}")
+    for o in a.odds:
+        for e in a.edge:
+            r = null_simulation(n_markets=a.markets, max_n=a.max_n, sims=a.sims, odds=o, edge=e)
+            print(f"{o:>5.2f} {e:>+6.2f} {r['single_look_at_min']:>10.3f} {r['first_crossing_by_max_n']:>11.3f} "
+                  f"{str(r['median_n_at_promotion']):>8} {r['any_of_n_markets_promoted']:>8.3f} "
+                  f"{r['expected_false_promotions']:>8.2f} {r['demoted_within_real_n']:>8.3f}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Records
 # ---------------------------------------------------------------------------
 def _unit_returns(bets: list[dict]) -> list[float]:
@@ -281,3 +361,10 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     lines.append(f"{i[0]}💰 = puntata vera (Kelly dimezzato, max {PROMOTED_MAX_STAKE_PCT:.1f}%) · 📝 = carta €10 · "
                  f"un mercato torna carta con ≥{DEMOTION_BAR['min_real_bets']} vere sotto {DEMOTION_BAR['max_roi_pct']:.0f}%{i[1]}")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--null-sim" in sys.argv:
+        raise SystemExit(_null_sim_report([a for a in sys.argv[1:] if a != "--null-sim"]))
+    print(json.dumps(evaluate_promotions(write=False), indent=1, default=str))
