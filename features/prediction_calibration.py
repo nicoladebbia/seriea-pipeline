@@ -467,18 +467,32 @@ class CalibrationPipeline:
         else:
             predicted = "DRAW"
 
-        # Draw candidate override: if draw detection identifies a strong draw
-        # signal AND draw is competitive (within 3pp of the leader), flip to DRAW
-        if (draw_analysis and draw_analysis.get("is_draw_candidate")
-                and prob_D > 0.28
-                and prob_D >= max(prob_H, prob_A) - 0.03):
-            predicted = "DRAW"
+        # The draw-candidate PICK override was deleted 2026-09-07, after being
+        # measured for the first time. It flipped the pick to DRAW whenever the
+        # detector fired and draw sat within 3pp of the leader. No pick-level
+        # measurement ever backed it: the cross-validation cited in
+        # draw_detection.py (avg LL 0.9471->0.9452) scores adjust_ensemble_probs
+        # by LOG-LOSS, which is blind to a pick flip.
+        #
+        # Replay on 1,520 held-out walk-forward rows (data/models/serie_a/
+        # cv_predictions.parquet, 2022-23..2025-26): the detector fires on 56,
+        # but the probability boost in Step 3 ALREADY makes DRAW the argmax on
+        # 51 of them. The override changed the pick on 5 matches in four seasons
+        # and went 2/5, where plain argmax also went 2/5 — net zero, and overall
+        # accuracy identical at 56.513% either way. It also reintroduced exactly
+        # the asymmetry the comment above records removing, and it is what made
+        # archived rows self-contradictory (fixed in c900a7b).
+        #
+        # The VALIDATED half — the prob_D boost in adjust_ensemble_probs — is
+        # untouched and still does all the work. Do not re-add a pick-level
+        # override without a pick-level measurement.
 
         # The confidence IS the picked outcome's probability, never the
-        # leader's. Identical to max() on every row where no override fired;
-        # on an overridden DRAW the leader is a different outcome, and
-        # reporting its probability made the row self-contradictory (archived
-        # Bologna v Udinese 2026-02-23: pick DRAW, confidence 0.4016 = home).
+        # leader's. With the override gone these are the same number on every
+        # row, and the indexed form is kept deliberately: it is the invariant,
+        # so any future rule that picks something other than the argmax cannot
+        # silently reintroduce the contradiction it fixed (archived Bologna v
+        # Udinese 2026-02-23: pick DRAW, confidence 0.4016 = home).
         # classify_prediction() reads this number to set confidence_class /
         # recommendation / suggested_bet_size, so the wrong one sizes a bet.
         max_prob = {"HOME": prob_H, "DRAW": prob_D, "AWAY": prob_A}[predicted]
