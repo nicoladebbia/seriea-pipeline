@@ -474,7 +474,14 @@ class CalibrationPipeline:
                 and prob_D >= max(prob_H, prob_A) - 0.03):
             predicted = "DRAW"
 
-        max_prob = max(prob_H, prob_D, prob_A)
+        # The confidence IS the picked outcome's probability, never the
+        # leader's. Identical to max() on every row where no override fired;
+        # on an overridden DRAW the leader is a different outcome, and
+        # reporting its probability made the row self-contradictory (archived
+        # Bologna v Udinese 2026-02-23: pick DRAW, confidence 0.4016 = home).
+        # classify_prediction() reads this number to set confidence_class /
+        # recommendation / suggested_bet_size, so the wrong one sizes a bet.
+        max_prob = {"HOME": prob_H, "DRAW": prob_D, "AWAY": prob_A}[predicted]
 
         result = {
             "predicted_outcome": predicted,

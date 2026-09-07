@@ -243,16 +243,23 @@ def apply_all_intelligence(prediction, sentiment=None, player_analysis=None, mar
         "away": round(probs["prob_A"], 3),
     }
 
-    # Re-determine predicted outcome
-    p = prediction["probabilities"]
-    if p["home"] >= p["draw"] and p["home"] >= p["away"]:
+    # Re-determine predicted outcome from the FULL-PRECISION probabilities,
+    # not the 3dp display copy written just above: rounding can reorder two
+    # outcomes that differ by <0.0005, so deriving from `p` let a display
+    # convention pick the match. Confidence is the picked outcome's own
+    # probability, the same invariant calibrate_prediction() holds.
+    if probs["prob_H"] >= probs["prob_D"] and probs["prob_H"] >= probs["prob_A"]:
         prediction["predicted_outcome"] = "HOME"
-    elif p["away"] >= p["draw"]:
+    elif probs["prob_A"] >= probs["prob_D"]:
         prediction["predicted_outcome"] = "AWAY"
     else:
         prediction["predicted_outcome"] = "DRAW"
 
-    prediction["confidence"] = max(p["home"], p["draw"], p["away"])
+    prediction["confidence"] = {
+        "HOME": probs["prob_H"],
+        "DRAW": probs["prob_D"],
+        "AWAY": probs["prob_A"],
+    }[prediction["predicted_outcome"]]
 
     # Add metadata
     active_adjustments = [a for a in adjustments if abs(a.home_shift) > 0.001]
