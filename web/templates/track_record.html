@@ -23,11 +23,12 @@
   .tr-market { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
                margin-bottom: var(--space-3); overflow: hidden; }
   .tr-market > summary { list-style: none; cursor: pointer; padding: var(--space-4) var(--space-5);
-                         display: grid; grid-template-columns: 180px 1fr 110px 90px; gap: var(--space-4);
+                         display: grid; grid-template-columns: 250px 1fr 110px 90px; gap: var(--space-4);
                          align-items: center; user-select: none; }
   .tr-market > summary::-webkit-details-marker { display: none; }
   .tr-market[open] > summary { border-bottom: 1px solid var(--border-subtle); }
-  .tr-market__name { font-size: 14px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+  .tr-market__name { font-size: 14px; font-weight: 700; color: var(--text-primary); display: flex;
+                     align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 4px; }
   .tr-market__name .chev { color: var(--text-tertiary); transition: transform 0.2s; font-size: 10px; }
   .tr-market[open] .tr-market__name .chev { transform: rotate(90deg); }
 
@@ -61,77 +62,126 @@
                       padding: 0 8px 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
 
   .tr-empty { padding: 48px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+
+  /* league chips — there is deliberately no "All": blending Serie A with
+     gated EPL into one number is the bug this page was fixed for. */
+  .tr-leagues { display: flex; gap: 8px; margin-bottom: var(--space-5); flex-wrap: wrap; }
+  .tr-chip { background: var(--bg-secondary); border: 1px solid var(--border-subtle); color: var(--text-tertiary);
+             border-radius: 999px; padding: 5px 14px; font-size: 11px; font-weight: 600; cursor: pointer;
+             font-family: inherit; transition: all 0.15s; }
+  .tr-chip:hover { color: var(--text-secondary); border-color: var(--border-strong); }
+  .tr-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tr-chip__n { opacity: 0.65; font-family: var(--font-mono); margin-left: 5px; font-weight: 400; }
+
+  .tr-tag { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary);
+            border: 1px solid var(--border-subtle); border-radius: 3px; padding: 1px 5px; font-weight: 600; }
+  .tr-market--derived .tr-market__name { color: var(--text-secondary); }
+  .tr-market__note { grid-column: 1 / -1; font-size: 10px; color: var(--text-tertiary); margin-top: -4px; }
+  .tr-untrusted { white-space: nowrap; }
+  .tr-se { font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); font-weight: 400; }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="tr-note">
   <b>What this is:</b> every prediction below was archived <b>before kickoff</b> (genuine pre-match snapshot,
-  zero hindsight), then graded against the actual result. The <b>edge</b> column is what matters — hit rate minus
-  the base rate (the best you'd do always picking the most common outcome). A market only has real skill if its
-  edge is positive. Goal-quantity markets (BTTS, O/U) show negative edge — exactly as the backtests predicted.
+  zero hindsight), then graded against the actual result by the same grader Analytics uses. The <b>edge</b>
+  column is what matters — hit rate minus the base rate (the best you'd do always picking the most common
+  outcome). A market only has real skill if its edge is positive.
+  <b>Leagues are kept apart</b> because a base rate only means something within one league.
+  The two <b>Poisson from xG</b> rows are derived here from the archived xG — they are <b>not</b> the O/U model
+  that places bets, and they read negative exactly as the backtests predicted.
 </div>
 
+<div class="tr-leagues" id="tr-leagues"></div>
 <div id="tr-container"><div class="tr-empty">Loading track record…</div></div>
 
 <script>
 (function () {
   const C = document.getElementById('tr-container');
+  const L = document.getElementById('tr-leagues');
   const pct = (x) => (x * 100).toFixed(1) + '%';
   const signed = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let DATA = null;
+
+  function renderLeague(key) {
+    const lg = (DATA.leagues || []).find(x => x.league === key);
+    if (!lg) { C.innerHTML = '<div class="tr-empty">No graded predictions yet.</div>'; return; }
+    L.querySelectorAll('.tr-chip').forEach(b => b.classList.toggle('active', b.dataset.league === key));
+
+    const mkts = lg.markets || [];
+    if (!mkts.length) { C.innerHTML = '<div class="tr-empty">No graded predictions for this league yet.</div>'; return; }
+
+    // Only the ensemble's own markets count toward "beat the base rate" — the
+    // Poisson rows measure an estimator nothing bets, so folding them into the
+    // headline would rate the page on a market that takes no money.
+    const own = mkts.filter(m => m.estimator === 'ensemble');
+    const positiveEdge = own.filter(m => m.edge > 0).length;
+
+    const summary = `<div class="tr-summary">
+      <div class="tr-stat"><div class="tr-stat__value">${lg.n_matches}</div><div class="tr-stat__label">matches graded</div></div>
+      <div class="tr-stat"><div class="tr-stat__value">${own.length}</div><div class="tr-stat__label">markets predicted</div></div>
+      <div class="tr-stat"><div class="tr-stat__value" style="color:${positiveEdge ? 'var(--green)' : 'var(--text-tertiary)'};">${positiveEdge}</div><div class="tr-stat__label">beat the base rate</div></div>
+    </div>`;
+
+    const rows = mkts.map(m => {
+      const edgeCls = m.edge >= 0 ? 'tr-edge--pos' : 'tr-edge--neg';
+      const fillColor = m.edge >= 0.02 ? 'var(--green)' : (m.edge >= -0.02 ? 'var(--text-tertiary)' : 'var(--red)');
+      const basePos = (m.base_rate * 100).toFixed(1);
+      const fillW = Math.max(2, m.hit_rate * 100);
+      const derived = m.estimator !== 'ensemble';
+      const untrusted = m.trusted ? '' :
+        `<span class="tr-untrusted" title="n=${m.n}, below the ${DATA.min_n}-match floor">n=${m.n} · below floor</span>`;
+      const tag = derived ? `<span class="tr-tag" title="${esc(m.note)}">not bet</span>` : '';
+      const note = derived && m.note ? `<div class="tr-market__note">${esc(m.note)}</div>` : '';
+
+      const matchRows = (m.matches || []).map(x => `
+        <div class="tr-match">
+          <span class="tr-match__teams">${esc(x.match)}</span>
+          <span class="tr-match__score">${esc(x.score)}</span>
+          <span class="tr-match__pick">${esc(x.pick)} · ${pct(x.prob)}</span>
+          <span class="tr-match__verdict ${x.hit ? 'tr-hit' : 'tr-miss'}">${x.hit ? '✓' : '✗'}</span>
+        </div>`).join('');
+
+      return `<details class="tr-market ${derived ? 'tr-market--derived' : ''}">
+        <summary>
+          <span class="tr-market__name"><span class="chev">▶</span>${esc(m.market)} ${tag} ${untrusted}</span>
+          <div class="tr-bar">
+            <div class="tr-bar__fill" style="width:${fillW}%;background:${fillColor};opacity:0.7;"></div>
+            <div class="tr-bar__base" style="left:${basePos}%;" title="base rate ${pct(m.base_rate)}"></div>
+            <span class="tr-bar__label">${pct(m.hit_rate)}</span>
+          </div>
+          <div class="tr-edge ${edgeCls}">${signed(m.edge)}<div class="tr-edge__label">edge vs base</div></div>
+          <div class="tr-record">${m.hits}/${m.n}<br><span class="tr-se" title="binomial standard error on the hit rate">±${(m.hit_rate_se * 100).toFixed(1)}pp</span></div>
+          ${note}
+        </summary>
+        <div class="tr-matches">
+          <div class="tr-matches__head"><span>match</span><span style="text-align:center;">score</span><span>our call</span><span style="text-align:center;">hit</span></div>
+          ${matchRows}
+        </div>
+      </details>`;
+    }).join('');
+
+    C.innerHTML = summary + rows;
+  }
 
   fetch('/api/track-record')
     .then(r => r.json())
     .then(d => {
-      const mkts = d.markets || [];
-      if (!mkts.length) { C.innerHTML = '<div class="tr-empty">No graded predictions yet.</div>'; return; }
-
-      // summary stats across all markets
-      const totalCalls = mkts.reduce((s, m) => s + m.n, 0);
-      const positiveEdge = mkts.filter(m => m.edge > 0).length;
-
-      const summary = `<div class="tr-summary">
-        <div class="tr-stat"><div class="tr-stat__value">${d.n_matches}</div><div class="tr-stat__label">matches graded</div></div>
-        <div class="tr-stat"><div class="tr-stat__value">${mkts.length}</div><div class="tr-stat__label">markets tracked</div></div>
-        <div class="tr-stat"><div class="tr-stat__value" style="color:var(--green);">${positiveEdge}</div><div class="tr-stat__label">beat the base rate</div></div>
-      </div>`;
-
-      const rows = mkts.map(m => {
-        const edgeCls = m.edge >= 0 ? 'tr-edge--pos' : 'tr-edge--neg';
-        const fillColor = m.edge >= 0.02 ? 'var(--green)' : (m.edge >= -0.02 ? 'var(--text-tertiary)' : 'var(--red)');
-        const basePos = (m.base_rate * 100).toFixed(1);
-        const fillW = Math.max(2, m.hit_rate * 100);
-        const untrusted = m.trusted ? '' : `<span class="tr-untrusted" title="n=${m.n} — small sample">small n</span>`;
-
-        const matchRows = (m.matches || []).map(x => `
-          <div class="tr-match">
-            <span class="tr-match__teams">${x.match}</span>
-            <span class="tr-match__score">${x.score}</span>
-            <span class="tr-match__pick">${x.pick} · ${pct(x.prob)}</span>
-            <span class="tr-match__verdict ${x.hit ? 'tr-hit' : 'tr-miss'}">${x.hit ? '✓' : '✗'}</span>
-          </div>`).join('');
-
-        return `<details class="tr-market">
-          <summary>
-            <span class="tr-market__name"><span class="chev">▶</span>${m.market} ${untrusted}</span>
-            <div class="tr-bar">
-              <div class="tr-bar__fill" style="width:${fillW}%;background:${fillColor};opacity:0.7;"></div>
-              <div class="tr-bar__base" style="left:${basePos}%;" title="base rate ${pct(m.base_rate)}"></div>
-              <span class="tr-bar__label">${pct(m.hit_rate)}</span>
-            </div>
-            <div class="tr-edge ${edgeCls}">${signed(m.edge)}<div class="tr-edge__label">edge vs base</div></div>
-            <div class="tr-record">${m.hits}/${m.n}<br><span style="font-size:9px;">base ${pct(m.base_rate)}</span></div>
-          </summary>
-          <div class="tr-matches">
-            <div class="tr-matches__head"><span>match</span><span style="text-align:center;">score</span><span>our call</span><span style="text-align:center;">hit</span></div>
-            ${matchRows}
-          </div>
-        </details>`;
-      }).join('');
-
-      C.innerHTML = summary + rows;
+      DATA = d;
+      const leagues = d.leagues || [];
+      if (!leagues.length) { C.innerHTML = '<div class="tr-empty">No graded predictions yet.</div>'; return; }
+      L.innerHTML = leagues.map(lg =>
+        `<button class="tr-chip" data-league="${esc(lg.league)}">${esc(lg.label)}<span class="tr-chip__n">${lg.n_matches}</span></button>`
+      ).join('');
+      L.querySelectorAll('.tr-chip').forEach(b =>
+        b.addEventListener('click', () => renderLeague(b.dataset.league)));
+      renderLeague(d.default_league || leagues[0].league);
     })
-    .catch(e => { C.innerHTML = '<div class="tr-empty" style="color:var(--red);">Failed to load: ' + e.message + '</div>'; });
+    .catch(e => { C.innerHTML = '<div class="tr-empty" style="color:var(--red);">Failed to load: ' + esc(e.message) + '</div>'; });
 })();
 </script>
 {% endblock %}

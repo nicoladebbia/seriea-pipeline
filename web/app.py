@@ -2209,126 +2209,213 @@ def _build_score_range_projection(pred: dict) -> dict | None:
     }
 
 
-_TRACKREC_CACHE: dict = {"data": None, "mtime": 0.0}
+_TRACKREC_CACHE: dict = {"data": None, "key": ()}
+
+# The best FIXED pick each market allows, as the set of actual outcomes every
+# strategy covers. The base rate is the best of these on the SAME matches, so
+# it has to range over picks we could have MADE — not over the results as
+# tagged. Tagging every draw to "1X" made the DC base max(H+D, A) when the
+# true floor is max(H+D, D+A); those agree only while home beats away. Serie A
+# (n=179): identical. The EPL sample (n=20, 4H/9D/7A): 0.650 vs 0.800 — 15pp
+# of edge that was never there. Splitting the page by league is what exposed
+# it, so the split and this fix ship together.
+# The name is written ONCE and used by both the table and the emit call: a
+# market whose two spellings drift falls out of the lookup below and
+# silently reverts to max(outcomes) — which IS the Double Chance bug.
+_TR_1X2, _TR_DC = "1X2", "Double Chance"
+_TR_OU = "O/U 2.5 (Poisson from xG)"
+_TR_BTTS = "BTTS (Poisson from xG)"
+
+_TR_STRATEGIES: dict[str, dict[str, set]] = {
+    _TR_1X2: {"HOME": {"HOME"}, "DRAW": {"DRAW"}, "AWAY": {"AWAY"}},
+    _TR_DC: {"1X": {"HOME", "DRAW"}, "X2": {"DRAW", "AWAY"}},
+    _TR_OU: {"Over": {"Over"}, "Under": {"Under"}},
+    _TR_BTTS: {"Yes": {"Yes"}, "No": {"No"}},
+}
+
+# The goal rows are derived HERE from the archived xG, by independent Poisson.
+# That is not the model that places bets: the O/U CatBoost is the total model,
+# and this repo measured corr(xg_home + xg_away, goals) = 0.06 — fed raw it
+# lost to the base rate on every totals market (CLAUDE.md, goal-process
+# section). They stay on the page because a measured-dead estimator is
+# information, but they are named so they cannot be read as the money market's
+# track record, which is what "O/U 2.5" sitting at a negative edge said.
+_TR_POISSON_NOTE = ("Independent Poisson off the archived xG — NOT the O/U "
+                    "model that places bets. corr(xG sum, goals) = 0.06.")
+
+# House floor for "enough matches to call it a record" (same n as
+# INCUMBENT_FULL_STAKE_MIN_N). At 20 the EPL split would have rendered a
+# 20-match sample as trusted, beside a 179-match Serie A one, with no caveat.
+_TR_MIN_N = 30
+
+_TR_LEAGUE_LABEL = {"serie_a": "Serie A", "premier_league": "Premier League"}
 
 
 def _build_track_record():
     """Grade every ARCHIVED pre-match prediction against the actual result.
 
-    Honest track record (advisor): predictions_archive.json holds genuine
-    pre-kickoff snapshots (archived_at < kickoff) — zero leak, unlike
-    regenerating with the trained model. Rolls up per-market hit rate WITH
-    base rate + n so a high hit-rate can't masquerade as skill when the base
-    is already high. ~134 matches join to an actual result.
+    predictions_archive.json holds genuine pre-kickoff snapshots
+    (archived_at < kickoff) — zero leak, unlike regenerating with the trained
+    model.
+
+    The join is ``match_predictions_to_results``, the same grader Analytics
+    and /api/system read. This function used to roll its own: raw
+    (un-normalised) team names, exact date only, and no league filter — so it
+    blended Serie A with gated EPL into a single number and graded a different
+    set of matches than every other page (183 blended, against 179 Serie A +
+    20 EPL canonically). Two graders over one file drift apart; there is one
+    now, and the rollup is per league so a base rate is computed within a
+    league rather than across the blend.
     """
     import numpy as np
-    import pandas as pd
     from scipy.stats import poisson
 
-    arch = _load_json(UPCOMING_DIR / "predictions_archive.json", {})
-    if not isinstance(arch, dict) or not arch:
-        return {"markets": [], "n_matches": 0}
-    mpath = DATA_DIR / "parsed" / "matches.parquet"
+    from scripts.analysis.feedback_analyzer import match_predictions_to_results
+
+    empty = {"leagues": [], "default_league": "", "markets": [],
+             "n_matches": 0, "min_n": _TR_MIN_N, "source": ""}
     try:
-        m = pd.read_parquet(mpath, columns=["match_date", "home_team", "away_team",
-                                            "home_score", "away_score"])
-    except Exception:
-        return {"markets": [], "n_matches": 0}
-    m = m.dropna(subset=["home_score", "away_score"]).copy()
-    m["key"] = (m["home_team"] + " vs " + m["away_team"] + "_"
-                + pd.to_datetime(m["match_date"]).dt.strftime("%Y-%m-%d"))
-    res = {r["key"]: r for _, r in m.iterrows()}
+        rows = match_predictions_to_results(league=None)
+    except Exception as e:  # noqa: BLE001 — a broken grader must not 500 the page
+        log.warning("track record: grader unavailable: %s", e)
+        return {**empty, "source": f"grader unavailable: {e}"}
+    if not rows:
+        return {**empty, "source": "no archived prediction joined a result"}
 
-    # market -> {n, hits, outcomes (count of each actual outcome for base rate), matches[]}
-    # base rate = best fixed-pick strategy on the SAME matches (max outcome frequency),
-    # so "DC 77.6%" is judged against "always pick 1X ~73%" — the structural floor.
-    mk: dict = {}
+    per_league: dict[str, dict] = {}
+    counted: dict[str, int] = {}
 
-    def add(name, pick, hit, prob, actual_outcome, match, score, dt):
-        d = mk.setdefault(name, {"n": 0, "hits": 0, "outcomes": {}, "matches": []})
+    def add(league, name, pick, hit, prob, actual, match, score, dt):
+        d = per_league.setdefault(league, {}).setdefault(
+            name, {"n": 0, "hits": 0, "outcomes": {}, "matches": []})
         d["n"] += 1
         d["hits"] += int(hit)
-        d["outcomes"][actual_outcome] = d["outcomes"].get(actual_outcome, 0) + 1
+        d["outcomes"][actual] = d["outcomes"].get(actual, 0) + 1
         d["matches"].append({"match": match, "date": dt, "score": score,
-                             "pick": pick, "hit": bool(hit), "prob": round(float(prob), 3)})
+                             "pick": pick, "hit": bool(hit),
+                             "prob": round(float(prob), 3)})
 
-    n_matches = 0
-    for k, p in arch.items():
-        if k not in res:
-            continue
-        r = res[k]
-        hs, as_ = int(r["home_score"]), int(r["away_score"])
-        tot = hs + as_
-        pr = p.get("probabilities") or {}
-        hxg, axg = p.get("home_xg"), p.get("away_xg")
+    for r in rows:
+        pr = r.get("probabilities") or {}
         if not pr:
             continue
-        n_matches += 1
-        match = p.get("match", k.rsplit("_", 1)[0])
-        dt = p.get("date", "")
-        score = f"{hs}-{as_}"
-        act = "home" if hs > as_ else ("away" if as_ > hs else "draw")
-        # 1X2 — our call is the top outcome; base outcome = the actual result
-        call = max(pr, key=pr.get)
-        add("1X2", call.upper(), call == act, pr[call], act, match, score, dt)
-        # Double chance — two-way cover; base outcome = which DC class the result falls in.
-        # For base rate we record ALL covering classes? No — record the single class our
-        # framing tracks: the actual result maps to whichever DC pick would've covered it.
-        dcp = "1X" if call in ("home", "draw") else "X2"
-        dch = (act in ("home", "draw")) if dcp == "1X" else (act in ("draw", "away"))
-        dcprob = (pr.get("home", 0) + pr.get("draw", 0)) if dcp == "1X" else (pr.get("draw", 0) + pr.get("away", 0))
-        # base outcome for DC = the most-frequent DC class: '1X' covers home+draw, 'X2'
-        # covers draw+away. We tag by the result so the rollup's max-freq = best fixed DC.
-        dc_class = "1X" if act in ("home", "draw") else "X2"
-        add("Double Chance", dcp, dch, dcprob, dc_class, match, score, dt)
-        # goal markets from xg (Poisson)
-        if hxg and axg:
-            lam = hxg + axg
-            pov = 1 - poisson.cdf(2, lam)
-            cou = "Over 2.5" if pov >= 0.5 else "Under 2.5"
-            add("O/U 2.5", cou, (tot > 2.5) == (pov >= 0.5), max(pov, 1 - pov),
-                "Over" if tot > 2.5 else "Under", match, score, dt)
-            pb = (1 - np.exp(-hxg)) * (1 - np.exp(-axg))
-            cb = "Yes" if pb >= 0.5 else "No"
-            add("BTTS", cb, ((hs > 0 and as_ > 0)) == (pb >= 0.5), max(pb, 1 - pb),
-                "Yes" if (hs > 0 and as_ > 0) else "No", match, score, dt)
+        lg = r.get("league") or "unknown"
+        hs, as_ = int(r["home_score"]), int(r["away_score"])
+        act = r["actual_outcome"]  # HOME / DRAW / AWAY, derived from the score
+        match, dt, score = r.get("match", ""), r.get("date", ""), f"{hs}-{as_}"
+        counted[lg] = counted.get(lg, 0) + 1
 
-    # roll up — base rate = best fixed-pick strategy on the SAME matches (max outcome
-    # frequency). edge = hit_rate - base_rate is what actually shows skill (advisor:
-    # DC 77.6% vs ~73% base = +4.6 edge, NOT a 77% genius bar). Rank by EDGE.
-    MIN_N = 20
-    markets = []
-    for name, d in mk.items():
-        if d["n"] == 0:
-            continue
-        rate = d["hits"] / d["n"]
-        base = max(d["outcomes"].values()) / d["n"] if d["outcomes"] else 0.0
-        markets.append({
-            "market": name,
-            "hit_rate": round(rate, 4),
-            "base_rate": round(base, 4),
-            "edge": round(rate - base, 4),
-            "hits": d["hits"],
-            "n": d["n"],
-            "trusted": d["n"] >= MIN_N,
-            "matches": sorted(d["matches"], key=lambda x: x["date"], reverse=True),
+        # The call is the one the ensemble ARCHIVED, not argmax of the stored
+        # probabilities. They disagree on 1 of 199 rows (Bologna v Udinese
+        # 2026-02-23: stored DRAW, probabilities put home ahead by 0.004) and
+        # every other consumer reads predicted_outcome — recomputing it here
+        # is how this page could report an accuracy no other page agreed with.
+        call = str(r.get("predicted_outcome") or "").upper()
+        if call.lower() not in pr:
+            call = str(max(pr, key=pr.get)).upper()
+        add(lg, _TR_1X2, call, call == act, pr[call.lower()],
+            act, match, score, dt)
+
+        # Double chance follows the same call.
+        dcp = "1X" if call in ("HOME", "DRAW") else "X2"
+        covers = _TR_STRATEGIES[_TR_DC][dcp]
+        dcprob = sum(float(pr.get(o.lower(), 0.0)) for o in covers)
+        add(lg, _TR_DC, dcp, act in covers, dcprob,
+            act, match, score, dt)
+
+        hxg, axg = r.get("home_xg"), r.get("away_xg")
+        if hxg and axg:
+            hxg, axg = float(hxg), float(axg)
+            pov = float(1 - poisson.cdf(2, hxg + axg))
+            over = (hs + as_) > 2.5
+            add(lg, _TR_OU,
+                "Over 2.5" if pov >= 0.5 else "Under 2.5",
+                over == (pov >= 0.5), max(pov, 1 - pov),
+                "Over" if over else "Under", match, score, dt)
+            pb = float((1 - np.exp(-hxg)) * (1 - np.exp(-axg)))
+            btts = hs > 0 and as_ > 0
+            add(lg, _TR_BTTS, "Yes" if pb >= 0.5 else "No",
+                btts == (pb >= 0.5), max(pb, 1 - pb),
+                "Yes" if btts else "No", match, score, dt)
+
+    leagues = []
+    for lg, mk in per_league.items():
+        markets = []
+        for name, d in mk.items():
+            n = d["n"]
+            if not n:
+                continue
+            rate = d["hits"] / n
+            # No silent max(outcomes) fallback: that formula is only right
+            # for a market whose picks are single outcomes, and reaching it
+            # by accident is how Double Chance under-reported its own floor.
+            strategies = _TR_STRATEGIES[name]
+            base = max(sum(c for o, c in d["outcomes"].items() if o in cov)
+                       for cov in strategies.values()) / n
+            markets.append({
+                "market": name,
+                "hit_rate": round(rate, 4),
+                "base_rate": round(base, 4),
+                "edge": round(rate - base, 4),
+                # Binomial SE of the HIT RATE (not of the edge — base and hit
+                # come from the same matches, so the edge's own SE needs a
+                # paired test this does not do). It exists so the page can
+                # show that +15pp on 20 matches is inside its own noise.
+                "hit_rate_se": round(
+                    float(np.sqrt(max(rate * (1 - rate), 0.0) / n)), 4),
+                "hits": d["hits"],
+                "n": n,
+                "trusted": n >= _TR_MIN_N,
+                "estimator": ("poisson_xg" if name in (_TR_OU, _TR_BTTS)
+                              else "ensemble"),
+                "note": _TR_POISSON_NOTE if name in (_TR_OU, _TR_BTTS) else "",
+                "matches": sorted(d["matches"],
+                                  key=lambda x: x["date"], reverse=True),
+            })
+        markets.sort(key=lambda x: -x["edge"])
+        leagues.append({
+            "league": lg,
+            "label": _TR_LEAGUE_LABEL.get(lg, lg.replace("_", " ").title()),
+            "n_matches": counted.get(lg, 0),
+            "markets": markets,
         })
-    markets.sort(key=lambda x: -x["edge"])
-    return {"markets": markets, "n_matches": n_matches,
-            "source": "predictions_archive (pre-kickoff snapshots) — ranked by edge over best fixed pick"}
+    # Serie A first — the production earner — then by sample size.
+    leagues.sort(key=lambda x: (x["league"] != "serie_a", -x["n_matches"]))
+
+    top = leagues[0]
+    return {
+        "leagues": leagues,
+        "default_league": top["league"],
+        # Back-compat: the DEFAULT league's rollup, so any reader still on
+        # .markets/.n_matches gets one league instead of the old blend.
+        "markets": top["markets"],
+        "n_matches": top["n_matches"],
+        "min_n": _TR_MIN_N,
+        "source": ("predictions_archive (pre-kickoff snapshots) graded by "
+                   "match_predictions_to_results — per league, ranked by edge "
+                   "over the best fixed pick"),
+    }
 
 
 @app.route("/api/track-record")
 def api_track_record():
     """Per-market hit rate from archived pre-match predictions (cached)."""
-    arch_path = UPCOMING_DIR / "predictions_archive.json"
-    try:
-        mtime = arch_path.stat().st_mtime
-    except OSError:
-        mtime = 0.0
-    if _TRACKREC_CACHE["data"] is None or _TRACKREC_CACHE["mtime"] != mtime:
+    from scripts.analysis import feedback_analyzer as _fa
+
+    # Key on the GRADER's own inputs, both of them. The cache used to key on
+    # the archive alone, so a match graded after its prediction was archived
+    # only surfaced when some unrelated later archive write happened to bust
+    # it — a result could sit invisible for days.
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    key = (_mtime(_fa.ARCHIVE_PATH), _mtime(_fa.MATCHES_PATH))
+    if _TRACKREC_CACHE["data"] is None or _TRACKREC_CACHE["key"] != key:
         _TRACKREC_CACHE["data"] = _build_track_record()
-        _TRACKREC_CACHE["mtime"] = mtime
+        _TRACKREC_CACHE["key"] = key
     return jsonify(_TRACKREC_CACHE["data"])
 
 
