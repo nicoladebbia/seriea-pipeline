@@ -563,6 +563,29 @@ def _get_team_stat_value(
     return item.get(f"{side}Value")
 
 
+def _result_from_scores(home_score, away_score) -> str | None:
+    """"H"/"A"/"D" from a final score, or None if the match has no score.
+
+    The main Sofascore ingest built rows with scores and 40+ team stats but
+    never this column -- only the results.json fallback path set it. Nothing
+    errors: the row looks complete, and every consumer that filters
+    `result.notna()` (feedback_analyzer's grader among them) simply drops it.
+    141 finished matches were in that state on 2026-09-07, including the whole
+    of EPL 2026-27.
+
+    None in, None out: an unplayed fixture must not become a phantom draw.
+    """
+    if home_score is None or away_score is None:
+        return None
+    try:
+        hs, as_ = float(home_score), float(away_score)
+    except (TypeError, ValueError):
+        return None
+    if hs != hs or as_ != as_:  # NaN
+        return None
+    return "H" if hs > as_ else ("A" if as_ > hs else "D")
+
+
 def update_matches_parquet(
     match_data_pairs: list[tuple[dict, dict]],
     season: str,
@@ -695,6 +718,7 @@ def update_matches_parquet(
             "away_team": away_team,
             "home_score": home_score,
             "away_score": away_score,
+            "result": _result_from_scores(home_score, away_score),
             "venue": venue,
             "attendance": None,  # Not available from Sofascore
             "referee": referee,
@@ -1181,9 +1205,7 @@ def _fallback_ingest_from_results(season: str | None = None) -> int:
         epl_teams = set(PREMIER_LEAGUE_NAMES.values())
         row["league"] = "premier_league" if home in epl_teams or away in epl_teams else "serie_a"
         row["league_name"] = "Premier League" if row["league"] == "premier_league" else "Serie A"
-        # Compute result from scores
-        hs, as_ = row["home_score"], row["away_score"]
-        row["result"] = "H" if hs > as_ else ("A" if as_ > hs else "D")
+        row["result"] = _result_from_scores(row["home_score"], row["away_score"])
         new_rows.append(row)
         log.info("Fallback: adding %s %d-%d %s (%s)",
                  home, m["home_score"], m["away_score"], away, date)

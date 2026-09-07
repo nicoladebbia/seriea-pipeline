@@ -233,7 +233,7 @@
 | `home_team`, `away_team` | Team names (normalized) | 100% | FBref + Sofascore |
 | `match_date` | Match date | 100% | FBref + Sofascore |
 | `home_score`, `away_score` | Final score | 100% | FBref + Sofascore |
-| `result` | H/D/A | 100% (64 NaN fixed today) | derived |
+| `result` | H/D/A | 100% — **141 NaN backfilled 2026-09-07**, see note below | derived |
 | `season` | e.g. '2025-2026' | 100% | derived |
 | `league` | 'serie_a' | 100% | derived |
 | `home_shots_total`, `away_shots_total` | Basic match stats | 100% (70 backfilled today) | FBref CSV + Sofascore |
@@ -261,6 +261,27 @@
 - 3-level failover → very robust
 
 ---
+
+**⚠ `result` was NULL on 141 finished matches until 2026-09-07 — presence is not completeness.**
+`update_matches_parquet()` (the Sofascore path that ingests nearly every row) built each row
+with scores, half-time scores and 40+ team stats and simply **omitted `result`**; only
+`_fallback_ingest_from_results()` ever set it. Nothing errored and the rows looked complete,
+but every consumer that filters `result.notna()` silently dropped them — including
+`feedback_analyzer.match_predictions_to_results()`, the canonical prediction grader, so a
+match with a good 3-0 on disk was treated as never played. Affected: premier_league 2025-26
+(71) + 2026-27 (30, i.e. **the entire EPL current season**), serie_a 2025-26 (30) + 2026-27
+(10); 2026-04-10 → 2026-09-06; all `data_source == "sofascore"`. Fixed by
+`matchday_updater._result_from_scores()` — now the single derivation used by BOTH writers —
+and the 141 rows backfilled through it. Spelling is `H`/`A`/`D`, never `HOME`/`DRAW`/`AWAY`.
+Locked by `tests/test_matches_result_column.py`, which asserts on the live parquet that no
+row has scores without a result.
+
+**Related reader bug, same day:** `/api/system`'s Pipeline History graded the prediction
+archive against `data/upcoming/results.json` — a fetch SNAPSHOT holding 8 entries against an
+archive of 216 — so 190 past matches rendered as "Pending", some from February.
+`feedback_analyzer`'s docstring already recorded this exact trap and its fix; that reader had
+never been moved over. It now reuses `match_predictions_to_results()`. Past-pending went
+190 → 5 (the residue is fixtures rescheduled by more than the grader's ±1-day window).
 
 ## 2. Features — features_serie_a.parquet
 
@@ -624,6 +645,8 @@ So a relegated club having **no** pre-season signal is correct — it is not in 
 - Used as team/player-strength proxy in features
 
 ### `data/external/transfermarkt/transfers_2026_2027.parquet` (ins/outs — squad tracker; delta GATED out of the live model)
+- **✅ GHOST-CLUB bug FIXED 2026-09-07 — the same defect `market_values` was fixed for on 2026-08-25, in the sibling writer.** `scrape_squad_market_values` got `_prune_to_league()` at both its cache-return and post-merge paths that day; `scrape_transfers` has the same two ingredients (a team map that is a historical superset + an append-only `pd.concat` merge) and got neither. By 2026-09-07 the file held **30 clubs for a 20-club league — 299 of 891 rows** belonging to Chievo, SPAL, Crotone, Benevento, Brescia, Sampdoria, Salernitana, Empoli, Pisa and Verona, i.e. **a third of the `/transfers` page described clubs not in Serie A**. Both paths now prune (the cache path persists it — `/api/transfers` reads the parquet directly). Live file pruned through the fixed code path: **891 → 592 rows, 30 → 20 clubs**, which reproduces exactly the 592/20 recorded here on 2026-07-14. EPL file was already clean. Locked by `tests/test_transfers_cache_prune.py`.
+- **Refresh cadence changed 2026-09-07:** `scripts/data/refresh_transfers.py` used to exit wholesale outside the transfer window, which froze `/rosters` "Recent Changes" at deadline day (newest entry 2026-09-02) and left squad values on a stale snapshot until January, while the job ran twice daily logging that nothing was wrong. Squad MEMBERSHIP is frozen off-window, but market values and contract dates are not, and `detect_changes` reports both. Now: full run inside the window, **squad values + change detection only outside it** (the window-only sources — transfers, rumors, Wikipedia, Capology — are the expensive ones and genuinely have nothing to say). First off-window run found 20 real changes. The window itself is now **derived from the season** rather than written as date literals (`("2026-06-01","2026-09-05")` was correct for one season, then silently wrong forever). Locked by `tests/test_transfer_refresh_window.py`.
 - **Confirmed 2026-27 transfers per Serie A club** (arrivals + departures). 592 rows / 20 clubs (re-scraped 2026-07-14). Schema (16 cols): `team, transfer_type (in/out), player_name, position, nationality, age, from_club, to_club, market_value_at_transfer, fee_text, fee_eur, is_loan, window` (from TM) + `transfer_date, date_window, n_sources` (from the Wikipedia merge, below).
 - **Writer:** `scraper/transfermarkt.scrape_transfers(season, league, only_teams)`. `current_league_teams()` resolves the ACTUAL 20 member clubs from TM's competition page (the static map is a historical superset). NOTE 2026-07-14: TM's 26/27 SA competition page correctly lists the promoted set **Venezia/Frosinone/Monza** (Cremonese/Hellas Verona/Pisa were relegated) — verified against Wikipedia's promoted/relegated table.
 - **✅ Fee-vs-market-value bug FIXED in the 26/27 file 2026-07-14 (the 9 HISTORICAL transfer files 2017-2025 still carry the buggy fee=MV — re-scrape needed if ever used for fee sums).** On the `/plus/1` layout a row shows BOTH a market value and a fee as `td.rechts`; the old `select_one("td.rechts")` grabbed the FIRST (market value) and stored it as the fee — e.g. Højlund's €44m fee was recorded as his €60m market value. Now the LAST `td.rechts` is the fee and the first is captured separately as `market_value_at_transfer`. **Blast radius: `jan_spend` (sums fees) was corrupted; `net_squad_delta` was essentially UNAFFECTED** — it weights by the separate `market_values_*` file, and `_transfer_materiality` classes any €-fee as `("paid", 1.0)` regardless of magnitude, so a wrong fee number didn't change its weight or class. Neither is in the deployed model, so live-prediction impact was zero regardless. Locked by `tests/test_transfer_multisource.py`.

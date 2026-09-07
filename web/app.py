@@ -4976,33 +4976,31 @@ def api_system():
             archive_list.append(pred)
     archive_list.sort(key=lambda p: p.get("date", ""), reverse=True)
 
-    # Results for matching against archive
-    results_raw = _load_json(UPCOMING_DIR / "results.json")
-    results_map = {}
-    if isinstance(results_raw, dict):
-        raw = results_raw.get("results", results_raw)
-        if isinstance(raw, dict):
-            for k, v in raw.items():
-                if isinstance(v, dict):
-                    results_map[v.get("match", k)] = v
+    # Grade the archive against matches.parquet, NOT data/upcoming/results.json.
+    # results.json is a FETCH SNAPSHOT -- it held 8 entries while the archive held
+    # 216 -- so /system's Pipeline History showed 190 past matches as "Pending",
+    # some of them from February. feedback_analyzer hit this exact bug and its
+    # docstring records the fix; this reader was never moved over. Reuse its
+    # join (date + normalized teams, +/-1 day for timezone drift) rather than
+    # writing a fourth implementation of it.
+    graded = {}
+    try:
+        from scripts.analysis.feedback_analyzer import match_predictions_to_results
+        for row in match_predictions_to_results(league=None):
+            graded[(str(row.get("date"))[:10], row.get("match"))] = row
+    except Exception as e:  # noqa: BLE001 — the page must render without grades
+        log.warning("Could not grade prediction archive: %s", e)
 
-    # Enrich archive with results
     for pred in archive_list:
-        match = pred.get("match", "")
-        result = results_map.get(match)
-        if result:
-            home_score = result.get("home_score", 0)
-            away_score = result.get("away_score", 0)
-            if home_score > away_score:
-                actual = "HOME"
-            elif away_score > home_score:
-                actual = "AWAY"
-            else:
-                actual = "DRAW"
+        row = graded.get((str(pred.get("date"))[:10], pred.get("match", "")))
+        if row:
+            actual = row["actual_outcome"]
             pred["actual_result"] = actual
-            pred["score"] = f"{home_score}-{away_score}"
+            pred["score"] = f"{row['home_score']}-{row['away_score']}"
             pred["correct"] = pred.get("predicted_outcome", "").upper() == actual
         else:
+            # Genuinely ungraded: an upcoming fixture, or one matches.parquet
+            # has not ingested yet. Not the same as "we never looked".
             pred["actual_result"] = None
             pred["score"] = None
             pred["correct"] = None
