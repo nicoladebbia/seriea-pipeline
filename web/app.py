@@ -1918,7 +1918,7 @@ def _wc_fun_combos(preds: list) -> dict:
     return build_fun_combos(preds)
 
 
-_COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0}
+_COMPARATIVE_CACHE: dict = {"df": None, "mtime": 0.0, "base_rates": None}
 # Player floor engine helpers live with the engine (scripts/betting/
 # player_predictions.py) since 2026-09-05 so the pick engine can price XIs
 # without importing web.app; the underscore names are kept for the routes.
@@ -2095,7 +2095,24 @@ def _comparative_matches_df():
         df = pd.read_parquet(path, columns=[c for c in cols if c in present])
         _COMPARATIVE_CACHE["df"] = df
         _COMPARATIVE_CACHE["mtime"] = mtime
+        _COMPARATIVE_CACHE["base_rates"] = None  # derived — recompute on demand
     return _COMPARATIVE_CACHE["df"]
+
+
+def _comparative_base_rates(matches_df):
+    """Cached who-makes-more base rates, keyed on the same matches.parquet mtime.
+
+    compute_base_rates is a pure function of the frame (dropna + two boolean
+    means per stat) but cost 492 ms measured, which was two thirds of the whole
+    /api/projections response — and it ran on EVERY request while only the frame
+    it consumes was cached. Invalidated in _comparative_matches_df above, so it
+    still "self-updates as data grows" exactly as its docstring promises: when
+    matches.parquet moves, this is dropped with the frame.
+    """
+    if _COMPARATIVE_CACHE["base_rates"] is None:
+        from scripts.prediction.comparative_markets import compute_base_rates
+        _COMPARATIVE_CACHE["base_rates"] = compute_base_rates(matches_df)
+    return _COMPARATIVE_CACHE["base_rates"]
 
 
 def _grade_pick(pick: dict, actual: dict) -> bool | None:
@@ -2516,11 +2533,11 @@ def api_projections():
     # Opponent-adjusted; fouls has real signal, corners/cards fall back to base rate.
     try:
         from scripts.prediction.comparative_markets import (
-            compute_expected_counts, all_comparative_markets, compute_base_rates,
+            compute_expected_counts, all_comparative_markets,
             total_cards_over_under, ref_card_avg, team_card_rate,
             total_fouls_over_under, ref_stat_avg, team_stat_rate)
         _matches = _comparative_matches_df()   # cached read (see helper)
-        _base_rates = compute_base_rates(_matches) if _matches is not None else {}
+        _base_rates = _comparative_base_rates(_matches) if _matches is not None else {}
         # predictions.json carries the assigned referee per match
         ref_by_match = {p.get("match"): p.get("referee")
                         for p in (preds if isinstance(preds, list) else [])}
@@ -11465,10 +11482,20 @@ def _warm_caches():
     """Pre-hit the parquet-heavy endpoints once so the first real visitor
     never eats the cold load (measured 2026-09-02: /api/team/<x> cold 13.5s,
     warm 0.2s — the 'Loading team data...' stall). Runs in a daemon thread;
-    any failure only means the first click pays the old price."""
+    any failure only means the first click pays the old price.
+
+    /api/projections is first because it is the worst of them: measured
+    2026-09-07 on a quiet machine, cold 37.8s vs warm 1.2s. Every expensive
+    thing behind it is a per-process cache filled lazily by whoever arrives
+    first — market_calibration builds its isotonic maps from the 16 MB
+    features parquet (12.9s), the goal-process simulator runs 10k paths per
+    match (3.2s over 11), the player engine loads player_match_stats (1.9s),
+    comparative markets read matches.parquet (0.5s). None of it is per-request
+    work, so nobody should ever have paid it — but after every restart the
+    first visitor did, and the page just sat blank until it finished."""
     try:
         with app.test_client() as c:
-            for u in ("/api/team/Bologna", "/api/players",
+            for u in ("/api/projections", "/api/team/Bologna", "/api/players",
                       "/api/team/Bologna/match-history?limit=1"):
                 c.get(u)
         log.info("cache warm-up done")
