@@ -89,9 +89,13 @@
   column is what matters — hit rate minus the base rate (the best you'd do always picking the most common
   outcome). A market only has real skill if its edge is positive.
   <b>Leagues are kept apart</b> because a base rate only means something within one league.
+  This is one season of archived predictions that found a result — <b>not</b> the walk-forward CV accuracy,
+  and not comparable to it.
   The two <b>Poisson from xG</b> rows are derived here from the archived xG — they are <b>not</b> the O/U model
   that places bets, and they read negative exactly as the backtests predicted.
 </div>
+
+<div class="tr-note" id="tr-money" hidden></div>
 
 <div class="tr-leagues" id="tr-leagues"></div>
 <div id="tr-container"><div class="tr-empty">Loading track record…</div></div>
@@ -135,8 +139,14 @@
       const derived = m.estimator !== 'ensemble';
       const untrusted = m.trusted ? '' :
         `<span class="tr-untrusted" title="n=${m.n}, below the ${DATA.min_n}-match floor">n=${m.n} · below floor</span>`;
-      const tag = derived ? `<span class="tr-tag" title="${esc(m.note)}">not bet</span>` : '';
-      const note = derived && m.note ? `<div class="tr-market__note">${esc(m.note)}</div>` : '';
+      // Names the ESTIMATOR. It used to say "not bet", which was true of
+      // these two rows and read as a claim that the other two ARE bet — and
+      // none of the four is: 1X2 and DC are switched off in the engine. The
+      // money statement is page-level (#tr-money) and derived from the config.
+      const tag = derived ? `<span class="tr-tag" title="${esc(m.note)}">xG poisson</span>` : '';
+      // No inline note: with the page-level money box, the badge and its
+      // tooltip, the same caveat was on screen four times per row.
+      const note = '';
 
       const matchRows = (m.matches || []).map(x => `
         <div class="tr-match">
@@ -172,6 +182,23 @@
     .then(r => r.json())
     .then(d => {
       DATA = d;
+
+      // Which markets take real money is READ from the betting config, never
+      // asserted here: the day 1X2 is re-enabled this line changes itself.
+      // Config keys, underscores flattened for prose. Deliberately NOT a
+      // display-name map: a map is one more thing to go stale, and the raw
+      // key is still unambiguous.
+      const bet = (d.bet_markets || []).map(b => b.replace(/_/g, ' '));
+      const M = document.getElementById('tr-money');
+      const onPage = (d.leagues || []).flatMap(lg => (lg.markets || []).map(m => m.market));
+      const overlap = bet.filter(b => onPage.some(n => n.toLowerCase().startsWith(b.toLowerCase())));
+      M.innerHTML = overlap.length
+        ? `<b>Money:</b> ${overlap.map(esc).join(', ')} on this page ${overlap.length > 1 ? 'are' : 'is'} bet for real.`
+        : `<b>Nothing on this page is bet for real.</b> These are the display ensemble's markets — the engine
+           stakes ${bet.length ? bet.map(esc).join(' and ') : 'its enabled markets'} only, from the O/U CatBoost,
+           and that record is on <a href="/betting">Betting</a> under <b>Market record</b>.`;
+      M.hidden = false;
+
       const leagues = d.leagues || [];
       if (!leagues.length) { C.innerHTML = '<div class="tr-empty">No graded predictions yet.</div>'; return; }
       L.innerHTML = leagues.map(lg =>

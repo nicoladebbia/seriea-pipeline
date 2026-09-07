@@ -249,3 +249,68 @@ def test_every_emitted_market_has_a_base_rate_strategy(tmp_path, monkeypatch):
                for m in lg["markets"]}
     assert emitted, "fixture produced no markets"
     assert emitted <= set(W._TR_STRATEGIES), emitted - set(W._TR_STRATEGIES)
+
+
+def test_no_market_on_the_page_is_one_the_engine_actually_bets(tmp_path, monkeypatch):
+    """The page grades the DISPLAY ensemble. Nothing on it takes real money.
+
+    The badge used to read "not bet" on the two Poisson rows only, which said
+    the other two DO carry stakes. They do not: the engine has 1X2 off since
+    2026-04 and DC off since 2026-06. This pins the claim to the config, so a
+    re-enabled market breaks the test instead of quietly making the page lie.
+    """
+    from scripts.betting.betting_unified import BettingConfig
+
+    enabled = sorted(k for k, v in BettingConfig().market_rules.items()
+                     if v.get("enabled"))
+    assert enabled, "no enabled market at all — betting config did not load"
+    assert W._tr_enabled_markets() == enabled
+
+    _seed(tmp_path, monkeypatch, [_row(i) for i in range(4)])
+    rec = W._build_track_record()
+    assert rec["bet_markets"] == enabled
+
+    on_page = {m["market"] for lg in rec["leagues"] for m in lg["markets"]}
+    # TRUE POSITIVE: the O/U row would collide if it were still called
+    # "O/U 2.5" — that name IS a prefix of the enabled "O/U_Over" family.
+    assert any(n.startswith("O/U") for n in on_page)
+    for bet in enabled:
+        stem = bet.split("_")[0].lower()
+        clashes = {n for n in on_page if n.lower().startswith(stem)}
+        assert all("Poisson" in n for n in clashes), (
+            f"{bet} is bet for real and {clashes} on the page shares its name "
+            f"without saying it is a different estimator")
+
+
+def test_standard_error_is_never_zero_on_a_market_that_never_hit(tmp_path, monkeypatch):
+    """+/-0.0pp on a 3-match sample is the opposite of what the field is for."""
+    import numpy as np
+
+    # Four matches, every 1X2 call wrong: home always picked, away always won.
+    rows = [_row(i, probs={"home": 0.6, "draw": 0.25, "away": 0.15}, hs=0, as_=2)
+            for i in range(4)]
+    _seed(tmp_path, monkeypatch, rows)
+    m = _mk(W._build_track_record(), "serie_a", W._TR_1X2)
+
+    assert m["hits"] == 0 and m["n"] == 4
+    old = float(np.sqrt(max(m["hit_rate"] * (1 - m["hit_rate"]), 0.0) / m["n"]))
+    assert old == 0.0                      # TRUE POSITIVE: the old formula
+    assert m["hit_rate_se"] > 0.05
+
+    # ...and it still agrees with the plain SE where the plain SE is sane.
+    assert abs(W._tr_se(100, 179) - float(np.sqrt(0.5587 * 0.4413 / 179))) < 0.001
+
+
+def test_an_archive_with_no_probabilities_returns_empty_not_a_500(tmp_path, monkeypatch):
+    """Rows that all get skipped left `leagues` empty and `leagues[0]` raised."""
+    _seed(tmp_path, monkeypatch, [_row(i) for i in range(3)])
+    arch = json.loads(fa.ARCHIVE_PATH.read_text())
+    for v in arch.values():
+        v.pop("probabilities")
+    fa.ARCHIVE_PATH.write_text(json.dumps(arch))
+
+    rows = fa.match_predictions_to_results(league=None)
+    assert len(rows) == 3          # TRUE POSITIVE: the grader still joins them,
+    rec = W._build_track_record()  # so the skip happens inside the builder
+    assert rec["leagues"] == [] and rec["n_matches"] == 0
+    assert rec["default_league"] == ""

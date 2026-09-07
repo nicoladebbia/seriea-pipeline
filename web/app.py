@@ -2243,12 +2243,41 @@ _TR_STRATEGIES: dict[str, dict[str, set]] = {
 _TR_POISSON_NOTE = ("Independent Poisson off the archived xG — NOT the O/U "
                     "model that places bets. corr(xG sum, goals) = 0.06.")
 
+
+def _tr_enabled_markets() -> list[str]:
+    """The markets that actually take real money, read from the betting config.
+
+    NOT a constant. Every row on this page is a market the engine has
+    switched OFF (1X2 since 2026-04 at -20% ROI, DC since 2026-06, BTTS
+    never on) or an estimator that was never wired to a bet at all — so the
+    page must say so, and must stop saying so by itself the day one is
+    re-enabled. Tagging only the Poisson rows "not bet" told the reader the
+    other two carry stakes; they do not.
+    """
+    try:
+        from scripts.betting.betting_unified import BettingConfig
+        rules = BettingConfig().market_rules
+        return sorted(k for k, v in rules.items() if v.get("enabled"))
+    except Exception as e:  # noqa: BLE001 — a config read must not 500 the page
+        log.warning("track record: market config unavailable: %s", e)
+        return []
+
 # House floor for "enough matches to call it a record" (same n as
 # INCUMBENT_FULL_STAKE_MIN_N). At 20 the EPL split would have rendered a
 # 20-match sample as trusted, beside a 179-match Serie A one, with no caveat.
 _TR_MIN_N = 30
 
 _TR_LEAGUE_LABEL = {"serie_a": "Serie A", "premier_league": "Premier League"}
+
+
+def _tr_se(hits: int, n: int) -> float:
+    """Agresti-Coull standard error of a hit rate. Never 0 for n >= 1."""
+    import numpy as np
+    if n <= 0:
+        return 0.0
+    adj_n = n + 4
+    adj_p = (hits + 2) / adj_n
+    return float(np.sqrt(adj_p * (1 - adj_p) / adj_n))
 
 
 def _build_track_record():
@@ -2357,12 +2386,16 @@ def _build_track_record():
                 "hit_rate": round(rate, 4),
                 "base_rate": round(base, 4),
                 "edge": round(rate - base, 4),
-                # Binomial SE of the HIT RATE (not of the edge — base and hit
-                # come from the same matches, so the edge's own SE needs a
-                # paired test this does not do). It exists so the page can
-                # show that +15pp on 20 matches is inside its own noise.
-                "hit_rate_se": round(
-                    float(np.sqrt(max(rate * (1 - rate), 0.0) / n)), 4),
+                # SE of the HIT RATE (not of the edge — base and hit come
+                # from the same matches, so the edge's own SE needs a paired
+                # test this does not do). It exists so the page can show that
+                # +15pp on 20 matches is inside its own noise — which is
+                # exactly where the textbook binomial SE breaks: it returns
+                # 0.0 when the rate is 0 or 1, printing "+/-0.0pp" on a
+                # 3-match market, the opposite of what the field is for.
+                # Agresti-Coull (+2 successes, +4 trials) never degenerates
+                # and is within 0.05pp of the plain SE at n=179.
+                "hit_rate_se": round(_tr_se(d["hits"], n), 4),
                 "hits": d["hits"],
                 "n": n,
                 "trusted": n >= _TR_MIN_N,
@@ -2382,6 +2415,15 @@ def _build_track_record():
     # Serie A first — the production earner — then by sample size.
     leagues.sort(key=lambda x: (x["league"] != "serie_a", -x["n_matches"]))
 
+    # Every row can be skipped even when rows is non-empty (an archive whose
+    # entries carry no probabilities), and leagues[0] on [] is a 500 -> a
+    # blank page with no reason on it. Fail with the same empty payload the
+    # no-rows path returns, which the template already renders as "no data".
+    if not leagues:
+        log.warning("track record: %d graded rows, none with probabilities",
+                    len(rows))
+        return empty
+
     top = leagues[0]
     return {
         "leagues": leagues,
@@ -2391,6 +2433,9 @@ def _build_track_record():
         "markets": top["markets"],
         "n_matches": top["n_matches"],
         "min_n": _TR_MIN_N,
+        # What the engine actually stakes. Empty of every market on this page
+        # by design — the page grades the DISPLAY ensemble.
+        "bet_markets": _tr_enabled_markets(),
         "source": ("predictions_archive (pre-kickoff snapshots) graded by "
                    "match_predictions_to_results — per league, ranked by edge "
                    "over the best fixed pick"),
