@@ -10,14 +10,29 @@ function sanitizeHTML(str) {
 }
 
 // --- API Fetch Wrapper ---
+// Every call is time-boxed. Without this a request that never settles leaves the
+// page on its loading state forever with nothing in the console -- a silent
+// spinner that looks identical to a slow server and is undebuggable from a
+// screenshot. A timeout turns that failure into a visible, named error.
+const API_TIMEOUT_MS = 30000;
+
 async function apiFetch(url, options = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), options.timeoutMs || API_TIMEOUT_MS);
   try {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     return await res.json();
   } catch (err) {
+    if (err.name === 'AbortError') {
+      const e = new Error(`timed out after ${(options.timeoutMs || API_TIMEOUT_MS) / 1000}s`);
+      console.error(`[API] ${url} ${e.message}`);
+      throw e;
+    }
     console.error(`[API] ${url} failed:`, err);
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -381,6 +396,20 @@ function initSidebar() {
     localStorage.setItem('sidebar-collapsed', isCollapsed);
     toggleBtn.setAttribute('aria-expanded', !isCollapsed);
   });
+
+  // Collapsed rail shows a search ICON in place of the input (the input squeezed
+  // to an unusable stub at 64px). Clicking it expands the rail and focuses the
+  // real field, so search is never a dead control.
+  const searchIcon = document.getElementById('sidebar-search-icon');
+  if (searchIcon) {
+    searchIcon.addEventListener('click', () => {
+      sidebar.classList.remove('collapsed');
+      localStorage.setItem('sidebar-collapsed', false);
+      toggleBtn.setAttribute('aria-expanded', 'true');
+      const input = document.getElementById('team-search');
+      if (input) input.focus();
+    });
+  }
 }
 
 // --- Mobile Sidebar ---
@@ -407,43 +436,35 @@ document.addEventListener('click', (e) => {
 });
 
 // --- Sidebar Stats ---
+let _nextMatchTimer = null;
+// One small call for all three footer strings. This used to be TWO calls for
+// the heaviest endpoints in the app -- /api/betting (1.30 MB) for the bankroll
+// and /api/dashboard (1.15 MB) for the countdown -- fired on every page load
+// whether or not the page showed either. /api/sidebar-stats reads the same
+// sources and returns ~100 bytes.
 async function loadSidebarStats() {
   try {
-    const data = await apiFetch('/api/betting');
-    const b = data.bankroll || {};
+    const data = await apiFetch('/api/sidebar-stats');
     const bankrollEl = document.getElementById('sidebar-bankroll');
     const roiEl = document.getElementById('sidebar-roi');
     if (bankrollEl) {
-      bankrollEl.textContent = eurFmt(b.current_balance || 1000);
+      bankrollEl.textContent = eurFmt(data.bankroll != null ? data.bankroll : 1000);
     }
     if (roiEl) {
-      // Use pre-computed ROI from backend (sourced from history.json)
       // Integer: ROI is an estimate (±10pp at n≈185), a decimal implies false precision
-      const roi = Math.round(b.roi != null ? b.roi : 0);
+      const roi = Math.round(data.roi != null ? data.roi : 0);
       roiEl.textContent = (roi > 0 ? '+' : '') + roi + '%';
       roiEl.style.color = 'var(--text-tertiary)';
     }
-  } catch {}
-}
-
-// --- Next Match Countdown ---
-async function loadNextMatchCountdown() {
-  try {
-    const data = await apiFetch('/api/dashboard');
-    const el = document.getElementById('sidebar-next-match');
-    if (!el || !data.matches || !data.matches.length) return;
-
-    // Find earliest upcoming match
-    const upcoming = data.matches.filter(m => m.status !== 'completed' && m.commence_time);
-    if (!upcoming.length) { el.textContent = 'No upcoming'; return; }
-
-    const earliest = upcoming[0];
-    el.textContent = timeUntil(earliest.commence_time);
-
-    // Update every 30 seconds for consistent countdowns
-    setInterval(() => {
-      el.textContent = timeUntil(earliest.commence_time);
-    }, 30000);
+    const nextEl = document.getElementById('sidebar-next-match');
+    if (nextEl) {
+      if (!data.next_match) { nextEl.textContent = 'No upcoming'; return; }
+      nextEl.textContent = timeUntil(data.next_match);
+      if (_nextMatchTimer) clearInterval(_nextMatchTimer);
+      _nextMatchTimer = setInterval(() => {
+        nextEl.textContent = timeUntil(data.next_match);
+      }, 30000);
+    }
   } catch {}
 }
 
@@ -715,7 +736,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initTeamSearch();
   loadTeamsList();
   loadSidebarStats();
-  loadNextMatchCountdown();
   initAlerts();
   LiveNotifications.start();
 });

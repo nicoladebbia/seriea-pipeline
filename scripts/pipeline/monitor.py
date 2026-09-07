@@ -175,6 +175,16 @@ def check_gemini_api_key() -> Dict:
             return {"status": "CRITICAL", "detail": f"Gemini key INVALID: {err[:80]}"}
         if "429" in err:
             return {"status": "OK", "detail": "Gemini key valid (rate limited)"}
+        # Google-side availability, not our key. A 503 UNAVAILABLE / "model is
+        # overloaded" means Google authenticated us and then declined to serve --
+        # exactly as much proof the key works as a 429. Reporting it as WARNING
+        # pinned a permanent yellow banner on /analytics for a condition nobody
+        # here can act on, which is the failure mode the weekly-refresh fix
+        # (efac03d) named: a step that cannot succeed must be a watch, not a gate.
+        upper = err.upper()
+        if any(code in err for code in ("500", "502", "503", "504")) or \
+                "UNAVAILABLE" in upper or "OVERLOADED" in upper:
+            return {"status": "OK", "detail": f"Gemini key valid (service busy: {err[:60]})"}
         return {"status": "WARNING", "detail": f"Gemini check failed: {err[:80]}"}
 
 

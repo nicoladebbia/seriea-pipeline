@@ -190,6 +190,46 @@ input, select, textarea { font: inherit; }
   display: none;
 }
 
+/* --- Collapsed rail: keep every control usable, never a half-rendered stub ---
+   Three things used to break at 64px: the search input squeezed to an unusable
+   sliver, the footer kept its VALUES while dropping its LABELS (three bare
+   numbers with nothing saying what they were), and the collapse chevron went on
+   pointing left so there was no visual affordance to expand again. */
+
+/* Search: swap the full input for an icon button that expands + focuses. */
+.sidebar__search-icon { display: none; }
+.sidebar.collapsed .sidebar__search { display: none; }
+.sidebar.collapsed .sidebar__search-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-3) 0;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.sidebar.collapsed .sidebar__search-icon:hover { color: var(--text-primary); }
+
+/* Footer: stack an abbreviated label above each value so the numbers mean
+   something on the rail. Expanded state keeps the long label, hides the short. */
+.sidebar__footer-short { display: none; }
+.sidebar.collapsed .sidebar__footer-short { display: block; font-size: 9px; letter-spacing: 0.04em; }
+.sidebar.collapsed .sidebar__footer { padding: var(--space-3) var(--space-1); }
+.sidebar.collapsed .sidebar__footer-stat {
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: var(--space-2) 0;
+}
+.sidebar.collapsed .sidebar__footer-value { font-size: 11px; }
+
+/* Chevron points the way it will move the rail: « to collapse, » to expand. */
+.sidebar__collapse-btn svg { transition: transform 0.2s ease; }
+.sidebar.collapsed .sidebar__collapse-btn svg { transform: rotate(180deg); }
+
 .sidebar__nav {
   flex: 1;
   padding: var(--space-3) var(--space-3);
@@ -2002,6 +2042,16 @@ table.ds-table {
   .sidebar .sidebar__nav-section {
     display: none;
   }
+
+  /* The auto-collapsed rail is the same rail — give it the same treatment. */
+  .sidebar .sidebar__search { display: none; }
+  .sidebar .sidebar__search-icon { display: flex; align-items: center; justify-content: center;
+    width: 100%; padding: var(--space-3) 0; border: none; background: none;
+    color: var(--text-tertiary); cursor: pointer; }
+  .sidebar .sidebar__footer-short { display: block; font-size: 9px; }
+  .sidebar .sidebar__footer-stat { flex-direction: column; align-items: center; gap: 1px; }
+  .sidebar .sidebar__footer-value { font-size: 11px; }
+  .sidebar .sidebar__collapse-btn svg { transform: rotate(180deg); }
 
   .main-content {
     margin-left: var(--sidebar-collapsed);

@@ -517,9 +517,14 @@ function renderMatch(m) {
 const _pjC = document.getElementById('pj-container');
 _pjC.innerHTML = '<div class="pj-empty">Fetching /api/projections …</div>';
 
-fetch('/api/projections')
+// Time-boxed: an unsettled fetch used to leave this container reading
+// "Fetching /api/projections …" indefinitely, with nothing on the page or in the
+// console saying why. Now it always resolves into either data or a named error.
+const _pjCtrl = new AbortController();
+const _pjTimer = setTimeout(() => _pjCtrl.abort(), 30000);
+fetch('/api/projections', { signal: _pjCtrl.signal })
   .then(r => {
-    _pjC.innerHTML = '<div class="pj-empty">Got HTTP ' + r.status + ', parsing…</div>';
+    clearTimeout(_pjTimer);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   })
@@ -557,7 +562,12 @@ fetch('/api/projections')
     }
   })
   .catch(e => {
-    _pjC.innerHTML = '<div class="pj-empty" style="color:#f87171;">Failed to load: ' + e.message + '<br><span style="font-size:11px;">(check the browser console — Cmd+Option+J)</span></div>';
+    clearTimeout(_pjTimer);
+    const msg = e.name === 'AbortError' ? 'timed out after 30s' : e.message;
+    _pjC.innerHTML = '<div class="pj-empty" style="color:#f87171;">Failed to load projections: ' + msg
+      + '<br><span style="font-size:11px;">The page is not stuck — this is the real outcome. '
+      + '<a href="/projections" style="color:inherit;text-decoration:underline;">Retry</a>'
+      + ' · check the console (Cmd+Option+J) for detail.</span></div>';
   });
 })();
 </script>

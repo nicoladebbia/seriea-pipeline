@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}Performance — SerieAI{% endblock %}
-{% block page_title %}Performance{% endblock %}
+{% block title %}Analytics — SerieAI{% endblock %}
+{% block page_title %}Analytics{% endblock %}
 
 {% block page_subtitle %}
 <div id="analytics-league-tabs" style="display:inline-flex;gap:4px;margin-left:12px;">
@@ -103,6 +103,17 @@
   .perf-inline-stat__value {
     font-size:18px; font-weight:700; font-family:var(--font-mono); margin-top:2px;
   }
+
+  /* Collapsed lists (CLV, bet history) — first 10 + one toggle */
+  .collapse-hidden { display:none !important; }
+  .collapse-toggle-row { padding:var(--space-3) 0; text-align:center; }
+  .collapse-toggle {
+    background:var(--bg-tertiary); border:1px solid var(--border-default);
+    color:var(--text-secondary); font-size:11px; padding:4px 12px;
+    border-radius:var(--radius-sm); cursor:pointer;
+  }
+  .collapse-toggle:hover { color:var(--text-primary); border-color:var(--accent); }
+  .collapse-hint { font-size:10px; color:var(--text-tertiary); margin-left:var(--space-2); }
 
   /* CLV bet rows */
   .perf-clv-row {
@@ -542,7 +553,10 @@ function renderCLV(clv) {
   else                   { badge.textContent = 'NEGATIVE'; badge.className = 'perf-badge perf-badge--negative'; }
 
   const betsEl = document.getElementById('clv-bets');
-  betsEl.innerHTML = (clv.bets || []).map(b => {
+  // Newest first and capped at 10: the full list is 184 rows, and the ones that
+  // tell you whether the edge is intact right now are the recent ones.
+  const clvRows = (clv.bets || []).slice().reverse();
+  const clvHtml = clvRows.map(b => {
     const clvPct = b.clv_pct || 0;
     const clvColor = clvPct > 0 ? 'var(--green)' : clvPct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
     const badgeClass = b.result === 'won' ? 'perf-badge--won' : b.result === 'lost' ? 'perf-badge--lost' : 'perf-badge--push';
@@ -559,7 +573,8 @@ function renderCLV(clv) {
         <span style="font-weight:700;font-family:var(--font-mono);color:${clvColor};">${clvPct >= 0 ? '+' : ''}${clvPct.toFixed(1)}%</span>
       </div>
     </div>`;
-  }).join('');
+  });
+  collapseTo(betsEl, clvHtml, 10, 'CLV rows');
 
   document.getElementById('section-model-row').style.display = '';
 }
@@ -622,6 +637,48 @@ function renderModelHealth(feedback, weights) {
   document.getElementById('section-model-row').style.display = '';
 }
 
+/* Show the first `n` rows and hide the rest behind one toggle. Both the CLV list
+   (184 rows) and the bet history (202) dumped everything onto the page, burying
+   the recent numbers that actually say whether the edge is intact. Works on
+   DOM nodes rather than HTML strings so it is safe for <tr> children too --
+   a nested <tbody> would have been dropped by the parser. */
+function collapseTo(container, rowHtml, n, noun) {
+  container.innerHTML = rowHtml.join('');
+  const total = rowHtml.length;
+  if (total <= n) return;
+
+  const overflow = Array.from(container.children).slice(n);
+  overflow.forEach(el => el.classList.add('collapse-hidden'));
+
+  const isRow = container.tagName === 'TBODY';
+  const holder = document.createElement(isRow ? 'tr' : 'div');
+  holder.className = 'collapse-toggle-row';
+  const cell = isRow ? document.createElement('td') : holder;
+  if (isRow) { cell.colSpan = 99; holder.appendChild(cell); }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'collapse-toggle';
+  btn.textContent = `Show all ${total} ${noun}`;
+  const hint = document.createElement('span');
+  hint.className = 'collapse-hint';
+  hint.textContent = `showing ${n} most recent`;
+
+  let expanded = false;
+  btn.addEventListener('click', () => {
+    expanded = !expanded;
+    // Remove the class entirely rather than overriding it: these rows have their
+    // own display (.perf-clv-row is flex), and no generic "undo" value restores it.
+    overflow.forEach(el => el.classList.toggle('collapse-hidden', !expanded));
+    btn.textContent = expanded ? 'Show fewer' : `Show all ${total} ${noun}`;
+    hint.style.display = expanded ? 'none' : '';
+  });
+
+  cell.appendChild(btn);
+  cell.appendChild(hint);
+  container.appendChild(holder);
+}
+
 /* --- History Table --- */
 function renderHistory(timeline, clvBets) {
   const clvMap = {};
@@ -631,7 +688,9 @@ function renderHistory(timeline, clvBets) {
   });
 
   const body = document.getElementById('history-body');
-  body.innerHTML = timeline.map(t => {
+  // Newest first: the timeline arrives oldest-first, so the most recent bet used
+  // to be 202 rows down. cumulative_profit stays the running total AS OF that bet.
+  const histHtml = timeline.slice().reverse().map(t => {
     const profitColor = t.profit > 0 ? 'var(--green)' : t.profit < 0 ? 'var(--red)' : 'var(--text-tertiary)';
     const cumColor = t.cumulative_profit >= 0 ? 'var(--green)' : 'var(--red)';
     const status = (t.status || 'pending').toLowerCase();
@@ -655,7 +714,8 @@ function renderHistory(timeline, clvBets) {
       <td style="text-align:right;">${clvCell}</td>
       <td style="text-align:center;"><span class="perf-badge ${badgeClass}">${badgeLabel}</span></td>
     </tr>`;
-  }).join('');
+  });
+  collapseTo(body, histHtml, 10, 'bets');
 
   document.getElementById('section-history').style.display = '';
 }

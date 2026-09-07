@@ -4583,6 +4583,57 @@ def _get_placed_bets():
 
 
 # ---------------------------------------------------------------------------
+# API: Sidebar stats — the three strings in the rail footer
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/sidebar-stats")
+def api_sidebar_stats():
+    """Bankroll, ROI and next kickoff for the sidebar footer.
+
+    These three strings used to cost 2.45 MB per page view: app.js pulled the
+    whole of /api/betting (1.30 MB) for two numbers and the whole of
+    /api/dashboard (1.15 MB) for one countdown, on EVERY page including ones
+    that display neither. Same sources, so the numbers cannot drift:
+    _get_ledger_metrics() is the one money computation (journal-derived, the
+    same call /api/betting and /api/analytics make) and commence_time comes
+    from the same odds_full files the dashboard reads.
+    """
+    metrics = _get_ledger_metrics() or {}
+    stats = _get_betting_stats()
+    _mb = metrics.get("bankroll", {})
+
+    # Earliest kickoff still in the future, across both leagues.
+    now = datetime.now(timezone.utc)
+    next_ko = None
+    for fname in ("odds_full.json", "odds_full_premier_league.json"):
+        raw = _load_json(UPCOMING_DIR / fname)
+        matches = raw.get("matches") if isinstance(raw, dict) else None
+        if not isinstance(matches, dict):
+            continue
+        for info in matches.values():
+            if not isinstance(info, dict):
+                continue
+            ct = info.get("commence_time")
+            if not ct:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt > now and (next_ko is None or dt < next_ko):
+                next_ko = dt
+
+    return jsonify({
+        "bankroll": _mb.get("current", 0.0),
+        "roi": stats["roi"],
+        "next_match": next_ko.isoformat() if next_ko else None,
+    })
+
+
+# ---------------------------------------------------------------------------
 # API: Analytics - P&L, history, performance
 # ---------------------------------------------------------------------------
 

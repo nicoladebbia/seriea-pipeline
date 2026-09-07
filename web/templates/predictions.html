@@ -32,14 +32,7 @@
   .pred-toggle__btn.active { background:var(--accent); color:white; }
   .pred-toggle__btn:not(:last-child) { border-right:1px solid var(--border-default); }
 
-  /* ── Edge Heatmap Table ───────────────────────────────── */
-  .pred-heatmap { margin-bottom:var(--space-6); }
-  .pred-heatmap__header {
-    display:flex; align-items:center; justify-content:space-between;
-    padding:var(--space-2) 0; margin-bottom:var(--space-2); cursor:pointer;
-  }
-  .pred-heatmap__title { font-size:13px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:var(--space-2); }
-  .pred-heatmap__arrow { transition:transform 0.2s; }
+  /* ── Tables (empty-state recent results) ──────────────── */
   .pred-table-wrap { overflow-x:auto; }
   .pred-table {
     width:100%; border-collapse:collapse; font-size:12px;
@@ -75,6 +68,9 @@
   .pred-row__center { width:80px; flex-shrink:0; text-align:center; }
   .pred-row__outcome { font-size:12px; font-weight:700; }
   .pred-row__xg { font-family:var(--font-mono); font-size:10px; color:var(--text-tertiary); }
+  .pred-row__xg-total { margin-left:6px; padding-left:6px; border-left:1px solid var(--border-subtle); color:var(--text-secondary); }
+  /* sorting by xG Total highlights the number being sorted on */
+  .sorted-by-xg .pred-row__xg-total { color:var(--accent); font-weight:600; }
   .pred-row__prob { width:100px; flex-shrink:0; }
   .pred-row__prob-bar { display:flex; height:5px; border-radius:3px; overflow:hidden; margin-bottom:3px; }
   .pred-row__prob-nums { font-family:var(--font-mono); font-size:9px; color:var(--text-tertiary); display:flex; justify-content:space-between; }
@@ -135,34 +131,6 @@
   </div>
   <div class="pred-controls__group">
     <span id="pred-count" class="text-small text-tertiary"></span>
-  </div>
-</div>
-
-<!-- Edge Overview Heatmap -->
-<div class="pred-heatmap">
-  <div class="pred-heatmap__header" onclick="toggleHeatmap()">
-    <div class="pred-heatmap__title">
-      <svg class="pred-heatmap__arrow" id="heatmap-arrow" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="transform:rotate(90deg)"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-      Edge Overview
-      <span class="text-tertiary text-small" style="font-weight:400">click row to view details</span>
-    </div>
-  </div>
-  <div class="pred-table-wrap" id="heatmap-body">
-    <table class="pred-table">
-      <thead>
-        <tr>
-          <th>KO</th>
-          <th>Match</th>
-          <th style="text-align:center">H Edge</th>
-          <th style="text-align:center">D Edge</th>
-          <th style="text-align:center">A Edge</th>
-          <th style="text-align:center">xG</th>
-          <th style="text-align:center">Conf</th>
-          <th style="text-align:center">Models</th>
-        </tr>
-      </thead>
-      <tbody id="heatmap-rows"></tbody>
-    </table>
   </div>
 </div>
 
@@ -257,9 +225,18 @@ function getMatchEdges(m) {
   };
 }
 
+// How many of the ensemble's 1X2 legs independently pick the same outcome the
+// ensemble did. Keep to legs that actually HAVE a 1X2 opinion: the blocklist
+// approach counted `over_under_ml` (an Over/Under model, keys 1.5/2.5/3.5 and
+// no prob_H/D/A) as a sixth voter. Its missing probabilities read as 0/0/0, and
+// `pH >= pD && pH >= pA` is true for zeros — so it cast a phantom HOME vote in
+// every match, inflating every denominator to 6 and every home-pick numerator
+// by one. Require prob_H instead of naming the keys to skip: a new non-1X2
+// component can't silently rejoin the vote.
 function getAgreement(m) {
   const comp = m.component_methods || {};
-  const methods = Object.entries(comp).filter(([k]) => !['xg_details','player_xg_details','lineup_source'].includes(k));
+  const methods = Object.entries(comp).filter(
+    ([, p]) => p && typeof p === 'object' && typeof p.prob_H === 'number');
   if (methods.length < 2) return null;
   const calls = methods.map(([, p]) => {
     const pH = p.prob_H||0, pD = p.prob_D||0, pA = p.prob_A||0;
@@ -270,50 +247,32 @@ function getAgreement(m) {
   return { agree, total: calls.length, calls, pred };
 }
 
+const OUTCOME_WORD = { H: 'HOME', D: 'DRAW', A: 'AWAY' };
+
+// Spell out what the ratio means. Low agreement is not a typo and not a signal
+// to bet the other side: the ensemble blends probabilities, it does not count
+// votes, so an outcome no single leg ranks first can still win the blend by
+// being every leg's consistent second choice. Worth knowing, never actionable
+// on its own -- 1X2 is display-only here, the money markets are O/U Over.
+function agreeTitle(agr) {
+  const word = OUTCOME_WORD[agr.pred];
+  const spread = agr.calls.map(c => OUTCOME_WORD[c][0]).join('');
+  if (agr.agree === 0) {
+    return `The ensemble says ${word}, but none of its ${agr.total} model legs rank `
+      + `${word} first (their picks: ${spread}). That happens when ${word} is the `
+      + `steady second choice everywhere while the other outcomes are spiky -- the `
+      + `blend rewards consistency. It does NOT mean bet the other side. 1X2 is `
+      + `display-only; bets come from the O/U engine.`;
+  }
+  return `${agr.agree} of ${agr.total} model legs rank ${word} first (their picks: `
+    + `${spread}). Higher = the legs agree; lower = the pick comes from the blend `
+    + `rather than a consensus. 1X2 is display-only; bets come from the O/U engine.`;
+}
+
 function matchAnchor(m) {
   return (m.match || `${m.home_team} vs ${m.away_team}`).replace(/[^a-zA-Z0-9]/g, '_');
 }
 
-
-// ═══════════════════════════════════════════════════════════════
-// EDGE HEATMAP TABLE
-// ═══════════════════════════════════════════════════════════════
-function renderHeatmap(matches) {
-  const tbody = document.getElementById('heatmap-rows');
-  const standings = _ctx.standings || {};
-  tbody.innerHTML = matches.map(m => {
-    const edges = getMatchEdges(m);
-    const agr = getAgreement(m);
-    const hPos = standings[m.home_team]?.position;
-    const aPos = standings[m.away_team]?.position;
-    const anchor = matchAnchor(m);
-    const agrHtml = agr ? (() => {
-      const ratio = agr.agree / agr.total;
-      const col = ratio >= 0.8 ? 'background:rgba(74,222,128,0.15);color:var(--green)' :
-                  ratio >= 0.5 ? 'background:rgba(251,191,36,0.15);color:var(--amber)' :
-                                 'background:rgba(248,113,113,0.15);color:var(--red)';
-      return `<span class="agree-badge" style="${col}">${agr.agree}/${agr.total} ${agr.pred}</span>`;
-    })() : '-';
-    const slug = matchSlug(m);
-    return `<tr onclick="window.location.href='/prediction/${slug}'" style="cursor:pointer">
-      <td class="text-mono text-tertiary">${formatKickoffTime(m.commence_time) || '-'}</td>
-      <td>${LEAGUE_BADGE_MAP[m.league || 'serie_a'] || ''} <span class="text-secondary font-medium">${m.home_team}</span> <span class="text-tertiary">vs</span> <span class="text-secondary font-medium">${m.away_team}</span></td>
-      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.home)}">${edgeFmt(edges.home)}</span></td>
-      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.draw)}">${edgeFmt(edges.draw)}</span></td>
-      <td style="text-align:center"><span class="edge-cell" style="${edgeCellStyle(edges.away)}">${edgeFmt(edges.away)}</span></td>
-      <td style="text-align:center" class="text-mono text-secondary">${xgFmt(m.home_xg)}-${xgFmt(m.away_xg)}</td>
-      <td style="text-align:center">${confBadge(m.confidence_level)}</td>
-      <td style="text-align:center">${agrHtml}</td>
-    </tr>`;
-  }).join('');
-}
-
-let _heatmapOpen = true;
-function toggleHeatmap() {
-  _heatmapOpen = !_heatmapOpen;
-  document.getElementById('heatmap-body').style.display = _heatmapOpen ? '' : 'none';
-  document.getElementById('heatmap-arrow').style.transform = _heatmapOpen ? 'rotate(90deg)' : 'rotate(0deg)';
-}
 
 function matchSlug(m) {
   return (m.match || `${m.home_team} vs ${m.away_team}`).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -370,7 +329,7 @@ function renderCompactRow(m) {
     </div>
     <div class="pred-row__center">
       <div class="pred-row__outcome" style="color:${outcomeCol}">${m.predicted_outcome || '?'}</div>
-      <div class="pred-row__xg">${xgFmt(m.home_xg)} - ${xgFmt(m.away_xg)}</div>
+      <div class="pred-row__xg">${xgFmt(m.home_xg)} - ${xgFmt(m.away_xg)}<span class="pred-row__xg-total" title="Total expected goals — the value the &quot;xG Total&quot; sort orders by">${xgFmt((m.home_xg||0)+(m.away_xg||0))} xG</span></div>
     </div>
     <div class="pred-row__prob">
       <div class="pred-row__prob-bar">
@@ -386,7 +345,7 @@ function renderCompactRow(m) {
     </div>
     <div class="pred-row__right">
       ${confBadge(m.confidence_level)}
-      ${agr ? `<span style="font-size:9px;color:${agr.agree/agr.total >= 0.8 ? 'var(--green)' : agr.agree/agr.total >= 0.5 ? 'var(--amber)' : 'var(--red)'}">${agr.agree}/${agr.total} agree</span>` : ''}
+      ${agr ? `<span style="font-size:9px;color:${agr.agree/agr.total >= 0.8 ? 'var(--green)' : agr.agree/agr.total >= 0.5 ? 'var(--amber)' : 'var(--red)'}" title="${agreeTitle(agr)}">${agr.agree}/${agr.total} models pick ${OUTCOME_WORD[agr.pred]}</span>` : ''}
     </div>
     <div class="pred-row__arrow">
       <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
@@ -463,11 +422,10 @@ function predRender() {
   if (sort === 'edge') matches.sort((a,b) => { const ea = getMatchEdges(a), eb = getMatchEdges(b); return Math.max(eb.home||0,eb.draw||0,eb.away||0) - Math.max(ea.home||0,ea.draw||0,ea.away||0); });
   else if (sort === 'confidence') matches.sort((a,b) => confRank(b.confidence_level) - confRank(a.confidence_level));
   else if (sort === 'xg') matches.sort((a,b) => ((b.home_xg||0)+(b.away_xg||0)) - ((a.home_xg||0)+(a.away_xg||0)));
+  document.getElementById('pred-cards')?.classList.toggle('sorted-by-xg', sort === 'xg');
 
   document.getElementById('pred-count').textContent = `${matches.length} of ${_allMatches.length} matches`;
 
-  // Heatmap
-  renderHeatmap(matches);
 
   // Compact rows
   const container = document.getElementById('pred-cards');
