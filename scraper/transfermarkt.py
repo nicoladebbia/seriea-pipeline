@@ -472,7 +472,12 @@ def scrape_transfers(
         missing = set(league_teams.keys()) - cached_teams
         if not missing:
             log.info("Loading cached transfers from %s (%d teams)", cache_path, len(cached_teams))
-            return cached_df
+            pruned = _prune_to_league(cached_df, league_teams, only_teams)
+            if len(pruned) != len(cached_df):
+                # Persist it. /api/transfers reads this parquet directly, so
+                # pruning only the return value would leave the ghosts on screen.
+                pruned.to_parquet(cache_path, index=False)
+            return pruned
         log.info("Cache exists but missing %d teams: %s — scraping those", len(missing), missing)
         teams_to_scrape = {k: v for k, v in league_teams.items() if k in missing}
 
@@ -526,6 +531,14 @@ def scrape_transfers(
         df = cached_df
     else:
         df = new_df
+
+    # Same two ingredients as the squad cache: a team map that is a historical
+    # superset and an append-only merge. scrape_squad_market_values got this
+    # prune on 2026-08-25; this writer did not, and by 2026-09-07 the Serie A
+    # file held 30 clubs for a 20-club league -- 299 of 891 rows belonging to
+    # Chievo, SPAL, Crotone, Benevento, Brescia, Sampdoria, Salernitana,
+    # Empoli, Pisa and Verona, a third of the /transfers page.
+    df = _prune_to_league(df, league_teams, only_teams)
 
     TM_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(cache_path, index=False)

@@ -21,23 +21,55 @@ import argparse
 import sys
 from datetime import UTC, date, datetime
 
-# Serie A 2026-27 summer window (approx). Winter window is Jan; the feature only
-# needs to be current when the season is live, so we cover summer + a winter tail.
-WINDOW_RANGES = [
-    ("2026-06-01", "2026-09-05"),   # summer window + a few days slack
-    ("2027-01-01", "2027-02-05"),   # winter window
-]
+# Window months, derived from the season -- NOT written as dates. The literals
+# here used to be ("2026-06-01", "2026-09-05") and ("2027-01-01", "2027-02-05"):
+# correct for exactly one season, then silently wrong, and the failure mode is a
+# job that skips forever while its log says nothing is wrong. Same annual fuse as
+# the season-in-a-filename trap in CLAUDE.md.
+#   summer: 1 Jun -> 5 Sep of the season's FIRST year (a few days of slack past
+#           deadline day), winter: 1 Jan -> 5 Feb of its SECOND year.
+_SUMMER = ((6, 1), (9, 5))
+_WINTER = ((1, 1), (2, 5))
 
 
-def _in_window(today: date) -> bool:
-    for lo, hi in WINDOW_RANGES:
-        if date.fromisoformat(lo) <= today <= date.fromisoformat(hi):
-            return True
-    return False
+def _window_ranges(season: str) -> list[tuple[date, date]]:
+    """Concrete (start, end) dates for `season` ("2026-2027")."""
+    y1, y2 = (int(part) for part in season.split("-")[:2])
+    (sm, sd), (em, ed) = _SUMMER
+    (wm, wd), (xm, xd) = _WINTER
+    return [
+        (date(y1, sm, sd), date(y1, em, ed)),
+        (date(y2, wm, wd), date(y2, xm, xd)),
+    ]
+
+
+def _in_window(today: date, season: str = "2026-2027") -> bool:
+    return any(lo <= today <= hi for lo, hi in _window_ranges(season))
 
 
 def _log(msg: str) -> None:
     print(f"[{datetime.now(UTC).isoformat()}] {msg}", flush=True)
+
+
+def _run_change_detection(args) -> None:
+    """Diff the fresh squad against the last snapshot and log every
+    signing / departure / value-change / contract-change. First run seeds the
+    snapshot and logs nothing (no cold-start phantom signings).
+
+    Called on BOTH paths: value and contract changes do not stop when the
+    window closes, and this is what /rosters renders as "Recent Changes".
+    """
+    try:
+        from scripts.data.transfer_change_detector import detect_changes
+        changes = detect_changes(season=args.season)
+        if changes:
+            _log(f"CHANGES DETECTED: {len(changes)} — " + "; ".join(
+                f"{c['type']}:{c.get('player')}" for c in changes[:6]
+            ) + (" …" if len(changes) > 6 else ""))
+        else:
+            _log("no squad changes since last snapshot")
+    except Exception as e:  # noqa: BLE001 — change log is best-effort, never blocks
+        _log(f"change detection FAILED: {type(e).__name__}: {e}")
 
 
 def main() -> int:
@@ -49,11 +81,21 @@ def main() -> int:
     args = ap.parse_args()
 
     today = datetime.now(UTC).date()
-    if not args.force and not _in_window(today):
-        _log(f"outside transfer window ({today}) — skipping. Use --force to override.")
-        return 0
-
-    _log(f"=== Serie A transfer refresh start ({args.season}) ===")
+    # Outside the window, squad MEMBERSHIP is frozen -- that is what a closed
+    # window means -- but market values and contract dates keep moving, and the
+    # change detector reports both. Skipping the whole run froze /rosters'
+    # "Recent Changes" from deadline day until January (observed: the panel's
+    # newest entry was 2026-09-02 while the job ran twice a day saying nothing
+    # was wrong) and left the squad-value model features on a stale snapshot for
+    # four months. So: full run inside the window, squad + change detection only
+    # outside it. The window-specific sources (transfers, rumors, Wikipedia,
+    # Capology) are the expensive ones and they genuinely have nothing to say.
+    in_window = args.force or _in_window(today, args.season)
+    if in_window:
+        _log(f"=== Serie A transfer refresh start ({args.season}) ===")
+    else:
+        _log(f"=== Serie A squad-only refresh ({args.season}) — "
+             f"outside transfer window ({today}); use --force for the full run ===")
 
     from scraper.transfermarkt import (
         current_league_teams,
@@ -68,14 +110,9 @@ def main() -> int:
     else:
         _log("could not resolve current clubs — falling back to full team map")
 
-    # 1. Confirmed transfers (feeds the model)
-    try:
-        df = scrape_transfers(season=args.season, league=args.league, only_teams=teams)
-        _log(f"confirmed transfers: {len(df)} rows")
-    except Exception as e:  # noqa: BLE001 — fail-soft; one dead source must not kill the rest
-        _log(f"confirmed transfers FAILED: {type(e).__name__}: {e}")
-
-    # 2. Squad market values (talent weights for the delta)
+    # 2. Squad market values (talent weights for the delta).
+    #    Runs in EVERY mode: values and contract dates move year-round, and the
+    #    change detector below is what feeds /rosters' "Recent Changes".
     try:
         mv = scrape_squad_market_values(
             season=args.season, league=args.league, only_teams=teams
@@ -83,6 +120,21 @@ def main() -> int:
         _log(f"market values: {len(mv)} rows")
     except Exception as e:  # noqa: BLE001 — fail-soft
         _log(f"market values FAILED: {type(e).__name__}: {e}")
+
+    if not in_window:
+        # Squad + change detection only. Everything below this point is
+        # window-specific: no confirmed transfers are registered, no rumors are
+        # live, and Wikipedia's window page is closed.
+        _run_change_detection(args)
+        _log("=== Serie A squad-only refresh done ===")
+        return 0
+
+    # 1. Confirmed transfers (feeds the model)
+    try:
+        df = scrape_transfers(season=args.season, league=args.league, only_teams=teams)
+        _log(f"confirmed transfers: {len(df)} rows")
+    except Exception as e:  # noqa: BLE001 — fail-soft; one dead source must not kill the rest
+        _log(f"confirmed transfers FAILED: {type(e).__name__}: {e}")
 
     # 3. Rumors (display-only — NEVER feeds the model).
     #    rumors_<season>.parquet is OVERWRITTEN each run, so it is
@@ -137,20 +189,7 @@ def main() -> int:
     else:
         _log("capology salaries: skipped (weekly step, runs Mondays; use --force to override)")
 
-    # 6. Change detection — diff the fresh squad against the last snapshot and log
-    #    every signing / departure / value-change / contract-change. First run
-    #    seeds the snapshot and logs nothing (no cold-start phantom signings).
-    try:
-        from scripts.data.transfer_change_detector import detect_changes
-        changes = detect_changes(season=args.season)
-        if changes:
-            _log(f"CHANGES DETECTED: {len(changes)} — " + "; ".join(
-                f"{c['type']}:{c.get('player')}" for c in changes[:6]
-            ) + (" …" if len(changes) > 6 else ""))
-        else:
-            _log("no squad changes since last snapshot")
-    except Exception as e:  # noqa: BLE001 — change log is best-effort, never blocks
-        _log(f"change detection FAILED: {type(e).__name__}: {e}")
+    _run_change_detection(args)
 
     _log("=== Serie A transfer refresh done ===")
     return 0
