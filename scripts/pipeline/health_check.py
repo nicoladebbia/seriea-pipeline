@@ -486,16 +486,67 @@ def check_data_quality() -> Dict:
                 status = "WARNING"
                 issues.append(f"High avg NaN rate: {nan_rate:.1%}")
 
-            # Per-column sparse detection: flag columns >90% NaN, excluding
-            # known-sparse families.
+            # Per-column sparse detection.
+            #
+            # ">90% NaN all-time" is NOT a fault on its own, and warning on it
+            # is what made this check permanent yellow: measured 2026-09-07, all
+            # 25 flagged columns were the Sofascore match-stat family, 100%
+            # filled for Serie A in BOTH the current and previous season and 0%
+            # for the EPL in both (EPL ground truth never carried them). Nine
+            # seasons of history dilute that to 2.5%, so a healthy, complete,
+            # unchanged column read as broken every single cycle.
+            #
+            # The fault this check exists to catch is the one CLAUDE.md names as
+            # the enrichment-bug detector: a column FILLED HISTORICALLY that goes
+            # EMPTY in the season being played (config.SEASONS lag, a frozen
+            # derived cache, a hash-vs-canonical key break). So compare each
+            # league against ITS OWN previous season and warn only on that.
+            #
+            # Per league, because this parquet is the SA+EPL union: a Serie
+            # A-only family averages ~48% across the mixed current season, which
+            # any single threshold decides by coin flip. Per-league, the same
+            # family is an unambiguous 1.00 / 0.00.
+            REGRESSION_WAS = 0.50   # filled in at least half of last season's rows
+            REGRESSION_NOW = 0.10   # ...and effectively absent this season
             col_nan = df[dense_cols].isna().mean()
             sparse_cols = col_nan[col_nan > 0.90].sort_values(ascending=False)
-            if len(sparse_cols) > 0:
+
+            regressed: list[str] = []       # "col (league)" for the message
+            regressed_cols: set[str] = set()  # exact names, never prefix-matched
+            seasons = sorted(df["season"].dropna().unique()) if "season" in df.columns else []
+            if len(sparse_cols) and len(seasons) >= 2:
+                cur_s, prev_s = seasons[-1], seasons[-2]
+                # One "league" when the frame is single-league; the real column
+                # when it is the union. Either way each group is compared to
+                # itself, never to the other league.
+                lg = df["league"] if "league" in df.columns else pd.Series("_all", index=df.index)
+                cur_mask, prev_mask = df["season"] == cur_s, df["season"] == prev_s
+                # Masks hoisted out of the column loop, and each test slices a
+                # single Series -- df[mask] would copy all ~1,500 columns once
+                # per (column, league) pair.
+                windows = []
+                for league in lg.dropna().unique():
+                    in_lg = lg == league
+                    prev_i, cur_i = in_lg & prev_mask, in_lg & cur_mask
+                    if int(prev_i.sum()) < 20 or int(cur_i.sum()) < 5:
+                        continue  # too few rows to tell a gap from a young season
+                    windows.append((league, prev_i, cur_i))
+                for col in sparse_cols.index:
+                    for league, prev_i, cur_i in windows:
+                        if (df.loc[prev_i, col].notna().mean() >= REGRESSION_WAS
+                                and df.loc[cur_i, col].notna().mean() < REGRESSION_NOW):
+                            regressed.append(f"{col} ({league})")
+                            regressed_cols.add(col)
+                            break
+            historical: list[str] = [c for c in sparse_cols.index if c not in regressed_cols]
+
+            if regressed:
                 if status == "OK":
                     status = "WARNING"
                 issues.append(
-                    f"{len(sparse_cols)} sparse columns (>90% NaN): "
-                    f"{', '.join(sparse_cols.index[:5])}{'...' if len(sparse_cols) > 5 else ''}"
+                    f"{len(regressed)} column(s) filled last season and empty this "
+                    f"season: {', '.join(regressed[:5])}"
+                    f"{'...' if len(regressed) > 5 else ''}"
                 )
 
             required = ["home_team", "away_team"]
@@ -511,6 +562,15 @@ def check_data_quality() -> Dict:
                 "nan_rate": round(nan_rate, 3),
                 "max_col_nan_rate": round(float(col_nan.max()), 3) if len(col_nan) else 0,
                 "sparse_columns": len(sparse_cols),
+                "sparse_columns_regressed": len(regressed),
+                # Context, deliberately not an issue: >90% NaN across full
+                # history while still filled wherever the source carries it.
+                "sparse_columns_historical": len(historical),
+                # False when the frame has <2 seasons: "did this stop being
+                # filled" is unanswerable then, and the aggregator only surfaces
+                # issues from WARNING/CRITICAL checks, so it is said here.
+                "sparse_columns_evaluated": len(seasons) >= 2,
+                "sparse_columns_historical_sample": historical[:5],
                 "issues": issues,
             }
         except Exception as e:
