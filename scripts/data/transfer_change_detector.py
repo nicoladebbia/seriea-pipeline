@@ -117,8 +117,20 @@ def detect_changes(season: str = "2026-2027") -> list[dict]:
         return []
 
     changes: list[dict] = []
+    seeded_clubs: list[str] = []
     for club, players in current.items():
-        prev_players = previous.get(club, {})
+        if club not in previous:
+            # A club with no previous snapshot is a squad-set change, not N
+            # signings. This is the cold-start guard applied per club: the
+            # league-wide one only covers the very first run, and `previous.get(
+            # club, {})` quietly turned every later club-list change into a full
+            # phantom squad. Measured 2026-09-07: nine such clubs on 2026-07-20
+            # minted 256 phantom "signings" — 36% of the whole changelog, and
+            # signings only, because this loop iterates CURRENT clubs so a club
+            # that vanishes emits nothing. Seed it; the next diff is real.
+            seeded_clubs.append(club)
+            continue
+        prev_players = previous[club]
         prev_keys = set(prev_players)
         cur_keys = set(players)
 
@@ -155,6 +167,10 @@ def detect_changes(season: str = "2026-2027") -> list[dict]:
                     "contract_until": cc, "prev_contract_until": pc,
                     "detail": f"contract {pc} → {cc}", "at": now,
                 })
+
+    if seeded_clubs:
+        log.info("%s: %d club(s) had no previous snapshot — seeded, not logged as "
+                 "signings: %s", season, len(seeded_clubs), ", ".join(sorted(seeded_clubs)[:8]))
 
     # Persist: prepend new changes (newest first), cap, save new snapshot.
     if changes:

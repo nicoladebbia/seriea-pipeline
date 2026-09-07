@@ -99,3 +99,64 @@ def test_changelog_is_appended_newest_first(tm):
     det.detect_changes("2026-2027")
     log = json.loads((tm / "transfer_changes_2026_2027.json").read_text())
     assert log and log[0]["type"] == "departure" and log[0]["player"] == "Beta Two"
+
+
+# --- A club that was not in the previous snapshot ------------------------
+#
+# The cold-start guard only covers the very first run. `previous.get(club, {})`
+# turned every LATER change to the club list into a full phantom squad of
+# signings. Measured on the live changelog 2026-09-07: nine clubs outside the
+# 2026-27 squad set appeared on 2026-07-20 and minted 256 phantom "signings" —
+# 36% of the whole feed, all of type `signing`, because this loop iterates
+# CURRENT clubs so a club that vanishes emits nothing at all.
+
+# _norm() strips digits, so "P0".."P3" would collapse to ONE key — names must
+# differ by letters for the fixture to model distinct players.
+_NAMES = ["Aldo Rossi", "Bruno Conti", "Carlo Neri", "Dario Ferri", "Elio Gatti",
+          "Fabio Lupo", "Gino Marra", "Hugo Sanna", "Ivo Testa", "Luca Vinci"]
+
+
+def _club_rows(team: str, n: int = 3):
+    names = [f"{_NAMES[i % len(_NAMES)]}{'' if i < len(_NAMES) else chr(97 + i // len(_NAMES))}"
+             for i in range(n)]
+    assert len({det._norm(x) for x in names}) == n, "fixture names must stay distinct after _norm"
+    return [
+        {"team": team, "player_name": nm, "position": "Midfield",
+         "market_value_eur": 1_000_000.0, "contract_until": "2028-06-30"}
+        for nm in names
+    ]
+
+
+def test_a_club_absent_from_the_snapshot_is_not_a_squad_of_signings(tm):
+    _write_squad(tm, _base_rows())
+    det.detect_changes("2026-2027")                       # seeds Napoli
+    _write_squad(tm, _base_rows() + _club_rows("Chievo", 25))
+    changes = det.detect_changes("2026-2027")
+    # The true positive this guards: the old code returned 25 signings here.
+    assert [c for c in changes if c["club"] == "Chievo"] == [], changes[:3]
+    assert not any(c["club"] == "Chievo"
+                   for c in json.loads((tm / "transfer_changes_2026_2027.json").read_text())
+                   ) if (tm / "transfer_changes_2026_2027.json").exists() else True
+
+
+def test_the_new_club_is_seeded_so_its_next_change_is_real(tm):
+    """Seeding must not make the club permanently invisible."""
+    _write_squad(tm, _base_rows())
+    det.detect_changes("2026-2027")
+    _write_squad(tm, _base_rows() + _club_rows("Chievo", 3))
+    assert det.detect_changes("2026-2027") == []          # seeded, silent
+    _write_squad(tm, _base_rows() + _club_rows("Chievo", 4))   # one real arrival
+    changes = det.detect_changes("2026-2027")
+    signings = [c for c in changes if c["club"] == "Chievo" and c["type"] == "signing"]
+    assert len(signings) == 1, changes
+    assert signings[0]["player"] == _NAMES[3]
+
+
+def test_a_known_club_still_reports_a_real_signing(tm):
+    """Positive control: the guard must not suppress ordinary signings."""
+    _write_squad(tm, _base_rows())
+    det.detect_changes("2026-2027")
+    _write_squad(tm, _base_rows() + _club_rows("Napoli", 1))
+    changes = det.detect_changes("2026-2027")
+    assert [c["type"] for c in changes] == ["signing"]
+    assert changes[0]["club"] == "Napoli"

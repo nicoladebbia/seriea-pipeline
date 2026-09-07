@@ -675,6 +675,31 @@ So a relegated club having **no** pre-season signal is correct — it is not in 
 - **Consumed by:** `net_squad_delta` talent-weighting (season-matched market value per player) AND the `/rosters` dashboard page (`/api/rosters` → `web/templates/rosters.html`), which groups players GK→DEF→MID→ATT sorted by value and flags confirmed 26/27 arrivals as "new".
 - **✅ Age bug FIXED 2026-07-14 (was a REAL defect, visible on /rosters).** The old age extractor took the first `^\d{1,2}$` cell — which is the SHIRT NUMBER (`td.rueckennummer`), not the age (e.g. Scamacca shirt 9 → age 9; 162 players under 15). The age is the parenthesized number in the DOB cell "01/07/2000 (26)". Fixed to parse `\((\d{1,2})\)`, with a shirt-number-skipping fallback bounded to [15,45]. Re-scraped: age range now 17–40, zero impossible ages.
 
+### `data/external/transfermarkt/transfer_changes_2026_2027.json` + `squad_snapshot_2026_2027.json` (the /squads "Recent Changes" feed)
+
+- **Writer:** `scripts/data/transfer_change_detector.detect_changes(season)`, called from
+  `scripts/data/refresh_transfers.py` on every run (since 2026-09-07 also OUTSIDE the
+  transfer window — the window gate used to `return 0` before change detection, which is
+  why the feed froze at 2 Sep; the first off-window run found 20 real changes).
+  Append-only, newest first, capped at `MAX_LOG = 2000`. `squad_snapshot_*.json` is the
+  previous state it diffs against. Read by `/api/transfer-changes` (`web/app.py:1352`).
+- **Rows 2026-09-07: 709 → 453, clubs 29 → 20.** 256 entries — 36% of the feed — were
+  phantom `signing` records, all stamped `2026-07-20`, for the nine clubs
+  (Benevento, Brescia, Chievo, Crotone, Empoli, SPAL, Salernitana, Sampdoria, Verona)
+  that the ghost-club bug above had put in `market_values_*.parquet`. **This is the
+  residue of that same bug**: the 2026-08-25 fix pruned the parquet but nothing cleaned
+  the changelog the poisoned parquet had already written — same 256, same nine clubs.
+  Removed 2026-09-07 with the criterion "club not in the season's squad set"; the
+  snapshot was already clean (20 clubs).
+- **✅ Phantom-squad guard added 2026-09-07.** The detector's cold-start guard only covered
+  the very first run; `previous.get(club, {})` turned every LATER change to the club list
+  into a whole phantom squad of signings. A club absent from the previous snapshot is now
+  SEEDED (logged at INFO, no change records) and its next diff is real. Note the failure
+  was asymmetric — the diff loop iterates CURRENT clubs, so a club that *vanishes* emits
+  nothing at all, which is why all 256 were `signing` and zero were `departure`.
+  Locked by `tests/test_transfer_change_detector.py` (three cases, incl. a positive
+  control that an ordinary signing at a known club still reports).
+
 ### `data/external/transfermarkt/salaries_2026_2027.parquet` (Capology ESTIMATED wages — DISPLAY-ONLY, never a model feature)
 - **Per-player estimated salary for all 20 Serie A clubs:** `player_name, team, annual_gross_eur, monthly_gross_eur, weekly_gross_eur, verified, capology_position, capology_age, contract_expiration, years_remaining, capology_slug, name_norm`. 561 players / 20 clubs (2026-07-14).
 - **⚠ ESTIMATES, NOT OFFICIAL FIGURES.** Capology's own header: *"All amounts are estimates and do not represent official figures."* The number is the **Est. Fixed** guaranteed gross salary — it **EXCLUDES bonuses / image rights / commercial deals** (Capology reports Fixed / Bonus / Total separately; we store Fixed only, because bonuses are conditional and Capology flags them "may be incomplete"). So media "total comp" quotes read HIGHER than this fixed figure (e.g. Lautaro fixed €16.67m here vs a media "€20m+" incl. bonuses — both correct, different tiers). `monthly = annual/12`, `weekly = annual/52`. `verified` = Capology's green-check (239/561 = 43%); rest are estimated.
