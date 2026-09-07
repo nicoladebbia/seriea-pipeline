@@ -162,7 +162,7 @@ def main() -> int:
     # --- Step 1: Refresh FBref fixtures.html (so we discover new matches) ---
     results["fbref_fixtures"] = step_refresh_fbref_fixtures()
 
-    # --- Step 2: Download any new FBref match HTMLs (headless) ---
+    # --- Step 2: Download any new FBref match HTMLs (headless) — a WATCH ---
     # 300s, not the default 3600: FBref is Cloudflare-blocked weekly and this
     # step otherwise hangs the full hour for nothing. Fail fast, move on.
     # Since 2026-08-26 the fetcher exits 1 when it recovers nothing while
@@ -170,9 +170,16 @@ def main() -> int:
     # browser recovery command in its stderr — not as five "No match HTMLs"
     # parse failures downstream. Sofascore covers results/scores only; the
     # four FBref parquets below have no other source.
-    results["fbref_htmls"] = run(
+    # 2026-09-07: FBref has been headless-blocked on every run since April
+    # (AUGUST_RUNBOOK: "every logged weekly run shows ✗ fbref_htmls"), so this
+    # step made the job exit 1 EVERY Monday — the same permanently-red signal
+    # step_watch_fbref_shots was taken out of the exit code for, and the one
+    # `health_check.check_launchd_plists` now reports as "last exit 1". It is
+    # a watch: run, logged, in the Monday card, never in the exit code. The
+    # week FBref answers again the watch reads "!!" and the parquets refill.
+    watches["fbref_htmls_downloaded"] = run(
         [py, "-m", "scripts.data.scrape_fbref_missing", "--season", CURRENT_SEASON, "--headless"],
-        "FBref match HTML download",
+        "FBref match HTML download (watch: headless-blocked since 2026-07)",
         timeout=300,
     )
 
@@ -366,6 +373,8 @@ def main() -> int:
         details = {"Steps OK": f"{n_ok}/{n_total}"}
         if failed_steps:
             details["Failed"] = ", ".join(failed_steps)
+        if not watches.get("fbref_htmls_downloaded", True):
+            details["FBref"] = "headless-blocked (watch, not gating)"
         status = "success" if n_ok == n_total else ("warn" if n_ok > 0 else "fail")
         notify_scheduler_run(
             name="weekly-data-refresh",

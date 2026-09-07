@@ -1094,6 +1094,23 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   real EPL bets; set false 2026-08-27 with `gated_reason`. Lift only via
   `scripts/models/validate_league_deployment.py` after EPL earns the bar.
 
+### Symptom: "`check_launchd_plists` WARNS `weekly-data-refresh: last exit 1` every Monday" (FIXED 2026-09-07)
+
+- **What you'll see**: `logs/launchd-weekly-data-refresh.log` ends `12/13 steps OK … ✗ fbref_htmls`
+  (botasaurus "Page too small"), exit 1, and the health check names the job all week. Every
+  other step passed; the ImportError/`ValueError` tracebacks in the `-err.log` are OLD content
+  (2026-08-17), not that run — check the timestamp before believing a traceback.
+- **Why**: `refresh_weekly_data.py` counted the FBref HTML download in `results` (gating) although
+  FBref has been headless-blocked since 2026-07 (documented in AUGUST_RUNBOOK) and every run of
+  it fails by construction. A step that cannot succeed was deciding the job's exit code, so the
+  exit code said nothing about the twelve steps that can.
+- **Fix**: the download is a `watches[...]` entry like `step_watch_fbref_shots` — printed, pushed
+  as `FBref: headless-blocked (watch, not gating)` in the notify card, never counted. Differential
+  test `test_a_blocked_fbref_download_does_not_change_the_jobs_exit_code`.
+- **Prevention rule**: **a job's exit code must be decided only by steps that CAN succeed** — a
+  known-blocked source is a watch, not a gate, or the alert channel carries a permanent false
+  alarm that trains the reader to ignore the real one.
+
 ### Symptom: "Telegram gets the same card 11 times in a row, every few minutes" (FIXED 2026-09-06)
 
 - **What you'll see**: bursts of identical cards ~0.5 s apart in `data/notification_history.jsonl`

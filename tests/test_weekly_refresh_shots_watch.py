@@ -146,3 +146,16 @@ def test_shots_is_absent_from_the_required_parser_loop(sandbox, monkeypatch):
     assert "parse_all_shots" not in literal, (
         "parse_all_shots is back inside the required-parser loop"
     )
+
+
+def test_a_blocked_fbref_download_does_not_change_the_jobs_exit_code(sandbox, monkeypatch):
+    """2026-09-07: FBref has been headless-blocked on every weekly run since
+    April, so `fbref_htmls` exited the job 1 every Monday and the launchd
+    exit-code health check would have said "last exit 1" forever. Same class
+    as the shots parser: a watch, not a gate."""
+    healthy, _ = _run_main(monkeypatch)
+    assert healthy == 0, "baseline not green — see test_the_sandbox_baseline_is_green"
+    blocked, invoked = _run_main(monkeypatch, failing_module="scripts.data.scrape_fbref_missing")
+    assert blocked == healthy, f"FBref blocked moved the exit code {healthy} -> {blocked}"
+    assert any("scripts.data.scrape_fbref_missing" in c and "--headless" in c for c in invoked), \
+        "the download must still be attempted every week — it is a watch for FBref coming back"
