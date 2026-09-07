@@ -57,8 +57,13 @@ def match_predictions_to_results(league: str | None = "serie_a"):
     2026-09-05: 0 of 216 archived after their match date), so grades are
     ex-ante — of the EARLIEST forecast vintage, not the T-30 refresh.
 
-    Join key: (date, normalized home, normalized away), with a ±1-day
-    fallback for timezone drift. Each row is tagged with its league;
+    Join key: (date, normalized home, normalized away), with a ±3-day
+    fallback. Measured 2026-09-07 over the whole archive: 185 entries land on
+    the exact day, 10 at ±1, 4 at ±2 — Serie A moves kickoffs after a
+    prediction is archived, and a ±1 window left those 4 permanently ungraded.
+    ±3 is safe because a Serie A ordered pair (home, away) plays once a season:
+    across the archive, ZERO entries have more than one candidate for the same
+    pair even within ±30 days. Each row is tagged with its league;
     `league` filters (default serie_a, the production earner) — pass None
     for all leagues.
     """
@@ -97,7 +102,9 @@ def match_predictions_to_results(league: str | None = "serie_a"):
         if row is None:
             try:
                 day = pd.Timestamp(d)
-                for shift in (-1, 1):
+                # Nearest-first, so the closest kickoff wins if a future
+                # archive ever does hold two candidates.
+                for shift in (-1, 1, -2, 2, -3, 3):
                     row = results_map.get(
                         (str(day + timedelta(days=shift))[:10], h, a))
                     if row is not None:
