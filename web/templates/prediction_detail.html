@@ -257,6 +257,50 @@
   }
   .refresh-indicator .animate-spin { width:12px; height:12px; }
 
+  /* ── Shortlist: what to bet, how much ───────────────── */
+  .mkt-short { margin-bottom:var(--space-4); }
+  .mkt-short__row {
+    display:grid;
+    grid-template-columns:minmax(150px,1.6fr) 52px 52px 56px 56px 30px 92px minmax(140px,1.9fr);
+    gap:8px; align-items:baseline; font-size:12px; line-height:1.7;
+    border-bottom:1px solid var(--border-subtle);
+  }
+  .mkt-short__row--head {
+    font-size:10px; text-transform:uppercase; letter-spacing:.04em;
+    color:var(--text-tertiary); line-height:2.2; border-bottom-color:var(--border);
+  }
+  .mkt-short__row--muted { opacity:.62; }
+  .mkt-short__row--muted:hover { opacity:1; }
+  .mkt-short__n { text-align:right; }
+  .mkt-short__bet { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mkt-short__why { font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mkt-short__money {
+    font-size:12px; line-height:1.6; padding:6px 10px; margin-bottom:var(--space-3);
+    border:1px solid var(--border-subtle); border-left:3px solid var(--border);
+    border-radius:var(--radius-sm);
+  }
+  .mkt-short__stake { white-space:nowrap; font-size:11px; }
+  .mkt-short__tag {
+    font-size:9px; margin-left:3px; opacity:.75;
+    font-family:var(--font-sans, inherit); text-transform:none;
+  }
+  .mkt-short__lede {
+    font-size:11px; line-height:1.5; color:var(--text-tertiary);
+    margin:2px 0 6px; max-width:120ch;
+  }
+  .mkt-short__more { margin-top:var(--space-2); }
+  .mkt-short__more > summary {
+    cursor:pointer; font-size:11px; color:var(--text-tertiary);
+    padding:4px 0; list-style:revert;
+  }
+  .mkt-short__more > summary:hover { color:var(--text-secondary); }
+
+  /* the why column is the first to go: it is a tooltip on the stake cell too */
+  @media (max-width:900px) {
+    .mkt-short__row { grid-template-columns:minmax(130px,1.6fr) 52px 52px 56px 56px 30px 92px; }
+    .mkt-short__why { display:none; }
+  }
+
   /* ── Responsive ─────────────────────────────────────── */
   @media (max-width:600px) {
     .match-hero__teams { flex-direction:column; gap:var(--space-3); padding:var(--space-4); }
@@ -264,6 +308,9 @@
     .match-hero__team-name { font-size:18px; }
     .ks-grid { grid-template-columns:repeat(2,1fr); }
     .vb-grid { grid-template-columns:1fr; }
+    /* the why column is a tooltip on the stake cell anyway */
+    .mkt-short__row { grid-template-columns:minmax(110px,1.4fr) 46px 46px 50px 50px 26px 86px; }
+    .mkt-short__why { display:none; }
   }
 </style>
 {% endblock %}
@@ -1476,12 +1523,99 @@ function _pickBanner(pk, nPriced) {
   const what = p.bet_type ? `${sanitizeHTML(p.bet_type)}: ${p.player ? sanitizeHTML(p.player) + ' ' : ''}${sanitizeHTML(p.selection || '')}${p.odds ? ' @ ' + Number(p.odds).toFixed(2) : ''}${p.edge_pct != null ? ` (${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%)` : ''}${p.tier ? ' <span class="text-tertiary">[' + sanitizeHTML(String(p.tier)) + ']</span>' : ''}` : '';
   const lean = pk.label === 'VALUE' && pk.lean ? `<div class="text-small text-tertiary">Paper lean alongside: ${sanitizeHTML(pk.lean.bet_type || '')} ${pk.lean.player ? sanitizeHTML(pk.lean.player) + ' ' : ''}${sanitizeHTML(pk.lean.selection || '')} @ ${pk.lean.odds} (${pk.lean.edge_pct > 0 ? '+' : ''}${pk.lean.edge_pct}%)</div>` : '';
   const one = a => `${sanitizeHTML(a.bet_type || '')}: ${a.player ? sanitizeHTML(a.player) + ' ' : ''}${sanitizeHTML(a.selection || '')} @ ${Number(a.odds).toFixed(2)} (${a.edge_pct > 0 ? '+' : ''}${Number(a.edge_pct).toFixed(1)}%${a.tier ? ', ' + sanitizeHTML(String(a.tier)) : ''}${a.n_books === 1 ? ', 1 book' : ''})`;
-  const ex = (pk.exotic || []).length ? `<div class="text-small text-secondary">🎲 Insolite (positive edge, paper): ${pk.exotic.slice(0, 3).map(one).join(' · ')}</div>`
+  // The positive-edge exotics are rows of the shortlist table below (flagged
+  // there with a die), so the banner only speaks when NOTHING outside the
+  // mainstream markets beats its price — which the table cannot say.
+  const ex = (pk.exotic || []).length ? ''
            : pk.exotic_fallback ? `<div class="text-small text-tertiary">🎲 Insolite: none beats its price; most probable ${one(pk.exotic_fallback)}</div>` : '';
   return `<div style="border:1px solid var(--border-subtle);border-left:3px solid ${colr};border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3)">
     <div style="font-size:12px"><b style="color:${colr}">${lab}</b> · ${what}</div>
     <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edges ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}${ex}</div>`;
 }
+// ---------------------------------------------------------------------------
+// The shortlist: what to bet, what not to, and how much. Every number comes
+// from /api/match-markets["shortlist"] — the same ranking the pick banner
+// above it was built from, so one bet cannot show two edges (it did until
+// 2026-09-08: the banner read picks.json while the grid priced rows live).
+// The stake is the GATE's answer, never this page's: a real euro figure exists
+// only for a bet the engine selected or a market market_promotion promoted.
+// ---------------------------------------------------------------------------
+const _STAKE_COLOUR = {
+  selected: 'var(--green)',
+  promoted: 'var(--green)',
+  paper:    'var(--text-tertiary)',
+  rejected: 'var(--amber)',
+  blocked:  'var(--text-tertiary)',
+  no_edge:  'var(--text-tertiary)',
+};
+function _stakeCell(st) {
+  if (!st) return '';
+  const col = _STAKE_COLOUR[st.kind] || 'var(--text-tertiary)';
+  if (!(st.eur > 0)) return `<span class="text-mono mkt-short__stake text-tertiary" title="${sanitizeHTML(st.note || '')}">—</span>`;
+  const tag = st.real ? '' : '<span class="mkt-short__tag">paper</span>';
+  return `<span class="text-mono mkt-short__stake" style="color:${col};font-weight:${st.real ? 700 : 400}" title="${sanitizeHTML(st.note || '')}">€${Number(st.eur).toFixed(2)}${tag}</span>`;
+}
+function _shortRow(b, opts) {
+  const st = b.stake || {};
+  const edge = Number(b.edge_pct);
+  const ecol = edge > 0 ? 'var(--green)' : 'var(--text-tertiary)';
+  const name = `${b.player ? '<b>' + sanitizeHTML(b.player) + '</b> ' : ''}${sanitizeHTML(b.selection || '')}`;
+  const flags = `${b.exotic ? ' <span title="outside the mainstream markets">🎲</span>' : ''}`
+    + `${b.n_books === 1 ? ' <span class="text-tertiary" style="font-size:9px" title="one book only — a single price is not a market">1bk</span>' : ''}`;
+  return `<div class="mkt-short__row${opts && opts.muted ? ' mkt-short__row--muted' : ''}">
+      <span class="mkt-short__bet">${name}${flags}<span class="text-tertiary" style="font-size:10px"> · ${sanitizeHTML(b.bet_type || '')}</span></span>
+      <span class="text-mono mkt-short__n">${Number(b.probability_pct).toFixed(1)}%</span>
+      <span class="text-mono mkt-short__n text-tertiary">${b.implied_pct != null ? Number(b.implied_pct).toFixed(1) + '%' : '—'}</span>
+      <span class="text-mono mkt-short__n">${b.odds != null ? '@' + Number(b.odds).toFixed(2) : '—'}</span>
+      <span class="text-mono mkt-short__n" style="color:${ecol}">${edge > 0 ? '+' : ''}${edge.toFixed(1)}%</span>
+      <span class="mkt-short__n">${_tierBadge(b.tier)}</span>
+      <span class="mkt-short__n">${_stakeCell(st)}</span>
+      <span class="mkt-short__why text-tertiary">${sanitizeHTML(st.note || '')}</span>
+    </div>`;
+}
+function _shortHead() {
+  return `<div class="mkt-short__row mkt-short__row--head">
+      <span class="mkt-short__bet">Bet</span>
+      <span class="mkt-short__n">Model</span><span class="mkt-short__n">Market</span>
+      <span class="mkt-short__n">Price</span><span class="mkt-short__n" title="EV per €1 staked at this price: model probability × odds − 1. NOT the engine's edge, which is model minus sharp in points after shrinkage.">Edge</span>
+      <span class="mkt-short__n">Tier</span><span class="mkt-short__n">Stake</span>
+      <span class="mkt-short__why">Why</span></div>`;
+}
+function renderShortlist(sl, nPriced) {
+  if (!sl) return '';
+  const band = sl.band || [3, 12];
+  if (!nPriced) {
+    return `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">No market price on any row yet — the per-event odds are fetched at T-6h and T-3h, so a match further out has model probabilities and nothing to compare them to.</div>`;
+  }
+  const named = (sl.real_bets || []).map(b =>
+    `${b.player ? sanitizeHTML(b.player) + ' ' : ''}${sanitizeHTML(b.selection || '')} @${Number(b.odds).toFixed(2)} for <b style="color:var(--green)">€${Number(b.eur).toFixed(2)}</b>`).join(' · ');
+  const real = sl.real_eur > 0
+    ? `${named}${sl.real_pct != null ? ` <span class="text-tertiary">· ${Number(sl.real_pct).toFixed(2)}% of the €${Number(sl.bankroll).toFixed(0)} bankroll</span>` : ''}`
+    : `<b>nothing</b> — the engine selected no bet here, and no market on this list has earned real stakes yet`;
+  let html = `<div class="mkt-short">
+    <div class="mkt-short__money">Real money on this match: ${real}${sl.paper_eur > 0 ? ` <span class="text-tertiary">· €${Number(sl.paper_eur).toFixed(2)} paper across ${sl.n_paper} row${sl.n_paper === 1 ? '' : 's'}, building the record each market needs to earn a real stake</span>` : ''}</div>`;
+  if (sl.bets.length) {
+    html += `<div class="text-label">Worth betting <span class="text-tertiary" style="font-weight:400">· ${sl.n_bets}</span></div>
+      <div class="mkt-short__lede">Every one of the ${nPriced} priced rows the model prices above the market, in the engine's own order: inside the ${band[0]}–${band[1]}% band first, then measured tier, then a multi-book price, then size of edge. <b>Not sorted by edge</b> — with this many rows the biggest number is a max over noise. The stake is the gate's answer, not this page's: a real euro figure only where the engine selected the bet or the market earned real stakes.</div>`;
+    html += _shortHead() + sl.bets.map(b => _shortRow(b)).join('');
+  } else {
+    html += `<div class="text-small text-tertiary">Nothing to bet: the market prices every one of the ${nPriced} priced rows at or above the model.</div>`;
+  }
+  if (sl.more && sl.more.length) {
+    html += `<details class="mkt-short__more"><summary>${sl.n_more} more with a positive edge, further down the same order</summary>${_shortHead()}${sl.more.map(b => _shortRow(b, {muted: true})).join('')}</details>`;
+  }
+  if (sl.flagged && sl.flagged.length) {
+    html += `<details class="mkt-short__more"><summary>${sl.n_flagged} row${sl.n_flagged === 1 ? '' : 's'} with an edge the gate throws away — long shots and edges above the ${band[1]}% cap</summary>${_shortHead()}${sl.flagged.map(b => _shortRow(b, {muted: true})).join('')}</details>`;
+  }
+  if (sl.avoid && sl.avoid.length) {
+    html += `<details class="mkt-short__more"><summary>${sl.n_avoid} the market prices past us — do not bet these</summary>
+      <div class="text-small text-tertiary" style="padding:4px 0">Most probable first, not most negative: the trap is the outcome that looks obvious and is already in the price.</div>
+      ${_shortHead()}${sl.avoid.map(b => _shortRow(b, {muted: true})).join('')}</details>`;
+  }
+  html += '</div>';
+  return html;
+}
+
 function renderMarkets(d) {
   if (!d || d.error) return `<div class="text-small text-tertiary">Markets unavailable: ${sanitizeHTML((d && d.error) || '')}</div>`;
   const groups = {};
@@ -1492,6 +1626,7 @@ function renderMarkets(d) {
     html += `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">${reasons.map(sanitizeHTML).join(' · ')}</div>`;
   }
   html += _pickBanner(d.pick, d.n_priced);
+  html += renderShortlist(d.shortlist, d.n_priced);
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3)">';
   for (const [g, rows] of Object.entries(groups)) {
     const tierC = rows.every(r => r.tier === 'C');

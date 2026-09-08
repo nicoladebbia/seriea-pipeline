@@ -326,7 +326,156 @@ def test_attach_prices_never_mutates_shared_rows(monkeypatch):
     P.attach_prices("A vs B", payload)
     assert payload["markets"][0]["odds"] == 2.0 and payload["n_priced"] == 1
     assert "odds" not in shared[0]
-    assert payload["pick"] is None
+    # the line is now rebuilt from the live prices, so it exists with no
+    # picks.json on disk — only its provenance keys come from the file
+    assert payload["pick"]["label"] == "LEAN"
+    assert payload["pick"].get("generated_at") is None
+    assert "odds" not in shared[0] and "in_band" not in shared[0]
+
+
+def test_the_banner_and_the_shortlist_are_built_from_one_ranking(monkeypatch):
+    """The page showed two edges for one bet (+8.6% banner from picks.json,
+    +9.8% live in the grid, 2026-09-08). Both now come from the same list, so
+    a bet that appears in each must carry the identical number."""
+    monkeypatch.setattr(P, "match_price_book", lambda m, league="serie_a": {
+        ("h2h", "home", None, None): {"odds": 2.2, "book": "b", "avg": 2.2, "n_books": 10},
+        ("totals", "over", 2.5, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 9}})
+    monkeypatch.setattr(P, "_read", lambda path, default: default)
+    payload = {"markets": [_row("1x2 finale", "1", 55.0, "A"), _row("Under/over", "Over 2.5", 56.0)],
+               "players": []}
+    P.attach_prices("A vs B", payload)
+    head = payload["pick"]["pick"]
+    top = payload["shortlist"]["bets"][0]
+    assert (head["selection"], head["edge_pct"]) == (top["selection"], top["edge_pct"])
+
+
+def test_no_euro_figure_is_offered_for_a_market_that_has_not_earned_real_stakes():
+    """The promotion gate is the product: a hypothetical Kelly stake beside a
+    paper row is the number that gets acted on. Only a bet the engine selected
+    or a promoted market may carry a real euro amount."""
+    from scripts.betting.betting_unified import BettingConfig
+    cfg = BettingConfig()
+    promo = {"markets": {"btts": {"status": "paper", "distance": "7/50 settled"}}}
+    row = {"bet_type": "Goal", "selection": "Sì", "probability_pct": 55.0, "odds": 2.0,
+           "implied_pct": 50.0, "edge_pct": 10.0, "market_key": "btts"}
+    st = P.money_state(row, slip_bet=None, engine_reason=None, promo_state=promo, cfg=cfg, bankroll=1000.0)
+    assert st["kind"] == "paper" and st["real"] is False and "7/50 settled" in st["note"]
+    # a selected bet carries the ENGINE's stake, not one computed here
+    st = P.money_state(row, slip_bet={"stake_amount": 18.25}, engine_reason=None,
+                       promo_state=promo, cfg=cfg, bankroll=1000.0)
+    assert st == {"kind": "selected", "real": True, "eur": 18.25,
+                  "note": "the engine's own selection — real stake, committed at T-30"}
+    # promoted: a real figure, and it is market_promotion's own function
+    from scripts.betting.market_promotion import promoted_stake
+    promo["markets"]["btts"]["status"] = "promoted"
+    st = P.money_state(row, slip_bet=None, engine_reason=None, promo_state=promo, cfg=cfg, bankroll=1000.0)
+    assert st["kind"] == "promoted" and st["eur"] == promoted_stake(0.55, 2.0, 1000.0) > 0
+
+
+def test_the_bet_carrying_real_money_is_the_first_row(monkeypatch):
+    """The ranker sorts by how credible an angle is, which puts a €14 real bet
+    under three €10 paper ones (Napoli-Bologna, 2026-09-08). The gate's own
+    verdict outranks the heuristic on a card whose question is 'what do I bet'."""
+    from scripts.betting.betting_unified import BettingConfig
+    slip = {"selected_bets": [{"match": "A vs B", "market": "O/U 1.5", "selection": "Over 1.5",
+                               "stake_amount": 14.46}]}
+    book = {("totals", "over", 1.5, None): {"odds": 1.38, "book": "b", "avg": 1.38, "n_books": 9},
+            ("totals", "over", 3.5, None): {"odds": 3.90, "book": "b", "avg": 3.90, "n_books": 4}}
+    rows = [_row("Under/over", "Over 3.5", 27.9), _row("Under/over", "Over 1.5", 75.0)]
+    priced = P.rank_candidates(P.price_rows(rows, book), (3.0, 7.0))
+    # the ranker itself puts the bigger edge (Over 3.5, +8.8%) first
+    assert priced[0]["selection"] == "Over 3.5"
+    sl = P.build_shortlist(priced, match_key="A vs B", slip=slip, cfg=BettingConfig(),
+                           promo_state={"markets": {}}, bankroll=1000.0)
+    assert sl["bets"][0]["selection"] == "Over 1.5"
+    assert sl["bets"][0]["stake"] == {"kind": "selected", "real": True, "eur": 14.46,
+                                      "note": "the engine's own selection — real stake, committed at T-30"}
+    assert sl["real_eur"] == 14.46 and sl["real_bets"][0]["selection"] == "Over 1.5"
+    assert sl["paper_eur"] == 10.0
+
+
+def test_a_negative_edge_row_is_never_staked_and_the_avoid_list_leads_with_the_obvious():
+    """'Which are not probable' has two answers and they are not the same list:
+    a 3% event at -40% nobody was going to bet, and a 65% Over 1.5 the market
+    already prices at 79% — the second is the trap worth showing first."""
+    from scripts.betting.betting_unified import BettingConfig
+    book = {("totals", "over", 1.5, None): {"odds": 1.27, "book": "b", "avg": 1.27, "n_books": 8},
+            ("totals", "under", 0.5, None): {"odds": 12.0, "book": "b", "avg": 12.0, "n_books": 3}}
+    rows = [_row("Under/over", "Over 1.5", 64.6), _row("Under/over", "Under 0.5", 3.0)]
+    priced = P.rank_candidates(P.price_rows(rows, book), (3.0, 7.0))
+    sl = P.build_shortlist(priced, match_key="A vs B", slip={}, cfg=BettingConfig(),
+                           promo_state={"markets": {}}, bankroll=1000.0)
+    assert sl["bets"] == []
+    assert [b["selection"] for b in sl["avoid"]] == ["Over 1.5", "Under 0.5"]
+    assert all(b["stake"]["eur"] == 0.0 for b in sl["avoid"])
+
+
+def test_a_1x2_row_reads_its_OWN_side_rule_not_the_first_one_enabled():
+    """The engine maps a 1x2 selection to ONE category and reads that
+    category's enable flag (_get_market_category). All three are off today, so
+    a first-enabled scan looked right; enable home alone and an away pick would
+    have claimed the home rule's money."""
+    from scripts.betting.betting_unified import BettingConfig
+    cfg = BettingConfig()
+    cfg.market_rules = {**cfg.market_rules,
+                        "1X2": {**cfg.market_rules["1X2"], "enabled": True}}
+    home = {"bet_type": "1x2 finale", "selection": "1"}
+    away = {"bet_type": "1x2 finale", "selection": "2"}
+    draw = {"bet_type": "1x2 finale", "selection": "X"}
+    assert (P.real_money_rule(home, cfg) or {}).get("category") == "1X2"
+    assert P.real_money_rule(away, cfg) is None
+    assert P.real_money_rule(draw, cfg) is None
+    # and with every side off — today's config — no 1x2 row claims real money
+    assert P.real_money_rule(home, BettingConfig()) is None
+
+
+def test_a_gated_league_never_claims_a_market_bets_real_money():
+    """EPL betting is gated at the LEAGUE (`_league_betting_enabled`), above any
+    market rule. Without that gate an EPL Over 2.5 read "O/U_Over bets real
+    money, but the engine did not select this row on this match" — true of the
+    market, false of this page, on a line a reader acts on."""
+    from scripts.betting.betting_unified import BettingConfig
+    cfg = BettingConfig()
+    book = {("totals", "over", 2.5, None): {"odds": 2.0, "book": "b", "avg": 2.0, "n_books": 6}}
+    priced = P.rank_candidates(P.price_rows([_row("Under/over", "Over 2.5", 55.0)], book), (3.0, 7.0))
+    # Serie A: the market rule IS what governs the row, so the note names it
+    sa = P.build_shortlist(priced, match_key="A vs B", slip={}, cfg=cfg,
+                           promo_state={"markets": {}}, bankroll=1000.0, betting_enabled=True)
+    assert sa["bets"][0]["stake"]["kind"] == "rejected"
+    assert "O/U_Over bets real money" in sa["bets"][0]["stake"]["note"]
+    # same row, gated league: paper, and the note says why
+    epl = P.build_shortlist(priced, match_key="A vs B", slip={}, cfg=cfg,
+                            promo_state={"markets": {}}, bankroll=1000.0, betting_enabled=False)
+    st = epl["bets"][0]["stake"]
+    assert st["kind"] == "paper" and st["real"] is False and "league is gated" in st["note"]
+    assert epl["real_eur"] == 0.0 and epl["real_bets"] == []
+    # a PROMOTED market is still gated by the league
+    promo = {"markets": {"ou_over_2_5": {"status": "promoted"}}}
+    gated = P.build_shortlist(priced, match_key="A vs B", slip={}, cfg=cfg,
+                              promo_state=promo, bankroll=1000.0, betting_enabled=False)
+    assert gated["bets"][0]["stake"]["real"] is False
+
+
+def test_last_seasons_selection_never_stakes_this_seasons_fixture():
+    """Serie A fixtures repeat, so match+selection is not an identity — the
+    date-blind journal dedup ate every real bet for nine days (2026-09-05).
+    The same guard here, fail-open when either date is unknown."""
+    from scripts.betting.betting_unified import BettingConfig
+    slip = {"selected_bets": [{"match": "A vs B", "date": "2025-09-13",
+                               "selection": "Over 1.5", "stake_amount": 14.46}]}
+    book = {("totals", "over", 1.5, None): {"odds": 1.38, "book": "b", "avg": 1.38, "n_books": 9}}
+    priced = P.rank_candidates(P.price_rows([_row("Under/over", "Over 1.5", 75.0)], book), (3.0, 7.0))
+    kw = dict(match_key="A vs B", slip=slip, cfg=BettingConfig(),
+              promo_state={"markets": {}}, bankroll=1000.0)
+    stale = P.build_shortlist(priced, kickoff="2026-09-13T16:00:00Z", **kw)
+    assert stale["real_eur"] == 0.0 and stale["bets"][0]["stake"]["kind"] != "selected"
+    # this season's fixture, same slip row date: the stake stands
+    slip["selected_bets"][0]["date"] = "2026-09-13"
+    live = P.build_shortlist(priced, kickoff="2026-09-13T16:00:00Z", **kw)
+    assert live["real_eur"] == 14.46
+    # no kickoff on the payload (no odds yet): fail open, never drop a real bet
+    slip["selected_bets"][0]["date"] = "2025-09-13"
+    assert P.build_shortlist(priced, kickoff=None, **kw)["real_eur"] == 14.46
 
 
 def test_paper_lean_beside_a_real_bet_is_a_different_bet():

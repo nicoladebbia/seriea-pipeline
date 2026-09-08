@@ -317,8 +317,19 @@ def match_price_book(match_key: str, league: str = "serie_a") -> dict[tuple, dic
 
 def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dict:
     """For the prediction page: price every market/player row of a
-    build_match_markets payload in place and attach this match's line from
-    PICKS_FILE (label, pick, reason) as payload["pick"]."""
+    build_match_markets payload in place, then serve the pick line AND the
+    staked shortlist from ONE ranking of those rows.
+
+    The line is rebuilt here from the live prices rather than copied out of
+    PICKS_FILE. That file is a snapshot taken when the slate last ran, and
+    reading it while the grid below priced the same rows live gave the page two
+    edges for one bet (+8.6% in the banner, +9.8% in the grid, 2026-09-08).
+    Only the provenance a live rebuild cannot know — when the slate ran, whether
+    the LEAN was paper-journaled — is carried over from the file.
+    """
+    from scripts.betting.bankroll_loader import get_effective_bankroll
+    from scripts.betting.betting_unified import BettingConfig, _league_betting_enabled
+
     book = match_price_book(match_key, league)
     # copies: simulator rows come from goal_process._SERVED_CACHE and are shared
     # across requests — pricing must never write into them
@@ -326,15 +337,40 @@ def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dic
     payload["players"] = [dict(r) for r in payload.get("players") or []]
     n = annotate_rows(payload["markets"], book) + annotate_rows(payload["players"], book)
     payload["n_priced"] = n
-    picks = _read(PICKS_FILE, {}) or {}
-    line = next((p for p in picks.get("picks") or [] if p.get("match") == match_key), None)
-    payload["pick"] = None if line is None else {
-        k: line.get(k) for k in ("label", "stage", "pick", "lean", "reason", "alternatives", "most_probable",
-                                 "exotic", "exotic_fallback", "n_exotic_positive",
-                                 "n_priced", "n_positive", "n_overconfident", "n_longshot_edges",
-                                 "journaled_bet_id", "prices_fetched_at")}
-    if payload["pick"] is not None:
-        payload["pick"]["generated_at"] = picks.get("generated_at")
+
+    cfg = BettingConfig.for_league(league)
+    band = (cfg.min_edge_pct, cfg.max_edge_pct)
+    try:
+        betting_enabled = _league_betting_enabled(league)
+    except Exception:  # noqa: BLE001 - fail closed: an unreadable gate stakes nothing
+        betting_enabled = False
+    slip = _read(UPCOMING / "unified_bet_slip.json", {}) or {}
+    candidates = _read(UPCOMING / "betting_candidates.json", {}) or {}
+    try:
+        from scripts.betting.market_promotion import load_state
+        promo_state = load_state()
+    except Exception:  # noqa: BLE001 - the shortlist degrades to paper, never 500s
+        promo_state = {"markets": {}}
+    try:
+        bankroll = float(get_effective_bankroll() or 0.0)
+    except Exception:  # noqa: BLE001
+        bankroll = 0.0
+
+    rows = payload["markets"] + payload["players"]
+    priced = rank_candidates(price_rows(rows, book), band)
+    payload["pick"] = build_match_pick(match_key, rows, book, slip=slip, candidates=candidates,
+                                       band=band, priced=priced)
+    payload["shortlist"] = build_shortlist(priced, match_key=match_key, slip=slip, cfg=cfg,
+                                           promo_state=promo_state, bankroll=bankroll,
+                                           betting_enabled=betting_enabled,
+                                           kickoff=payload.get("kickoff_utc"))
+    payload["shortlist"]["band"] = [band[0], OVERCONFIDENCE_CAP]
+    slate = _read(PICKS_FILE, {}) or {}
+    stored = next((p for p in slate.get("picks") or [] if p.get("match") == match_key), None)
+    if stored is not None:
+        payload["pick"]["generated_at"] = slate.get("generated_at")
+        for k in ("journaled_bet_id", "prices_fetched_at"):
+            payload["pick"][k] = stored.get(k)
     return payload
 
 
@@ -392,10 +428,234 @@ def _pick_view(c: dict) -> dict:
                                   "lineup", "xi_status", "start_pct", "start_prob")}
 
 
+# ---------------------------------------------------------------------------
+# What money a row can take. The GATE decides; this only reports what it said.
+# ---------------------------------------------------------------------------
+# Card bet_type -> the market_rules categories betting_unified gates on
+# (_get_market_category). A family with no category there is not a market the
+# real engine can bet at all, whatever edge the card shows for it.
+_RULE_CATEGORY = {
+    "Under/over": ("O/U_Over", "O/U_Under"),
+    "Doppia chance": ("DC",),
+    "Goal": ("BTTS",),
+}
+# 1x2 is the one family where the engine reads ONE category per SELECTION and
+# that category's own enable flag (_get_market_category). Iterating the three
+# and taking the first enabled would let an away pick claim the home rule's
+# money the day 1X2 is re-enabled for home only — all three are off today, so
+# this costs nothing yet and is wrong the moment it does not.
+_1X2_CATEGORY = {"1": "1X2", "x": "1X2_Draw", "2": "1X2_Away"}
+
+
+def real_money_rule(c: dict, cfg: Any) -> dict | None:
+    """The market_rules entry that would govern this row as a REAL bet, or None
+    when no ENABLED rule covers it. Read live from BettingConfig — a market
+    switched off in the engine is switched off here in the same second, and a
+    line outside `allowed_lines` (O/U only bets 1.5 and 2.5) is not covered."""
+    if c.get("bet_type") == "1x2 finale":
+        cat = _1X2_CATEGORY.get(str(c.get("selection") or "").strip().lower())
+        cats = (cat,) if cat else ()
+    else:
+        cats = _RULE_CATEGORY.get(c.get("bet_type")) or ()
+    if not cats:
+        return None
+    ou = _ou_parts(c.get("selection") or "")
+    for cat in cats:
+        if cat.startswith("O/U"):
+            if ou is None or (ou[0] == "under") != (cat == "O/U_Under"):
+                continue
+        rule = cfg.market_rules.get(cat) or {}
+        if not rule.get("enabled"):
+            continue
+        lines = rule.get("allowed_lines")
+        if lines is not None and (ou is None or ou[1] not in lines):
+            continue
+        return {"category": cat, **rule}
+    return None
+
+
+def _promo_distance(market_key: str | None, promo_state: dict) -> str:
+    """How far this paper market is from real stakes, in the gate's own words.
+    A market with no row has never had a paper bet settle: 0 of the bar."""
+    from scripts.betting.market_promotion import PROMOTION_BAR
+    row = ((promo_state or {}).get("markets") or {}).get(market_key or "")
+    if not row:
+        return f"0/{PROMOTION_BAR['min_settled']} settled"
+    return str(row.get("distance") or "at the bar")
+
+
+def money_state(c: dict, *, slip_bet: dict | None, engine_reason: str | None,
+                promo_state: dict, cfg: Any, bankroll: float,
+                betting_enabled: bool = True) -> dict:
+    """What this row can be staked, and by whose decision. Five states:
+
+      selected  the engine picked this exact bet -> ITS stake, read from the slip
+      rejected  the market DOES bet real money but the gate said no on this match
+      promoted  market_promotion promoted this paper market -> promoted_stake()
+      paper     still building its paper record -> the flat paper stake + distance
+      blocked   long shot or edge above the cap -> nothing, whatever the market
+
+    No hypothetical euro figure is ever produced for a market that has not
+    earned real stakes: the gate is the product (project CLAUDE.md), and a
+    number on the page is the thing that gets acted on.
+
+    `betting_enabled` is the LEAGUE gate (`_league_betting_enabled`), and it
+    sits above every real-money branch: on a gated league (EPL) no row can be
+    staked whatever its market rule or promotion says. Without it an EPL O/U
+    Over 2.5 read "O/U_Over bets real money, but the engine did not select this
+    row" — true of the market, false of the league, on a page a reader acts on.
+    """
+    from scripts.betting.market_promotion import is_promoted, promoted_stake
+
+    p = (c.get("probability_pct") or 0) / 100.0
+    odds = c.get("odds")
+    if slip_bet is not None:
+        eur = slip_bet.get("stake_amount") or slip_bet.get("stake") or 0.0
+        return {"kind": "selected", "real": True, "eur": round(float(eur), 2),
+                "note": "the engine's own selection — real stake, committed at T-30"}
+    if engine_reason:
+        return {"kind": "rejected", "real": True, "eur": 0.0, "note": engine_reason}
+    if (c.get("edge_pct") or 0) <= 0:
+        return {"kind": "no_edge", "real": False, "eur": 0.0,
+                "note": f"the market prices it at {c.get('implied_pct')}% against the model's "
+                        f"{c.get('probability_pct')}% — nothing to bet at this price"}
+    if c.get("overconfident"):
+        return {"kind": "blocked", "real": False, "eur": 0.0,
+                "note": f"edge above the {OVERCONFIDENCE_CAP:.0f}% cap — model overconfidence, not value"}
+    if c.get("longshot"):
+        return {"kind": "blocked", "real": False, "eur": 0.0,
+                "note": f"model gives it {c.get('probability_pct')}%, under the {MIN_PROB_PCT:.0f}% floor — "
+                        "an edge on a rare event is inside the model's own error"}
+    rule = real_money_rule(c, cfg) if betting_enabled else None
+    if rule is not None:
+        return {"kind": "rejected", "real": True, "eur": 0.0,
+                "note": f"{rule['category']} bets real money, but the engine did not select this row "
+                        f"on this match — its edge is shrunk and de-vigged against Pinnacle, the "
+                        f"{c.get('edge_pct')}% here is the raw gap"}
+    mk = c.get("market_key")
+    if mk and betting_enabled and is_promoted(mk, promo_state):
+        eur = promoted_stake(p, float(odds or 0), bankroll)
+        return {"kind": "promoted", "real": True, "eur": eur,
+                "note": "promoted by its own paper record — real stake at half Kelly"}
+    from scripts.betting.betting_unified import PAPER_STAKE
+    if not betting_enabled:
+        return {"kind": "paper", "real": False, "eur": PAPER_STAKE,
+                "note": "paper only: this league is gated for real money — no row here can be staked"}
+    return {"kind": "paper", "real": False, "eur": PAPER_STAKE,
+            "note": f"paper only: {_promo_distance(mk, promo_state)} toward real stakes"}
+
+
+def _shortlist_view(c: dict, stake: dict) -> dict:
+    return {**_pick_view(c), "overconfident": c.get("overconfident"),
+            "longshot": c.get("longshot"), "stake": stake,
+            "exotic": c.get("bet_type") not in _MAIN_BET_TYPES}
+
+
+def build_shortlist(priced: list[dict], *, match_key: str, slip: dict, cfg: Any,
+                    promo_state: dict, bankroll: float, betting_enabled: bool = True,
+                    kickoff: str | None = None,
+                    n_bets: int = 10, n_other: int = 6) -> dict:
+    """The ranked answer to "what do I bet, and how much".
+
+    `bets`    every priced row with a positive edge that is neither a long shot
+              nor above the cap, in the RANKER's own order (in band > tier >
+              multi-book > edge) — not by edge, because with 40+ priced rows the
+              biggest number is a max over noise.
+    `flagged` positive-edge rows the ranker sank, each with the reason it sank.
+    `avoid`   the other half of the question: rows the market prices ABOVE the
+              model, biggest disagreement first — the bets that look obvious
+              (a 65% "Over 1.5") and are already priced past.
+    """
+    # A fixture pair repeats every season, so "Napoli vs Bologna" alone is not
+    # an identity — the date-blind journal dedup ate every real bet for nine
+    # days (2026-09-05). Both dates are compared only when both are known: the
+    # slip carries `date`, the payload the odds `commence_time`, and on the
+    # live slate they agree (2026-09-13 vs 2026-09-13T16:00:00Z).
+    day = (kickoff or "")[:10] or None
+
+    def _same_day(b):
+        return not day or not b.get("date") or str(b["date"])[:10] == day
+
+    sel_bets = [b for b in (slip.get("selected_bets") or [])
+                if isinstance(b, dict) and b.get("match") == match_key and _same_day(b)]
+    misses = [m for m in (slip.get("near_misses") or [])
+              if isinstance(m, dict) and m.get("match") == match_key and _same_day(m)]
+
+    def _slip_for(c):
+        for b in sel_bets:
+            if str(b.get("selection", "")).lower() == str(c.get("selection", "")).lower():
+                return b
+        return None
+
+    def _reason_for(c):
+        for m in misses:
+            if str(m.get("selection", "")).lower() == str(c.get("selection", "")).lower():
+                # The engine's edge is model-minus-sharp in POINTS, after
+                # shrinkage and the Pinnacle de-vig; the card's is EV per unit
+                # staked. Same word, two quantities — name the unit or the two
+                # numbers on one row look like a bug.
+                e, band = m.get("edge_pct"), ""
+                if m.get("min_edge") is not None:
+                    band = f", its band is {m.get('min_edge')}–{m.get('max_edge')}pp"
+                at = f" at {e:+.1f}pp" if isinstance(e, int | float) else ""
+                return f"engine rejected it — {m.get('reason')}{at}{band}"
+        return None
+
+    def _view(c):
+        return _shortlist_view(c, money_state(c, slip_bet=_slip_for(c), engine_reason=_reason_for(c),
+                                              promo_state=promo_state, cfg=cfg, bankroll=bankroll,
+                                              betting_enabled=betting_enabled))
+
+    positive = [c for c in priced if c["edge_pct"] > 0 and not c["overconfident"] and not c["longshot"]]
+    flagged = [c for c in priced if c["edge_pct"] > 0 and (c["overconfident"] or c["longshot"])]
+    # `avoid` is ranked by MODEL PROBABILITY, not by how negative the edge is:
+    # sorting by edge fills the list with 3% events at -40%, which nobody was
+    # going to bet. The useful trap is the outcome that looks obvious — a 65%
+    # "Over 1.5" the market already prices at 79%.
+    negative = sorted((c for c in priced if c["edge_pct"] <= 0 and not c["longshot"]),
+                      key=lambda c: -(c.get("probability_pct") or 0))
+    negative += sorted((c for c in priced if c["edge_pct"] <= 0 and c["longshot"]),
+                       key=lambda c: c["edge_pct"])
+    # The ranker orders by how CREDIBLE an angle is, which is the right order
+    # for paper. A bet the gate cleared for real money outranks all of it and
+    # must be the first row on the card — sorting is stable, so the ranker's
+    # order survives inside each group. (Napoli–Bologna, 2026-09-08: the one
+    # bet carrying real money sat fourth, under three paper rows.)
+    _MONEY_FIRST = {"selected": 0, "promoted": 1}
+    views = [_view(c) for c in positive]
+    views.sort(key=lambda b: _MONEY_FIRST.get(b["stake"]["kind"], 2))
+    bets, more = views[:n_bets], views[n_bets:]
+    real = [b for b in views if b["stake"]["real"] and b["stake"]["eur"] > 0]
+    # both sums are over every positive row, not the visible ten: the money line
+    # says "on this match", and a paper row pushed into `more` is still one
+    paper = [b for b in views if not b["stake"]["real"] and b["stake"]["eur"] > 0]
+    return {"bets": bets, "more": more, "n_more": len(more),
+            "real_bets": [{"selection": b.get("selection"), "bet_type": b.get("bet_type"),
+                           "player": b.get("player"), "odds": b.get("odds"),
+                           "eur": b["stake"]["eur"]} for b in real],
+            "flagged": [_view(c) for c in flagged[:n_other]],
+            "avoid": [_view(c) for c in negative[:n_other]],
+            "n_bets": len(positive), "n_flagged": len(flagged), "n_avoid": len(negative),
+            "bankroll": round(float(bankroll or 0), 2),
+            # the headline answer to "what do I actually put money on": the sum
+            # of what the GATE cleared, which on most matches is nothing at all
+            "real_eur": round(sum(b["stake"]["eur"] for b in real), 2),
+            "real_pct": (round(100.0 * sum(b["stake"]["eur"] for b in real) / bankroll, 2)
+                         if bankroll else None),
+            "n_real": len(real), "paper_eur": round(sum(b["stake"]["eur"] for b in paper), 2),
+            "n_paper": len(paper)}
+
+
 def build_match_pick(match_key: str, rows: list[dict], book: dict[tuple, dict], *,
-                     slip: dict, candidates: dict, band: tuple[float, float]) -> dict:
-    """The line for one match: label, headline pick, three alternatives, counts."""
-    priced = rank_candidates(price_rows(rows, book), band)
+                     slip: dict, candidates: dict, band: tuple[float, float],
+                     priced: list[dict] | None = None) -> dict:
+    """The line for one match: label, headline pick, three alternatives, counts.
+
+    `priced` lets a caller that already ranked the rows pass that list in, so
+    the banner and any table beside it are the SAME objects and cannot show
+    two different edges for one bet (the prediction page did, 2026-09-08:
+    +8.6% in the banner from picks.json against +9.8% live in the grid)."""
+    priced = rank_candidates(price_rows(rows, book), band) if priced is None else priced
     verdict = _engine_verdict(match_key, slip, candidates)
     positive = [c for c in priced if c["edge_pct"] > 0 and not c["overconfident"] and not c["longshot"]]
     over = [c for c in priced if c["overconfident"] and not c["longshot"]]
