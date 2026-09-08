@@ -476,6 +476,14 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   test_the_sharp_entry_price_is_recorded_without_moving_the_bet` is the differential:
   same slate with and without the per-book prices, identical edge/stake/selection,
   tag present in one and absent in the other.
+  **Both ends pick the sharpest book PRESENT, not the first in list order**
+  (`SHARP_BOOK_PREFERENCE` / `preferred_sharp`, one definition in `bet_journal`,
+  imported by `clv_capture` and `betting_unified`; the duplicate `SHARP_BOOKMAKERS`
+  set is an alias to it). The two prices are read by two different code paths over
+  two differently-ordered lists: on the live cache the O/U 2.5 entry tagged
+  Matchbook while the close tagged Pinnacle, and `movement_pair()` — working
+  exactly as designed — would have returned nothing forever. With the shared order
+  the live slate reads Matchbook at both ends, the first end-to-end computable pair.
   **And the money market was never captured at all.** The bulk feed's `totals`
   carries the headline lines only (2.0 / 2.25 / 2.5); **O/U 1.5 lives in
   `alternate_totals`**, which `_match_bet_to_odds` did not read — a live dry run on
