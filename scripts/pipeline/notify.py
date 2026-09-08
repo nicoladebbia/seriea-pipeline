@@ -442,8 +442,15 @@ def _is_quiet_hours(prefs: dict) -> bool:
         return False
 
 
-def _should_send(channel: str, category: str) -> bool:
-    """Check if a notification should be sent to a given channel for a category."""
+def _should_send(channel: str, category: str, priority: str = "") -> bool:
+    """Check if a notification should be sent to a given channel for a category.
+
+    `priority` matters only for quiet hours: `live` is ~59% of all volume, so
+    letting the whole category bypass quiet hours meant the loudest category
+    ignored the only volume control. A live card is urgent when there is money
+    on the match (notify_goal / notify_full_time set PRIORITY_URGENT from
+    bet_context); a scoreline on a match with no bet can wait until 07:00.
+    """
     prefs = load_preferences()
 
     # Global mute — nothing sends
@@ -454,10 +461,15 @@ def _should_send(channel: str, category: str) -> bool:
     if not prefs.get("channels", {}).get(channel, True):
         return False
 
-    # Quiet hours — only alert and live categories bypass for Telegram;
-    # macOS always sends regardless of quiet hours.
+    # Quiet hours — `alert` always bypasses for Telegram; `live` bypasses only
+    # when it is urgent (i.e. there is a bet on the match). macOS always sends
+    # regardless of quiet hours.
     if channel == "telegram" and _is_quiet_hours(prefs):
-        if category not in ("alert", "live"):
+        if category == "alert":
+            pass
+        elif category == "live" and priority == PRIORITY_URGENT:
+            pass
+        else:
             return False
 
     # Check category-specific toggle
@@ -801,13 +813,13 @@ def notify(message: str, title: str = "SerieAI", level: str = "info",
     results = {}
 
     # macOS — always plain text (256 char limit handled by _notify_macos)
-    if _should_send("macos", category):
+    if _should_send("macos", category, priority):
         results["macos"] = _notify_macos(message, title)
     else:
         results["macos"] = False
 
     # Telegram — prefer rich HTML if provided, else plain text
-    if _should_send("telegram", category):
+    if _should_send("telegram", category, priority):
         if tg_html:
             results["telegram"] = _notify_telegram(
                 tg_html, title, level, priority=priority, html=True,
@@ -1387,8 +1399,93 @@ def notify_no_action(matches: list[str]) -> dict:
         return {}
     listed = ", ".join(matches[:4]) + (f" +{len(matches) - 4}" if len(matches) > 4 else "")
     msg = f"T-30 ran for {listed}: no edge cleared the bar. No bets."
+
+    tg = TgMsg()
+    tg.title("T-30: no bets", emoji="\U0001f6e1️")
+    tg.blank()
+    tg.line("The chain ran. Nothing cleared the bar.")
+    tg.blank()
+    for m in matches[:6]:
+        tg.raw(f"  · {_html_escape(m)}")
+    if len(matches) > 6:
+        tg.italic(f"  +{len(matches) - 6} more")
+    tg.blank()
+    tg.italic("A quiet slate is a decision, not a failure.")
+
     return notify(msg, title="T-30: no bets", level="info", category="betting",
-                  priority=PRIORITY_NORMAL)
+                  priority=PRIORITY_NORMAL, tg_html=tg.build())
+
+
+def notify_journal_rejected(blocked: list[str], offered: int) -> dict:
+    """The engine selected bets and the journal refused them — say so LOUDLY.
+
+    This is the shape of the 2026-09-05 date-blind dedup bug: the slip said
+    "recorded 1", the journal took zero, and the only trace was a WARNING in
+    `logs/pipeline.log`. Real money the engine decided to place did not get
+    placed. category="alert" so it survives quiet hours.
+    """
+    if not blocked:
+        return {}
+    msg = (f"{len(blocked)} of {offered} selected bet(s) were REJECTED by the journal: "
+           + "; ".join(blocked[:3]))
+
+    tg = TgMsg()
+    tg.title(f"{len(blocked)} of {offered} bets NOT journaled", emoji="⚠️")
+    tg.blank()
+    tg.line("The engine selected these. The journal refused them.")
+    tg.blank()
+    for b in blocked[:6]:
+        tg.raw(f"  ❌ {_html_escape(b)}")
+    if len(blocked) > 6:
+        tg.italic(f"  +{len(blocked) - 6} more")
+    tg.blank()
+    tg.italic("Usually a dedup collision. Check bet_journal.add_bet before the next kickoff.")
+
+    # The count belongs in the TITLE: that is what macOS shows and what the
+    # history file records (the history logs `message`/`title`, never tg_html).
+    return notify(msg[:250], title=f"Journal REJECTED {len(blocked)} of {offered} bets",
+                  level="warning", category="alert", priority=PRIORITY_URGENT,
+                  tg_html=tg.build())
+
+
+def notify_market_promotion(transitions: list[dict]) -> dict:
+    """A market crossed the promotion gate, was demoted, or an incumbent's
+    stake ladder moved. This is where real money starts or stops flowing —
+    CLAUDE.md calls the gate "the product" and it pushed nothing until now.
+
+    Each transition: {kind, market, reason, n, roi_pct, z}. `kind` is one of
+    "promoted" | "demoted" | "stake_up" | "stake_down".
+    """
+    if not transitions:
+        return {}
+
+    icons = {"promoted": "\U0001f7e2", "demoted": "\U0001f534",
+             "stake_up": "⬆️", "stake_down": "⬇️"}
+    words = {"promoted": "PROMOTED to real stakes", "demoted": "DEMOTED to paper",
+             "stake_up": "full stake unlocked", "stake_down": "stake halved"}
+
+    head = ", ".join(f"{t['market']} {words.get(t['kind'], t['kind'])}" for t in transitions[:3])
+    msg = f"Market gate moved: {head}"
+
+    tg = TgMsg()
+    tg.title("Market gate moved", emoji="\U0001f3e6")
+    tg.blank()
+    for t in transitions:
+        kind = t.get("kind", "")
+        tg.raw(f"{icons.get(kind, '•')} <b>{_html_escape(str(t.get('market', '?')))}</b> "
+               f"— {_html_escape(words.get(kind, kind))}")
+        n, roi, z = t.get("n"), t.get("roi_pct"), t.get("z")
+        if n is not None:
+            tg.raw(f"  n={n} · ROI {roi:+.1f}% · z {z:+.2f}"
+                   if roi is not None and z is not None else f"  n={n}")
+        if t.get("reason"):
+            tg.italic(f"  {_html_escape(str(t['reason']))}")
+        tg.blank()
+    tg.italic("The gate decided this from the settled record. Nobody edited a number.")
+
+    level = "warning" if any(t.get("kind") in ("demoted", "stake_down") for t in transitions) else "success"
+    return notify(msg[:250], title="Market gate moved", level=level,
+                  category="alert", priority=PRIORITY_URGENT, tg_html=tg.build())
 
 
 def notify_fill_nudge(match: str, count: int, minutes: int = 10) -> dict:
@@ -1857,7 +1954,11 @@ def notify_full_time(match_key: str, home_score: int, away_score: int,
         level = "info"
 
     badge = _league_badge(match_key=match_key)
-    return notify(msg, title=f"{badge} \U0001f3c1 FT {home_score}-{away_score}", level=level, category="live")
+    # Explicit priority: the ("live", "info") default is URGENT, which would let
+    # a no-bet scoreline through quiet hours on this fallback path.
+    return notify(msg, title=f"{badge} \U0001f3c1 FT {home_score}-{away_score}", level=level,
+                  category="live",
+                  priority=PRIORITY_URGENT if had_bet else PRIORITY_NORMAL)
 
 
 def notify_retrain(mode: str, matchweek: int, promoted: bool,
@@ -1881,7 +1982,35 @@ def notify_retrain(mode: str, matchweek: int, promoted: bool,
         level = "warning"
 
     title = f"Retrain: MW {matchweek} {'upgraded' if promoted else 'unchanged'}"
-    return notify(msg, title=title, level=level, category="retrain")
+
+    tg = TgMsg()
+    if promoted:
+        tg.title(f"MW {matchweek} — model promoted", emoji="\U0001f504")
+        tg.blank()
+        if new_ll < old_ll - 0.005:
+            tg.line("Retrained and it got sharper.")
+            tg.blank()
+            tg.kv("Log-loss", f"{old_ll:.4f} → {new_ll:.4f}")
+        else:
+            tg.line("Retrained — performance is steady.")
+            tg.blank()
+            tg.kv("Log-loss", f"{new_ll:.4f}")
+        if reason:
+            tg.kv("Reason", reason)
+        tg.blank()
+        tg.italic("Next matchweek's predictions use the upgraded model.")
+    else:
+        tg.title(f"MW {matchweek} — model unchanged", emoji="\U0001f7e1")
+        tg.blank()
+        tg.line("Retrain ran. The new model wasn't better.")
+        if reason:
+            tg.blank()
+            tg.kv("Reason", reason)
+        tg.blank()
+        tg.italic("Keeping the current model. No action needed.")
+
+    return notify(msg, title=title, level=level, category="retrain",
+                  tg_html=tg.build())
 
 
 

@@ -206,9 +206,10 @@
         <option value="30">30s</option>
         <option value="60">1 min</option>
       </select>
-      <label class="text-small text-tertiary" for="lp-goal-pings" title="Telegram goal / red-card pings: every tracked match, or only matches with a journal bet">Pings</label>
+      <label class="text-small text-tertiary" for="lp-goal-pings" title="Telegram goal / red-card / full-time pings. Serie A + bets (default): Serie A always, other leagues only when a journal bet is on the match. All goals: every tracked match, both leagues. Bet games: only matches with a bet, any league">Pings</label>
       <select id="lp-goal-pings" onchange="lpSetGoalPings(this.value)" class="select" style="width:auto;">
-        <option value="all" selected>All goals</option>
+        <option value="serie_a" selected>Serie A + bets</option>
+        <option value="all">All goals</option>
         <option value="bets">Bet games</option>
       </select>
       <label class="text-small text-tertiary" for="lp-inplay-pings" title="Telegram ping when the in-play PAPER engine takes a pick after a goal. Off by default: the backtest on stored matchdays fails the skill gate">In-play</label>

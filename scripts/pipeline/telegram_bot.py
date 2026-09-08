@@ -480,19 +480,116 @@ def _reply_keyboard() -> dict:
 
 
 # WC-season command menu — populates Telegram's ☰ menu button at input-left.
+# ---------------------------------------------------------------------------
+# Command registry — ONE definition, three consumers
+# ---------------------------------------------------------------------------
+# Until 2026-09-07 the router handled ~27 commands, `_MENU_COMMANDS` registered
+# 12 and `/help` listed ~22, all maintained by hand. They disagreed: `/record`
+# was in the menu but absent from `/help`; `/match`, `/fill`, `/league`,
+# `/parlays`, `/summary` and `/clear` were reachable but advertised nowhere.
+#
+# Fields: (command, menu_description, help_line, group, in_menu)
+#   in_menu=True  → registered with Telegram's ☰ button (max ~12 reads well)
+#   in_menu=False → reachable, and listed in /help only if its group is one
+#                   _handle_help renders (Fantacalcio, Serie A betting).
+#                   Session and Legacy rows are reachable and deliberately
+#                   unlisted everywhere.
+# `tests/test_telegram_commands.py` asserts this registry and the router's
+# dispatch branches name exactly the same set, so they cannot drift again.
+
+_GROUP_FANTA = "Fantacalcio"
+_GROUP_BETTING = "Serie A betting"
+_GROUP_SESSION = "Session"
+_GROUP_LEGACY = "Legacy World Cup"
+
+_COMMANDS: list[dict] = [
+    # ── Fantacalcio ──
+    {"command": "xi", "menu": "⚽ Formazione fantacalcio consigliata",
+     "help": "formazione consigliata della giornata",
+     "group": _GROUP_FANTA, "in_menu": True},
+    {"command": "sfide", "menu": "🆚 Pronostico H2H prossimi avversari",
+     "help": "pronostico H2H vs i prossimi avversari",
+     "group": _GROUP_FANTA, "in_menu": True, "aliases": ["h2h"]},
+    {"command": "formazioni", "menu": "📸 Manda la formazione avversaria",
+     "help": "foto della formazione avversaria → XI corretto",
+     "group": _GROUP_FANTA, "in_menu": True, "aliases": ["avversario"]},
+    # ── Serie A betting ──
+    {"command": "picks", "menu": "🎯 Miglior angolo per ogni partita",
+     "help": "miglior angolo per OGNI partita (tutti i mercati)",
+     "group": _GROUP_BETTING, "in_menu": True, "aliases": ["angoli"]},
+    {"command": "bets", "menu": "🎫 Value bet nello slip",
+     "help": "value bet nello slip (edge-gated, soldi veri)",
+     "group": _GROUP_BETTING, "in_menu": True},
+    {"command": "record", "menu": "📊 Record mercati: chi ha guadagnato la puntata vera",
+     "help": "record per mercato: chi ha guadagnato la puntata vera",
+     "group": _GROUP_BETTING, "in_menu": True, "aliases": ["storico"]},
+    {"command": "today", "menu": "📅 Partite di oggi + previsioni",
+     "help": "partite di oggi + previsioni",
+     "group": _GROUP_BETTING, "in_menu": True, "aliases": ["matches"]},
+    {"command": "match", "menu": "", "help": "tocca una partita per l'analisi completa",
+     "group": _GROUP_BETTING, "in_menu": False},
+    {"command": "live", "menu": "🔴 Risultati live",
+     "help": "risultati live + le tue bet",
+     "group": _GROUP_BETTING, "in_menu": True},
+    {"command": "bankroll", "menu": "💰 Bilancio, ROI, streak",
+     "help": "bilancio, ROI, streak",
+     "group": _GROUP_BETTING, "in_menu": True},
+    {"command": "player", "menu": "👤 Scheda giocatore: /player Dzeko",
+     "help": "scheda giocatore: /player Dzeko",
+     "group": _GROUP_BETTING, "in_menu": True},
+    {"command": "digest", "menu": "📰 Riassunto del giorno",
+     "help": "riassunto del giorno",
+     "group": _GROUP_BETTING, "in_menu": True},
+    {"command": "parlays", "menu": "", "help": "multiple (guardrail: max 3 legs)",
+     "group": _GROUP_BETTING, "in_menu": False},
+    {"command": "fill", "menu": "", "help": "conferma una giocata (/fill 2 1.95)",
+     "group": _GROUP_BETTING, "in_menu": False},
+    {"command": "league", "menu": "", "help": "filtro per lega (EPL, Serie A)",
+     "group": _GROUP_BETTING, "in_menu": False},
+    {"command": "summary", "menu": "", "help": "riepilogo settimanale a bottoni",
+     "group": _GROUP_BETTING, "in_menu": False},
+    # ── Session ──
+    {"command": "start", "menu": "", "help": "benvenuto e stato del sistema",
+     "group": _GROUP_SESSION, "in_menu": False},
+    {"command": "clear", "menu": "", "help": "reset conversazione",
+     "group": _GROUP_SESSION, "in_menu": False},
+    {"command": "help", "menu": "❓ Tutti i comandi", "help": "tutti i comandi",
+     "group": _GROUP_SESSION, "in_menu": True},
+    # ── Legacy World Cup (WC2026 is over; reachable, deliberately unadvertised
+    #    in the menu. Removing them means plist + handlers + data/worldcup/,
+    #    a cleanup with a wider blast radius than the messaging surface.) ──
+    {"command": "wc", "menu": "", "help": "tabellone World Cup",
+     "group": _GROUP_LEGACY, "in_menu": False, "aliases": ["worldcup"]},
+    {"command": "ladder", "menu": "", "help": "scala giornaliera",
+     "group": _GROUP_LEGACY, "in_menu": False, "aliases": ["scala"]},
+    {"command": "mybets", "menu": "", "help": "le tue giocate WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "bet", "menu": "", "help": "piazza una giocata WC (bankroll separato)",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "leg", "menu": "", "help": "aggiungi una leg WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "settle", "menu": "", "help": "chiudi una giocata WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "balance", "menu": "", "help": "saldo WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "deposit", "menu": "", "help": "deposito WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "cancel", "menu": "", "help": "annulla l'operazione in corso",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "guard", "menu": "", "help": "guardrail giocate WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+    {"command": "lossstop", "menu": "", "help": "stop-loss WC",
+     "group": _GROUP_LEGACY, "in_menu": False},
+]
+
+# Every name the router must dispatch: primary commands plus their aliases.
+ALL_COMMAND_NAMES: set[str] = {c["command"] for c in _COMMANDS} | {
+    a for c in _COMMANDS for a in c.get("aliases", [])
+}
+
 _MENU_COMMANDS = [
-    {"command": "formazioni", "description": "📸 Manda la formazione avversaria"},
-    {"command": "xi", "description": "⚽ Formazione fantacalcio consigliata"},
-    {"command": "sfide", "description": "🆚 Pronostico H2H prossimi avversari"},
-    {"command": "picks", "description": "🎯 Miglior angolo per ogni partita"},
-    {"command": "record", "description": "📊 Record mercati: chi ha guadagnato la puntata vera"},
-    {"command": "today", "description": "📅 Partite di oggi + previsioni"},
-    {"command": "bets", "description": "🎫 Value bet nello slip"},
-    {"command": "live", "description": "🔴 Risultati live"},
-    {"command": "bankroll", "description": "💰 Bilancio, ROI, streak"},
-    {"command": "player", "description": "👤 Scheda giocatore: /player Dzeko"},
-    {"command": "digest", "description": "📰 Riassunto del giorno"},
-    {"command": "help", "description": "❓ Tutti i comandi"},
+    {"command": c["command"], "description": c["menu"]}
+    for c in _COMMANDS if c.get("in_menu") and c.get("menu")
 ]
 
 
@@ -2468,28 +2565,23 @@ def _handle_league(args: str, conversation: ConversationManager) -> str:
 
 
 def _handle_help() -> str:
-    """Handle /help — all available commands, grouped by what they serve."""
+    """Handle /help — all available commands, grouped by what they serve.
+
+    Rendered from `_COMMANDS`, the same registry that builds the ☰ menu, so a
+    command can never again be reachable-but-undocumented (or the reverse).
+    """
     from scripts.pipeline.notify import TgMsg
 
     tg = TgMsg()
     tg.raw("<b>SerieAI Commands</b>")
-    tg.blank()
-    tg.raw("<b>Fantacalcio:</b>")
-    tg.raw("  /xi \u2014 formazione consigliata della giornata")
-    tg.raw("  /sfide \u2014 pronostico H2H vs i prossimi avversari")
-    tg.raw("  /formazioni \u2014 foto della formazione avversaria \u2192 XI corretto")
-    tg.blank()
-    tg.raw("<b>Serie A betting:</b>")
-    tg.raw("  /picks \u2014 miglior angolo per OGNI partita (tutti i mercati)")
-    tg.raw("  /bets \u2014 value bet nello slip (edge-gated, soldi veri)")
-    tg.raw("  /today \u2014 partite di oggi + previsioni")
-    tg.raw("  /match \u2014 tocca una partita per l'analisi completa")
-    tg.raw("  /live \u2014 risultati live + le tue bet")
-    tg.raw("  /bankroll \u2014 bilancio, ROI, streak")
-    tg.raw("  /player \u2014 scheda giocatore: /player Dzeko")
-    tg.raw("  /digest \u2014 riassunto del giorno")
-    tg.raw("  /league \u2014 filtro per lega (EPL, Serie A)")
-    tg.raw("  /fill \u2014 conferma una giocata (/fill 2 1.95)")
+    for _group in (_GROUP_FANTA, _GROUP_BETTING):
+        _rows = [c for c in _COMMANDS if c["group"] == _group]
+        if not _rows:
+            continue
+        tg.blank()
+        tg.raw(f"<b>{_group}:</b>")
+        for _c in _rows:
+            tg.raw(f"  /{_c['command']} \u2014 {_c['help']}")
     tg.blank()
     tg.raw("<b>🤖 AI chat \u2014 scrivimi e basta:</b>")
     tg.italic("Niente comando: qualsiasi messaggio va all'AI con accesso a")

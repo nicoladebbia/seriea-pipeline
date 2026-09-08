@@ -509,13 +509,16 @@ def on_snapshot(mk: str, entry: dict, snap: dict, *, prof: dict | None = None,
 
 
 def send_pick_ping(mk: str, entry: dict, rec: dict) -> None:
-    from scripts.pipeline.notify import notify
+    from scripts.pipeline.notify import PRIORITY_NORMAL, notify
     score = rec.get("score") or [0, 0]
     cap = " (edge above the 12% cap: counted, not journaled)" if rec.get("over_cap") else ""
     msg = (f"PAPER in-play: {rec['selection']} @ {rec['odds']:.2f} — {mk} {score[0]}-{score[1]} at {rec.get('minute')}'\n"
            f"fair {rec['fair'] * 100:.0f}% vs market {rec['market_prob'] * 100:.0f}% (+{rec['edge_pct']:.1f}%){cap}\n"
            f"Paper only. Books reprice before you can act; the record decides if this ever earns a stake.")
-    notify(msg, title=f"IN-PLAY (paper) {mk}", level="info", category="live")
+    # PRIORITY_NORMAL, not the ("live", "info") URGENT default: a paper pick
+    # must never break quiet hours. No money rides on it by construction.
+    notify(msg, title=f"IN-PLAY (paper) {mk}", level="info", category="live",
+           priority=PRIORITY_NORMAL)
 
 
 # ------------------------------------------------------------------ grading

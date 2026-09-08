@@ -5572,7 +5572,14 @@ def api_live():
         from scripts.data.live_monitor import _goal_ping_mode
         data["live_goal_pings"] = _goal_ping_mode()
     except Exception:  # noqa: BLE001
-        data["live_goal_pings"] = "all"
+        # The monitor's own default, imported rather than repeated: this used
+        # to say "all" and would have shown the wrong mode on the page the day
+        # the state read failed.
+        try:
+            from scripts.data.live_monitor import GOAL_PING_DEFAULT_MODE
+            data["live_goal_pings"] = GOAL_PING_DEFAULT_MODE
+        except Exception:  # noqa: BLE001
+            data["live_goal_pings"] = "serie_a"
     try:
         from scripts.betting.inplay import BACKTEST_PATH, ping_mode
         data["inplay_pings"] = ping_mode()

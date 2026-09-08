@@ -861,6 +861,68 @@ Third instance of this trap in this file (see also `config/settings.py:SEASONS` 
   day is a broken alert channel** — every new notify call site must say what changed and fire
   only on change.
 
+## Telegram surface (audited 2026-09-07) — what sends, what breaks quiet hours
+
+The 2026-08-27 cut above fixed VOLUME. The 2026-09-07 audit read the same layer for
+CORRECTNESS and found four defects, all now closed. Read this before adding a card.
+
+- **`priority` is the quiet-hours gate, so every `category="live"` call site must state
+  it.** Quiet hours (23:00–07:00) no longer pass `live` wholesale: `alert` always
+  bypasses, `live` bypasses only at `PRIORITY_URGENT` — which in practice means *there is
+  a bet on this match*. Everything else is held (Telegram DROPS, not queues; macOS is
+  unaffected). `_DEFAULT_PRIORITY[("live","info")]` is URGENT, so a site that passes no
+  priority bypasses quiet hours **by inheritance** — the three raw sites in
+  `live_monitor.py` were correct only by accident. They now say `priority=PRIORITY_URGENT`
+  next to their `has_bets` gate, and `test_every_raw_live_notify_states_its_priority`
+  fails on any new one that doesn't. `notify_goal` derives it from `has_active_bet`;
+  `notify_full_time`'s legacy fallback from `had_bet`; `inplay.py`'s paper ping is
+  `PRIORITY_NORMAL` (paper money never wakes anyone).
+- **Live pings are league-gated, default `serie_a`.** `live_monitor.GOAL_PING_MODES` =
+  `all` / `serie_a` / `bets`, stored in `pipeline_state.json:live_goal_pings`, switchable
+  on `/live`. `serie_a` = Serie A always, any other league only with a bet on it — 24 of
+  64 live cards in the 09-05..09-07 window were EPL, a league whose betting is gated, so
+  they could not flip a decision. The gate **fails OPEN**: an unrecognised league still
+  pings, because silencing a real Serie A goal costs more than one card too many.
+  `live_pings_allowed` is the ONE gate — the FT card had none at all before this, and a
+  suppressed FT card still latches `_ft_notified` so it is not retried every cycle.
+- **Two failures that were silent are now cards.** A bankroll load failure aborts betting
+  and pushes `CRITICAL: Bankroll Error` (it used to `from notify import send_notification`,
+  a name that has never existed there — the ImportError went into a bare `except: pass`,
+  so the engine refused to bet in total silence). And the journal refusing a selected bet
+  pushes `notify_journal_rejected` — that WARNING was the only trace while the date-blind
+  dedup ate every real bet for nine days.
+- **The promotion gate announces itself.** `market_promotion.evaluate_promotions` collects
+  `promoted` / `demoted` / `stake_up` / `stake_down` transitions and pushes
+  `notify_market_promotion` **after** the state write (a failed notification must never
+  cost the state change it describes) and only `if transitions`. Comparison is against the
+  PERSISTED scale, so a steady state never re-pushes; a market oscillating across the
+  demotion boundary DOES get a card per flip, deliberately — each flip halves or doubles
+  the money on the next slip.
+- **Commands come from one registry.** `telegram_bot._COMMANDS` owns `command` / `menu` /
+  `help` / `group` / `in_menu`; `_MENU_COMMANDS` (the `setMyCommands` payload) and
+  `/help` are both derived from it. `tests/test_telegram_commands.py` parses the router's
+  dispatch branches out of the source and asserts set equality both ways, so a command can
+  no longer exist in the menu without a handler or vice versa. Legacy World Cup commands
+  are registered `_GROUP_LEGACY`, `in_menu: False` — they still answer, they never occupy
+  a menu slot.
+- **A card Telegram rejects is not lost — it arrives BROKEN, and almost silently.**
+  `_notify_telegram` retries a failed `parse_mode: HTML` send once with `parse_mode`
+  removed, so a malformed card is delivered with its tags showing and the only trace is
+  `Telegram chunk N sent without HTML (fallback)` at INFO. Never judge card health from
+  "the message arrived".
+- **Validate a card against Telegram's OWN parser for free: POST it with `chat_id: 0`.**
+  Measured 2026-09-07: the API parses entities BEFORE it validates the chat, so malformed
+  HTML answers `can't parse entities: ...` and well-formed HTML answers `chat not found`.
+  Nothing is delivered either way. All 16 production payloads (built through the real
+  `_notify_telegram`, urlopen blocked) answered `chat not found`. Bare `&` and `>` are
+  accepted; a bare `<` is NOT — which is why the plain-text path escapes with
+  `_html_escape(message)`, and why the realistic breaker is an exception repr
+  (`<class 'ValueError'>`, `<Response [403]>`) in a failure card, not a team name.
+  `test_the_bytes_we_post_are_html_telegram_accepts` is the offline proxy for that probe
+  (Telegram's tag whitelist + balance); re-run the live probe after touching the escaping.
+- Tests: `tests/test_notify_gaps.py`, `tests/test_live_ping_gate.py`,
+  `tests/test_telegram_commands.py`, plus the existing `tests/test_notify_dedup.py`.
+
 ### Symptom: "health-monitor flags 64 sparse columns CRITICAL but they're known-empty by design"
 
 - **Why**: `features_quality` check flags any column >90% NaN unless its prefix is in `SPARSE_PREFIXES`. New feature families (e.g. `home_fh_*` first-half rollups, `home_xg_share_*` zone xG) weren't allowlisted.

@@ -720,25 +720,72 @@ def _get_bet_context(match_key: str, home_score: int = 0, away_score: int = 0,
         return None
 
 
-GOAL_PING_MODES = ("all", "bets")
+# "all"     — every tracked match, both leagues
+# "serie_a" — Serie A always; any other league only when a bet is on it. The
+#             default since 2026-09-07: 24 of 64 live cards in the 09-05..09-07
+#             window were EPL, a league whose betting is gated, so those cards
+#             could not flip a decision. Serie A is the money league and is
+#             never silenced.
+# "bets"    — only matches carrying a journal bet, any league
+GOAL_PING_MODES = ("all", "serie_a", "bets")
+GOAL_PING_DEFAULT_MODE = "serie_a"
 GOAL_PING_STATE_KEY = "live_goal_pings"
+# Leagues that ping unconditionally under "serie_a"
+GOAL_PING_ALWAYS_LEAGUES = ("serie_a",)
 
 
 def _goal_ping_mode() -> str:
-    """'all' or 'bets', from pipeline_state.json (set on /live or via /api/live/config)."""
+    """'all', 'serie_a' or 'bets', from pipeline_state.json (set on /live or
+    via /api/live/config)."""
     try:
         from scripts.pipeline.pipeline_state import load_state
-        mode = str(load_state().get(GOAL_PING_STATE_KEY) or "all").lower()
+        mode = str(load_state().get(GOAL_PING_STATE_KEY) or GOAL_PING_DEFAULT_MODE).lower()
     except Exception:  # noqa: BLE001 - state trouble must not silence goals
-        return "all"
-    return mode if mode in GOAL_PING_MODES else "all"
+        return GOAL_PING_DEFAULT_MODE
+    return mode if mode in GOAL_PING_MODES else GOAL_PING_DEFAULT_MODE
+
+
+def _match_league_key(match_key: str, match_data: Dict | None = None) -> str:
+    """Best-effort league key ('serie_a' / 'premier_league' / '') for a live
+    match: the stored field first, then team-name inference."""
+    explicit = str((match_data or {}).get("league") or "").strip().lower()
+    if explicit:
+        return explicit.replace(" ", "_")
+    home = (match_data or {}).get("home_team") or (
+        match_key.split(" vs ")[0].strip() if " vs " in match_key else "")
+    away = (match_data or {}).get("away_team") or (
+        match_key.split(" vs ")[1].strip() if " vs " in match_key else "")
+    if not home:
+        return ""
+    try:
+        return str(infer_league(home, away) or "").lower()
+    except Exception:  # noqa: BLE001 - never let league inference silence a goal
+        return ""
+
+
+def live_pings_allowed(mode: str, match_key: str, match_data: Dict | None,
+                       has_bets: bool) -> bool:
+    """Should live event cards (goal / red / FT) send for this match?
+
+    Fails OPEN: an unknown league under "serie_a" pings. Silencing a real goal
+    costs more than one card too many.
+    """
+    if mode == "all":
+        return True
+    if has_bets:
+        return True
+    if mode == "bets":
+        return False
+    league = _match_league_key(match_key, match_data)
+    return (not league) or league in GOAL_PING_ALWAYS_LEAGUES
 
 
 def _send_live_event_notifications(match_key: str, match_data: Dict,
                                     old_events: List, new_events: List):
     """Compare old vs new Sofascore events and send coaching-style notifications."""
     try:
-        from scripts.pipeline.notify import notify, notify_goal
+        from scripts.pipeline.notify import (PRIORITY_URGENT, notify,
+                                             notify_goal)
     except Exception:
         return
 
@@ -791,9 +838,12 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
     # Goal/red-card pings: "all" (every tracked match — Nicola's 2026-09-05
     # ask, now that the events arrive via ESPN within seconds) or "bets"
     # (the 2026-08-31 setting: only matches carrying a journal bet).
-    if _goal_ping_mode() == "bets" and not (bet_ctx and bet_ctx.get("has_bets")):
+    _mode = _goal_ping_mode()
+    if not live_pings_allowed(_mode, match_key, match_data,
+                              bool(bet_ctx and bet_ctx.get("has_bets"))):
         if new_goal_events or new_other_events:
-            log.info("Live events on %s suppressed — no bets on this match (goal pings: bets)", match_key)
+            log.info("Live events on %s suppressed — no bets on this match (goal pings: %s)",
+                     match_key, _mode)
         return
 
     # Send goal notifications (batch multiple into one if needed)
@@ -819,7 +869,10 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
                 msg += "\n"
                 for b in bet_ctx["bets"]:
                     msg += f"\n  \u00b7 {b['selection']}: {b['commentary']}"
-            notify(msg, title=f"GOALS {h_score}-{a_score}", level="info", category="live")
+            # URGENT stated, not inherited: this branch runs only when there
+            # are bets on the match, and priority is what breaks quiet hours.
+            notify(msg, title=f"GOALS {h_score}-{a_score}", level="info",
+                   category="live", priority=PRIORITY_URGENT)
         except Exception as e:
             log.debug("Batch goal notification failed: %s", e)
     else:
@@ -865,7 +918,9 @@ def _send_live_event_notifications(match_key: str, match_data: Dict,
                     msg = f"{card_label}: {player} ({team}) {minute}'"
                     msg += f"\nYou have {len(bet_ctx['bets'])} bet(s) on this match \u2014 could shift the game."
                     try:
-                        notify(msg, title=f"RED: {match_key}", level="warning", category="live")
+                        # Bet-gated two lines up \u2014 URGENT stated, not inherited.
+                        notify(msg, title=f"RED: {match_key}", level="warning",
+                               category="live", priority=PRIORITY_URGENT)
                     except Exception as e:
                         log.debug("Red card notification failed: %s", e)
 
@@ -1429,7 +1484,8 @@ def poll_once() -> Dict:
                     if (bet_ctx and bet_ctx.get("has_bets")
                             and not match_entry.get("live_events")):
                         try:
-                            from scripts.pipeline.notify import notify
+                            from scripts.pipeline.notify import (PRIORITY_URGENT,
+                                                                 notify)
                             lines = [
                                 f"⚽ <b>{scoring_team} scored!</b>",
                                 f"{home} {home_score}-{away_score} {away}"
@@ -1448,6 +1504,9 @@ def poll_once() -> Dict:
                                 title=f"GOAL {home_score}-{away_score}",
                                 level="info",
                                 category="live",
+                                # Bet-gated by the `has_bets` condition above \u2014
+                                # URGENT stated, not inherited from the default map.
+                                priority=PRIORITY_URGENT,
                             )
                         except Exception as e:
                             log.debug("Score-change goal alert failed: %s", e)
@@ -1543,6 +1602,13 @@ def poll_once() -> Dict:
             if fs:
                 # Get full bet context with final score for P&L
                 bet_ctx = _get_bet_context(mk, fs[0], fs[1], 90)
+                # Same gate as the goal path — the FT card had none at all, so a
+                # gated-league match still posted a result card. Latch the flag
+                # either way: a suppressed card must not be retried every cycle.
+                if not live_pings_allowed(_goal_ping_mode(), mk, mdata,
+                                          bool(bet_ctx and bet_ctx.get("has_bets"))):
+                    mdata["_ft_notified"] = True
+                    continue
                 try:
                     from scripts.pipeline.notify import notify_full_time
                     notify_full_time(

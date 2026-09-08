@@ -347,8 +347,27 @@ def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: l
         if real_settled is None:
             real_settled = [b for b in everything if b.get("pipeline_status") == PIPELINE_STATUS]
     state = load_state(path)
+    # Transitions collected here and pushed AFTER the state write: a failed
+    # notification must never cost us the state change it describes.
+    transitions: list[dict] = []
+    prev_scale = {k: (r or {}).get("stake_scale")
+                  for k, r in (state.get("incumbents") or {}).items()}
     state["incumbents"] = incumbent_records(real_all)
     for key, row in state["incumbents"].items():
+        # Compared against the PERSISTED scale, so a steady state never re-pushes
+        # however often this runs. A market sitting on the demotion boundary CAN
+        # oscillate 1.0 -> 0.5 -> 1.0 across settlements and get a card each time:
+        # that is accepted deliberately, because every one of those flips halves
+        # or doubles the money on the next slip. A stake change is never noise.
+        was, now_scale = prev_scale.get(key), row.get("stake_scale")
+        if was is not None and now_scale is not None and was != now_scale:
+            transitions.append({
+                "kind": "stake_up" if now_scale > was else "stake_down",
+                "market": key, "reason": row.get("stake_reason"),
+                "n": row["real_since_live"]["n"],
+                "roi_pct": row["real_since_live"]["roi_pct"],
+                "z": row["real_since_live"]["z"],
+            })
         if not row["bar_passed"]:
             log.info("Incumbent %s bets real money without clearing the bar: %s (real n=%d, since go-live n=%d)",
                      key, row["distance"], row["real"]["n"], row["real_since_live"]["n"])
@@ -371,6 +390,10 @@ def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: l
                                 "mean_clv_pct": None, "n_clv": 0}
                 row["distance"] = passes_bar(row["paper"])[1]
                 log.warning("Market %s DEMOTED to paper: %s", mk, why)
+                transitions.append({"kind": "demoted", "market": mk, "reason": why,
+                                    "n": (row.get("real") or {}).get("n"),
+                                    "roi_pct": (row.get("real") or {}).get("roi_pct"),
+                                    "z": (row.get("real") or {}).get("z")})
             else:
                 row["distance"] = "promoted"
             continue
@@ -381,12 +404,24 @@ def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: l
                         "promoted_at": now.isoformat(), "snapshot": dict(paper_rec)})
             log.warning("Market %s PROMOTED to real stakes on %d paper bets (ROI %+.1f%%, z %.2f)",
                         mk, paper_rec["n"], paper_rec["roi_pct"], paper_rec["z"])
+            transitions.append({"kind": "promoted", "market": mk, "reason": why,
+                                "n": paper_rec["n"], "roi_pct": paper_rec["roi_pct"],
+                                "z": paper_rec["z"]})
     state["updated_at"] = now.isoformat()
     state["bar"] = PROMOTION_BAR
     state["demotion_bar"] = DEMOTION_BAR
     if write:
         from config.settings import atomic_write_json
         atomic_write_json(path or STATE_PATH, state)
+        # After the write, and only on a real write: a promotion/demotion is
+        # where real money starts or stops flowing. The gate is the product;
+        # until 2026-09-07 it announced itself nowhere.
+        if transitions:
+            try:
+                from scripts.pipeline.notify import notify_market_promotion
+                notify_market_promotion(transitions)
+            except Exception as e:
+                log.error("Market-gate notification could not be sent: %s", e)
     return state
 
 

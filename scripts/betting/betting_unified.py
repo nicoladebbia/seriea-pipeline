@@ -358,15 +358,21 @@ class BettingConfig:
                 cfg.bankroll = get_effective_bankroll()
             except Exception as e:
                 log.critical("BANKROLL LOAD FAILED: %s — REFUSING TO BET", e)
+                # `send_notification` lives in scheduler.py, never in notify — the
+                # import raised ImportError into the bare except below, so from the
+                # day this was written the engine refused to bet SILENTLY. The one
+                # path where silence is worst. category="alert" so it also breaks
+                # quiet hours.
                 try:
-                    from scripts.pipeline.notify import send_notification
-                    send_notification(
-                        f"Bankroll load failed: {e}. Betting engine ABORTED.",
+                    from scripts.pipeline.notify import notify
+                    notify(
+                        f"Bankroll load failed: {e}. Betting engine ABORTED — no bets this run.",
                         title="CRITICAL: Bankroll Error",
                         level="critical",
+                        category="alert",
                     )
-                except Exception:
-                    pass
+                except Exception as notify_err:
+                    log.error("Bankroll-failure alert could not be sent: %s", notify_err)
                 raise RuntimeError(f"Cannot load bankroll: {e}") from e
         return cfg
 
@@ -3700,6 +3706,15 @@ def save_bet_slip(slip: BetSlip, all_value: List[ValueBet],
                 blocked.append(f"{bet.match} {bet.selection} -> {bet_id or 'rejected'}")
         if blocked:
             log.warning("Journal: %d of %d bets NOT recorded: %s", len(blocked), len(slip.bets), "; ".join(blocked))
+            # A rejected bet is money the engine decided to place and the store
+            # refused. The date-blind dedup ate EVERY real bet for nine days
+            # (2026-08-27 → 09-05) and this WARNING was the only trace, in a log
+            # nobody reads at 20:15. Push it.
+            try:
+                from scripts.pipeline.notify import notify_journal_rejected
+                notify_journal_rejected(blocked, len(slip.bets))
+            except Exception as notify_err:
+                log.error("Journal-rejection alert could not be sent: %s", notify_err)
         log.info("Journal: recorded %d of %d bets", n_recorded, len(slip.bets))
     except Exception as e:
         log.debug("Failed to write to bet journal: %s", e)

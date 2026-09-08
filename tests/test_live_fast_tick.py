@@ -150,14 +150,20 @@ def test_the_same_goal_on_the_next_tick_is_not_pinged_again(monkeypatch):
     assert len(sent) == 1 and sent[0]["scorer"] == "Y" and sent[0]["home_score"] == 2
 
 
-def test_goal_ping_mode_reads_state_and_defaults_to_all(monkeypatch):
+def test_goal_ping_mode_reads_state_and_defaults_to_serie_a(monkeypatch):
+    """Default changed from "all" to "serie_a" on 2026-09-07: EPL goal/FT cards
+    could not flip a decision (its betting is gated) and were 24 of 64 live
+    cards in the audited window. Serie A is never silenced. Full behaviour of
+    the gate itself lives in tests/test_live_ping_gate.py."""
     import scripts.pipeline.pipeline_state as ps
     monkeypatch.setattr(ps, "load_state", lambda: {"live_goal_pings": "bets"})
     assert lm._goal_ping_mode() == "bets"
+    monkeypatch.setattr(ps, "load_state", lambda: {"live_goal_pings": "all"})
+    assert lm._goal_ping_mode() == "all"
     monkeypatch.setattr(ps, "load_state", lambda: {"live_goal_pings": "garbage"})
-    assert lm._goal_ping_mode() == "all"
+    assert lm._goal_ping_mode() == "serie_a"
     monkeypatch.setattr(ps, "load_state", lambda: {})
-    assert lm._goal_ping_mode() == "all"
+    assert lm._goal_ping_mode() == "serie_a"
 
 
 def test_fast_espn_roster_fills_player_stats_when_sofascore_is_absent(monkeypatch):
