@@ -12,9 +12,11 @@ Flow:
   4. Store as closing_odds + compute clv_pct
   5. Update journal
 
-Designed to run ~5 minutes before kickoff via the pre-kickoff scheduler.
-Should also work post-match (last available odds are a reasonable proxy
-for closing odds).
+Runs on every pre-kickoff cycle and REPLACES the stored price each time while
+kickoff is still ahead, so what ends up in the journal is the last pre-kickoff
+quote — the close. Once kickoff has passed the stored price is frozen; a bet
+that was never captured before kickoff still takes a post-match price as a
+last-resort proxy.
 
 API Cost: ~4 credits (same as odds snapshot)
 
@@ -27,6 +29,7 @@ Usage:
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -140,24 +143,47 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float,
     return None
 
 
+def _match_entry(bet: Dict, odds_data: Dict) -> Dict | None:
+    """The odds entry for this bet's fixture, or None."""
+    match_key = bet.get("match", "")
+    entry = odds_data.get(match_key)
+    if not entry:
+        parts = match_key.split(" vs ")
+        if len(parts) == 2:
+            entry = odds_data.get(f"{parts[1]} vs {parts[0]}")
+    return entry or None
+
+
+def _is_pre_kickoff(entry: Dict) -> bool:
+    """True only when this entry's kickoff is provably still ahead of us.
+
+    A price read after kickoff is not a closing price — it is an in-play or
+    stale quote. Unknown or unparseable `commence_time` reads as NOT pre-kickoff
+    so an unknown-vintage price can never overwrite a stored close (fail closed).
+    """
+    raw = (entry or {}).get("commence_time")
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts > now_utc()
+
+
 def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
     """Match a pending bet to current odds.
 
     Returns (closing_odds, source_description) or None if no match.
     """
-    match_key = bet.get("match", "")
     market = bet.get("market", "").upper()
     selection = bet.get("selection", "").upper()
 
-    match_odds = odds_data.get(match_key)
+    match_odds = _match_entry(bet, odds_data)
     if not match_odds:
-        # Try reversed team order
-        parts = match_key.split(" vs ")
-        if len(parts) == 2:
-            reversed_key = f"{parts[1]} vs {parts[0]}"
-            match_odds = odds_data.get(reversed_key)
-        if not match_odds:
-            return None
+        return None
 
     # ── 1X2 ──
     if market in ("1X2", "H2H"):
@@ -376,16 +402,25 @@ def capture_clv(dry_run: bool = False, from_cache: bool = False) -> Dict:
         bet_id = bet.get("bet_id", "?")
         bet_odds = bet.get("odds", 0)
 
-        # Skip if already has CLV
-        if bet.get("clv_pct") is not None:
-            skipped += 1
-            continue
-
         result = _match_bet_to_odds(bet, odds_data)
         if result is None:
             no_match += 1
             log.debug("No match for bet %s (%s %s)",
                       bet_id, bet.get("match"), bet.get("selection"))
+            continue
+
+        # The CLOSING line is the LAST price before kickoff, not the first one we
+        # happened to see. This loop used to skip any bet that already carried a
+        # clv_pct, so a bet journalled at T-30 had its "close" read from the very
+        # snapshot it was priced on: 58 of 172 real rows ended up with
+        # closing_odds EXACTLY equal to their own entry sharp price, and the line
+        # movement the stake ladder gates on was structurally zero on precisely
+        # the T-30 bets the design wants. So: overwrite while kickoff is still
+        # ahead, and freeze the stored price once it has passed.
+        if bet.get("closing_odds") is not None and not _is_pre_kickoff(
+            _match_entry(bet, odds_data) or {}
+        ):
+            skipped += 1
             continue
 
         closing_odds, source = result
@@ -416,7 +451,7 @@ def capture_clv(dry_run: bool = False, from_cache: bool = False) -> Dict:
         "timestamp": now_utc().isoformat(),
     }
 
-    log.info("CLV capture: %d captured, %d skipped (already have CLV), %d no match",
+    log.info("CLV capture: %d captured, %d frozen (kickoff passed), %d no match",
              captured, skipped, no_match)
     return summary
 

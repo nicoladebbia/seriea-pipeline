@@ -896,8 +896,10 @@ def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None,
 
     bet = journal["bets"][bet_id]
     bet["closing_odds"] = closing_odds
-    if closing_source:
-        bet["closing_source"] = closing_source
+    # The tag describes THIS price. A later capture that arrives without one
+    # clears it, so a stale sharp tag can never vouch for a price it did not
+    # come with — the three fields are rewritten together or not at all.
+    bet["closing_source"] = closing_source
 
     if clv_pct is not None:
         bet["clv_pct"] = clv_pct
@@ -907,6 +909,8 @@ def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None,
     entry_sharp = bet.get("pinnacle_odds")
     if closing_book(bet) and entry_sharp and entry_sharp > 1.0 and closing_odds and closing_odds > 1.0:
         bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
+    else:
+        bet["clv_move_pct"] = None
 
     _save_journal(journal)
     return True

@@ -510,6 +510,88 @@ class TestCLVIsNotTheEntryEdge:
         assert out["real"]["clv_pct"] == 2.4, "a displayed metric is never rewritten in place"
         assert out["real"]["clv_move_pct"] == round((1 / 3.20 - 1 / 3.25) * 100, 2)
 
+    def _pending_with_a_close(self, clean_journal, when, monkeypatch):
+        """A journalled bet that already carries a captured close, plus a fresh
+        Pinnacle price for the same fixture kicking off at `when`."""
+        from datetime import timedelta
+        from scripts.betting import clv_capture
+        from scripts.utils.match_timing import now_utc
+
+        add_bet({
+            "match": "Inter vs Milan", "date": "2026-02-15", "market": "O/U 1.5",
+            "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.7246,
+            "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
+            "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+            "factors": [], "placed_at": "2026-02-14T10:00:00",
+        })
+        bet_id = next(iter(_load_journal()["bets"]))
+        # the price the T-30 cycle read off the very snapshot the bet was priced on
+        update_clv(bet_id, closing_odds=1.38, clv_pct=2.17,
+                   closing_source="totals.1.5.over (9 bm) [Pinnacle]")
+        ko = (now_utc() + timedelta(hours=when)).isoformat().replace("+00:00", "Z")
+        odds = {"Inter vs Milan": {
+            "commence_time": ko,
+            "totals": [{"line": 1.5, "all_bookmakers": [
+                {"bookmaker": "Bet365", "over": 1.40},
+                {"bookmaker": "Pinnacle", "over": 1.34},
+            ]}],
+        }}
+        monkeypatch.setattr(clv_capture, "_load_cached_odds", lambda: odds)
+        monkeypatch.setattr(clv_capture, "_append_clv_history", lambda *a, **k: None)
+        return bet_id
+
+    def test_the_close_is_the_LAST_pre_kickoff_price_not_the_first(
+        self, clean_journal, monkeypatch
+    ):
+        from scripts.betting.clv_capture import capture_clv
+        bet_id = self._pending_with_a_close(clean_journal, when=+2, monkeypatch=monkeypatch)
+
+        # the true positive: the rule this replaces skipped on exactly this state
+        assert _load_journal()["bets"][bet_id]["clv_pct"] is not None
+
+        summary = capture_clv(from_cache=True)
+        bet = _load_journal()["bets"][bet_id]
+        assert summary["captured"] == 1
+        assert bet["closing_odds"] == 1.34, "kickoff is still ahead — the line moved, take it"
+        assert bet["clv_move_pct"] == round((1 / 1.34 - 1 / 1.38) * 100, 2)
+        assert bet["clv_pct"] == round((1.41 / 1.34 - 1) * 100, 2)
+
+    def test_a_price_read_after_kickoff_never_overwrites_the_close(
+        self, clean_journal, monkeypatch
+    ):
+        from scripts.betting.clv_capture import capture_clv
+        bet_id = self._pending_with_a_close(clean_journal, when=-2, monkeypatch=monkeypatch)
+
+        summary = capture_clv(from_cache=True)
+        bet = _load_journal()["bets"][bet_id]
+        assert summary["captured"] == 0 and summary["skipped"] == 1
+        assert bet["closing_odds"] == 1.38, "in-play/stale quote is not a closing line"
+
+    def test_an_unknown_kickoff_is_treated_as_past(self, clean_journal, monkeypatch):
+        from scripts.betting.clv_capture import _is_pre_kickoff
+        assert _is_pre_kickoff({}) is False
+        assert _is_pre_kickoff({"commence_time": "not a date"}) is False
+
+    def test_a_recapture_without_a_book_clears_the_tag_and_the_move(self, clean_journal):
+        add_bet({
+            "match": "Inter vs Milan", "date": "2026-02-15", "market": "O/U 1.5",
+            "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.72,
+            "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
+            "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+            "factors": [], "placed_at": "2026-02-14T10:00:00",
+        })
+        bet_id = next(iter(_load_journal()["bets"]))
+        update_clv(bet_id, closing_odds=1.34,
+                   closing_source="totals.1.5.over (9 bm) [Pinnacle]")
+        assert _load_journal()["bets"][bet_id]["clv_move_pct"] is not None
+
+        # a second writer (clv_tracker) stores a price with no book behind it
+        update_clv(bet_id, closing_odds=1.36)
+        bet = _load_journal()["bets"][bet_id]
+        assert bet["closing_source"] is None
+        assert bet["clv_move_pct"] is None, "a stale tag must not vouch for a new price"
+        assert bet["clv_pct"] == round((1.41 / 1.36 - 1) * 100, 2)
+
     def test_capture_names_the_book_it_read_the_close_from(self):
         from scripts.betting.clv_capture import _find_sharp_odds, _match_bet_to_odds
         books = [{"bookmaker": "Bet365", "over": 1.44}, {"bookmaker": "Pinnacle", "over": 1.38}]

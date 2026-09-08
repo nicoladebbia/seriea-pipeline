@@ -438,6 +438,24 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   before this (`should_demote` alone let ROI −9.9% double the stake; ROI > 0 alone let n=30
   ROI +17.5% z +1.82 through; beat-the-close would clear anything) and every one of those
   records is pinned in the tests.
+  **The stored "close" was the FIRST price after the bet, not the last one before
+  kickoff — measured 2026-09-08, and it is why the movement term collapsed.**
+  `capture_clv` skipped any bet that already carried a `clv_pct`, and it runs from the
+  T-30 pre-kickoff cycle that journals the bet, off the same odds cache: entry and
+  "close" came from ONE snapshot. **58 of 172 real rows have `closing_odds` exactly
+  equal to their own `pinnacle_odds`** (median difference 0.0000), and the split is by
+  design of the timing — rows captured near kickoff (median 2.1h to settlement) are the
+  exact-equal ones, rows placed days early (35.2h) are the ones that moved. So the leg
+  had signal only on the >24h-early bets the timing edge exists to avoid. The guard is
+  now: **overwrite the stored price on every cycle while `commence_time` is still ahead,
+  freeze it once kickoff passes** (`_is_pre_kickoff`, fail-closed on a missing or
+  unparseable time so an unknown-vintage quote can never overwrite a close). A bet never
+  captured before kickoff still takes a post-match price as a last-resort proxy. The
+  three closing fields are also rewritten together in `update_clv` — a later price with
+  no book behind it CLEARS `closing_source` and `clv_move_pct`, so a stale sharp tag can
+  never vouch for a price it did not come with (`clv_tracker` is that second, untagged
+  writer). Historical rows keep their prices; none of them carries a tag, so none feeds
+  the movement leg.
   **One CLV definition, and three fields instead of one.** `clv_pct` is the percent return
   against the close (`odds/closing − 1`) everywhere now — `_compute_clv` was writing a
   *probability difference* into the same field the ratio-form `clv_capture` and
