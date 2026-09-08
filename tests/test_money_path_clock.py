@@ -228,3 +228,15 @@ def test_full_stake_unlocks_at_thirty_held_up_bets_not_twenty_nine():
     # thirty bets that trip the demotion bar stay on the half stake
     bad = MP.incumbent_records(_real(15, 15))["ou_over_1_5"]
     assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
+
+
+def test_thirty_bets_that_merely_avoid_the_demotion_bar_do_not_unlock_full_stake():
+    """The -10%..0 band: `should_demote` says no, and the ladder used to read
+    that as yes. Asserting should_demote is False is the precondition — it is
+    what makes this a test of the ROI condition rather than of the old one."""
+    from scripts.betting import market_promotion as MP
+    rec = MP.incumbent_records(_real(21, 9))["ou_over_1_5"]
+    assert rec["real_since_live"]["n"] == 30
+    assert MP.should_demote(rec["real_since_live"]) == (False, "")
+    assert rec["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "not positive" in rec["stake_reason"]
+
