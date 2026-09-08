@@ -1514,14 +1514,22 @@ function _priceChip(r) {
   const books = r.n_books != null ? `${r.n_books} book${r.n_books === 1 ? '' : 's'}` : '';
   return `<span class="text-tertiary" style="font-size:10px;margin-right:6px" title="${sanitizeHTML(r.book || '')} ${books}: market ${r.implied_pct}% vs model ${r.probability_pct}%">@${Number(r.odds).toFixed(2)} <span style="color:${col}">${e > 0 ? '+' : ''}${e.toFixed(1)}%</span></span>`;
 }
-function _pickBanner(pk, nPriced) {
+// The banner is the pick engine's VERDICT — the label, its reason, and the
+// honesty counts. The bet itself is a row of the shortlist table below, built
+// from the same ranking, so naming it here printed the same line twice back to
+// back (Venezia, 2026-09-08: "LEAN · Under/over: Under 3.5 @ 1.42 (+9.8%) [B]"
+// directly above the identical table row). It is named here only when the
+// table below carries no bets — NO EDGE, or nothing priced yet — where the
+// banner is the only place the pick appears.
+function _pickBanner(pk, nPriced, sl) {
   if (!pk) return `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">Pick engine: no line for this match yet (runs with the betting engine; ${nPriced || 0} rows priced live).</div>`;
   const p = pk.pick || pk.most_probable || {};
   const colr = { VALUE: 'var(--green)', LEAN: 'var(--text-secondary)', NO_EDGE: 'var(--text-tertiary)' }[pk.label] || 'var(--text-secondary)';
   const lab = pk.label === 'VALUE' ? (pk.stage === 'candidate' ? 'VALUE (commits at T-30)' : 'VALUE · real stake')
             : pk.label === 'LEAN' ? 'LEAN · paper only' : 'NO EDGE';
-  const what = p.bet_type ? `${sanitizeHTML(p.bet_type)}: ${p.player ? sanitizeHTML(p.player) + ' ' : ''}${sanitizeHTML(p.selection || '')}${p.odds ? ' @ ' + Number(p.odds).toFixed(2) : ''}${p.edge_pct != null ? ` (${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%)` : ''}${p.tier ? ' <span class="text-tertiary">[' + sanitizeHTML(String(p.tier)) + ']</span>' : ''}` : '';
-  const lean = pk.label === 'VALUE' && pk.lean ? `<div class="text-small text-tertiary">Paper lean alongside: ${sanitizeHTML(pk.lean.bet_type || '')} ${pk.lean.player ? sanitizeHTML(pk.lean.player) + ' ' : ''}${sanitizeHTML(pk.lean.selection || '')} @ ${pk.lean.odds} (${pk.lean.edge_pct > 0 ? '+' : ''}${pk.lean.edge_pct}%)</div>` : '';
+  const inTable = !!(sl && sl.bets && sl.bets.length);
+  const what = p.bet_type && !inTable ? `${sanitizeHTML(p.bet_type)}: ${p.player ? sanitizeHTML(p.player) + ' ' : ''}${sanitizeHTML(p.selection || '')}${p.odds ? ' @ ' + Number(p.odds).toFixed(2) : ''}${p.edge_pct != null ? ` (${p.edge_pct > 0 ? '+' : ''}${Number(p.edge_pct).toFixed(1)}%)` : ''}${p.tier ? ' <span class="text-tertiary">[' + sanitizeHTML(String(p.tier)) + ']</span>' : ''}` : '';
+  const lean = pk.label === 'VALUE' && pk.lean && !inTable ? `<div class="text-small text-tertiary">Paper lean alongside: ${sanitizeHTML(pk.lean.bet_type || '')} ${pk.lean.player ? sanitizeHTML(pk.lean.player) + ' ' : ''}${sanitizeHTML(pk.lean.selection || '')} @ ${pk.lean.odds} (${pk.lean.edge_pct > 0 ? '+' : ''}${pk.lean.edge_pct}%)</div>` : '';
   const one = a => `${sanitizeHTML(a.bet_type || '')}: ${a.player ? sanitizeHTML(a.player) + ' ' : ''}${sanitizeHTML(a.selection || '')} @ ${Number(a.odds).toFixed(2)} (${a.edge_pct > 0 ? '+' : ''}${Number(a.edge_pct).toFixed(1)}%${a.tier ? ', ' + sanitizeHTML(String(a.tier)) : ''}${a.n_books === 1 ? ', 1 book' : ''})`;
   // The positive-edge exotics are rows of the shortlist table below (flagged
   // there with a die), so the banner only speaks when NOTHING outside the
@@ -1529,7 +1537,7 @@ function _pickBanner(pk, nPriced) {
   const ex = (pk.exotic || []).length ? ''
            : pk.exotic_fallback ? `<div class="text-small text-tertiary">🎲 Insolite: none beats its price; most probable ${one(pk.exotic_fallback)}</div>` : '';
   return `<div style="border:1px solid var(--border-subtle);border-left:3px solid ${colr};border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3)">
-    <div style="font-size:12px"><b style="color:${colr}">${lab}</b> · ${what}</div>
+    <div style="font-size:12px"><b style="color:${colr}">${lab}</b>${what ? ' · ' + what : ''}</div>
     <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edge${pk.n_longshot_edges === 1 ? '' : 's'} ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}${ex}</div>`;
 }
 // ---------------------------------------------------------------------------
@@ -1625,7 +1633,7 @@ function renderMarkets(d) {
   if (reasons.length) {
     html += `<div class="text-small text-tertiary" style="margin-bottom:var(--space-3)">${reasons.map(sanitizeHTML).join(' · ')}</div>`;
   }
-  html += _pickBanner(d.pick, d.n_priced);
+  html += _pickBanner(d.pick, d.n_priced, d.shortlist);
   html += renderShortlist(d.shortlist, d.n_priced);
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--space-3)">';
   for (const [g, rows] of Object.entries(groups)) {
