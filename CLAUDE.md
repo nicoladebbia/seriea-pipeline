@@ -400,19 +400,18 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `betting_unified.py` owns the market config and that stays a decision, not a script.
   **Closed the same day — the stake follows the record, not the constant.** An incumbent
   is staked like a freshly promoted market: Kelly AND cap × `PROMOTED_KELLY_SCALE` (0.5)
-  until its since-go-live real record **clears `PROMOTION_BAR` entire** — the same bar,
-  every leg, a paper market clears to reach real money at all (n ≥ 50, ROI > 0, z ≥ 2.5,
-  CLV > 0 once 20 closing prices exist). Then full 0.15 / 2.5%. The ladder was too weak
-  twice and both fixtures are pinned in the tests: the original test at n=30 was
-  `should_demote` alone (ROI < −10% or z < −1), so a record at **ROI −9.9% DOUBLED the
-  stake** on the next slip; adding ROI > 0 still passed **n=50 ROI +12.8% z +1.60**, a
-  record indistinguishable from noise. Nicola's call, 2026-09-08. `INCUMBENT_FULL_STAKE_MIN_N`
-  is now `PROMOTION_BAR["min_settled"]` (50, was `DEMOTION_BAR["min_real_bets"]` = 30) — that
-  single line is what makes the ladder symmetric, and it is the whole difference from
-  "keep 30, just add z". Asymmetry here is not a rounding detail: it is the incumbents
-  betting real money on evidence their competitors are refused for. Both renderers state
-  the real condition and read the row's own `stake_reason` for WHICH leg is short — never
-  let `/betting` or the `/record` card describe the ladder as a bet COUNT alone. `incumbent_records` writes
+  until its since-go-live real record clears **`INCUMBENT_FULL_STAKE_BAR`** — the promotion
+  bar's QUALITY legs (ROI > 0, z ≥ 2.5, CLV > 0 once 20 closing prices exist) at the
+  ladder's own count of 30 (`{**PROMOTION_BAR, "min_settled": 30}`). Then full 0.15 / 2.5%.
+  Same quality of evidence as a market queueing for real money, less quantity of it — the
+  ladder is a MULTIPLIER on a market already betting, not admission, and that is the one
+  place it is allowed to differ from `PROMOTION_BAR`. The ladder was too weak twice and both
+  fixtures are pinned in the tests: originally the only test at n=30 was `should_demote`
+  (ROI < −10% or z < −1), so a record at **ROI −9.9% DOUBLED the stake** on the next slip;
+  adding ROI > 0 alone still passed **n=30 ROI +17.5% z +1.82**, a record indistinguishable
+  from noise. Nicola's call, 2026-09-08. Both renderers state the real condition and read the
+  row's own `stake_reason` for WHICH leg is short — never let `/betting` or the `/record`
+  card describe the ladder as a bet COUNT alone. `incumbent_records` writes
   `stake_scale` / `stake_reason`, `_make_bet` reads them once per engine run
   (`_incumbent_stake_scale`, fail-closed to 0.5 with no state), `ValueBet.stake_scale` /
   `stake_note` carry it. Dry run on the MW3 slate: EUR 18–22 → EUR 10 a bet (1.5 line at

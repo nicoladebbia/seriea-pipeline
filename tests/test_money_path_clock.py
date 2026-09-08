@@ -219,31 +219,31 @@ def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00"):
     return out
 
 
-def test_full_stake_unlocks_at_the_bars_own_count_not_one_bet_short():
+def test_full_stake_unlocks_at_thirty_held_up_bets_not_twenty_nine():
     from scripts.betting import market_promotion as MP
-    n = MP.PROMOTION_BAR["min_settled"]
-    assert MP.INCUMBENT_FULL_STAKE_MIN_N == n == 50, "the ladder's count leg is the bar's own"
-    short = MP.incumbent_records(_real(41, n - 1 - 41))["ou_over_1_5"]
-    full = MP.incumbent_records(_real(42, n - 42))["ou_over_1_5"]
+    n = MP.INCUMBENT_FULL_STAKE_MIN_N
+    assert n == MP.DEMOTION_BAR["min_real_bets"] == 30, "the ladder keeps its own count"
+    short = MP.incumbent_records(_real(25, n - 1 - 25))["ou_over_1_5"]
+    full = MP.incumbent_records(_real(26, n - 26))["ou_over_1_5"]
     assert short["real_since_live"]["n"] == n - 1
     assert short["stake_scale"] == MP.PROMOTED_KELLY_SCALE and f"{n - 1}/{n}" in short["stake_reason"]
     assert full["real_since_live"]["n"] == n
     assert full["stake_scale"] == 1.0 and "bar cleared" in full["stake_reason"]
     # a full count that trips the demotion bar stays on the half stake
-    bad = MP.incumbent_records(_real(25, 25))["ou_over_1_5"]
+    bad = MP.incumbent_records(_real(15, 15))["ou_over_1_5"]
     assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
 
 
 def test_a_positive_but_noisy_record_does_not_unlock_full_stake():
-    """The ladder has been too weak twice. This pins the second one: n=50,
-    ROI +12.8%, z +1.60 — positive, non-demoting, and short of the bar every
-    paper market clears. Both preconditions are asserted, so the half stake is
-    attributable to the z leg and not to a rule that already existed."""
+    """The ladder has been too weak twice. This pins the second one: n=30,
+    ROI +17.5%, z +1.82 — positive, non-demoting, and short of the z the
+    promotion bar demands. Both preconditions are asserted, so the half stake
+    is attributable to the z leg and not to a rule that already existed."""
     from scripts.betting import market_promotion as MP
-    rec = MP.incumbent_records(_real(40, 10))["ou_over_1_5"]
+    rec = MP.incumbent_records(_real(25, 5))["ou_over_1_5"]
     since = rec["real_since_live"]
-    assert since["n"] == MP.PROMOTION_BAR["min_settled"]
+    assert since["n"] == MP.INCUMBENT_FULL_STAKE_MIN_N
     assert since["roi_pct"] > MP.PROMOTION_BAR["min_roi_pct"], "precondition: the ROI-only rule accepts this"
     assert MP.should_demote(since) == (False, ""), "precondition: the demotion-bar-only rule accepts this"
-    assert since["z"] < MP.PROMOTION_BAR["min_z"]
+    assert since["z"] < MP.PROMOTION_BAR["min_z"] == MP.INCUMBENT_FULL_STAKE_BAR["min_z"]
     assert rec["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "short of the bar" in rec["stake_reason"]

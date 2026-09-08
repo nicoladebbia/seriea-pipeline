@@ -442,7 +442,8 @@ async function loadMarketRecord() {
   marketRecordData = d;
   if (_lastStatsArgs) renderStatsBar(..._lastStatsArgs);
   const bar = d.bar || {}, dem = d.demotion_bar || {};
-  const minN = d.full_stake_min_n || 50, scale = d.promoted_kelly_scale ?? 0.5;
+  const minN = d.full_stake_min_n || 30, scale = d.promoted_kelly_scale ?? 0.5;
+  const ladder = d.full_stake_bar || d.bar || {};   // the ladder's own bar, not the promotion bar
   const ageMin = d.updated_at ? Math.max(0, Math.round((Date.now() - new Date(d.updated_at).getTime()) / 60000)) : null;
   const age = ageMin == null ? '' : ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.round(ageMin / 60)}h ago` : `${Math.round(ageMin / 1440)}d ago`;
   const roiCol = v => (v == null ? 'var(--text-tertiary)' : v > 0 ? 'var(--green)' : v < -10 ? 'var(--red)' : 'var(--amber)');
@@ -466,7 +467,7 @@ async function loadMarketRecord() {
       : `${num(0)} of ${minN} bets — nothing settled yet`;
     const stakeLine = full
       ? `Full stake: Kelly 0.15, cap 2.5% of bankroll. Drops back to half if ${dem.min_real_bets} real bets run below ${dem.max_roi_pct}% ROI or z &lt; ${dem.max_z}.`
-      : `Half Kelly and half cap (about €10 a bet) until ${minN} real bets on the current model clear the promotion bar — ROI &gt; ${bar.min_roi_pct ?? 0}%, z ≥ ${bar.min_z ?? 2.5}, CLV &gt; 0 once ${bar.min_clv_n ?? 20} closing prices exist. The same bar, every leg, a paper market clears to reach real money at all. Then full: Kelly 0.15, cap 2.5%. Nobody flips this by hand — the record does.`;
+      : `Half Kelly and half cap (about €10 a bet) until ${minN} real bets on the current model clear the promotion bar's quality legs — ROI &gt; ${ladder.min_roi_pct ?? 0}%, z ≥ ${ladder.min_z ?? 2.5}, CLV &gt; 0 once ${ladder.min_clv_n ?? 20} closing prices exist. Same quality of evidence a paper market needs to reach real money, at ${minN} bets instead of ${bar.min_settled ?? 50}. Then full: Kelly 0.15, cap 2.5%. Nobody flips this by hand — the record does.`;
     return `<div class="vb-inner-card" style="background:var(--bg-secondary);">
       <div class="vb-flex-between" style="margin-bottom:var(--space-2);">
         <span style="font-size:14px;font-weight:700;color:var(--text-primary);">${_mrEsc(r.market)} ${_mrEsc(r.side)} <span style="font-weight:400;color:var(--text-tertiary);font-size:11px;">· the O/U model's bet</span></span>

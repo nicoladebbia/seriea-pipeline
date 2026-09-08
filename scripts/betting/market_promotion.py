@@ -75,25 +75,23 @@ INCUMBENT_MARKETS = {"ou_over_1_5": ("O/U 1.5", "Over"), "ou_over_2_5": ("O/U 2.
 INCUMBENT_LIVE_FROM = "2026-08-27T00:00:00+00:00"
 # Stake ladder for an incumbent (2026-09-06, closing the Kelly 0.15 question):
 # the engine stakes it at PROMOTED_KELLY_SCALE x Kelly and x cap — what a
-# freshly promoted market gets — until its since-go-live real record CLEARS
-# PROMOTION_BAR. The record decides, not a hand-set fraction.
+# freshly promoted market gets — until its since-go-live real record clears
+# INCUMBENT_FULL_STAKE_BAR. The record decides, not a hand-set fraction.
 #
-# It is the SAME bar, every leg, that a paper market must clear to touch real
-# money at all: n >= 50, ROI > 0, z >= 2.5, CLV > 0 once 20 closing prices
-# exist. Nicola's call, 2026-09-08. Two earlier versions of this ladder were
-# both weaker than the bar the props queue behind:
-#   - until 2026-09-08 the only test at n=30 was `should_demote` (ROI < -10%
-#     or z < -1), so a record at ROI -9.9% DOUBLED the stake on the next slip;
-#   - the ROI > 0 leg alone still passed n=50 ROI +12.8% z +1.60, a record
-#     indistinguishable from noise.
-# Asymmetry here is not a rounding detail: it is the incumbents betting real
-# money on evidence their competitors are refused for.
-#
-# The count leg moved 30 -> 50 with this change, because it is now the bar's
-# own `min_settled` rather than the demotion bar's `min_real_bets`. That is
-# what makes it symmetric. If the intent were "keep 30, just add z", this one
-# line is the whole difference.
-INCUMBENT_FULL_STAKE_MIN_N = PROMOTION_BAR["min_settled"]
+# That bar is PROMOTION_BAR's QUALITY legs — ROI > 0, z >= 2.5, CLV > 0 once
+# 20 closing prices exist — at the ladder's own count of 30 rather than the
+# bar's 50. Nicola's call, 2026-09-08, after two weaker versions:
+#   - originally the only test at n=30 was `should_demote` (ROI < -10% or
+#     z < -1), so a record at ROI -9.9% DOUBLED the stake on the next slip;
+#   - adding ROI > 0 alone still passed n=30 ROI +17.5% z +1.82 — positive,
+#     and indistinguishable from noise.
+# The count stays at 30 deliberately: this ladder is a stake MULTIPLIER on a
+# market already betting real money, not admission to real money, so it asks
+# for the same QUALITY of evidence as the promotion bar without the same
+# QUANTITY. Everything else is the bar, so the two cannot drift apart on what
+# "good" means — only on how much of it.
+INCUMBENT_FULL_STAKE_MIN_N = DEMOTION_BAR["min_real_bets"]
+INCUMBENT_FULL_STAKE_BAR = {**PROMOTION_BAR, "min_settled": INCUMBENT_FULL_STAKE_MIN_N}
 
 # Market key -> what the bet is, for the /record card
 MARKET_NAMES_IT = {
@@ -291,18 +289,18 @@ def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LI
 
 def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     """(multiplier, reason) for an incumbent, from its since-go-live record.
-    Full stake needs that record to clear PROMOTION_BAR — the same bar, every
-    leg, a paper market clears to reach real money. Anything short stays on the
-    half a freshly promoted market gets. The demotion-bar reason is kept
-    separate from the short-of-the-bar one because they are different sizes of
-    bad and the card says which."""
+    Full stake needs that record to clear INCUMBENT_FULL_STAKE_BAR — the
+    promotion bar's quality legs at the ladder's own count. Anything short
+    stays on the half a freshly promoted market gets. The demotion-bar reason
+    is kept separate from the short-of-the-bar one because they are different
+    sizes of bad and the card says which."""
     n = since.get("n", 0)
     if n < INCUMBENT_FULL_STAKE_MIN_N:
         return PROMOTED_KELLY_SCALE, f"since go-live {n}/{INCUMBENT_FULL_STAKE_MIN_N} settled"
     demote, why = should_demote(since)
     if demote:
         return PROMOTED_KELLY_SCALE, f"since go-live record at the demotion bar: {why}"
-    misses = bar_misses(since)
+    misses = bar_misses(since, INCUMBENT_FULL_STAKE_BAR)
     if misses:
         return PROMOTED_KELLY_SCALE, f"since go-live n={n} short of the bar: {'; '.join(misses)}"
     return 1.0, (f"since go-live n={n} ROI {since['roi_pct']:+.1f}% "
