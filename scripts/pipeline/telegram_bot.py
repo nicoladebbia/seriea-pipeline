@@ -490,10 +490,10 @@ def _reply_keyboard() -> dict:
 #
 # Fields: (command, menu_description, help_line, group, in_menu)
 #   in_menu=True  → registered with Telegram's ☰ button (max ~12 reads well)
-#   in_menu=False → reachable, and listed in /help only if its group is one
-#                   _handle_help renders (Fantacalcio, Serie A betting).
-#                   Session and Legacy rows are reachable and deliberately
-#                   unlisted everywhere.
+#   in_menu=False → reachable, and still listed in /help. Fantacalcio and
+#                   Serie A betting get a line each; Session and Legacy get a
+#                   compact trailing line. Every row in this table appears in
+#                   /help — that is what test_every_registered_command... pins.
 # `tests/test_telegram_commands.py` asserts this registry and the router's
 # dispatch branches name exactly the same set, so they cannot drift again.
 
@@ -2589,8 +2589,16 @@ def _handle_help() -> str:
     tg.italic("Es: 'analizza Genoa-Como', 'come sta andando il bankroll?',")
     tg.italic("'chi schiero in porta?' \u2014 anche screenshot di formazioni.")
     tg.blank()
-    tg.raw("<b>Legacy World Cup:</b> /wc /ladder /mybets /bet /settle /balance /guard /lossstop")
-    tg.raw("<b>Session:</b> /clear \u2014 reset conversazione")
+    # Derived, not typed: the hand-written version of this line listed 8 of the
+    # 11 legacy commands (/leg, /deposit, /cancel were missing) — the same drift
+    # the registry exists to end, two lines below the loop that ends it.
+    _legacy = " ".join(f"/{c['command']}" for c in _COMMANDS if c["group"] == _GROUP_LEGACY)
+    if _legacy:
+        tg.raw(f"<b>{_GROUP_LEGACY}:</b> {_legacy}")
+    _session = [c for c in _COMMANDS if c["group"] == _GROUP_SESSION and c["command"] != "help"]
+    if _session:
+        tg.raw("<b>Session:</b> " + " · ".join(
+            f"/{c['command']} \u2014 {c['help']}" for c in _session))
     return tg.build()
 
 

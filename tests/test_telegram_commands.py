@@ -123,3 +123,34 @@ def test_no_duplicate_command_names():
         seen.extend(c.get("aliases", []))
     dupes = {n for n in seen if seen.count(n) > 1}
     assert not dupes, f"a name is claimed twice: {sorted(dupes)}"
+
+
+def test_every_registered_command_appears_in_help():
+    """The registry killed the drift between the router and the ☰ menu, but
+    `_handle_help` still ended with two HAND-TYPED lines two lines below the
+    loop that derives the rest — and the Legacy one listed 8 of 11 commands
+    (/leg, /deposit, /cancel were missing). Both lines are derived now.
+
+    `/help` is exempt from its own output.
+    """
+    import re
+
+    from scripts.pipeline.telegram_bot import _COMMANDS, _handle_help
+
+    rendered = re.sub(r"<[^>]+>", "", _handle_help())
+    missing = [c["command"] for c in _COMMANDS
+               if c["command"] != "help" and f"/{c['command']}" not in rendered]
+    assert not missing, f"reachable but undocumented in /help: {missing}"
+
+
+def test_help_lists_no_command_the_router_cannot_dispatch():
+    """The other direction: /help must not advertise a dead command."""
+    import re
+
+    from scripts.pipeline.telegram_bot import ALL_COMMAND_NAMES, _handle_help
+
+    rendered = re.sub(r"<[^>]+>", "", _handle_help())
+    # Only the command tokens, not prose containing a slash.
+    advertised = {m.group(1) for m in re.finditer(r"(?:^|[\s(])/([a-z0-9_]+)", rendered)}
+    unknown = advertised - ALL_COMMAND_NAMES
+    assert not unknown, f"/help advertises commands with no handler: {sorted(unknown)}"
