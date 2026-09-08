@@ -467,14 +467,14 @@ async function loadMarketRecord() {
       : `${num(0)} of ${minN} bets — nothing settled yet`;
     const stakeLine = full
       ? `Full stake: Kelly 0.15, cap 2.5% of bankroll. Drops back to half if ${dem.min_real_bets} real bets run below ${dem.max_roi_pct}% ROI or z &lt; ${dem.max_z}.`
-      : `Half Kelly and half cap (about €10 a bet) until ${minN} real bets on the current model clear the promotion bar's quality legs — ROI &gt; ${ladder.min_roi_pct ?? 0}%, z ≥ ${ladder.min_z ?? 2.5}, CLV &gt; 0 once ${ladder.min_clv_n ?? 20} closing prices exist. Same quality of evidence a paper market needs to reach real money, at ${minN} bets instead of ${bar.min_settled ?? 50}. Then full: Kelly 0.15, cap 2.5%. Nobody flips this by hand — the record does.`;
+      : `Half Kelly and half cap (about €10 a bet) until ${minN} real bets clear the ladder: ROI &gt; ${ladder.min_roi_pct ?? 0}% as a floor, and CLV &gt; ${ladder.min_clv_pct ?? 0}% at z ≥ ${ladder.min_clv_z ?? 2.5} on at least ${ladder.min_clv_n ?? 20} closing prices. CLV is the quality leg because it measures the same edge without waiting for the coin to land — the return would need roughly 648 settled bets to say as much as CLV says in 30. Then full: Kelly 0.15, cap 2.5%. Nobody flips this by hand — the record does.`;
     return `<div class="vb-inner-card" style="background:var(--bg-secondary);">
       <div class="vb-flex-between" style="margin-bottom:var(--space-2);">
         <span style="font-size:14px;font-weight:700;color:var(--text-primary);">${_mrEsc(r.market)} ${_mrEsc(r.side)} <span style="font-weight:400;color:var(--text-tertiary);font-size:11px;">· the O/U model's bet</span></span>
         ${pill}
       </div>
       <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);">
-        <div><span style="color:var(--text-tertiary);">Settled real bets:</span> ${num(rr.n ?? 0)} · ROI <span class="vb-mono" style="color:${roiCol(rr.roi_pct)};font-weight:600;">${_mrPct(rr.roi_pct)}</span> · CLV <span class="vb-mono" style="color:${roiCol(rr.mean_clv_pct)};">${rr.mean_clv_pct == null ? '—' : _mrPct(rr.mean_clv_pct)}</span> · z ${num(rr.z == null ? '—' : Number(rr.z).toFixed(2))}${span ? ` <span style="color:var(--text-tertiary);">(${span}, previous model)</span>` : ''}</div>
+        <div><span style="color:var(--text-tertiary);">Settled real bets:</span> ${num(rr.n ?? 0)} · ROI <span class="vb-mono" style="color:${roiCol(rr.roi_pct)};font-weight:600;">${_mrPct(rr.roi_pct)}</span> · CLV <span class="vb-mono" style="color:${roiCol(rr.mean_clv_pct)};">${rr.mean_clv_pct == null ? '—' : _mrPct(rr.mean_clv_pct)}</span>${rr.clv_z == null ? '' : ` <span style="color:var(--text-tertiary);">(z ${Number(rr.clv_z).toFixed(2)})</span>`} · z ${num(rr.z == null ? '—' : Number(rr.z).toFixed(2))}${span ? ` <span style="color:var(--text-tertiary);">(${span}, previous model)</span>` : ''}</div>
         <div><span style="color:var(--text-tertiary);">Would it pass the promotion bar today?</span> ${passes}</div>
         <div><span style="color:var(--text-tertiary);">On the current model (since ${_mrMonth(d.live_from || '')}):</span> ${sinceLine}</div>
         ${_mrBar(sl.n || 0, minN, full ? 'var(--green)' : 'var(--amber)')}

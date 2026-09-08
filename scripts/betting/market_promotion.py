@@ -78,20 +78,36 @@ INCUMBENT_LIVE_FROM = "2026-08-27T00:00:00+00:00"
 # freshly promoted market gets — until its since-go-live real record clears
 # INCUMBENT_FULL_STAKE_BAR. The record decides, not a hand-set fraction.
 #
-# That bar is PROMOTION_BAR's QUALITY legs — ROI > 0, z >= 2.5, CLV > 0 once
-# 20 closing prices exist — at the ladder's own count of 30 rather than the
-# bar's 50. Nicola's call, 2026-09-08, after two weaker versions:
-#   - originally the only test at n=30 was `should_demote` (ROI < -10% or
-#     z < -1), so a record at ROI -9.9% DOUBLED the stake on the next slip;
-#   - adding ROI > 0 alone still passed n=30 ROI +17.5% z +1.82 — positive,
-#     and indistinguishable from noise.
-# The count stays at 30 deliberately: this ladder is a stake MULTIPLIER on a
-# market already betting real money, not admission to real money, so it asks
-# for the same QUALITY of evidence as the promotion bar without the same
-# QUANTITY. Everything else is the bar, so the two cannot drift apart on what
-# "good" means — only on how much of it.
+# THE QUALITY LEG IS CLV, NOT RETURN (Nicola's call, 2026-09-08). Both measure
+# the same claim — "these bets are priced better than the market" — but the
+# return needs the coin to land and CLV does not, so their sample efficiency is
+# not comparable. Measured that day on the live journal, same bets:
+#
+#   market          ROI z   n for ROI z>=2.5   CLV z   n for CLV z>=2.5
+#   O/U 1.5 Over    +0.68        ~648          +9.98          ~3
+#   O/U 2.5 Over    -0.10        never        +16.11          ~1
+#
+# A return-z leg at n=30 needed a +28.1% ROI run to clear; simulated on the real
+# odds mix it fired 7.4% of the time, and it got WORSE with volume, because the
+# only way a thin book clears it is luck. That is a gate that never opens, which
+# is not a strict gate — it is a broken one.
+#
+# ROI > 0 stays as a FLOOR, deliberately. CLV says the price was good; it does
+# not say the market made money, and full stake on a market that is beating the
+# close while losing is not a trade anyone wants. Both must hold.
+#
+# The CLV legs are REQUIRED here, not conditional. PROMOTION_BAR waives CLV
+# below min_clv_n because a queueing paper market may have no closing prices at
+# all; for this ladder CLV IS the evidence, so too few prices BLOCKS. Fail
+# closed — see full_stake_misses.
 INCUMBENT_FULL_STAKE_MIN_N = DEMOTION_BAR["min_real_bets"]
-INCUMBENT_FULL_STAKE_BAR = {**PROMOTION_BAR, "min_settled": INCUMBENT_FULL_STAKE_MIN_N}
+INCUMBENT_FULL_STAKE_BAR = {
+    "min_settled": INCUMBENT_FULL_STAKE_MIN_N,
+    "min_roi_pct": PROMOTION_BAR["min_roi_pct"],   # the floor, not the quality leg
+    "min_clv_pct": PROMOTION_BAR["min_clv_pct"],
+    "min_clv_n": PROMOTION_BAR["min_clv_n"],
+    "min_clv_z": PROMOTION_BAR["min_z"],           # the same 2.5, read off CLV
+}
 
 # Market key -> what the bet is, for the /record card
 MARKET_NAMES_IT = {
@@ -219,11 +235,17 @@ def market_record(bets: list[dict], since: str | None = None) -> dict[str, dict]
         mu = mean(r) if r else 0.0
         sd = pstdev(r) if n > 1 else 0.0
         z = (mu / (sd / n ** 0.5)) if n > 1 and sd > 0 else 0.0
+        # CLV gets the same t-statistic as the return. It is a far lower-variance
+        # measurement of the same claim: measured 2026-09-08 on the live journal,
+        # O/U 1.5 Over needs ~648 settled bets for the RETURN z to reach 2.5 and
+        # ~3 for the CLV z. That is why the incumbent stake ladder reads this one.
+        nc, sdc = len(m["clv"]), (pstdev(m["clv"]) if len(m["clv"]) > 1 else 0.0)
+        clv_z = (mean(m["clv"]) / (sdc / nc ** 0.5)) if nc > 1 and sdc > 0 else 0.0
         out[mk] = {"n": n, "won": sum(b.get("status") == "won" for b in m["bets"]),
                    "roi_pct": round(mu * 100, 1), "z": round(z, 2),
                    "profit": round(sum(float(b.get("profit") or 0) for b in m["bets"]), 2),
                    "mean_clv_pct": round(mean(m["clv"]), 2) if m["clv"] else None,
-                   "n_clv": len(m["clv"])}
+                   "n_clv": nc, "clv_z": round(clv_z, 2)}
     return out
 
 
@@ -256,7 +278,32 @@ def bar_misses(rec: dict, bar: dict = PROMOTION_BAR) -> list[str]:
     return out
 
 
-_EMPTY_REC = {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0, "mean_clv_pct": None, "n_clv": 0}
+def full_stake_misses(rec: dict, bar: dict = INCUMBENT_FULL_STAKE_BAR) -> list[str]:
+    """EVERY unmet condition for an incumbent's FULL stake — a different gate
+    from `bar_misses`, which is admission to real money.
+
+    Two deliberate differences. The quality leg is the CLV t-statistic, not the
+    return's (see INCUMBENT_FULL_STAKE_BAR for the measurement). And the CLV
+    legs are REQUIRED rather than waived below `min_clv_n`: a market with no
+    closing prices has not produced the evidence this gate reads, so it stays on
+    the half stake instead of passing by absence."""
+    out = []
+    if rec["n"] < bar["min_settled"]:
+        out.append(f"{rec['n']}/{bar['min_settled']} settled")
+    if rec["roi_pct"] <= bar["min_roi_pct"]:
+        out.append(f"ROI {rec['roi_pct']:+.1f}%")
+    if rec.get("n_clv", 0) < bar["min_clv_n"]:
+        out.append(f"{rec.get('n_clv', 0)}/{bar['min_clv_n']} closing prices")
+    else:
+        if (rec.get("mean_clv_pct") or 0) <= bar["min_clv_pct"]:
+            out.append(f"CLV {rec['mean_clv_pct']:+.2f}%")
+        if (rec.get("clv_z") or 0) < bar["min_clv_z"]:
+            out.append(f"CLV z {rec.get('clv_z') or 0:.2f} < {bar['min_clv_z']:.1f}")
+    return out
+
+
+_EMPTY_REC = {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0,
+              "mean_clv_pct": None, "n_clv": 0, "clv_z": 0.0}
 
 
 def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LIVE_FROM,
@@ -289,9 +336,10 @@ def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LI
 
 def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     """(multiplier, reason) for an incumbent, from its since-go-live record.
-    Full stake needs that record to clear INCUMBENT_FULL_STAKE_BAR — the
-    promotion bar's quality legs at the ladder's own count. Anything short
-    stays on the half a freshly promoted market gets. The demotion-bar reason
+    Full stake needs that record to clear INCUMBENT_FULL_STAKE_BAR: enough
+    settled bets, ROI > 0 as a floor, and a CLV record that is positive and
+    significant. Anything short stays on the half a freshly promoted market
+    gets. The demotion-bar reason
     is kept separate from the short-of-the-bar one because they are different
     sizes of bad and the card says which."""
     n = since.get("n", 0)
@@ -300,11 +348,12 @@ def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     demote, why = should_demote(since)
     if demote:
         return PROMOTED_KELLY_SCALE, f"since go-live record at the demotion bar: {why}"
-    misses = bar_misses(since, INCUMBENT_FULL_STAKE_BAR)
+    misses = full_stake_misses(since)
     if misses:
         return PROMOTED_KELLY_SCALE, f"since go-live n={n} short of the bar: {'; '.join(misses)}"
     return 1.0, (f"since go-live n={n} ROI {since['roi_pct']:+.1f}% "
-                 f"z {since['z']:+.2f} — bar cleared")
+                 f"CLV {since.get('mean_clv_pct') or 0:+.2f}% "
+                 f"z {since.get('clv_z') or 0:+.2f} — bar cleared")
 
 
 def incumbent_stake_scale(market: str, selection: str, state: dict | None = None) -> tuple[float, str]:
@@ -400,7 +449,7 @@ def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: l
     for mk in sorted(seen | set(markets)):
         row = markets.setdefault(mk, {"status": "paper", "since": now.isoformat(), "record_from": None})
         paper_rec = market_record(paper_settled, since=row.get("record_from")).get(mk) or \
-            {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0, "mean_clv_pct": None, "n_clv": 0}
+            dict(_EMPTY_REC)
         row["paper"] = paper_rec
         row["real"] = real_by.get(mk)
         if row["status"] == "promoted":
@@ -409,8 +458,7 @@ def evaluate_promotions(paper_settled: list[dict] | None = None, real_settled: l
                 row.update({"status": "paper", "since": now.isoformat(), "record_from": now.isoformat(),
                             "reason": f"demoted: {why}", "demoted_at": now.isoformat()})
                 # the paper count restarts here: the record that promoted it is spent
-                row["paper"] = {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0,
-                                "mean_clv_pct": None, "n_clv": 0}
+                row["paper"] = dict(_EMPTY_REC)
                 row["distance"] = passes_bar(row["paper"])[1]
                 log.warning("Market %s DEMOTED to paper: %s", mk, why)
                 transitions.append({"kind": "demoted", "market": mk, "reason": why,
@@ -521,10 +569,12 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     for mk, r in incumbents.items():
         rr = r.get("real") or {}
         sl = r.get("real_since_live") or {}
-        clv = f" · CLV {rr['mean_clv_pct']:+.1f}%" if rr.get("mean_clv_pct") is not None else ""
+        clv = (f" · CLV {rr['mean_clv_pct']:+.1f}% (z {rr.get('clv_z') or 0:+.1f})"
+               if rr.get("mean_clv_pct") is not None else "")
         bar = "barra superata" if r.get("bar_passed") else f"barra NON superata: {r.get('distance', '')}"
         stake = ("puntata piena" if (r.get("stake_scale") or 1.0) >= 1.0
-                 else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live superano la barra")
+                 else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live "
+                      f"hanno ROI > 0 e CLV z ≥ {INCUMBENT_FULL_STAKE_BAR['min_clv_z']:.1f}")
         lines.append(f"🏦 {b[0]}{MARKET_NAMES_IT.get(mk, mk)}{b[1]} vera n={rr.get('n', 0)} ROI {rr.get('roi_pct', 0):+.0f}% "
                      f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)} · {stake}")
     if not rows:

@@ -400,18 +400,27 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   `betting_unified.py` owns the market config and that stays a decision, not a script.
   **Closed the same day — the stake follows the record, not the constant.** An incumbent
   is staked like a freshly promoted market: Kelly AND cap × `PROMOTED_KELLY_SCALE` (0.5)
-  until its since-go-live real record clears **`INCUMBENT_FULL_STAKE_BAR`** — the promotion
-  bar's QUALITY legs (ROI > 0, z ≥ 2.5, CLV > 0 once 20 closing prices exist) at the
-  ladder's own count of 30 (`{**PROMOTION_BAR, "min_settled": 30}`). Then full 0.15 / 2.5%.
-  Same quality of evidence as a market queueing for real money, less quantity of it — the
-  ladder is a MULTIPLIER on a market already betting, not admission, and that is the one
-  place it is allowed to differ from `PROMOTION_BAR`. The ladder was too weak twice and both
-  fixtures are pinned in the tests: originally the only test at n=30 was `should_demote`
-  (ROI < −10% or z < −1), so a record at **ROI −9.9% DOUBLED the stake** on the next slip;
-  adding ROI > 0 alone still passed **n=30 ROI +17.5% z +1.82**, a record indistinguishable
-  from noise. Nicola's call, 2026-09-08. Both renderers state the real condition and read the
-  row's own `stake_reason` for WHICH leg is short — never let `/betting` or the `/record`
-  card describe the ladder as a bet COUNT alone. `incumbent_records` writes
+  until its since-go-live real record clears **`INCUMBENT_FULL_STAKE_BAR`** — 30 settled
+  bets, **ROI > 0 as a floor**, and a **CLV record that is positive and significant**
+  (mean CLV > 0, CLV z ≥ 2.5, on ≥ 20 closing prices). `full_stake_misses()` is that gate;
+  `market_record` carries `clv_z` for it. Then full 0.15 / 2.5%.
+  **The quality leg is CLV, not the return (Nicola's call, 2026-09-08), because they are
+  not comparable in sample efficiency.** Measured that day on the live journal, same bets:
+  O/U 1.5 Over has return z **+0.68** (z ≥ 2.5 would need **~648** settled bets) against
+  CLV z **+9.98** (~3 bets); O/U 2.5 Over is return z −0.10 (never) against CLV z **+16.11**.
+  A return-z leg at n=30 required a **+28.1% ROI run over 30 bets**, fired 7.4% of the time
+  in simulation on the real odds mix, and got *worse* with volume — the only thing that
+  opens it is luck, and volume destroys luck. That is a broken gate, not a strict one.
+  Do NOT "reach n=30 faster" by loosening selection: simulated, diluting half the slate with
+  break-even bets drops P(unlock) 7.4% → 4.7%, and doubling volume that way drops it to 3.7%
+  **while corrupting the record the gate exists to read**. ROI > 0 stays a floor because CLV
+  says the price was good, not that the market made money. **The CLV legs are REQUIRED here,
+  the inverse of `PROMOTION_BAR`, which waives CLV below `min_clv_n`**: this gate reads CLV,
+  so no closing prices means no evidence, means half stake — fail closed. The ladder was too
+  weak twice before this (`should_demote` alone let ROI −9.9% double the stake; ROI > 0 alone
+  let n=30 ROI +17.5% z +1.82 through) and every one of those records is pinned in the tests.
+  Both renderers state the real condition and read the row's own `stake_reason` for WHICH leg
+  is short — never let `/betting` or the `/record` card describe the ladder as a bet COUNT alone. `incumbent_records` writes
   `stake_scale` / `stake_reason`, `_make_bet` reads them once per engine run
   (`_incumbent_stake_scale`, fail-closed to 0.5 with no state), `ValueBet.stake_scale` /
   `stake_note` carry it. Dry run on the MW3 slate: EUR 18–22 → EUR 10 a bet (1.5 line at

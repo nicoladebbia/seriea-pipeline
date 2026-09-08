@@ -209,13 +209,15 @@ def test_atomic_write_survives_a_failed_rename_with_the_old_file_intact(tmp_path
 # ---------------------------------------------------------------------------
 # 6. The incumbent stake ladder at the bar's own boundary
 # ---------------------------------------------------------------------------
-def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00"):
+def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00", clv=(1.2, 3.4, 0.8, 2.9)):
     out = []
     for i in range(n_won + n_lost):
         won = i < n_won
         out.append({"market": "O/U 1.5", "selection": "Over 1.5", "status": "won" if won else "lost",
                     "stake": 10.0, "odds": odds, "profit": round(10.0 * (odds - 1), 2) if won else -10.0,
-                    "placed_at": placed, "extra": None, "pipeline_status": "current"})
+                    "placed_at": placed, "extra": None, "pipeline_status": "current",
+                    # varying, because a constant CLV has no t-statistic
+                    "clv_pct": None if clv is None else clv[i % len(clv)]})
     return out
 
 
@@ -223,27 +225,35 @@ def test_full_stake_unlocks_at_thirty_held_up_bets_not_twenty_nine():
     from scripts.betting import market_promotion as MP
     n = MP.INCUMBENT_FULL_STAKE_MIN_N
     assert n == MP.DEMOTION_BAR["min_real_bets"] == 30, "the ladder keeps its own count"
-    short = MP.incumbent_records(_real(25, n - 1 - 25))["ou_over_1_5"]
-    full = MP.incumbent_records(_real(26, n - 26))["ou_over_1_5"]
+    short = MP.incumbent_records(_real(22, n - 1 - 22))["ou_over_1_5"]
+    full = MP.incumbent_records(_real(22, n - 22))["ou_over_1_5"]
     assert short["real_since_live"]["n"] == n - 1
     assert short["stake_scale"] == MP.PROMOTED_KELLY_SCALE and f"{n - 1}/{n}" in short["stake_reason"]
     assert full["real_since_live"]["n"] == n
     assert full["stake_scale"] == 1.0 and "bar cleared" in full["stake_reason"]
-    # a full count that trips the demotion bar stays on the half stake
+    # a full count that trips the demotion bar stays on the half stake, however
+    # good its CLV — the demotion bar is checked before the quality leg
     bad = MP.incumbent_records(_real(15, 15))["ou_over_1_5"]
+    assert bad["real_since_live"]["clv_z"] > MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
     assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
 
 
-def test_a_positive_but_noisy_record_does_not_unlock_full_stake():
-    """The ladder has been too weak twice. This pins the second one: n=30,
-    ROI +17.5%, z +1.82 — positive, non-demoting, and short of the z the
-    promotion bar demands. Both preconditions are asserted, so the half stake
-    is attributable to the z leg and not to a rule that already existed."""
+def test_the_quality_leg_is_CLV_and_ROI_is_only_a_floor():
+    """The ladder has read the wrong leg three times. This pins the current one
+    from both sides: a record whose RETURN says nothing (z +0.30, and z >= 2.5
+    on the return would need a +28.1% run over 30 bets) but whose CLV is
+    overwhelming clears; the same record with the money going the other way does
+    not, because ROI > 0 is kept as a floor."""
     from scripts.betting import market_promotion as MP
-    rec = MP.incumbent_records(_real(25, 5))["ou_over_1_5"]
-    since = rec["real_since_live"]
-    assert since["n"] == MP.INCUMBENT_FULL_STAKE_MIN_N
-    assert since["roi_pct"] > MP.PROMOTION_BAR["min_roi_pct"], "precondition: the ROI-only rule accepts this"
-    assert MP.should_demote(since) == (False, ""), "precondition: the demotion-bar-only rule accepts this"
-    assert since["z"] < MP.PROMOTION_BAR["min_z"] == MP.INCUMBENT_FULL_STAKE_BAR["min_z"]
-    assert rec["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "short of the bar" in rec["stake_reason"]
+    good = MP.incumbent_records(_real(22, 8))["ou_over_1_5"]["real_since_live"]
+    assert good["z"] < MP.PROMOTION_BAR["min_z"], "precondition: the return-z rule blocks this"
+    assert good["clv_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
+    assert MP.full_stake_misses(good) == []
+
+    losing = MP.incumbent_records(_real(21, 9))["ou_over_1_5"]["real_since_live"]
+    assert losing["clv_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"] and losing["roi_pct"] < 0
+    assert MP.full_stake_misses(losing) == ["ROI -1.3%"]
+
+    # and a book with no closing prices cannot clear a gate that reads them
+    blind = MP.incumbent_records(_real(22, 8, clv=None))["ou_over_1_5"]["real_since_live"]
+    assert MP.full_stake_misses(blind) == [f"0/{MP.INCUMBENT_FULL_STAKE_BAR['min_clv_n']} closing prices"]
