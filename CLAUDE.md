@@ -23,7 +23,7 @@
 
 - **When to consult it:** "where is X handled?", "what calls Y?", "is this file dead?", "what's the entry point for Z?", any orientation or refactor question.
 - **Companion `CLEANUP_PLAN.md`** holds the kill-list, keep-list (valid one-shots — do NOT delete), merge surface, and the rule that **zero importers ≠ dead** here (scripts/ are launchd/cron/subprocess-invoked).
-- **Entry points** are the 15 launchd plists + `web/app.py` + `cli.py` — listed in ARCHITECTURE_MAP.md's "Entry points" table. That table IS the command/subscription surface.
+- **Entry points** are the 21 launchd plists + `web/app.py` + `cli.py` — listed in ARCHITECTURE_MAP.md's "Entry points" table. That table IS the command/subscription surface.
 - The import/liveness facts were derived mechanically (AST + plist scan), not narrated — trust them. If the map contradicts memory, trust the map. If a file moved/was deleted after the map was generated (2026-06-01), regenerate the relevant section.
 
 ## Commands
@@ -898,6 +898,18 @@ CORRECTNESS and found four defects, all now closed. Read this before adding a ca
   PERSISTED scale, so a steady state never re-pushes; a market oscillating across the
   demotion boundary DOES get a card per flip, deliberately — each flip halves or doubles
   the money on the next slip.
+- **The gate is scored from BOTH settlement paths (2026-09-08).** Until then
+  `evaluate_promotions()` had ONE call site: inside `settle_picks()`, the PAPER path, and
+  only `if summary["settled"]`. Real O/U bets settle through `settle_bets()` straight off
+  the results dict while paper props wait on player stats that land 14h+ later — so a run
+  that settled real money and no paper pick left the incumbent ladder un-scored: no
+  `stake_up` / `stake_down` card could fire and the next slip staked off a stale
+  `stake_scale`. The incumbents' first real transition (30 settled since go-live) is
+  exactly that shape. `settle_bets` now calls it too, outside the settle lock, at the
+  choke point every real path goes through (auto_settle, run_full_pipeline,
+  results_fetcher's own main). Idempotent — transitions diff against the PERSISTED state,
+  so both paths firing in one run pushes once. Test:
+  `test_a_real_settlement_alone_scores_the_gate_and_pushes_the_stake_card`.
 - **Commands come from one registry.** `telegram_bot._COMMANDS` owns `command` / `menu` /
   `help` / `group` / `in_menu`; `_MENU_COMMANDS` (the `setMyCommands` payload) and
   `/help` are both derived from it. `tests/test_telegram_commands.py` parses the router's
@@ -910,6 +922,25 @@ CORRECTNESS and found four defects, all now closed. Read this before adding a ca
   removed, so a malformed card is delivered with its tags showing and the only trace is
   `Telegram chunk N sent without HTML (fallback)` at INFO. Never judge card health from
   "the message arrived".
+- **A builder must NOT open its body with the card's own title.** `_notify_telegram`
+  prepends `"<emoji> <b>{title}</b>"` to every card, so a `tg.title("X")` under
+  `notify(..., title="X")` prints the header twice. Three did it — `notify_market_promotion`,
+  `notify_no_action`, `notify_scheduler_run` (whose own docstring says "ONE title line
+  only") — and nobody saw it, because `notification_history.jsonl` logs the macOS body and
+  never the HTML: the duplicate exists only in the bytes POSTed. Found 2026-09-08 by
+  capturing them. A body MAY open with its own bold line when it says something DIFFERENT
+  (`notify_settlement`'s section heading). `test_no_card_prints_its_own_title_twice` runs
+  the whole `_CARD_BUILDERS` list through the real transport and fails on a repeat.
+  **The list is the coverage — a manual text comparison of builder-vs-title left three
+  cards unresolved and cleared `notify_scheduler_run`, which the test then caught.** So
+  the twelve entries take `(monkeypatch, tmp_path)` and set up whatever a card needs
+  (`notify_matchweek_summary` reads a journal derived from `notify.__file__`;
+  `notify_health_state_change` is silent on a first run and WRITES its dedup state —
+  both are redirected, never the live files). **Every card test asserts `payloads` before
+  its loop:** `notify_scheduler_run("success")` posts nothing at all (routine success is
+  a persist-only card since the 2026-08-27 cut), so without that guard the param went
+  green having checked zero bytes. A per-card test with no non-empty precondition is the
+  vacuous-pass shape of `verification.md` #5.
 - **Validate a card against Telegram's OWN parser for free: POST it with `chat_id: 0`.**
   Measured 2026-09-07: the API parses entities BEFORE it validates the chat, so malformed
   HTML answers `can't parse entities: ...` and well-formed HTML answers `chat not found`.

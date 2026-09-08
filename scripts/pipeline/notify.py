@@ -1401,8 +1401,7 @@ def notify_no_action(matches: list[str]) -> dict:
     msg = f"T-30 ran for {listed}: no edge cleared the bar. No bets."
 
     tg = TgMsg()
-    tg.title("T-30: no bets", emoji="\U0001f6e1️")
-    tg.blank()
+    tg.blank()          # header comes from _notify_telegram; see notify_market_promotion
     tg.line("The chain ran. Nothing cleared the bar.")
     tg.blank()
     for m in matches[:6]:
@@ -1468,7 +1467,11 @@ def notify_market_promotion(transitions: list[dict]) -> dict:
     msg = f"Market gate moved: {head}"
 
     tg = TgMsg()
-    tg.title("Market gate moved", emoji="\U0001f3e6")
+    # No tg.title() here: _notify_telegram already prepends
+    # "<emoji> <b>{title}</b>" to every card, so a title line repeating the
+    # same string renders the header TWICE. Verified by capturing the real
+    # posted payload 2026-09-08. A body may open with its own bold line only
+    # when it SAYS something different (see notify_settlement).
     tg.blank()
     for t in transitions:
         kind = t.get("kind", "")
@@ -2980,7 +2983,6 @@ def notify_scheduler_run(
     """
     emoji, label = _SCHEDULER_BADGE.get(name, ("⚙️", name.replace("-", " ").title()))
     status_l = (status or "ok").lower()
-    icon = _STATUS_ICON.get(status_l, "ℹ️")
     is_failure = status_l in ("fail", "failed", "error")
     is_success = status_l in ("ok", "success", "skipped")
 
@@ -3022,8 +3024,14 @@ def notify_scheduler_run(
 
     # ---------- Telegram (rich, single title) ----------
     tg = TgMsg()
-    # One header line: icon + label + status + time + duration
-    header_bits = [f"{icon} <b>{_html_escape(label)}</b>"]
+    # One header line: time + duration. NOT the label — this
+    # function's own docstring says "ONE title line only", and notify() below
+    # passes `label` as the title, which _notify_telegram already renders as
+    # "<emoji> <b>{label}</b>". Repeating it here printed the job name twice
+    # in every scheduler card (caught 2026-09-08 by capturing the real bytes).
+    # (and no status icon either: notify()'s level maps to the SAME emoji, so
+    # the body line is just the clock and the duration)
+    header_bits: list[str] = []
     if is_success and dur_str:
         header_bits.append(f"<i>{_html_escape(when)}</i>")
         header_bits.append(f"<i>{dur_str}</i>")

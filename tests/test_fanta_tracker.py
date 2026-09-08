@@ -11,6 +11,8 @@ page, not a restatement of the happy path:
     misses every booking silently.
   * The fantavoto must NOT be range-guarded -- guarding it discards double-figure hauls.
 """
+import hashlib
+
 import pytest
 
 from scripts.fantacalcio.live_scores import parse
@@ -1009,7 +1011,14 @@ def test_round_digest_fires_once_per_settled_round(monkeypatch, tmp_path):
 
 
 def _trow(nome, R, level, p_play=0.9, pid=None):
-    return {"id": pid or hash(nome) % 10000, "nome": nome, "R": R,
+    # blake2b, NOT hash(): str hashing is randomised per process, so
+    # `hash(nome) % 10000` handed two of these 28 names the same id on ~5% of
+    # runs (PYTHONHASHSEED=23 reproduces it). evaluate_offer removes by id, so
+    # a collision dropped a second player with the one under test and the
+    # verdict came back ROSA ILLEGALE. Stable digest, 2**32 space: same name
+    # still means the same id, and the id is the same in every process.
+    digest = int.from_bytes(hashlib.blake2b(nome.encode(), digest_size=4).digest(), "big")
+    return {"id": pid or digest, "nome": nome, "R": R,
             "level": level, "p_play": p_play}
 
 

@@ -344,6 +344,57 @@ def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
     assert other is None or other.stake_scale == 1.0
 
 
+def test_a_real_settlement_alone_scores_the_gate_and_pushes_the_stake_card(tmp_path, monkeypatch):
+    """Until 2026-09-08 evaluate_promotions() ran from ONE place: inside
+    settle_picks(), the PAPER path, and only when a paper pick settled. Real
+    O/U bets settle through settle_bets() straight off the results dict while
+    paper props wait on player stats that land 14h+ later, so a run that
+    settled real money and no paper pick left the incumbent ladder un-scored:
+    no stake card, and the next slip staked off a stale stake_scale. The real
+    path must score it on its own, with the paper journal empty."""
+    import json as _json
+
+    import scripts.data.results_fetcher as rf
+    from scripts.pipeline import notify as N
+
+    live = "2026-09-13T17:00:00+00:00"
+    # The state on disk says HALF (the record had not earned full stake yet)...
+    MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 2, 1, 1.41, live))
+    on_disk = _json.loads(MP.STATE_PATH.read_text())
+    assert on_disk["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
+
+    # ...and the real journal now holds 30 held-up bets since go-live, which is
+    # a stake_up. The PAPER journal stays empty: settle_picks() cannot fire.
+    earned = _real_engine("O/U 1.5", "Over 1.5", 21, 9, 1.41, live)
+    BJ.JOURNAL_PATH.write_text(_json.dumps(
+        {"metadata": {}, "bets": {f"b{i}": b for i, b in enumerate(earned)}}))
+    assert not P.PICKS_JOURNAL_PATH.exists()
+
+    pushed: list = []
+    monkeypatch.setattr(N, "notify_market_promotion", lambda tr: pushed.append(tr))
+    monkeypatch.setattr(rf, "DATA_DIR", tmp_path)
+    # the settlement arithmetic is another test's job; this one is about what
+    # a settled REAL bet triggers, so the locked inner call is a stand-in
+    monkeypatch.setattr(rf, "_settle_bets_locked", lambda results: {"settled": 1, "pending": 0})
+
+    out = rf.settle_bets({})
+
+    assert out == {"settled": 1, "pending": 0}          # the summary is passed through
+    after = _json.loads(MP.STATE_PATH.read_text())
+    assert after["incumbents"]["ou_over_1_5"]["stake_scale"] == 1.0
+    assert len(pushed) == 1 and pushed[0][0]["kind"] == "stake_up"
+    assert pushed[0][0]["market"] == "ou_over_1_5" and pushed[0][0]["n"] == 30
+
+    # idempotent: the paper path calling it again in the same run pushes nothing
+    MP.evaluate_promotions()
+    assert len(pushed) == 1
+    # and a run that settled nothing real must not touch the gate at all
+    monkeypatch.setattr(rf, "_settle_bets_locked", lambda results: {"settled": 0, "pending": 3})
+    monkeypatch.setattr(MP, "evaluate_promotions",
+                        lambda *a, **k: pytest.fail("scored the gate on a no-op settlement"))
+    rf.settle_bets({})
+
+
 def test_api_market_record_serves_the_same_state_as_the_bot_card(tmp_path):
     """/betting renders the gate from /api/market-record; it must read the
     same derived file the Telegram card reads, with names and thresholds."""

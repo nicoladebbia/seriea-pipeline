@@ -341,10 +341,29 @@ def settle_bets(results: Dict[str, Dict]) -> Dict:
     _lock_fd = open(_settle_lock_path, "w")
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX)
-        return _settle_bets_locked(results)
+        summary = _settle_bets_locked(results)
     finally:
         fcntl.flock(_lock_fd, fcntl.LOCK_UN)
         _lock_fd.close()
+    # The incumbent stake ladder and the promotion gate are scored from the
+    # REAL journal, but until 2026-09-08 evaluate_promotions() ran from ONE
+    # place: inside settle_picks(), the PAPER path, and only when a paper pick
+    # settled. A real O/U settlement with no paper pick settling in the same
+    # run is routine -- paper props wait on player stats that land 14h+ late,
+    # real bets settle straight off the results dict -- and in that run the
+    # state was never re-scored: no stake_up/stake_down card could fire and
+    # _make_bet went on reading a stale stake_scale. Run it here, outside the
+    # settle lock, at the choke point every real-settlement path goes through
+    # (auto_settle, run_full_pipeline, results_fetcher's own main).
+    # Idempotent: transitions are diffed against the PERSISTED state, so the
+    # paper path calling it again in the same run pushes nothing.
+    if summary.get("settled"):
+        try:
+            from scripts.betting.market_promotion import evaluate_promotions
+            evaluate_promotions()
+        except Exception as e:  # noqa: BLE001 - settlement must not fail on the gate
+            log.warning("promotion evaluation failed after real settlement: %s", e)
+    return summary
 
 
 def _settle_bets_locked(results: Dict[str, Dict]) -> Dict:

@@ -132,7 +132,7 @@ ruff check . && mypy .
 
 ## Status
 
-Active personal project, run live on a schedule (15 launchd jobs + the Flask dashboard). **Honest about its ceiling:** the production model sits below the ~53–55% market SOTA on walk-forward 1X2 accuracy — exactly where an honest, odds-excluded model should be — and the repo is wired to flag any number that claims otherwise. The 1X2 "who-wins" markets are the only ones treated as bet-grade; goal-quantity and corners/cards markets were backtested, found to add no skill over the base rate, and **removed from every consumer** rather than left in to inflate the feature list.
+Active personal project, run live on a schedule (21 launchd jobs + the Flask dashboard). **Honest about its ceiling:** the production model sits below the ~53–55% market SOTA on walk-forward 1X2 accuracy — exactly where an honest, odds-excluded model should be — and the repo is wired to flag any number that claims otherwise. The 1X2 "who-wins" markets are the only ones treated as bet-grade; goal-quantity and corners/cards markets were backtested, found to add no skill over the base rate, and **removed from every consumer** rather than left in to inflate the feature list.
 
 Two further sources of truth, both generated mechanically (not hand-written narrative):
 - [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) — per-file map (purpose, imports, liveness, quality grade) for the whole codebase.

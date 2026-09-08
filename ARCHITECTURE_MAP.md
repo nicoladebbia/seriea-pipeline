@@ -10,7 +10,9 @@
 - **Quality:** A=147 · B=144 · C=6 · D=5 · F=19.
 
 ## Entry points — what actually runs the system
-15 launchd jobs (all currently **hibernated** — off-season) + the Flask web app + cli.py. This is the entire command/subscription surface.
+21 launchd jobs (all loaded and firing — the season is running; re-count with
+`ls ~/Library/LaunchAgents/com.seriea-pipeline.*.plist | wc -l`, never trust this number) + the
+Flask web app + cli.py. This is the entire command/subscription surface.
 
 | Trigger (launchd plist) | Invokes | Module |
 |---|---|---|
@@ -30,6 +32,10 @@
 | telegram-bot | `telegram_bot` | `scripts/pipeline/telegram_bot.py` |
 | web-dashboard | `app.py` | `web/app.py` |
 | live-loop | `live_monitor.py --loop` | `scripts/data/live_monitor.py` (added 2026-09-06: arming + Odds API polls + ESPN fast tick, out of the web process) |
+| odds-edge-scanner | `odds_edge_monitor --daemon` | `scripts/betting/odds_edge_monitor.py` (match-day only, 15-min interval, 12h cap) |
+| fanta-tracker | `scripts.fantacalcio.tracker` | `scripts/fantacalcio/tracker.py` |
+| transfer-refresh | `refresh_transfers` | `scripts/data/refresh_transfers.py` |
+| state-backup | `state_backup` | `scripts/utils/state_backup.py` |
 
 **External subscriptions/APIs:** Odds API (h2h/totals/spreads bulk + per-event markets), Groq (sentiment — default OFF, `RUN_SENTIMENT=1`, `$1/day` cap), Telegram Bot API. Key env vars: `RUN_SENTIMENT`, `GROQ_DAILY_BUDGET_USD`, Odds API key/tier.
 

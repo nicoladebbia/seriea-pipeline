@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -268,7 +269,12 @@ def test_builders_send_html_not_the_macos_body(monkeypatch, fn, args):
     monkeypatch.setattr(N, "notify", lambda *a, **k: sent.append(k) or {})
     getattr(N, fn)(*args)
     assert sent[0].get("tg_html"), f"{fn} still ships the plain macOS body to Telegram"
-    assert "<b>" in sent[0]["tg_html"]
+    # any Telegram tag: the point is that this is markup and not the plain
+    # macOS body. NOT "<b>" specifically -- a card whose only bold line was
+    # a duplicate of the header (see test_no_card_prints_its_own_title_twice)
+    # is correct with none.
+    assert re.search(r"</?(b|i|code|pre|a|u|s)>", sent[0]["tg_html"]), \
+        f"{fn} ships no HTML markup at all"
 
 
 @pytest.mark.parametrize("promoted", [True, False])
@@ -384,7 +390,7 @@ _TG_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
 _NASTY = 'Roma <b>& "Milan" <not-a-tag> 5>3 & <i'
 
 
-def _telegram_payloads(monkeypatch, transports, build) -> list[str]:
+def _telegram_payloads(monkeypatch, transports, build, tmp_path=None) -> list[str]:
     """The exact `text` the bot would POST, with delivery made impossible.
 
     Goes through the REAL `_notify_telegram` — conftest's tripwire yields the
@@ -412,7 +418,7 @@ def _telegram_payloads(monkeypatch, transports, build) -> list[str]:
     import time as _t
     monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
 
-    build()
+    build(monkeypatch, tmp_path)
     return [c["text"] for c in seen if c.get("parse_mode") == "HTML"]
 
 
@@ -435,27 +441,110 @@ def _assert_telegram_parseable(text: str, label: str) -> None:
         raise AssertionError(f"{label}: unescaped '<' at offset {m.start()}")
 
 
-@pytest.mark.parametrize("label,build", [
-    ("no_action", lambda: N.notify_no_action([_NASTY, "Roma vs Lecce"])),
-    ("journal_rejected", lambda: N.notify_journal_rejected([f"{_NASTY} OVER 1.5 -> old"], 3)),
-    ("market_promotion", lambda: N.notify_market_promotion([
+def _build_matchweek_summary(monkeypatch, tmp_path):
+    """The card that actually went out at 08:00 today.
+
+    It derives its own paths from `notify.__file__`, so redirecting that is
+    what puts a deterministic journal under it — the real one holds whatever
+    settled in the last 10 days, and a card built from "whatever" is a card
+    that tests nothing on a quiet week.
+    """
+    root = tmp_path / "pkg" / "scripts" / "pipeline"
+    root.mkdir(parents=True)
+    (tmp_path / "pkg" / "data" / "betting").mkdir(parents=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    (tmp_path / "pkg" / "data" / "betting" / "bet_journal.json").write_text(json.dumps({
+        "bets": {
+            "b1": {"status": "won", "date": today, "match": _NASTY, "league": "serie_a",
+                   "market": "O/U 1.5", "selection": "Over 1.5 <x>", "odds": 1.45,
+                   "stake": 10.0, "profit": 4.5},
+            "b2": {"status": "lost", "date": today, "match": "Roma vs Lecce",
+                   "league": "serie_a", "market": "O/U 2.5", "selection": "Over 2.5",
+                   "odds": 1.9, "stake": 10.0, "profit": -10.0},
+        }
+    }))
+    monkeypatch.setattr(N, "__file__", str(root / "notify.py"))
+    return N.notify_matchweek_summary(3)
+
+
+def _build_health_state_change(monkeypatch, tmp_path):
+    """Silent on the first run and it WRITES its dedup state, so the state path
+    is redirected (never touch the live one) and seeded with a prior cycle."""
+    state = tmp_path / "health_notify_state.json"
+    state.write_text(json.dumps({
+        "issue_keys": {"critical|[health_check] something old": {
+            "first_seen": "2026-01-01T00:00:00", "last_seen": "2026-01-01T00:00:00",
+            "level": "critical", "message": "[health_check] something old"}},
+    }))
+    monkeypatch.setattr(N, "_HEALTH_STATE_PATH", state)
+    return N.notify_health_state_change({
+        "overall_status": "critical",
+        "issues": [("critical", f"[health_check] {_NASTY} lineup fetch 403 <blocked>"),
+                   ("warning", "[health_check] odds stale 7.5d ago")],
+    })
+
+
+_CARD_BUILDERS = [
+    ("no_action", lambda mp, tp: N.notify_no_action([_NASTY, "Roma vs Lecce"])),
+    ("journal_rejected", lambda mp, tp: N.notify_journal_rejected([f"{_NASTY} OVER 1.5 -> old"], 3)),
+    ("market_promotion", lambda mp, tp: N.notify_market_promotion([
         {"kind": "promoted", "market": _NASTY, "reason": "bar cleared",
          "n": 52, "roi_pct": 4.1, "z": 2.7}])),
-    ("retrain", lambda: N.notify_retrain("quick", 3, True, old_ll=0.99, new_ll=0.97, reason=_NASTY)),
-    ("goal_with_bet", lambda: N.notify_goal(
+    ("retrain", lambda mp, tp: N.notify_retrain("quick", 3, True, old_ll=0.99, new_ll=0.97, reason=_NASTY)),
+    ("goal_with_bet", lambda mp, tp: N.notify_goal(
         _NASTY, "Dybala <10>", "AS Roma & Co", 1, 0, 30, True,
         bet_context={"has_bets": True, "bets": [{"selection": "OVER 1.5 <x>", "odds": 1.8,
                                                  "stake": 10, "is_winning": True,
                                                  "commentary": "cruising & fine"}]})),
-    ("goal_no_bet", lambda: N.notify_goal(_NASTY, "Dybala", "AS Roma", 1, 0, 30, True)),
-    ("full_time_no_bet", lambda: N.notify_full_time(_NASTY, 2, 1)),
+    ("goal_no_bet", lambda mp, tp: N.notify_goal(_NASTY, "Dybala", "AS Roma", 1, 0, 30, True)),
+    ("full_time_no_bet", lambda mp, tp: N.notify_full_time(_NASTY, 2, 1)),
     # The realistic carrier of a stray '<': an exception repr in a failure card.
-    ("scheduler_failure", lambda: N.notify_scheduler_failure(
+    ("scheduler_failure", lambda mp, tp: N.notify_scheduler_failure(
         _NASTY, error="boom <class 'ValueError'> & <Response [403]>")),
-])
-def test_the_bytes_we_post_are_html_telegram_accepts(monkeypatch, label, build,
+    # The four below were the '?' rows of the manual audit — a text comparison
+    # could not resolve them, so they are measured here instead. scheduler_run
+    # was in that same '?' set and WAS a duplicate; reading is not measuring.
+    # "failed", not "success": a routine-success card deliberately does not
+    # send (2026-08-27 volume cut), so the success variant posts no bytes at all.
+    ("scheduler_run", lambda mp, tp: N.notify_scheduler_run(
+        _NASTY, "failed", details={"bets": 2, "note": "fine & dandy"})),
+    ("loss_streak", lambda mp, tp: N.notify_loss_streak(
+        4, 120.0, [{"match": _NASTY, "selection": "Over 1.5 <x>", "odds": 1.9,
+                    "stake": 10.0, "clv": -1.2}])),
+    ("clv_degradation", lambda mp, tp: N.notify_clv_degradation(0.5, 4.0, "2 weeks", [_NASTY])),
+    ("matchweek_summary", _build_matchweek_summary),
+    ("health_state_change", _build_health_state_change),
+]
+
+
+@pytest.mark.parametrize("label,build", _CARD_BUILDERS)
+def test_the_bytes_we_post_are_html_telegram_accepts(monkeypatch, tmp_path, label, build,
                                                     _no_real_notifications):
-    payloads = _telegram_payloads(monkeypatch, _no_real_notifications, build)
+    payloads = _telegram_payloads(monkeypatch, _no_real_notifications, build, tmp_path)
     assert payloads, f"{label} built no Telegram payload"
     for text in payloads:
         _assert_telegram_parseable(text, label)
+
+
+@pytest.mark.parametrize("label,build", _CARD_BUILDERS)
+def test_no_card_prints_its_own_title_twice(monkeypatch, tmp_path, label, build,
+                                            _no_real_notifications):
+    """`_notify_telegram` prepends "<emoji> <b>{title}</b>" to EVERY card, so a
+    builder that also opens its body with that same string renders the header
+    twice. Two did — notify_market_promotion and notify_no_action — and nobody
+    saw it, because the history file logs the macOS body and never the HTML:
+    the duplicate exists only in the bytes actually POSTed. Caught 2026-09-08
+    by capturing them. A body MAY open with its own bold line when it says
+    something DIFFERENT (notify_settlement's section heading)."""
+    payloads = _telegram_payloads(monkeypatch, _no_real_notifications, build, tmp_path)
+    # Without this the loop body never runs for a card that builds nothing, and
+    # the test goes green having checked zero bytes.
+    assert payloads, f"{label} built no Telegram payload"
+    for text in payloads:
+        head = re.match(r"^\S+ <b>(.+?)</b>\n", text)
+        assert head, f"{label}: card does not start with the standard header"
+        title, body = head.group(1), text[head.end():]
+        assert f"<b>{title}</b>" not in body, (
+            f"{label}: the body repeats the header {title!r} — drop the "
+            f"tg.title() call, _notify_telegram already writes that line"
+        )
