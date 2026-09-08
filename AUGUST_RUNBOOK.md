@@ -309,47 +309,38 @@ pipeline treats odds_api as primary.
 | `scripts.data.live_reconciliation` | `scripts/data/live_monitor.py:1181` | ✅ **REBUILT** — replays all 123 stored blocks exactly |
 | `scripts.data.backfill_historical_odds` | `run_full_pipeline.py:1337` (subprocess) | ✅ **REBUILT** — see below |
 
-#### PR #7 — transfers half LANDED, WorldCup half still open (2026-07-16)
+#### PR #7 — CLOSED (transfers landed; the WorldCup half died with the surface)
 
-> **MOOT since 2026-09-07:** the entire World Cup surface was deleted (`scripts/worldcup/`, `/worldcup`, the 11 bot commands, the wc-refresh job, `data/worldcup/` — archived to iCloud `seriea-backups/`). Nothing below about the WorldCup half of #7 is actionable; close it. The transfers half is unaffected.
+> **Closed 2026-09-07/08.** `gh pr view 7` reads `state: MERGED`, and
+> `gh pr list --state open` is empty — there is no open PR #7 to land. Its
+> WorldCup half is moot twice over: the entire World Cup surface was deleted
+> (`scripts/worldcup/`, `/worldcup`, the 11 bot commands, the wc-refresh job,
+> `data/worldcup/` — archived to iCloud `seriea-backups/`), so all three files
+> the old resolution table adjudicated (`scripts/worldcup/grading.py`,
+> `scripts/worldcup/knockout.py`, `tests/test_worldcup.py`) no longer exist.
+> **Nothing here is actionable.** The rest is kept as a record of the July
+> decision.
 
-PR #7 was split. **PR #14 landed the 9 transfers/rosters commits** — they replay
-onto main with zero conflicts, add 33 passing tests, 0 regressions, and fixed
+**PR #14 landed the 9 transfers/rosters commits** — they replayed onto main with
+zero conflicts, added 33 passing tests, 0 regressions, and fixed
 `transfer-refresh` (exit 1 → exit 0, verified under launchd). Phantom modules
 **9/15 → 10/15**.
 
-**#7 stays open for its WorldCup half only.** Its own safety argument is
-**stale** — it was written when main was 2 commits past the merge base; main is
-now 33 past (the #10–#13 stack). Both sides independently fixed the same
-home/away-swap grading bug (`3574968` on main vs `72fa866` on the branch), which
-is what turned into the conflict. There is **no urgency**: the World Cup is over.
+**The one conflict verdict worth keeping**, because it names a live invariant and
+not a deleted file: `tests/test_bet_journal.py` had to resolve to **MAIN**. The
+branch's version stops the write to the real `bankroll.json` but never patches
+`DATA_DIR`, so `generate_report()` still reads the production path and the mock is
+never read back — it passes only because the assertions check unconditional
+substrings and a missing bankroll silently falls back to `1000.0`. Taking the
+branch there would have re-opened the ledger-drift leak main fixed in `8d03831`.
+That trap is a property of the test, not of the merge, so it still applies.
 
-If you ever do land it, the 4 conflicts need **per-file judgement, not a blanket
-pick** (the original PR resolved everything to the branch, which was safe then
-and is not now):
-
-| File | Take | Why |
-|---|---|---|
-| `tests/test_bet_journal.py` | **MAIN** | ⚠️ The branch's fix stops the write to the real `bankroll.json` but never patches `DATA_DIR`, so `generate_report()` still reads the production path — the mock is never read back. It only passes because the assertions check unconditional substrings and a missing bankroll silently falls back to `1000.0`. **Resolving this to the branch re-opens the ledger-drift leak main fixed in `8d03831`.** |
-| `scripts/worldcup/grading.py` | MAIN | `_pair_mask` is DRY and fixes 2 more call sites the branch missed (`reconstruct_halftime` is live at `web/app.py:1593`) |
-| `scripts/worldcup/knockout.py` | BRANCH | Both hunks together — a per-hunk mix `NameError`s |
-| `tests/test_worldcup.py` | UNION | Purely additive, 3 tests, no collision |
-
-#### ⚠️ Pre-existing: 4 `test_worldcup.py` failures on main (2026-07-16)
-
-`TestRealArtifacts` / `TestResultConditioning` fail on **main**, unrelated to any
-of the above (verified: the worldcup code and test are byte-identical between
-main and the rebuild branch). They assert fixed expectations against **live**
-bracket data that the wc-refresh job keeps rewriting — e.g.
-`third-place teams == semifinal losers` now reads `{England, France}` vs
-`{Argentina, Spain}`. Flaky by construction, not a regression. The WC is over, so
-this is cosmetic — but the suite is not green on main, and that will mask a real
-failure later. Either pin the fixture or drop the assertions.
-
-Separately: `TestLiveResultsOverlay` / `TestFbrefResults` (6 tests) hard-depend
-on gitignored `data/worldcup/international_results.csv`, so they fail on any
-fresh clone. `tests/test_live_reconciliation.py` shows the fix pattern
-(`pytest.mark.skipif` when the data is absent).
+**The `test_worldcup.py` failures recorded here are gone with the file.** They
+were four `TestRealArtifacts` / `TestResultConditioning` assertions pinned to live
+bracket data the wc-refresh job kept rewriting, plus six
+`TestLiveResultsOverlay` / `TestFbrefResults` tests that hard-depended on a
+gitignored CSV. The suite is green: **1892 passed** (2026-09-08). Do not go
+looking for them.
 
 #### Triage of these five (2026-07-16)
 
@@ -645,8 +636,9 @@ surviving state file; the logs can rotate away, so this is now the record.**
 `scraper/sofascore_standings.py` now owns it; `web/app.py` imports it back under
 the original private names, so every dashboard call site is unchanged. The move
 is proven **byte-identical**: all 190 moved lines reproduce under a 9-name
-rename map, so no logic changed. Suite `765 passed` (+16 new), the 4
-`test_worldcup.py` failures are pre-existing on main.
+rename map, so no logic changed. Suite `765 passed` (+16 new), plus 4
+`test_worldcup.py` failures that were pre-existing on main at the time (that file
+and the whole World Cup surface were deleted 2026-09-07; the suite is green now).
 
 **The import side-effect was WORSE than recorded, which is why extraction was
 right.** Measured: `import web.app` = 134ms and starts **two** threads —
@@ -912,7 +904,7 @@ one. On complete data this fold stops being the anchor.
 | CLV kill-switch | clv_tracker.get_market_clv_gate + apply_intelligence_filters | live in code |
 | T-30 candidate mode | morning/evening plists env var | arms at step 4 reload |
 | Prop auto-settlement | scheduler settlement_check | live at reload |
-| Result-pinned WC sim | scripts/worldcup/ | WC-only, sunsets Jul 20 |
+| Result-pinned WC sim | scripts/worldcup/ | ~~WC-only~~ DELETED 2026-09-07 (archived to iCloud) |
 | Betfair feed / lineup scraper | NOT BUILT — master plan WS3.3/3.7 | next build block |
 
 ## Quick reference — what was hardened mid-June (scanner audit session)
