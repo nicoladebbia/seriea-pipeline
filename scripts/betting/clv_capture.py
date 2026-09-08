@@ -143,9 +143,20 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float,
     return None
 
 
-def _line_key(line: float) -> str:
-    """alternate_totals is keyed by the line as it was written: "1.5", "2.0"."""
-    return str(int(line)) if float(line).is_integer() else str(line)
+def _alt_line(alt: Dict, line: float) -> Dict | None:
+    """The alternate_totals entry for `line`, matched on the parsed VALUE.
+
+    The keys are whatever `str()` produced when the feed was written — the live
+    file holds "1.0" and "2.0", a "2" would be just as valid, and guessing the
+    string shape is how a lookup silently returns nothing.
+    """
+    for key, entry in (alt or {}).items():
+        try:
+            if abs(float(key) - line) < 0.01:
+                return entry
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _match_entry(bet: Dict, odds_data: Dict) -> Dict | None:
@@ -240,7 +251,7 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
         # — the line this system bets most — lives in alternate_totals, so a capture
         # that reads `totals` alone never matches the money market at all.
         if not any(abs(t.get("line", 0) - line) < 0.01 for t in totals):
-            alt = (match_odds.get("alternate_totals") or {}).get(_line_key(line))
+            alt = _alt_line(match_odds.get("alternate_totals") or {}, line)
             if alt:
                 side = "over" if "OVER" in selection else "under" if "UNDER" in selection else None
                 if side:

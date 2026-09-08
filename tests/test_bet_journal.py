@@ -576,8 +576,13 @@ class TestCLVIsNotTheEntryEdge:
         """The bulk feed's `totals` carries 2.0/2.25/2.5 only. O/U 1.5 — the line
         this system actually bets — is in alternate_totals, so a matcher that reads
         `totals` alone never matched the money market at all."""
-        from scripts.betting.clv_capture import _line_key, _match_bet_to_odds
-        assert (_line_key(1.5), _line_key(2.0)) == ("1.5", "2")
+        from scripts.betting.clv_capture import _alt_line, _match_bet_to_odds
+        # the live feed writes "1.0" / "2.0"; "2" would be just as valid, so the
+        # lookup matches the parsed value and never the string shape
+        alt = {"1.0": {"n": 1}, "1.5": {"n": 2}, "2.0": {"n": 3}}
+        assert (_alt_line(alt, 1.5), _alt_line(alt, 2.0), _alt_line(alt, 3.5)) == (
+            {"n": 2}, {"n": 3}, None)
+        assert _alt_line({"2": {"n": 4}}, 2.0) == {"n": 4}
 
         bet = {"match": "Lazio vs Milan", "market": "O/U 1.5", "selection": "Over 1.5"}
         headline_only = {"Lazio vs Milan": {"totals": [{"line": 2.5, "all_bookmakers": [
