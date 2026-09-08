@@ -143,6 +143,11 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float,
     return None
 
 
+def _line_key(line: float) -> str:
+    """alternate_totals is keyed by the line as it was written: "1.5", "2.0"."""
+    return str(int(line)) if float(line).is_integer() else str(line)
+
+
 def _match_entry(bet: Dict, odds_data: Dict) -> Dict | None:
     """The odds entry for this bet's fixture, or None."""
     match_key = bet.get("match", "")
@@ -231,6 +236,28 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
             except ValueError:
                 continue
 
+        # The bulk feed carries only the headline lines (2.0 / 2.25 / 2.5). O/U 1.5
+        # — the line this system bets most — lives in alternate_totals, so a capture
+        # that reads `totals` alone never matches the money market at all.
+        if not any(abs(t.get("line", 0) - line) < 0.01 for t in totals):
+            alt = (match_odds.get("alternate_totals") or {}).get(_line_key(line))
+            if alt:
+                side = "over" if "OVER" in selection else "under" if "UNDER" in selection else None
+                if side:
+                    sharp = _find_sharp_odds(alt.get("all_bookmakers", []), side)
+                    if sharp:
+                        closing, book = sharp
+                        n = len(alt.get("all_bookmakers", []))
+                        return closing, f"alt_totals.{line}.{side} ({n} bm) [{book}]"
+                    # the MEAN across books, never best_*: a max over N books is
+                    # an extreme, not a line, and comparing our taken price to the
+                    # best price available at the close makes CLV negative by
+                    # construction
+                    fallback = alt.get(side) or alt.get(f"best_{side}")
+                    if fallback and fallback > 1.0:
+                        return fallback, f"alt_totals.{line}.{side} (summary)"
+            return None
+
         for total in totals:
             if abs(total.get("line", 0) - line) < 0.01:
                 bookmakers = total.get("all_bookmakers", [])
@@ -239,7 +266,7 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
                     if sharp:
                         closing, book = sharp
                         return closing, f"totals.{line}.over ({len(bookmakers)} bm) [{book}]"
-                    fallback = total.get("best_over") or total.get("over")
+                    fallback = total.get("over") or total.get("best_over")
                     if fallback and fallback > 1.0:
                         return fallback, f"totals.{line}.over (summary)"
                 elif "UNDER" in selection:
@@ -247,7 +274,7 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
                     if sharp:
                         closing, book = sharp
                         return closing, f"totals.{line}.under ({len(bookmakers)} bm) [{book}]"
-                    fallback = total.get("best_under") or total.get("under")
+                    fallback = total.get("under") or total.get("best_under")
                     if fallback and fallback > 1.0:
                         return fallback, f"totals.{line}.under (summary)"
                 break

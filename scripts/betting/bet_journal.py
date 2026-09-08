@@ -895,6 +895,13 @@ def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None,
         return False
 
     bet = journal["bets"][bet_id]
+    # `clv_tracker` also writes closing prices, from settlement-time snapshots and
+    # with no book behind them. A tagged price captured before kickoff is strictly
+    # better evidence than an untagged one read after the match, so it stands.
+    if bet.get("closing_odds") is not None and bet.get("closing_source") and not closing_source:
+        log.debug("Keeping tagged closing price for %s over an untagged rewrite", bet_id)
+        return True
+
     bet["closing_odds"] = closing_odds
     # The tag describes THIS price. A later capture that arrives without one
     # clears it, so a stale sharp tag can never vouch for a price it did not

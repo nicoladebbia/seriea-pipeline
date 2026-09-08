@@ -456,6 +456,22 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   never vouch for a price it did not come with (`clv_tracker` is that second, untagged
   writer). Historical rows keep their prices; none of them carries a tag, so none feeds
   the movement leg.
+  **And the money market was never captured at all.** The bulk feed's `totals`
+  carries the headline lines only (2.0 / 2.25 / 2.5); **O/U 1.5 lives in
+  `alternate_totals`**, which `_match_bet_to_odds` did not read — a live dry run on
+  2026-09-08 matched **0 of 14** pending bets. Every O/U closing price in the journal
+  came from the OTHER writer, `clv_tracker`, which reads settlement-time snapshots and
+  passes no book. So: the matcher falls back to `alternate_totals` when the line is not
+  in `totals`, `odds_fetcher` keeps `all_bookmakers` per alternate line (it had the book
+  names and threw them away in aggregation), and `update_clv` refuses an untagged
+  rewrite of a tagged pre-kickoff close — otherwise `clv_tracker` would wipe the
+  movement number on exactly the settled population the ladder scores. A summary
+  fallback now reads the market MEAN, never `best_over`: a max across N books is an
+  extreme, not a line, and comparing our taken price to the best price available at the
+  close made CLV negative by construction (Lazio–Milan read −3.4% that way, +0.7% as a
+  mean). Until a fetch writes per-book alternate lines the O/U tag is `(summary)` and
+  `closing_book()` correctly refuses it — so `n_clv_move` stays 0 and both incumbents
+  stay at half stake on evidence, not on record.
   **One CLV definition, and three fields instead of one.** `clv_pct` is the percent return
   against the close (`odds/closing − 1`) everywhere now — `_compute_clv` was writing a
   *probability difference* into the same field the ratio-form `clv_capture` and

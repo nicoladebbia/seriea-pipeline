@@ -572,7 +572,40 @@ class TestCLVIsNotTheEntryEdge:
         assert _is_pre_kickoff({}) is False
         assert _is_pre_kickoff({"commence_time": "not a date"}) is False
 
-    def test_a_recapture_without_a_book_clears_the_tag_and_the_move(self, clean_journal):
+    def test_the_close_for_OU_1_5_comes_from_alternate_totals(self):
+        """The bulk feed's `totals` carries 2.0/2.25/2.5 only. O/U 1.5 — the line
+        this system actually bets — is in alternate_totals, so a matcher that reads
+        `totals` alone never matched the money market at all."""
+        from scripts.betting.clv_capture import _line_key, _match_bet_to_odds
+        assert (_line_key(1.5), _line_key(2.0)) == ("1.5", "2")
+
+        bet = {"match": "Lazio vs Milan", "market": "O/U 1.5", "selection": "Over 1.5"}
+        headline_only = {"Lazio vs Milan": {"totals": [{"line": 2.5, "all_bookmakers": [
+            {"bookmaker": "Pinnacle", "over": 1.90}]}]}}
+        assert _match_bet_to_odds(bet, headline_only) is None, "1.5 is not 2.5"
+
+        odds = {"Lazio vs Milan": {
+            "totals": [{"line": 2.5, "all_bookmakers": [{"bookmaker": "Pinnacle", "over": 1.90}]}],
+            "alternate_totals": {"1.5": {
+                "over": 1.36, "best_over": 1.40, "bookmakers_count": 3,
+                "all_bookmakers": [{"bookmaker": "Bet365", "over": 1.40},
+                                   {"bookmaker": "Pinnacle", "over": 1.34}],
+            }},
+        }}
+        closing, source = _match_bet_to_odds(bet, odds)
+        assert closing == 1.34 and source.endswith("[Pinnacle]")
+
+        # without per-book prices the line can still be read, but never as a book
+        no_books = {"Lazio vs Milan": {"totals": [], "alternate_totals": {
+            "1.5": {"over": 1.36, "best_over": 1.40, "bookmakers_count": 3}}}}
+        closing, source = _match_bet_to_odds(bet, no_books)
+        # the market MEAN, not best_over: a max over N books is an extreme, not a
+        # line, and it would make our CLV negative by construction
+        assert closing == 1.36 and source.endswith("(summary)")
+        from scripts.betting.bet_journal import closing_book
+        assert closing_book({"closing_source": source}) is None
+
+    def test_a_settlement_time_writer_cannot_clobber_a_tagged_close(self, clean_journal):
         add_bet({
             "match": "Inter vs Milan", "date": "2026-02-15", "market": "O/U 1.5",
             "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.72,
@@ -585,12 +618,28 @@ class TestCLVIsNotTheEntryEdge:
                    closing_source="totals.1.5.over (9 bm) [Pinnacle]")
         assert _load_journal()["bets"][bet_id]["clv_move_pct"] is not None
 
-        # a second writer (clv_tracker) stores a price with no book behind it
+        # clv_tracker rewrites closing prices from settlement-time snapshots with no
+        # book behind them. A price read after the match must not displace the tagged
+        # one read before kickoff — that would wipe the movement leg on exactly the
+        # settled population the stake ladder scores.
         update_clv(bet_id, closing_odds=1.36)
         bet = _load_journal()["bets"][bet_id]
-        assert bet["closing_source"] is None
-        assert bet["clv_move_pct"] is None, "a stale tag must not vouch for a new price"
-        assert bet["clv_pct"] == round((1.41 / 1.36 - 1) * 100, 2)
+        assert bet["closing_odds"] == 1.34
+        assert bet["closing_source"].endswith("[Pinnacle]")
+        assert bet["clv_move_pct"] == round((1 / 1.34 - 1 / 1.38) * 100, 2)
+
+        # but an untagged price on a row that never had a tag is still taken, and it
+        # yields no movement number
+        add_bet({"match": "Roma vs Lazio", "date": "2026-02-16", "market": "O/U 1.5",
+                 "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.72,
+                 "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
+                 "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+                 "factors": [], "placed_at": "2026-02-15T10:00:00"})
+        other = [b for b in _load_journal()["bets"] if "Roma" in b][0]
+        update_clv(other, closing_odds=1.36)
+        row = _load_journal()["bets"][other]
+        assert row["closing_source"] is None and row["clv_move_pct"] is None
+        assert row["clv_pct"] == round((1.41 / 1.36 - 1) * 100, 2)
 
     def test_capture_names_the_book_it_read_the_close_from(self):
         from scripts.betting.clv_capture import _find_sharp_odds, _match_bet_to_odds

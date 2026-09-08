@@ -1229,7 +1229,13 @@ def process_extra_markets(raw_extra: Dict[str, Dict]) -> Dict[str, Dict]:
         if at_entries:
             # Group by line (point)
             lines = {}  # {0.5: {"over": [prices], "under": [prices]}, ...}
+            # Per line, per book: the sharp price has to survive aggregation or the
+            # closing line for O/U 1.5 — the market this system actually bets — can
+            # never be compared against the SAME book at entry, and the incumbent
+            # stake ladder's line-movement leg has nothing to read.
+            books = {}  # {0.5: {"Pinnacle": {"over": p, "under": p}}, ...}
             for bm in at_entries:
+                book = bm.get("bookmaker") or bm.get("title") or bm.get("key")
                 for o in bm.get("outcomes", []):
                     name = o.get("name", "").lower()  # "Over" or "Under"
                     point = o.get("point")
@@ -1237,6 +1243,8 @@ def process_extra_markets(raw_extra: Dict[str, Dict]) -> Dict[str, Dict]:
                     if point is None or price <= 1:
                         continue
                     lines.setdefault(point, {}).setdefault(name, []).append(price)
+                    if book and name in ("over", "under"):
+                        books.setdefault(point, {}).setdefault(book, {})[name] = price
 
             result["alternate_totals"] = {}
             for line, sides in sorted(lines.items()):
@@ -1250,6 +1258,11 @@ def process_extra_markets(raw_extra: Dict[str, Dict]) -> Dict[str, Dict]:
                     entry["under"] = round(sum(under_prices) / len(under_prices), 2)
                     entry["best_under"] = round(max(under_prices), 2)
                 entry["bookmakers_count"] = max(len(over_prices), len(under_prices))
+                per_book = books.get(line, {})
+                if per_book:
+                    entry["all_bookmakers"] = [
+                        {"bookmaker": name, **prices} for name, prices in sorted(per_book.items())
+                    ]
                 result["alternate_totals"][str(line)] = entry
 
         # --- Draw No Bet ---

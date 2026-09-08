@@ -128,3 +128,36 @@ def test_pre_match_loader_reads_the_epl_file_too(tmp_path, monkeypatch):
     pre = lm._load_pre_match_odds()
     assert pre["Roma vs Atalanta"]["home"] == 1.67
     assert lm._pre_match_odds_for(pre, "Newcastle United", "Bournemouth", "2026-09-05T11:30:00Z")["home"] == 1.8
+
+
+def test_alternate_totals_keep_the_book_behind_each_price():
+    """O/U 1.5 is the line this system bets, and it exists only in
+    alternate_totals. The aggregation used to keep prices and throw the book
+    names away, so the closing price for the money market could never be
+    compared against the SAME book at entry — leaving the incumbent stake
+    ladder's line-movement leg with nothing to read, permanently."""
+    from scripts.data.odds_fetcher import process_extra_markets
+
+    raw = {"Lazio vs Milan": {"alternate_totals": [
+        {"bookmaker": "Pinnacle", "outcomes": [
+            {"name": "Over", "point": 1.5, "price": 1.34},
+            {"name": "Under", "point": 1.5, "price": 3.20},
+        ]},
+        {"bookmaker": "Bet365", "outcomes": [
+            {"name": "Over", "point": 1.5, "price": 1.40},
+        ]},
+    ]}}
+    out = process_extra_markets(raw)["Lazio vs Milan"]["alternate_totals"]["1.5"]
+
+    assert out["best_over"] == 1.40                      # the aggregates still stand
+    assert out["over"] == round((1.34 + 1.40) / 2, 2)
+    books = {b["bookmaker"]: b for b in out["all_bookmakers"]}
+    assert books["Pinnacle"]["over"] == 1.34 and books["Pinnacle"]["under"] == 3.20
+    assert books["Bet365"] == {"bookmaker": "Bet365", "over": 1.40}
+
+    from scripts.betting.clv_capture import _match_bet_to_odds
+    closing, source = _match_bet_to_odds(
+        {"match": "Lazio vs Milan", "market": "O/U 1.5", "selection": "Over 1.5"},
+        process_extra_markets(raw),
+    )
+    assert (closing, source.endswith("[Pinnacle]")) == (1.34, True)
