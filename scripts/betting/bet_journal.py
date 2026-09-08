@@ -179,7 +179,19 @@ def get_clv_lookup() -> Dict[str, float]:
     return result
 
 
-SHARP_CLOSING_BOOKS = {"Pinnacle", "Pinnacle Sports", "BetCRIS", "CRIS", "Matchbook"}
+# Ordered by sharpness. BOTH ends of the movement subtraction pick the
+# highest-preference book PRESENT, never the first one in list order — the entry
+# price and the closing price are read from two different code paths, and if they
+# disagree on which book to quote the movement number is silently never computed.
+SHARP_BOOK_PREFERENCE = ("Pinnacle", "Pinnacle Sports", "BetCRIS", "CRIS", "Matchbook")
+SHARP_CLOSING_BOOKS = set(SHARP_BOOK_PREFERENCE)
+SHARP_BOOKMAKERS = SHARP_CLOSING_BOOKS  # the name clv_capture has always used
+
+
+def preferred_sharp(names) -> str | None:
+    """The sharpest book among `names`, or None."""
+    present = set(names or ())
+    return next((b for b in SHARP_BOOK_PREFERENCE if b in present), None)
 
 
 def movement_pair(bet: Dict) -> tuple:

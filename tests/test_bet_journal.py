@@ -591,6 +591,33 @@ class TestCLVIsNotTheEntryEdge:
         assert _is_pre_kickoff({}) is False
         assert _is_pre_kickoff({"commence_time": "not a date"}) is False
 
+    def test_both_ends_pick_the_SAME_book_when_several_sharps_quote(self):
+        """The entry price and the closing price are read by two different code
+        paths. Picking "the first sharp book in this list" makes them agree only
+        by luck: on the live 2026-09-08 cache the O/U 2.5 entry tagged Matchbook
+        while the close would have tagged Pinnacle, and movement_pair() — working
+        exactly as designed — would have returned nothing forever."""
+        from scripts.betting.bet_journal import preferred_sharp
+        from scripts.betting.clv_capture import _find_sharp_odds
+        from scripts.betting.betting_unified import sharp_entry_price
+
+        assert preferred_sharp(["Matchbook", "Pinnacle"]) == "Pinnacle"
+        assert preferred_sharp(["Matchbook", "Bet365"]) == "Matchbook"
+        assert preferred_sharp(["Bet365"]) is None
+
+        # the two lists are ordered differently on purpose
+        close_side = [{"bookmaker": "Pinnacle", "over": 2.25},
+                      {"bookmaker": "Matchbook", "over": 2.32}]
+        entry_side = [{"bookmaker": "Matchbook", "over": 2.32},
+                      {"bookmaker": "Pinnacle", "over": 2.25}]
+        assert _find_sharp_odds(close_side, "over") == (2.25, "Pinnacle")
+        assert sharp_entry_price(entry_side, "over") == (2.25, "Pinnacle")
+
+        # a book that quotes no price cannot be the reference
+        assert sharp_entry_price(
+            [{"bookmaker": "Pinnacle", "over": 0}, {"bookmaker": "Matchbook", "over": 2.32}],
+            "over") == (2.32, "Matchbook")
+
     def test_the_close_for_OU_1_5_comes_from_alternate_totals(self):
         """The bulk feed's `totals` carries 2.0/2.25/2.5 only. O/U 1.5 — the line
         this system actually bets — is in alternate_totals, so a matcher that reads

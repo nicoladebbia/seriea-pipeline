@@ -948,14 +948,11 @@ def sharp_entry_price(bookmakers: List[Dict], selection_key: str) -> tuple:
     (measured 2026-09-08: -0.55pp mean, 8 of 9 lines, against a movement signal
     of -0.04 / +0.40pp).
     """
-    from scripts.betting.bet_journal import SHARP_CLOSING_BOOKS
-    for bm in bookmakers or []:
-        name = bm.get("bookmaker")
-        if name in SHARP_CLOSING_BOOKS:
-            val = bm.get(selection_key, 0)
-            if val and val > 1.0:
-                return float(val), name
-    return None, ""
+    from scripts.betting.bet_journal import preferred_sharp
+
+    priced = {bm.get("bookmaker"): bm.get(selection_key, 0) for bm in bookmakers or []}
+    book = preferred_sharp([n for n, v in priced.items() if v and v > 1.0])
+    return (float(priced[book]), book) if book else (None, "")
 
 
 def get_pinnacle_odds(bookmakers: List[Dict], selection_key: str) -> float:

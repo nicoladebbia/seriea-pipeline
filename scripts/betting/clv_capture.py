@@ -40,8 +40,9 @@ from scripts.utils.match_timing import now_utc
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# Sharp bookmakers (used for closing line if available)
-SHARP_BOOKMAKERS = {"Pinnacle", "Pinnacle Sports", "BetCRIS", "CRIS", "Matchbook"}
+# Sharp bookmakers — ONE definition, in bet_journal, because the entry side and
+# the closing side must agree on both the membership and the preference order.
+from scripts.betting.bet_journal import SHARP_BOOKMAKERS  # noqa: E402,F401
 
 # Cached odds file candidates (in priority order)
 _ODDS_FILES = [
@@ -128,12 +129,14 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float,
         would read as line movement when nothing moved. The journal stores it so
         `clv_move_pct` can refuse the mixed comparison.
     """
-    # Try sharp bookmakers first
-    for bm in bookmakers:
-        if bm.get("bookmaker") in SHARP_BOOKMAKERS:
-            val = bm.get(selection_key, 0)
-            if val and val > 1.0:
-                return val, bm["bookmaker"]
+    from scripts.betting.bet_journal import preferred_sharp
+
+    # The sharpest book PRESENT, never the first one in list order — the entry
+    # price is read by a different code path and the two must agree on the book
+    priced = {bm.get("bookmaker"): bm.get(selection_key, 0) for bm in bookmakers or []}
+    book = preferred_sharp([n for n, v in priced.items() if v and v > 1.0])
+    if book:
+        return priced[book], book
 
     # Fall back to market average
     vals = [bm.get(selection_key, 0) for bm in bookmakers if bm.get(selection_key, 0) > 1.0]
