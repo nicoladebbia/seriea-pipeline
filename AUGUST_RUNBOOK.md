@@ -311,6 +311,8 @@ pipeline treats odds_api as primary.
 
 #### PR #7 — transfers half LANDED, WorldCup half still open (2026-07-16)
 
+> **MOOT since 2026-09-07:** the entire World Cup surface was deleted (`scripts/worldcup/`, `/worldcup`, the 11 bot commands, the wc-refresh job, `data/worldcup/` — archived to iCloud `seriea-backups/`). Nothing below about the WorldCup half of #7 is actionable; close it. The transfers half is unaffected.
+
 PR #7 was split. **PR #14 landed the 9 transfers/rosters commits** — they replay
 onto main with zero conflicts, add 33 passing tests, 0 regressions, and fixed
 `transfer-refresh` (exit 1 → exit 0, verified under launchd). Phantom modules

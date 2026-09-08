@@ -678,7 +678,7 @@ Organised by *symptom-first* so you can grep for what you're seeing:
   events. It still has NO `statistics`, so the HTML tier cannot feed live team stats.
   `/event/<id>` 302s to the slugged URL. Not wired (ESPN covers events too); if ESPN ever
   goes away, this is the Sofascore path for events, statistics stay ESPN-or-nothing.
-- **Page-tier map (measured 2026-06-11, mid-ban)**: NOT all www pages are equal. **Tournament hub pages** are ISR-rendered FRESH (live scores within minutes — use these; WC: `scripts/worldcup/sofascore_fetch.WC_TOURNAMENT_PAGE`). **Daily-schedule pages** (`/football/{date}`) are stale prerenders (opener showed `notstarted` 75 min after kickoff) — last resort only. **Match pages** carried i18n strings only in June 2026 (NO event/lineups/statistics payloads); by 2026-09-05 they carry `incidents` but still no statistics/lineups — an HTML fallback for lineups or player stats is still IMPOSSIBLE; during bans, lineups degrade to caps-fallback XIs and the stats parquet catches up on the first healthy API run (`events/last` re-serves history).
+- **Page-tier map (measured 2026-06-11, mid-ban)**: NOT all www pages are equal. **Tournament hub pages** are ISR-rendered FRESH (live scores within minutes — use these). **Daily-schedule pages** (`/football/{date}`) are stale prerenders (opener showed `notstarted` 75 min after kickoff) — last resort only. **Match pages** carried i18n strings only in June 2026 (NO event/lineups/statistics payloads); by 2026-09-05 they carry `incidents` but still no statistics/lineups — an HTML fallback for lineups or player stats is still IMPOSSIBLE; during bans, lineups degrade to caps-fallback XIs and the stats parquet catches up on the first healthy API run (`events/last` re-serves history).
 - **Sentinels**: SA standings page must contain `Inter`; EPL must contain `Arsenal`. If sentinel missing → schema break, log and trip breaker.
 - **Prevention rule**: **HTML scraping with breaker is the canonical fallback for Sofascore**. Never just retry the API in a loop when you get 403 — burn the cooldown, scrape the HTML. And before writing any NEW page parser, fetch one specimen and confirm the data is present AND fresh (see the global "never write a parser against an unverified source" rule — this project paid for it).
 
@@ -902,9 +902,9 @@ CORRECTNESS and found four defects, all now closed. Read this before adding a ca
   `help` / `group` / `in_menu`; `_MENU_COMMANDS` (the `setMyCommands` payload) and
   `/help` are both derived from it. `tests/test_telegram_commands.py` parses the router's
   dispatch branches out of the source and asserts set equality both ways, so a command can
-  no longer exist in the menu without a handler or vice versa. Legacy World Cup commands
-  are registered `_GROUP_LEGACY`, `in_menu: False` — they still answer, they never occupy
-  a menu slot.
+  no longer exist in the menu without a handler or vice versa, and every registered
+  command appears in `/help`. The World Cup surface (11 legacy commands, the bet tracker,
+  the ladder, the pre-match alerts) was deleted on 2026-09-07 — see the removal commit.
 - **A card Telegram rejects is not lost — it arrives BROKEN, and almost silently.**
   `_notify_telegram` retries a failed `parse_mode: HTML` send once with `parse_mode`
   removed, so a malformed card is delivered with its tags showing and the only trace is

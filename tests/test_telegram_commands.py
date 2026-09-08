@@ -85,15 +85,6 @@ def test_menu_is_derived_and_within_telegram_limits():
         assert entry["command"] in TB.ALL_COMMAND_NAMES
 
 
-def test_legacy_world_cup_commands_are_not_in_the_menu():
-    """WC2026 is over. The commands still answer, but they must not occupy
-    slots in the ☰ menu that the money surface needs."""
-    legacy = {c["command"] for c in TB._COMMANDS if c["group"] == TB._GROUP_LEGACY}
-    assert legacy, "the legacy group should still describe the WC surface"
-    in_menu = {e["command"] for e in TB._MENU_COMMANDS} & legacy
-    assert not in_menu, f"legacy WC commands in the menu: {sorted(in_menu)}"
-
-
 def test_help_lists_every_fanta_and_betting_command():
     """The /record regression: in the menu, absent from /help."""
     help_text = TB._handle_help()

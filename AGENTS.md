@@ -68,7 +68,7 @@ Layout:
 - `web/app.py` — Flask app (~11k lines, two background threads; never import it to
   borrow a helper). Page routes: `/`, `/live`, `/projections`, `/matches`,
   `/track-record`, `/value-bets`, `/prediction/<slug>`, `/rosters`, `/fantacalcio`,
-  `/worldcup`. API: `/api/dashboard`, `/api/live`, `/api/data-freshness`,
+  API: `/api/dashboard`, `/api/live`, `/api/data-freshness`,
   `/api/standings/<league>`, `/api/projections`, `/api/match-markets/<slug>`,
   `/api/match/<date>/<home>/<away>`, `/api/best-bets`, `/api/players`.
 - `tests/` — 109 files. `conftest.py` autouse `_promotion_state_isolated` redirects the
@@ -102,7 +102,7 @@ Entry points are 21 launchd plists in `~/Library/LaunchAgents/com.seriea-pipelin
 (morning, evening, pre-kickoff-monitor, settlement, matchweek-retrain, health-monitor,
 telegram-bot, web-dashboard, odds-edge-scanner, odds-line-movement, sofascore-watcher,
 weekly-data-refresh, weekly-monitor, daily-digest, refresh-understat, scrape-epl-current,
-transfer-refresh, friendlies-refresh, fanta-tracker, state-backup, wc-refresh) plus
+transfer-refresh, friendlies-refresh, fanta-tracker, state-backup) plus
 `web/app.py` on port 5001 and `cli.py`. `launchctl list | grep seriea-pipeline` shows what
 is loaded; `-` as PID means an interval job between runs, not a dead job. Morning and
 evening plists have `RunAtLoad: true`: a Mac wake or `launchctl reload` fires both at once,
@@ -230,7 +230,7 @@ result is archived to `data/odds_snapshots/pick_markets_<ts>.json.gz` (since 202
 Telegram dedups by issue signature with numbers collapsed; quiet hours 23:00–07:00 drop
 routine messages. `data/notification_history.jsonl` logs the macOS fallback text, not what
 Telegram rendered. Bot commands: `/today /picks /record /bets /bankroll /live /parlays
-/worldcup /xi /formazioni /sfide /help`.
+/xi /formazioni /sfide /help`.
 
 ## 4. Identity keys and things that fail silently
 

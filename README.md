@@ -47,7 +47,6 @@ ml/
         ▼
 scripts/prediction · scripts/betting · web/  (Flask dashboard)   ── value-bet / Kelly signals
         ▼
-scripts/worldcup/   independent Elo + Poisson-GLM model for the 2026 World Cup
 ```
 
 **Data flow is one-directional and idempotent per stage:** each layer writes Parquet keyed by a deterministic `match_id`, so any stage can be recomputed without re-scraping. Coverage: 5 league configs, 21 seasons (2005-06 → 2025-26), per-league models (deliberately *not* one model across leagues — Serie A and the Premier League have different home-advantage and draw structure).
@@ -84,8 +83,6 @@ The bug this avoids (documented in `ml/ensemble.py`): isotonic regression applie
 - **HTML-fallback scraping with circuit breakers.** When Sofascore's API returns Cloudflare 403s, the scraper parses the `__NEXT_DATA__` JSON embedded in the public HTML, with measured per-page-tier freshness rules (hub pages are fresh ISR renders; match pages are data-free shells) and sentinel checks (`Inter` must appear in Serie A standings, `Arsenal` in the EPL) that trip a breaker on schema drift instead of silently writing garbage.
 
 - **Plugin feature pipeline.** `features/build.py` orchestrates ~37 feature-engineering steps as `FeaturePlugin` (ABC) subclasses over a shared `FeatureState`, producing a ~1,059-column table. The provenance of every column → step is documented in `DATA_CATALOG.md`.
-
-- **World Cup model with real holdout discipline** (`scripts/worldcup/`). An independent Elo + Poisson-GLM model whose ratings are **leak-free by construction** (each match's expectancy uses only pre-match ratings). The variant was selected on a DEV set (WC 2018 + Euro 2020) while WC 2022 / Euro 2024 / Copa 2024 were kept **untouched as a FINAL holdout** — and it ships only because the backtest shows positive Brier skill over the base rate. Goal-quantity markets are explicitly marked "display-grade" until they clear a skill threshold; they are not dressed up as predictive.
 
 ---
 
