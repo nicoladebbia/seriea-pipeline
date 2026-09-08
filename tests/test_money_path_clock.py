@@ -207,7 +207,7 @@ def test_atomic_write_survives_a_failed_rename_with_the_old_file_intact(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# 6. The incumbent stake ladder at the 30-bet boundary
+# 6. The incumbent stake ladder at the bar's own boundary
 # ---------------------------------------------------------------------------
 def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00"):
     out = []
@@ -219,24 +219,31 @@ def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00"):
     return out
 
 
-def test_full_stake_unlocks_at_thirty_held_up_bets_not_twenty_nine():
+def test_full_stake_unlocks_at_the_bars_own_count_not_one_bet_short():
     from scripts.betting import market_promotion as MP
-    rec29 = MP.incumbent_records(_real(22, 7))["ou_over_1_5"]
-    rec30 = MP.incumbent_records(_real(23, 7))["ou_over_1_5"]
-    assert rec29["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "29/30" in rec29["stake_reason"]
-    assert rec30["stake_scale"] == 1.0
-    # thirty bets that trip the demotion bar stay on the half stake
-    bad = MP.incumbent_records(_real(15, 15))["ou_over_1_5"]
+    n = MP.PROMOTION_BAR["min_settled"]
+    assert MP.INCUMBENT_FULL_STAKE_MIN_N == n == 50, "the ladder's count leg is the bar's own"
+    short = MP.incumbent_records(_real(41, n - 1 - 41))["ou_over_1_5"]
+    full = MP.incumbent_records(_real(42, n - 42))["ou_over_1_5"]
+    assert short["real_since_live"]["n"] == n - 1
+    assert short["stake_scale"] == MP.PROMOTED_KELLY_SCALE and f"{n - 1}/{n}" in short["stake_reason"]
+    assert full["real_since_live"]["n"] == n
+    assert full["stake_scale"] == 1.0 and "bar cleared" in full["stake_reason"]
+    # a full count that trips the demotion bar stays on the half stake
+    bad = MP.incumbent_records(_real(25, 25))["ou_over_1_5"]
     assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
 
 
-def test_thirty_bets_that_merely_avoid_the_demotion_bar_do_not_unlock_full_stake():
-    """The -10%..0 band: `should_demote` says no, and the ladder used to read
-    that as yes. Asserting should_demote is False is the precondition — it is
-    what makes this a test of the ROI condition rather than of the old one."""
+def test_a_positive_but_noisy_record_does_not_unlock_full_stake():
+    """The ladder has been too weak twice. This pins the second one: n=50,
+    ROI +12.8%, z +1.60 — positive, non-demoting, and short of the bar every
+    paper market clears. Both preconditions are asserted, so the half stake is
+    attributable to the z leg and not to a rule that already existed."""
     from scripts.betting import market_promotion as MP
-    rec = MP.incumbent_records(_real(21, 9))["ou_over_1_5"]
-    assert rec["real_since_live"]["n"] == 30
-    assert MP.should_demote(rec["real_since_live"]) == (False, "")
-    assert rec["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "not positive" in rec["stake_reason"]
-
+    rec = MP.incumbent_records(_real(40, 10))["ou_over_1_5"]
+    since = rec["real_since_live"]
+    assert since["n"] == MP.PROMOTION_BAR["min_settled"]
+    assert since["roi_pct"] > MP.PROMOTION_BAR["min_roi_pct"], "precondition: the ROI-only rule accepts this"
+    assert MP.should_demote(since) == (False, ""), "precondition: the demotion-bar-only rule accepts this"
+    assert since["z"] < MP.PROMOTION_BAR["min_z"]
+    assert rec["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "short of the bar" in rec["stake_reason"]

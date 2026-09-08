@@ -75,25 +75,25 @@ INCUMBENT_MARKETS = {"ou_over_1_5": ("O/U 1.5", "Over"), "ou_over_2_5": ("O/U 2.
 INCUMBENT_LIVE_FROM = "2026-08-27T00:00:00+00:00"
 # Stake ladder for an incumbent (2026-09-06, closing the Kelly 0.15 question):
 # the engine stakes it at PROMOTED_KELLY_SCALE x Kelly and x cap — what a
-# freshly promoted market gets — until its since-go-live real record has this
-# many settled bets AND is POSITIVE. The record decides, not a hand-set
-# fraction.
+# freshly promoted market gets — until its since-go-live real record CLEARS
+# PROMOTION_BAR. The record decides, not a hand-set fraction.
 #
-# The ROI condition is Nicola's call of 2026-09-08 and it CHANGED the ladder.
-# Until then the only test at n=30 was `should_demote`, i.e. ROI < -10% or
-# z < -1 — so a since-go-live record of ROI -9.9% doubled the money on the
-# next slip. That made the incumbents' gate "not demonstrably bad" while the
-# gate the props must clear to touch real money is "demonstrably good"
-# (PROMOTION_BAR: ROI > 0, z >= 2.5). The sign, at least, is now the same on
-# both sides, with the same `<=` comparison bar_misses/passes_bar use so that
-# break-even does not count as positive.
+# It is the SAME bar, every leg, that a paper market must clear to touch real
+# money at all: n >= 50, ROI > 0, z >= 2.5, CLV > 0 once 20 closing prices
+# exist. Nicola's call, 2026-09-08. Two earlier versions of this ladder were
+# both weaker than the bar the props queue behind:
+#   - until 2026-09-08 the only test at n=30 was `should_demote` (ROI < -10%
+#     or z < -1), so a record at ROI -9.9% DOUBLED the stake on the next slip;
+#   - the ROI > 0 leg alone still passed n=50 ROI +12.8% z +1.60, a record
+#     indistinguishable from noise.
+# Asymmetry here is not a rounding detail: it is the incumbents betting real
+# money on evidence their competitors are refused for.
 #
-# z is deliberately NOT required here. Demanding z >= 2.5 at n=30 would hold
-# the incumbents at half stake essentially forever — that is the promotion
-# bar's job at n=50, and this ladder is a stake multiplier, not admission to
-# real money (betting_unified owns the on/off switch either way).
-INCUMBENT_FULL_STAKE_MIN_N = DEMOTION_BAR["min_real_bets"]
-INCUMBENT_FULL_STAKE_MIN_ROI_PCT = PROMOTION_BAR["min_roi_pct"]
+# The count leg moved 30 -> 50 with this change, because it is now the bar's
+# own `min_settled` rather than the demotion bar's `min_real_bets`. That is
+# what makes it symmetric. If the intent were "keep 30, just add z", this one
+# line is the whole difference.
+INCUMBENT_FULL_STAKE_MIN_N = PROMOTION_BAR["min_settled"]
 
 # Market key -> what the bet is, for the /record card
 MARKET_NAMES_IT = {
@@ -291,22 +291,22 @@ def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LI
 
 def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     """(multiplier, reason) for an incumbent, from its since-go-live record.
-    Full stake needs enough settled bets AND a positive ROI; anything short of
-    that stays on the half a freshly promoted market gets. The demotion-bar
-    reason is kept separate from the not-positive one because they are
-    different sizes of bad and the card says which."""
+    Full stake needs that record to clear PROMOTION_BAR — the same bar, every
+    leg, a paper market clears to reach real money. Anything short stays on the
+    half a freshly promoted market gets. The demotion-bar reason is kept
+    separate from the short-of-the-bar one because they are different sizes of
+    bad and the card says which."""
     n = since.get("n", 0)
     if n < INCUMBENT_FULL_STAKE_MIN_N:
         return PROMOTED_KELLY_SCALE, f"since go-live {n}/{INCUMBENT_FULL_STAKE_MIN_N} settled"
     demote, why = should_demote(since)
     if demote:
         return PROMOTED_KELLY_SCALE, f"since go-live record at the demotion bar: {why}"
-    roi = since.get("roi_pct", 0.0)
-    if roi <= INCUMBENT_FULL_STAKE_MIN_ROI_PCT:
-        return PROMOTED_KELLY_SCALE, (
-            f"since go-live n={n} ROI {roi:+.1f}% not positive "
-            f"(needs > {INCUMBENT_FULL_STAKE_MIN_ROI_PCT:.0f}%)")
-    return 1.0, f"since go-live n={n} ROI {roi:+.1f}% z {since['z']:+.2f}"
+    misses = bar_misses(since)
+    if misses:
+        return PROMOTED_KELLY_SCALE, f"since go-live n={n} short of the bar: {'; '.join(misses)}"
+    return 1.0, (f"since go-live n={n} ROI {since['roi_pct']:+.1f}% "
+                 f"z {since['z']:+.2f} — bar cleared")
 
 
 def incumbent_stake_scale(market: str, selection: str, state: dict | None = None) -> tuple[float, str]:
@@ -526,7 +526,7 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
         clv = f" · CLV {rr['mean_clv_pct']:+.1f}%" if rr.get("mean_clv_pct") is not None else ""
         bar = "barra superata" if r.get("bar_passed") else f"barra NON superata: {r.get('distance', '')}"
         stake = ("puntata piena" if (r.get("stake_scale") or 1.0) >= 1.0
-                 else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live con ROI > 0")
+                 else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live superano la barra")
         lines.append(f"🏦 {b[0]}{MARKET_NAMES_IT.get(mk, mk)}{b[1]} vera n={rr.get('n', 0)} ROI {rr.get('roi_pct', 0):+.0f}% "
                      f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)} · {stake}")
     if not rows:

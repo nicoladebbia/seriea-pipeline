@@ -7329,9 +7329,9 @@ def api_market_record():
     Same file, same thresholds, so the page and the bot cannot disagree."""
     try:
         from scripts.betting.market_promotion import (
-            DEMOTION_BAR, INCUMBENT_FULL_STAKE_MIN_N, INCUMBENT_FULL_STAKE_MIN_ROI_PCT,
-            INCUMBENT_LIVE_FROM, MARKET_NAMES_IT, PROMOTED_KELLY_SCALE,
-            PROMOTED_MAX_STAKE_PCT, PROMOTION_BAR, load_state,
+            DEMOTION_BAR, INCUMBENT_FULL_STAKE_MIN_N, INCUMBENT_LIVE_FROM,
+            MARKET_NAMES_IT, PROMOTED_KELLY_SCALE, PROMOTED_MAX_STAKE_PCT,
+            PROMOTION_BAR, load_state,
         )
         st = load_state()
         incumbents = [{"key": k, "name": MARKET_NAMES_IT.get(k, k), **v}
@@ -7342,9 +7342,7 @@ def api_market_record():
                                       key=lambda kv: (order.get(kv[1].get("status"), 2),
                                                       -(kv[1].get("paper") or {}).get("n", 0)))]
         return jsonify({"updated_at": st.get("updated_at"), "bar": PROMOTION_BAR, "demotion_bar": DEMOTION_BAR,
-                        "full_stake_min_n": INCUMBENT_FULL_STAKE_MIN_N,
-                        "full_stake_min_roi_pct": INCUMBENT_FULL_STAKE_MIN_ROI_PCT,
-                        "live_from": INCUMBENT_LIVE_FROM,
+                        "full_stake_min_n": INCUMBENT_FULL_STAKE_MIN_N, "live_from": INCUMBENT_LIVE_FROM,
                         "promoted_kelly_scale": PROMOTED_KELLY_SCALE, "promoted_max_stake_pct": PROMOTED_MAX_STAKE_PCT,
                         "incumbents": incumbents, "markets": markets})
     except (ImportError, OSError, ValueError, TypeError) as e:

@@ -296,8 +296,9 @@ def test_pick_markets_archive_writes_only_this_cycle_gzipped(tmp_path):
 def test_incumbent_stake_follows_the_since_go_live_record_not_a_constant():
     """Kelly 0.15 was set on a record the current model never produced. An
     incumbent is staked like a freshly promoted market (x PROMOTED_KELLY_SCALE
-    on Kelly and cap) until 30 settled real bets since go-live that do not trip
-    the demotion bar; no evaluated record at all fails closed to the half."""
+    on Kelly and cap) until its since-go-live record CLEARS PROMOTION_BAR — the
+    same bar, every leg, a paper market clears to reach real money. No
+    evaluated record at all fails closed to the half."""
     legacy = "2026-03-01T17:00:00+00:00"
     live = "2026-09-13T17:00:00+00:00"
     assert MP.incumbent_stake_scale("1X2", "Home", {"incumbents": {}}) == (1.0, "")
@@ -305,62 +306,72 @@ def test_incumbent_stake_follows_the_since_go_live_record_not_a_constant():
     # legacy-only record: half, however good the legacy numbers are
     st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 60, 0, 1.41, legacy), write=False)
     assert st["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
-    assert MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st) == (MP.PROMOTED_KELLY_SCALE, "since go-live 0/30 settled")
-    # 30 real bets since go-live that hold up -> full stake
-    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 23, 7, 1.41, live), write=False)
+    assert MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st) == (MP.PROMOTED_KELLY_SCALE, "since go-live 0/50 settled")
+    # 50 real bets since go-live that clear every leg of the bar -> full stake
+    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 42, 8, 1.41, live), write=False)
     scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
-    assert scale == 1.0 and why.startswith("since go-live n=30 ROI +")
-    # 30 since go-live at the demotion bar -> back to half, and the card says so
-    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 17, 13, 1.41, live), write=False)
+    assert scale == 1.0 and why.startswith("since go-live n=50 ROI +") and "bar cleared" in why
+    # 50 since go-live at the demotion bar -> half, and the card says so
+    st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 25, 25, 1.41, live), write=False)
     scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
     assert scale == MP.PROMOTED_KELLY_SCALE and "demotion bar" in why
-    assert "puntata ×0.5 finché 30 vere dal go-live" in MP.record_card(st, html=False)
+    assert "puntata ×0.5 finché 50 vere dal go-live superano la barra" in MP.record_card(st, html=False)
     # a promoted mirror since go-live is not the engine's record
     mirror = [dict(b, extra={"picks_ref": "x"}, pipeline_status=MP.PIPELINE_STATUS)
-              for b in _settled("O/U 1.5", 30, 0, odds=1.41, placed=live)]
+              for b in _settled("O/U 1.5", 50, 0, odds=1.41, placed=live)]
     st = MP.evaluate_promotions([], [], real_all=mirror, write=False)
     assert st["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
 
 
-def test_full_stake_needs_a_POSITIVE_record_not_merely_a_non_demoting_one():
-    """Nicola's call, 2026-09-08. Until then the ladder unlocked full stake at
-    n=30 on anything `should_demote` did not catch, and that bar is ROI < -10%
-    or z < -1 — so a since-go-live record of ROI -9.9% doubled the money on the
-    next slip. The bar the props must clear to reach real money is ROI > 0; the
-    incumbents now clear the same sign.
+def test_full_stake_needs_the_WHOLE_promotion_bar_not_a_weaker_cousin_of_it():
+    """Nicola's call, 2026-09-08. The ladder has now been wrong twice in the
+    same direction, and each fixture below is the record that the PREVIOUS
+    version waved through:
 
-    Each case asserts its OWN precondition: `should_demote` is False, so the
-    half stake is attributable to the new ROI condition and not to the old one
-    firing. Without that the test passes against the code it is pinning."""
+      - the original test at n=30 was `should_demote` alone (ROI < -10% or
+        z < -1), so ROI -1.3% doubled the money on the next slip;
+      - adding ROI > 0 still passed n=50 ROI +12.8% z +1.60 — positive, and
+        indistinguishable from noise.
+
+    Full stake now needs the since-go-live record to clear PROMOTION_BAR
+    entire: the same bar, every leg, a paper market clears to reach real money
+    at all. Each blocked case asserts its own precondition — that the rule it
+    is replacing ACCEPTS it — so this tests the new condition and not the old
+    one."""
     live = "2026-09-13T17:00:00+00:00"
 
     def since(n_won, n_lost, odds=1.41):
         return MP.incumbent_records(_real_engine("O/U 1.5", "Over 1.5", n_won, n_lost, odds, live))["ou_over_1_5"]
 
-    # -1.3% ROI, z -0.11: the band between the demotion bar and zero. The old
-    # ladder gave this full stake.
-    losing = since(21, 9)
-    assert losing["real_since_live"]["n"] == MP.INCUMBENT_FULL_STAKE_MIN_N
-    assert MP.should_demote(losing["real_since_live"]) == (False, ""), "precondition: the OLD rule accepts this"
+    # positive ROI, z 1.60: what the ROI-only rule unlocked
+    noisy = since(40, 10)
+    rec = noisy["real_since_live"]
+    assert rec["n"] == MP.INCUMBENT_FULL_STAKE_MIN_N == MP.PROMOTION_BAR["min_settled"]
+    assert rec["roi_pct"] > MP.PROMOTION_BAR["min_roi_pct"], "precondition: the ROI-only rule accepts this"
+    assert MP.should_demote(rec) == (False, ""), "precondition: the original rule accepts this too"
+    assert noisy["stake_scale"] == MP.PROMOTED_KELLY_SCALE
+    assert "short of the bar" in noisy["stake_reason"] and "z 1.60 < 2.5" in noisy["stake_reason"]
+
+    # -1.3% at n=50: still caught, and by the ROI leg, which the reason names
+    losing = since(35, 15)
+    assert losing["real_since_live"]["roi_pct"] < 0
+    assert MP.should_demote(losing["real_since_live"]) == (False, ""), "precondition: the original rule accepts this"
     assert losing["stake_scale"] == MP.PROMOTED_KELLY_SCALE
-    assert "not positive" in losing["stake_reason"] and "-1.3%" in losing["stake_reason"]
+    assert "ROI " in losing["stake_reason"] and "short of the bar" in losing["stake_reason"]
 
-    # exactly break-even is not positive — the same `<=` the promotion bar uses
-    flat = since(15, 15, odds=2.0)
-    assert flat["real_since_live"]["roi_pct"] == 0.0
-    assert MP.should_demote(flat["real_since_live"]) == (False, ""), "precondition: the OLD rule accepts this"
-    assert flat["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "not positive" in flat["stake_reason"]
+    # the count leg is the bar's own min_settled now, not the demotion bar's 30
+    assert since(42, 8)["stake_scale"] == 1.0
+    n30 = MP.incumbent_records(_real_engine("O/U 1.5", "Over 1.5", 25, 5, 1.41, live))["ou_over_1_5"]
+    assert n30["real_since_live"]["n"] == 30 == MP.DEMOTION_BAR["min_real_bets"]
+    assert "30/50 settled" in MP.bar_misses(n30["real_since_live"])
+    # the count leg short-circuits, so the reason is the progress string and not
+    # a list of legs a 30-bet record could not have cleared anyway
+    assert n30["stake_scale"] == MP.PROMOTED_KELLY_SCALE and n30["stake_reason"] == "since go-live 30/50 settled"
 
-    # and a positive record still unlocks, with the demotion bar still louder
-    good = since(22, 8)
-    assert good["stake_scale"] == 1.0 and good["stake_reason"].startswith("since go-live n=30 ROI +")
-    bad = since(15, 15)
-    assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
-
-    # the card says the real condition, not just the count
-    card = MP.record_card(MP.evaluate_promotions(
-        [], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 21, 9, 1.41, live), write=False), html=False)
-    assert "30 vere dal go-live con ROI > 0" in card
+    # a market that clears every leg says so
+    good = since(45, 5)
+    assert good["stake_scale"] == 1.0 and "bar cleared" in good["stake_reason"]
+    assert MP.bar_misses(good["real_since_live"]) == []
 
 
 def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
@@ -375,7 +386,7 @@ def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
     assert half is not None and half.stake_scale == MP.PROMOTED_KELLY_SCALE
     assert half.stake_note == "incumbent record not evaluated yet"
     live = "2026-09-13T17:00:00+00:00"
-    MP.evaluate_promotions([], [], real_all=_real_engine("O/U 2.5", "Over 2.5", 14, 16, 2.47, live))
+    MP.evaluate_promotions([], [], real_all=_real_engine("O/U 2.5", "Over 2.5", 30, 20, 2.47, live))
     full = make(UnifiedBettingEngine())
     assert full.stake_scale == 1.0 and full.stake_pct == pytest.approx(half.stake_pct * 2, abs=0.02)
     assert full.stake_pct < full.stake_amount / full.stake_amount * 2.5   # under the cap, so the ratio is exact
@@ -404,13 +415,13 @@ def test_a_real_settlement_alone_scores_the_gate_and_pushes_the_stake_card(tmp_p
     on_disk = _json.loads(MP.STATE_PATH.read_text())
     assert on_disk["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
 
-    # ...and the real journal now holds 30 settled bets since go-live at a
-    # POSITIVE ROI, which is a stake_up. 22/8 not 21/9: since 2026-09-08 the
-    # ladder needs the record to be positive, not merely non-demoting, and
-    # 21/9 is -1.3% (see test_full_stake_needs_a_POSITIVE_record...). This
-    # test is about what a settled REAL bet triggers, so it wants a record
-    # that unambiguously earns the transition.
-    earned = _real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live)
+    # ...and the real journal now holds 50 settled bets since go-live that
+    # clear PROMOTION_BAR entire, which is a stake_up. The fixture tracks the
+    # ladder: this test is about what a settled REAL bet TRIGGERS, so it wants
+    # a record that unambiguously earns the transition under whatever the
+    # current bar is. test_full_stake_needs_the_WHOLE_promotion_bar... owns
+    # the threshold itself.
+    earned = _real_engine("O/U 1.5", "Over 1.5", 42, 8, 1.41, live)
     BJ.JOURNAL_PATH.write_text(_json.dumps(
         {"metadata": {}, "bets": {f"b{i}": b for i, b in enumerate(earned)}}))
     assert not P.PICKS_JOURNAL_PATH.exists()
@@ -428,7 +439,7 @@ def test_a_real_settlement_alone_scores_the_gate_and_pushes_the_stake_card(tmp_p
     after = _json.loads(MP.STATE_PATH.read_text())
     assert after["incumbents"]["ou_over_1_5"]["stake_scale"] == 1.0
     assert len(pushed) == 1 and pushed[0][0]["kind"] == "stake_up"
-    assert pushed[0][0]["market"] == "ou_over_1_5" and pushed[0][0]["n"] == 30
+    assert pushed[0][0]["market"] == "ou_over_1_5" and pushed[0][0]["n"] == MP.INCUMBENT_FULL_STAKE_MIN_N
 
     # idempotent: the paper path calling it again in the same run pushes nothing
     MP.evaluate_promotions()
@@ -450,7 +461,10 @@ def test_api_market_record_serves_the_same_state_as_the_bot_card(tmp_path):
     r = appmod.app.test_client().get("/api/market-record")
     assert r.status_code == 200
     d = r.get_json()
-    assert d["bar"] == MP.PROMOTION_BAR and d["full_stake_min_n"] == 30 and d["updated_at"].startswith("2026-09-14")
+    assert d["bar"] == MP.PROMOTION_BAR and d["updated_at"].startswith("2026-09-14")
+    # the ladder's count leg IS the bar's own min_settled since 2026-09-08 —
+    # asserted against the bar, so the page cannot drift from the gate
+    assert d["full_stake_min_n"] == MP.PROMOTION_BAR["min_settled"] == 50
     assert [i["key"] for i in d["incumbents"]] == ["ou_over_1_5", "ou_over_2_5"]   # both, always
     inc = d["incumbents"][0]
     assert inc["name"] == "Over 1.5 (motore)"
