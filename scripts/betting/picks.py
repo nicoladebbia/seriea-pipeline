@@ -327,7 +327,7 @@ def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dic
     Only the provenance a live rebuild cannot know — when the slate ran, whether
     the LEAN was paper-journaled — is carried over from the file.
     """
-    from scripts.betting.bankroll_loader import get_effective_bankroll
+    from scripts.betting.bankroll_loader import compute_current_bankroll, load_bankroll_config
     from scripts.betting.betting_unified import BettingConfig, _league_betting_enabled
 
     book = match_price_book(match_key, league)
@@ -351,10 +351,16 @@ def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dic
         promo_state = load_state()
     except Exception:  # noqa: BLE001 - the shortlist degrades to paper, never 500s
         promo_state = {"markets": {}}
+    # The stake is sized against AVAILABLE capital, not the balance — the two
+    # differ by whatever is on open bets, and the sidebar shows the balance
+    # (EUR 1029.02 there against EUR 1004 here, 2026-09-08). Carry both so the
+    # page can say which number it divided by.
     try:
-        bankroll = float(get_effective_bankroll() or 0.0)
+        info = compute_current_bankroll(load_bankroll_config())
+        bankroll = float(info.get("available_balance") or 0.0)
+        pending = float(info.get("pending_stakes") or 0.0)
     except Exception:  # noqa: BLE001
-        bankroll = 0.0
+        bankroll, pending = 0.0, 0.0
 
     rows = payload["markets"] + payload["players"]
     priced = rank_candidates(price_rows(rows, book), band)
@@ -365,6 +371,7 @@ def attach_prices(match_key: str, payload: dict, league: str = "serie_a") -> dic
                                            betting_enabled=betting_enabled,
                                            kickoff=payload.get("kickoff_utc"))
     payload["shortlist"]["band"] = [band[0], OVERCONFIDENCE_CAP]
+    payload["shortlist"]["pending_stakes"] = round(pending, 2)
     slate = _read(PICKS_FILE, {}) or {}
     stored = next((p for p in slate.get("picks") or [] if p.get("match") == match_key), None)
     if stored is not None:

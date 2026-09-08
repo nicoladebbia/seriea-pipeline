@@ -1530,7 +1530,7 @@ function _pickBanner(pk, nPriced) {
            : pk.exotic_fallback ? `<div class="text-small text-tertiary">🎲 Insolite: none beats its price; most probable ${one(pk.exotic_fallback)}</div>` : '';
   return `<div style="border:1px solid var(--border-subtle);border-left:3px solid ${colr};border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3)">
     <div style="font-size:12px"><b style="color:${colr}">${lab}</b> · ${what}</div>
-    <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edges ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}${ex}</div>`;
+    <div class="text-small text-tertiary">${sanitizeHTML(pk.reason || '')}${pk.journaled_bet_id ? ' · paper-journaled' : ''} · ${pk.n_priced || 0} rows priced, ${pk.n_positive || 0} with positive edge${pk.n_longshot_edges ? `, ${pk.n_longshot_edges} long-shot edge${pk.n_longshot_edges === 1 ? '' : 's'} ignored` : ''}${pk.n_overconfident ? `, ${pk.n_overconfident} above the cap` : ''}</div>${lean}${ex}</div>`;
 }
 // ---------------------------------------------------------------------------
 // The shortlist: what to bet, what not to, and how much. Every number comes
@@ -1590,7 +1590,7 @@ function renderShortlist(sl, nPriced) {
   const named = (sl.real_bets || []).map(b =>
     `${b.player ? sanitizeHTML(b.player) + ' ' : ''}${sanitizeHTML(b.selection || '')} @${Number(b.odds).toFixed(2)} for <b style="color:var(--green)">€${Number(b.eur).toFixed(2)}</b>`).join(' · ');
   const real = sl.real_eur > 0
-    ? `${named}${sl.real_pct != null ? ` <span class="text-tertiary">· ${Number(sl.real_pct).toFixed(2)}% of the €${Number(sl.bankroll).toFixed(0)} bankroll</span>` : ''}`
+    ? `${named}${sl.real_pct != null ? ` <span class="text-tertiary">· ${Number(sl.real_pct).toFixed(2)}% of the €${Number(sl.bankroll).toFixed(0)} available${sl.pending_stakes > 0 ? ` (€${Number(sl.pending_stakes).toFixed(2)} of the balance is on open bets)` : ''}</span>` : ''}`
     : `<b>nothing</b> — the engine selected no bet here, and no market on this list has earned real stakes yet`;
   let html = `<div class="mkt-short">
     <div class="mkt-short__money">Real money on this match: ${real}${sl.paper_eur > 0 ? ` <span class="text-tertiary">· €${Number(sl.paper_eur).toFixed(2)} paper across ${sl.n_paper} row${sl.n_paper === 1 ? '' : 's'}, building the record each market needs to earn a real stake</span>` : ''}</div>`;
@@ -1608,7 +1608,7 @@ function renderShortlist(sl, nPriced) {
     html += `<details class="mkt-short__more"><summary>${sl.n_flagged} row${sl.n_flagged === 1 ? '' : 's'} with an edge the gate throws away — long shots and edges above the ${band[1]}% cap</summary>${_shortHead()}${sl.flagged.map(b => _shortRow(b, {muted: true})).join('')}</details>`;
   }
   if (sl.avoid && sl.avoid.length) {
-    html += `<details class="mkt-short__more"><summary>${sl.n_avoid} the market prices past us — do not bet these</summary>
+    html += `<details class="mkt-short__more"><summary>${sl.n_avoid} row${sl.n_avoid === 1 ? '' : 's'} the market prices past us — do not bet these</summary>
       <div class="text-small text-tertiary" style="padding:4px 0">Most probable first, not most negative: the trap is the outcome that looks obvious and is already in the price.</div>
       ${_shortHead()}${sl.avoid.map(b => _shortRow(b, {muted: true})).join('')}</details>`;
   }
