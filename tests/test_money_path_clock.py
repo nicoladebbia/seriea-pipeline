@@ -209,15 +209,17 @@ def test_atomic_write_survives_a_failed_rename_with_the_old_file_intact(tmp_path
 # ---------------------------------------------------------------------------
 # 6. The incumbent stake ladder at the bar's own boundary
 # ---------------------------------------------------------------------------
-def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00", clv=(1.2, 3.4, 0.8, 2.9)):
+def _real(n_won, n_lost, odds=1.41, placed="2026-09-13T17:00:00+00:00", clv=(1.2, 3.4, 0.8, 2.9),
+          move=(0.9, -0.2, 0.6, 0.8)):
     out = []
     for i in range(n_won + n_lost):
         won = i < n_won
         out.append({"market": "O/U 1.5", "selection": "Over 1.5", "status": "won" if won else "lost",
                     "stake": 10.0, "odds": odds, "profit": round(10.0 * (odds - 1), 2) if won else -10.0,
                     "placed_at": placed, "extra": None, "pipeline_status": "current",
-                    # varying, because a constant CLV has no t-statistic
-                    "clv_pct": None if clv is None else clv[i % len(clv)]})
+                    # varying, because a constant series has no t-statistic
+                    "clv_pct": None if clv is None else clv[i % len(clv)],
+                    "clv_move_pct": None if move is None else move[i % len(move)]})
     return out
 
 
@@ -232,28 +234,43 @@ def test_full_stake_unlocks_at_thirty_held_up_bets_not_twenty_nine():
     assert full["real_since_live"]["n"] == n
     assert full["stake_scale"] == 1.0 and "bar cleared" in full["stake_reason"]
     # a full count that trips the demotion bar stays on the half stake, however
-    # good its CLV — the demotion bar is checked before the quality leg
+    # far the line moved our way — demotion is checked before the quality leg
     bad = MP.incumbent_records(_real(15, 15))["ou_over_1_5"]
-    assert bad["real_since_live"]["clv_z"] > MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
+    assert bad["real_since_live"]["clv_move_z"] > MP.INCUMBENT_FULL_STAKE_BAR["min_clv_move_z"]
     assert bad["stake_scale"] == MP.PROMOTED_KELLY_SCALE and "demotion bar" in bad["stake_reason"]
 
 
-def test_the_quality_leg_is_CLV_and_ROI_is_only_a_floor():
-    """The ladder has read the wrong leg three times. This pins the current one
+def test_the_quality_leg_is_the_line_MOVING_not_beating_the_close():
+    """The ladder has read the wrong leg four times. This pins the current one
     from both sides: a record whose RETURN says nothing (z +0.30, and z >= 2.5
-    on the return would need a +28.1% run over 30 bets) but whose CLV is
-    overwhelming clears; the same record with the money going the other way does
-    not, because ROI > 0 is kept as a floor."""
+    on the return would need a +28.1% run over 30 bets) but whose sharp line
+    moved our way clears; the same record with the money going the other way
+    does not, because ROI > 0 is kept as a floor.
+
+    Beat-the-close is NOT the leg, and the third case is why: decomposed on the
+    live journal 2026-09-08, +2.07 of O/U 1.5's +2.61% beat-the-close was the
+    same-moment spread between our best-of-N price and the one sharp book the
+    close is read from — 0 of 48 negative, the engine's entry edge restated.
+    A gate on that opens for any market where we shop."""
     from scripts.betting import market_promotion as MP
     good = MP.incumbent_records(_real(22, 8))["ou_over_1_5"]["real_since_live"]
     assert good["z"] < MP.PROMOTION_BAR["min_z"], "precondition: the return-z rule blocks this"
-    assert good["clv_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
+    assert good["clv_move_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_move_z"]
     assert MP.full_stake_misses(good) == []
 
     losing = MP.incumbent_records(_real(21, 9))["ou_over_1_5"]["real_since_live"]
-    assert losing["clv_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"] and losing["roi_pct"] < 0
+    assert losing["clv_move_z"] >= MP.INCUMBENT_FULL_STAKE_BAR["min_clv_move_z"] and losing["roi_pct"] < 0
     assert MP.full_stake_misses(losing) == ["ROI -1.3%"]
 
-    # and a book with no closing prices cannot clear a gate that reads them
-    blind = MP.incumbent_records(_real(22, 8, clv=None))["ou_over_1_5"]["real_since_live"]
-    assert MP.full_stake_misses(blind) == [f"0/{MP.INCUMBENT_FULL_STAKE_BAR['min_clv_n']} closing prices"]
+    # the spread-shaped record: beat-the-close is huge and near-deterministic,
+    # the line never moved. The old rule cleared it; this one must not.
+    spread_only = MP.incumbent_records(
+        _real(22, 8, clv=(2.0, 2.1, 2.05, 2.15), move=(0.05, -0.04, 0.03, -0.05))
+    )["ou_over_1_5"]["real_since_live"]
+    assert spread_only["clv_z"] > 20, "precondition: the beat-the-close rule would clear this"
+    assert MP.full_stake_misses(spread_only), "but the line never moved"
+
+    # and a book with no same-book closing prices cannot clear a gate reading them
+    blind = MP.incumbent_records(_real(22, 8, clv=None, move=None))["ou_over_1_5"]["real_since_live"]
+    assert MP.full_stake_misses(blind) == [
+        f"0/{MP.INCUMBENT_FULL_STAKE_BAR['min_clv_move_n']} sharp closing lines"]

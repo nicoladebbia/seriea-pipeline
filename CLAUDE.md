@@ -401,24 +401,55 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   **Closed the same day — the stake follows the record, not the constant.** An incumbent
   is staked like a freshly promoted market: Kelly AND cap × `PROMOTED_KELLY_SCALE` (0.5)
   until its since-go-live real record clears **`INCUMBENT_FULL_STAKE_BAR`** — 30 settled
-  bets, **ROI > 0 as a floor**, and a **CLV record that is positive and significant**
-  (mean CLV > 0, CLV z ≥ 2.5, on ≥ 20 closing prices). `full_stake_misses()` is that gate;
-  `market_record` carries `clv_z` for it. Then full 0.15 / 2.5%.
-  **The quality leg is CLV, not the return (Nicola's call, 2026-09-08), because they are
-  not comparable in sample efficiency.** Measured that day on the live journal, same bets:
-  O/U 1.5 Over has return z **+0.68** (z ≥ 2.5 would need **~648** settled bets) against
-  CLV z **+9.98** (~3 bets); O/U 2.5 Over is return z −0.10 (never) against CLV z **+16.11**.
-  A return-z leg at n=30 required a **+28.1% ROI run over 30 bets**, fired 7.4% of the time
-  in simulation on the real odds mix, and got *worse* with volume — the only thing that
-  opens it is luck, and volume destroys luck. That is a broken gate, not a strict one.
+  bets, **ROI > 0 as a floor**, and the **sharp line MOVING our way, significantly**
+  (`clv_move_pct` > 0, `clv_move_z` ≥ 2.5, on ≥ 20 bets with a same-book closing price).
+  `full_stake_misses()` is that gate; `market_record` carries `clv_move_z` for it. Then
+  full 0.15 / 2.5%.
+  **The quality leg is not the return (Nicola's call, 2026-09-08), because they are not
+  comparable in sample efficiency.** Measured that day on the live journal, same bets:
+  O/U 1.5 Over has return z **+0.68** (z ≥ 2.5 would need **~648** settled bets). A return-z
+  leg at n=30 required a **+28.1% ROI run over 30 bets**, fired 7.4% of the time in
+  simulation on the real odds mix, and got *worse* with volume — the only thing that opens
+  it is luck, and volume destroys luck. That is a broken gate, not a strict one.
   Do NOT "reach n=30 faster" by loosening selection: simulated, diluting half the slate with
   break-even bets drops P(unlock) 7.4% → 4.7%, and doubling volume that way drops it to 3.7%
-  **while corrupting the record the gate exists to read**. ROI > 0 stays a floor because CLV
-  says the price was good, not that the market made money. **The CLV legs are REQUIRED here,
-  the inverse of `PROMOTION_BAR`, which waives CLV below `min_clv_n`**: this gate reads CLV,
-  so no closing prices means no evidence, means half stake — fail closed. The ladder was too
-  weak twice before this (`should_demote` alone let ROI −9.9% double the stake; ROI > 0 alone
-  let n=30 ROI +17.5% z +1.82 through) and every one of those records is pinned in the tests.
+  **while corrupting the record the gate exists to read**.
+  **And the quality leg is not beat-the-close either — that was the shipped answer for one
+  commit and it was wrong.** `clv_pct` is our best-of-N entry price against ONE sharp book's
+  close, so it contains the same-moment spread between those two prices. Decomposed on the
+  live journal 2026-09-08 (`pinnacle_odds` at entry is the hinge): of O/U 1.5 Over's +2.61%,
+  **+2.07 is spread and −0.04 is the line moving**; O/U 2.5 Over is +2.14 spread and +0.40
+  movement. The spread term is **0 of 48 and 0 of 38 negative** — it is the engine's own
+  entry edge restated, near-deterministic, so its t-statistic runs away with n (+9.98 at
+  n=48, +16.11 at n=39) and a gate on it opens for any market where we shop books. The
+  movement term has real negative mass (12/48, 8/38) and z **−0.30** / **+2.96**: it is the
+  half that says the market later came to our side, and it orders the two markets
+  *opposite* to ROI. Both are on the `/record` card and `/betting`; only movement gates.
+  **`clv_move_pct` needs the SAME book at both ends**, so `clv_capture` tags the closing
+  price with the book it read (`closing_source`, `"...[Pinnacle]"`) and `closing_book()`
+  refuses a market mean, a summary fallback, a soft book, or an untagged legacy row —
+  comparing a mean-close to a sharp entry is a change of reference masquerading as
+  movement. Every row on disk predates the tag, so `n_clv_move` starts at 0 and both
+  incumbents sit on the count leg anyway (1/30 and 0/30 since go-live) — no stake moved.
+  ROI > 0 stays a floor because a moving line says the price was good, not that the market
+  made money. **The movement legs are REQUIRED here, the inverse of `PROMOTION_BAR`, which
+  waives CLV below `min_clv_n`**: this gate reads movement, so no same-book closing prices
+  means no evidence, means half stake — fail closed. The ladder was too weak three times
+  before this (`should_demote` alone let ROI −9.9% double the stake; ROI > 0 alone let n=30
+  ROI +17.5% z +1.82 through; beat-the-close would clear anything) and every one of those
+  records is pinned in the tests.
+  **One CLV definition, and three fields instead of one.** `clv_pct` is the percent return
+  against the close (`odds/closing − 1`) everywhere now — `_compute_clv` was writing a
+  *probability difference* into the same field the ratio-form `clv_capture` and
+  `clv_tracker` wrote, so the journal held two units under one name. `clv_move_pct` is the
+  movement, in percentage points. `entry_edge_vs_sharp_pct` is what used to be written into
+  `clv_pct` when there was **no closing line at all** — an entry-time edge against Pinnacle
+  with zero information about how the line moved; 3 rows on disk (all EPL, all gated) were
+  relocated by `backfill_clv`, which never rewrites a `clv_pct` that already stands.
+  **The paper picks' CLV carries the same spread term** (`closing_price_for` is best across
+  books): it is only a sign leg in `PROMOTION_BAR`, where return-z ≥ 2.5 is what binds, so
+  it was left alone — but do not promote it to a t-statistic leg there without decomposing
+  it the same way first.
   Both renderers state the real condition and read the row's own `stake_reason` for WHICH leg
   is short — never let `/betting` or the `/record` card describe the ladder as a bet COUNT alone. `incumbent_records` writes
   `stake_scale` / `stake_reason`, `_make_bet` reads them once per engine run

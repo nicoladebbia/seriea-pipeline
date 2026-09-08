@@ -24,7 +24,8 @@ def _isolated_journals(tmp_path, monkeypatch):
     monkeypatch.setattr(P, "closing_price_for", lambda bet: None)
 
 
-def _settled(market, n_won, n_lost, odds=2.0, stake=10.0, placed="2026-09-06T17:00:00+00:00", clv=None, status_extra=None):
+def _settled(market, n_won, n_lost, odds=2.0, stake=10.0, placed="2026-09-06T17:00:00+00:00",
+             clv=None, move=None, status_extra=None):
     out = []
     for i in range(n_won + n_lost):
         won = i < n_won
@@ -32,7 +33,11 @@ def _settled(market, n_won, n_lost, odds=2.0, stake=10.0, placed="2026-09-06T17:
                     "profit": round(stake * (odds - 1), 2) if won else -stake, "placed_at": placed,
                     # a LIST cycles per bet: a constant CLV has zero variance and
                     # therefore no t-statistic, which no real book ever has
-                    "clv_pct": clv[i % len(clv)] if isinstance(clv, list | tuple) else clv})
+                    "clv_pct": clv[i % len(clv)] if isinstance(clv, list | tuple) else clv,
+                    # beat-the-close and the sharp line's MOVEMENT are different
+                    # quantities and the ladder reads the second one, so a
+                    # fixture must be able to set them apart
+                    "clv_move_pct": move[i % len(move)] if isinstance(move, list | tuple) else move})
     for st in (status_extra or []):
         out.append({"market": market, "status": st, "stake": stake, "odds": odds, "profit": 0.0, "placed_at": placed})
     return out
@@ -67,9 +72,9 @@ def test_bar_names_the_first_unmet_condition():
     assert MP.passes_bar(rec)[0]
 
 
-def _real_engine(market, selection, n_won, n_lost, odds, placed, clv=None):
+def _real_engine(market, selection, n_won, n_lost, odds, placed, clv=None, move=None):
     out = []
-    for b in _settled(market, n_won, n_lost, odds=odds, placed=placed, clv=clv):
+    for b in _settled(market, n_won, n_lost, odds=odds, placed=placed, clv=clv, move=move):
         out.append(dict(b, selection=selection, extra=None, pipeline_status="current"))
     return out
 
@@ -175,7 +180,11 @@ def test_promoted_pick_is_mirrored_into_the_real_journal_and_settled_with_it(mon
     assert MP.settle_linked(pid, "won", result_score="2-1", closing_odds=1.95) == 1
     (settled,) = BJ.get_settled_bets()
     assert settled["status"] == "won" and settled["profit"] == round(15.0 * 1.02, 2)
-    assert settled["closing_odds"] == 1.95 and settled["clv_pct"] == round((1 / 1.95 - 1 / 2.02) * 100, 2)
+    # one CLV definition across the codebase since 2026-09-08: the percent
+    # return against the close, which clv_capture, clv_tracker and every row
+    # already in the real journal use. _compute_clv was the odd one out, writing
+    # a probability difference into the same field.
+    assert settled["closing_odds"] == 1.95 and settled["clv_pct"] == round((2.02 / 1.95 - 1) * 100, 2)
     # the paper CLV is no longer a fake 0.0: no closing price -> no claim
     from scripts.betting.bet_journal import _load_journal
     paper = _load_journal(P.PICKS_JOURNAL_PATH)["bets"][pid]
@@ -311,14 +320,14 @@ def test_incumbent_stake_follows_the_since_go_live_record_not_a_constant():
     assert MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st) == (MP.PROMOTED_KELLY_SCALE, "since go-live 0/30 settled")
     # 30 real bets since go-live that clear every leg of the bar -> full stake
     st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 26, 4, 1.41, live,
-                                                             clv=[1.2, 3.4, 0.8, 2.9]), write=False)
+                                                             clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8]), write=False)
     scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
     assert scale == 1.0 and why.startswith("since go-live n=30 ROI +") and "bar cleared" in why
     # 30 since go-live at the demotion bar -> half, and the card says so
     st = MP.evaluate_promotions([], [], real_all=_real_engine("O/U 1.5", "Over 1.5", 15, 15, 1.41, live), write=False)
     scale, why = MP.incumbent_stake_scale("O/U 1.5", "Over 1.5", st)
     assert scale == MP.PROMOTED_KELLY_SCALE and "demotion bar" in why
-    assert ("puntata ×0.5 finché 30 vere dal go-live hanno ROI > 0 e CLV z ≥ 2.5"
+    assert ("puntata ×0.5 finché 30 vere dal go-live hanno ROI > 0 e movimento linea z ≥ 2.5"
             in MP.record_card(st, html=False))
     # a promoted mirror since go-live is not the engine's record
     mirror = [dict(b, extra={"picks_ref": "x"}, pipeline_status=MP.PIPELINE_STATUS)
@@ -327,68 +336,84 @@ def test_incumbent_stake_follows_the_since_go_live_record_not_a_constant():
     assert st["incumbents"]["ou_over_1_5"]["stake_scale"] == MP.PROMOTED_KELLY_SCALE
 
 
-def test_full_stake_reads_CLV_as_the_quality_leg_with_ROI_as_a_floor():
-    """Nicola's call, 2026-09-08, and the third correction to this ladder in a
-    day — each one because the leg being read was the wrong one:
+def test_full_stake_reads_the_line_move_as_the_quality_leg_with_ROI_as_a_floor():
+    """The fourth correction to this ladder, each because the leg being read was
+    the wrong one:
 
       - `should_demote` alone (ROI < -10% or z < -1) let ROI -1.3% double the stake;
       - ROI > 0 alone let n=30 ROI +17.5% z +1.82 through — positive, and noise;
       - z >= 2.5 on the RETURN needed a +28.1% ROI run over 30 bets to clear.
         On the live journal that is ~648 settled bets, and simulated on the real
         odds mix it fired 7.4% of the time and got WORSE with volume. A gate that
-        only luck opens is broken, not strict.
+        only luck opens is broken, not strict;
+      - beat-the-close, which looked like the answer for one commit, is ~80% the
+        same-moment spread between our best-of-N entry and the one sharp book the
+        close is read from. Decomposed on the live journal 2026-09-08: of O/U
+        1.5 Over's +2.61%, +2.07 is spread (0 of 48 negative) and -0.04 is the
+        line moving. Its variance is therefore near zero and its t-statistic
+        near unbounded (+9.98 at n=48, +16.11 at n=39), so it clears for any
+        market where we shop books — the engine agreeing with its own entry edge.
 
-    So the quality leg is the CLV t-statistic and ROI > 0 is a floor. The record
-    below is the shape of the real O/U 1.5 book — a return that says nothing yet
-    and a CLV that is already overwhelming — and the two rules disagree about it,
-    which is the whole point of the change."""
+    So the quality leg is the t-statistic of the sharp line's MOVEMENT between
+    entry and close, and ROI > 0 is a floor. The record below is the shape of
+    the real O/U 1.5 book — a return that says nothing yet — and the return rule
+    and this one disagree about it, which is the point."""
     live = "2026-09-13T17:00:00+00:00"
-    # 22/30 at 1.41 = ROI +3.4%, return z +0.30; CLV +2.09% with real spread
-    real_shape = _real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live, clv=[1.2, 3.4, 0.8, 2.9])
+    # 22/30 at 1.41 = ROI +3.4%, return z +0.30; line move +0.51% at z +6.34
+    real_shape = _real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live, clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8])
     rec = MP.market_record(real_shape)["O/U 1.5"]
     assert rec["n"] == 30 and rec["roi_pct"] > 0
     # the two rules genuinely disagree — this is the true positive, computed live
     assert rec["z"] < MP.PROMOTION_BAR["min_z"], "precondition: the return-z rule BLOCKS this"
     assert MP.bar_misses(rec, {**MP.PROMOTION_BAR, "min_settled": 30}) == [f"z {rec['z']:.2f} < 2.5"]
-    assert MP.full_stake_misses(rec) == [], "and the CLV rule clears it"
+    assert MP.full_stake_misses(rec) == [], "and the line-move rule clears it"
 
     got = MP.incumbent_records(real_shape)["ou_over_1_5"]
     assert got["stake_scale"] == 1.0 and "bar cleared" in got["stake_reason"]
-    assert "CLV +2.09%" in got["stake_reason"]
-    # the card shows the CLV z the ladder reads, not only the mean — a market
-    # with no closing prices has no such parenthesis, which is why this is
-    # asserted here and not on a clv-less fixture
+    assert "line move +0.51%" in got["stake_reason"]
+    # the card shows BOTH halves: beat-the-close is mostly our shopping, the
+    # line move is the market coming to our side, and only the second gates
     card = MP.record_card(MP.evaluate_promotions([], [], real_all=real_shape, write=False), html=False)
-    assert f"CLV +2.1% (z {rec['clv_z']:+.1f})" in card
+    assert "CLV +2.1%" in card
+    assert f"linea {rec['mean_clv_move_pct']:+.2f}% (z {rec['clv_move_z']:+.1f})" in card
 
-    # ROI is a FLOOR: beating the close while losing money is not full stake
+    # ROI is a FLOOR: the line moving our way while we lose money is not full stake
     losing = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 21, 9, 1.41, live,
-                                           clv=[1.2, 3.4, 0.8, 2.9]))["O/U 1.5"]
-    assert losing["roi_pct"] < 0 and losing["clv_z"] > MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
+                                           clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8]))["O/U 1.5"]
+    assert losing["roi_pct"] < 0 and losing["clv_move_z"] > MP.INCUMBENT_FULL_STAKE_BAR["min_clv_move_z"]
     assert MP.full_stake_misses(losing) == ["ROI -1.3%"]
 
-    # a CLV that is positive but not significant does not clear
+    # a move that is positive but not significant does not clear
     noisy = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live,
-                                          clv=[-9.0, 11.0, -8.0, 10.0]))["O/U 1.5"]
-    assert noisy["mean_clv_pct"] > 0 and noisy["clv_z"] < MP.INCUMBENT_FULL_STAKE_BAR["min_clv_z"]
-    assert any("CLV z" in m for m in MP.full_stake_misses(noisy))
+                                          move=[-9.0, 11.0, -8.0, 10.0]))["O/U 1.5"]
+    assert noisy["mean_clv_move_pct"] > 0 and noisy["clv_move_z"] < MP.INCUMBENT_FULL_STAKE_BAR["min_clv_move_z"]
+    assert any("line-move z" in m for m in MP.full_stake_misses(noisy))
 
-    # negative CLV is named as CLV, not as z
+    # a big, significant beat-the-close with a line that never moved is the
+    # shape the previous rule cleared and this one must not
+    spread_only = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live,
+                                                clv=[2.0, 2.1, 2.05, 2.15],
+                                                move=[0.05, -0.04, 0.03, -0.05]))["O/U 1.5"]
+    assert spread_only["clv_z"] > 20, "precondition: the beat-the-close rule cleared this"
+    assert MP.full_stake_misses(spread_only), "the line never moved"
+
+    # a negative move is named as the move, not as its z
     bad = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live,
-                                        clv=[-1.2, -3.4, -0.8, -2.9]))["O/U 1.5"]
-    assert MP.full_stake_misses(bad) == ["CLV -2.09%", f"CLV z {bad['clv_z']:.2f} < 2.5"]
+                                        move=[-1.2, -3.4, -0.8, -2.9]))["O/U 1.5"]
+    assert MP.full_stake_misses(bad) == ["line move -2.09%", f"line-move z {bad['clv_move_z']:.2f} < 2.5"]
 
-    # NO closing prices BLOCKS — the opposite of PROMOTION_BAR, which waives CLV
-    # below min_clv_n. This gate reads CLV, so absence of it is absence of evidence.
+    # NO same-book closing prices BLOCKS — the opposite of PROMOTION_BAR, which
+    # waives CLV below min_clv_n. This gate reads the move, so absence of it is
+    # absence of evidence.
     blind = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live))["O/U 1.5"]
-    assert blind["n_clv"] == 0 and MP.bar_misses(blind, {**MP.PROMOTION_BAR, "min_settled": 30, "min_z": 0.0}) == []
-    assert MP.full_stake_misses(blind) == ["0/20 closing prices"]
+    assert blind["n_clv_move"] == 0 and MP.bar_misses(blind, {**MP.PROMOTION_BAR, "min_settled": 30, "min_z": 0.0}) == []
+    assert MP.full_stake_misses(blind) == ["0/20 sharp closing lines"]
     assert MP.incumbent_records(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live))["ou_over_1_5"]["stake_scale"] \
         == MP.PROMOTED_KELLY_SCALE
 
     # the count leg still short-circuits ahead of everything
     short = MP.incumbent_records(_real_engine("O/U 1.5", "Over 1.5", 20, 9, 1.41, live,
-                                              clv=[1.2, 3.4, 0.8, 2.9]))["ou_over_1_5"]
+                                              clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8]))["ou_over_1_5"]
     assert short["stake_scale"] == MP.PROMOTED_KELLY_SCALE and short["stake_reason"] == "since go-live 29/30 settled"
 
 
@@ -405,7 +430,7 @@ def test_engine_halves_an_incumbent_stake_until_the_record_earns_it(tmp_path):
     assert half.stake_note == "incumbent record not evaluated yet"
     live = "2026-09-13T17:00:00+00:00"
     MP.evaluate_promotions([], [], real_all=_real_engine("O/U 2.5", "Over 2.5", 19, 11, 2.47, live,
-                                                        clv=[1.2, 3.4, 0.8, 2.9]))
+                                                        clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8]))
     full = make(UnifiedBettingEngine())
     assert full.stake_scale == 1.0 and full.stake_pct == pytest.approx(half.stake_pct * 2, abs=0.02)
     assert full.stake_pct < full.stake_amount / full.stake_amount * 2.5   # under the cap, so the ratio is exact
@@ -440,7 +465,7 @@ def test_a_real_settlement_alone_scores_the_gate_and_pushes_the_stake_card(tmp_p
     # a record that unambiguously earns the transition under whatever the
     # current bar is. test_full_stake_needs_the_WHOLE_promotion_bar... owns
     # the threshold itself.
-    earned = _real_engine("O/U 1.5", "Over 1.5", 26, 4, 1.41, live, clv=[1.2, 3.4, 0.8, 2.9])
+    earned = _real_engine("O/U 1.5", "Over 1.5", 26, 4, 1.41, live, clv=[1.2, 3.4, 0.8, 2.9], move=[0.9, -0.2, 0.6, 0.8])
     BJ.JOURNAL_PATH.write_text(_json.dumps(
         {"metadata": {}, "bets": {f"b{i}": b for i, b in enumerate(earned)}}))
     assert not P.PICKS_JOURNAL_PATH.exists()
@@ -483,7 +508,7 @@ def test_api_market_record_serves_the_same_state_as_the_bot_card(tmp_path):
     # the ladder keeps its own count (30) and the bar's quality legs —
     # asserted against the constant, so the page cannot drift from the gate
     assert d["full_stake_min_n"] == MP.INCUMBENT_FULL_STAKE_MIN_N == 30
-    assert d["full_stake_bar"]["min_clv_z"] == MP.PROMOTION_BAR["min_z"] == 2.5
+    assert d["full_stake_bar"]["min_clv_move_z"] == MP.PROMOTION_BAR["min_z"] == 2.5
     assert "min_z" not in d["full_stake_bar"], "the ladder's quality leg is CLV, not the return"
     assert [i["key"] for i in d["incumbents"]] == ["ou_over_1_5", "ou_over_2_5"]   # both, always
     inc = d["incumbents"][0]

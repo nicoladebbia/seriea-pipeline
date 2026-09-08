@@ -435,3 +435,88 @@ def test_last_seasons_settled_bet_never_blocks_this_seasons(tmp_path):
     # same fixture, same date, market spelled differently -> the guard still holds
     variant = BJ.add_bet(dict(base, date="2026-09-06", market="OU_1.5"), journal_path=jp)
     assert variant == new and len(BJ._load_journal(jp)["bets"]) == 2
+
+
+# =============================================================================
+# CLV: beat-the-close vs the line actually MOVING (2026-09-08)
+# =============================================================================
+
+class TestCLVIsNotTheEntryEdge:
+    """Until 2026-09-08 one field, `clv_pct`, held three different quantities:
+    a probability difference against the closing line, a percent return against
+    the closing line, and — when no closing line existed — the entry edge
+    against Pinnacle, which contains no information about how the line moved.
+    The incumbent stake ladder read that field."""
+
+    def test_no_closing_line_means_no_CLV_only_an_entry_edge(self):
+        from scripts.betting.bet_journal import _compute_clv
+        bet = {"odds": 2.00, "sharp_implied_prob": 0.55, "closing_odds": None}
+        _compute_clv(bet)
+        # the true positive: the OLD rule wrote exactly this number into clv_pct
+        assert bet["entry_edge_vs_sharp_pct"] == round((0.55 - 1 / 2.00) * 100, 2) == 5.0
+        assert bet.get("clv_pct") is None, "an entry-time edge is not closing-line value"
+        assert bet.get("clv_move_pct") is None
+
+    def test_the_line_move_needs_the_SAME_book_at_both_ends(self):
+        from scripts.betting.bet_journal import _compute_clv
+        base = {"odds": 1.41, "pinnacle_odds": 1.38, "closing_odds": 1.34}
+        for source, why in (
+            (None, "captured before the source was recorded"),
+            ("totals.1.5.over (9 bm) [market_mean]", "a mean of many books is a different reference"),
+            ("totals.1.5.over (summary)", "a summary field names no book"),
+            ("totals.1.5.over (9 bm) [Bet365]", "a soft book is not the sharp line"),
+        ):
+            bet = dict(base, closing_source=source)
+            _compute_clv(bet)
+            assert bet.get("clv_move_pct") is None, why
+            assert bet["clv_pct"] is not None, "beat-the-close still stands"
+
+        bet = dict(base, closing_source="totals.1.5.over (9 bm) [Pinnacle]")
+        _compute_clv(bet)
+        assert bet["clv_move_pct"] == round((1 / 1.34 - 1 / 1.38) * 100, 2)
+        # and it is a DIFFERENT number from beat-the-close, which also carries
+        # the same-moment spread between our 1.41 and Pinnacle's 1.38
+        assert bet["clv_move_pct"] != bet["clv_pct"]
+
+    def test_the_move_is_negative_when_the_market_goes_against_us(self):
+        from scripts.betting.bet_journal import _compute_clv
+        bet = {"odds": 1.41, "pinnacle_odds": 1.38, "closing_odds": 1.45,
+               "closing_source": "totals.1.5.over (9 bm) [Pinnacle]"}
+        _compute_clv(bet)
+        assert bet["clv_move_pct"] < 0
+        # beat-the-close is negative here too — the point of the pair is that on
+        # the live journal it almost never was, because we shop and the close is
+        # one book. This asserts the sign logic, not the live distribution.
+        assert bet["clv_pct"] < 0
+
+    def test_backfill_relocates_an_old_entry_edge_and_leaves_a_real_CLV_alone(self, clean_journal, sample_bet):
+        from scripts.betting.bet_journal import _load_journal, _save_journal, add_bet, backfill_clv, settle_bet
+        bid = add_bet(sample_bet)
+        settle_bet(bid, "won", result_score="1-1")
+        j = _load_journal()
+        # a row as the old rule left it: entry-vs-sharp value sitting in clv_pct
+        j["bets"][bid].update(closing_odds=None, clv_pct=1.47, clv_move_pct=None,
+                              entry_edge_vs_sharp_pct=None)
+        j["bets"]["real"] = dict(j["bets"][bid], bet_id="real", clv_pct=2.4,
+                                 closing_odds=3.20, pinnacle_odds=3.25,
+                                 closing_source="h2h.draw (9 bookmakers) [Pinnacle]",
+                                 clv_move_pct=None, entry_edge_vs_sharp_pct=None)
+        _save_journal(j)
+
+        backfill_clv()
+        out = _load_journal()["bets"]
+        assert out[bid].get("clv_pct") is None
+        assert out[bid]["entry_edge_vs_sharp_pct"] == 1.47, "renamed, not recomputed"
+        assert out["real"]["clv_pct"] == 2.4, "a displayed metric is never rewritten in place"
+        assert out["real"]["clv_move_pct"] == round((1 / 3.20 - 1 / 3.25) * 100, 2)
+
+    def test_capture_names_the_book_it_read_the_close_from(self):
+        from scripts.betting.clv_capture import _find_sharp_odds, _match_bet_to_odds
+        books = [{"bookmaker": "Bet365", "over": 1.44}, {"bookmaker": "Pinnacle", "over": 1.38}]
+        assert _find_sharp_odds(books, "over") == (1.38, "Pinnacle")
+        assert _find_sharp_odds([{"bookmaker": "Bet365", "over": 1.44}], "over") == (1.44, "market_mean")
+
+        odds = {"Inter vs Milan": {"totals": [{"line": 1.5, "all_bookmakers": books}]}}
+        got = _match_bet_to_odds({"match": "Inter vs Milan", "market": "O/U 1.5",
+                                  "selection": "Over 1.5"}, odds)
+        assert got[0] == 1.38 and got[1].endswith("[Pinnacle]")

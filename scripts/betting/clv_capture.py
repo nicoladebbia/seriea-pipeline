@@ -111,7 +111,7 @@ def _load_cached_odds() -> Dict:
     return odds
 
 
-def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> float | None:
+def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float, str] | None:
     """Find sharp bookmaker odds for a selection, falling back to market average.
 
     Args:
@@ -119,19 +119,23 @@ def _find_sharp_odds(bookmakers: List[Dict], selection_key: str) -> float | None
         selection_key: Key to look up, e.g. "home", "draw", "away", "over", "under"
 
     Returns:
-        Best estimate of closing line: sharp bookmaker if available, else market average.
+        (odds, book) — the sharp book's price and its name, else the market mean
+        tagged "market_mean". The NAME is load-bearing: a mean of many books is a
+        different reference from a sharp quote, and comparing one against the other
+        would read as line movement when nothing moved. The journal stores it so
+        `clv_move_pct` can refuse the mixed comparison.
     """
     # Try sharp bookmakers first
     for bm in bookmakers:
         if bm.get("bookmaker") in SHARP_BOOKMAKERS:
             val = bm.get(selection_key, 0)
             if val and val > 1.0:
-                return val
+                return val, bm["bookmaker"]
 
     # Fall back to market average
     vals = [bm.get(selection_key, 0) for bm in bookmakers if bm.get(selection_key, 0) > 1.0]
     if vals:
-        return round(sum(vals) / len(vals), 3)
+        return round(sum(vals) / len(vals), 3), "market_mean"
 
     return None
 
@@ -170,9 +174,10 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
             return None
 
         # Use sharp bookmaker or average
-        closing = _find_sharp_odds(bookmakers, sel_key)
-        if closing:
-            return closing, f"h2h.{sel_key} ({len(bookmakers)} bookmakers)"
+        sharp = _find_sharp_odds(bookmakers, sel_key)
+        if sharp:
+            closing, book = sharp
+            return closing, f"h2h.{sel_key} ({len(bookmakers)} bookmakers) [{book}]"
 
         # Fall back to the summary field
         fallback = h2h.get(sel_key) or h2h.get(f"best_{sel_key}")
@@ -204,16 +209,18 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
             if abs(total.get("line", 0) - line) < 0.01:
                 bookmakers = total.get("all_bookmakers", [])
                 if "OVER" in selection:
-                    closing = _find_sharp_odds(bookmakers, "over")
-                    if closing:
-                        return closing, f"totals.{line}.over ({len(bookmakers)} bm)"
+                    sharp = _find_sharp_odds(bookmakers, "over")
+                    if sharp:
+                        closing, book = sharp
+                        return closing, f"totals.{line}.over ({len(bookmakers)} bm) [{book}]"
                     fallback = total.get("best_over") or total.get("over")
                     if fallback and fallback > 1.0:
                         return fallback, f"totals.{line}.over (summary)"
                 elif "UNDER" in selection:
-                    closing = _find_sharp_odds(bookmakers, "under")
-                    if closing:
-                        return closing, f"totals.{line}.under ({len(bookmakers)} bm)"
+                    sharp = _find_sharp_odds(bookmakers, "under")
+                    if sharp:
+                        closing, book = sharp
+                        return closing, f"totals.{line}.under ({len(bookmakers)} bm) [{book}]"
                     fallback = total.get("best_under") or total.get("under")
                     if fallback and fallback > 1.0:
                         return fallback, f"totals.{line}.under (summary)"
@@ -235,9 +242,10 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
 
         # Try sharp bookmaker from all_bookmakers (uses "odds" key, not "home"/"draw")
         bms = dc_entry.get("all_bookmakers", [])
-        closing = _find_sharp_odds(bms, "odds")
-        if closing:
-            return closing, f"dc.{dc_key} ({len(bms)} bookmakers)"
+        sharp = _find_sharp_odds(bms, "odds")
+        if sharp:
+            closing, book = sharp
+            return closing, f"dc.{dc_key} ({len(bms)} bookmakers) [{book}]"
 
         best = dc_entry.get("best")
         if best and best > 1.0:
@@ -297,25 +305,29 @@ def _match_bet_to_odds(bet: Dict, odds_data: Dict) -> Tuple[float, str] | None:
             if abs(best_spread.get("line", 0) - target_line) <= 0.5:
                 bookmakers = best_spread.get("all_bookmakers", [])
                 if "HOME" in selection:
-                    closing = _find_sharp_odds(bookmakers, "home")
-                    if closing:
-                        return closing, f"spreads.{best_spread['line']}.home ({len(bookmakers)} bm)"
+                    sharp = _find_sharp_odds(bookmakers, "home")
+                    if sharp:
+                        closing, book = sharp
+                        return closing, f"spreads.{best_spread['line']}.home ({len(bookmakers)} bm) [{book}]"
                 elif "AWAY" in selection:
-                    closing = _find_sharp_odds(bookmakers, "away")
-                    if closing:
-                        return closing, f"spreads.{best_spread['line']}.away ({len(bookmakers)} bm)"
+                    sharp = _find_sharp_odds(bookmakers, "away")
+                    if sharp:
+                        closing, book = sharp
+                        return closing, f"spreads.{best_spread['line']}.away ({len(bookmakers)} bm) [{book}]"
         else:
             # No line parsed — try first available spread
             spread = spreads[0]
             bookmakers = spread.get("all_bookmakers", [])
             if "HOME" in selection:
-                closing = _find_sharp_odds(bookmakers, "home")
-                if closing:
-                    return closing, f"spreads.{spread.get('line')}.home ({len(bookmakers)} bm)"
+                sharp = _find_sharp_odds(bookmakers, "home")
+                if sharp:
+                    closing, book = sharp
+                    return closing, f"spreads.{spread.get('line')}.home ({len(bookmakers)} bm) [{book}]"
             elif "AWAY" in selection:
-                closing = _find_sharp_odds(bookmakers, "away")
-                if closing:
-                    return closing, f"spreads.{spread.get('line')}.away ({len(bookmakers)} bm)"
+                sharp = _find_sharp_odds(bookmakers, "away")
+                if sharp:
+                    closing, book = sharp
+                    return closing, f"spreads.{spread.get('line')}.away ({len(bookmakers)} bm) [{book}]"
 
     return None
 
@@ -384,7 +396,7 @@ def capture_clv(dry_run: bool = False, from_cache: bool = False) -> Dict:
                      bet.get("match"), bet.get("market"), bet.get("selection"),
                      bet_odds, closing_odds, clv_pct, source)
         else:
-            update_clv(bet_id, closing_odds=closing_odds, clv_pct=clv_pct)
+            update_clv(bet_id, closing_odds=closing_odds, clv_pct=clv_pct, closing_source=source)
             log.info("CLV captured: %s | %s %s | bet=%.2f close=%.2f CLV=%+.1f%% [%s]",
                      bet.get("match"), bet.get("market"), bet.get("selection"),
                      bet_odds, closing_odds, clv_pct, source)

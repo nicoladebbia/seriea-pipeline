@@ -104,9 +104,18 @@ INCUMBENT_FULL_STAKE_MIN_N = DEMOTION_BAR["min_real_bets"]
 INCUMBENT_FULL_STAKE_BAR = {
     "min_settled": INCUMBENT_FULL_STAKE_MIN_N,
     "min_roi_pct": PROMOTION_BAR["min_roi_pct"],   # the floor, not the quality leg
-    "min_clv_pct": PROMOTION_BAR["min_clv_pct"],
-    "min_clv_n": PROMOTION_BAR["min_clv_n"],
-    "min_clv_z": PROMOTION_BAR["min_z"],           # the same 2.5, read off CLV
+    # The quality leg reads the sharp line's MOVEMENT between our entry and the
+    # close, not beat-the-close. Beat-the-close is ~80% the same-moment spread
+    # between our best-of-N price and the one sharp book the close is read from
+    # (2026-09-08: 0 of 48 and 0 of 38 O/U rows negative) — a restatement of the
+    # engine's own entry edge, so gating on it is the engine agreeing with
+    # itself, and its near-zero variance sends the t-statistic to +16 on 39
+    # bets. Movement is the half that says whether the market later came to our
+    # side. It needs the SAME book at both ends (`clv_move_pct`), so a row whose
+    # closing price came from a market mean or an untagged capture is excluded.
+    "min_clv_move_pct": PROMOTION_BAR["min_clv_pct"],
+    "min_clv_move_n": PROMOTION_BAR["min_clv_n"],
+    "min_clv_move_z": PROMOTION_BAR["min_z"],      # the same 2.5, read off movement
 }
 
 # Market key -> what the bet is, for the /record card
@@ -224,10 +233,12 @@ def market_record(bets: list[dict], since: str | None = None) -> dict[str, dict]
             continue
         if b.get("status") not in ("won", "lost", "push"):
             continue
-        m = by.setdefault(b.get("market") or "?", {"bets": [], "clv": []})
+        m = by.setdefault(b.get("market") or "?", {"bets": [], "clv": [], "move": []})
         m["bets"].append(b)
         if b.get("clv_pct") is not None:
             m["clv"].append(float(b["clv_pct"]))
+        if b.get("clv_move_pct") is not None:
+            m["move"].append(float(b["clv_move_pct"]))
     out: dict[str, dict] = {}
     for mk, m in by.items():
         r = _unit_returns(m["bets"])
@@ -235,17 +246,26 @@ def market_record(bets: list[dict], since: str | None = None) -> dict[str, dict]
         mu = mean(r) if r else 0.0
         sd = pstdev(r) if n > 1 else 0.0
         z = (mu / (sd / n ** 0.5)) if n > 1 and sd > 0 else 0.0
-        # CLV gets the same t-statistic as the return. It is a far lower-variance
-        # measurement of the same claim: measured 2026-09-08 on the live journal,
-        # O/U 1.5 Over needs ~648 settled bets for the RETURN z to reach 2.5 and
-        # ~3 for the CLV z. That is why the incumbent stake ladder reads this one.
+        # Beat-the-close and the sharp line's MOVEMENT both get the return's
+        # t-statistic, and the ladder reads the second one. Measured 2026-09-08
+        # by decomposing the live journal: of O/U 1.5 Over's +2.61% CLV, +2.07%
+        # is the same-moment spread between our best-of-N price and Pinnacle
+        # (0 of 48 negative — we always shop) and -0.04% is the line actually
+        # moving. The spread term is the engine's own entry edge restated, so
+        # its z grows without bound in n (+9.98 at n=48, +16.11 at n=39) and a
+        # gate on it would open for any market where we shop books. The
+        # movement term has real negative mass (12/48, 8/38) and z -0.30 / +2.96.
         nc, sdc = len(m["clv"]), (pstdev(m["clv"]) if len(m["clv"]) > 1 else 0.0)
         clv_z = (mean(m["clv"]) / (sdc / nc ** 0.5)) if nc > 1 and sdc > 0 else 0.0
+        nm, sdm = len(m["move"]), (pstdev(m["move"]) if len(m["move"]) > 1 else 0.0)
+        move_z = (mean(m["move"]) / (sdm / nm ** 0.5)) if nm > 1 and sdm > 0 else 0.0
         out[mk] = {"n": n, "won": sum(b.get("status") == "won" for b in m["bets"]),
                    "roi_pct": round(mu * 100, 1), "z": round(z, 2),
                    "profit": round(sum(float(b.get("profit") or 0) for b in m["bets"]), 2),
                    "mean_clv_pct": round(mean(m["clv"]), 2) if m["clv"] else None,
-                   "n_clv": nc, "clv_z": round(clv_z, 2)}
+                   "n_clv": nc, "clv_z": round(clv_z, 2),
+                   "mean_clv_move_pct": round(mean(m["move"]), 2) if m["move"] else None,
+                   "n_clv_move": nm, "clv_move_z": round(move_z, 2)}
     return out
 
 
@@ -282,28 +302,30 @@ def full_stake_misses(rec: dict, bar: dict = INCUMBENT_FULL_STAKE_BAR) -> list[s
     """EVERY unmet condition for an incumbent's FULL stake — a different gate
     from `bar_misses`, which is admission to real money.
 
-    Two deliberate differences. The quality leg is the CLV t-statistic, not the
-    return's (see INCUMBENT_FULL_STAKE_BAR for the measurement). And the CLV
-    legs are REQUIRED rather than waived below `min_clv_n`: a market with no
-    closing prices has not produced the evidence this gate reads, so it stays on
-    the half stake instead of passing by absence."""
+    Two deliberate differences. The quality leg is the t-statistic of the sharp
+    line's MOVEMENT, not the return's and not beat-the-close's (see
+    INCUMBENT_FULL_STAKE_BAR for why). And the movement legs are REQUIRED rather
+    than waived below their n: a market with no same-book closing prices has not
+    produced the evidence this gate reads, so it stays on the half stake instead
+    of passing by absence."""
     out = []
     if rec["n"] < bar["min_settled"]:
         out.append(f"{rec['n']}/{bar['min_settled']} settled")
     if rec["roi_pct"] <= bar["min_roi_pct"]:
         out.append(f"ROI {rec['roi_pct']:+.1f}%")
-    if rec.get("n_clv", 0) < bar["min_clv_n"]:
-        out.append(f"{rec.get('n_clv', 0)}/{bar['min_clv_n']} closing prices")
+    if rec.get("n_clv_move", 0) < bar["min_clv_move_n"]:
+        out.append(f"{rec.get('n_clv_move', 0)}/{bar['min_clv_move_n']} sharp closing lines")
     else:
-        if (rec.get("mean_clv_pct") or 0) <= bar["min_clv_pct"]:
-            out.append(f"CLV {rec['mean_clv_pct']:+.2f}%")
-        if (rec.get("clv_z") or 0) < bar["min_clv_z"]:
-            out.append(f"CLV z {rec.get('clv_z') or 0:.2f} < {bar['min_clv_z']:.1f}")
+        if (rec.get("mean_clv_move_pct") or 0) <= bar["min_clv_move_pct"]:
+            out.append(f"line move {rec['mean_clv_move_pct']:+.2f}%")
+        if (rec.get("clv_move_z") or 0) < bar["min_clv_move_z"]:
+            out.append(f"line-move z {rec.get('clv_move_z') or 0:.2f} < {bar['min_clv_move_z']:.1f}")
     return out
 
 
 _EMPTY_REC = {"n": 0, "won": 0, "roi_pct": 0.0, "z": 0.0, "profit": 0.0,
-              "mean_clv_pct": None, "n_clv": 0, "clv_z": 0.0}
+              "mean_clv_pct": None, "n_clv": 0, "clv_z": 0.0,
+              "mean_clv_move_pct": None, "n_clv_move": 0, "clv_move_z": 0.0}
 
 
 def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LIVE_FROM,
@@ -337,8 +359,8 @@ def incumbent_records(real_settled: list[dict], *, live_from: str = INCUMBENT_LI
 def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     """(multiplier, reason) for an incumbent, from its since-go-live record.
     Full stake needs that record to clear INCUMBENT_FULL_STAKE_BAR: enough
-    settled bets, ROI > 0 as a floor, and a CLV record that is positive and
-    significant. Anything short stays on the half a freshly promoted market
+    settled bets, ROI > 0 as a floor, and a sharp-line-movement record that is
+    positive and significant. Anything short stays on the half a freshly promoted market
     gets. The demotion-bar reason
     is kept separate from the short-of-the-bar one because they are different
     sizes of bad and the card says which."""
@@ -352,8 +374,8 @@ def _stake_scale_from_since(since: dict) -> tuple[float, str]:
     if misses:
         return PROMOTED_KELLY_SCALE, f"since go-live n={n} short of the bar: {'; '.join(misses)}"
     return 1.0, (f"since go-live n={n} ROI {since['roi_pct']:+.1f}% "
-                 f"CLV {since.get('mean_clv_pct') or 0:+.2f}% "
-                 f"z {since.get('clv_z') or 0:+.2f} — bar cleared")
+                 f"line move {since.get('mean_clv_move_pct') or 0:+.2f}% "
+                 f"z {since.get('clv_move_z') or 0:+.2f} — bar cleared")
 
 
 def incumbent_stake_scale(market: str, selection: str, state: dict | None = None) -> tuple[float, str]:
@@ -569,12 +591,15 @@ def record_card(state: dict | None = None, *, html: bool = True) -> str:
     for mk, r in incumbents.items():
         rr = r.get("real") or {}
         sl = r.get("real_since_live") or {}
-        clv = (f" · CLV {rr['mean_clv_pct']:+.1f}% (z {rr.get('clv_z') or 0:+.1f})"
-               if rr.get("mean_clv_pct") is not None else "")
+        # Both halves, because they say different things: beat-the-close is
+        # mostly our shopping, the line move is the market coming to our side.
+        clv = (f" · CLV {rr['mean_clv_pct']:+.1f}%" if rr.get("mean_clv_pct") is not None else "")
+        clv += (f" · linea {rr['mean_clv_move_pct']:+.2f}% (z {rr.get('clv_move_z') or 0:+.1f})"
+                if rr.get("mean_clv_move_pct") is not None else "")
         bar = "barra superata" if r.get("bar_passed") else f"barra NON superata: {r.get('distance', '')}"
         stake = ("puntata piena" if (r.get("stake_scale") or 1.0) >= 1.0
                  else f"puntata ×{r.get('stake_scale')} finché {INCUMBENT_FULL_STAKE_MIN_N} vere dal go-live "
-                      f"hanno ROI > 0 e CLV z ≥ {INCUMBENT_FULL_STAKE_BAR['min_clv_z']:.1f}")
+                      f"hanno ROI > 0 e movimento linea z ≥ {INCUMBENT_FULL_STAKE_BAR['min_clv_move_z']:.1f}")
         lines.append(f"🏦 {b[0]}{MARKET_NAMES_IT.get(mk, mk)}{b[1]} vera n={rr.get('n', 0)} ROI {rr.get('roi_pct', 0):+.0f}% "
                      f"z {rr.get('z', 0):+.2f}{clv} · {i[0]}{bar}{i[1]} · dal go-live n={sl.get('n', 0)} · {stake}")
     if not rows:

@@ -115,7 +115,14 @@ def test_settle_paper_bets_grades_ou_and_leaves_real_journal_alone(
     bet = list(json.loads(paper.read_text())["bets"].values())[0]
     assert bet["status"] == "won"
     assert bet["profit"] == pytest.approx(10.0 * 0.29)
-    assert bet["clv_pct"] is not None, "CLV must be computed for the bar"
+    # No closing line was ever captured for this bet, so it has no CLV — since
+    # 2026-09-08 the entry edge against the sharp price is stored under its own
+    # name instead of being written into clv_pct and counted as closing-line
+    # value. PROMOTION_BAR waives its CLV leg below min_clv_n, so a paper market
+    # that never gets a closing price is judged on ROI and return-z, not on a
+    # number derived from the price it was entered at.
+    assert bet["clv_pct"] is None
+    assert bet["entry_edge_vs_sharp_pct"] == round((0.7377 - 1 / 1.29) * 100, 2)
     assert not real.exists(), "settling paper must not create the real journal"
 
 

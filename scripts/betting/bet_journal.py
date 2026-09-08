@@ -179,39 +179,66 @@ def get_clv_lookup() -> Dict[str, float]:
     return result
 
 
+SHARP_CLOSING_BOOKS = {"Pinnacle", "Pinnacle Sports", "BetCRIS", "CRIS", "Matchbook"}
+
+
+def closing_book(bet: Dict) -> str | None:
+    """The book whose price is stored in `closing_odds`, when it is a sharp one.
+
+    `clv_capture` tags its source `"...[Pinnacle]"`; a market mean is tagged
+    `[market_mean]` and a summary-field fallback carries no tag at all. Both of
+    those are a DIFFERENT reference from the sharp quote taken at entry, so they
+    are not eligible for a movement number. Rows captured before the tag existed
+    return None and are ineligible too — fail closed.
+    """
+    src = bet.get("closing_source") or ""
+    if src.endswith("]") and "[" in src:
+        book = src[src.rindex("[") + 1:-1]
+        return book if book in SHARP_CLOSING_BOOKS else None
+    return None
+
+
 def _compute_clv(bet: Dict) -> None:
-    """Compute Closing Line Value for a settled bet.
+    """Compute the closing-line numbers for a settled bet.
 
-    CLV measures whether we got better odds than the sharp market implied.
-    Positive CLV = we beat the market (good). Negative = we didn't (bad).
+    Two DIFFERENT quantities, deliberately in two fields — they were one field
+    until 2026-09-08 and the mix made the ladder's quality leg meaningless:
 
-    Two methods, in priority order:
-    1. If closing_odds available: CLV = (1/placed_odds) - (1/closing_odds)
-       (we got better odds than closing line)
-    2. If sharp_implied_prob available: CLV = (1/placed_odds) - sharp_implied_prob
-       (we got better odds than Pinnacle's implied probability)
+    `clv_pct` — beat-the-close: our price against the closing price, as a
+    percentage return. Requires `closing_odds`. This is the number `/record`
+    shows and the one bettors mean by CLV. It contains the same-moment book
+    spread (we take best-of-N, the close is one sharp book), so on this journal
+    it runs ~+2.1% almost deterministically: 0 of 86 O/U rows negative.
 
-    Stored as percentage (e.g., 2.5 means +2.5% edge over closing/sharp).
+    `clv_move_pct` — how the SHARP line moved between our entry and the close,
+    in percentage points of implied probability, same book at both ends. This is
+    the half that carries information about the SELECTION rather than about our
+    shopping, and the only half with real negative mass (12/48 and 8/38). It is
+    what the incumbent stake ladder reads.
+
+    `entry_edge_vs_sharp_pct` — no closing line exists, so this is not CLV at
+    all: it is the entry edge against Pinnacle, restated. It used to be written
+    into `clv_pct` and counted as closing-line value.
     """
     placed_odds = bet.get("odds")
     if not placed_odds or placed_odds <= 1.0:
         return
 
     placed_implied = 1.0 / placed_odds
-
-    # Method 1: closing odds (best — actual closing line)
     closing_odds = bet.get("closing_odds")
+
     if closing_odds and closing_odds > 1.0:
-        closing_implied = 1.0 / closing_odds
-        bet["clv_pct"] = round((closing_implied - placed_implied) * 100, 2)
+        bet["clv_pct"] = round(((placed_odds / closing_odds) - 1.0) * 100, 2)
+        entry_sharp = bet.get("pinnacle_odds")
+        if closing_book(bet) and entry_sharp and entry_sharp > 1.0:
+            bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
         return
 
-    # Method 2: sharp implied probability (Pinnacle at placement time)
+    # No closing line. What we have is the entry edge against the sharp price —
+    # an entry-time quantity with no information about how the line moved.
     sharp_prob = bet.get("sharp_implied_prob")
     if sharp_prob and sharp_prob > 0:
-        # CLV = sharp thinks outcome is X% likely, we got odds implying Y%
-        # If sharp says 45% but our odds imply 40%, CLV = +5% (we got value)
-        bet["clv_pct"] = round((sharp_prob - placed_implied) * 100, 2)
+        bet["entry_edge_vs_sharp_pct"] = round((sharp_prob - placed_implied) * 100, 2)
         return
 
 
@@ -226,11 +253,24 @@ def backfill_clv() -> Dict:
     for bet_id, bet in journal["bets"].items():
         if bet.get("status") not in ("won", "lost", "push"):
             continue
-        if bet.get("clv_pct") is not None:
-            continue  # Already has CLV
-
-        _compute_clv(bet)
-        if bet.get("clv_pct") is not None:
+        before = (bet.get("clv_pct"), bet.get("clv_move_pct"), bet.get("entry_edge_vs_sharp_pct"))
+        relocated = False
+        if bet.get("clv_pct") is not None and not bet.get("closing_odds"):
+            # Written by the old rule, which put the entry-vs-sharp edge into
+            # clv_pct and called it closing-line value. Move the STORED value to
+            # its own name rather than recomputing: the quantity is unchanged,
+            # only its name was wrong, and the inputs may have moved since.
+            bet["entry_edge_vs_sharp_pct"] = bet.pop("clv_pct")
+            relocated = True
+        if bet.get("clv_pct") is None and not relocated:
+            _compute_clv(bet)
+        elif bet.get("clv_move_pct") is None:
+            # clv_pct already stands (a displayed metric — not rewritten here);
+            # fill only the movement half, which never existed before.
+            entry_sharp, closing_odds = bet.get("pinnacle_odds"), bet.get("closing_odds")
+            if closing_book(bet) and entry_sharp and entry_sharp > 1.0 and closing_odds and closing_odds > 1.0:
+                bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
+        if (bet.get("clv_pct"), bet.get("clv_move_pct"), bet.get("entry_edge_vs_sharp_pct")) != before:
             updated += 1
 
     if updated > 0:
@@ -452,7 +492,9 @@ def add_bet(bet_data: Dict, journal_path: Path | None = None, *,
             "result_score": None,
             "profit": None,
             "closing_odds": None,
+            "closing_source": None,
             "clv_pct": None,
+            "clv_move_pct": None,
             "placed_at": bet_data.get("placed_at", now_utc().isoformat()),
             "settled_at": None,
             "pipeline_status": bet_data.get("pipeline_status"),
@@ -838,11 +880,14 @@ def repair_settlements(dry_run: bool = True) -> Dict:
     return stats
 
 
-def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None) -> bool:
-    """Store CLV data for a bet.
+def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None,
+               closing_source: str | None = None) -> bool:
+    """Store the closing price for a bet and derive its CLV numbers.
 
-    If clv_pct is not provided, computes it from odds and closing_odds.
-    CLV = (bet_odds / closing_odds) - 1
+    `closing_source` names where the price came from (`clv_capture` tags the
+    book). Without it the movement number cannot be computed, because a mean of
+    many books compared against a sharp entry quote is a change of reference,
+    not a line that moved.
     """
     journal = _load_journal()
     if bet_id not in journal["bets"]:
@@ -851,11 +896,17 @@ def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None) -> bool:
 
     bet = journal["bets"][bet_id]
     bet["closing_odds"] = closing_odds
+    if closing_source:
+        bet["closing_source"] = closing_source
 
     if clv_pct is not None:
         bet["clv_pct"] = clv_pct
     elif bet.get("odds") and closing_odds and closing_odds > 1.0:
         bet["clv_pct"] = round(((bet["odds"] / closing_odds) - 1.0) * 100, 2)
+
+    entry_sharp = bet.get("pinnacle_odds")
+    if closing_book(bet) and entry_sharp and entry_sharp > 1.0 and closing_odds and closing_odds > 1.0:
+        bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
 
     _save_journal(journal)
     return True
