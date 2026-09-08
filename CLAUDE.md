@@ -456,6 +456,26 @@ pill only where the gate said nothing) and the banner + `@odds (edge)` chips on
   never vouch for a price it did not come with (`clv_tracker` is that second, untagged
   writer). Historical rows keep their prices; none of them carries a tag, so none feeds
   the movement leg.
+  **The other end of the subtraction was never Pinnacle either (fixed 2026-09-08).**
+  `closing_book()` guarded the close; nothing guarded the entry. On an O/U
+  ALTERNATE line the synthesized totals entry carries a fabricated book
+  (`"Alt totals book"`), so `get_pinnacle_odds` finds nothing and `scan_ou_market`
+  falls back to `total["over"]` — the market MEAN — which is then stored on the bet
+  as `pinnacle_odds`. Measured that day on the lines where per-book prices do exist,
+  Pinnacle vs the same-instant mean runs **−0.55pp, 8 of 9 negative** — an order of
+  magnitude above the movement it would have been read as (−0.04 / +0.40pp). So the
+  bet now carries `entry_sharp_odds` / `entry_sharp_book` from a NAMED sharp book
+  (`sharp_entry_price`, fed by the real per-book prices the synth passes along under
+  `sharp_bookmakers`), and `movement_pair()` computes `clv_move_pct` only when the
+  entry book and `closing_book()` are the SAME book. **These fields are CLV-only and
+  must never become a pricing input**: putting the real books into `all_bookmakers`
+  would make `get_pinnacle_odds` find Pinnacle, change the de-vig basis and therefore
+  change which bets get selected — a separate decision from measuring them, and the
+  mean is the conservative reference (it understates our edge, so the engine bets
+  less than it could, never more). `tests/test_betting_logic.py::
+  test_the_sharp_entry_price_is_recorded_without_moving_the_bet` is the differential:
+  same slate with and without the per-book prices, identical edge/stake/selection,
+  tag present in one and absent in the other.
   **And the money market was never captured at all.** The bulk feed's `totals`
   carries the headline lines only (2.0 / 2.25 / 2.5); **O/U 1.5 lives in
   `alternate_totals`**, which `_match_bet_to_odds` did not read — a live dry run on

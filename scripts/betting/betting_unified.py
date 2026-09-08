@@ -449,6 +449,11 @@ class ValueBet:
     pinnacle_odds: float         # Pinnacle odds (benchmark)
     odds_count: int              # How many bookmakers offer this
 
+    # The sharp book's own price at entry, and its name. CLV-only: the movement
+    # leg needs the SAME book at both ends of the subtraction.
+    entry_sharp_odds: float = None
+    entry_sharp_book: str = ""
+
     # Staking
     kelly_raw: float = 0.0       # Raw Kelly fraction
     kelly_adj: float = 0.0       # Adjusted Kelly (fractional + caps)
@@ -742,6 +747,8 @@ def run_paper_track() -> int:
                 "bookmaker": bet.best_bookmaker,
                 "avg_odds": bet.avg_odds,
                 "pinnacle_odds": bet.pinnacle_odds,
+                "entry_sharp_odds": getattr(bet, "entry_sharp_odds", None),
+                "entry_sharp_book": getattr(bet, "entry_sharp_book", ""),
                 "stake": PAPER_STAKE,
                 "confidence": bet.confidence_tier,
                 "league": league_key,
@@ -927,6 +934,28 @@ def find_best_odds(bookmakers: List[Dict], selection_key: str) -> Tuple[float, s
 
     avg = sum(odds_list) / len(odds_list)
     return best, best_bk, avg, len(odds_list)
+
+
+def sharp_entry_price(bookmakers: List[Dict], selection_key: str) -> tuple:
+    """(price, book) from a NAMED sharp book, or (None, "").
+
+    Recorded on the bet purely so CLV can compare the same book at both ends.
+    It is deliberately NOT the de-vig basis: `pinnacle_odds` keeps whatever the
+    scanner already used, so this cannot change which bets get selected. On an
+    O/U alternate line the scanner's "sharp" price is the market MEAN — the
+    synthesized totals entry carries a fabricated book name — and a Pinnacle
+    close minus a mean entry is a change of reference, not a line that moved
+    (measured 2026-09-08: -0.55pp mean, 8 of 9 lines, against a movement signal
+    of -0.04 / +0.40pp).
+    """
+    from scripts.betting.bet_journal import SHARP_CLOSING_BOOKS
+    for bm in bookmakers or []:
+        name = bm.get("bookmaker")
+        if name in SHARP_CLOSING_BOOKS:
+            val = bm.get(selection_key, 0)
+            if val and val > 1.0:
+                return float(val), name
+    return None, ""
 
 
 def get_pinnacle_odds(bookmakers: List[Dict], selection_key: str) -> float:
@@ -1243,7 +1272,7 @@ class UnifiedBettingEngine:
     def _make_bet(self, match, date, market, selection, model_p, sharp_p,
                   best_o, best_bk, avg_o, pin_o, count, confidence=0,
                   max_edge_override=None, min_edge_override=None,
-                  pred=None) -> ValueBet | None:
+                  pred=None, entry_sharp=(None, "")) -> ValueBet | None:
         """Shared bet construction with mandatory +EV gate.
         Returns None if the bet is not +EV at best available odds.
         Uses per-market edge thresholds from BettingConfig.market_rules,
@@ -1485,6 +1514,7 @@ class UnifiedBettingEngine:
             edge_pct=round(edge_pct, 2), raw_edge=round(raw_edge, 4),
             best_odds=best_o, best_bookmaker=best_bk, avg_odds=round(avg_o, 2),
             pinnacle_odds=pin_o, odds_count=count,
+            entry_sharp_odds=entry_sharp[0], entry_sharp_book=entry_sharp[1],
             kelly_raw=round(kelly_raw, 4), kelly_adj=round(kelly_adj, 4),
             stake_pct=round(stake_pct, 2),
             stake_amount=round(cfg.bankroll * stake_pct / 100, 2),
@@ -1662,10 +1692,16 @@ class UnifiedBettingEngine:
                     pin_o = [pin_over, pin_under][side_idx]
                     # Per-line min_edge override (e.g., O/U 2.5 needs higher edge than 1.5)
                     line_edge = lme.get(line) if lme else None
+                    # headline lines carry the real books in all_bookmakers; an
+                    # alternate line carries a stub there and the real ones under
+                    # sharp_bookmakers (a stub name is in no sharp set, so a cache
+                    # written before that key existed simply yields no tag)
                     bet = self._make_bet(
                         match, date, f"O/U {line}", sel_name, model_p,
                         true_probs[side_idx], best_o, best_bk, avg_o, pin_o,
-                        count, min_edge_override=line_edge, pred=match_pred)
+                        count, min_edge_override=line_edge, pred=match_pred,
+                        entry_sharp=sharp_entry_price(
+                            total.get("sharp_bookmakers") or bookmakers, sel_key))
                     if bet:
                         bets.append(bet)
         return bets
@@ -2893,6 +2929,11 @@ class UnifiedBettingEngine:
                         "all_bookmakers": [
                             {"bookmaker": "Alt totals book", "over": best_over, "under": best_under}
                         ],
+                        # The real per-book prices, for the entry-side CLV tag only.
+                        # Nothing that prices a bet reads this key — putting them in
+                        # all_bookmakers would make get_pinnacle_odds find Pinnacle
+                        # and change the de-vig basis, i.e. change bet selection.
+                        "sharp_bookmakers": entry.get("all_bookmakers", []),
                     }
                     odds_full[match_key].setdefault("totals", []).append(synth)
                     alt_added += 1
@@ -3303,6 +3344,8 @@ def record_bets(slip: BetSlip) -> int:
                 "bookmaker": bet.best_bookmaker,
                 "avg_odds": bet.avg_odds,
                 "pinnacle_odds": bet.pinnacle_odds,
+                "entry_sharp_odds": getattr(bet, "entry_sharp_odds", None),
+                "entry_sharp_book": getattr(bet, "entry_sharp_book", ""),
                 "stake": bet.stake_amount,
                 "confidence": bet.confidence_tier,
                 "placed_at": slip.generated_at,

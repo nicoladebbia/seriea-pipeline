@@ -449,3 +449,52 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _alt_line_odds(match, with_sharp_books=True):
+    """The shape betting_unified synthesizes for an O/U ALTERNATE line: the
+    aggregates are real, `all_bookmakers` is a single fabricated entry, and the
+    real per-book prices (when the fetch is new enough to carry them) ride along
+    under a key no pricing code reads."""
+    entry = {
+        "line": 1.5, "over": 1.29, "under": 3.50, "best_over": 1.32,
+        "best_under": 3.60, "bookmakers_count": 5,
+        "all_bookmakers": [
+            {"bookmaker": "Alt totals book", "over": 1.32, "under": 3.60}],
+    }
+    if with_sharp_books:
+        entry["sharp_bookmakers"] = [
+            {"bookmaker": "bet365", "over": 1.32, "under": 3.40},
+            {"bookmaker": "Pinnacle", "over": 1.28, "under": 3.60},
+        ]
+    return {match: {"totals": [entry]}}
+
+
+def test_the_sharp_entry_price_is_recorded_without_moving_the_bet():
+    """The movement leg needs the same book at both ends, and on an alternate
+    line `pinnacle_odds` is really the market MEAN — the synthesized entry names
+    no sharp book. Recording the true sharp price must NOT become the de-vig
+    basis: that would change which bets get selected, which is a separate
+    decision from measuring them."""
+    from scripts.betting.betting_unified import UnifiedBettingEngine
+
+    match = "Inter vs Napoli"
+    preds = [{"match": match, "date": "2026-09-05", "over_1_5": 0.84}]
+
+    with_books = UnifiedBettingEngine().scan_ou_market(
+        preds, _alt_line_odds(match), None)
+    without = UnifiedBettingEngine().scan_ou_market(
+        preds, _alt_line_odds(match, with_sharp_books=False), None)
+
+    assert len(with_books) == 1 and len(without) == 1
+    a, b = with_books[0], without[0]
+
+    # the entry tag appears...
+    assert (a.entry_sharp_book, a.entry_sharp_odds) == ("Pinnacle", 1.28)
+    assert (b.entry_sharp_book, b.entry_sharp_odds) == ("", None)
+
+    # ...and nothing that decides the bet moved
+    assert a.pinnacle_odds == b.pinnacle_odds == 1.29, "still the market mean"
+    assert (a.edge_pct, a.sharp_implied_prob, a.best_odds, a.stake_amount) == \
+           (b.edge_pct, b.sharp_implied_prob, b.best_odds, b.stake_amount)
+    assert a.entry_sharp_odds != a.pinnacle_odds, "the two references differ"

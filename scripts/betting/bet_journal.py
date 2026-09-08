@@ -182,6 +182,26 @@ def get_clv_lookup() -> Dict[str, float]:
 SHARP_CLOSING_BOOKS = {"Pinnacle", "Pinnacle Sports", "BetCRIS", "CRIS", "Matchbook"}
 
 
+def movement_pair(bet: Dict) -> tuple:
+    """(entry_price, closing_price) when BOTH came from the same sharp book.
+
+    `pinnacle_odds` is not a usable entry price for this: on an O/U alternate
+    line the scanner never finds a named sharp book (the synthesized totals
+    entry carries a fabricated one) and falls back to the market MEAN, which it
+    then stores under that name. Measured 2026-09-08, Pinnacle vs the same-instant
+    mean runs -0.55pp on 8 of 9 lines — an order of magnitude above the movement
+    it would be read as. So the movement leg requires a NAMED entry book, and it
+    must be the same book that quoted the close.
+    """
+    close_book = closing_book(bet)
+    if not close_book or (bet.get("entry_sharp_book") or "") != close_book:
+        return None, None
+    entry, closing = bet.get("entry_sharp_odds"), bet.get("closing_odds")
+    if not entry or entry <= 1.0 or not closing or closing <= 1.0:
+        return None, None
+    return entry, closing
+
+
 def closing_book(bet: Dict) -> str | None:
     """The book whose price is stored in `closing_odds`, when it is a sharp one.
 
@@ -229,9 +249,9 @@ def _compute_clv(bet: Dict) -> None:
 
     if closing_odds and closing_odds > 1.0:
         bet["clv_pct"] = round(((placed_odds / closing_odds) - 1.0) * 100, 2)
-        entry_sharp = bet.get("pinnacle_odds")
-        if closing_book(bet) and entry_sharp and entry_sharp > 1.0:
-            bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
+        entry_sharp, closing = movement_pair(bet)
+        if entry_sharp:
+            bet["clv_move_pct"] = round((1.0 / closing - 1.0 / entry_sharp) * 100, 2)
         return
 
     # No closing line. What we have is the entry edge against the sharp price —
@@ -267,9 +287,9 @@ def backfill_clv() -> Dict:
         elif bet.get("clv_move_pct") is None:
             # clv_pct already stands (a displayed metric — not rewritten here);
             # fill only the movement half, which never existed before.
-            entry_sharp, closing_odds = bet.get("pinnacle_odds"), bet.get("closing_odds")
-            if closing_book(bet) and entry_sharp and entry_sharp > 1.0 and closing_odds and closing_odds > 1.0:
-                bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
+            entry_sharp, closing = movement_pair(bet)
+            if entry_sharp:
+                bet["clv_move_pct"] = round((1.0 / closing - 1.0 / entry_sharp) * 100, 2)
         if (bet.get("clv_pct"), bet.get("clv_move_pct"), bet.get("entry_edge_vs_sharp_pct")) != before:
             updated += 1
 
@@ -485,6 +505,10 @@ def add_bet(bet_data: Dict, journal_path: Path | None = None, *,
             "bookmaker": bet_data.get("bookmaker"),
             "avg_odds": bet_data.get("avg_odds"),
             "pinnacle_odds": bet_data.get("pinnacle_odds"),
+            # the sharp book's own price at entry, and its name — CLV only, never
+            # a pricing input; absent means no movement number, by design
+            "entry_sharp_odds": bet_data.get("entry_sharp_odds"),
+            "entry_sharp_book": bet_data.get("entry_sharp_book") or "",
             "stake": bet_data.get("stake"),
             "confidence": bet_data.get("confidence"),
             "factors": bet_data.get("factors"),
@@ -913,9 +937,9 @@ def update_clv(bet_id: str, closing_odds: float, clv_pct: float = None,
     elif bet.get("odds") and closing_odds and closing_odds > 1.0:
         bet["clv_pct"] = round(((bet["odds"] / closing_odds) - 1.0) * 100, 2)
 
-    entry_sharp = bet.get("pinnacle_odds")
-    if closing_book(bet) and entry_sharp and entry_sharp > 1.0 and closing_odds and closing_odds > 1.0:
-        bet["clv_move_pct"] = round((1.0 / closing_odds - 1.0 / entry_sharp) * 100, 2)
+    entry_sharp, closing = movement_pair(bet)
+    if entry_sharp:
+        bet["clv_move_pct"] = round((1.0 / closing - 1.0 / entry_sharp) * 100, 2)
     else:
         bet["clv_move_pct"] = None
 

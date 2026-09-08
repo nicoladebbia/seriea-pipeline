@@ -273,4 +273,4 @@ def test_the_quality_leg_is_the_line_MOVING_not_beating_the_close():
     # and a book with no same-book closing prices cannot clear a gate reading them
     blind = MP.incumbent_records(_real(22, 8, clv=None, move=None))["ou_over_1_5"]["real_since_live"]
     assert MP.full_stake_misses(blind) == [
-        f"0/{MP.INCUMBENT_FULL_STAKE_BAR['min_clv_move_n']} sharp closing lines"]
+        f"0/{MP.INCUMBENT_FULL_STAKE_BAR['min_clv_move_n']} same-book entry+close"]

@@ -459,7 +459,8 @@ class TestCLVIsNotTheEntryEdge:
 
     def test_the_line_move_needs_the_SAME_book_at_both_ends(self):
         from scripts.betting.bet_journal import _compute_clv
-        base = {"odds": 1.41, "pinnacle_odds": 1.38, "closing_odds": 1.34}
+        base = {"odds": 1.41, "pinnacle_odds": 1.38, "closing_odds": 1.34,
+                "entry_sharp_odds": 1.38, "entry_sharp_book": "Pinnacle"}
         for source, why in (
             (None, "captured before the source was recorded"),
             ("totals.1.5.over (9 bm) [market_mean]", "a mean of many books is a different reference"),
@@ -471,6 +472,21 @@ class TestCLVIsNotTheEntryEdge:
             assert bet.get("clv_move_pct") is None, why
             assert bet["clv_pct"] is not None, "beat-the-close still stands"
 
+        # ...and the ENTRY side needs a named book too. Every legacy row carries
+        # `pinnacle_odds` that is really the alt-totals market MEAN, so a Pinnacle
+        # close against it is a change of reference, not a line that moved. The
+        # true positive: the rule this replaces read exactly that field.
+        no_entry_book = dict(base, closing_source="totals.1.5.over (9 bm) [Pinnacle]")
+        no_entry_book.pop("entry_sharp_book"), no_entry_book.pop("entry_sharp_odds")
+        _compute_clv(no_entry_book)
+        assert no_entry_book["pinnacle_odds"] == 1.38, "the old rule's input is right there"
+        assert no_entry_book.get("clv_move_pct") is None
+
+        mismatched = dict(base, entry_sharp_book="Matchbook",
+                          closing_source="totals.1.5.over (9 bm) [Pinnacle]")
+        _compute_clv(mismatched)
+        assert mismatched.get("clv_move_pct") is None, "two sharp books are still two books"
+
         bet = dict(base, closing_source="totals.1.5.over (9 bm) [Pinnacle]")
         _compute_clv(bet)
         assert bet["clv_move_pct"] == round((1 / 1.34 - 1 / 1.38) * 100, 2)
@@ -481,6 +497,7 @@ class TestCLVIsNotTheEntryEdge:
     def test_the_move_is_negative_when_the_market_goes_against_us(self):
         from scripts.betting.bet_journal import _compute_clv
         bet = {"odds": 1.41, "pinnacle_odds": 1.38, "closing_odds": 1.45,
+               "entry_sharp_odds": 1.38, "entry_sharp_book": "Pinnacle",
                "closing_source": "totals.1.5.over (9 bm) [Pinnacle]"}
         _compute_clv(bet)
         assert bet["clv_move_pct"] < 0
@@ -499,6 +516,7 @@ class TestCLVIsNotTheEntryEdge:
                               entry_edge_vs_sharp_pct=None)
         j["bets"]["real"] = dict(j["bets"][bid], bet_id="real", clv_pct=2.4,
                                  closing_odds=3.20, pinnacle_odds=3.25,
+                                 entry_sharp_odds=3.25, entry_sharp_book="Pinnacle",
                                  closing_source="h2h.draw (9 bookmakers) [Pinnacle]",
                                  clv_move_pct=None, entry_edge_vs_sharp_pct=None)
         _save_journal(j)
@@ -521,7 +539,8 @@ class TestCLVIsNotTheEntryEdge:
             "match": "Inter vs Milan", "date": "2026-02-15", "market": "O/U 1.5",
             "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.7246,
             "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
-            "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+            "pinnacle_odds": 1.38, "entry_sharp_odds": 1.38,
+            "entry_sharp_book": "Pinnacle", "stake": 10.0, "confidence": "MEDIUM",
             "factors": [], "placed_at": "2026-02-14T10:00:00",
         })
         bet_id = next(iter(_load_journal()["bets"]))
@@ -615,7 +634,8 @@ class TestCLVIsNotTheEntryEdge:
             "match": "Inter vs Milan", "date": "2026-02-15", "market": "O/U 1.5",
             "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.72,
             "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
-            "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+            "pinnacle_odds": 1.38, "entry_sharp_odds": 1.38,
+            "entry_sharp_book": "Pinnacle", "stake": 10.0, "confidence": "MEDIUM",
             "factors": [], "placed_at": "2026-02-14T10:00:00",
         })
         bet_id = next(iter(_load_journal()["bets"]))
@@ -638,7 +658,8 @@ class TestCLVIsNotTheEntryEdge:
         add_bet({"match": "Roma vs Lazio", "date": "2026-02-16", "market": "O/U 1.5",
                  "selection": "Over 1.5", "model_prob": 0.74, "sharp_implied_prob": 0.72,
                  "edge_pct": 1.5, "odds": 1.41, "bookmaker": "Bet365", "avg_odds": 1.40,
-                 "pinnacle_odds": 1.38, "stake": 10.0, "confidence": "MEDIUM",
+                 "pinnacle_odds": 1.38, "entry_sharp_odds": 1.38,
+            "entry_sharp_book": "Pinnacle", "stake": 10.0, "confidence": "MEDIUM",
                  "factors": [], "placed_at": "2026-02-15T10:00:00"})
         other = [b for b in _load_journal()["bets"] if "Roma" in b][0]
         update_clv(other, closing_odds=1.36)

@@ -407,7 +407,7 @@ def test_full_stake_reads_the_line_move_as_the_quality_leg_with_ROI_as_a_floor()
     # absence of evidence.
     blind = MP.market_record(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live))["O/U 1.5"]
     assert blind["n_clv_move"] == 0 and MP.bar_misses(blind, {**MP.PROMOTION_BAR, "min_settled": 30, "min_z": 0.0}) == []
-    assert MP.full_stake_misses(blind) == ["0/20 sharp closing lines"]
+    assert MP.full_stake_misses(blind) == ["0/20 same-book entry+close"]
     assert MP.incumbent_records(_real_engine("O/U 1.5", "Over 1.5", 22, 8, 1.41, live))["ou_over_1_5"]["stake_scale"] \
         == MP.PROMOTED_KELLY_SCALE
 

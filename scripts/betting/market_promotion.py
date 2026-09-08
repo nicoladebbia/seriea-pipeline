@@ -314,7 +314,9 @@ def full_stake_misses(rec: dict, bar: dict = INCUMBENT_FULL_STAKE_BAR) -> list[s
     if rec["roi_pct"] <= bar["min_roi_pct"]:
         out.append(f"ROI {rec['roi_pct']:+.1f}%")
     if rec.get("n_clv_move", 0) < bar["min_clv_move_n"]:
-        out.append(f"{rec.get('n_clv_move', 0)}/{bar['min_clv_move_n']} sharp closing lines")
+        # entry AND close from the SAME named sharp book — one end alone says
+        # nothing about movement
+        out.append(f"{rec.get('n_clv_move', 0)}/{bar['min_clv_move_n']} same-book entry+close")
     else:
         if (rec.get("mean_clv_move_pct") or 0) <= bar["min_clv_move_pct"]:
             out.append(f"line move {rec['mean_clv_move_pct']:+.2f}%")
